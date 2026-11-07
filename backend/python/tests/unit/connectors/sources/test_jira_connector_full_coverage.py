@@ -808,7 +808,6 @@ class TestReindexRecords:
             connector_name=Connectors.JIRA,
             connector_id="conn-jira-1",
             scope="personal",
-            created_by="test-user-id",
         )
         connector._check_and_fetch_updated_record = AsyncMock(return_value=None)
 

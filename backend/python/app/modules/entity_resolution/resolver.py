@@ -880,7 +880,8 @@ class EntityResolver:
         metadata.sub_category_level_3 = (chain[2] if chain[0] and chain[1] else None) or None
         metadata.topics = by_slot.get(TOPIC.slot, [])
         metadata.languages = by_slot.get(LANGUAGE.slot, [])
-        metadata.organizations = by_slot.get(ORGANIZATION.slot, [])
+        if metadata.organizations is not None:
+            metadata.organizations = by_slot.get(ORGANIZATION.slot, [])
         metadata.own_labels = True
 
 

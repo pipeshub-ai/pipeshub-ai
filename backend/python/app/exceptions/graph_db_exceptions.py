@@ -39,6 +39,40 @@ class GraphLockUnavailableError(GraphDBError):
     """
 
 
+# The server-wide transaction memory pool ran out, or one transaction hit its own
+# limit. Neither clears by sending the same statement again.
+MEMORY_LIMIT_CODES = frozenset({
+    "Neo.TransientError.General.MemoryPoolOutOfMemoryError",
+    "Neo.TransientError.General.TransactionMemoryLimit",
+})
+
+
+class GraphMemoryLimitError(GraphDBError):
+    """A bulk write was larger than the graph server's transaction memory pool.
+
+    Sending it again fails the same way, so it is not a transient error and no
+    retry loop runs it twice. Not a ``TransientError`` subclass on purpose, and
+    raised outside the handler of the driver's error so that nothing in its
+    ``__cause__`` / ``__context__`` chain looks transient either. The statement
+    rolled back whole: whatever it was rewriting is as it was.
+
+    ``groups`` names the groups an aggregated error left unwritten.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        operation: str | None = None,
+        size: int | None = None,
+        groups: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.operation = operation
+        self.size = size
+        self.groups = groups or []
+
+
 class KnowledgeHubListingTooLarge(GraphDBError):
     """The database gave up on a listing for want of memory.
 
@@ -74,3 +108,10 @@ def is_out_of_memory(error: BaseException) -> bool:
             return True
         error = getattr(error, "__cause__", None)
     return False
+
+
+def is_graph_memory_refusal(exc: BaseException) -> bool:
+    """The graph server's memory pool refused a write: a ``GraphMemoryLimitError``, or a driver
+    error that carries one of the pool's status codes (a statement not marked as bulk keeps the
+    driver's error)."""
+    return isinstance(exc, GraphMemoryLimitError) or getattr(exc, "code", None) in MEMORY_LIMIT_CODES

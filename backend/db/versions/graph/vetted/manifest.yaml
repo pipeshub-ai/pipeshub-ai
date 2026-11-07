@@ -83,12 +83,14 @@ functions:
     custom_plan: true        # a generic plan walks the primary key in id order to meet the LIMIT instead of using the key's index
     body: |
       IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
-      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
-        WHERE n.org_id = v_org AND n.coll = 'blocks' AND n.doc->>'recordId' = p_record_id AND n.id > p_after
+      -- only the ids are materialized (the key's index first, then ordered: an order in the same query can walk the primary key and filter the whole collection); the page's docs are fetched by key
+      RETURN QUERY WITH m AS MATERIALIZED (SELECT n.id FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'blocks' AND n.doc->>'recordId' = p_record_id
           AND NOT EXISTS (SELECT 1 FROM unnest(p_keys, p_vals) f(k, v)
             WHERE CASE WHEN p_null_absent AND f.v = 'null' THEN coalesce(n.doc->f.k, f.v) <> f.v
-                       ELSE n.doc->f.k IS DISTINCT FROM f.v END)
-        ORDER BY n.id LIMIT p_limit;
+                       ELSE n.doc->f.k IS DISTINCT FROM f.v END))
+        SELECT n.id, n.doc FROM (SELECT m.id FROM m WHERE m.id > p_after ORDER BY m.id LIMIT p_limit) pg
+        JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'blocks' AND n.id = pg.id ORDER BY n.id;
 
   # The blocks of one connector with one folded name (index nodes_block_name).
   - name: graph.blocks_by_name
@@ -109,12 +111,14 @@ functions:
     custom_plan: true        # a generic plan walks the primary key in id order to meet the LIMIT instead of using the key's index
     body: |
       IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
-      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
-        WHERE n.org_id = v_org AND n.coll = 'blocks' AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'nameFolded' = p_name_folded AND n.id > p_after
+      -- only the ids are materialized (the key's index first, then ordered: an order in the same query can walk the primary key and filter the whole collection); the page's docs are fetched by key
+      RETURN QUERY WITH m AS MATERIALIZED (SELECT n.id FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'blocks' AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'nameFolded' = p_name_folded
           AND NOT EXISTS (SELECT 1 FROM unnest(p_keys, p_vals) f(k, v)
             WHERE CASE WHEN p_null_absent AND f.v = 'null' THEN coalesce(n.doc->f.k, f.v) <> f.v
-                       ELSE n.doc->f.k IS DISTINCT FROM f.v END)
-        ORDER BY n.id LIMIT p_limit;
+                       ELSE n.doc->f.k IS DISTINCT FROM f.v END))
+        SELECT n.id, n.doc FROM (SELECT m.id FROM m WHERE m.id > p_after ORDER BY m.id LIMIT p_limit) pg
+        JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'blocks' AND n.id = pg.id ORDER BY n.id;
 
   # The code files of one path (index nodes_codefile_path).
   - name: graph.code_files_by_path
@@ -134,9 +138,64 @@ functions:
     custom_plan: true        # a generic plan walks the primary key in id order to meet the LIMIT instead of using the key's index
     body: |
       IF cardinality(p_keys) <> cardinality(p_vals) THEN RAISE EXCEPTION 'p_keys and p_vals differ in length' USING ERRCODE = '22023'; END IF;
-      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
-        WHERE n.org_id = v_org AND n.coll = 'codeFiles' AND n.doc->>'filePath' = p_path AND n.id > p_after
+      -- only the ids are materialized (the key's index first, then ordered: an order in the same query can walk the primary key and filter the whole collection); the page's docs are fetched by key
+      RETURN QUERY WITH m AS MATERIALIZED (SELECT n.id FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'codeFiles' AND n.doc->>'filePath' = p_path
           AND NOT EXISTS (SELECT 1 FROM unnest(p_keys, p_vals) f(k, v)
             WHERE CASE WHEN p_null_absent AND f.v = 'null' THEN coalesce(n.doc->f.k, f.v) <> f.v
-                       ELSE n.doc->f.k IS DISTINCT FROM f.v END)
-        ORDER BY n.id LIMIT p_limit;
+                       ELSE n.doc->f.k IS DISTINCT FROM f.v END))
+        SELECT n.id, n.doc FROM (SELECT m.id FROM m WHERE m.id > p_after ORDER BY m.id LIMIT p_limit) pg
+        JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'codeFiles' AND n.id = pg.id ORDER BY n.id;
+
+# ---- more hot lookups (graph_0004) ------------------------------------------------------------------------------------------------
+# The same reason as the code graph's reads above: a plain statement under the service role reaches an expression index on the document
+# only through org_id. Each function answers one lookup the services make on every request or sync step, from the org of app.org_id.
+
+  # The records of one connector with one external id (index nodes_record_external); the caller picks the live or deleted one. No ORDER BY: an ordered scan of the primary key can look cheaper to a plan than the index of the key.
+  - name: graph.record_by_external
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_connector_id, type: text, length: [1, 200]}
+      - {name: p_external_id, type: text, length: [1, 2000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'externalRecordId' = p_external_id
+        LIMIT 100;
+
+  # The user with one userId (index nodes_user_userid).
+  - name: graph.user_by_user_id
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_user_id, type: text, length: [1, 200]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'users' AND n.doc->>'userId' = p_user_id
+        LIMIT 1;
+
+  # The records of the org that hold any of the given virtual record ids (index nodes_record_vrid), whose own orgId is the org; up to 5000.
+  - name: graph.records_by_virtual_id
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_vrids, type: "text[]", max_items: 1000, item_not_null: true, item_length: [1, 200]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'virtualRecordId' = ANY(p_vrids) AND n.doc->>'orgId' = v_org
+        LIMIT 5000;

@@ -70,6 +70,7 @@ from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import cypher_not_a_service_account
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
+    GraphMemoryLimitError,
     GraphQueryError,
     KnowledgeHubListingBusy,
     KnowledgeHubListingTooLarge,
@@ -571,6 +572,16 @@ def _by_ends(edge: dict) -> tuple[str, ...]:
     return (str(edge.get("from_key", edge.get("from_id"))), str(edge.get("to_key", edge.get("to_id"))))
 
 
+# The timestamps of an edge: the only keys a diffed replace does not compare. Any other key counts as a
+# semantic property, so a key a caller adds later errs toward a rewrite.
+_EDGE_TIME_KEYS = ("createdAtTimestamp", "updatedAtTimestamp")
+
+
+def _semantic_props(props: dict) -> dict:
+    """*props* without the timestamps and without nulls (``SET r = map`` stores no null)."""
+    return {k: v for k, v in props.items() if k not in _EDGE_TIME_KEYS and v is not None}
+
+
 # Edges one statement moves; a hub node's millions go in batches.
 _EDGE_MOVE_BATCH = 5000
 
@@ -589,6 +600,17 @@ def _created_ends(rows: list[dict] | None) -> list[str]:
     """The node ids at both ends of the edges a statement reported as created (`made`: a list of `[from, to]` pairs)."""
     made = (rows[0].get("made") if rows and isinstance(rows[0], dict) else None) or []
     return [i for pair in made for i in pair]
+
+
+# From this many rows an edge write or replace fails for good when the server's transaction memory pool refuses it
+# (GraphMemoryLimitError). A smaller one is likely the victim of a big statement holding the shared pool, and
+# keeps the bounded retry, which usually outlasts it.
+BULK_EDGE_ROWS = 10_000
+
+
+def _bulk_rows(operation: str, rows: int) -> dict[str, Any]:
+    """execute_query's ``bulk`` keywords for a batch edge write of this many rows, none for a small one."""
+    return {"bulk": operation, "size": rows} if rows >= BULK_EDGE_ROWS else {}
 
 
 # Set on an edge by the MERGE that creates it and read in the same statement: tells a created edge from a found one.
@@ -1064,6 +1086,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         failed block passed to ``begin_transaction``."""
         if self.client is None or not self.client.opens_explicit_transaction(explicit):
             return False
+        if isinstance(error, GraphMemoryLimitError):
+            return False  # the memory pool refused it; the same statement is refused again
         return isinstance(error, TransientError)
 
     def is_write_conflict(self, error: BaseException) -> bool:
@@ -1148,6 +1172,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return [
             "CREATE CONSTRAINT person_org_email_unique IF NOT EXISTS "
             f"FOR (n:{Neo4jLabel.PEOPLE.value}) REQUIRE (n.orgId, n.email) IS UNIQUE",
+            # A person a source names without an email (see Person.source_key).
+            "CREATE CONSTRAINT person_org_source_key_unique IF NOT EXISTS "
+            f"FOR (n:{Neo4jLabel.PEOPLE.value}) REQUIRE (n.orgId, n.sourceKey) IS UNIQUE",
             # A sync point key names one sync point: connectors embed their org and
             # connector id, code-graph build state its record group's id. Without it
             # two first upserts both created one, and reads returned either (B3).
@@ -2502,23 +2529,60 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     def _replace_edges_to_cypher(
         self, to_id: str, to_collection: str, edges: list[dict], collection: str
     ) -> tuple[str, dict[str, Any]]:
-        """The statement of ``replace_edges_to`` up to its RETURN, so a caller can add to the same write."""
+        """The statement of ``replace_edges_to`` up to its RETURN, so a caller can add to the same write.
+
+        It moves only the difference between the stored edges and *edges*: the old
+        edges whose source is not in the new set are deleted, the new ones are merged,
+        and a kept edge is rewritten only when a property other than the two
+        timestamps changed. The statement ends with exactly one row, so a caller can
+        append writes that must run once. The member keys travel whole in ``$keep``:
+        a Python-side read of the old edges would be a separate transaction when
+        NEO4J_EXPLICIT_TRANSACTIONS is false, and would lose a member to a concurrent
+        replace of the same group.
+        """
         self._validate_edges(collection, edges)
         relationship_type = edge_collection_to_relationship(collection)
-        parameters: dict[str, Any] = {"to_id": to_id}
+        to_node_label = collection_to_label(to_collection)
+        parameters: dict[str, Any] = {"to_id": to_id, "time_keys": list(_EDGE_TIME_KEYS)}
+        keep: list[str] = []
         creates = []
         for i, ((from_label, to_label), rows) in enumerate(self._edges_by_labels(edges).items()):
-            parameters[f"edges_{i}"] = rows
+            # Duplicate members: the last row wins (the rows keep the order of the input per key).
+            members = list(
+                {(row["from_key"], row["to_key"]): {**row, "sem": _semantic_props(row["props"])} for row in rows}.values()
+            )
+            parameters[f"edges_{i}"] = members
+            if to_label == to_node_label:
+                # Only an edge into *to_id* keeps its source's old edge; one into another node of the label does not.
+                keep.extend(f"{from_label}|{member['from_key']}" for member in members if member["to_key"] == to_id)
             creates.append(f"""
             CALL {{
                 UNWIND $edges_{i} AS edge
                 MATCH (from:{from_label} {{id: edge.from_key}})
                 MATCH (to:{to_label} {{id: edge.to_key}})
+                CALL {{
+                    WITH from, to
+                    MATCH (from)-[parallel:{relationship_type}]->(to)
+                    WITH parallel ORDER BY id(parallel) SKIP 1
+                    DELETE parallel
+                }}
                 MERGE (from)-[r:{relationship_type}]->(to)
-                SET r = edge.props
+                ON CREATE SET r = edge.props
+                WITH r, edge, r.createdAtTimestamp AS created
+                WHERE size([k IN keys(r) WHERE NOT k IN $time_keys]) <> size(keys(edge.sem))
+                    OR any(k IN keys(edge.sem) WHERE r[k] IS NULL OR r[k] <> edge.sem[k])
+                SET r = edge.sem,
+                    r.createdAtTimestamp = coalesce(created, edge.props.createdAtTimestamp),
+                    r.updatedAtTimestamp = edge.props.updatedAtTimestamp
             }}""")
+        parameters["keep"] = keep
         return f"""
-            OPTIONAL MATCH ()-[old:{relationship_type}]->(:{collection_to_label(to_collection)} {{id: $to_id}})
+            OPTIONAL MATCH (target:{to_node_label} {{id: $to_id}})
+            SET target.{_MATCH_LOCK} = true
+            REMOVE target.{_MATCH_LOCK}
+            WITH count(*) AS _
+            OPTIONAL MATCH (source)-[old:{relationship_type}]->(:{to_node_label} {{id: $to_id}})
+            WHERE NOT any(l IN labels(source) WHERE (l + '|' + source.id) IN $keep)
             DELETE old
             WITH count(*) AS _
             {"".join(creates)}""", parameters
@@ -2531,12 +2595,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         collection: str,
         transaction: str | None = None,
     ) -> None:
-        # One statement, so a failure deletes nothing: with NEO4J_EXPLICIT_TRANSACTIONS
-        # off (the default) a separate delete committed before the new edges were
-        # written, and a group whose rewrite failed was left with no members.
+        """Replace the *collection* edges into *to_id*: every old one is gone unless *edges* has it again."""
+        # One statement, so a failure deletes nothing: the code default of
+        # NEO4J_EXPLICIT_TRANSACTIONS is true, but false is a supported mode in
+        # which a separate delete would commit before the new edges were written,
+        # and a group whose rewrite failed was left with no members.
         statement, parameters = self._replace_edges_to_cypher(to_id, to_collection, edges, collection)
         await self.client.execute_query(
-            f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction
+            f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction,
+            **_bulk_rows("group replace", len(edges)),
         )
 
     @staticmethod
@@ -2605,7 +2672,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (n:{collection_to_label(CollectionNames.RECORDS.value)} {{id: $record_id}})
             {_cypher_kh_tree_refresh(edge_collection_to_relationship(CollectionNames.INHERIT_PERMISSIONS.value), "n")}"""
         await self.client.execute_query(
-            f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction
+            f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction,
+            **_bulk_rows("record permission replace", len(edges)),
         )
 
     async def link_record_to_group(
@@ -2764,6 +2832,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     query,
                     parameters={"edges": group_edges},
                     txn_id=transaction,
+                    **_bulk_rows("batch edge create", len(group_edges)),
                 )
                 if report:
                     made = _created_ends(rows)
@@ -2814,6 +2883,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     query,
                     parameters={"edges": group_edges},
                     txn_id=transaction,
+                    **_bulk_rows("edge create if absent", len(group_edges)),
                 )
                 if report:
                     made = _created_ends(rows)
@@ -6130,7 +6200,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         raise_on_error: bool = False,
         org_id: str | None = None,
     ) -> User | None:
-        """Get user by email"""
+        """Get user by email; with ``org_id``, only a user of that organisation."""
         try:
             scoped = org_id is not None
             org_filter = "AND u.orgId = $org_id" if scoped else ""
@@ -18408,6 +18478,60 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 raise
             return None
 
+
+    async def get_person_by_source_key(
+        self, source_key: str, org_id: str, transaction: str | None = None, *, raise_on_error: bool = False,
+    ) -> Person | None:
+        """See :meth:`IGraphDBProvider.get_person_by_source_key`."""
+        try:
+            label = collection_to_label(CollectionNames.PEOPLE.value)
+            rows = await self.client.execute_query(
+                f"MATCH (p:{label} {{sourceKey: $source_key, orgId: $org_id}}) RETURN p LIMIT 1",
+                parameters={"source_key": source_key, "org_id": org_id},
+                txn_id=transaction,
+            )
+            if not rows:
+                return None
+            return Person.from_arango_person(
+                self._neo4j_to_arango_node(dict(rows[0]["p"]), CollectionNames.PEOPLE.value)
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Get person by source key failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return None
+
+    async def upsert_person_by_source_key(
+        self,
+        person: Person,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> str | None:
+        """See :meth:`IGraphDBProvider.upsert_person_by_source_key`. Atomic
+        through the person_org_source_key_unique constraint."""
+        try:
+            label = collection_to_label(CollectionNames.PEOPLE.value)
+            person_doc = person.to_arango_person()
+            self.validator.validate_node(CollectionNames.PEOPLE.value, person_doc)
+            props = self._arango_to_neo4j_node(person_doc, CollectionNames.PEOPLE.value)
+            results = await self.client.execute_query(
+                f"""
+                MERGE (p:{label} {{sourceKey: $source_key, orgId: $org_id}})
+                ON CREATE SET p = $props
+                RETURN p.id AS id
+                """,
+                parameters={"source_key": person.source_key, "org_id": person.org_id, "props": props},
+                txn_id=transaction,
+            )
+            return results[0]["id"] if results else None
+        except SchemaValidationError:
+            raise
+        except Exception as e:
+            self.logger.error(f"❌ Upsert person by source key failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return None
     async def ensure_app_membership(
         self,
         principal_id: str,
@@ -18529,6 +18653,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             app_rel = edge_collection_to_relationship(
                 CollectionNames.USER_APP_RELATION.value
             )
+            entity_rel = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
 
             # The transfers are written out per relationship type rather than looped:
             # Cypher has no dynamic relationship type without APOC.
@@ -18556,6 +18681,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 ON CREATE SET moved = properties(r)
                 DELETE r
                 RETURN count(*) AS moved_app_relations
+            }}
+
+            // Records naming the person (author, editor, owner) point AT it; they follow
+            // it to the user whether or not it splits.
+            CALL {{
+                WITH p, u
+                MATCH (rec)-[r:{entity_rel}]->(p)
+                MERGE (rec)-[moved:{entity_rel} {{edgeType: r.edgeType}}]->(u)
+                ON CREATE SET moved = properties(r)
+                DELETE r
+                RETURN count(*) AS moved_entity_relations
             }}
 
             // Aggregating rather than returning the deleted node keeps this block from
@@ -23506,17 +23642,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not org_id or not key or not node.get("name"):
             raise ValueError("an extracted organisation needs an org, an id and a name")
         now = get_epoch_timestamp_in_ms()
+        props = {
+            "name": node["name"], "normalizedName": node.get("normalizedName"),
+            "accountType": "enterprise", "isActive": True, "isExternal": True, "parentOrgId": org_id,
+            "createdAtTimestamp": now, "updatedAtTimestamp": now,
+        }
+        self.validator.validate_node(CollectionNames.ORGS.value, {"id": key, **props})
         label = collection_to_label(CollectionNames.ORGS.value)
         await self.client.execute_query(
             f"""
             MERGE (o:{label} {{id: $id}})
             ON CREATE SET o += $props
             """,
-            parameters={"id": key, "props": {
-                "name": node["name"], "normalizedName": node.get("normalizedName"),
-                "accountType": "enterprise", "isActive": True, "isExternal": True, "parentOrgId": org_id,
-                "createdAtTimestamp": now, "updatedAtTimestamp": now,
-            }},
+            parameters={"id": key, "props": props},
             txn_id=transaction,
         )
 

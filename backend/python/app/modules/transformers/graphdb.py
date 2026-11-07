@@ -299,6 +299,9 @@ class GraphDBTransformer(Transformer):
         rejects them during a rolling deploy; the record's taxonomy must not
         be lost over that. A re-extraction writes them again.
         """
+        # None is unknown (a fallback summary names nothing): keep the existing links.
+        if getattr(getattr(record, "semantic_metadata", None), "organizations", []) is None:
+            return []
         provider = self.graph_data_store.graph_provider
         org_id = resolution.org_id
         record_id = getattr(record, "id", "")

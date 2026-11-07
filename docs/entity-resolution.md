@@ -251,10 +251,13 @@ naming "Slack"), or a generic word ("the client").
     record to its account, including EXTRACTED ones; re-index those records
     after the rollout if pods overlapped.
   - Rolling back on ArangoDB: strip the new field and edges, or Salesforce
-    account sync fails on keyed accounts:
+    account sync fails on keyed accounts. Run the two queries separately (in
+    one query the second loop nests in the first and runs once per organisation):
     ```aql
     FOR o IN organizations FILTER HAS(o, "normalizedName")
       UPDATE o WITH { normalizedName: null } IN organizations OPTIONS { keepNull: false }
+    ```
+    ```aql
     FOR e IN entityRelations FILTER e.edgeType == "MENTIONS" REMOVE e IN entityRelations
     ```
     Neo4j has no strict schema and needs neither.

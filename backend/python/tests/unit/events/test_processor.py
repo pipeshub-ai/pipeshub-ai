@@ -408,6 +408,31 @@ class TestProcessImage:
         fields = gp.update_node.await_args.args[2]
         assert fields["indexingStatus"] == ProgressStatus.ENABLE_MULTIMODAL_MODELS.value
 
+    @pytest.mark.parametrize(
+        ("parsing_before", "parsing_written"),
+        [
+            (ProgressStatus.IN_PROGRESS.value, ProgressStatus.ENABLE_MULTIMODAL_MODELS.value),
+            (ProgressStatus.COMPLETED.value, None),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_non_multimodal_never_leaves_a_parse_in_progress(self, parsing_before, parsing_written) -> None:
+        proc, _, gp, _ = _make_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "mimeType": "image/png",
+            "parsingStatus": parsing_before,
+        }
+
+        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm:
+            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
+            with patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb:
+                mock_emb.return_value = {"isMultimodal": False}
+
+                await _collect(proc.process_image("rec-1", b"img", "vr-1"))
+
+        assert gp.update_node.await_args.args[2].get("parsingStatus") == parsing_written
+
 
 # ===========================================================================
 # Processor.process_pdf_with_docling

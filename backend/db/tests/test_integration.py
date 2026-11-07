@@ -69,10 +69,10 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
 # the modules besides the kernel: platform (the store fence, background jobs and the runtime tables), the document store's branches and the vector retrieval module
 DOCSTORE_BRANCHES = ("content", "conversation", "identity", "integrations", "oauth", "platform_data")
 MODULES = ("platform", *DOCSTORE_BRANCHES, "retrieval")
-HEADS = {"kernel": (17, 11), "platform": (4, 0), "content": (3, 0), "conversation": (2, 0), "identity": (5, 0), "integrations": (2, 0), "oauth": (4, 0), "platform_data": (4, 0),
-         "graph": (3, 0), "kg": (6, 0), "retrieval": (2, 0)}
+HEADS = {"kernel": (17, 11), "platform": (5, 0), "content": (3, 0), "conversation": (2, 0), "identity": (5, 0), "integrations": (2, 0), "oauth": (4, 0), "platform_data": (4, 0),
+         "graph": (5, 0), "kg": (7, 0), "retrieval": (2, 0)}
 # platform_data_0002 depends on the last revision of most other document-store branches, so those are not heads
-REVISION_HEADS = {"platform_0004", "identity_0005", "content_0003", "oauth_0004", "platform_data_0004", "kg_0006", "retrieval_0002", "graph_0003"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
+REVISION_HEADS = {"platform_0005", "identity_0005", "content_0003", "oauth_0004", "platform_data_0004", "kg_0007", "retrieval_0002", "graph_0005"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
 
 
 def test_fresh_install(db):
@@ -560,17 +560,17 @@ def test_the_one_running_job_index_comes_and_goes_with_the_platform_job_function
         assert c.execute(index).fetchone()[0] is True
 
 
-def test_the_runtime_tables_come_and_go_with_platform_0003_and_0004(db):
-    """The key-value, queue and scheduler tables are internal tables the four service roles may use; a downgrade takes them and their registry rows away."""
+def test_the_runtime_tables_come_and_go_with_platform_0003_to_0005(db):
+    """The key-value, queue, scheduler and cache tables are internal tables the service roles may use; a downgrade takes them and their registry rows away."""
     cluster, name = db
     url = cluster.url(name, MIGRATE)
-    tables = ("kv_entries", "queue_messages", "queue_groups", "queue_deliveries", "sched_jobs", "sched_repeats")
+    tables = ("kv_entries", "queue_messages", "queue_groups", "queue_deliveries", "sched_jobs", "sched_repeats", "cache_entries")
     assert run_migrate(url).returncode == 0
     with connect(cluster, name) as c:
         for t in tables:
             assert c.execute("SELECT class FROM kernel.rls_registry WHERE rel = %s::regclass", (f"platform.{t}",)).fetchone()[0] == "internal"
             who = {  # who may use each table: the Node API everything; the Python services the key-value and queue tables; the config-only role just key-value
-                "sched_jobs": {"pipeshub_node"}, "sched_repeats": {"pipeshub_node"},
+                "sched_jobs": {"pipeshub_node"}, "sched_repeats": {"pipeshub_node"}, "cache_entries": {"pipeshub_node"},
                 "kv_entries": {"pipeshub_node", "pipeshub_connectors", "pipeshub_indexing", "pipeshub_query", "pipeshub_kv"},
             }.get(t, {"pipeshub_node", "pipeshub_connectors", "pipeshub_indexing", "pipeshub_query"})
             for role in ("pipeshub_node", "pipeshub_connectors", "pipeshub_indexing", "pipeshub_query", "pipeshub_kv", "pipeshub_jobs"):
@@ -725,7 +725,7 @@ def test_skipping_the_surface_check_is_loud_and_remembered(db):
 
 # ---- a build older than the database (helm rollback of a deployment whose migrate Job is created again) ----------------------------
 
-def _as_newer_build(cluster, name, revision="platform_0004", min_code=None):
+def _as_newer_build(cluster, name, revision="platform_0005", min_code=None):
     """Emulate a database migrated by a newer build: one head carries a revision id this tree does not have."""
     with cluster.admin(name) as c:
         c.execute("UPDATE kernel.alembic_version SET version_num = 'platform_0099' WHERE version_num = %s", (revision,))

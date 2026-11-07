@@ -435,9 +435,81 @@ async def test_a_stopped_worker_returns_between_batches_while_jobs_keep_coming_a
     left_marks, left_jobs = await marks(p, org), await jobs(pg_db, org)
     assert (left_marks == 0) or left_jobs                                # whatever it left hidden has a job that will restamp it
     await no_stale_visible(p, pg_db, org)
-    # the stopped worker may have claimed a job just before it stopped: that job is not claimable until its claim is stale (restamp.claim), so the next worker takes over claims as if their time had passed
-    assert await restamp.run_jobs(pg_db, org, "w2", batch=50, stale_ms=0) >= 0
+    assert await restamp.run_jobs(pg_db, org, "w2", batch=50) >= 0           # a stopped worker gave its claim back: the job is claimable at once, whatever it was doing
     assert await marks(p, org) == 0 and await jobs(pg_db, org) == [] and await dry_diffs(p, org, "app1") == []
+
+
+async def claimed_by(db, org: str) -> list:
+    return await run_in(db, org, lambda tx: tx.fetch("SELECT id, claimed_by, cursor FROM kg.restamp_queue WHERE org_id = $1 ORDER BY id", org))
+
+
+async def one_job_hidden(p, db, org: str) -> None:
+    """A narrowed folder: one queued ``rows`` job hiding its 12 children."""
+    await fat(p, org)
+    await drain_org(db, org)
+    await narrow(p, org)
+    await drain_org(db, org)
+    assert len(await jobs(db, org)) == 1 and await marks(p, org) == 12
+
+
+async def test_a_worker_that_stops_mid_job_gives_its_claim_back_and_another_worker_finishes_the_job_at_once(pg_db, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await one_job_hidden(p, pg_db, org)
+    stop = asyncio.Event()
+    real = restamp.run_batch
+
+    async def stop_after_the_first_batch(*a: object, **k: object) -> tuple:
+        out = await real(*a, **k)
+        stop.set()
+        return out
+    monkeypatch.setattr(restamp, "run_batch", stop_after_the_first_batch)
+    job = await restamp.claim(pg_db, org, "w1")
+    assert await restamp.run_job(pg_db, org, job, "w1", batch=3, stop=stop) is False
+    monkeypatch.setattr(restamp, "run_batch", real)
+    left = await claimed_by(pg_db, org)
+    assert [(r["claimed_by"], r["cursor"] is not None) for r in left] == [(None, True)]       # the claim is back, the cursor of the committed batch stays
+    assert 0 < await marks(p, org) < 12 and await no_stale_visible(p, pg_db, org)             # what is not restamped yet is still hidden
+    assert await restamp.run_jobs(pg_db, org, "w2", batch=50) == 1                           # the default staleness: no 120 s wait
+    assert await marks(p, org) == 0 and await jobs(pg_db, org) == [] and await dry_diffs(p, org, "app1") == []     # the hidden rows are back, and current
+
+
+async def test_a_worker_that_stops_right_after_claiming_gives_the_job_back_before_any_batch(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await one_job_hidden(p, pg_db, org)
+    stop = asyncio.Event()
+    job = await restamp.claim(pg_db, org, "w1")
+    stop.set()
+    assert await restamp.run_job(pg_db, org, job, "w1", stop=stop) is False
+    assert [r["claimed_by"] for r in await claimed_by(pg_db, org)] == [None] and await marks(p, org) == 12
+    assert await restamp.run_jobs(pg_db, org, "w2") == 1 and await marks(p, org) == 0
+
+
+async def test_a_worker_cannot_give_back_a_claim_another_worker_holds(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await one_job_hidden(p, pg_db, org)
+    job = await restamp.claim(pg_db, org, "w1")
+    assert await restamp.release(pg_db, org, job, "w2") is False
+    assert [r["claimed_by"] for r in await claimed_by(pg_db, org)] == ["w1"]
+    assert await restamp.run_jobs(pg_db, org, "w3") == 0                                      # w1's claim is live
+    assert await restamp.release(pg_db, org, job, "w1") is True and await restamp.release(pg_db, org, job, "w1") is False
+
+
+async def test_a_worker_whose_stale_claim_was_taken_over_cannot_give_the_new_claim_back(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await one_job_hidden(p, pg_db, org)
+    old = await restamp.claim(pg_db, org, "w1")
+    await asyncio.sleep(0.01)                                                                  # stale means a heartbeat older than now - stale_ms, so not in the same millisecond
+    assert await restamp.claim(pg_db, org, "w2", stale_ms=0) is not None                       # w1 went quiet: w2 takes the job over
+    assert await restamp.release(pg_db, org, old, "w1") is False                              # w1 stops late and gives back nothing
+    assert [r["claimed_by"] for r in await claimed_by(pg_db, org)] == ["w2"]
+
+
+async def test_a_claim_that_was_not_given_back_is_still_taken_only_once_it_is_stale(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await one_job_hidden(p, pg_db, org)
+    await restamp.claim(pg_db, org, "w1")                                                    # a crash: nothing runs, nothing is released
+    assert await restamp.run_jobs(pg_db, org, "w2") == 0 and await marks(p, org) == 12
+    assert await restamp.run_jobs(pg_db, org, "w2", stale_ms=0) == 1 and await marks(p, org) == 0
 
 
 async def test_a_rows_job_whose_records_reach_another_connector_takes_its_lock_and_never_runs_without_locks(pg_db, monkeypatch) -> None:

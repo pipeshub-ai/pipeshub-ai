@@ -9,7 +9,12 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import (
+    FOLDER_MIME_TYPES,
+    CollectionNames,
+    Connectors,
+    ProgressStatus,
+)
 from app.core.org_context import current_or_system, current_org_id
 from app.exceptions.graph_db_exceptions import (
     GraphQueryError,
@@ -19,6 +24,8 @@ from app.models.entities import FileRecord, Record
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.typed_record import typed_record
 from app.services.graph_db.common.utils import (
+    CANONICAL_PARENT_RELATION_TYPES,
+    build_connector_stats_response,
     jira_issue_browse_url_regex,
     record_status_field,
 )
@@ -34,6 +41,7 @@ from app.services.graph_db.postgres.base import (
 from app.services.graph_db.postgres.hierarchy import _EDGE_COLLS, _remove_records
 from app.services.graph_db.postgres.records import _rec, _uniq, _vis
 from app.services.graph_db.postgres.trash import _sweep_edges
+from app.services.graph_db.vector_membership_queries import PAGE_RECORD_FIELDS
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -705,3 +713,259 @@ class LookupsMixin(PgBase):
         except Exception as e:
             self.logger.error("Failed to get related mails by messageIdHeader: %s", e)
             return []
+
+
+    # ---- keys by external id, linked records, failed records, documents by status, departments, and what is left of a connector's sync ----
+    async def filter_linked_record_ids(self, record_ids: list[str], transaction: str | None = None) -> list[str]:
+        """The records among ``record_ids`` that belong to a record group or have a canonical hierarchy parent, in the order asked."""
+        org = current_org_id()
+        ids = list(dict.fromkeys(record_ids))
+        if not ids:
+            return []
+        found = {r["id"] for r in await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.filter_linked_record_ids */ SELECT r.id FROM graph.nodes r
+            WHERE r.org_id = $1 AND r.coll = 'records' AND r.id = ANY($2::text[])
+              AND (EXISTS (SELECT 1 FROM graph.edges b JOIN graph.nodes g ON g.org_id = b.org_id AND g.coll = 'recordGroups' AND g.id = b.to_id
+                           WHERE b.org_id = r.org_id AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.from_id = r.id AND b.to_coll = 'recordGroups')
+                   OR EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = r.org_id AND p.coll = 'nodeRelations' AND p.to_coll = 'records' AND p.to_id = r.id
+                              AND p.doc->>'relationshipType' = ANY($3::text[])))""", org, ids, list(CANONICAL_PARENT_RELATION_TYPES)), transaction)}
+        return [i for i in ids if i in found]
+
+    async def _key_by_external(self, external_id: str, connector_id: str | None, transaction: str | None) -> str | None:
+        org = current_org_id()
+        try:
+            return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.key_by_external_id */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'records'
+                AND doc->>'externalRecordId' = $2 AND ($3::text IS NULL OR doc->>'connectorId' = $3) ORDER BY id LIMIT 1""", org, external_id, connector_id), transaction)
+        except Exception:
+            self.logger.exception("Get record key by external id failed")
+            return None
+
+    async def get_key_by_external_file_id(self, external_file_id: str) -> str | None:
+        """The key of a record of this org by external id, whatever its connector. With no connector named there is no index for it."""
+        return await self._key_by_external(external_file_id, None, None)
+
+    async def get_key_by_external_message_id(self, external_message_id: str, transaction: str | None = None) -> str | None:
+        return await self._key_by_external(external_message_id, None, transaction)
+
+    async def get_record_key_by_external_id(self, external_id: str, connector_id: str, transaction: str | None = None) -> str | None:
+        return await self._key_by_external(external_id, connector_id, transaction)
+
+    async def get_failed_records_by_org(self, org_id: str, connector_id: str, transaction: str | None = None) -> list[dict]:
+        """The live records of the connector whose indexing failed; another org's id reads as none."""
+        org = current_org_id()
+        try:
+            if org_id != org:
+                return []
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_failed_records_by_org */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'records'
+                AND doc->>'connectorId' = $2 AND doc->>'indexingStatus' = 'FAILED' AND doc->>'orgId' = $1 AND doc->>'isDeleted' IS DISTINCT FROM 'true' ORDER BY id""", org, connector_id), transaction)
+            return [_arango(_doc(r["doc"]), "records") for r in rows]
+        except Exception:
+            self.logger.exception("Get failed records by org failed")
+            return []
+
+    async def get_documents_by_status(self, collection: str, status: str, transaction: str | None = None) -> list[dict]:
+        """Every document of the collection in this org with this indexing status. A read by a document field of a whole collection: there is no index for it."""
+        org = current_org_id()
+        try:
+            rows = await self._q(lambda tx: tx.fetch("/* pipeshub:graph.get_documents_by_status */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND doc->>'indexingStatus' = $3 ORDER BY id",
+                                                     org, collection, status), transaction)
+            return [_arango(_doc(r["doc"]), collection) for r in rows]
+        except Exception:
+            self.logger.exception("Get documents by status failed")
+            return []
+
+    async def get_departments(self, org_id: str | None = None, transaction: str | None = None) -> list[str]:
+        """The names of the departments with no org or the given one. Another org's id reads as none; a department without a name is left out."""
+        org = current_org_id()
+        try:
+            if org_id and org_id != org:
+                return []
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_departments */ SELECT doc->>'departmentName' AS name FROM graph.nodes WHERE org_id = $1 AND coll = 'departments'
+                AND doc->>'departmentName' IS NOT NULL AND ($2::text IS NULL OR doc->>'orgId' IS NULL OR doc->>'orgId' = $2) ORDER BY id""", org, org_id or None), transaction)
+            return [r["name"] for r in rows]
+        except Exception:
+            self.logger.exception("Get departments failed")
+            return []
+
+    async def delete_sync_points_by_connector_id(self, connector_id: str, transaction: str | None = None) -> tuple[int, bool]:
+        """Deletes the connector's sync points: (how many, whether all went)."""
+        current_org_id()
+        try:
+            return (await self.remove_nodes_by_field("syncPoints", "connectorId", field_value=connector_id, transaction=transaction), True)
+        except Exception:
+            self.logger.exception("Failed to delete the sync points of connector %s", connector_id)
+            return (0, False)
+
+    async def delete_connector_sync_edges(self, connector_id: str, transaction: str | None = None) -> tuple[int, bool]:
+        """Deletes the edges a sync made around the connector's records, groups, roles and groups of users and its app, all or none; the nodes and type links stay."""
+        current_org_id()
+        try:
+            node_ids = (await self._collect_connector_entities(connector_id, transaction)).get("all_node_ids") or []
+            if not node_ids:
+                return (0, True)
+            n, failed = await self._delete_all_edges_for_nodes(transaction or "", node_ids, [
+                "belongsTo", "nodeRelations", "permission", "inheritPermissions", "userAppRelation", "entityRelations", "anyone"])
+            return (n, not failed)
+        except Exception:
+            self.logger.exception("Error deleting connector sync edges for %s", connector_id)
+            return (0, False)
+
+    async def reap_stale_external_app_relations(self, connector_id: str, transaction: str | None = None) -> int:
+        """Drops the external-collaborator membership edges of the app whose grant is gone (a USER grant on a live record or group of the connector, directly or
+        through a group, role or team), then the persons left with no edge at all; returns how many persons went. A member who is not flagged external is never touched."""
+        org = current_org_id()
+
+        async def go(tx: Tx) -> int:
+            gone = await tx.fetch("""/* pipeshub:graph.reap_stale_external_edges */ DELETE FROM graph.edges d USING (
+                  SELECT u.from_coll, u.from_id FROM graph.edges u WHERE u.org_id = $1 AND u.coll = 'userAppRelation' AND u.to_coll = 'apps' AND u.to_id = $2
+                    AND u.doc->>'isExternalUser' = 'true'
+                    AND NOT EXISTS (SELECT 1 FROM graph.edges g JOIN graph.nodes t ON t.org_id = g.org_id AND t.coll = g.to_coll AND t.id = g.to_id
+                                    WHERE g.org_id = $1 AND g.coll = 'permission' AND g.from_coll = u.from_coll AND g.from_id = u.from_id AND g.doc->>'type' = 'USER'
+                                      AND g.to_coll IN ('records', 'recordGroups') AND t.doc->>'connectorId' = $2 AND t.doc->>'isDeleted' IS DISTINCT FROM 'true')
+                    AND NOT EXISTS (SELECT 1 FROM graph.edges m JOIN graph.edges g ON g.org_id = m.org_id AND g.coll = 'permission' AND g.from_coll = m.to_coll AND g.from_id = m.to_id
+                                      AND g.to_coll IN ('records', 'recordGroups')
+                                    JOIN graph.nodes t ON t.org_id = g.org_id AND t.coll = g.to_coll AND t.id = g.to_id
+                                    WHERE m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = u.from_coll AND m.from_id = u.from_id AND m.doc->>'type' = 'USER'
+                                      AND m.to_coll IN ('groups', 'roles', 'teams') AND t.doc->>'connectorId' = $2 AND t.doc->>'isDeleted' IS DISTINCT FROM 'true')) s
+                WHERE d.org_id = $1 AND d.coll = 'userAppRelation' AND d.to_coll = 'apps' AND d.to_id = $2 AND d.from_coll = s.from_coll AND d.from_id = s.from_id
+                RETURNING d.from_coll, d.from_id""", org, connector_id)
+            people = sorted({r["from_id"] for r in gone if r["from_coll"] == "person"})
+            if not people:
+                return 0
+            return await tx.fetchval("""/* pipeshub:graph.reap_stranded_persons */ WITH d AS (DELETE FROM graph.nodes p WHERE p.org_id = $1 AND p.coll = 'person' AND p.id = ANY($2::text[])
+                AND NOT EXISTS (SELECT 1 FROM graph.edges e WHERE e.org_id = p.org_id AND ((e.from_coll = 'person' AND e.from_id = p.id) OR (e.to_coll = 'person' AND e.to_id = p.id)))
+                RETURNING 1) SELECT count(*) FROM d""", org, people)
+        try:
+            return await self._q(go, transaction, write=True)
+        except Exception:
+            self.logger.exception("Reap stale external app relations failed for %s", connector_id)
+            return 0
+
+    async def find_next_queued_duplicate(self, record_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> dict | None:
+        """A queued, live record with the same md5 (and the same size when the reference has one) in the reference record's own org; none when the
+        reference has no md5 or no org (the comparison is then null and matches nothing). Reads the md5 by document field, which no index covers: a scan of the org's records."""
+        org = current_org_id()
+        try:
+            d = await self._one("""/* pipeshub:graph.find_next_queued_duplicate */ SELECT n.doc FROM graph.nodes r JOIN graph.nodes n ON n.org_id = r.org_id AND n.coll = 'records'
+                AND n.doc->>'md5Checksum' = r.doc->>'md5Checksum' AND n.doc->>'orgId' = r.doc->>'orgId' AND n.id <> r.id AND n.doc->>'indexingStatus' = 'QUEUED'
+                AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND (r.doc->>'sizeInBytes' IS NULL OR n.doc->>'sizeInBytes' = r.doc->>'sizeInBytes')
+                WHERE r.org_id = $1 AND r.coll = 'records' AND r.id = $2 ORDER BY n.id LIMIT 1""", org, record_id, transaction=transaction)
+            return _arango(d, "records") if d else None
+        except Exception as e:
+            self.logger.error(f"❌ Failed to find next queued duplicate: {e}")
+            if raise_on_error:
+                raise
+            return None
+
+    async def get_connector_instances_with_filters(self, collection: str, scope: str | None = None, user_id: str | None = None, *, is_admin: bool = False,
+                                                   search: str | None = None, page: int = 1, limit: int = 20, transaction: str | None = None) -> tuple[list[dict], int]:
+        """One page of the instances the user may see, newest first, and the total. An admin sees the team's and their own; anyone else only their own (with no user: an admin sees the team's, anyone else nothing). ``search`` is a literal, case-insensitive "contains" on name, type and group (the Neo4j provider reads it as a regular expression)."""
+        org = current_org_id()
+        pattern = None if not search else "%" + search.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        try:
+            rows = await self._lrows("""/* pipeshub:graph.get_connector_instances_with_filters */ SELECT n.doc, count(*) OVER () AS total FROM graph.nodes n
+                WHERE n.org_id = $1 AND n.coll = $2 AND ($3::text IS NULL OR n.doc->>'scope' = $3)
+                  AND CASE WHEN $4 THEN (n.doc->>'scope' = 'team' OR n.doc->>'createdBy' = $5::text) ELSE n.doc->>'createdBy' = $5::text END
+                  AND ($6::text IS NULL OR lower(n.doc->>'name') LIKE $6 OR lower(n.doc->>'type') LIKE $6 OR lower(n.doc->>'appGroup') LIKE $6)
+                ORDER BY CASE WHEN jsonb_typeof(n.doc->'createdAtTimestamp') = 'number' THEN (n.doc->>'createdAtTimestamp')::numeric END DESC NULLS LAST, n.id OFFSET $7 LIMIT $8""",
+                                  org, collection, scope or None, is_admin, user_id, pattern, (max(page, 1) - 1) * limit, limit, transaction=transaction)
+            if rows:
+                return [_arango(_doc(r["doc"]), collection) for r in rows], rows[0]["total"]
+            total = await self._lrows("""/* pipeshub:graph.get_connector_instances_with_filters_total */ SELECT count(*) AS n FROM graph.nodes n
+                WHERE n.org_id = $1 AND n.coll = $2 AND ($3::text IS NULL OR n.doc->>'scope' = $3)
+                  AND CASE WHEN $4 THEN (n.doc->>'scope' = 'team' OR n.doc->>'createdBy' = $5::text) ELSE n.doc->>'createdBy' = $5::text END
+                  AND ($6::text IS NULL OR lower(n.doc->>'name') LIKE $6 OR lower(n.doc->>'type') LIKE $6 OR lower(n.doc->>'appGroup') LIKE $6)""",
+                                      org, collection, scope or None, is_admin, user_id, pattern, transaction=transaction)
+            return [], total[0]["n"]
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get connector instances with filters: {e}")
+            return [], 0
+
+    async def get_connector_stats(self, org_id: str, connector_id: str, transaction: str | None = None) -> dict:
+        """Record counts of a collection (records that belong to its app) or a connector (records of the record groups that chain up to its app, up to 10 hops),
+        by type, indexing, extraction and entities state; a record in several groups counts once; internal, placeholder, deleted and folder records stay out."""
+        org = current_org_id()
+        statuses = [s.value for s in ProgressStatus]
+        try:
+            app = await self._one("/* pipeshub:graph.get_connector_stats_app */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'apps' AND n.id = $2",
+                                  org, connector_id, transaction=transaction)
+            is_kb = bool(app) and app.get("type") == Connectors.KNOWLEDGE_BASE.value
+            rows = [] if org_id != org else await self._lrows("""/* pipeshub:graph.get_connector_stats */ WITH RECURSIVE g(id, depth) AS (
+                  SELECT e.from_id, 1 FROM graph.edges e WHERE e.org_id = $1 AND NOT $3 AND e.coll = 'belongsTo' AND e.from_coll = 'recordGroups'
+                    AND e.to_coll = 'apps' AND e.to_id = $2
+                  UNION SELECT e.from_id, g.depth + 1 FROM g JOIN graph.edges e ON e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'recordGroups'
+                    AND e.to_coll = 'recordGroups' AND e.to_id = g.id WHERE g.depth < 10),
+                r AS (SELECT DISTINCT e.from_id AS id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'belongsTo' AND e.from_coll = 'records'
+                    AND ((NOT $3 AND e.to_coll = 'recordGroups' AND e.to_id IN (SELECT id FROM g)) OR ($3 AND e.to_coll = 'apps' AND e.to_id = $2)))
+                SELECT n.doc->>'recordType' AS "recordType", n.doc->>'indexingStatus' AS "indexingStatus", n.doc->>'extractionStatus' AS "extractionStatus",
+                       s.doc->>'status' AS "entitiesStatus", count(*) AS cnt
+                FROM r JOIN graph.nodes n ON n.org_id = $1 AND n.coll = 'records' AND n.id = r.id
+                LEFT JOIN graph.nodes s ON s.org_id = $1 AND s.coll = 'stageStates' AND s.id = (n.doc->>'virtualRecordId') || ':' || (n.doc->>'contentRev') || ':entities'
+                WHERE coalesce((n.doc->>'isInternal')::boolean, false) = false AND coalesce((n.doc->>'isPlaceholder')::boolean, false) = false
+                  AND coalesce((n.doc->>'isDeleted')::boolean, false) = false AND NOT coalesce(n.doc->>'mimeType', '') = ANY($4::text[])
+                GROUP BY 1, 2, 3, 4""", org, connector_id, is_kb, FOLDER_MIME_TYPES, transaction=transaction)
+            result = build_connector_stats_response([dict(r) for r in rows], statuses, org_id, connector_id, origin="COLLECTION" if is_kb else "CONNECTOR")
+            return {"success": True, "data": result}
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get connector stats: {e}")
+            return {"success": False, "message": str(e), "data": None}
+
+    # ---- the vector membership backfill: the next app to walk, and its records a page at a time ------------------------------------------------
+    async def get_app_needing_vector_membership_backfill(self, transaction: str | None = None) -> dict | None:
+        """The first connector instance (lowest id, byte order) not marked backfilled and not being deleted: under an org context that org's, under a system
+        context (the indexing loop) any org's, through the vetted cross-org read of instances. Neo4j picks an arbitrary one; the order makes the walk repeatable."""
+        if current_or_system().kind == "system":
+            # every instance is read, a page at a time to the end: a capped read would answer None while apps past the cap still need the walk.
+            # graph.system_apps orders by the database collation; the walk's order is byte order, as under an org context (ORDER BY n.id COLLATE "C").
+            # a strict < keeps the first of equal ids, so apps sharing an id across orgs keep the read's (id, org) order.
+            best, best_id = None, b""
+            async for page in self._system_app_pages():
+                for a in page:
+                    key = str(a["_key"]).encode()
+                    if a.get("vectorMembershipBackfilled") in (None, False) and (a.get("status") or "") != "DELETING" and (best is None or key < best_id):
+                        best, best_id = a, key
+            return best
+        d = await self._one("""/* pipeshub:graph.get_app_needing_vector_membership_backfill */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'apps'
+            AND coalesce(n.doc->'vectorMembershipBackfilled', 'null'::jsonb) IN ('null'::jsonb, 'false'::jsonb) AND coalesce(n.doc->>'status', '') <> 'DELETING'
+            ORDER BY n.id COLLATE "C" LIMIT 1""", current_org_id(), transaction=transaction)
+        return _arango(d, "apps") if d else None
+
+    async def page_records_for_vector_membership_backfill(self, connector_id: str, after_key: str | None, limit: int, transaction: str | None = None) -> list[dict]:
+        """The connector's records after ``after_key`` in key order (byte order, as the cursor compares), as ``PAGE_RECORD_FIELDS``. A failure raises: an empty page
+        reads as "finished" to the backfill, which would then mark the connector done having processed nothing. The ambient org's records only: the job binds the connector's own org."""
+        n = max(1, int(limit))
+        sql = """/* pipeshub:graph.page_records_for_vector_membership_backfill */ SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
+            AND n.doc->>'connectorId' = $2 AND ($3::text IS NULL OR n.id COLLATE "C" > $3::text COLLATE "C") ORDER BY n.id COLLATE "C" LIMIT $4"""
+        rows = await self._lrows(sql, current_org_id(), connector_id, after_key or None, n, transaction=transaction)      # one org: a system scope raises, no org is guessed
+        return [{"_key": r["id"], **{f: _doc(r["doc"]).get(f) for f in PAGE_RECORD_FIELDS if f != "_key"}} for r in rows]
+
+    async def _fetch_existing_file_names_in_parent(self, kb_id: str, parent_folder_id: str | None, transaction: str | None = None, *,
+                                                   raise_on_error: bool = False) -> set[tuple[str, str]]:
+        """``(lower name, mime type)`` of the live files directly under the folder, or at the root of the knowledge base (its records that have no parent
+        record and are not folders). A failure answers an empty set unless ``raise_on_error``."""
+        org = current_org_id()
+        try:
+            if parent_folder_id is None:
+                rows = await self._lrows("""/* pipeshub:graph.existing_file_names_in_kb_root */ SELECT r.doc->>'recordName' AS name, m.mime AS mime
+                    FROM graph.edges b JOIN graph.nodes kb ON kb.org_id = b.org_id AND kb.coll = 'apps' AND kb.id = b.to_id AND kb.doc->>'type' = 'KB'
+                    JOIN graph.nodes r ON r.org_id = b.org_id AND r.coll = 'records' AND r.id = b.from_id
+                    CROSS JOIN LATERAL (SELECT coalesce(r.doc->>'mimeType', (SELECT f.doc->>'mimeType' FROM graph.edges t JOIN graph.nodes f ON f.org_id = t.org_id
+                        AND f.coll = 'files' AND f.id = t.to_id AND f.doc->>'isFile' = 'true' WHERE t.org_id = b.org_id AND t.coll = 'isOfType' AND t.from_coll = 'records'
+                        AND t.from_id = r.id AND t.to_coll = 'files' ORDER BY f.id LIMIT 1)) AS mime) m
+                    WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.to_coll = 'apps' AND b.to_id = $2
+                      AND coalesce((r.doc->>'isDeleted')::boolean, false) = false AND NOT m.mime = ANY($3::text[])
+                      AND NOT EXISTS (SELECT 1 FROM graph.edges p WHERE p.org_id = b.org_id AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD'
+                        AND p.from_coll = 'records' AND p.to_coll = 'records' AND p.to_id = r.id)""", org, kb_id, FOLDER_MIME_TYPES, transaction=transaction)
+            else:
+                rows = await self._lrows("""/* pipeshub:graph.existing_file_names_in_folder */ SELECT r.doc->>'recordName' AS name,
+                        coalesce(r.doc->>'mimeType', f.doc->>'mimeType') AS mime
+                    FROM graph.edges p JOIN graph.nodes r ON r.org_id = p.org_id AND r.coll = 'records' AND r.id = p.to_id
+                    JOIN graph.edges t ON t.org_id = p.org_id AND t.coll = 'isOfType' AND t.from_coll = 'records' AND t.from_id = r.id AND t.to_coll = 'files'
+                    JOIN graph.nodes f ON f.org_id = p.org_id AND f.coll = 'files' AND f.id = t.to_id AND f.doc->>'isFile' = 'true'
+                    WHERE p.org_id = $1 AND p.coll = 'nodeRelations' AND p.doc->>'relationshipType' = 'PARENT_CHILD' AND p.from_coll = 'records' AND p.from_id = $2
+                      AND p.to_coll = 'records' AND coalesce((r.doc->>'isDeleted')::boolean, false) = false""", org, parent_folder_id, transaction=transaction)
+            return {(r["name"].lower(), str(r["mime"] or "")) for r in rows if r["name"]}
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch existing file names: {e}")
+            if raise_on_error:
+                raise
+            return set()

@@ -5,9 +5,12 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
+from app.config.constants.neo4j import parse_node_id
 from app.core.org_context import current_or_system, current_org_id
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from app.core.db import Tx
 
 from app.services.graph_db.postgres.base import (
@@ -106,24 +109,29 @@ class CoreMixin(PgBase):
         extra = set(filters or {}) - {"isActive"}
         if extra or (filters and filters.get("isActive") is not True):
             raise ValueError(f"a cross-org read of connector instances filters on isActive=true only, not on {sorted(extra) or 'isActive=false'}")
+        if limit <= 0:
+            return []
         docs: list[dict] = []
-        after, after_org, to_skip = after_key or "", "", skip
-        while len(docs) < limit:
-            want = min(1000, to_skip + (limit - len(docs)))
-            rows = await self._system_read(lambda tx, a=after, o=after_org, w=want: tx.fetch(
-                "/* pipeshub:graph.system_apps */ SELECT org_id, app_id, node_json FROM graph.system_apps($1, $2, $3, $4)", bool(filters), a, o, w))
-            for r in rows:
-                if after_key and r["app_id"] == after_key:
-                    continue
-                if to_skip:
-                    to_skip -= 1
-                    continue
-                docs.append(_arango(_doc(json.loads(r["node_json"])), "apps"))
-            if len(rows) < want:
+        async for page in self._system_app_pages(only_active=bool(filters), after_key=after_key or "", page_size=min(1000, skip + limit)):
+            docs.extend(d for d in page if not (after_key and d["_key"] == after_key))
+            if len(docs) >= skip + limit:
                 break
-            after, after_org = rows[-1][1], rows[-1][0]      # (app_id, org_id) of the last row: the cursor
-        docs = docs[:limit]
+        docs = docs[skip:skip + limit]
         return [{f: d.get(f) for f in return_fields} for d in docs] if return_fields else docs
+
+    async def _system_app_pages(self, *, only_active: bool = False, after_key: str = "", after_org: str = "", page_size: int = 1000) -> AsyncIterator[list[dict]]:
+        """Every connector instance across orgs after the (``after_key``, ``after_org``) row, in (id, org) order, ``page_size`` (1..1000) at a time to the end.
+        The cursor is the last row's (id, org): an id alone would skip the other orgs' copies of an id that ends a page."""
+        after, cur_org = after_key, after_org
+        while True:
+            rows = await self._system_read(lambda tx, a=after, o=cur_org: tx.fetch(
+                "/* pipeshub:graph.system_apps */ SELECT org_id, app_id, node_json FROM graph.system_apps($1, $2, $3, $4)", only_active, a, o, page_size))
+            if rows:
+                # the partition is the app's org: a legacy instance whose document has no orgId still names it
+                yield [{**_arango(_doc(json.loads(r["node_json"])), "apps"), "orgId": r[0]} for r in rows]      # r[0]: the row's org_id
+            if len(rows) < page_size:
+                return
+            after, cur_org = rows[-1][1], rows[-1][0]      # (app_id, org_id) of the last row
 
     async def batch_upsert_nodes(self, nodes: list[dict], collection: str, transaction: str | None = None) -> bool | None:
         if not nodes:
@@ -421,3 +429,49 @@ class CoreMixin(PgBase):
             AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = $4 AND ($5::int = 0 OR ($5::int = 1 AND e.ekey = '') OR ($5::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> ''))) RETURNING 1) SELECT count(*) FROM d""",
                                                      org, colls, to_collection, to_id, kind), transaction, write=True)
 
+    # ---- checks on documents and edges, and the update of an edge -------------------------------------------------------------------
+    async def check_collection_has_document(self, collection_name: str, document_id: str, transaction: str | None = None) -> bool:
+        org = current_org_id()
+        try:
+            return bool(await self._q(lambda tx: tx.fetchval("/* pipeshub:graph.check_collection_has_document */ SELECT EXISTS (SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = $3)",
+                                                           org, collection_name, document_id), transaction))
+        except Exception:
+            self.logger.exception("Check collection has document failed")
+            return False
+
+    async def check_edge_exists(self, from_key: str, to_key: str, edge_collection: str, transaction: str | None = None) -> bool:
+        """Whether an edge of the collection runs from the node with this key to the node with that one (the nodes are named by key alone, as on Neo4j)."""
+        org = current_org_id()
+        colls, kind = _edge_scope(edge_collection, pair=True)
+        try:
+            return bool(await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.check_edge_exists */ SELECT EXISTS (SELECT 1 FROM graph.edges e WHERE e.org_id = $1 AND e.coll = ANY($2::text[])
+                AND e.to_id = $4 AND e.from_id = $3 AND ($5::int = 0 OR ($5::int = 1 AND e.ekey = '') OR ($5::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> ''))))""",
+                                                           org, colls, from_key, to_key, kind), transaction))
+        except Exception:
+            self.logger.exception("Check edge exists failed")
+            return False
+
+    async def update_edge(self, from_key: str, to_key: str, edge_updates: dict, collection: str, transaction: str | None = None) -> bool:
+        """Merges ``edge_updates`` into the edges of the collection between two nodes named ``<collection>/<key>`` (a null removes a property); True when there was
+        one. An edge whose key changes with the update (a grant's type, an authenticated-as link's connector) is re-keyed, and the change is the capture's like
+        any other write of a grant. A failure raises."""
+        (fc, fid), (tc, tid) = parse_node_id(from_key), parse_node_id(to_key)
+        if not fc or not tc:
+            raise ValueError(f"update_edge needs '<collection>/<key>' ids, got {from_key!r} and {to_key!r}")
+        org = current_org_id()
+        colls, kind = _edge_scope(collection, pair=True)
+        _VALIDATOR.validate_edge_update(collection, edge_updates)      # before the first statement, as the other edge writers do
+
+        async def go(tx: Tx) -> int:
+            rows = await tx.fetch("""/* pipeshub:graph.update_edge_read */ SELECT e.coll, e.ekey, e.doc FROM graph.edges e WHERE e.org_id = $1 AND e.coll = ANY($2::text[])
+                AND e.from_coll = $3 AND e.from_id = $4 AND e.to_coll = $5 AND e.to_id = $6
+                AND ($7::int = 0 OR ($7::int = 1 AND e.ekey = '') OR ($7::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> ''))) ORDER BY e.coll, e.ekey FOR UPDATE""",
+                                  org, colls, fc, fid, tc, tid, kind)
+            docs = [{k: v for k, v in {**_doc(r["doc"]), **edge_updates}.items() if v is not None} for r in rows]
+            if len(rows) > 1 and any(_ekey(r["coll"], d) != r["ekey"] for r, d in zip(rows, docs, strict=True)):
+                raise ValueError(f"update_edge would change the key of {len(rows)} edges between {from_key} and {to_key}: name one of them")
+            for r, doc in zip(rows, docs, strict=True):
+                await tx.execute("""/* pipeshub:graph.update_edge */ UPDATE graph.edges SET doc = $7::jsonb, ekey = $8 WHERE org_id = $1 AND coll = $2 AND from_coll = $3 AND from_id = $4
+                    AND to_coll = $5 AND to_id = $6 AND ekey = $9""", org, r["coll"], fc, fid, tc, tid, _j(doc), _ekey(r["coll"], doc), r["ekey"])
+            return len(rows)
+        return await self._q(go, transaction, write=True) > 0

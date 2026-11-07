@@ -1,60 +1,48 @@
-from logging import Logger
+"""Container factories.
+
+Every heavy import below is made inside the factory that needs it. A service
+imports this module through its container, so a module-level import here would
+load the whole parser, event-processing and indexing stack into every service,
+including those that call one or two factories (the connector service uses two,
+the docling service none). ``tests/unit/test_import_boundaries.py`` keeps it so.
+"""
+from __future__ import annotations
+
 from typing import TYPE_CHECKING
 
-from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import ExtensionTypes
-from app.events.events import EventProcessor
-from app.events.processor import Processor, convert_record_dict_to_record
-from app.modules.entity_resolution import EntityResolver
-from app.modules.indexing.connector_off_events import GraphConnectorOffFilter
-from app.modules.indexing.run import IndexingPipeline
-from app.modules.indexing.stored_content_cleanup import StoredContentCleanup
-from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
-from app.modules.parsers.csv.csv_parser import CSVParser
-from app.modules.parsers.docx.docparser import DocParser
-from app.modules.parsers.excel.excel_parser import ExcelParser
-from app.modules.parsers.excel.xls_parser import XLSParser
-from app.modules.parsers.html_parser.html_parser import HTMLParser
-from app.modules.parsers.image_parser.image_parser import ImageParser
-from app.modules.parsers.json.json_parser import JSONParser
-from app.modules.parsers.markdown.markdown_parser import MarkdownParser
-from app.modules.parsers.markdown.mdx_parser import MDXParser
-from app.modules.parsers.pptx.ppt_parser import PPTParser
-from app.modules.parsers.pptx.pptx_parser import PPTXParser
-from app.modules.parsers.sql.sql_table_parser import SQLTableParser
-from app.modules.parsers.sql.sql_view_parser import SQLViewParser
-from app.modules.parsers.yaml.yaml_parser import YAMLParser
-from app.modules.pipeline.runtime import PipelineRuntime, build_pipeline_runtime
-from app.modules.retrieval.retrieval_service import RetrievalService
-from app.modules.transformers.blob_storage import BlobStorage
-from app.modules.transformers.document_extraction import DocumentExtraction
-from app.modules.transformers.entity_vectorstore import EntityVectorStore
-from app.modules.transformers.graphdb import GraphDBTransformer
-from app.modules.transformers.sink_orchestrator import SinkOrchestrator
-from app.modules.transformers.vectorstore import VectorStore
-from app.services.extraction.client import ExtractionClient
 from app.services.featureflag.featureflag import FeatureFlagService
 from app.services.featureflag.provider.etcd import EtcdProvider
 from app.services.graph_db.graph_db_provider_factory import GraphDBProviderFactory
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.messaging.config import messaging_env
-from app.services.vector_db.collection_manifest import CollectionManifestStore
-from app.services.vector_db.collection_registry import CollectionRegistry
-from app.services.vector_db.interface.vector_db import IVectorDBService
-from app.services.vector_db.models import CollectionConfig
-from app.services.vector_db.strategy_resolver import (
-    StrategyConfigurationError,
-    resolve_strategy,
-)
 from app.services.vector_db.vector_db_provider_factory import VectorDBProviderFactory
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
+    from logging import Logger
+
+    from app.config.configuration_service import ConfigurationService
+    from app.events.events import EventProcessor
+    from app.events.processor import Processor
+    from app.modules.entity_resolution import EntityResolver
+    from app.modules.indexing.connector_off_events import GraphConnectorOffFilter
+    from app.modules.indexing.run import IndexingPipeline
+    from app.modules.pipeline.runtime import PipelineRuntime
+    from app.modules.retrieval.retrieval_service import RetrievalService
+    from app.modules.transformers.blob_storage import BlobStorage
+    from app.modules.transformers.document_extraction import DocumentExtraction
+    from app.modules.transformers.entity_vectorstore import EntityVectorStore
+    from app.modules.transformers.graphdb import GraphDBTransformer
+    from app.modules.transformers.sink_orchestrator import SinkOrchestrator
+    from app.modules.transformers.vectorstore import VectorStore
     from app.services.cache.accessible_records_cache import (
         AccessibleRecordsInvalidator,
     )
     from app.services.cache.interface import IAccessibleRecordsCache
+    from app.services.extraction.client import ExtractionClient
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
     from app.services.parsing.client import ParsingClient
+    from app.services.vector_db.collection_registry import CollectionRegistry
+    from app.services.vector_db.interface.vector_db import IVectorDBService
 
 
 # Note - Cannot make this a singleton as it is used in the container and DI does not work with static methods
@@ -120,6 +108,14 @@ class ContainerUtils:
         (deletes/rebuilds), and RetrievalService (reads) so the existence cache and
         collection manifest stay coherent across the indexing/query surface.
         """
+        from app.services.vector_db.collection_manifest import CollectionManifestStore
+        from app.services.vector_db.collection_registry import CollectionRegistry
+        from app.services.vector_db.models import CollectionConfig
+        from app.services.vector_db.strategy_resolver import (
+            StrategyConfigurationError,
+            resolve_strategy,
+        )
+
         strategy = await resolve_strategy(config_service, logger)
         capabilities = vector_db_service.get_capabilities()
 
@@ -159,6 +155,9 @@ class ContainerUtils:
         blob_storage: BlobStorage | None = None,
     ) -> IndexingPipeline:
         """Async factory for the legacy IndexingPipeline (collection mgmt, bulk deletes)."""
+        from app.modules.indexing.run import IndexingPipeline
+        from app.modules.indexing.stored_content_cleanup import StoredContentCleanup
+
         pipeline = IndexingPipeline(
             logger=logger,
             config_service=config_service,
@@ -176,6 +175,8 @@ class ContainerUtils:
         self, logger, graph_provider, config_service, vector_db_service, collection_registry: CollectionRegistry
     ) -> VectorStore:
         """Async factory for VectorStore"""
+        from app.modules.transformers.vectorstore import VectorStore
+
         vector_store = VectorStore(logger, config_service, graph_provider, collection_registry, vector_db_service)
         return vector_store
 
@@ -184,6 +185,8 @@ class ContainerUtils:
         recreate_on_dimension_mismatch: bool = False,
     ) -> EntityVectorStore:
         """Async factory for EntityVectorStore"""
+        from app.modules.transformers.entity_vectorstore import EntityVectorStore
+
         return EntityVectorStore(
             logger, config_service, vector_db_service, collection_name,
             recreate_on_dimension_mismatch=recreate_on_dimension_mismatch,
@@ -200,6 +203,8 @@ class ContainerUtils:
 
         Always on (apply mode) — see ``app.modules.entity_resolution``.
         """
+        from app.modules.entity_resolution import EntityResolver
+
         return EntityResolver(
             logger=logger,
             config_service=config_service,
@@ -211,6 +216,9 @@ class ContainerUtils:
         self, logger: Logger, graph_provider: IGraphDBProvider
     ) -> GraphConnectorOffFilter | None:
         """Async factory for the indexing consumer's connector-off filter."""
+        from app.modules.indexing.connector_off_events import GraphConnectorOffFilter
+        from app.services.messaging.config import messaging_env
+
         refresh_seconds = messaging_env.connector_state_refresh_seconds
         if refresh_seconds <= 0:
             return None
@@ -218,6 +226,8 @@ class ContainerUtils:
 
     async def create_graphdb(self, graph_provider, logger) -> GraphDBTransformer:
         """Async factory for GraphDB transformer (uses graph_provider for transactions)"""
+        from app.modules.transformers.graphdb import GraphDBTransformer
+
         graphdb = GraphDBTransformer(graph_provider, logger)
         return graphdb
 
@@ -233,6 +243,8 @@ class ContainerUtils:
         entity_resolver: EntityResolver | None = None,
     ) -> SinkOrchestrator:
         """Async factory for SinkOrchestrator"""
+        from app.modules.transformers.sink_orchestrator import SinkOrchestrator
+
         orchestrator = SinkOrchestrator(
             graphdb=graphdb,
             blob_storage=blob_storage,
@@ -247,11 +259,15 @@ class ContainerUtils:
 
     async def create_document_extractor(self, logger, graph_provider: IGraphDBProvider, config_service) -> DocumentExtraction:
         """Async factory for DocumentExtraction"""
+        from app.modules.transformers.document_extraction import DocumentExtraction
+
         extractor = DocumentExtraction(logger, graph_provider, config_service)
         return extractor
 
     async def create_blob_storage(self, logger, config_service, graph_provider: IGraphDBProvider) -> BlobStorage:
         """Async factory for BlobStorage"""
+        from app.modules.transformers.blob_storage import BlobStorage
+
         blob_storage = BlobStorage(logger, config_service, graph_provider)
         return blob_storage
 
@@ -259,6 +275,22 @@ class ContainerUtils:
         self, logger: Logger, config_service: ConfigurationService
     ) -> dict:
         """Async factory for Parsers"""
+        from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
+        from app.modules.parsers.csv.csv_parser import CSVParser
+        from app.modules.parsers.docx.docparser import DocParser
+        from app.modules.parsers.excel.excel_parser import ExcelParser
+        from app.modules.parsers.excel.xls_parser import XLSParser
+        from app.modules.parsers.html_parser.html_parser import HTMLParser
+        from app.modules.parsers.image_parser.image_parser import ImageParser
+        from app.modules.parsers.json.json_parser import JSONParser
+        from app.modules.parsers.markdown.markdown_parser import MarkdownParser
+        from app.modules.parsers.markdown.mdx_parser import MDXParser
+        from app.modules.parsers.pptx.ppt_parser import PPTParser
+        from app.modules.parsers.pptx.pptx_parser import PPTXParser
+        from app.modules.parsers.sql.sql_table_parser import SQLTableParser
+        from app.modules.parsers.sql.sql_view_parser import SQLViewParser
+        from app.modules.parsers.yaml.yaml_parser import YAMLParser
+
         image_parser = ImageParser(logger)
 
         parsers = {
@@ -303,6 +335,9 @@ class ContainerUtils:
     ) -> PipelineRuntime:
         """The pipeline stage runtime. Its publisher is bound to a producer when the consumers
         start, and its duplicate release to the vector-membership sync with the event processor."""
+        from app.models.record_convert import convert_record_dict_to_record
+        from app.modules.pipeline.runtime import build_pipeline_runtime
+
         return build_pipeline_runtime(
             logger=logger,
             config_service=config_service,
@@ -325,6 +360,8 @@ class ContainerUtils:
         pipeline_runtime: PipelineRuntime,
     ) -> Processor:
         """Async factory for Processor"""
+        from app.events.processor import Processor
+
         processor = Processor(
             logger=logger,
             config_service=config_service,
@@ -363,6 +400,8 @@ class ContainerUtils:
         object or a record can be skipped as a duplicate of something living
         in a different collection.
         """
+        from app.events.events import EventProcessor
+
         event_processor = EventProcessor(
             logger=logger,
             processor=processor,
@@ -401,6 +440,8 @@ class ContainerUtils:
         collection_registry: CollectionRegistry,
     ) -> RetrievalService:
         """Async factory for RetrievalService"""
+        from app.modules.retrieval.retrieval_service import RetrievalService
+
         service = RetrievalService(
             logger=logger,
             config_service=config_service,
