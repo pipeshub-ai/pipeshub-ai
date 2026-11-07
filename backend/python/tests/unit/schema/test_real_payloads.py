@@ -587,6 +587,8 @@ _NESTED_SAMPLES = {
     ("records", "recordProps"): {"owner": "ann", "tags": ["a", "b"], "score": 1.5, "flag": True},
     ("blocks", "typeTable"): {"a": {"t": "int", "n": [1, 2]}},
     ("blocks", "pendingEdges"): [{"to": "x", "kind": "CALLS", "meta": {"line": 3}}],
+    # C/C++ function-like macro -> [line, names its body calls]; an over-cap macro keeps no callees.
+    ("blocks", "macroTable"): {"serverLog": [12, ["_serverLog"]], "lua_pop": [40, ["lua_settop"]], "WIDE": [7, []]},
     ("agentTemplates", "models"): [{"name": "n", "role": "r", "provider": "p", "config": {"temperature": 0.2, "stop": ["a"]}}],
     ("agentTemplates", "memory"): {"type": ["CONVERSATIONS"], "extra": {"k": 1}},
     ("agentTemplates", "tools"): [{"name": "t", "description": "d"}],
