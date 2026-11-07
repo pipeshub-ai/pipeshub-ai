@@ -99,6 +99,13 @@ def test_a_method_without_a_body_is_a_declaration_in_every_language() -> None:
         assert bodied == {"O", "d", "o", "b"} & {s.name for s in parse_code(src, language).symbols}, language
 
 
+def test_a_dart_callable_whose_body_is_a_sibling_is_not_a_declaration() -> None:
+    # Dart's `function_body` follows the signature as a sibling; the span claims it, so it is a body.
+    src = b"class A {\n  void n() { print(1); }\n  int get g => 1;\n}\nvoid top() { print(2); }\nvoid ext();\n"
+    declared = {s.name for s in parse_code(src, "dart").symbols if "declaration" in s.modifiers}
+    assert declared == {"ext"}
+
+
 def test_only_a_global_using_is_marked_global() -> None:
     contexts = [f.context for f in parse_code(SRC, "csharp").pending
                 if getattr(f.relation, "value", f.relation) == RecordRelations.IMPORTS_FROM.value]
