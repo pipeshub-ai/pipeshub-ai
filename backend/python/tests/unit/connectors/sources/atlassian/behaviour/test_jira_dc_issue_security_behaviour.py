@@ -505,13 +505,44 @@ class TestUpgradeWhileTheLevelsCannotBeRead:
         assert "hidden from everyone" in next(n for n in notes.sent if "issue security levels" in n["title"])["message"]
         assert json.loads(store.values_for("project_ENG")["security_levels"]) == {"*": "held"}
         batches = len(db.record_batches)
+        searches = len(jql_search.jql)
+        notices = len(notes.sent)
         await sync(connector, jql_search, recent=[])
         assert len(db.record_batches) == batches, "a read that keeps failing does not repeat the pass"
+        assert len(jql_search.jql) == 1 and searches > 1, "and does not walk the project again"
+        assert json.loads(store.values_for("project_ENG")["security_levels"]) == {"*": "held"}
+        again = [n for n in notes.sent[notices:] if "issue security levels" in n["title"]]
+        assert "hidden from everyone" in again[0]["message"] and "keep the access" not in again[0]["message"]
 
         serve_scheme(jira, {SECRET: [ALICE]})
         await sync(connector, jql_search, recent=[])
         assert readers(db, "2") == {("USER", "alice@example.com")}
         assert SECRET in json.loads(store.values_for("project_ENG")["security_levels"])
+
+    async def test_an_issue_that_fails_to_build_in_the_closing_pass_is_closed_by_the_next_sync(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        connector, _ = await self._stored(jira, db, store, jql_search)
+        serve_scheme(jira, {SECRET: [ALICE]}, members=json_response({"errorMessages": ["busy"]}, status=503))
+        real = connector._extract_issue_data_with_parent
+        failing = {"on": True}
+
+        async def extract(issue: dict, users: dict) -> dict:
+            if failing["on"] and issue["id"] == "2":
+                raise RuntimeError("cannot build")
+            return await real(issue, users)
+
+        connector._extract_issue_data_with_parent = extract
+
+        await sync(connector, jql_search, recent=[])
+
+        assert not hidden_from_project(db.records["2"]), "it stayed open"
+        assert json.loads(store.values_for("project_ENG")["security_levels"]) == {"*": "retry"}, "not marked done"
+
+        failing["on"] = False
+        await sync(connector, jql_search, recent=[])
+        assert hidden_from_project(db.records["2"]) and readers(db, "2") == set()
+        assert json.loads(store.values_for("project_ENG")["security_levels"]) == {"*": "held"}
 
     async def test_a_level_naming_application_roles_that_cannot_be_read_is_hidden_until_they_can(
         self, jira, db, store, jql_search,

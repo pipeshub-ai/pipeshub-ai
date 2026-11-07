@@ -200,3 +200,14 @@ class TestGroupHolders:
         fixed = JiraDataCenterConnector._groups_by_name(rows)
         assert fixed[0]["holder"]["value"] == "devs" and fixed[1] == rows[1]
         assert rows[0]["holder"]["value"] == "gid-7", "the server's rows are not changed"
+
+
+class TestSkippedHoldersAreReportedOncePerLevel:
+    async def test_a_holder_with_no_e_mail_is_one_warning_not_one_per_issue(self, caplog) -> None:
+        connector = _connector()
+        connector._issue_security["10"] = IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, members_readable=True,
+            members_by_level={"1": [{"type": "user", "parameter": "ghost", "user": {"name": "ghost"}}]})
+        with caplog.at_level(logging.WARNING, logger="t"):
+            await connector._build_issue_records([_issue(str(n), f"P-{n}", level="1") for n in range(1, 6)], "10", [])
+        assert len([r for r in caplog.records if "were not granted" in r.getMessage()]) == 1

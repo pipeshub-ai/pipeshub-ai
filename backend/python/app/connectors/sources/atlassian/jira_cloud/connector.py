@@ -96,7 +96,9 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     http_status_is_transient,
     index_members,
     level_reads_alike,
+    levels_after_walk,
     plan_level_reread,
+    pre_walk_marker,
     read_security_level,
     refuses_a_scope,
     scheme_has_no_levels,
@@ -583,6 +585,10 @@ class JiraConnector(BaseConnector):
         # Project key -> why its issue security levels could not be applied this sync,
         # reported once per sync rather than once per project.
         self._unreadable_security: dict[str, str] = {}
+        # Projects whose leveled issues are hidden meanwhile because they were stored open, and the
+        # holders already reported this sync (once per level, not once per issue).
+        self._never_tightened_security: set[str] = set()
+        self._skipped_holders_logged: set[tuple[str, str | None, str]] = set()
         self._issue_build_failures = 0  # issues skipped because they failed to build
         # Parents of stories, by issue id, as read this sync: an epic read with its project's
         # issues, or asked for when a story names it. None: Jira gave no usable answer.
@@ -4041,6 +4047,8 @@ class JiraConnector(BaseConnector):
         full_sync_project_ids: set[str] = set()
         leveled_reread_project_ids: set[str] = set()
         self._unreadable_security = {}
+        self._never_tightened_security = set()
+        self._skipped_holders_logged = set()
         self._parent_levels = {}
         self._parent_level_failures = set()
 
@@ -4188,11 +4196,13 @@ class JiraConnector(BaseConnector):
         reread, changed_levels, levels_to_save = self._plan_level_reread(
             security, stored_levels, is_new_project=is_new_project
         )
+        if levels_to_save.get("*") == "held":
+            self._never_tightened_security.add(project_key)  # hidden meanwhile, not kept as stored
         unreadable = not readable and security.knowledge != SchemeKnowledge.NONE
         if security.defer_checkpoint or (unreadable and reread):
             # Saved before the walk: a page that fails later leaves issues written with their
             # level unapplied behind the advanced cursor, and only this marker re-reads them.
-            retry = {**{k: v for k, v in (stored_levels or {}).items() if k != "*"}, "*": "retry"}
+            retry = pre_walk_marker(stored_levels)
             if retry != stored_levels:
                 await self._record_security_levels(project_key, retry, force=True)
 
@@ -4301,6 +4311,7 @@ class JiraConnector(BaseConnector):
                     raise
                 # The account cannot name some level in JQL; every leveled issue covers it.
                 await self._reread_leveled_issues(project_key, project_id, jira_users, stats, None)
+        levels_to_save = levels_after_walk(levels_to_save, self._issue_build_failures)
         if is_new_project or levels_to_save != stored_levels:
             await self._record_security_levels(
                 project_key, levels_to_save, force=security.defer_checkpoint
@@ -4376,7 +4387,9 @@ class JiraConnector(BaseConnector):
         """One warning per reason for the projects whose issue security levels could not be
         applied this sync, and one notification for the connector's owner."""
         lines: list[str] = []
-        for reason, effect, project_keys, line in unreadable_security_notices(self._unreadable_security):
+        for reason, effect, project_keys, line in unreadable_security_notices(
+            self._unreadable_security, self._never_tightened_security,
+        ):
             self.logger.warning(
                 "Issues with a security level in %s project(s) %s until their levels can be read; %s: %s",
                 len(project_keys), effect, UNREADABLE_REASONS[reason], ", ".join(project_keys),
@@ -5230,9 +5243,11 @@ class JiraConnector(BaseConnector):
                 reporter_email=reporter_email,
                 assignee_email=assignee_email,
             )
-            if skipped_holders:
+            if skipped_holders and (logged := (project_id, read_security_level(fields)[1], ",".join(skipped_holders))) \
+                    not in self._skipped_holders_logged:
+                self._skipped_holders_logged.add(logged)
                 self.logger.warning(
-                    f"Issue {issue_key}: security level holders of type {skipped_holders} were not granted"
+                    f"Issue {issue_key} and the others in its security level: holders of type {skipped_holders} were not granted"
                 )
 
         records.append((issue_record, permissions, is_issue_changed))

@@ -84,7 +84,9 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     http_status_is_transient,
     index_members,
     level_reads_alike,
+    levels_after_walk,
     plan_level_reread,
+    pre_walk_marker,
     read_security_level,
     refuses_a_scope,
     scheme_has_no_levels,
@@ -528,6 +530,7 @@ class JiraDataCenterConnector(BaseConnector):
         self._scheme_members: dict[str, tuple[bool, dict[str, list[dict[str, Any]]]]] = {}
         self._unreadable_security: dict[str, str] = {}
         self._never_tightened_security: set[str] = set()
+        self._skipped_holders_logged: set[tuple[str, str | None, str]] = set()
         self._app_roles_mapping: dict[str, list[dict[str, Any]]] = {}
         # Issues of the project being synced that failed to build, this run.
         self._issue_build_failures: int = 0
@@ -3170,6 +3173,7 @@ class JiraDataCenterConnector(BaseConnector):
         leveled_reread_project_ids: set[str] = set()
         self._unreadable_security = {}
         self._never_tightened_security = set()
+        self._skipped_holders_logged = set()
         self._parent_levels = {}
         self._scheme_members = {}
 
@@ -3381,14 +3385,13 @@ class JiraDataCenterConnector(BaseConnector):
         reread, changed_levels, levels_to_save = plan_level_reread(
             security, stored_levels, is_new_project=is_new_project, app_roles_mapping=self._app_roles_mapping,
         )
-        if reread == "leveled" and security.defer_checkpoint:
+        if levels_to_save.get("*") == "held":
             self._never_tightened_security.add(project_key)  # hidden meanwhile, not kept as stored
         unreadable = not readable and security.knowledge != SchemeKnowledge.NONE
         if security.defer_checkpoint or (unreadable and reread):
             # Saved before the walk: a page that fails later leaves issues written with their
             # level unapplied behind the advanced cursor, and only this marker reads them again.
-            held = (stored_levels or {}).get("*") == "held"
-            retry = {**{k: v for k, v in (stored_levels or {}).items() if k != "*"}, "*": "held" if held else "retry"}
+            retry = pre_walk_marker(stored_levels)
             if retry != stored_levels:
                 await self._record_security_levels(project_key, retry, force=True)
         if _stored_map((project_sync_data or {}).get("child_parents")):
@@ -3489,6 +3492,7 @@ class JiraDataCenterConnector(BaseConnector):
             await self._reread_stored_issues(
                 project_key, project_id, jira_users, stats, changed_levels, every_issue=reread == "project"
             )
+        levels_to_save = levels_after_walk(levels_to_save, self._issue_build_failures)
         if is_new_project or levels_to_save != stored_levels:
             await self._record_security_levels(project_key, levels_to_save, force=security.defer_checkpoint)
 
@@ -4859,9 +4863,12 @@ class JiraDataCenterConnector(BaseConnector):
                         # The level could not be read for now. An issue Jira changed, or a child that follows its
                         # parent, may have a different level, so it must not keep the old level's holders.
                         issue_record.rewrite_permissions = True
-                    if skipped_holders:
+                    if skipped_holders and (logged := (project_id, read_security_level(fields)[1], ",".join(skipped_holders))) \
+                            not in self._skipped_holders_logged:
+                        self._skipped_holders_logged.add(logged)
                         self.logger.warning(
-                            f"Issue {issue_key}: security level holders of type {skipped_holders} were not granted"
+                            f"Issue {issue_key} and the others in its security level: "
+                            f"holders of type {skipped_holders} were not granted"
                         )
                 all_records.append((issue_record, permissions))
                 if (

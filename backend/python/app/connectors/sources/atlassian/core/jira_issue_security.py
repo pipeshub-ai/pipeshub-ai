@@ -791,6 +791,22 @@ def plan_level_reread(
     return ("levels" if changed else None), changed or None, current
 
 
+def pre_walk_marker(stored: dict[str, str] | None) -> dict[str, str]:
+    """The level map saved before the walk when a read is deferred: the digests, and a marker that
+    asks for a re-read. A pass already done on a project never tightened (``held``) stays marked, so
+    a read that keeps failing does not repeat it."""
+    held = (stored or {}).get("*") == "held"
+    return {**{k: v for k, v in (stored or {}).items() if k != "*"}, "*": "held" if held else "retry"}
+
+
+def levels_after_walk(levels_to_save: dict[str, str], build_failures: int) -> dict[str, str]:
+    """The level map to save after the walk. An issue that failed to build in a pass that closed the
+    leveled issues of a project never tightened may have stayed open, so the pass is not marked done."""
+    if build_failures and levels_to_save.get("*") == "held":
+        return {**levels_to_save, "*": "retry"}
+    return levels_to_save
+
+
 def unreadable_security_notices(
     unreadable: dict[str, str], never_tightened: frozenset[str] | set[str] = frozenset(),
 ) -> list[tuple[str, str, list[str], str]]:

@@ -22,7 +22,9 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     classify_scheme_response,
     hold_levels_naming_unread_roles,
     level_reads_alike,
+    levels_after_walk,
     plan_level_reread,
+    pre_walk_marker,
     refuses_a_scope,
     resolve_scheme_knowledge,
     scheme_has_no_levels,
@@ -705,3 +707,17 @@ class TestNotListedWording:
     def test_the_reason_names_the_server_without_saying_data_center(self) -> None:
         assert "Data Center" not in UNREADABLE_REASONS[UNREADABLE_NOT_LISTED]
         assert "does not list who holds" in UNREADABLE_REASONS[UNREADABLE_NOT_LISTED]
+
+
+class TestMarkers:
+    def test_the_pre_walk_marker_keeps_a_pass_already_done(self) -> None:
+        assert pre_walk_marker({"1": "d", "*": "held"}) == {"1": "d", "*": "held"}
+        assert pre_walk_marker({"1": "d"}) == {"1": "d", "*": "retry"}
+        assert pre_walk_marker({"*": "retry"}) == {"*": "retry"}
+        assert pre_walk_marker(None) == {"*": "retry"}
+
+    def test_a_closing_pass_with_a_build_failure_is_not_marked_done(self) -> None:
+        assert levels_after_walk({"*": "held"}, 1) == {"*": "retry"}
+        assert levels_after_walk({"*": "held"}, 0) == {"*": "held"}
+        assert levels_after_walk({"1": "d", "*": "retry"}, 3) == {"1": "d", "*": "retry"}
+        assert levels_after_walk({"1": "d"}, 3) == {"1": "d"}
