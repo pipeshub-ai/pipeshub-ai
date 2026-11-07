@@ -38,7 +38,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # -----------------------------------------------------------------------------
 # Stage 1: Node.js Backend Build
 # -----------------------------------------------------------------------------
-FROM node:20-slim AS nodejs-backend
+FROM node:24-slim AS nodejs-backend
 WORKDIR /app/backend
 
 COPY backend/nodejs/apps/package*.json ./
@@ -74,7 +74,7 @@ RUN mkdir -p /app/templates && cd src && find . -name '*.hbs' -exec cp --parents
 # Stage 2: Frontend Build (Next.js in `frontend/`)
 # -----------------------------------------------------------------------------
 # Static export so the Node.js API can serve files from `backend/dist/public`.
-FROM node:20-slim AS frontend-build
+FROM node:24-slim AS frontend-build
 WORKDIR /app/frontend
 
 COPY frontend/package*.json ./
