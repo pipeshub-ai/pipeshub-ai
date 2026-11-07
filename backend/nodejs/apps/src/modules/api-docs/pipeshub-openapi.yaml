@@ -63200,8 +63200,9 @@ paths:
           description: |
             One of:
             - the API could not be reached, or answered with something that is not HTTP;
-            - for an OAuth sign-in, the OAuth server is down or rate-limiting (5xx or 429), so no
-              access token could be had. The API itself was not called.
+            - for an OAuth scheme (a person's sign-in or client credentials), the OAuth server is down
+              or rate-limiting (5xx or 429) when an access token is needed: before the call, or when
+              refreshing after the API answered `401`. The call, or its retry, was not sent.
 
             The connectors service answers `502`, which the gateway reports as `500 INTERNAL_ERROR`.
 
