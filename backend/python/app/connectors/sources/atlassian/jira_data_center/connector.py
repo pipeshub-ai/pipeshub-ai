@@ -537,6 +537,8 @@ class JiraDataCenterConnector(BaseConnector):
         self._batch_parents: dict[str, str | None] = {}
         # Set when the JQL that names a parent's children is refused, so every stored issue is read.
         self._reread_whole_project: bool = False
+        # Set while the stored issues of a level are read again, so their parents are noted.
+        self._collect_parents: bool = False
 
     def _notification_title(self, event: str) -> str:
         return f"{self.connector_instance_name or 'Jira Data Center'} connector {event}"
@@ -3370,10 +3372,8 @@ class JiraDataCenterConnector(BaseConnector):
             retry = {**{k: v for k, v in (stored_levels or {}).items() if k != "*"}, "*": "retry"}
             if retry != stored_levels:
                 await self._record_security_levels(project_key, retry, force=True)
-        unsettled_parents: dict[str, str | None] = _stored_map((project_sync_data or {}).get("child_parents"))
-        if unsettled_parents:
-            unsettled_parents = await self._settle_children(
-                project_key, project_id, jira_users, {"new_count": 0, "updated_count": 0}, unsettled_parents, {})
+        if _stored_map((project_sync_data or {}).get("child_parents")):
+            await self._settle_children(project_key, project_id, jira_users, {"new_count": 0, "updated_count": 0}, {})
 
         def checkpoint_at(last_seen: int | None) -> int | None:
             # A failed issue keeps the checkpoint at its own updated time so the next search finds it again.
@@ -3434,8 +3434,7 @@ class JiraDataCenterConnector(BaseConnector):
             total_issues_processed += batch_size
             if parents:
                 # Before the cursor passes these parents, which would not bring them back.
-                unsettled_parents = await self._settle_children(
-                    project_key, project_id, jira_users, stats, parents, unsettled_parents)
+                await self._settle_children(project_key, project_id, jira_users, stats, parents)
 
             # Update checkpoint AFTER successful processing
             if last_issue_updated_in_batch:
@@ -3501,32 +3500,43 @@ class JiraDataCenterConnector(BaseConnector):
         level_ids: list[str] | None, *, every_issue: bool = False,
     ) -> None:
         """Rebuild the stored issues in ``level_ids``; when it is None, every stored issue
-        with a level, or every stored issue with ``every_issue``."""
-        async for batch, _more, _ts in self._fetch_issues_batched(
-            project_key, project_id, users, None, None, is_new_project=True, stored_only=True,
-            level_ids=level_ids, leveled_only=level_ids is None and not every_issue,
-        ):
-            if batch:
+        with a level, or every stored issue with ``every_issue``. The children of a rebuilt
+        issue are read again too: a story stored under an epic that now has a level must leave it."""
+        self._batch_parents = {}
+        self._collect_parents = not every_issue
+        try:
+            async for batch, _more, _ts in self._fetch_issues_batched(
+                project_key, project_id, users, None, None, is_new_project=True, stored_only=True,
+                level_ids=level_ids, leveled_only=level_ids is None and not every_issue,
+            ):
+                if not batch:
+                    continue
+                parents, self._batch_parents = self._batch_parents, {}
                 await self._process_new_records(batch, project_key, stats)
+                if parents:
+                    await self._settle_children(project_key, project_id, users, stats, parents)
+        finally:
+            self._collect_parents = False
+            self._batch_parents = {}
 
     async def _settle_children(
         self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],
-        parents: dict[str, str | None], unsettled: dict[str, str | None],
-    ) -> dict[str, str | None]:
-        """Read the children of ``parents`` again and return the parents still unsettled.
+        parents: dict[str, str | None],
+    ) -> None:
+        """Read the children of ``parents`` again, and of any parents an earlier read left unsettled.
 
-        The parents are saved in the checkpoint first, beside those an earlier read left
-        unsettled, so a crash or a child that could not be read is retried next sync.
+        The parents are saved in the checkpoint first, so a crash or a child that could not be read
+        is retried next sync.
         """
-        pending = {**unsettled, **parents}
+        stored = _stored_map((await self._get_project_sync_checkpoint(project_key)).get("child_parents"))
+        pending = {**stored, **parents}
         await self._update_project_sync_checkpoint(project_key, child_parents=json.dumps(pending, sort_keys=True))
         failures_before = self._issue_build_failures
         await self._reread_children(project_key, project_id, users, stats, pending)
         if self._issue_build_failures != failures_before:
             self.logger.warning(f"Some child issues of {project_key} could not be read again; reading them next sync")
-            return pending
+            return
         await self._update_project_sync_checkpoint(project_key, child_parents="{}")
-        return {}
 
     async def _reread_children(
         self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],
@@ -3541,6 +3551,7 @@ class JiraDataCenterConnector(BaseConnector):
         children has every stored issue of the project read instead.
         """
         ids = [i for i in parents if str(i).isdigit()]
+        collecting, self._collect_parents = self._collect_parents, False  # children's children are not read
         clauses = [f"parent in ({', '.join(ids[i:i + CHILD_REREAD_CHUNK])})" for i in range(0, len(ids), CHILD_REREAD_CHUNK)]
         epic_field = (self._epic_link_field_id or "").removeprefix("customfield_")
         epic_keys = [k for k in parents.values() if k and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*-\d+", k)]
@@ -3549,19 +3560,20 @@ class JiraDataCenterConnector(BaseConnector):
                 f"cf[{epic_field}] in ({', '.join(epic_keys[i:i + CHILD_REREAD_CHUNK])})"
                 for i in range(0, len(epic_keys), CHILD_REREAD_CHUNK)
             ]
-        for clause in clauses:
-            try:
+        try:
+            for clause in clauses:
                 async for batch, _more, _ts in self._fetch_issues_batched(
                     project_key, project_id, users, None, None, is_new_project=True, stored_only=True, extra_jql=clause,
                 ):
                     if batch:
                         await self._process_new_records(batch, project_key, stats)
-            except JiraReadError as e:
-                if e.status != HttpStatusCode.BAD_REQUEST.value:
-                    raise
-                self.logger.warning(f"Jira refused the JQL naming children in {project_key}; reading every stored issue")
-                self._reread_whole_project = True
-                return
+        except JiraReadError as e:
+            if e.status != HttpStatusCode.BAD_REQUEST.value:
+                raise
+            self.logger.warning(f"Jira refused the JQL naming children in {project_key}; reading every stored issue")
+            self._reread_whole_project = True
+        finally:
+            self._collect_parents = collecting
 
     async def _fetch_issues_batched(
         self,
@@ -4810,7 +4822,7 @@ class JiraDataCenterConnector(BaseConnector):
                             f"Issue {issue_key}: security level holders of type {skipped_holders} were not granted"
                         )
                 all_records.append((issue_record, permissions))
-                if not stored_only and not is_new_project and not issue_data["is_subtask"]:
+                if (self._collect_parents or (not stored_only and not is_new_project)) and not issue_data["is_subtask"]:
                     # Only an incremental batch names parents; a full read reaches every child itself.
                     self._batch_parents[str(issue_id)] = issue_key if issue_data["is_epic"] else None
 
