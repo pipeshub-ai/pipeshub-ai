@@ -161,6 +161,19 @@ async def test_a_failed_pass_is_retried_with_backoff() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_failed_pass_is_not_a_quiet_one() -> None:
+    """A write conflict raises on Arango, so the pass that fails is the sign a writer is still there."""
+    config = await recorded(age_ms=QUIET_MS - 1)
+    assert await sweeper(Graph(passes=[RuntimeError("write-write conflict")]), config).tick() == {"retrying": 1}
+    assert intent(config)["lastFoundAt"] == NOW
+
+    due = intent(config)["nextAttemptAt"]
+    assert await sweeper(Graph(passes=[(0, 0)]), config, now=due).tick() == {"swept": 1}
+    kept = intent(config)
+    assert kept is not None and kept["lastFoundAt"] == NOW
+
+
+@pytest.mark.asyncio
 async def test_a_failed_app_read_never_passes_for_a_gone_app() -> None:
     config, graph = await recorded(age_ms=GRACE_MS + 1), Graph(app=RuntimeError("timeout"), passes=[(0, 0)])
     assert await sweeper(graph, config).tick() == {"retrying": 1}

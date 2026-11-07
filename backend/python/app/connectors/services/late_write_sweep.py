@@ -132,7 +132,9 @@ class LateWriteSweeper:
             self.logger.warning(
                 "Late-write sweep failed; kept for retry | org=%s connector=%s", org_id, connector_id, exc_info=True,
             )
-            await self._reschedule(intent, now)
+            # On Arango a writer still running surfaces as a write conflict that raises here, so a
+            # failed pass restarts the quiet clock instead of counting toward it.
+            await self._reschedule({**intent, "lastFoundAt": now}, now)
             return "retrying"
         if removed:
             self.logger.warning(
