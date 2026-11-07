@@ -164,3 +164,62 @@ def test_only_go_emits_embeds(language, source) -> None:
         return
     assert not embeds
     assert [f for f in facts if f.to_name == "Base"]  # the real heritage is still there
+
+
+SERVER = b'''package web
+
+type Server struct{}
+
+func (s *Server) ListenAndServe() {}
+'''
+
+OUTSIDE = b'''package api
+
+import "net/http"
+
+type App struct {
+	http.Server
+}
+
+func run(a *App) {
+	a.ListenAndServe()
+}
+'''
+
+
+async def test_an_embedded_type_from_an_outside_package_is_no_repo_type_so_named(graph, index_file) -> None:
+    """`http.Server` is net/http's, never the repo's own `web.Server`: its methods stay unlinked."""
+    await index_file("recW", "web/server.go", SERVER, "go")
+    await index_file("recA", "api/app.go", OUTSIDE, "go")
+    await _build(graph)
+    assert _targets(graph, CALLS, "api/app.go") == set()
+
+
+GENERIC = b'''package box
+
+type Box[T any] struct{}
+
+func (b *Box[T]) Get() {}
+
+type Holder struct {
+	Box[int]
+}
+
+func use(h *Holder) {
+	h.Get()
+}
+'''
+
+
+async def test_a_generic_embedded_type_promotes_its_methods(graph, index_file) -> None:
+    await index_file("recB", "box/box.go", GENERIC, "go")
+    await _build(graph)
+    assert _targets(graph, CALLS, "box/box.go") == {"box/box.go::method:Box.Get"}
+
+
+def test_a_union_of_types_in_an_interface_is_no_embed() -> None:
+    """`interface { A | B }` is a type-set constraint, not an embedded `A`; `interface { A }` embeds A."""
+    from app.modules.parsers.code_parser.engine import parse_code
+
+    facts = parse_code(b"package p\n\ntype C interface {\n\tA | B\n}\n\ntype D interface {\n\tA\n}\n", "go").pending
+    assert [(f.to_name, f.context) for f in facts if f.context == "embeds"] == [("A", "embeds")]

@@ -2466,6 +2466,8 @@ class _Builder:
             hit = self._defined_or_reexported(module, name)
             if hit in self.index.type_blocks:
                 return hit
+        if qualified_prefix and family == "go":
+            return None  # `http.Server` is that package's type: never a repo type named like it elsewhere
         candidates = [
             cid for cid in self.index.candidates(name) if cid in self.index.type_blocks
         ]

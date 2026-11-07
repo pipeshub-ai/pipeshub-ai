@@ -586,10 +586,14 @@ def _heritage_go(node: Node, src: bytes, out: list[PendingEdgeFact], idx: int) -
             if _field(holder, "name") is not None:
                 continue  # a named field, not an embed
             typ = _field(holder, "type")
+        elif len(holder.named_children) != 1:
+            continue  # `A | B`: a constraint's type set, not an embedded interface
         else:
-            typ = holder.named_children[0] if holder.named_children else None
+            typ = holder.named_children[0]
         while typ is not None and typ.type == "pointer_type":
             typ = typ.named_children[0] if typ.named_children else None
+        if typ is not None and typ.type == "generic_type":  # `Box[int]` embeds Box
+            typ = _field(typ, "type")
         if typ is None or typ.type not in ("type_identifier", "qualified_type"):
             continue
         package = _field(typ, "package")
