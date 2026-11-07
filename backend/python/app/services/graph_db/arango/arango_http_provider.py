@@ -8152,36 +8152,33 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str | None = None,
     ) -> dict[str, User]:
         """See :meth:`IGraphDBProvider.get_users_by_emails`."""
-        wanted = list(dict.fromkeys(e.lower() for e in emails if e))
-        if not wanted or not any(e.strip() for e in wanted):
+        wanted = list(dict.fromkeys(e.strip().lower() for e in emails if e and e.strip()))
+        if not wanted:
             return {}
         scoped = org_id is not None
         org_filter = "FILTER user.orgId == @org_id" if scoped else ""
-        query_emails = list(dict.fromkeys([*wanted, *(e.strip() for e in wanted if e.strip())]))
-        bind_vars = {"emails": query_emails, **({"org_id": org_id} if scoped else {})}
-        # Direct comparison against normalized inputs allows the persistent index
-        # on (orgId, email) to be used, while the case-insensitive fallback ensures
-        # legacy unnormalized emails are findable during rollout.
+        bind_vars = {"emails": wanted, **({"org_id": org_id} if scoped else {})}
         query = f"""
         FOR user IN {CollectionNames.USERS.value}
             {org_filter}
-            FILTER (user.email IN @emails OR LOWER(TRIM(user.email)) IN @emails)
+            FILTER user.email IN @emails
             RETURN user
         """
         try:
             rows = await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction)
             found: dict[str, User] = {}
+            matched = []
             for row in rows or []:
                 node = self._translate_node_from_arango(row)
                 u = User.from_arango_user(node)
-                raw_email = (row.get("email") or "").lower()
-                stripped = raw_email.strip()
-                for k in (raw_email, stripped):
-                    if k and (k not in found or (u.is_active and not found[k].is_active)):
-                        found[k] = u
-                for w in wanted:
-                    if w.strip() == stripped and (w not in found or (u.is_active and not found[w].is_active)):
-                        found[w] = u
+                matched.append((row, u))
+            matched.sort(
+                key=lambda item: str(item[1].user_id or item[1].id or item[0].get("id") or item[0].get("_key") or "")
+            )
+            for row, u in matched:
+                key = (row.get("email") or "").strip().lower()
+                if key not in found or (u.is_active and not found[key].is_active):
+                    found[key] = u
             return found
         except Exception as e:
             self.logger.error(f"❌ Get users by emails failed: {str(e)}")
@@ -8206,10 +8203,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         scoped = org_id is not None
         org_filter = "FILTER user.orgId == @org_id" if scoped else ""
         bind_vars = {"email": normalized_email, **({"org_id": org_id} if scoped else {})}
+
         query = f"""
         FOR user IN {CollectionNames.USERS.value}
             {org_filter}
-            FILTER (user.email == @email OR LOWER(TRIM(user.email)) == @email)
+            FILTER user.email == @email
             SORT user.isActive DESC
             LIMIT 1
             RETURN user
@@ -8222,12 +8220,35 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
 
+            candidate: User | None = None
             if results:
-                # Convert to User entity
                 user_data = self._translate_node_from_arango(results[0])
-                return User.from_arango_user(user_data)
+                candidate = User.from_arango_user(user_data)
+                if candidate.is_active:
+                    return candidate
 
-            return None
+            # Legacy fallback during rollout: runs separately only when indexed lookup
+            # does not find an active user.
+            legacy_query = f"""
+            FOR user IN {CollectionNames.USERS.value}
+                {org_filter}
+                FILTER LOWER(TRIM(user.email)) == @email
+                SORT user.isActive DESC
+                LIMIT 1
+                RETURN user
+            """
+            legacy_results = await self.http_client.execute_aql(
+                legacy_query,
+                bind_vars=bind_vars,
+                txn_id=transaction
+            )
+            if legacy_results:
+                legacy_data = self._translate_node_from_arango(legacy_results[0])
+                legacy_candidate = User.from_arango_user(legacy_data)
+                if legacy_candidate.is_active or candidate is None:
+                    return legacy_candidate
+
+            return candidate
 
         except Exception as e:
             self.logger.error(f"❌ Get user by email failed: {str(e)}")
@@ -8941,11 +8962,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             query = f"""
             FOR doc IN {CollectionNames.PEOPLE.value}
-                FILTER doc.email == @email AND doc.orgId == @org_id
+                FILTER doc.orgId == @org_id AND (doc.email == @email OR TRIM(doc.email) == @stripped OR LOWER(TRIM(doc.email)) == @stripped)
                 LIMIT 1
                 RETURN doc
             """
-            bind_vars: dict[str, Any] = {"email": email.lower(), "org_id": org_id}
+            bind_vars: dict[str, Any] = {
+                "email": email.lower(),
+                "stripped": email.strip().lower(),
+                "org_id": org_id,
+            }
 
             results = await self.http_client.execute_aql(
                 query, bind_vars=bind_vars, txn_id=transaction
@@ -10957,11 +10982,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not users:
                 return
 
-            # Get org_id
-            orgs = await self.get_all_orgs()
-            if not orgs:
-                raise Exception("No organizations found in the database")
-            org_id = orgs[0]["_key"]
             connector_id = users[0].connector_id
 
             app = await self.get_document(connector_id, CollectionNames.APPS.value)
@@ -10969,10 +10989,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 raise Exception(f"Failed to get/create app: {connector_id}")
 
             app_id = app["_id"]
+            org_id = app.get("orgId") or getattr(users[0], "org_id", None)
+            if not org_id:
+                orgs = await self.get_all_orgs()
+                if not orgs:
+                    raise Exception("No organizations found in the database")
+                org_id = orgs[0]["_key"]
 
             for user in users:
-                # Check if user exists
-                user_record = await self.get_user_by_email(user.email, transaction)
+                # Check if user exists within connector's organization
+                user_record = await self.get_user_by_email(user.email, transaction, org_id=org_id)
 
                 if not user_record:
                     # Create new user
@@ -10982,7 +11008,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         transaction=transaction
                     )
 
-                    user_record = await self.get_user_by_email(user.email, transaction)
+                    user_record = await self.get_user_by_email(user.email, transaction, org_id=org_id)
 
                     # This address may already exist as a Person from an external share.
                     # Non-fatal: one CRM contact must not fail a whole sync.
@@ -11508,8 +11534,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # Deduplicate emails to avoid redundant queries
             unique_emails = list(set(emails))
+            norm_to_orig: dict[str, list[str]] = {}
+            for e in unique_emails:
+                if e:
+                    norm_to_orig.setdefault(e.strip().lower(), []).append(e)
 
-            # QUERY 1: Check users collection
+            # QUERY 1: Check users collection with both original and normalized emails
+            user_query_emails = list(dict.fromkeys([*unique_emails, *norm_to_orig.keys()]))
             user_query = f"""
             FOR doc IN {CollectionNames.USERS.value}
                 FILTER doc.email IN @emails
@@ -11518,15 +11549,20 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             try:
                 users = await self.http_client.execute_aql(
                     user_query,
-                    bind_vars={"emails": unique_emails},
+                    bind_vars={"emails": user_query_emails},
                     txn_id=transaction
                 )
                 for user in users:
-                    result_map[user["email"]] = (
+                    u_email = user["email"]
+                    val = (
                         user["id"],
                         CollectionNames.USERS.value,
                         "USER"
                     )
+                    result_map[u_email] = val
+                    norm = (u_email or "").strip().lower()
+                    for orig in norm_to_orig.get(norm, []):
+                        result_map[orig] = val
                 self.logger.debug(f"✅ Found {len(users)} users")
             except Exception as e:
                 self.logger.error(f"❌ Error querying users: {str(e)}")
