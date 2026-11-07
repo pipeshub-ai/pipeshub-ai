@@ -42,9 +42,9 @@ def _neo4j(execute_query: AsyncMock) -> Neo4jProvider:
 async def test_arango_migration_logs_person_and_user_keys(caplog: pytest.LogCaptureFixture) -> None:
     provider = _arango()
     provider.get_person_by_email = AsyncMock(return_value=Person(id="p1", email=EMAIL))
-    # CRM probe, then the permission and userAppRelation transfers, each with nothing to move.
+    # Not a CRM contact, and every edge read finds nothing to move; answered by query, not call order.
     provider.http_client.execute_aql = AsyncMock(
-        side_effect=[[False], [{"mine": [], "theirs": []}], [{"mine": [], "theirs": []}], []]
+        side_effect=lambda query, **_: [False] if query.startswith("RETURN (") else [{"mine": [], "theirs": []}]
     )
 
     assert await provider.migrate_person_to_user(EMAIL, "u1", "org-1", transaction="txn-1") is not None
