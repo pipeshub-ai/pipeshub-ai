@@ -11655,7 +11655,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 removed += found
             except Exception as e:
                 left = None
-                self.logger.warning(f"⚠️ Sweep of what indexing wrote during delete of {connector_id} failed: {e}")
+                self.logger.warning(f"Sweep of what indexing wrote during delete of {connector_id} failed: {e}")
             if left == 0:
                 break
             if attempt + 1 < CASCADE_ATTEMPTS:
@@ -11666,7 +11666,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
         if left != 0:
             self.logger.warning(
-                f"⚠️ Connector {connector_id} still has {left if left is not None else 'an unknown number of'} "
+                f"Connector {connector_id} still has {left if left is not None else 'an unknown number of'} "
                 f"block(s) or stage state(s) after {CASCADE_ATTEMPTS} sweeps following its delete; "
                 "the late-write sweep removes them"
             )
