@@ -88,18 +88,60 @@ jobs:
           echo "version=$version candidate=${version}-rc.${GITHUB_RUN_ID} promote=$promote"
 
   # ---------------------------------------------------------------------------
-  build:
-    name: Build ${{ matrix.variant }}
+  # Hash tags of the bases this commit's lockfile needs. Built here only when
+  # they are not already on Docker Hub (a manual run of Base images on main publishes them).
+  base-hash:
+    name: Resolve base images
     needs: resolve
-    runs-on: runs-on=${{ github.run_id }}/runner=8cpu-linux-x64/volume=200gb
+    runs-on: ubuntu-latest
+    outputs:
+      hash: ${{ steps.tag.outputs.hash }}
+      missing: ${{ steps.tag.outputs.missing }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install crane
+        uses: imjasonh/setup-crane@31b88efe9de28ae0ffa220711af4b60be9435f6e # v0.4
+
+      - id: tag
+        run: |
+          set -euo pipefail
+          hash="$(bash scripts/docker/base_tag.sh --hash)"
+          echo "hash=${hash}" >> "$GITHUB_OUTPUT"
+          missing=false
+          for name in python-deps runtime models-bge; do
+            if ! crane digest "${BASE_IMAGE}:${name}-${hash}" >/dev/null 2>&1; then
+              echo "${BASE_IMAGE}:${name}-${hash} is not published"
+              missing=true
+            fi
+          done
+          echo "missing=${missing}" >> "$GITHUB_OUTPUT"
+
+  build-bases:
+    name: Build missing base images
+    needs: base-hash
+    if: needs.base-hash.outputs.missing == 'true'
+    uses: ./.github/workflows/base-images.yml
+    secrets: inherit
+
+  # ---------------------------------------------------------------------------
+  # Slim first, then full, on one native runner per architecture so the full
+  # build reuses the slim layers. Each arch pushes its own tag; merge joins them.
+  build:
+    name: Build app (${{ matrix.arch }})
+    needs: [resolve, base-hash, build-bases]
+    if: always() && needs.resolve.result == 'success' && needs.base-hash.result == 'success' && (needs.build-bases.result == 'success' || needs.build-bases.result == 'skipped')
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
         include:
-          - variant: full
-            python_deps: python-deps
-          - variant: slim
-            python_deps: python-deps-slim
+          - arch: amd64
+            runner: runs-on=${{ github.run_id }}/runner=8cpu-linux-x64/volume=200gb
+          - arch: arm64
+            runner: runs-on=${{ github.run_id }}/runner=8cpu-linux-arm64/volume=200gb
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -113,37 +155,154 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # The base images are rebuilt deliberately, not on every release — see the
-      # header of Dockerfile.base. Pull whatever is published and fail loudly if
-      # it is absent, rather than silently building a 40-minute base layer here.
-      - name: Pull base images
+      - name: Labels
+        id: labels
         run: |
           set -euo pipefail
-          for tag in ${{ matrix.python_deps }} runtime; do
-            if ! docker pull "${BASE_IMAGE}:${tag}"; then
-              echo "::error::${BASE_IMAGE}:${tag} is not published. Build it from Dockerfile.base first (see its header)."
-              exit 1
-            fi
-          done
+          echo "npm=$(sha256sum backend/nodejs/apps/package-lock.json | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push candidate
+      - name: Build and push slim
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: Dockerfile
-          platforms: linux/amd64,linux/arm64
+          target: runtime-slim
+          platforms: linux/${{ matrix.arch }}
           push: true
           provenance: true
           sbom: true
           build-args: |
-            PYTHON_DEPS_IMAGE=${{ env.BASE_IMAGE }}:${{ matrix.python_deps }}
-            RUNTIME_BASE_IMAGE=${{ env.BASE_IMAGE }}:runtime
+            PYTHON_DEPS_IMAGE=${{ env.BASE_IMAGE }}:python-deps-${{ needs.base-hash.outputs.hash }}
+            RUNTIME_BASE_IMAGE=${{ env.BASE_IMAGE }}:runtime-${{ needs.base-hash.outputs.hash }}
+            REQUIRE_CURRENT_BASE=1
             APP_VERSION=${{ needs.resolve.outputs.version }}
             GIT_COMMIT=${{ github.sha }}
+            BASE_HASH=${{ needs.base-hash.outputs.hash }}
+            NPM_LOCK_HASH=${{ steps.labels.outputs.npm }}
           tags: |
-            ${{ env.IMAGE }}:${{ needs.resolve.outputs.candidate }}${{ matrix.variant == 'slim' && '-slim' || '' }}
-          cache-from: type=gha,scope=${{ matrix.variant }}
-          cache-to: type=gha,scope=${{ matrix.variant }},mode=max
+            ${{ env.IMAGE }}:${{ needs.resolve.outputs.candidate }}-slim-${{ matrix.arch }}
+          cache-from: type=gha,scope=app-${{ matrix.arch }}
+          cache-to: type=gha,scope=app-${{ matrix.arch }},mode=max
+
+      - name: Build and push full
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          target: runtime
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          provenance: true
+          sbom: true
+          build-args: |
+            PYTHON_DEPS_IMAGE=${{ env.BASE_IMAGE }}:python-deps-${{ needs.base-hash.outputs.hash }}
+            RUNTIME_BASE_IMAGE=${{ env.BASE_IMAGE }}:runtime-${{ needs.base-hash.outputs.hash }}
+            MODELS_IMAGE=${{ env.BASE_IMAGE }}:models-bge-${{ needs.base-hash.outputs.hash }}
+            REQUIRE_CURRENT_BASE=1
+            APP_VERSION=${{ needs.resolve.outputs.version }}
+            GIT_COMMIT=${{ github.sha }}
+            BASE_HASH=${{ needs.base-hash.outputs.hash }}
+            NPM_LOCK_HASH=${{ steps.labels.outputs.npm }}
+          tags: |
+            ${{ env.IMAGE }}:${{ needs.resolve.outputs.candidate }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=app-${{ matrix.arch }}
+          cache-to: type=gha,scope=app-${{ matrix.arch }},mode=max
+
+  merge:
+    name: Merge app manifests
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create multi-arch tags
+        env:
+          CANDIDATE: ${{ needs.resolve.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            -t "${IMAGE}:${CANDIDATE}-slim" \
+            "${IMAGE}:${CANDIDATE}-slim-amd64" \
+            "${IMAGE}:${CANDIDATE}-slim-arm64"
+          docker buildx imagetools create \
+            -t "${IMAGE}:${CANDIDATE}" \
+            "${IMAGE}:${CANDIDATE}-amd64" \
+            "${IMAGE}:${CANDIDATE}-arm64"
+
+      - name: Remove per-arch tags
+        continue-on-error: true
+        env:
+          CANDIDATE: ${{ needs.resolve.outputs.candidate }}
+          HUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          jwt="$(curl -fsS -H 'Content-Type: application/json' \
+            -d "$(jq -cn --arg u "$HUB_USERNAME" --arg p "$HUB_TOKEN" '{username:$u,password:$p}')" \
+            https://hub.docker.com/v2/users/login | jq -r .token)"
+          for tag in "${CANDIDATE}-slim-amd64" "${CANDIDATE}-slim-arm64" "${CANDIDATE}-amd64" "${CANDIDATE}-arm64"; do
+            code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+              -H "Authorization: JWT ${jwt}" \
+              "https://hub.docker.com/v2/repositories/${IMAGE}/tags/${tag}/")"
+            echo "delete ${IMAGE}:${tag} -> HTTP ${code}"
+          done
+
+  layer-report:
+    name: Layer diff
+    needs: [resolve, merge]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install crane
+        uses: imjasonh/setup-crane@31b88efe9de28ae0ffa220711af4b60be9435f6e # v0.4
+
+      - name: Compare slim layers with the published slim tag
+        env:
+          CANDIDATE: ${{ needs.resolve.outputs.candidate }}
+        run: python3 scripts/docker/layer_diff.py "${IMAGE}:slim" "${IMAGE}:${CANDIDATE}-slim"
+
+  trivy:
+    name: Scan slim image
+    needs: [resolve, merge]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Report only. A new CVE must not block a release that the smoke would pass.
+      - name: Install Trivy
+        env:
+          TRIVY_VERSION: 0.76.0
+          TRIVY_SHA256: e24b1c51293c1b15e4ba8d45bbc7891ba053f90278ec2698f3562c993e145fe7
+        run: |
+          set -euo pipefail
+          url="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -fsSL "$url" -o /tmp/trivy.tar.gz
+          echo "${TRIVY_SHA256}  /tmp/trivy.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
+          sudo install -m 0755 /tmp/trivy /usr/local/bin/trivy
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Scan the slim candidate
+        env:
+          CANDIDATE: ${{ needs.resolve.outputs.candidate }}
+          TRIVY_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          TRIVY_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: trivy image --exit-code 0 --severity HIGH,CRITICAL "${IMAGE}:${CANDIDATE}-slim"
 
   # ---------------------------------------------------------------------------
   # install.sh pulls pipeshubai/pipeshub-sandbox:${IMAGE_TAG}, so the candidate
@@ -189,7 +348,7 @@ jobs:
   # yet, so this runs against exactly what a user would install.
   verify:
     name: Verify ${{ matrix.deploy }} candidate (${{ matrix.arch }}${{ matrix.graph && format(', {0}', matrix.graph) || '' }})
-    needs: [resolve, build, build-sandbox]
+    needs: [resolve, merge, build-sandbox]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -251,6 +410,13 @@ jobs:
             echo "expected ${{ matrix.arch }} — this job would silently re-test the wrong image"
             exit 1
           }
+
+      - name: Image structure
+        if: ${{ !matrix.graph }}
+        env:
+          PIPESHUB_IMAGE: ${{ env.IMAGE }}:${{ needs.resolve.outputs.candidate }}${{ matrix.suffix }}
+          PIPESHUB_IMAGE_VARIANT: ${{ matrix.deploy }}
+        run: bash deployment/docker-compose/tests/image_structure_test.sh
 
       - name: First-run smoke against the candidate image
         env:

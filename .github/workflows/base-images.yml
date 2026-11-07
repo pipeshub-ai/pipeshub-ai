@@ -1,42 +1,37 @@
 name: Base images
 
-# CI builds the app image FROM ghcr.io/pipeshub-ai/pipeshub-ai-base instead of
-# Docker Hub, so test runs neither hit Docker Hub's anonymous pull limit nor
-# show up in its pull counts. This workflow keeps those GHCR tags current.
-# Docker Hub's pipeshubai/pipeshub-ai-base, which releases build from, is still
-# published by hand (see the header of Dockerfile.base); nothing here pushes to
-# Docker Hub.
+# Publishes pipeshubai/pipeshub-ai-base (and the GHCR copy) from Dockerfile.base.
+# Tags are content hashes from scripts/docker/base_tag.sh:
+#   python-deps-<hash>  runtime-<hash>  models-bge-<hash>
+# Floating tags (python-deps, runtime, models-bge) move only from main.
+# Publishing is a hand-run step, as it is on main: nothing here runs on a push. A
+# release calls this workflow when the hash tags it needs are not published yet.
 #
-#   mirror  copies each Docker Hub tag, every platform, as it is, so CI tests on
-#           the base releases build from. It runs daily, so GHCR follows a
-#           hand-published base within a day; run it by hand to sync sooner. It
-#           compares digests first (a HEAD request, which Docker Hub does not
-#           count as a pull) and copies only the tags that differ.
-#   build   rebuilds every tag from main, by hand only: run automatically it
-#           would let CI drift ahead of the Docker Hub base. The next daily
-#           mirror puts the Docker Hub tags back.
-#
-# CI pulls these anonymously and falls back to Docker Hub when a tag is missing,
-# so the package must be public: Package settings -> Change visibility -> Public.
+# The daily mirror of main's earlier setup is kept: it copies the Docker Hub
+# floating tags to GHCR as they are, so GHCR follows a base that was published to
+# Docker Hub some other way (an earlier release, a hand-run build) within a day.
+# Run the workflow by hand with mode "mirror" to sync sooner. CI pulls GHCR
+# anonymously and falls back to Docker Hub, so the package must be public.
 on:
   schedule:
     - cron: '17 4 * * *'
+  workflow_call:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'mirror: copy the current Docker Hub tags; build: rebuild from main'
+        description: 'build: publish the content-hash bases for this ref; mirror: copy the current Docker Hub tags to GHCR'
         required: true
-        default: mirror
+        default: build
         type: choice
         options:
-          - mirror
           - build
+          - mirror
 
 permissions:
   contents: read
 
 concurrency:
-  group: base-images
+  group: base-images-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -84,33 +79,59 @@ jobs:
             fi
           done
 
+  hash:
+    name: Content hash
+    # A schedule runs the mirror only; a call from a release carries no mode and builds.
+    if: github.repository == 'pipeshub-ai/pipeshub-ai' && github.event_name != 'schedule' && inputs.mode != 'mirror'
+    runs-on: ubuntu-latest
+    outputs:
+      hash: ${{ steps.tag.outputs.hash }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: tag
+        run: echo "hash=$(bash scripts/docker/base_tag.sh --hash)" >> "$GITHUB_OUTPUT"
+
   build:
-    name: Build ${{ matrix.tag }} (${{ matrix.arch }})
-    if: github.repository == 'pipeshub-ai/pipeshub-ai' && github.ref == 'refs/heads/main' && inputs.mode == 'build'
+    name: Build ${{ matrix.name }} (${{ matrix.arch }})
+    needs: hash
+    # A schedule runs the mirror only; a call from a release carries no mode and builds.
+    if: github.repository == 'pipeshub-ai/pipeshub-ai' && github.event_name != 'schedule' && inputs.mode != 'mirror'
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 150
+    timeout-minutes: 180
     permissions:
       contents: read
       packages: write
     strategy:
+      fail-fast: false
       matrix:
-        tag: [python-deps, python-deps-slim, runtime]
-        arch: [amd64, arm64]
         include:
-          - tag: python-deps
+          - name: python-deps
             target: python-deps
-            bundle_bge: '1'
-          - tag: python-deps-slim
-            target: python-deps
-            bundle_bge: '0'
-          - tag: runtime
-            target: runtime-base
-            bundle_bge: '1'
-          # Native runners for each architecture; emulating arm64 would take
-          # hours for the Python dependencies.
-          - arch: amd64
+            arch: amd64
             runner: ubuntu-24.04
-          - arch: arm64
+          - name: python-deps
+            target: python-deps
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - name: runtime
+            target: runtime-base
+            arch: amd64
+            runner: ubuntu-24.04
+          - name: runtime
+            target: runtime-base
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - name: models-bge
+            target: models
+            arch: amd64
+            runner: ubuntu-24.04
+          - name: models-bge
+            target: models
+            arch: arm64
             runner: ubuntu-24.04-arm
     steps:
       - name: Checkout
@@ -138,9 +159,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Pushed under a per-architecture tag; the publish job joins the two, so
-      # the tag CI pulls never points at a half-built set of platforms.
-      - name: Build and push
+      - name: Log in to Docker Hub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.name }}-${{ needs.hash.outputs.hash }}-${{ matrix.arch }}
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -149,23 +174,26 @@ jobs:
           platforms: linux/${{ matrix.arch }}
           push: true
           provenance: false
-          build-args: |
-            BUNDLE_BGE_EMBEDDING=${{ matrix.bundle_bge }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
           tags: |
-            ${{ env.GHCR_IMAGE }}:${{ matrix.tag }}-${{ matrix.arch }}
+            ${{ env.GHCR_IMAGE }}:${{ matrix.name }}-${{ needs.hash.outputs.hash }}-${{ matrix.arch }}
+            ${{ env.HUB_IMAGE }}:${{ matrix.name }}-${{ needs.hash.outputs.hash }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=base-${{ matrix.name }}-${{ matrix.arch }}
+          cache-to: type=gha,scope=base-${{ matrix.name }}-${{ matrix.arch }},mode=max
 
   publish:
-    name: Publish ${{ matrix.tag }}
-    needs: build
+    name: Publish ${{ matrix.name }}
+    needs: [hash, build]
+    # A schedule runs the mirror only; a call from a release carries no mode and builds.
+    if: github.repository == 'pipeshub-ai/pipeshub-ai' && github.event_name != 'schedule' && inputs.mode != 'mirror'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       packages: write
     strategy:
       matrix:
-        tag: [python-deps, python-deps-slim, runtime]
+        name: [python-deps, runtime, models-bge]
     steps:
       - name: Log in to GHCR
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
@@ -174,14 +202,32 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Join the architectures under ${{ matrix.tag }}
+      - name: Log in to Docker Hub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Join architectures
         env:
-          TAG: ${{ matrix.tag }}
+          NAME: ${{ matrix.name }}
+          HASH: ${{ needs.hash.outputs.hash }}
           SOURCE: https://github.com/${{ github.repository }}
         run: |
           set -euo pipefail
-          docker buildx imagetools create \
-            --annotation "index:org.opencontainers.image.source=${SOURCE}" \
-            -t "${GHCR_IMAGE}:${TAG}" \
-            "${GHCR_IMAGE}:${TAG}-amd64" "${GHCR_IMAGE}:${TAG}-arm64"
-          docker buildx imagetools inspect "${GHCR_IMAGE}:${TAG}"
+          for registry in "$GHCR_IMAGE" "$HUB_IMAGE"; do
+            docker buildx imagetools create \
+              --annotation "index:org.opencontainers.image.source=${SOURCE}" \
+              -t "${registry}:${NAME}-${HASH}" \
+              "${registry}:${NAME}-${HASH}-amd64" \
+              "${registry}:${NAME}-${HASH}-arm64"
+          done
+          # Floating tags move only from main. A release build of a tag keeps
+          # the hash tags and leaves python-deps/runtime/models-bge alone.
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            for registry in "$GHCR_IMAGE" "$HUB_IMAGE"; do
+              docker buildx imagetools create \
+                -t "${registry}:${NAME}" \
+                "${registry}:${NAME}-${HASH}"
+            done
+          fi

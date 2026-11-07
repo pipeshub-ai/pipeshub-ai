@@ -5,6 +5,9 @@
   "author": "PipesHub",
   "homepage": "https://github.com/pipeshub-ai/pipeshub-ai",
   "private": true,
+  "engines": {
+    "node": ">=22"
+  },
   "main": "electron/compile/main.js",
   "scripts": {
     "dev": "next dev --turbopack",
