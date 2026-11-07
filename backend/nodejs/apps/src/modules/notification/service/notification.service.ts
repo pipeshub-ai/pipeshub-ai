@@ -3,6 +3,7 @@ import { DefaultEventsMap, Server, Socket } from 'socket.io';
 import { Logger } from '../../../libs/services/logger.service';
 import { inject, injectable } from 'inversify';
 import { BadRequestError } from '../../../libs/errors/http.errors';
+import { classifyError } from '../../../libs/utils/error-class';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { TYPES } from '../../../libs/types/container.types';
 import { findSessionRefusal } from '../../../libs/utils/user-session.utils';
@@ -101,6 +102,11 @@ export class NotificationService {
 
         next();
       } catch (error) {
+        // The socket is refused here, so this is the one place it is logged.
+        this.logger.warn('socket.auth.rejected', {
+          error_class: classifyError(error),
+          error,
+        });
         next(
           error instanceof Error
             ? error
