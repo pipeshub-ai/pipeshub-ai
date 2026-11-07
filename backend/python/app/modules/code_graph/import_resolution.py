@@ -14,8 +14,12 @@ import sys
 from collections import Counter
 from typing import TYPE_CHECKING
 
+from app.modules.code_graph.resolvers import RESOLVERS
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+    from app.modules.code_graph.symbol_index import SymbolIndex
 
 __all__ = ["ImportResolution", "resolve_import_specifier"]
 
@@ -47,10 +51,16 @@ _MAX_BARREL_HOPS = 8
 
 
 class ImportResolution:
-    """Resolves specifiers against the set of file paths present in the repo."""
+    """Resolves specifiers against the set of file paths present in the repo.
 
-    def __init__(self, file_paths: set[str]) -> None:
+    *index*, when given, is the build's symbol index: a family resolver in
+    ``resolvers`` may read it (a PHP `use A\\B\\C` names a class, found by the
+    qualified names of the blocks, not by a path). The built-in branches never do.
+    """
+
+    def __init__(self, file_paths: set[str], index: SymbolIndex | None = None) -> None:
         self._files = file_paths
+        self._index = index
         # Every trailing run of a Python module's path segments -> its files, so
         # an absolute import looks itself up instead of scanning all files with
         # the same basename (every `__init__.py`, per unresolved dotted import,
@@ -283,9 +293,9 @@ class ImportResolution:
                 return self._resolve_jvm(specifier, from_file)
             if family == "go":
                 return self._resolve_go(specifier)
-            # No resolver for this language's imports yet; JS rules would only
-            # misread its specifiers.
-            return None
+            # Without a resolver for the family, JS rules would only misread its specifiers.
+            resolver = RESOLVERS.get(family)
+            return resolver(specifier, from_file, self._files, self._index) if resolver else None
         except (ValueError, IndexError):
             return None
 
