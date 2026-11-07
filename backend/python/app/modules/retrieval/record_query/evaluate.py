@@ -185,11 +185,22 @@ def evaluate(cond: Condition, row: Row, *, recall: bool = False) -> Verdict:
     return Verdict(not decisive)
 
 
+# Set on a recall row: the exact ``RECORD_TYPE:EDGE_TYPE`` pairs its connector's
+# records carry (``role_carriers.py``), absent when not known.
+ROLE_CARRIERS = "roleCarriers"
+
+
 def _person(row: Row, edges: set[str], ids: set[str], *, recall: bool) -> Verdict:
     in_role = [p for p in row.get("people") or [] if p["role"] in edges]
     if any(p["id"] in ids for p in in_role):
         return Verdict(True)
-    return Verdict(None, frozenset({"person"})) if recall and not in_role else Verdict(False)
+    if not recall or in_role:
+        return Verdict(False)
+    carried = row.get(ROLE_CARRIERS)
+    if carried is not None and not any(f"{row.get('recordType')}:{edge}" in carried for edge in edges):
+        # No record of this type from this connector ever has the role: a missed edge is impossible.
+        return Verdict(False)
+    return Verdict(None, frozenset({"person"}))
 
 
 def evaluate_all(conditions: list[Condition], row: Row, *, recall: bool = False) -> Verdict:

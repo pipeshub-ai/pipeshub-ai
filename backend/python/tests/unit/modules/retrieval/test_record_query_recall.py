@@ -187,3 +187,75 @@ async def test_the_search_runs_beside_the_engine_with_the_query_terms_and_window
     task = recall.start_search(query, {}, search)
     assert await task == ["r1"]
     assert seen == [("open", {"source_updated_after_ms": 1_772_323_200_000})]
+
+
+class _CarrierGraph(_Graph):
+    def __init__(self, rows: list[dict[str, Any]], carriers: dict[str, frozenset[str] | None]) -> None:
+        super().__init__(rows)
+        self.carriers = carriers
+        self.backfilled: list[str] = []
+
+    async def get_role_carriers(self, org_id: str, app_ids: list[str]) -> dict[str, frozenset[str] | None]:
+        return {a: self.carriers[a] for a in app_ids if a in self.carriers}
+
+    async def backfill_role_carriers(self, org_id: str, app_id: str) -> None:
+        self.backfilled.append(app_id)
+
+
+def _mail(key: str) -> dict[str, Any]:
+    return {**_row(key, status=None), "recordType": "MAIL", "connectorName": "GMAIL", "connectorId": "gm"}
+
+
+class TestARoleTheRecordTypeNeverCarries:
+    """A hit of a type whose connector never gives that type the role cannot
+    have lost the edge, so it is a miss, not a possible match for the judge."""
+
+    def _query(self) -> RecordQuery:
+        return _query([{"person": {"role": "assignee", "name": "Ravi"}}])
+
+    async def test_a_mail_is_a_miss_and_an_unassigned_ticket_stays_possible(self, readable: set[str]) -> None:
+        rows = [_row("ticket"), _mail("mail")]
+        readable.update({"ticket", "mail"})
+        graph = _CarrierGraph(rows, {"zd": frozenset({"TICKET:ASSIGNED_TO"}), "gm": frozenset({"MAIL:AUTHORED_BY"})})
+        result = _result(self._query(), set())
+        result.connector_ids = ["zd", "gm"]
+        check = await recall.reconcile(graph, CONTEXT, result, ["ticket", "mail"])
+        assert [r["_key"] for r in check.possible] == ["ticket"]
+
+    async def test_until_a_connector_is_backfilled_its_hits_stay_possible_and_the_backfill_starts(
+        self, readable: set[str],
+    ) -> None:
+        rows = [_mail("mail")]
+        readable.add("mail")
+        graph = _CarrierGraph(rows, {"gm": None})
+        result = _result(self._query(), set())
+        result.connector_ids = ["gm"]
+        check = await recall.reconcile(graph, CONTEXT, result, ["mail"])
+        await asyncio.sleep(0)
+        assert [r["_key"] for r in check.possible] == ["mail"]
+        assert graph.backfilled == ["gm"]
+
+    async def test_a_failed_carrier_read_decides_nothing(self, readable: set[str]) -> None:
+        class _Down(_CarrierGraph):
+            async def get_role_carriers(self, org_id: str, app_ids: list[str]) -> dict:
+                raise RuntimeError("down")
+
+        readable.add("mail")
+        graph = _Down([_mail("mail")], {})
+        result = _result(self._query(), set())
+        result.connector_ids = ["gm"]
+        check = await recall.reconcile(graph, CONTEXT, result, ["mail"])
+        assert [r["_key"] for r in check.possible] == ["mail"]
+
+    async def test_a_query_without_people_reads_no_carriers(self, readable: set[str]) -> None:
+        class _Counting(_CarrierGraph):
+            reads = 0
+
+            async def get_role_carriers(self, org_id: str, app_ids: list[str]) -> dict:
+                type(self).reads += 1
+                return {}
+
+        readable.add("t")
+        graph = _Counting([_row("t", status=None)], {})
+        await recall.reconcile(graph, CONTEXT, _result(_query([{"field": "status", "in": ["OPEN"]}]), set()), ["t"])
+        assert _Counting.reads == 0

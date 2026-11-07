@@ -253,3 +253,29 @@ def test_grouping_by_organisation_never_drops_a_record_it_cannot_place() -> None
     # One organisation a record at most, so every record is in exactly one line.
     assert sum(g.count for g in real + others) == len(rows)
     assert unassigned(q(group_by={"field": "status"}), rows) == []
+
+
+class TestRoleCarriers:
+    from app.modules.retrieval.record_query.evaluate import ROLE_CARRIERS
+
+    def _row(self, record_type: str, carriers: frozenset[str] | None) -> dict:
+        row = {"recordType": record_type, "people": []}
+        if carriers is not None:
+            row[self.ROLE_CARRIERS] = carriers
+        return row
+
+    def _verdict(self, row: dict):  # noqa: ANN202
+        from app.modules.retrieval.record_query.evaluate import evaluate_all
+        from app.modules.retrieval.record_query.model import RecordQuery
+
+        query = RecordQuery.model_validate({"where": [{"person": {"role": "assignee", "ids": ["p1"]}}]})
+        return evaluate_all(query.where, row, recall=True).value
+
+    def test_a_type_that_never_carries_the_role_is_a_miss(self) -> None:
+        assert self._verdict(self._row("MAIL", frozenset({"TICKET:ASSIGNED_TO"}))) is False
+
+    def test_a_type_that_carries_it_is_unknown(self) -> None:
+        assert self._verdict(self._row("TICKET", frozenset({"TICKET:ASSIGNED_TO"}))) is None
+
+    def test_without_carriers_it_is_unknown(self) -> None:
+        assert self._verdict(self._row("MAIL", None)) is None

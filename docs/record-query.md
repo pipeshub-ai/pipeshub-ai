@@ -283,6 +283,18 @@ It is a bounded hybrid search beside the engine
   outside the window or container) drops it; what the graph cannot tell (no
   person or organisation edge, no field, not classified, no extracted
   mention) makes it a possible match.
+- **Role carriers**: a missing person edge is unknown only for a record type
+  that ever carries the role. Each connector node holds the
+  `RECORD_TYPE:EDGE_TYPE` pairs its records carry (`roleCarriers`), noted by
+  `batch_create_entity_relations` in the edges' own transaction and only
+  when a pair is new, so an ordinary batch never writes the connector node.
+  A one-off backfill adds the existing edges and sets
+  `roleCarriersComplete`; it starts the first time the recall check meets
+  the connector (`role_carriers.py`). Until then, and when the read fails or
+  the backend has none (PostgreSQL), every hit stays possible. Once
+  complete, a mail found for "assigned to Mira" is a miss, not a candidate
+  for the judge: live, all 20 possible matches the judge marked unclear for
+  that question were mail, files, pages or deals.
 - **Render**: the exact total as before, then "Possible matches the graph
   could not confirm: M" with up to 10 listed and cited like rows, and the
   rule that they are never added to an exact total. A failed or late search

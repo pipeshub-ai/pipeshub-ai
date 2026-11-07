@@ -953,3 +953,58 @@ async def test_the_seed_of_records_not_classified_yet_reads_the_org_status_index
         assert ["orgId", "extractionStatus"] in fields, fields
     keys, _ = await _scan(g, pushed)
     assert [k.id for k in keys] == [r["_key"] for r in _reference(g, pushed)]
+
+
+# ---------------------------------------------------------------- role carriers
+
+
+def _carried(g: Graph) -> dict[str, frozenset[str]]:
+    """Each connector's ``RECORD_TYPE:EDGE_TYPE`` pairs from the seeded person edges."""
+    out: dict[str, set[str]] = {key: set() for key in g.connectors.values()}
+    for record, _person, edge_type in [*RECORD_PEOPLE, *PEOPLE_TO_RECORD]:
+        spec = SPECS[record]
+        if spec.other_org:
+            continue
+        record_type = {"ticket": "TICKET", "deal": "DEAL", "file": "FILE"}[spec.kind]
+        out[g.connectors[spec.connector]].add(f"{record_type}:{edge_type}")
+    return {k: frozenset(v) for k, v in out.items()}
+
+
+async def test_role_carriers_are_unknown_until_backfilled_then_exact(seeded: Graph) -> None:
+    g = seeded
+    apps = g.connector_ids
+    assert await g.graph.get_role_carriers(g.org, apps) == dict.fromkeys(apps)
+    for app in apps:
+        await g.graph.backfill_role_carriers(g.org, app)
+    stored = await g.graph.get_role_carriers(g.org, apps)
+    expected = _carried(g)
+    # The writes note other-org records too; the backfill counts this org's only. Both only add.
+    assert all(expected[a] <= stored[a] for a in apps), (stored, expected)
+    assert "TICKET:ASSIGNED_TO" in stored[g.connectors[ZENDESK]]
+    assert not any(p.startswith("TICKET:") for p in stored[g.connectors[SALESFORCE]])
+
+
+async def test_a_new_pair_written_in_a_transaction_is_noted_with_it(seeded: Graph) -> None:
+    g = seeded
+    app = g.connectors[SALESFORCE]
+    await g.graph.backfill_role_carriers(g.org, app)
+    before = (await g.graph.get_role_carriers(g.org, [app]))[app]
+    assert "DEAL:REVIEWED_BY" not in before
+
+    async def write(name: str, *, commit: bool) -> None:
+        txn = await g.graph.begin_transaction(
+            read=[c.value for c in C], write=[c.value for c in C], explicit=True,
+        )
+        spec = Spec("deal", SALESFORCE, None, 5_000, 5_000, deal={"amount": 1, "closeDate": None,
+                                                                   "isWon": False, "isClosed": False})
+        await g.graph.batch_upsert_records([_record(g, name, spec)], transaction=txn)
+        await g.graph.batch_create_entity_relations([
+            {"_from": f"{C.RECORDS.value}/{g.rid(name)}", "_to": f"{C.USERS.value}/{g.nid('ann')}",
+             "edgeType": "REVIEWED_BY", "createdAtTimestamp": 1},
+        ], transaction=txn)
+        await (g.graph.commit_transaction(txn) if commit else g.graph.rollback_transaction(txn))
+
+    await write("d-rolled-back", commit=False)
+    assert (await g.graph.get_role_carriers(g.org, [app]))[app] == before
+    await write("d-new", commit=True)
+    assert (await g.graph.get_role_carriers(g.org, [app]))[app] == before | {"DEAL:REVIEWED_BY"}

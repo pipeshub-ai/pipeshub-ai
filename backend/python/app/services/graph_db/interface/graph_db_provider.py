@@ -8726,6 +8726,26 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_role_carriers(self, org_id: str, app_ids: list[str]) -> dict[str, frozenset[str] | None]:
+        """Which record types of each connector in ``app_ids`` carry which
+        person role, as ``"RECORD_TYPE:EDGE_TYPE"`` strings.
+
+        The set is exact once ``backfill_role_carriers`` has run for the
+        connector: ``batch_create_entity_relations`` adds a pair the first
+        time an edge of that type reaches a record of that type, and nothing
+        removes one. Before that the value is None (not known); a connector
+        with no node is left out.
+        """
+        pass
+
+    @abstractmethod
+    async def backfill_role_carriers(self, org_id: str, app_id: str) -> None:
+        """Add every pair the connector's existing person edges carry to its
+        role carriers, then mark the set exact. Safe beside concurrent
+        writes: both only add."""
+        pass
+
+    @abstractmethod
     async def get_taxonomy_entity_membership(
         self,
         refs: list[dict[str, Any]],

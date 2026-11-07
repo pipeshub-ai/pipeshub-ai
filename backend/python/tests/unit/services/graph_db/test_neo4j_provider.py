@@ -1541,7 +1541,14 @@ class TestAdvancedEdgeOperations:
         )
 
         assert result is True
-        assert neo4j_provider.client.execute_query.await_count == 2
+        # One statement per (labels, edgeType) group, then the role carriers of both records.
+        assert neo4j_provider.client.execute_query.await_count == 3
+        note = neo4j_provider.client.execute_query.await_args_list[-1]
+        assert note.args[0] == neo4j_provider._NOTE_ROLE_CARRIERS
+        assert note.kwargs["parameters"]["probes"] == [
+            {"rid": "r1", "edge": "ASSIGNED_TO"}, {"rid": "r2", "edge": "CREATED_BY"},
+        ]
+        assert note.kwargs["txn_id"] == "txn-er"
 
     @pytest.mark.asyncio
     async def test_batch_create_entity_relations_skips_invalid_edges(

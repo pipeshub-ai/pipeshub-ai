@@ -210,6 +210,8 @@ from app.services.graph_db.common.team_grant_role import (
     aql_team_grant_role,
 )
 from app.services.graph_db.common.utils import (
+    PERSON_ROLE_EDGE_TYPES,
+    role_carrier_probes,
     CANONICAL_PARENT_RELATION_TYPES,
     CONTAINER_INHERIT_MAX_DEPTH,
     CONTAINMENT_MAX_DEPTH,
@@ -4108,6 +4110,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars,
                 txn_id=transaction
             )
+
+            probes = role_carrier_probes(arango_edges)
+            if probes:
+                # In the edges' transaction, so a record it created is visible and a rollback takes the note too.
+                await self.http_client.execute_aql(self._NOTE_ROLE_CARRIERS, {"probes": probes}, txn_id=transaction)
 
             self.logger.debug(
                 f"✅ Successfully created {len(results)} entity relation edges."
@@ -22514,6 +22521,55 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         keys = [CandidateKey(str(r["id"]), int(r.get("sort_ts") or 0)) for r in rows or [] if r]
         return RecordCandidates(keys, capped=len(keys) >= cap)
+
+    # A connector document is written only when a pair is new: one write per
+    # connector on every edge batch would make its sync transactions conflict.
+    _NOTE_ROLE_CARRIERS = """
+    FOR p IN @probes
+        LET r = DOCUMENT(CONCAT("records/", p.rid))
+        FILTER r != null AND r.connectorId != null AND r.recordType != null
+        COLLECT app_id = r.connectorId INTO carriers = CONCAT(r.recordType, ":", p.edge)
+        LET a = DOCUMENT(CONCAT("apps/", app_id))
+        FILTER a != null
+        LET added = MINUS(UNIQUE(carriers), a.roleCarriers || [])
+        FILTER LENGTH(added) > 0
+        UPDATE a WITH {roleCarriers: APPEND(a.roleCarriers || [], added, true)} IN apps
+    """
+
+    async def get_role_carriers(self, org_id: str, app_ids: list[str]) -> dict[str, frozenset[str] | None]:
+        if not app_ids:
+            return {}
+        rows = await self.http_client.execute_aql(
+            """
+            FOR a IN @@apps FILTER a._key IN @app_ids
+                RETURN {id: a._key, complete: a.roleCarriersComplete == true, carriers: a.roleCarriers || []}
+            """,
+            {"@apps": CollectionNames.APPS.value, "app_ids": list(app_ids)},
+        )
+        return {r["id"]: frozenset(r["carriers"]) if r["complete"] else None for r in rows or []}
+
+    async def backfill_role_carriers(self, org_id: str, app_id: str) -> None:
+        await self.http_client.execute_aql(
+            """
+            LET carriers = UNIQUE(
+                FOR r IN @@records FILTER r.orgId == @org_id AND r.connectorId == @app_id
+                    FOR v, e IN ANY r @@relations
+                        FILTER e.edgeType IN @edges
+                            AND (IS_SAME_COLLECTION(@users, v) OR IS_SAME_COLLECTION(@people, v))
+                        RETURN CONCAT(r.recordType, ":", e.edgeType)
+            )
+            LET a = DOCUMENT(@@apps, @app_id)
+            FILTER a != null
+            UPDATE a WITH {roleCarriers: UNION_DISTINCT(a.roleCarriers || [], carriers), roleCarriersComplete: true}
+                IN @@apps
+            """,
+            {
+                "@records": CollectionNames.RECORDS.value, "@relations": CollectionNames.ENTITY_RELATIONS.value,
+                "@apps": CollectionNames.APPS.value, "users": CollectionNames.USERS.value,
+                "people": CollectionNames.PEOPLE.value, "org_id": org_id, "app_id": app_id,
+                "edges": sorted(PERSON_ROLE_EDGE_TYPES),
+            },
+        )
 
     async def get_record_query_rows(
         self,

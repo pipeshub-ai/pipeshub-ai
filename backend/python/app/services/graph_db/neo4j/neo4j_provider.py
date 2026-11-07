@@ -171,6 +171,7 @@ from app.services.graph_db.common.utils import (
     ENTITY_CANDIDATE_SCAN_CAP,
     PATH_MAX_CANDIDATES,
     PERSON_ENTITY_TYPE,
+    PERSON_ROLE_EDGE_TYPES,
     TRASH_LIST_OTHER_ROOT_NAMES,
     TRASH_STATE_FIELDS,
     TRASHED_EXTERNAL_ID_PREFIX,
@@ -185,6 +186,7 @@ from app.services.graph_db.common.utils import (
     person_query_ref,
     record_taxonomy_refs,
     restore_items,
+    role_carrier_probes,
     select_canonical_chain_names,
     soft_delete_request_result,
     soft_delete_result,
@@ -2932,6 +2934,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # Process edges - handle ArangoDB format (_from, _to) or generic format
             edge_data = []
+            written: list[dict[str, str]] = []
             for edge in edges:
                 # Check for ArangoDB format first (_from, _to)
                 if "_from" in edge and "_to" in edge:
@@ -2973,6 +2976,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "edge_type": edge_type,
                     "props": props
                 })
+                written.append({"from_collection": from_collection, "from_id": from_id, "to_collection": to_collection,
+                                "to_id": to_id, "edgeType": edge_type})
 
             if not edge_data:
                 return True
@@ -2999,6 +3004,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     query,
                     parameters={"edges": group_edges},
                     txn_id=transaction
+                )
+
+            probes = role_carrier_probes(written)
+            if probes:
+                # In the edges' transaction, so a record it created is visible and a rollback takes the note too.
+                await self.client.execute_query(
+                    self._NOTE_ROLE_CARRIERS, parameters={"probes": probes}, txn_id=transaction,
                 )
 
             self.logger.debug(
@@ -23359,6 +23371,47 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         capped=bool(row.get("capped")),
                     )
         return results
+
+    # A connector node is written only when a pair is new: one lock per connector
+    # taken on every edge batch would queue all of its sync transactions.
+    _NOTE_ROLE_CARRIERS = """
+    UNWIND $probes AS p
+    MATCH (r:Record {id: p.rid})
+    WITH r.connectorId AS app_id, r.recordType + ':' + p.edge AS carrier
+    WHERE app_id IS NOT NULL AND carrier IS NOT NULL
+    WITH app_id, collect(DISTINCT carrier) AS carriers
+    MATCH (a:App {id: app_id})
+    WITH a, [c IN carriers WHERE NOT c IN coalesce(a.roleCarriers, [])] AS added
+    WHERE size(added) > 0
+    SET a.roleCarriers = coalesce(a.roleCarriers, []) + added
+    """
+
+    async def get_role_carriers(self, org_id: str, app_ids: list[str]) -> dict[str, frozenset[str] | None]:
+        if not app_ids:
+            return {}
+        rows = await self.client.execute_query(
+            """
+            MATCH (a:App) WHERE a.id IN $app_ids
+            RETURN a.id AS id, a.roleCarriersComplete = true AS complete, coalesce(a.roleCarriers, []) AS carriers
+            """,
+            parameters={"app_ids": list(app_ids)},
+        )
+        return {r["id"]: frozenset(r["carriers"]) if r["complete"] else None for r in rows or []}
+
+    async def backfill_role_carriers(self, org_id: str, app_id: str) -> None:
+        await self.client.execute_query(
+            """
+            CALL {
+              MATCH (r:Record {orgId: $org_id, connectorId: $app_id})-[e:ENTITYRELATIONS]-(:User|Person)
+              WHERE e.edgeType IN $edges
+              RETURN collect(DISTINCT r.recordType + ':' + e.edgeType) AS carriers
+            }
+            MATCH (a:App {id: $app_id})
+            SET a.roleCarriers = coalesce(a.roleCarriers, []) + [c IN carriers WHERE NOT c IN coalesce(a.roleCarriers, [])],
+                a.roleCarriersComplete = true
+            """,
+            parameters={"org_id": org_id, "app_id": app_id, "edges": sorted(PERSON_ROLE_EDGE_TYPES)},
+        )
 
     _RECORD_QUERY_ROW = """_key: rec.id, recordName: rec.recordName, recordType: rec.recordType,
                   connectorName: rec.connectorName, connectorId: rec.connectorId,

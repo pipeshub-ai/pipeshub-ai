@@ -25,7 +25,11 @@ from app.core.org_context import spawn_in_request
 from app.modules.retrieval.entity_permissions import admitted_node_ids
 from app.modules.retrieval.record_fields import FieldKind
 from app.modules.retrieval.record_fields import field as field_spec
-from app.modules.retrieval.record_query.evaluate import EDGE_ENTITY_TYPES, evaluate_all
+from app.modules.retrieval.record_query.evaluate import (
+    EDGE_ENTITY_TYPES,
+    ROLE_CARRIERS,
+    evaluate_all,
+)
 from app.modules.retrieval.record_query.model import (
     EntityCondition,
     FieldCondition,
@@ -35,6 +39,7 @@ from app.modules.retrieval.record_query.model import (
     walk_conditions,
 )
 from app.modules.retrieval.record_query.pushdown import pushdown
+from app.modules.retrieval.record_query.role_carriers import known_role_carriers
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
@@ -133,6 +138,11 @@ def start_search(query: RecordQuery, names: Mapping[str, str], search: Search, *
     return spawn_in_request(asyncio.wait_for(search(" ".join(terms), search_time_range(query)), deadline_seconds))
 
 
+def _asks_for_people(query: RecordQuery) -> bool:
+    return any(isinstance(c, PersonCondition) or (isinstance(c, EntityCondition) and c.entity.type in EDGE_ENTITY_TYPES)
+               for c in walk_conditions(query.where))
+
+
 def _recall_pushdown(resolved: RecordQuery, hit_ids: list[str]) -> Pushdown:
     """The query's structural conditions, narrowed to ``hit_ids``: what the
     graph knows for certain about a hit (source, type, container, window,
@@ -171,11 +181,15 @@ async def reconcile(
         context.org_id, record_ids=ids, pushdown=pushed, timeout_seconds=timeout,
     ) if ids else []
     sort_ts = {k.id: k.sort_ts for k in found.keys}
+    carriers = await known_role_carriers(
+        graph, context.org_id, {str(r.get("connectorId") or "") for r in rows},
+    ) if rows and _asks_for_people(resolved) else {}
     kinds: Counter[str] = Counter()
     for row in rows:
         if row.get("virtualRecordId") and str(row["virtualRecordId"]) in result.matched_virtual_ids:
             continue  # another copy of a record already counted
-        verdict = evaluate_all(resolved.where, row, recall=True)
+        pairs = carriers.get(str(row.get("connectorId") or ""))
+        verdict = evaluate_all(resolved.where, {**row, ROLE_CARRIERS: pairs} if pairs is not None else row, recall=True)
         if verdict.value is False:
             continue
         check.possible.append({**row, "sortTs": sort_ts.get(str(row.get("_key")), 0)})

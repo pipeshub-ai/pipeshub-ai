@@ -257,6 +257,32 @@ PERSON_ENTITY_TYPE = "person"
 PERSON_EDGES_TO_USER: tuple[str, ...] = PERSON_EDGES_TO_PERSON
 PERSON_EDGES_FROM_USER: tuple[str, ...] = PERSON_EDGES_FROM_PERSON
 _PERSON_EDGES: tuple[str, ...] = (*PERSON_EDGES_TO_USER, *PERSON_EDGES_FROM_USER)
+PERSON_ROLE_EDGE_TYPES: frozenset[str] = frozenset(_PERSON_EDGES)
+
+
+def role_carrier_probes(edges: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
+    """``{rid, edge}`` for each person-role edge in ``edges`` (a record and a
+    user or person, either shape, either direction): what
+    ``batch_create_entity_relations`` notes in the record's connector as a
+    role its record type carries."""
+    records = CollectionNames.RECORDS.value
+    people = (CollectionNames.USERS.value, CollectionNames.PEOPLE.value)
+    seen: dict[tuple[str, str], dict[str, str]] = {}
+    for edge in edges:
+        edge_type = edge.get("edgeType")
+        if edge_type not in PERSON_ROLE_EDGE_TYPES:
+            continue
+        if "_from" in edge and "_to" in edge:
+            from_coll, _, from_id = str(edge["_from"]).partition("/")
+            to_coll, _, to_id = str(edge["_to"]).partition("/")
+        else:
+            from_coll, from_id = edge.get("from_collection"), edge.get("from_id")
+            to_coll, to_id = edge.get("to_collection"), edge.get("to_id")
+        record_id = (from_id if from_coll == records and to_coll in people
+                     else to_id if to_coll == records and from_coll in people else None)
+        if record_id:
+            seen.setdefault((record_id, edge_type), {"rid": record_id, "edge": edge_type})
+    return list(seen.values())
 
 
 def person_query_ref(ref: dict[str, Any]) -> dict[str, list[str]]:

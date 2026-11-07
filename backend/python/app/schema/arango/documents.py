@@ -210,6 +210,10 @@ app_schema = {
             # Set when sync is turned on; see toggle_connector_instance.
             "enabledAtTimestamp": {"type": ["number", "null"]},
             "vectorMembershipBackfilled": {"type": "boolean", "default": False},
+            # app.modules.retrieval.record_query.role_carriers: "RECORD_TYPE:EDGE_TYPE" pairs the
+            # connector's records carry, exact once the backfill has set roleCarriersComplete.
+            "roleCarriers": {"type": ["array", "null"], "items": {"type": "string"}},
+            "roleCarriersComplete": {"type": ["boolean", "null"]},
             "vectorMembershipBackfillAfterKey": {"type": ["string", "null"]},
             "vectorMembershipBackfillFailures": {"type": ["integer", "null"]},
             "vectorMembershipBackfillAttempts": {"type": ["integer", "null"]},

@@ -314,6 +314,8 @@ class TestAbstractMethodInventory:
         "get_person_nodes",
         "get_record_query_candidates",
         "get_record_query_rows",
+        "get_role_carriers",
+        "backfill_role_carriers",
         "get_record_people",
         "get_record_organizations",
         "get_record_group_organization",
