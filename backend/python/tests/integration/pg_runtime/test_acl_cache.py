@@ -21,7 +21,6 @@ def _env(runtime, **extra: str) -> dict[str, str]:
         "PG_POOLER": "none",
         "PG_RUNTIME_SERVICE": "connectors",
         "REDIS_MODE": "",
-        "LOG_LEVEL": "ERROR",  # logs share stdout with the JSON lines these tests read
         **extra,
     }
 
