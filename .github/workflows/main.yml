@@ -170,6 +170,18 @@ jobs:
             echo "No Python files changed, skipping ruff."
           fi
 
+      # The log level already says what an emoji in a log line would (docs/logging.md).
+      # Fails only on emoji log calls this pull request adds to backend/python/app.
+      - name: Fail on new emoji in Python log calls
+        run: |
+          MERGE_BASE=$(git merge-base origin/main HEAD)
+          mapfile -d '' -t CHANGED_FILES < <(git diff --diff-filter=d --name-only -z "$MERGE_BASE" -- ':(glob)backend/python/app/**/*.py' || true)
+          if ((${#CHANGED_FILES[@]})); then
+            python3 .github/scripts/new_lint_findings.py log-emoji "$MERGE_BASE" "${CHANGED_FILES[@]}"
+          else
+            echo "No app Python files changed, skipping the emoji check."
+          fi
+
       # A class or function defined twice in one test module replaces the
       # first, and pytest never runs it. This fails on any F811 in a changed
       # test file, including one already on main.
