@@ -4074,7 +4074,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         bind_vars = {"edges": edges, "@collection": CollectionNames.ENTITY_RELATIONS.value}
 
         async def write() -> list:
-            return await self.http_client.execute_aql(query, bind_vars, txn_id=txn)
+            return await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=txn)
 
         try:
             return await self._retry_write_conflicts(write, txn)
