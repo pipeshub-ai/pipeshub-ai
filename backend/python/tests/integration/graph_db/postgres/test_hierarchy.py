@@ -42,7 +42,7 @@ async def tree(p: OrgBound) -> None:
 
 NAMES = [n for n, f in vars(HierarchyMixin).items() if not n.startswith("__") and callable(f) and n != "_rows"]
 CALLS = {
-    "create_edges_if_absent": ([link("a", "b")], "nodeRelations"), "copy_document_relationships": ("a", "b"), "delete_edges_between_collections": ("a", "records", "nodeRelations", "records"),
+    "create_edges_if_absent": ([link("a", "b")], "nodeRelations"), "copy_document_relationships": ("a", "b"), "replace_record_entity_relations": ("a", ["users", "person"], "INFERRED", []), "delete_edges_between_collections": ("a", "records", "nodeRelations", "records"),
     "delete_edges_by_relationship_types": ("a", "records", "nodeRelations", ["BOOKMARK"]), "delete_parent_child_edge_to_record": ("a",),
     "get_record_group_by_external_id": ("c1", "g"), "batch_upsert_record_groups": ([],), "create_record_group_relation": ("a", "g"), "create_record_groups_relation": ("g", "h"),
     "get_record_group_by_id": ("g",), "_ancestor_chains": ("a", None), "get_record_path": ("a",), "get_record_path_segments": ("a",),
