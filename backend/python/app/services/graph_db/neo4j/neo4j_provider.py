@@ -23673,6 +23673,48 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return int((rows or [{}])[0].get("deleted") or 0)
 
+    async def replace_record_entity_relations(
+        self,
+        record_id: str,
+        to_collections: list[str],
+        origin: str,
+        edges: list[dict],
+        transaction: str | None = None,
+    ) -> None:
+        """See :meth:`IGraphDBProvider.replace_record_entity_relations`."""
+        if not record_id or not to_collections or not origin:
+            raise ValueError("replacing a record's entity relations needs a record, collections and an origin")
+        # Before any statement, like the creates: a bad edge must fail with the old links in place.
+        self._validate_edges(CollectionNames.ENTITY_RELATIONS.value, edges)
+        rel = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
+        parameters: dict[str, Any] = {
+            "record_id": record_id, "origin": origin, "inferred": EntityOrigin.INFERRED.value,
+            "labels": [collection_to_label(c) for c in to_collections],
+        }
+        creates = []
+        for i, ((from_label, to_label), rows) in enumerate(self._edges_by_labels(edges).items()):
+            parameters[f"edges_{i}"] = rows
+            creates.append(f"""
+            CALL {{
+                UNWIND $edges_{i} AS edge
+                MATCH (from:{from_label} {{id: edge.from_key}})
+                MATCH (to:{to_label} {{id: edge.to_key}})
+                MERGE (from)-[r:{rel} {{edgeType: edge.props.edgeType}}]->(to)
+                SET r = edge.props
+            }}""")
+        # One statement: a failure in the creates rolls the delete back, whatever NEO4J_EXPLICIT_TRANSACTIONS says.
+        await self.client.execute_query(
+            f"""
+            OPTIONAL MATCH (:Record {{id: $record_id}})-[old:{rel}]->(target)
+            WHERE any(l IN labels(target) WHERE l IN $labels) AND coalesce(old.origin, $inferred) = $origin
+            DELETE old
+            WITH count(*) AS _
+            {"".join(creates)}
+            RETURN count(*) AS done""",
+            parameters=parameters,
+            txn_id=transaction,
+        )
+
     async def get_organization_record_reach(
         self,
         org_id: str,

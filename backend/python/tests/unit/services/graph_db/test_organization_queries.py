@@ -94,6 +94,53 @@ class TestDeleteByOrigin:
             await make().delete_record_entity_relations("r", "organizations", "")
 
 
+class TestReplaceByOrigin:
+    EDGE = {
+        "_from": "records/r", "_to": "users/u", "edgeType": "ASSIGNED_TO", "origin": "INFERRED",
+        "source": "c", "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+    }
+
+    async def test_neo4j_deletes_and_writes_in_one_statement(self) -> None:
+        p = _neo4j()
+        await p.replace_record_entity_relations("r", ["users", "person"], "INFERRED", [self.EDGE])
+        (call,) = p.client.execute_query.await_args_list
+        query = call.args[0]
+        assert "DELETE old" in query and "MERGE (from)-[r:ENTITYRELATIONS {edgeType: edge.props.edgeType}]->(to)" in query
+        assert "coalesce(old.origin, $inferred) = $origin" in query
+        assert call.kwargs["parameters"]["labels"] == ["User", "Person"]
+
+    async def test_neo4j_failed_write_issues_no_separate_delete(self) -> None:
+        p = _neo4j()
+        p.client.execute_query.side_effect = RuntimeError("boom")
+        with pytest.raises(RuntimeError, match="boom"):
+            await p.replace_record_entity_relations("r", ["users"], "INFERRED", [self.EDGE])
+        assert p.client.execute_query.await_count == 1
+
+    async def test_neo4j_invalid_edge_fails_before_any_statement(self) -> None:
+        p = _neo4j()
+        with pytest.raises(Exception):  # noqa: B017
+            await p.replace_record_entity_relations("r", ["users"], "INFERRED", [{**self.EDGE, "edgeType": "NOT_A_TYPE"}])
+        p.client.execute_query.assert_not_awaited()
+
+    async def test_neo4j_nothing_to_write_still_clears(self) -> None:
+        p = _neo4j()
+        await p.replace_record_entity_relations("r", ["organizations"], "INFERRED", [])
+        assert "DELETE old" in p.client.execute_query.await_args.args[0]
+
+    async def test_arango_deletes_then_creates_in_the_callers_transaction(self) -> None:
+        p = _arango()
+        await p.replace_record_entity_relations("r", ["users", "person"], "INFERRED", [self.EDGE], "txn-1")
+        calls = p.http_client.execute_aql.await_args_list
+        assert [c.kwargs["txn_id"] for c in calls] == ["txn-1"] * 3
+        assert [c.kwargs["bind_vars"].get("to") for c in calls[:2]] == ["users", "person"]
+        assert "UPSERT" in calls[2].args[0]
+
+    @pytest.mark.parametrize("make", [_neo4j, _arango], ids=["neo4j", "arango"])
+    async def test_an_origin_and_collections_are_required(self, make) -> None:
+        with pytest.raises(ValueError):
+            await make().replace_record_entity_relations("r", ["users"], "", [])
+
+
 class TestReach:
     async def test_arango_counts_live_records_and_connector_edges(self) -> None:
         p = _arango([{"key": "k", "records": 2, "inferred": False}])

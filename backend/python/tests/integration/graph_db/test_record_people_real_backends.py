@@ -626,3 +626,38 @@ async def _remove_users_of(provider: Neo4jProvider | ArangoHTTPProvider, org: st
         f"FOR u IN {CollectionNames.USERS.value} FILTER u.orgId == @org REMOVE u IN {CollectionNames.USERS.value}",
         {"org": org},
     )
+
+
+async def test_a_replace_whose_write_fails_keeps_the_old_links(backend) -> None:
+    """Neo4j without explicit transactions commits each statement, so the delete
+    and the write are one statement; ArangoDB rolls back the caller's transaction."""
+    from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+    provider, org = backend
+    await provider.ensure_schema()
+    mail_id = await _seed(provider, org)
+    case_id = f"{org}-case"
+    store = GraphDataStore(logger, provider)
+    await backfill(provider, store, org, apply=True, logger=logger, out=io.StringIO())
+    before = await _edges(provider, case_id)
+    assert before == [(f"{org}-bob", "ASSIGNED_TO")]
+
+    edge = {
+        "_from": f"records/{case_id}", "_to": f"users/{org}-ann", "edgeType": "ASSIGNED_TO", "origin": "INFERRED",
+        "source": f"{org}-conn", "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+    }
+    users = [CollectionNames.USERS.value, CollectionNames.PEOPLE.value]
+    if isinstance(provider, Neo4jProvider):
+        # A property Neo4j cannot store fails inside the statement, after its delete clause.
+        with pytest.raises(Exception):  # noqa: B017
+            await provider.replace_record_entity_relations(case_id, users, "INFERRED", [{**edge, "extra": {"a": 1}}])
+    else:
+        with pytest.raises(Exception):  # noqa: B017
+            async with store.transaction() as tx:
+                await tx.replace_record_entity_relations(case_id, users, "INFERRED", [{**edge, "edgeType": "NOT_A_TYPE"}])
+    assert await _edges(provider, case_id) == before
+
+    # The same call with a good edge replaces the set, and INFERRED links of other collections stay.
+    await provider.replace_record_entity_relations(case_id, users, "INFERRED", [edge])
+    assert await _edges(provider, case_id) == [(f"{org}-ann", "ASSIGNED_TO")]
+    assert await _edges(provider, mail_id) == [(f"{org}-ann", "AUTHORED_BY"), (f"{org}-bob", "ADDRESSED_TO")]

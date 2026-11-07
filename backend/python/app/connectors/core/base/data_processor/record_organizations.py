@@ -31,8 +31,9 @@ ACCOUNT_RECORD_TYPES = frozenset({RecordType.DEAL, RecordType.CASE, RecordType.T
 
 class OrganizationStore(Protocol):
     async def get_record_group_organization(self, record_group_id: str, org_id: str) -> str | None: ...
-    async def delete_record_entity_relations(self, record_id: str, to_collection: str, origin: str) -> int: ...
-    async def batch_create_entity_relations(self, edges: list[dict]) -> None: ...
+    async def replace_record_entity_relations(
+        self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
+    ) -> None: ...
 
 
 async def link_record_organization(
@@ -44,7 +45,7 @@ async def link_record_organization(
     """Replace ``record``'s account edge with the account its group belongs
     to now. Returns the number of edges written (0 or 1).
 
-    A failed lookup leaves the existing edge alone; a failed write is logged,
+    A failed lookup or write leaves the existing edge alone; a failed write is logged,
     not raised, since ``FOR_ACCOUNT`` is a new edge type an older pod's schema
     can reject during a rolling deploy (as in ``record_people``). Failures
     ``must_propagate`` names (a conflict the caller retries, a failure that
@@ -59,20 +60,8 @@ async def link_record_organization(
             raise
         logger.warning("Account lookup failed for record %s: %s", record.id, exc)
         return 0
-    try:
-        # Only INFERRED: extraction's links to organisations the record names
-        # are its own to replace.
-        await store.delete_record_entity_relations(
-            record.id, CollectionNames.ORGS.value, EntityOrigin.INFERRED.value,
-        )
-    except Exception as exc:  # the edge below replaces a stale one anyway
-        if propagate(exc) or is_programming_error(exc):
-            raise
-        logger.warning("Could not clear account edges of record %s: %s", record.id, exc)
-    if not organization_id:
-        return 0
     now = get_epoch_timestamp_in_ms()
-    edge = {
+    edges = [{
         "_from": f"{CollectionNames.RECORDS.value}/{record.id}",
         "_to": f"{CollectionNames.ORGS.value}/{organization_id}",
         "edgeType": EntityRelations.FOR_ACCOUNT.value,
@@ -80,12 +69,16 @@ async def link_record_organization(
         "source": record.connector_id,
         "createdAtTimestamp": now,
         "updatedAtTimestamp": now,
-    }
+    }] if organization_id else []
     try:
-        await store.batch_create_entity_relations([edge])
+        # One replace, so a failed write keeps the old edge. Only INFERRED:
+        # extraction's links to organisations the record names are its own to replace.
+        await store.replace_record_entity_relations(
+            record.id, [CollectionNames.ORGS.value], EntityOrigin.INFERRED.value, edges,
+        )
     except Exception as exc:
         if propagate(exc) or is_programming_error(exc):
             raise
-        logger.warning("Record %s: account edge not written: %s", record.id, exc)
+        logger.warning("Record %s: account edge not replaced: %s", record.id, exc)
         return 0
-    return 1
+    return len(edges)

@@ -44,14 +44,16 @@ def _store() -> MagicMock:
     store.get_user_by_source_id = AsyncMock(
         side_effect=lambda sid, connector_id, **_: SimpleNamespace(id=SOURCE_MEMBERS[sid]) if sid in SOURCE_MEMBERS else None,
     )
-    store.delete_edges_between_collections = AsyncMock()
-    store.batch_create_entity_relations = AsyncMock()
+    store.replace_record_entity_relations = AsyncMock()
     return store
 
 
 def _written(store: MagicMock) -> list[dict]:
     """Every edge written, across the record's write batches."""
-    return [e for call in store.batch_create_entity_relations.await_args_list for e in call.args[0]]
+    return [
+        e for call in store.replace_record_entity_relations.await_args_list
+        for e in call.args[-1]
+    ]
 
 
 def _edges(store: MagicMock) -> set[tuple[str, str]]:
@@ -80,7 +82,7 @@ class TestMail:
     async def test_a_recipient_who_is_not_a_member_gets_no_edge_and_no_node(self) -> None:
         store = _store()
         await link_record_people(_mail(to_emails=["stranger@else.com"]), store, logging.getLogger("t"))
-        store.batch_create_entity_relations.assert_not_awaited()
+        assert _written(store) == []
         assert not any(name.startswith("upsert") for name, *_ in store.method_calls)
 
     async def test_a_recipient_named_twice_is_one_edge(self) -> None:
@@ -160,24 +162,22 @@ class TestOtherRecordTypes:
 
 
 class TestWriteBehaviour:
-    async def test_existing_person_edges_are_cleared_first_and_only_those(self) -> None:
-        """Edges to organisations belong to record_organizations."""
+    async def test_existing_person_edges_are_replaced_in_one_call_and_only_those(self) -> None:
+        """Edges to organisations belong to record_organizations: the call names
+        only the member and person collections, INFERRED, and carries the new edges."""
         store = _store()
-        order: list[str] = []
-        store.delete_edges_between_collections.side_effect = lambda *a: order.append("delete")
-        store.batch_create_entity_relations.side_effect = lambda edges: order.append("create")
-        await link_record_people(_mail(from_email="ann@acme.com"), store, logging.getLogger("t"))
-        assert order == ["delete", "delete", "create"]
-        assert [c.args for c in store.delete_edges_between_collections.await_args_list] == [
-            ("rec-1", "records", "entityRelations", "users"),
-            ("rec-1", "records", "entityRelations", "person"),
-        ]
+        ticket = TicketRecord(record_type=RecordType.TICKET, assignee_email="ann@acme.com", **BASE)
+        await link_record_people(ticket, store, logging.getLogger("t"))
+        store.replace_record_entity_relations.assert_awaited_once()
+        record_id, collections, origin, edges = store.replace_record_entity_relations.await_args.args
+        assert (record_id, collections, origin) == ("rec-1", ["users", "person"], "INFERRED")
+        assert [e["_to"] for e in edges] == ["users/u-ann"]
 
     async def test_a_new_record_that_names_nobody_is_left_alone(self) -> None:
         store = _store()
         file_record = FileRecord(record_type=RecordType.FILE, is_file=True, extension="txt", **BASE)
         assert await link_record_people(file_record, store, logging.getLogger("t"), may_have_edges=False) == 0
-        store.delete_edges_between_collections.assert_not_awaited()
+        store.replace_record_entity_relations.assert_not_awaited()
 
     async def test_a_failed_member_read_is_raised_not_read_as_nobody(self) -> None:
         """Read as "not a member" it would commit the record without the edge
@@ -190,8 +190,8 @@ class TestWriteBehaviour:
             await link_record_people(
                 _mail(from_email="ann@acme.com", to_emails=["bob@acme.com"]), store, logging.getLogger("t"),
             )
-        store.batch_create_entity_relations.assert_not_awaited()
-        store.delete_edges_between_collections.assert_not_awaited()  # the old edges survive a failed read
+        assert _written(store) == []
+        store.replace_record_entity_relations.assert_not_awaited()  # the old edges survive a failed read
 
     async def test_member_reads_ask_to_raise_and_the_email_read_is_scoped_to_the_org(self) -> None:
         store = _store()
@@ -235,8 +235,8 @@ class TestReviewFixes:
         await link_record_people(_mail(from_email="ann@acme.com"), store, logging.getLogger("t"))
         # The lookup answered, so the record's edges were replaced: it is the
         # org check, not a failed lookup, that wrote none.
-        store.delete_edges_between_collections.assert_awaited()
-        store.batch_create_entity_relations.assert_not_awaited()
+        store.replace_record_entity_relations.assert_awaited_once()
+        assert _written(store) == []
 
     async def test_lookups_are_capped_not_only_edges(self, monkeypatch) -> None:
         monkeypatch.setattr(record_people, "MAX_PERSON_LOOKUPS", 3)
@@ -251,11 +251,11 @@ class TestReviewFixes:
         abort the record's sync. Long-standing types still raise."""
         store = _store()
 
-        async def _create(edges: list) -> None:
+        async def _replace(_record_id: str, _collections: list, _origin: str, edges: list) -> None:
             if any(e["edgeType"] == "ADDRESSED_TO" for e in edges):
                 raise RuntimeError("Document does not match the entity relations schema")
 
-        store.batch_create_entity_relations = AsyncMock(side_effect=_create)
+        store.replace_record_entity_relations = AsyncMock(side_effect=_replace)
         with caplog.at_level(logging.WARNING, logger="t"):
             await link_record_people(
                 TicketRecord(record_type=RecordType.TICKET, assignee_email="ann@acme.com", **BASE),
@@ -263,12 +263,14 @@ class TestReviewFixes:
             )
             await link_record_people(_mail(from_email="ann@acme.com", to_emails=["bob@acme.com"]), store, logging.getLogger("t"))
         assert "rec-1" in caplog.text
+        # The rejected types fall back to a replace of the rest, so the old edges still go.
+        assert store.replace_record_entity_relations.await_count == 3
 
     async def test_long_standing_edge_types_still_raise(self) -> None:
         import pytest
 
         store = _store()
-        store.batch_create_entity_relations = AsyncMock(side_effect=RuntimeError("db down"))
+        store.replace_record_entity_relations = AsyncMock(side_effect=RuntimeError("db down"))
         with pytest.raises(RuntimeError):
             await link_record_people(
                 TicketRecord(record_type=RecordType.TICKET, assignee_email="ann@acme.com", **BASE),
@@ -284,14 +286,13 @@ class TestFailuresTheCallerMustSee:
     def _ticket() -> TicketRecord:
         return TicketRecord(record_type=RecordType.TICKET, assignee_email="ann@acme.com", **BASE)
 
-    async def test_a_failed_clear_is_raised_when_the_caller_needs_it(self) -> None:
+    async def test_a_failed_replace_is_raised_when_the_caller_needs_it(self) -> None:
         import pytest
 
         store = _store()
-        store.delete_edges_between_collections = AsyncMock(side_effect=RuntimeError("deadlock"))
+        store.replace_record_entity_relations = AsyncMock(side_effect=RuntimeError("deadlock"))
         with pytest.raises(RuntimeError, match="deadlock"):
             await link_record_people(self._ticket(), store, logging.getLogger("t"), lambda exc: True)
-        store.batch_create_entity_relations.assert_not_awaited()
 
     async def test_a_failed_person_write_is_raised_when_the_caller_needs_it(self) -> None:
         import pytest
@@ -306,17 +307,21 @@ class TestFailuresTheCallerMustSee:
         import pytest
 
         store = _store()
-        store.batch_create_entity_relations = AsyncMock(side_effect=RuntimeError("deadlock"))
+        store.replace_record_entity_relations = AsyncMock(side_effect=RuntimeError("deadlock"))
         with pytest.raises(RuntimeError, match="deadlock"):
             await link_record_people(
                 _mail(from_email="ann@acme.com"), store, logging.getLogger("t"), lambda exc: True,
             )
 
-    async def test_other_failures_to_clear_do_not_fail_the_record(self) -> None:
+    async def test_a_failed_replace_of_long_standing_types_is_raised(self) -> None:
+        """The replace is one call: the old edges are kept, and the record is retried."""
+        import pytest
+
         store = _store()
-        store.delete_edges_between_collections = AsyncMock(side_effect=RuntimeError("boom"))
-        written = await link_record_people(self._ticket(), store, logging.getLogger("t"), lambda exc: False)
-        assert written == 1
+        store.replace_record_entity_relations = AsyncMock(side_effect=RuntimeError("boom"))
+        with pytest.raises(RuntimeError, match="boom"):
+            await link_record_people(self._ticket(), store, logging.getLogger("t"), lambda exc: False)
+        store.replace_record_entity_relations.assert_awaited_once()
 
 
 def test_hidden_email_ticket_fields_survive_a_graph_round_trip() -> None:
@@ -417,13 +422,12 @@ class TestSourcePeople:
     async def test_both_member_and_person_edges_are_cleared_first(self) -> None:
         store = _person_store()
         await link_record_people(_file(authored_by=SourcePerson(email="ann@acme.com")), store, logging.getLogger("t"))
-        cleared = {c.args[3] for c in store.delete_edges_between_collections.await_args_list}
-        assert cleared == {"users", "person"}
+        assert store.replace_record_entity_relations.await_args.args[1] == ["users", "person"]
 
     async def test_a_record_that_names_nobody_costs_nothing(self) -> None:
         store = _person_store()
         assert await link_record_people(_file(), store, logging.getLogger("t"), may_have_edges=False) == 0
-        store.delete_edges_between_collections.assert_not_awaited()
+        store.replace_record_entity_relations.assert_not_awaited()
 
 
 class TestReviewFixesAuthorship:
@@ -464,7 +468,7 @@ class TestReviewFixesAuthorship:
     async def test_an_updated_record_that_names_nobody_loses_its_old_edges(self) -> None:
         store = _person_store()
         await link_record_people(_file(), store, logging.getLogger("t"), may_have_edges=True)
-        assert {c.args[3] for c in store.delete_edges_between_collections.await_args_list} == {"users", "person"}
+        assert store.replace_record_entity_relations.await_args.args[1:] == (["users", "person"], "INFERRED", [])
 
     def test_an_unset_key_is_left_out_of_the_stored_person(self) -> None:
         """An older pod can restore the old strict schema (email required, no
@@ -480,7 +484,7 @@ class TestReviewFixesAuthorship:
             side_effect=lambda emails, **_: {e: SimpleNamespace(id="u-x", org_id="org-2") for e in emails},
         )
         await link_record_people(_file(authored_by=SourcePerson(email="ann@acme.com")), store, logging.getLogger("t"))
-        store.batch_create_entity_relations.assert_not_awaited()
+        assert _written(store) == []
         store.upsert_person_by_email.assert_not_awaited()
 
 
@@ -543,7 +547,7 @@ class TestPlaceholders:
 
         assert await link_record_people(stub, store, logging.getLogger("t")) == 0
 
-        store.delete_edges_between_collections.assert_not_awaited()
+        store.replace_record_entity_relations.assert_not_awaited()
         store.get_users_by_emails.assert_not_awaited()
 
 
@@ -553,9 +557,47 @@ class TestABugIsNotAFailedLookup:
     seen to be wrong, in production or in a test whose stub did not match."""
 
     @pytest.mark.parametrize("error", [TypeError("unexpected keyword argument 'org_id'"), AttributeError("x")])
-    @pytest.mark.parametrize("failing", ["get_users_by_emails", "delete_edges_between_collections", "batch_create_entity_relations"])
+    @pytest.mark.parametrize("failing", ["get_users_by_emails", "replace_record_entity_relations"])
     async def test_a_programming_error_is_raised(self, failing: str, error: Exception) -> None:
         store = _store()
         getattr(store, failing).side_effect = error
         with pytest.raises(type(error)):
             await link_record_people(_mail(from_email="ann@acme.com"), store, logging.getLogger("t"))
+
+
+class _LinkStore:
+    """Edges held as an atomic replace keeps them: a write that fails leaves them as they were."""
+
+    def __init__(self, edges: list[dict], fail: bool = False) -> None:
+        self.edges, self.fail = edges, fail
+        self.get_users_by_emails = AsyncMock(
+            side_effect=lambda emails, **_: {e: SimpleNamespace(id=MEMBERS[e]) for e in emails if e in MEMBERS},
+        )
+
+    async def replace_record_entity_relations(self, record_id, collections, origin, edges) -> None:
+        if self.fail:
+            raise RuntimeError("write failed")
+        self.edges = [
+            e for e in self.edges
+            if not (e["_to"].split("/")[0] in collections and e.get("origin", "INFERRED") == origin)
+        ] + edges
+
+
+class TestAtomicReplace:
+    OLD = {"_from": "records/rec-1", "_to": "users/u-old", "edgeType": "ASSIGNED_TO", "origin": "INFERRED"}
+    KEPT = {"_from": "records/rec-1", "_to": "organizations/o", "edgeType": "FOR_ACCOUNT", "origin": "INFERRED"}
+
+    async def test_a_successful_replace_leaves_exactly_the_new_set(self) -> None:
+        store = _LinkStore([dict(self.OLD), dict(self.KEPT)])
+        ticket = TicketRecord(record_type=RecordType.TICKET, assignee_email="ann@acme.com", **BASE)
+        await link_record_people(ticket, store, logging.getLogger("t"))
+        assert sorted((e["_to"], e["edgeType"]) for e in store.edges) == [
+            ("organizations/o", "FOR_ACCOUNT"), ("users/u-ann", "ASSIGNED_TO"),
+        ]
+
+    async def test_a_failed_write_keeps_the_old_person_edges(self) -> None:
+        store = _LinkStore([dict(self.OLD), dict(self.KEPT)], fail=True)
+        ticket = TicketRecord(record_type=RecordType.TICKET, assignee_email="ann@acme.com", **BASE)
+        with pytest.raises(RuntimeError, match="write failed"):
+            await link_record_people(ticket, store, logging.getLogger("t"))
+        assert store.edges == [self.OLD, self.KEPT]

@@ -8859,6 +8859,27 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    async def replace_record_entity_relations(
+        self,
+        record_id: str,
+        to_collections: list[str],
+        origin: str,
+        edges: list[dict],
+        transaction: str | None = None,
+    ) -> None:
+        """Replace the record's ``entityRelations`` edges of ``origin`` to nodes of
+        ``to_collections`` with *edges*.
+
+        Concrete by design: a provider with real transactions keeps the delete and
+        the create. Neo4j overrides it with one statement, since with
+        NEO4J_EXPLICIT_TRANSACTIONS off a failure after the delete left the record
+        with none of its links.
+        """
+        for to_collection in to_collections:
+            await self.delete_record_entity_relations(record_id, to_collection, origin, transaction)
+        if edges:
+            await self.batch_create_entity_relations(edges, transaction)
+
     @abstractmethod
     async def get_organization_record_reach(
         self,

@@ -487,6 +487,15 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def replace_record_entity_relations(
+        self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
+    ) -> None:
+        """Replace the record's ``entityRelations`` edges of ``origin`` to
+        ``to_collections`` with ``edges``, atomically; see
+        ``IGraphDBProvider.replace_record_entity_relations``."""
+        pass
+
+    @abstractmethod
     async def ensure_team_app_edge(self, connector_id: str, org_id: str) -> None:
         """
         Ensure the org's "All" team has an edge to the app in userAppRelation.

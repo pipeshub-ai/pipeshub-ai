@@ -95,15 +95,9 @@ class _DryRunStore:
     async def get_record_group_organization(self, record_group_id: str, org_id: str) -> str | None:
         return await self._graph.get_record_group_organization(record_group_id, org_id)
 
-    async def delete_edges_between_collections(
-        self, from_id: str, from_collection: str, edge_collection: str, to_collection: str,
+    async def replace_record_entity_relations(
+        self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
     ) -> None:
-        return None
-
-    async def delete_record_entity_relations(self, record_id: str, to_collection: str, origin: str) -> int:
-        return 0
-
-    async def batch_create_entity_relations(self, edges: list[dict]) -> None:
         self.edges += len(edges)
 
 
