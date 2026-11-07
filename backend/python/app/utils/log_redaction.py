@@ -193,7 +193,7 @@ def _redact_pairs_in(text: str, *, literals_only: bool = False) -> str:
             comment = comment or "#" in text[scanned : head.end()]
             scanned = head.end()
             in_code = not (double % 2 or single % 2 or comment)
-        # Before the value match: a skipped bare value leaves `pos`, so matching it would rescan the run.
+        # Before the value match: a skipped bare value does not move `pos`, so matching it would rescan the run.
         if in_code and not _QUOTED.match(text, head.end()):
             continue
         value = _PAIR_VALUE.match(text, head.end())
@@ -254,7 +254,8 @@ def redact_secrets_in_text(text: str) -> str:
     is a string literal, so ``token = await f()`` stays readable. A bare value
     is kept there: a long number (``password = 12345678``), a non-string local
     that ``capture_locals`` prints under a frame with no source, a one-character
-    unterminated literal, and anything under text laid out as a fake frame."""
+    unterminated literal, a pair after an odd number of escaped quotes inside
+    a literal (``'it\\'s token=v'``), and anything under a fake frame line."""
     if not text:
         return text
     lower = text.lower()
