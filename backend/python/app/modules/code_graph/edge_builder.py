@@ -2238,7 +2238,7 @@ async def build_code_graph_edges(
         unbound = {index.record_by_file.get(f) for f in builder.bindings_missing}
         unbound = {r for r in unbound if r in index.blocks_by_record} - reresolve - tried_bindings
         if unbound:   # a type file joining the build rewrites its heritage: its impls' files join too
-            unbound = _with_impl_partners(index, unbound) - reresolve - tried_bindings
+            unbound = await asyncio.to_thread(_with_impl_partners, index, unbound) - reresolve - tried_bindings
         missing_types = set(builder.types_missing) - builder.types_loaded - tried_types
         tried_bindings |= unbound
         tried_types |= missing_types
