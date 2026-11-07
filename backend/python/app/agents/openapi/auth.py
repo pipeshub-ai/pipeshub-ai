@@ -143,7 +143,7 @@ class OAuthTokenSource:
             try:
                 fresh = await self._obtain(tokens)
             except MCPOAuthError as e:
-                # Down or rate-limiting: the sign-in is still good, so don't send the user to sign in again.
+                # Down or rate-limiting: the stored credential is still good, so don't send the user to sign in again.
                 if is_transient_status(e.status):
                     raise ApiCallError(
                         "The API's OAuth server is down or busy, so PipesHub couldn't get an access token. "

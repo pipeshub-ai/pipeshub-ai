@@ -336,10 +336,13 @@ class TestCredentials:
         assert api.call("GET", "/instances").json()["instances"][0]["isConnected"] is True
 
 
+def _create_sign_in_toolset(api: Harness) -> dict[str, Any]:
+    """An authorization-code toolset with its OAuth app, as an admin adds it."""
+    return api.create(spec=AUTH_CODE_SPEC, authSchemeName="sso", operations=["list_pages"], scopes=["pages.read"],
+                      oauthClientId="wiki-app", oauthClientSecret="app-secret")
+
+
 class TestOAuthSignIn:
-    def _create(self, api: Harness) -> dict[str, Any]:
-        return api.create(spec=AUTH_CODE_SPEC, authSchemeName="sso", operations=["list_pages"], scopes=["pages.read"],
-                          oauthClientId="wiki-app", oauthClientSecret="app-secret")
 
     def test_client_id_is_required(self, api: Harness) -> None:
         resp = api.call("POST", "/instances", user=ADMIN, json={
@@ -347,18 +350,18 @@ class TestOAuthSignIn:
         assert resp.status_code == 400 and "client ID" in resp.json()["detail"]
 
     def test_admin_view_never_shows_the_app_secret(self, api: Harness) -> None:
-        created = self._create(api)
+        created = _create_sign_in_toolset(api)
         view = api.call("GET", f"/instances/{created['id']}/config", user=ADMIN).json()
         assert view["oauthClientId"] == "wiki-app" and view["hasOauthClientSecret"] is True
         assert "app-secret" not in str(view)
 
     def test_entering_credentials_is_refused(self, api: Harness) -> None:
-        created = self._create(api)
+        created = _create_sign_in_toolset(api)
         resp = api.call("PUT", f"/instances/{created['id']}/credentials", json={"token": "t"})
         assert resp.status_code == 400 and "Sign in" in resp.json()["detail"]
 
     def test_sign_in_round_trip(self, api: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
-        created = self._create(api)
+        created = _create_sign_in_toolset(api)
         exchanged: list[dict[str, Any]] = []
 
         async def exchange(token_url: str, client_id: str, client_secret: str | None, code: str, redirect_uri: str, **kw: Any) -> OAuthTokens:  # noqa: ANN401
@@ -391,7 +394,7 @@ class TestOAuthSignIn:
 
 
     def test_a_sign_in_from_the_desktop_app_is_marked_and_completes(self, api: Harness, monkeypatch: pytest.MonkeyPatch) -> None:
-        created = self._create(api)
+        created = _create_sign_in_toolset(api)
 
         async def exchange(*_a: Any, **_kw: Any) -> OAuthTokens:  # noqa: ANN401
             return OAuthTokens(access_token="at", refresh_token="rt", expires_in=3600)
@@ -473,7 +476,7 @@ class TestTestCall:
             raise error
 
         monkeypatch.setattr(auth_module, "refresh_access_token", refresh)
-        created = TestOAuthSignIn()._create(api)
+        created = _create_sign_in_toolset(api)
         expired = OAuthTokens(access_token="old", refresh_token="rt", expires_in=60,
                               created_at=datetime.now(timezone.utc) - timedelta(hours=1))
         asyncio.run(ApiToolsetStore(api.config).save_credentials(created["id"], MEMBER, ApiToolsetCredentials(oauth=expired)))

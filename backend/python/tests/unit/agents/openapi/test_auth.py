@@ -232,7 +232,7 @@ class TestTokenEndpointOutage:
         assert raised.value.__cause__ is endpoint.error and endpoint.error.status == status
         assert not saved
 
-    @pytest.mark.parametrize(("status", "body"), [OUTAGES[2], OUTAGES[4]])
+    @pytest.mark.parametrize(("status", "body"), [(503, {"error": "temporarily_unavailable"}), (429, {"error": "slow_down"})])
     async def test_a_client_credentials_outage_says_try_again(
         self, endpoint: _FakeTokenEndpoint, status: int, body: dict[str, Any],
     ) -> None:
@@ -241,6 +241,7 @@ class TestTokenEndpointOutage:
                                   token_url="https://a/t", allow_private=False)
         with pytest.raises(ApiCallError, match="^The API's OAuth server is down or busy"):
             await source.access_token()
+        assert [kind for kind, _ in endpoint.calls] == ["client_credentials"]
 
     @pytest.mark.parametrize(("status", "body"), REFUSALS)
     async def test_a_refusal_still_asks_to_sign_in_again(self, endpoint: _FakeTokenEndpoint, status: int, body: dict[str, Any]) -> None:
