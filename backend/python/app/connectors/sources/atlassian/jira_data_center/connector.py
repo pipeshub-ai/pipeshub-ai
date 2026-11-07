@@ -3171,6 +3171,8 @@ class JiraDataCenterConnector(BaseConnector):
         failed_project_statuses: dict[str, Optional[int]] = {}
         full_sync_project_ids: set[str] = set()
         leveled_reread_project_ids: set[str] = set()
+        # A context left from the last sync must not decide this one's stubs before it is read again.
+        self._issue_security = {}
         self._unreadable_security = {}
         self._never_tightened_security = set()
         self._skipped_holders_logged = set()

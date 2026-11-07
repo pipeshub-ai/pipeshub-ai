@@ -96,6 +96,16 @@ class TestStoredGrantsKept:
 
 
 class TestAncestorStub:
+    async def test_a_sync_starts_with_no_security_context_left_from_the_last_one(self) -> None:
+        # The placeholder sweep runs after the walk: a holder removed since the last sync must not
+        # still reach a stub because a project's read failed before its context was refreshed.
+        connector = _connector()
+        connector._issue_security["10"] = IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level={"1": []},
+        )
+        await connector._sync_all_project_issues([], [], None)
+        assert connector._issue_security == {}
+
     def test_a_stub_of_a_leveled_issue_is_granted_to_the_level_only(self) -> None:
         connector = _connector()
         connector._issue_security["10"] = IssueSecurityContext(
