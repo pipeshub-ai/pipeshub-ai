@@ -152,6 +152,21 @@ async def test_a_delete_that_cannot_remove_everything_is_refused_and_changes_not
     assert await snapshot(w) == before
 
 
+async def test_a_refused_delete_in_a_caller_transaction_leaves_nothing_for_its_commit(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A delete that fails part way inside the caller's transaction rolls back to its savepoint: the caller's commit keeps none of it."""
+    await connector(w, "c1")
+    before = await snapshot(w)
+
+    async def nothing(tx: Tx, org: str, ids: list[str]) -> int:
+        return 0
+    monkeypatch.setattr(delete_module, "_remove_records", nothing)
+    t = await w.p.begin_transaction([], [])
+    got = await w.p.delete_connector_instance("c1", w.org, t)
+    assert got["success"] is False and "remain" in got["error"]
+    await w.p.commit_transaction(t)
+    assert await snapshot(w) == before
+
+
 async def test_a_label_a_merge_points_at_or_from_is_left_for_the_redirect(w: World) -> None:
     await connector(w, "c1")
     await w.nodes("topics", {"_key": "loser", "mergedInto": "winner"}, {"_key": "winner"}, {"_key": "plain"})

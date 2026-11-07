@@ -914,8 +914,16 @@ class LookupsMixin(PgBase):
         """The first connector instance (lowest id, byte order) not marked backfilled and not being deleted: under an org context that org's, under a system
         context (the indexing loop) any org's, through the vetted cross-org read of instances. Neo4j picks an arbitrary one; the order makes the walk repeatable."""
         if current_or_system().kind == "system":
-            apps = await self._system_apps_page(0, 1_000_000, None, None, None)      # shortcut: reads every instance to pick one; instances are few, a vetted filtered read when they are not
-            return next((a for a in apps if a.get("vectorMembershipBackfilled") in (None, False) and (a.get("status") or "") != "DELETING"), None)
+            # every instance is read, a page at a time to the end: a capped read would answer None while apps past the cap still need the walk.
+            # graph.system_apps orders by the database collation; the walk's order is byte order, as under an org context (ORDER BY n.id COLLATE "C").
+            # a strict < keeps the first of equal ids, so apps sharing an id across orgs keep the read's (id, org) order.
+            best, best_id = None, b""
+            async for page in self._system_app_pages():
+                for a in page:
+                    key = str(a["_key"]).encode()
+                    if a.get("vectorMembershipBackfilled") in (None, False) and (a.get("status") or "") != "DELETING" and (best is None or key < best_id):
+                        best, best_id = a, key
+            return best
         d = await self._one("""/* pipeshub:graph.get_app_needing_vector_membership_backfill */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'apps'
             AND coalesce(n.doc->'vectorMembershipBackfilled', 'null'::jsonb) IN ('null'::jsonb, 'false'::jsonb) AND coalesce(n.doc->>'status', '') <> 'DELETING'
             ORDER BY n.id COLLATE "C" LIMIT 1""", current_org_id(), transaction=transaction)
