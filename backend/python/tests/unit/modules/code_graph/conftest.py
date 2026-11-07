@@ -145,8 +145,9 @@ class FakeGraphProvider:
         if collection == CollectionNames.RECORDS.value:
             # The repo's code files, empty ones included, as the builder lists them.
             return [{"_key": record_id} for record_id in self.code_files]
+        fields = [f for f in return_fields or ("name", "kind") if f != "_key"]
         return [
-            {"_key": key, "name": doc.get("name"), "kind": doc.get("kind")}
+            {"_key": key, **{f: doc.get(f) for f in fields}}
             for key, doc in self.blocks.items()
             if all(doc.get(field) == value for field, value in filters.items())
         ]
@@ -239,3 +240,12 @@ def index_file(graph) -> Callable[..., Awaitable[dict[str, int]]]:
         )
 
     return _index
+
+
+@pytest.fixture
+def c_repo(index_file) -> Callable[[dict[str, bytes]], Awaitable[None]]:
+    """Index C/C++ files by path: `.cpp`/`.hpp` as C++, the rest as C."""
+    async def _repo(files: dict[str, bytes]) -> None:
+        for i, (path, source) in enumerate(files.items()):
+            await index_file(f"r{i}", path, source, "cpp" if path.endswith((".cpp", ".hpp")) else "c")
+    return _repo

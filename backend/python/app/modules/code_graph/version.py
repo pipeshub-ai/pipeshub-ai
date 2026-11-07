@@ -26,9 +26,11 @@ __all__ = ["EDGE_RULES_VERSION", "PARSER_VERSION"]
 # Left at the last CODE_GRAPH_VERSION so indexed repos are not re-indexed; the
 # EXTENDS facts their blobs hold are read as INHERITS by the edge builder.
 # 2026.11.8: Rust use paths, impls named by their type, traits, type table, callees, receiver chains, macro args.
-PARSER_VERSION = "2026.11.8"
+# 2026.11.9: C/C++ includes, preprocessor branches, declarators, macros, static and C++ type facts.
+PARSER_VERSION = "2026.11.9"
 
 # 2026.10.20: EXTENDS merged into INHERITS (an interface extending one stays
 # INHERITS); the full rebuild this forces replaces stored EXTENDS edges.
 # 2026.11.8: Rust paths placed by a crate resolver, impls as parts of their type, typed receiver chains.
-EDGE_RULES_VERSION = "2026.11.8"
+# 2026.11.9: C/C++ include scope, header/source pairing, wrapper macros, static linkage, C++ typed calls.
+EDGE_RULES_VERSION = "2026.11.9"
