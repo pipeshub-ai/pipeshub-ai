@@ -16,6 +16,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, RecordRelations, RecordTypes
+from app.modules.code_graph.family_rules import rules_for
 from app.modules.code_graph.guards import (
     is_test_path,
     lang_family,
@@ -104,8 +105,6 @@ MAX_BLOCKS_PER_BUILD = max(1, env_int("CODE_EDGE_BUILD_MAX_BLOCKS", 300000))
 _MAX_HEURISTIC_CANDIDATES = 64
 # A package re-exporting a name re-exported by another: followed this many hops.
 _MAX_REEXPORT_HOPS = 4
-# Languages where a bare call inside a method may be a call on `this`.
-_IMPLICIT_THIS_FAMILIES = frozenset({"jvm", "csharp"})
 _MIN_MISSING_FACTS_TO_ABORT = 5
 
 logger = logging.getLogger(__name__)
@@ -346,7 +345,7 @@ class _Builder:
         self._py_classes: dict[str, list[str]] | None = None
         self._py_reach: dict[str, tuple[set[str], set[str]]] = {}
         self.re_exports: dict[str, set[str]] = {}
-        self.imports = ImportResolution(set(index.record_by_file) | (repo_paths or set()))
+        self.imports = ImportResolution(set(index.record_by_file) | (repo_paths or set()), index=index)
         self._interface_memo: dict[str, bool] = {}
         # Files whose type tables are in the index; None when all are (a full build).
         # An incremental build loads only the re-resolved files' tables, so the
@@ -696,7 +695,7 @@ class _Builder:
                     self.result.unresolved += 1
                 continue
 
-            if relation in _CALL_RELATIONS and family in _IMPLICIT_THIS_FAMILIES:
+            if relation in _CALL_RELATIONS and rules_for(family).bare_call_reaches_method == "same_class":
                 # `getPet(id)` inside a Java method is `this.getPet(id)`: the class's
                 # own method or an inherited one, before any guess by name.
                 owner = self._enclosing_type(block_id)
@@ -840,22 +839,24 @@ class _Builder:
             if pinned:
                 return pinned[0], CONFIDENCE_EXTRACTED, RESOLUTION_QUALIFIER
 
+        rules = rules_for(family)
         same_file = self._eligible(self._defined_in(call_file, name), family, relation)
-        if family == "js" and relation in _CALL_RELATIONS:
+        if rules.lexical_module_scope and relation in _CALL_RELATIONS:
             # A bare JS/TS call never reaches a method: that takes `this.` or a receiver.
             same_file = [cid for cid in same_file if self.index.rows[cid].kind != "method"]
         if same_file:
             candidates, confidence, resolution = same_file, CONFIDENCE_EXTRACTED, RESOLUTION_SAME_FILE
         else:
-            # An unqualified Go name is never an imported package's: those take `pkg.`.
-            imported = [] if family == "go" else self._eligible(
-                [cid for module in sorted(self.module_imports.get(call_file, ()))
-                 for cid in self._defined_in(module, name)],
+            modules = set(self.module_imports.get(call_file, ())) if rules.bare_names_from_imported_modules else set()
+            if rules.implicit_scope:
+                modules.update(rules.implicit_scope(self.index, call_file))
+            imported = self._eligible(
+                [cid for module in sorted(modules) for cid in self._defined_in(module, name)],
                 family, relation,
             )
             if imported:
                 candidates, confidence, resolution = imported, CONFIDENCE_EXTRACTED, RESOLUTION_MODULE
-            elif family == "js" and relation in _CALL_RELATIONS:
+            elif rules.lexical_module_scope and relation in _CALL_RELATIONS:
                 # ES modules have no implicit cross-module scope: without an
                 # import the call cannot be reaching this definition.
                 self.result.unresolved += 1
@@ -890,8 +891,7 @@ class _Builder:
             typed = [cid for cid in candidates if cid in self.index.type_blocks]
             return typed or candidates
         if relation in _CALL_RELATIONS:
-            if family == "go":
-                # A bare Go call names a function: a method is only ever `x.m()`.
+            if rules_for(family).bare_call_reaches_method == "never":
                 candidates = [cid for cid in candidates
                               if (row := self.index.rows.get(cid)) is None or row.kind != "method"]
             # Class exclusion: `select(Model)` is not a call to Model.
@@ -964,7 +964,8 @@ class _Builder:
         if receiver_type and (receiver_type.startswith("=") or receiver_type.endswith("[]")):
             receiver_type = None
         family = self._family_of(block_id)
-        if not receiver_type and receiver in ("self", "this"):
+        rules = rules_for(family)
+        if not receiver_type and receiver in rules.self_receivers:
             owner = self._enclosing_type(block_id)
             if owner:
                 target = self._resolve_self_method(owner, name)
@@ -973,7 +974,7 @@ class _Builder:
                 # A mixin calling a method its concrete classes supply.
                 return self._py_unique_method(name, fact, record_id)
         two_arg = _PY_SUPER.fullmatch(receiver or "") if family == "py" else None
-        if not receiver_type and (receiver in ("super()", "super") or two_arg):
+        if not receiver_type and (receiver in rules.super_receivers or two_arg):
             # `super().__init__()`, `super.save()`: the nearest base that defines it.
             # `super(C, self).m()` starts above C, which need not be the enclosing class.
             owner = self._enclosing_type(block_id)
@@ -1478,7 +1479,8 @@ class _Builder:
             if parent_id in self.index.type_blocks:
                 return parent_id
             row = self.index.rows.get(parent_id)
-        return None
+        hook = rules_for(self._family_of(block_id)).enclosing_type
+        return hook(self.index, block_id) if hook else None
 
     def _methods_on(self, owner: str, method_name: str) -> str | list[str] | None:
         """*method_name* on *owner*, or on each member when *owner* is a union alias."""
@@ -1553,16 +1555,21 @@ class _Builder:
 
     def _method_by_owner_name(self, owner: str, method_name: str) -> str | None:
         """A method declared outside its type's body (Go `func (c *Context) Render`):
-        named `method:Context.Render`, in the type's own package (its folder)."""
+        named `method:Context.Render`, in the type's own package (its folder), or
+        where the family's rules look for it."""
         row = self.index.rows.get(owner)
         if row is None or not row.name or not row.file_path:
             return None
         wanted = f"{row.name}.{method_name}"
         folder = row.file_path.rsplit("/", 1)[0] if "/" in row.file_path else ""
-        hits = [cid for cid in self.index.candidates(method_name)
-                if (self.index.rows[cid].qualified_name or "").partition(":")[2] == wanted
-                and (self.index.file_by_block.get(cid, "").rsplit("/", 1)[0]
-                     if "/" in self.index.file_by_block.get(cid, "") else "") == folder]
+        named = [cid for cid in self.index.candidates(method_name)
+                 if (self.index.rows[cid].qualified_name or "").partition(":")[2] == wanted]
+        hits = [cid for cid in named
+                if (self.index.file_by_block.get(cid, "").rsplit("/", 1)[0]
+                    if "/" in self.index.file_by_block.get(cid, "") else "") == folder]
+        if not hits and named and rules_for(self._family_of(owner)).out_of_line_methods == "repo":
+            # `Foo::bar()` in src/foo.cpp for `class Foo` in include/foo.h: the nearest one.
+            hits = path_proximity_winner(named, self.index.file_by_block, row.file_path)
         return hits[0] if len(hits) == 1 else None
 
     def _base_types_of(self, type_block: str) -> list[str]:

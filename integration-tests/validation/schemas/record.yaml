@@ -8,6 +8,57 @@ fields:
       - OPEN
       - STRICT
       - RESTRICTED
+  authored_by:
+    required: false
+    type: object
+    properties:
+      source_id:
+        required: false
+        type: string
+      email:
+        required: false
+        type: string
+      display_name:
+        required: false
+        type: string
+      is_service_account:
+        required: false
+        type: boolean
+  created_by:
+    required: false
+    type: object
+    properties:
+      source_id:
+        required: false
+        type: string
+      email:
+        required: false
+        type: string
+      display_name:
+        required: false
+        type: string
+      is_service_account:
+        required: false
+        type: boolean
+  last_modified_by:
+    required: false
+    type: object
+    properties:
+      source_id:
+        required: false
+        type: string
+      email:
+        required: false
+        type: string
+      display_name:
+        required: false
+        type: string
+      is_service_account:
+        required: false
+        type: boolean
+  owners:
+    required: false
+    type: array
   block_containers:
     type: object
     required: false

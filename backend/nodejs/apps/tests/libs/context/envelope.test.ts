@@ -23,6 +23,7 @@ import {
   sign,
 } from '../../../src/libs/context/envelope'
 import { currentOrgContext, makeOrgContext, MissingOrgContext, runWithOrgContext } from '../../../src/libs/context/orgContext'
+import { getRequestContext, runWithRequestContext } from '../../../src/libs/context/request-context'
 
 const KEY = deriveKey('test-scopedJwtSecret-from-config-service')
 const OTHER = deriveKey('another-secret')
@@ -168,6 +169,26 @@ describe('envelope v2', () => {
     try { await runWithEnvelope(T, bad, async () => { seen = 'ran' }) } catch (e) { rejected = e instanceof EnvelopeRejected }
     expect(rejected).to.equal(true)
     expect(seen).to.equal('org_b')
+  })
+
+  it('runWithEnvelope puts the signed org and user on the consumer log context', async () => {
+    configureEnvelope(async () => [KEY])
+    const ctx = await runWithRequestContext({ rootId: 'sys-1', orgId: 'org_unverified' }, async () => {
+      await runWithEnvelope(T, msg(), async () => undefined)
+      return getRequestContext()
+    })
+    expect(ctx).to.include({ orgId: 'org_b', userId: 'u1' })
+  })
+
+  it('an unsigned message keeps the consumer log context as it was', async () => {
+    configureEnvelope(async () => [KEY])
+    await withEnv({ ENVELOPE_SIGN: undefined, ENVELOPE_CTX_REQUIRED: undefined }, async () => {
+      const ctx = await runWithRequestContext({ rootId: 'sys-1', orgId: 'org_outer' }, async () => {
+        await runWithEnvelope(T, { payload: { orgId: 'org_payload' } }, async () => undefined)
+        return getRequestContext()
+      })
+      expect(ctx).to.deep.equal({ rootId: 'sys-1', orgId: 'org_outer' })
+    })
   })
 
   it('eventType is signed: a signed message re-sent with another eventType is rejected', async () => {

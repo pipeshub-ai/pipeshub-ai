@@ -20,7 +20,15 @@ from app.models.entities import Record
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.common.typed_record import typed_record
 from app.services.graph_db.common.utils import TRASHED_EXTERNAL_ID_PREFIX
-from app.services.graph_db.postgres.base import PgBase, _arango, _doc, _j, _node
+from app.services.graph_db.postgres.base import (
+    _VALIDATOR,
+    PgBase,
+    _arango,
+    _doc,
+    _j,
+    _node,
+    _pgbool,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -59,6 +67,10 @@ async def _upsert_docs(tx: Tx, org: str, coll: str, docs: list[dict]) -> None:
                      org, coll, _j([{"id": i, "doc": by_id[i]} for i in sorted(by_id)]))
 
 
+_RECORD_BY_EXTERNAL_PAGE = 100       # the function's LIMIT
+_RECORD_BY_EXTERNAL = "/* pipeshub:graph.record_by_external */ SELECT node_id, doc FROM graph.record_by_external($1, $2)"       # the vetted read of graph_0004
+
+
 class RecordsMixin(PgBase):
     # ---- single reads ------------------------------------------------------------------------------------------
     async def get_record_by_external_id(self, connector_id: str, external_id: str, transaction: str | None = None,
@@ -66,10 +78,18 @@ class RecordsMixin(PgBase):
         """None means there is no such record, never that the lookup failed: a lookup that could not be read raises ``GraphQueryError``."""
         org = current_org_id()
         try:
-            d = await self._one("""/* pipeshub:graph.get_record_by_external_id */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
-                AND n.doc->>'connectorId' = $2 AND n.doc->>'externalRecordId' = $3
-                AND ($4::int = 0 OR coalesce((n.doc->>'isDeleted')::boolean, false) = ($4::int = 2)) LIMIT 1""",
-                                org, connector_id, external_id, _vis(visibility), transaction=transaction)
+            vis = _vis(visibility)
+            rows = None
+            if isinstance(connector_id, str) and isinstance(external_id, str) and 0 < len(connector_id) <= 200 and 0 < len(external_id) <= 2000:
+                # the vetted read returns every record of the pair, and the visibility is read off the documents; a full page may not be all of them
+                rows = await self._q(lambda tx: tx.fetch(_RECORD_BY_EXTERNAL, connector_id, external_id), transaction)
+            if rows is not None and len(rows) < _RECORD_BY_EXTERNAL_PAGE:
+                d = next((x for x in (_doc(r["doc"]) for r in rows) if vis == 0 or _pgbool(x.get("isDeleted")) == (vis == 2)), None)
+            else:
+                d = await self._one("""/* pipeshub:graph.get_record_by_external_id */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
+                    AND n.doc->>'connectorId' = $2 AND n.doc->>'externalRecordId' = $3
+                    AND ($4::int = 0 OR coalesce((n.doc->>'isDeleted')::boolean, false) = ($4::int = 2)) LIMIT 1""",
+                                    org, connector_id, external_id, vis, transaction=transaction)
             return Record.from_arango_base_record(_arango(d, _RECORDS)) if d else None
         except Exception as e:
             if raise_on_error:
@@ -226,8 +246,8 @@ class RecordsMixin(PgBase):
         """Each record's base document, type document and ``isOfType`` edge, set-based per record type, in one transaction.
 
         ``release_trashed_external_ids``: a record in the trash of the same connector that holds an incoming record's external id gives it up
-        (kept in ``trashedExternalRecordId`` behind ``TRASHED_EXTERNAL_ID_PREFIX``), in the same transaction as the write. Documents are not
-        validated against a schema here, as in ``batch_upsert_nodes``."""
+        (kept in ``trashedExternalRecordId`` behind ``TRASHED_EXTERNAL_ID_PREFIX``), in the same transaction as the write. Every document is
+        validated against its schema before the first statement, as in ``batch_upsert_nodes``."""
         org = current_org_id()
         if not records:
             return
@@ -235,12 +255,17 @@ class RecordsMixin(PgBase):
         for rec in records:
             by_type.setdefault(RECORD_TYPE_COLLECTION_MAPPING.get(rec.record_type), []).append(rec)
 
+        bases_by_type = {coll: [_node(r.to_arango_base_record(), _RECORDS) for r in group] for coll, group in by_type.items()}
+        types_by_type = {coll: [_node(r.to_arango_record(), coll) for r in by_type[coll]] for coll in by_type if coll}
+        all_bases = [b for bases in bases_by_type.values() for b in bases]
+        await self._validate_upserts(_RECORDS, all_bases, transaction)
+        for coll in sorted(types_by_type):
+            await self._validate_upserts(coll, types_by_type[coll], transaction)
+
         async def go(tx: Tx) -> None:
             # Row locks are taken in one order whatever the mix of types: every base document by id, then each type's documents by id
             # (collections in name order), then the edges. Two concurrent batches over the same records cannot wait on each other.
             now = get_epoch_timestamp_in_ms()
-            bases_by_type = {coll: [_node(r.to_arango_base_record(), _RECORDS) for r in group] for coll, group in by_type.items()}
-            all_bases = [b for bases in bases_by_type.values() for b in bases]
             if release_trashed_external_ids:
                 await tx.execute("""/* pipeshub:graph.release_trashed_external_ids */ UPDATE graph.nodes h
                     SET doc = h.doc || jsonb_build_object('trashedExternalRecordId', h.doc->>'externalRecordId', 'externalRecordId', $3::text || h.id)
@@ -250,7 +275,7 @@ class RecordsMixin(PgBase):
                                  org, _j([{"id": b["id"], "ext": b.get("externalRecordId"), "cid": b.get("connectorId")} for b in all_bases]), TRASHED_EXTERNAL_ID_PREFIX)
             await _upsert_docs(tx, org, _RECORDS, all_bases)
             for coll in sorted(c for c in by_type if c):
-                types = [_node(r.to_arango_record(), coll) for r in by_type[coll]]
+                types = types_by_type[coll]
                 await _upsert_docs(tx, org, coll, types)
                 edges = {b["id"]: {"fi": b["id"], "ti": t["id"], "doc": {"createdAtTimestamp": now, "updatedAtTimestamp": now}}
                          for b, t in zip(bases_by_type[coll], types, strict=True)}
@@ -274,6 +299,7 @@ class RecordsMixin(PgBase):
         if not ids:
             return []
         extra = {"queuedAtTimestamp": get_epoch_timestamp_in_ms()} if new_status == ProgressStatus.QUEUED.value else {}
+        _VALIDATOR.validate_node_update(_RECORDS, {"indexingStatus": new_status, **extra})
         # A database error raises (Neo4j logs it and returns []): the Kafka handler reads [] as "the record moved on" and discards the message, which
         # would drop the final FAILED marking and leave the record in its old status; raising lets the consumer retry.
         rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.compare_and_set_indexing_status */ UPDATE graph.nodes
@@ -283,11 +309,13 @@ class RecordsMixin(PgBase):
         return [r["id"] for r in rows]
 
     async def update_indexing_status_for_record_ids(self, record_ids: list[str], status: str) -> None:
-        """Set the status of each existing record that is neither internal nor a placeholder; a failure is logged, not raised."""
+        """Set the status of each existing record that is neither internal nor a placeholder; a database failure is logged, not raised, but a
+        status the schema rejects is (it is validated first, and is an update: a missing record stays missing)."""
         org = current_org_id()
         ids = _uniq(record_ids)
         if not ids:
             return
+        _VALIDATOR.validate_node_update(_RECORDS, {"indexingStatus": status})
         try:
             await self._q(lambda tx: tx.execute("""/* pipeshub:graph.update_indexing_status_for_record_ids */ UPDATE graph.nodes
                 SET doc = doc || jsonb_build_object('indexingStatus', $3::text)

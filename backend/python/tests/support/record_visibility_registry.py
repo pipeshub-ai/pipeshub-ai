@@ -62,6 +62,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         Rule.LIVE, "the batch access check behind every open, listing and search hit: trashed means no access",
     ),
     "check_record_access_with_details": (Rule.LIVE, "the access check: trashed means no access"),
+    "get_organization_record_reach": (Rule.LIVE, "a trashed record does not make an extracted organisation searchable"),
     "get_accessible_virtual_record_ids": (Rule.LIVE, "the search permission map"),
     "filter_accessible_virtual_record_ids": (Rule.LIVE, "search permission check"),
     "filter_accessible_record_ids": (Rule.LIVE, "search permission check"),
@@ -163,6 +164,9 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "find_legacy_taxonomy_nodes": (
         Rule.ALL, "counts a trashed record's legacy edges, which migrate-legacy must move as well",
     ),
+    "find_merged_taxonomy_nodes_with_edges": (
+        Rule.ALL, "counts a trashed record's edges on a merged node, which the sweep must move as well",
+    ),
     "get_record_path": (Rule.ALL, _STRUCTURE),
     "get_record_path_segments": (Rule.ALL, "storage path of a record the caller already resolved"),
     "get_records_in_delete_batch": (
@@ -223,4 +227,5 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "record_purge_failure": (Rule.WRITE, "counts only on records still in the trash"),
     "delete_blocks_for_records": (Rule.WRITE, ""),
     "batch_upsert_node_relations": (Rule.WRITE, ""),
+    "delete_record_entity_relations": (Rule.WRITE, "one record's own edges, whatever its state"),
 }

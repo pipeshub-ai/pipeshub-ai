@@ -9383,6 +9383,15 @@ components:
                 - agent
                 - internal_search
                 - web_search
+            compareTurn:
+              type: boolean
+              description: |
+                Compare models: this turn is also being answered by a second model in a
+                hidden branch (`POST /conversations/{conversationId}/compare/branch`).
+                When `true` and the `ENABLE_CHAT_COMPARE` feature flag is on, the
+                stream emits `CUSTOM` `{ name: "turn_started", value: { conversationId, userMessageId } }`
+                right after the question is saved and before the model starts. Ignored
+                otherwise; a request without it streams exactly as before.
     CreateAgentConversationResponse:
       type: object
       description: |
@@ -9985,6 +9994,15 @@ components:
                 - agent
                 - internal_search
                 - web_search
+            compareTurn:
+              type: boolean
+              description: |
+                Compare models: this turn is also being answered by a second model in a
+                hidden branch (`POST /conversations/{conversationId}/compare/branch`).
+                When `true` and the `ENABLE_CHAT_COMPARE` feature flag is on, the
+                stream emits `CUSTOM` `{ name: "turn_started", value: { conversationId, userMessageId } }`
+                right after the question is saved and before the model starts. Ignored
+                otherwise; a request without it streams exactly as before.
     AddMessageResponse:
       type: object
       additionalProperties: false
@@ -17558,6 +17576,7 @@ components:
             - ENABLE_ACTIONS: Allow agents to use toolset actions and show Actions management in the UI
             - ENABLE_VECTOR_STORE_REBUILD: Allow admins to clean up and reindex the vector store
             - ENABLE_PROJECTS: Organize conversations, files and instructions into project workspaces (default: false)
+            - ENABLE_CHAT_COMPARE: Let users send one question to two models and choose the better answer (default: false)
             - ENABLE_SKILLS: Allow users to create, import and manage Skills (SKILL.md packages) and let agents load them (default: true)
             - ENABLE_SOFT_DELETE: Move deleted records to the trash instead of removing them at once (default: false)
             - ENABLE_USER_CONTEXT: Include the current user's name, email, and organization in default assistant / Universal Agent system prompts (default: true)
@@ -18299,7 +18318,7 @@ components:
           type: string
           description: |
             Unique feature flag key. Current keys: ENABLE_MCP, ENABLE_API_TOOLSETS, ENABLE_ACTIONS,
-            ENABLE_VECTOR_STORE_REBUILD, ENABLE_PROJECTS, ENABLE_SKILLS, ENABLE_SOFT_DELETE,
+            ENABLE_VECTOR_STORE_REBUILD, ENABLE_PROJECTS, ENABLE_CHAT_COMPARE, ENABLE_SKILLS, ENABLE_SOFT_DELETE,
             ENABLE_NAMED_ENTITY_EXTRACTION, ENABLE_ARTIFACT_WRITE,
             ENABLE_ARTIFACT_READ_SHADOW, ENABLE_ARTIFACT_READ, ENABLE_USER_CONTEXT, ENABLE_KH_SCOPE_LISTING.
             ENABLE_BETA_CONNECTORS is hidden and never listed here.
@@ -24729,6 +24748,144 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+    MyToolsetsList:
+      description: Toolsets retrieved successfully
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status:
+                type: string
+                example: success
+              pagination:
+                type: object
+                properties:
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+                  total:
+                    type: integer
+                  totalPages:
+                    type: integer
+                  hasNext:
+                    type: boolean
+                  hasPrev:
+                    type: boolean
+              filterCounts:
+                type: object
+                properties:
+                  all:
+                    type: integer
+                  authenticated:
+                    type: integer
+                  notAuthenticated:
+                    type: integer
+              toolsets:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    instanceId:
+                      type: string
+                      description: Empty string for registry-only (synthetic) entries.
+                    instanceName:
+                      type: string
+                    toolsetType:
+                      type: string
+                    authType:
+                      type: string
+                      enum: [OAUTH, API_TOKEN, BASIC_AUTH, BEARER_TOKEN, USERNAME_PASSWORD, NONE]
+                    oauthConfigId:
+                      type: string
+                      nullable: true
+                    displayName:
+                      type: string
+                    description:
+                      type: string
+                    iconPath:
+                      type: string
+                    category:
+                      type: string
+                      description: Toolset category from the backend ToolsetCategory enum.
+                      enum:
+                        - app
+                        - file
+                        - file_storage
+                        - web_search
+                        - search
+                        - research
+                        - utility
+                        - communication
+                        - productivity
+                        - database
+                        - calendar
+                        - project_management
+                        - documentation
+                        - code_execution
+                      example: app
+                    supportedAuthTypes:
+                      type: array
+                      items:
+                        type: string
+                    documentationLinks:
+                      type: array
+                      items:
+                        type: object
+                        additionalProperties: false
+                        properties:
+                          title:
+                            type: string
+                          url:
+                            type: string
+                          type:
+                            type: string
+                            description: Link category, e.g. setup or pipeshub.
+                    toolCount:
+                      type: integer
+                    tools:
+                      type: array
+                      items:
+                        type: object
+                        additionalProperties: false
+                        properties:
+                          name:
+                            type: string
+                          fullName:
+                            type: string
+                          description:
+                            type: string
+                    isConfigured:
+                      type: boolean
+                    isAuthenticated:
+                      type: boolean
+                    isFromRegistry:
+                      type: boolean
+                      description: true for registry-only (synthetic) entries.
+                    createdBy:
+                      type: string
+                      description: User ID that created the instance. Absent on registry-only entries.
+                    scope:
+                      type: string
+                      enum: [org, personal]
+                      description: >-
+                        `org` for the organization's instances, `personal` for the caller's own. Absent on
+                        registry-only entries.
+                    createdAtTimestamp:
+                      type: integer
+                      format: int64
+                      description: Epoch millis. Absent on registry-only entries.
+                    updatedAtTimestamp:
+                      type: integer
+                      format: int64
+                      description: Epoch millis. Absent on registry-only entries.
+                    auth:
+                      type: object
+                      nullable: true
+                      description: The credential fields the calling user saved for a non-OAuth instance, returned as stored (an API token is not masked). Null when the user saved none or the instance uses OAuth. Absent on registry-only entries.
+                      additionalProperties: true
 security:
   - bearerAuth: []
   - oauth2: []
@@ -46479,6 +46636,207 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /conversations/{conversationId}/compare/branch:
+    post:
+      tags:
+        - Conversations
+      summary: Create the hidden branch of a Compare models turn
+      description: |
+        Compare models: creates a hidden branch conversation holding the
+        conversation's messages before the given question, so a second model can
+        answer the same question there. The client then streams the question in the
+        branch with the ordinary `POST /conversations/{branchConversationId}/messages/stream`
+        using the second model. The branch has the owner, organization and project of
+        the conversation, is never shared, and never appears in any list or search; it
+        can be opened by id by its owner. A branch from an earlier try is deleted first.
+        Requires the `ENABLE_CHAT_COMPARE` feature flag; owner only.
+      operationId: createCompareBranch
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userMessageId]
+              properties:
+                userMessageId:
+                  type: string
+                  format: objectId
+                  description: The `user_query` message of this conversation to re-ask.
+      responses:
+        '200':
+          description: The branch was created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  branchConversationId:
+                    type: string
+                    format: objectId
+        '400':
+          description: Invalid body, or the conversation is an agent chat.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Compare models is turned off for the workspace.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Conversation or question not found, not owned by the caller, or the message is not a question.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The question already has the most branches allowed (a concurrent duplicate request).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /conversations/{conversationId}/compare:
+    get:
+      tags:
+        - Conversations
+      summary: List the Compare models branches of a conversation
+      description: |
+        Used to restore the compare view after a reload. Owner only; an empty
+        array when there is none. Requires the `ENABLE_CHAT_COMPARE` feature flag.
+      operationId: listCompareBranches
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:read]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '200':
+          description: The branches.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  branches:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        branchConversationId:
+                          type: string
+                          format: objectId
+                        userMessageId:
+                          type: string
+                          format: objectId
+                          description: The question of this conversation the branch re-asks.
+        '400':
+          description: The conversation is an agent chat.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Compare models is turned off for the workspace.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Conversation not found or not owned by the caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /conversations/{conversationId}/compare/choose:
+    post:
+      tags:
+        - Conversations
+      summary: Choose the answer to keep (Compare models)
+      description: |
+        `primary` keeps the conversation as it is and deletes the branches (safe to
+        repeat). A branch id replaces the conversation's messages from the compared
+        question onward with the branch's turn (question, answer, tool calls, citations,
+        model, parts), sets the conversation's status and model from the branch, and
+        deletes the branches; the client then refetches the conversation. A conversation
+        that is only waiting on a question card may be chosen over. Requires the
+        `ENABLE_CHAT_COMPARE` feature flag; owner only.
+      operationId: chooseCompare
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [choice]
+              properties:
+                choice:
+                  type: string
+                  description: The literal `primary`, or a `branchConversationId`.
+      responses:
+        '200':
+          description: Done.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  already:
+                    type: boolean
+                    description: True when the conversation has no branch left, i.e. the choice was already made.
+        '400':
+          description: Invalid body, or the conversation is an agent chat.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Compare models is turned off for the workspace.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Conversation or branch not found, or not owned by the caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The branch or the conversation is still being answered, or the branch has no answer yet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /conversations/{conversationId}/message/{messageId}/regenerate:
     post:
       tags:
@@ -50467,8 +50825,15 @@ paths:
         **Permissions**
 
         The authenticated user must have `can_edit` on the agent (typically the
-        owner). Service-account and `shareWithOrg` transitions follow additional
-        Python business rules.
+        owner). Turning on `shareWithOrg` for an agent that is not shared also
+        needs `can_share`. Converting a regular agent into a service-account
+        agent (changing `isServiceAccount` from `false` to `true`) is limited
+        to the agent's owner or an organization administrator, because a
+        service-account agent searches with its creator's access unless it is
+        bound to a service account (`serviceAccountUserId`). A conversion
+        may turn on `shareWithOrg` in the same request without `can_share`.
+        Resending `isServiceAccount: true` for an agent that is already a
+        service-account agent needs no extra permission.
 
         **Success response**
 
@@ -50512,7 +50877,11 @@ paths:
           description: |
             `HTTP_FORBIDDEN`: the OAuth access token lacks the `agent:write` scope,
             or the caller can see the agent (for example one shared with the
-            organization) but is not its owner, so may not edit it.
+            organization) but is not its owner, so may not edit it. Also returned
+            when an editor without `can_share` turns on `shareWithOrg`, when an
+            editor who is neither the owner nor an administrator converts a
+            regular agent by setting `isServiceAccount: true`, and when someone
+            other than an administrator changes `serviceAccountUserId`.
           content:
             application/json:
               schema:
@@ -50543,6 +50912,16 @@ paths:
             Unexpected AI-backend or gateway failure.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The change needs the caller's organization role (converting a
+            regular agent by setting `isServiceAccount: true` as a non-owner, or
+            changing `serviceAccountUserId`) and the role could not be confirmed just
+            now. Nothing was saved; retry.
           content:
             application/json:
               schema:
@@ -57020,15 +57399,18 @@ paths:
         - Toolset Instances
       summary: List configured toolsets
       description: |-
-        Meant to return the toolsets configured for the authenticated user, in the shape of `GET
-        /toolsets/my-toolsets`. It currently fails for every caller: once the token and scope checks
-        pass, the connector service raises an internal error whatever is configured, and the answer is
-        `500`. Use `GET /toolsets/my-toolsets` instead. The query string is not read.
+        Legacy alias of `GET /toolsets/my-toolsets`: the toolsets configured for the authenticated user,
+        merged with that user's authentication status, in the same response shape. The query string is
+        not forwarded to the connector service, so this always answers the first page with its defaults
+        (at most 20 items, with `pagination` and `filterCounts`); call `GET /toolsets/my-toolsets` to
+        page, search or filter.
       operationId: listConfiguredToolsets
       security:
         - bearerAuth: []
         - oauth2: [toolset:read]
       responses:
+        '200':
+          $ref: '#/components/responses/MyToolsetsList'
         '400':
           $ref: '#/components/responses/XssRejected'
         '401':
@@ -57048,9 +57430,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Every request that passes the token and scope checks (`HTTP_INTERNAL_SERVER_ERROR`, "Something
-            went wrong while PipesHub tried to getting configured toolsets..."), for administrators and
-            members, with or without configured instances.
+            Unexpected error, or an unmapped error forwarded from the connector backend.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -57820,143 +58200,7 @@ paths:
             type: string
       responses:
         '200':
-          description: Toolsets retrieved successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    example: success
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      total:
-                        type: integer
-                      totalPages:
-                        type: integer
-                      hasNext:
-                        type: boolean
-                      hasPrev:
-                        type: boolean
-                  filterCounts:
-                    type: object
-                    properties:
-                      all:
-                        type: integer
-                      authenticated:
-                        type: integer
-                      notAuthenticated:
-                        type: integer
-                  toolsets:
-                    type: array
-                    items:
-                      type: object
-                      additionalProperties: false
-                      properties:
-                        instanceId:
-                          type: string
-                          description: Empty string for registry-only (synthetic) entries.
-                        instanceName:
-                          type: string
-                        toolsetType:
-                          type: string
-                        authType:
-                          type: string
-                          enum: [OAUTH, API_TOKEN, BASIC_AUTH, BEARER_TOKEN, USERNAME_PASSWORD, NONE]
-                        oauthConfigId:
-                          type: string
-                          nullable: true
-                        displayName:
-                          type: string
-                        description:
-                          type: string
-                        iconPath:
-                          type: string
-                        category:
-                          type: string
-                          description: Toolset category from the backend ToolsetCategory enum.
-                          enum:
-                            - app
-                            - file
-                            - file_storage
-                            - web_search
-                            - search
-                            - research
-                            - utility
-                            - communication
-                            - productivity
-                            - database
-                            - calendar
-                            - project_management
-                            - documentation
-                            - code_execution
-                          example: app
-                        supportedAuthTypes:
-                          type: array
-                          items:
-                            type: string
-                        documentationLinks:
-                          type: array
-                          items:
-                            type: object
-                            additionalProperties: false
-                            properties:
-                              title:
-                                type: string
-                              url:
-                                type: string
-                              type:
-                                type: string
-                                description: Link category, e.g. setup or pipeshub.
-                        toolCount:
-                          type: integer
-                        tools:
-                          type: array
-                          items:
-                            type: object
-                            additionalProperties: false
-                            properties:
-                              name:
-                                type: string
-                              fullName:
-                                type: string
-                              description:
-                                type: string
-                        isConfigured:
-                          type: boolean
-                        isAuthenticated:
-                          type: boolean
-                        isFromRegistry:
-                          type: boolean
-                          description: true for registry-only (synthetic) entries.
-                        createdBy:
-                          type: string
-                          description: User ID that created the instance. Absent on registry-only entries.
-                        scope:
-                          type: string
-                          enum: [org, personal]
-                          description: >-
-                            `org` for the organization's instances, `personal` for the caller's own. Absent on
-                            registry-only entries.
-                        createdAtTimestamp:
-                          type: integer
-                          format: int64
-                          description: Epoch millis. Absent on registry-only entries.
-                        updatedAtTimestamp:
-                          type: integer
-                          format: int64
-                          description: Epoch millis. Absent on registry-only entries.
-                        auth:
-                          type: object
-                          nullable: true
-                          description: The credential fields the calling user saved for a non-OAuth instance, returned as stored (an API token is not masked). Null when the user saved none or the instance uses OAuth. Absent on registry-only entries.
-                          additionalProperties: true
+          $ref: '#/components/responses/MyToolsetsList'
         '400':
           description: |
             Invalid query parameters (`VALIDATION_ERROR`, with `metadata.errors` naming each one): `page`
@@ -60974,7 +61218,8 @@ paths:
         '500':
           description: |
             Unexpected failure in the gateway or in the connectors service, including an MCP server that
-            could not be reached or answered with an error other than a sign-in request (the connectors
+            could not be reached or answered with an error other than a sign-in request, or a sign-in that
+            couldn't be renewed because its provider is down, rate-limiting or busy (the connectors
             service answers `502`, which the gateway reports as `500`).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
@@ -69369,6 +69614,7 @@ paths:
         - ENABLE_ACTIONS: Enable toolset actions (default: true)
         - ENABLE_VECTOR_STORE_REBUILD: Enable vector store cleanup/reindex from Connectors (default: false)
         - ENABLE_PROJECTS: Enable Projects — project workspaces for conversations, files and instructions (default: false)
+        - ENABLE_CHAT_COMPARE: Compare models in chat — one question answered by two models side by side (default: false)
         - ENABLE_SKILLS: Enable Skills — SKILL.md packages agents can load (default: true)
         - ENABLE_SOFT_DELETE: Move deleted records to the trash instead of removing them at once (default: false)
         - ENABLE_USER_CONTEXT: Include user name, email, and organization in default assistant / Universal Agent system prompts (default: true)
@@ -73532,7 +73778,6 @@ paths:
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [semantic:write]
         - oauth2: [semantic:read]
       requestBody:
         required: true
@@ -73610,7 +73855,6 @@ paths:
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [semantic:write]
         - oauth2: [semantic:read]
       requestBody:
         required: true
@@ -73669,7 +73913,6 @@ paths:
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [semantic:write]
         - oauth2: [semantic:read]
       requestBody:
         required: true

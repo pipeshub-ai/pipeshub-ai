@@ -36,7 +36,7 @@ async def _services() -> dict[str, Any]:
     graph.batch_upsert_nodes = AsyncMock(return_value=True)
     graph.batch_create_edges = AsyncMock(return_value=True)
     graph.commit_transaction = AsyncMock()
-    graph.check_agent_permission = AsyncMock(return_value={"can_edit": True})
+    graph.check_agent_permission = AsyncMock(return_value={"can_edit": True, "can_share": True, "user_role": "OWNER"})
     graph.update_agent = AsyncMock(return_value=True)
     return {"graph_provider": graph, "logger": MagicMock(), "config_service": config}
 

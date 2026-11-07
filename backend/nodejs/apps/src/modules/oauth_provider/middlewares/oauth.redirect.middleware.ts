@@ -19,6 +19,7 @@ import { Logger } from '../../../libs/services/logger.service'
 import { AuthTokenService } from '../../../libs/services/authtoken.service'
 import { makeOrgContext, runWithOrgContext } from '../../../libs/context/orgContext';
 import { findSessionRefusal } from '../../../libs/utils/user-session.utils';
+import { setContextIdentity } from '../../../libs/context/request-context';
 
 /**
  * Creates a middleware that redirects to frontend for OAuth authentication
@@ -66,6 +67,9 @@ export function createOAuthRedirectMiddleware(
         return;
       }
 
+      // Bound before the session check, so a refused session's line says whose it was.
+      setContextIdentity(decoded);
+
       // A valid signature is not a live session: a personal access token, an
       // OAuth token or a signed-out session has to sign in again first.
       const refusal = await findSessionRefusal(decoded, logger);
@@ -89,7 +93,7 @@ export function createOAuthRedirectMiddleware(
         role: decoded.role,
         accountType: decoded.accountType,
       }
-      logger.debug('OAuth request authenticated', { userId: decoded.userId })
+      logger.debug('OAuth request authenticated');
       // The handler after this reads the person's organisation, which PostgreSQL needs bound.
       const orgId = decoded.orgId as string | undefined;
       if (orgId) {

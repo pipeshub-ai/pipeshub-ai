@@ -32,6 +32,7 @@ from app.containers.connector import (
 )
 from app.edition_services import get_data_entities_processor_cls
 from app.modules.indexing.record_republish import record_event
+from app.schema.node_validator import SchemaValidationError
 from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
@@ -39,6 +40,7 @@ from app.services.graph_db.common.record_visibility import (
 )
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.telemetry.modules.schema_metrics import record_schema_rejection
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import CONNECTOR_OFF
 
@@ -110,6 +112,13 @@ class EntityEventService(BaseEventService):
             else:
                 self.logger.error(f"Unknown entity event type: {event_type}")
                 return False
+        except SchemaValidationError as e:
+            # Permanent: redelivering the event cannot make the payload valid. Handled, not retried.
+            # The data processor marks an error it already logged and counted: report it once.
+            if not getattr(e, "schema_reported", False):
+                self.logger.error(f"Entity event {event_type} rejected by schema validation (collection={e.collection}): {e}")
+                record_schema_rejection(e.collection)
+            return True
         except Exception as e:
             self.logger.error(f"Error processing entity event: {str(e)}")
             return False
@@ -207,6 +216,8 @@ class EntityEventService(BaseEventService):
 
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error creating organization: {str(e)}")
             return False
@@ -233,6 +244,8 @@ class EntityEventService(BaseEventService):
             )
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error updating organization: {str(e)}")
             return False
@@ -264,6 +277,8 @@ class EntityEventService(BaseEventService):
             await self._remove_api_toolset_data(payload["orgId"])
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error deleting organization: {str(e)}")
             return False
@@ -272,7 +287,7 @@ class EntityEventService(BaseEventService):
     async def _handle_user_added(self, payload: dict) -> bool:
         """Handle user creation event"""
         try:
-            self.logger.info(f"📥 Processing user added event: {payload}")
+            self.logger.info("Processing user added event for user %s", payload.get("userId"))
             # raise_on_error: the providers answer None to a failed read too, and
             # "nobody" here would mint a second user for someone who is there.
             existing_user = await self.graph_provider.get_user_by_email(
@@ -373,12 +388,12 @@ class EntityEventService(BaseEventService):
             # Get or create "All" team for org and add user with PERMISSION edge
             await self._get_or_create_all_team_and_add_user(payload["orgId"], user_key)
 
-            self.logger.info(
-                f"✅ Successfully created/updated user: {payload['email']}"
-            )
+            self.logger.info("Created or updated user %s", payload["userId"])
             self._schedule_connector_link(payload["orgId"])
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error creating/updating user: {str(e)}")
             return False
@@ -444,7 +459,7 @@ class EntityEventService(BaseEventService):
     async def _handle_user_updated(self, payload: dict) -> bool:
         """Handle user update event"""
         try:
-            self.logger.info(f"📥 Processing user updated event: {payload}")
+            self.logger.info("Processing user updated event for user %s", payload.get("userId"))
             # Find existing user by userId
             existing_user = await self.graph_provider.get_user_by_user_id(
                 payload["userId"],
@@ -525,9 +540,11 @@ class EntityEventService(BaseEventService):
                     {"isActive": None},
                 )
 
-            self.logger.info(f"✅ Successfully updated user: {payload['email']}")
+            self.logger.info("Updated user %s", payload["userId"])
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error updating user: {str(e)}")
             return False
@@ -535,13 +552,13 @@ class EntityEventService(BaseEventService):
     async def _handle_user_deleted(self, payload: dict) -> bool:
         """Handle user deletion event"""
         try:
-            self.logger.info(f"📥 Processing user deleted event: {payload}")
+            self.logger.info("Processing user deleted event for user %s", payload.get("userId"))
             # Find existing user by email
             existing_user_id = await self.graph_provider.get_entity_id_by_email(
                 payload["email"]
             )
             if not existing_user_id:
-                self.logger.error(f"User not found with mail: {payload['email']}")
+                self.logger.error("No graph user has the deleted user's email (user %s)", payload.get("userId"))
                 return False
 
             org_id = payload["orgId"]
@@ -559,13 +576,15 @@ class EntityEventService(BaseEventService):
             )
             # At once, not after the cleanup below: until it moves, a scope read before the delete is still served.
             await notify_principals_changed(org_id)
-            self.logger.info(f"✅ Successfully soft-deleted user: {payload['email']}")
+            self.logger.info("Soft-deleted graph user %s", existing_user_id)
             if payload.get("userId"):
                 await self._remove_mcp_data("user", payload["orgId"], payload["userId"])
                 await self._remove_personal_toolsets("user", payload["orgId"], payload["userId"])
                 await self._remove_api_toolset_data(payload["orgId"], payload["userId"])
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error deleting user: {str(e)}")
             return False
@@ -655,6 +674,8 @@ class EntityEventService(BaseEventService):
             self.logger.info(f"✅ Successfully enabled apps for org: {org_id}")
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error enabling apps: {str(e)}")
             return False
@@ -674,7 +695,6 @@ class EntityEventService(BaseEventService):
             self.logger.info(f"📥 Processing app disabled event: {payload}")
 
             # Set apps as inactive
-            app_updates = []
             for app_name in apps:
                 app_doc = await self.graph_provider.get_document(
                     connector_id, CollectionNames.APPS.value
@@ -682,21 +702,16 @@ class EntityEventService(BaseEventService):
                 if not app_doc:
                     self.logger.error(f"App not found: {app_name}")
                     return False
-                app_data = {
-                    "id": connector_id,
-                    "name": app_doc.get("name", app_doc.get("_key", connector_id)),
-                    "type": app_doc.get("type"),
-                    "appGroup": app_doc.get("appGroup"),
-                    "isActive": False,
-                    "createdAtTimestamp": app_doc.get("createdAtTimestamp"),
-                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                }
-                app_updates.append(app_data)
 
-            # Update apps in database
-            await self.graph_provider.batch_upsert_nodes(
-                app_updates, CollectionNames.APPS.value
-            )
+            # Update apps in database. Only the two fields that change: rebuilding the
+            # whole document from the stored one would write None for a field a legacy
+            # app lacks, which the schema (rightly) rejects.
+            for _ in apps:
+                await self.graph_provider.update_node(
+                    connector_id,
+                    CollectionNames.APPS.value,
+                    {"isActive": False, "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
+                )
             await notify_principals_changed(org_id)  # before the (slow) cleanup below; see process_event
 
             # Stop any running sync/reindex and wait for it to unwind, bounded:
@@ -774,6 +789,8 @@ class EntityEventService(BaseEventService):
             self.logger.info(f"✅ Successfully disabled apps for org: {org_id}")
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error disabling apps: {str(e)}")
             return False
@@ -789,14 +806,9 @@ class EntityEventService(BaseEventService):
         try:
             mode = await self.graph_provider.migrate_person_to_user(email, user_key, org_id)
             if mode:
-                self.logger.info(
-                    f"✅ Adopted existing person for {email} ({mode})"
-                )
+                self.logger.info("Adopted existing person for user %s (%s)", user_key, mode)
         except Exception as e:
-            self.logger.error(
-                f"❌ Failed to adopt existing person for {email}: {str(e)}",
-                exc_info=True,
-            )
+            self.logger.error("Failed to adopt existing person for user %s: %s", user_key, e, exc_info=True)
 
     async def _start_requeue_of_parked_records(self, connector_id: str) -> None:
         """Queue again, in the background, what was parked while the connector was off.

@@ -998,6 +998,8 @@ export interface StreamChatRequest {
   projectId?: string;
   /** The person's answer to a tool approval card; the call itself is saved server-side. */
   toolApproval?: ToolApprovalAnswer;
+  /** Compare mode only: asks the server for a `turn_started` event once the question is saved. */
+  compareTurn?: true;
 }
 
 export type ToolApprovalDecision = 'allow' | 'deny';

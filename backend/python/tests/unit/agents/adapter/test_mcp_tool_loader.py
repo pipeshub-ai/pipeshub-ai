@@ -25,6 +25,10 @@ from app.agents.mcp.service import (
     instance_config_from_dict,
 )
 from tests.unit.agents.adapter.conftest import make_context
+from tests.unit.agents.mcp.refresh_failures import (
+    lock_contention_error,
+    token_endpoint_error,
+)
 
 
 def _instance(instance_id: str = "inst-1", *, type_id: str = "jira_mcp") -> dict[str, Any]:
@@ -443,6 +447,21 @@ class TestRefreshOnExpiredTokenAtDiscovery:
 
         assert fake_sessions.seen_tokens == ["Bearer old"]
         assert context.mcp_tool_load_failures[0]["reason"] == "auth_expired"
+
+    @pytest.mark.parametrize("make_failure", [
+        pytest.param(lambda: token_endpoint_error(503, {"error": "temporarily_unavailable"}), id="provider-503"),
+        pytest.param(lock_contention_error, id="lock-held"),
+    ])
+    async def test_a_refresh_that_couldnt_run_is_recorded_as_unreachable(
+        self, monkeypatch: pytest.MonkeyPatch, fake_sessions: type[_FakeClientManager], make_failure: Any,  # noqa: ANN401
+    ) -> None:
+        # The model is then told the server is temporarily unavailable, not to reconnect it.
+        monkeypatch.setattr(mcp_session_module, "refresh_credential_record", AsyncMock(side_effect=await make_failure()))
+        context = _oauth_context()
+
+        await MCPToolProvider().load_into(ToolRegistry(), context)
+
+        assert context.mcp_tool_load_failures[0]["reason"] == "unreachable"
 
 
 class TestOneConnectionPerTurn:

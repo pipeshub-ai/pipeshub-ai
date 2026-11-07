@@ -217,6 +217,9 @@ class KBAppsMigrationService:
                 continue
             try:
                 result = await self.graph_provider.migrate_agent_hub_knowledge(org_id)
+                # The provider reports a failed write as {"error": ...} instead of raising.
+                if result.get("error"):
+                    raise RuntimeError(result["error"])
                 migrated = result.get("agents_migrated", 0)
                 agents_migrated_total += migrated
                 if migrated:

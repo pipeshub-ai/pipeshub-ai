@@ -37,11 +37,9 @@ _MD_MODULE = DoclingMarkdownParser.parse_string.__globals__["markdown_lib"]
 
 @pytest.fixture
 def docling_parser():
-    with patch.dict("sys.modules", _DOCLING_MOCKS):
-        with patch(
-            "app.modules.parsers.markdown.docling_markdown_parser.DocumentConverter"
-        ):
-            return DoclingMarkdownParser()
+    parser = DoclingMarkdownParser()
+    parser.converter = MagicMock()
+    return parser
 
 
 @pytest.fixture

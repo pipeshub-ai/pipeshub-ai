@@ -84,6 +84,8 @@ export interface StreamMessageCallbacks {
    * straight into slot state. No legacy equivalent; safe to no-op.
    */
   onParts?: (parts: MessagePart[]) => void;
+  /** Compare mode: the question is saved and its id known, so the branch for the second model can start. */
+  onTurnStarted?: (data: { conversationId?: string; userMessageId?: string }) => void;
   onError?: (error: Error) => void;
   signal?: AbortSignal;
 }

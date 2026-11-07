@@ -96,11 +96,13 @@ export type ConnectorType =
   | 'posthog'
   | 'brave'
   | 'stripe'
+  | 'paypal'
   | 'vercel'
   | 'docusign'
   | 'okta'
   | 'zapier'
   | 'trello'
+  | 'cloudflare'
   // Generic / Fallback
   | 'web'
   | 'api'
@@ -201,11 +203,13 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'posthog': { svg: null, fallback: 'insights' },
   'brave': { svg: svg('brave'), fallback: 'travel_explore' },
   'stripe': { svg: svg('stripe'), fallback: 'payments' },
+  'paypal': { svg: svg('paypal'), fallback: 'payments' },
   'vercel': { svg: svg('vercel'), fallback: 'code' },
   'docusign': { svg: svg('docusign'), fallback: 'draw' },
   'okta': { svg: svg('okta'), fallback: 'badge' },
   'zapier': { svg: svg('zapier'), fallback: 'bolt' },
   'trello': { svg: svg('trello'), fallback: 'view_kanban' },
+  'cloudflare': { svg: svg('cloudflare'), fallback: 'cloud' },
   // Generic / Fallback
   'web': { svg: svg('web'), fallback: 'language' },
   // API toolsets (admin-uploaded OpenAPI specs)
@@ -270,10 +274,12 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['hugging-face', 'huggingface'], ['huggingface', 'huggingface'],
   ['brave', 'brave'],
   ['stripe', 'stripe'],
+  ['paypal', 'paypal'],
   ['vercel', 'vercel'],
   ['docusign', 'docusign'], ['okta', 'okta'],
   ['zapier', 'zapier'],
   ['trello', 'trello'],
+  ['cloudflare', 'cloudflare'],
   // Broad fallbacks (last — only match if nothing specific matched)
   // Google toolset slugs are bare (`docs`, `sheets`); check them before the `google` catch-all.
   ['docs', 'google-docs'], ['sheets', 'google-sheets'],

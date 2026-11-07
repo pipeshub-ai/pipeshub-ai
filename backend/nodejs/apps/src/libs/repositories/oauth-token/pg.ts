@@ -7,7 +7,7 @@ import type { KnowledgeLimit } from '../../../modules/oauth_provider/types/oauth
 import { currentOrgContext } from '../../context/orgContext';
 import { ConflictError, InternalServerError } from '../../errors/http.errors';
 import { UniqueConstraintError } from '../errors';
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import { hashOpaqueToken } from './token-hash';
 import {
   assertOrg,

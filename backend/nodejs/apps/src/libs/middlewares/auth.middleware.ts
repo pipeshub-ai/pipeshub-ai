@@ -21,9 +21,9 @@ import { assertDelegationStillHolds } from '../../modules/oauth_provider/service
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
 import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
 import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
-import { setContextOrgId } from '../context/request-context';
+import { setContextIdentity } from '../context/request-context';
 import { recordAgentCall } from './agent-call-recorder';
-import { CALLER_ROLE_LOOKUP_PATH, MCP_PATH } from './rate-limit.middleware';
+import { MCP_PATH } from './rate-limit.middleware';
 
 const CLIENT_NAME_HEADER = 'client-name';
 const WEB_CLIENT_NAME = 'pipeshub-ai';
@@ -125,15 +125,16 @@ export class AuthMiddleware {
   ): Promise<void> {
     const decoded = await this.tokenService.verifyToken(token);
     req.user = decoded;
-    // Context middleware runs before auth, so this is the first point the org is known.
-    setContextOrgId(decoded.orgId);
+    // Context middleware runs before auth, so this is the first point the org is known. Bound before the session
+    // check on purpose: the signature is valid, so a refused session's 401 still says whose it was.
+    setContextIdentity({ orgId: decoded.orgId, userId: decoded.userId });
 
     const refusal = await findSessionRefusal(decoded, this.logger);
     if (refusal) {
       throw new UnauthorizedError(refusal);
     }
 
-    this.logger.debug('User authenticated', decoded);
+    this.logger.debug('User authenticated');
   }
 
   /**
@@ -150,13 +151,12 @@ export class AuthMiddleware {
     const payload = await oauthTokenService.verifyAccessToken(token);
 
     // Audience-bound tokens (RFC 8707) are only issued for /mcp, so one works elsewhere only
-    // as part of an /mcp tool call. The role lookup is also allowed: a Python service that a
-    // tool call reaches asks it to confirm the token is live, and it sends no relay header.
+    // as part of an /mcp tool call. That includes the role lookup a Python service makes for the
+    // call, which forwards the relay header it was sent.
     const route = `${req.baseUrl}${req.path}`.replace(/\/$/, '');
     if (
       payload.aud !== undefined &&
       route !== MCP_PATH &&
-      !(req.method === 'GET' && route === CALLER_ROLE_LOOKUP_PATH) &&
       !this.tokenService.isMcpRelay(req)
     ) {
       throw new UnauthorizedError('This token is only valid at /mcp');
@@ -321,7 +321,7 @@ export class AuthMiddleware {
       oauthScopes: tokenScopes,
       oauthAudience: payload.aud,
     };
-    setContextOrgId(orgId);
+    setContextIdentity({ orgId, userId });
     // The web app's client name lets an agent run wait for a person to approve a tool call.
     // An OAuth or personal access token is a program, not the web app, so it can't claim it.
     if (
@@ -358,11 +358,9 @@ export class AuthMiddleware {
 
         const userId = decoded?.userId as string | undefined;
         const orgId = decoded?.orgId as string | undefined;
-        setContextOrgId(orgId);
+        setContextIdentity({ orgId, userId });
 
-        this.logger.debug(
-          `userId: ${userId}, orgId: ${orgId}, scope: ${scope}`,
-        );
+        this.logger.debug('Scoped token verified', { scope });
 
         if (
           userId &&
@@ -393,7 +391,7 @@ export class AuthMiddleware {
           }
         }
 
-        this.logger.debug('User authenticated', decoded);
+        this.logger.debug('User authenticated');
         // Pre-org flows (login lookups, mail) mint scoped tokens without an orgId; they stay unbound.
         if (orgId) {
           runWithOrgContext(

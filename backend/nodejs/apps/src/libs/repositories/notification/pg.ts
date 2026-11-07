@@ -4,7 +4,7 @@
  * deleted row out of every read and change.
  */
 import { retentionCutoff } from '../../../modules/notification/utils/notification-api.utils';
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import { assertOrg, inUnit, newObjectId, oidOf } from '../pg-util';
 import type {
   NewNotification,
