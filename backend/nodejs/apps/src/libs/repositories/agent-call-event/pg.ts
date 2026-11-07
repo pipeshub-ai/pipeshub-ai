@@ -2,7 +2,7 @@
  * PostgreSQL implementation of the agent call repository (`DOC_STORE=postgres`). Every statement runs in the caller's org unit;
  * a row of another org is invisible. A rolled-up GET and a plain row share one INSERT: only a row with a `bucket` can conflict.
  */
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import { Params, assertOrg, inUnit, newObjectId, oidOf } from '../pg-util';
 import {
   STATUS_RANGES,
