@@ -111,26 +111,26 @@ class TestHttpStatusCodeClassification:
 class TestStatusCodeExtraction:
     """Test HTTP status code extraction from various exception types."""
 
-    def testextract_status_code_from_status_code_attr(self):
+    def test_extract_status_code_from_status_code_attr(self):
         """Test extraction from exception with status_code attribute."""
         exc = Exception("API error")
         exc.status_code = 503
         assert extract_status_code(exc) == 503
 
-    def testextract_status_code_from_status_attr(self):
+    def test_extract_status_code_from_status_attr(self):
         """Test extraction from exception with status attribute."""
         exc = Exception("API error")
         exc.status = 429
         assert extract_status_code(exc) == 429
 
-    def testextract_status_code_from_response_status_code(self):
+    def test_extract_status_code_from_response_status_code(self):
         """Test extraction from exception with response.status_code (httpx style)."""
         exc = Exception("HTTP error")
         exc.response = MagicMock()
         exc.response.status_code = 502
         assert extract_status_code(exc) == 502
 
-    def testextract_status_code_from_code_attr(self):
+    def test_extract_status_code_from_code_attr(self):
         """Test extraction from aiohttp ClientResponseError status."""
         try:
             import aiohttp
@@ -145,7 +145,7 @@ class TestStatusCodeExtraction:
         except ImportError:
             pytest.skip("aiohttp not available")
 
-    def testextract_status_code_from_boto_response(self):
+    def test_extract_status_code_from_boto_response(self):
         """Test extraction from boto3-style response dict."""
         exc = Exception("AWS error")
         exc.response = {
@@ -154,19 +154,19 @@ class TestStatusCodeExtraction:
         }
         assert extract_status_code(exc) == 503
 
-    def testextract_status_code_returns_none_when_missing(self):
+    def test_extract_status_code_returns_none_when_missing(self):
         """Test that None is returned when no status code is available."""
         exc = Exception("Generic error")
         assert extract_status_code(exc) is None
 
-    def testextract_status_code_ignores_string_status(self):
+    def test_extract_status_code_ignores_string_status(self):
         """Google-style string .status must not be treated as an HTTP code."""
         exc = Exception("Quota exceeded")
         exc.status = "RESOURCE_EXHAUSTED"
         exc.code = 429
         assert extract_status_code(exc) == 429
 
-    def testextract_status_code_string_status_alone_returns_none(self):
+    def test_extract_status_code_string_status_alone_returns_none(self):
         """String-only .status is ignored so classify does not TypeError."""
         exc = Exception("Quota exceeded")
         exc.status = "RESOURCE_EXHAUSTED"
