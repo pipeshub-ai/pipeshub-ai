@@ -103,7 +103,7 @@ async def fetch_unnormalized_users(
         return [
             {
                 "id": row["id"],
-                "orgId": row.get("orgId"),
+                "orgId": org_id,
                 "email": row["email"],
                 "newEmail": row["newEmail"],
             }
@@ -126,7 +126,7 @@ async def fetch_unnormalized_users(
         return [
             {
                 "id": r["id"],
-                "orgId": r.get("org_id"),
+                "orgId": org_id,
                 "email": r["email"],
                 "newEmail": r["new_email"],
             }
