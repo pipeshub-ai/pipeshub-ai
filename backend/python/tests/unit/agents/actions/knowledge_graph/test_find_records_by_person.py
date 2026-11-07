@@ -237,7 +237,44 @@ class TestPeopleWhoAreNotMembers:
         assert text.startswith("Records linked to Mia Member (mia@acme.test)")
         assert "not a member" not in own and "(not a member)" in ext
         assert listing.await_args.kwargs["nodes"] == [("users", "u-m"), ("person", "p-m")]
-        assert listing.probe.await_args.args[2] == [[("users", "u-m"), ("person", "p-m")]]
+        assert listing.probe.await_args.args[2] == [[("users", "u-m")], [("person", "p-m")]]
+
+
+    async def test_a_member_with_no_readable_record_of_her_own_is_never_named(self, listing) -> None:
+        member = {"id": "u-m", "fullName": "Mia Member", "email": "mia@acme.test"}
+        person = {"id": "p-m", "fullName": "Mia Outside", "email": "mia@acme.test"}
+        listing.pages["p-m"] = EntityRecordPage(records=[_row("r-ext")], next_cursor=None)
+        state = self._with([person], [member])
+        state["graph_provider"].get_record_people = AsyncMock(return_value=[])
+        _, text = await execute_find_records_by_person(state, "Mia Member")
+        assert text.startswith("Records linked to Mia Outside (not a member)")
+        assert "mia@acme.test" not in text and "Mia Member" not in text.replace('"Mia Member"', "") and "not to" not in text
+        assert listing.await_args.kwargs["nodes"] == [("person", "p-m")]
+        state["graph_provider"].get_record_people.assert_not_awaited()
+
+    async def test_a_member_with_nothing_readable_and_a_person_with_nothing_readable_read_as_no_match(self, listing) -> None:
+        member = {"id": "u-m", "fullName": "Mia Member", "email": "mia@acme.test"}
+        person = {"id": "p-m", "fullName": "Mia Member", "email": "mia@acme.test"}
+        _, nobody = await execute_find_records_by_person(self._with([]), "Mia Member")
+        _, text = await execute_find_records_by_person(self._with([person], [member]), "Mia Member")
+        assert text == nobody
+
+    async def test_the_one_reachable_namesake_is_not_cut_by_twenty_it_cannot_reach(self, listing) -> None:
+        many = [{"id": f"p-{i:03d}", "fullName": "Alex Kim", "email": f"alex{i}@partner.test"} for i in range(150)]
+        listing.pages["p-149"] = EntityRecordPage(records=[_row("r1")], next_cursor=None)
+        state = self._with([])
+        state["graph_provider"].find_people = AsyncMock(side_effect=lambda org, q, *, limit: many[:limit])
+        _, text = await execute_find_records_by_person(state, "Alex Kim")
+        assert text.startswith("Records linked to Alex Kim (not a member)") and "Ticket r1" in text
+        assert len(listing.probe.await_args.args[2]) == 150
+
+    async def test_namesakes_who_are_not_members_are_listed_without_an_email_hint(self, listing) -> None:
+        a = {"id": "p-a", "fullName": "Alex Kim", "email": "a@partner.test"}
+        b = {"id": "p-b", "fullName": "Alex Kim", "email": "b@partner.test"}
+        listing.pages["p-a"] = listing.pages["p-b"] = EntityRecordPage(records=[_row("r1")], next_cursor=None)
+        _, text = await execute_find_records_by_person(self._with([a, b]), "Alex Kim")
+        assert "partner.test" not in text and "with the person's email" not in text
+        assert text.count("(not a member)") >= 2 and "ask the user for more of the name" in text
 
 
 class TestRoles:

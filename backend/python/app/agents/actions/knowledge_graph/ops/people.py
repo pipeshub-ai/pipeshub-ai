@@ -67,6 +67,8 @@ _MAX_LIMIT = 50
 _DEFAULT_LIMIT = 20
 _MAX_READ_HINT_IDS = 8
 _USER_MATCH_LIMIT = 20
+# Non-members are fetched wider than they are shown: the one the user can reach must not be cut by namesakes they cannot.
+_PERSON_MATCH_LIMIT = 200
 NO_FURTHER_RECORDS_MSG = (
     "No further readable records for this person - the previous page was the last."
 )
@@ -200,7 +202,7 @@ async def _shown_people(
     # Both lookups always run, so a name that matches only a non-member costs the same as one that matches no one.
     members, outsiders = await asyncio.gather(
         graph.find_users(context.org_id, asked, limit=_USER_MATCH_LIMIT),
-        graph.find_people(context.org_id, asked, limit=_USER_MATCH_LIMIT),
+        graph.find_people(context.org_id, asked, limit=_PERSON_MATCH_LIMIT),
     )
     people = _people([
         *({**u, "collection": CollectionNames.USERS.value} for u in members),
@@ -208,11 +210,31 @@ async def _shown_people(
     ])
     if not people:
         return []
-    starts = await readable_person_offsets(
-        graph, context, [_nodes(group) for group in people],
+    # A group of a member and a Person is probed as its two halves in the same batch, so
+    # a member with no readable record of her own is told apart from one who has.
+    halves = [
+        [_nodes(_members(g)), _nodes([u for u in g if u not in _members(g)])]
+        if _members(g) and len(_members(g)) < len(g) else [_nodes(g)]
+        for g in people
+    ]
+    starts = iter(await readable_person_offsets(
+        graph, context, [nodes for pair in halves for nodes in pair],
         edge_types=edge_types, record_types=record_types,
-    )
-    return [(group, start) for group, start in zip(people, starts) if start is not None]
+    ))
+    shown = []
+    for group, pair in zip(people, halves):
+        found = [next(starts) for _ in pair]
+        readable = [s for s in found if s is not None]
+        if not readable:
+            continue
+        if len(pair) == 2 and found[0] is None:
+            # Only the Person's records are readable: she is shown as the non-member she is, never as the member.
+            shown_group = [u for u in group if u not in _members(group)]
+        else:
+            shown_group = group
+        # Each half's offset counts its own candidates, which are never later than the union's.
+        shown.append((shown_group, min(readable)))
+    return shown
 
 
 def _people(users: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -272,8 +294,11 @@ def _label(group: list[dict[str, Any]]) -> str:
 
 def _ambiguous(asked: str, groups: list[list[dict[str, Any]]]) -> str:
     lines = [f'Several people match "{_trunc(asked)}":']
-    lines.extend(f"- {_label(group)}" for group in groups)
-    lines.append("Call knowledgegraph__find_records_by_person again with the person's email.")
+    lines.extend(f"- {_label(group)}" for group in groups[:_USER_MATCH_LIMIT])
+    if any(_members(group) for group in groups):
+        lines.append("Call knowledgegraph__find_records_by_person again with the person's email.")
+    if any(not _members(group) for group in groups):
+        lines.append("People marked (not a member) have no email to give: ask the user for more of the name.")
     return "\n".join(lines)
 
 

@@ -68,6 +68,7 @@ async def _seed(provider: Any, org: str, other_org: str, app: str) -> None:  # n
     await provider.batch_upsert_nodes([
         {"id": f"{org}-me", "userId": f"{org}-me", "orgId": org, "email": f"me@{org}.test", "fullName": "Me Myself"},
         {"id": f"{org}-mia", "userId": f"{org}-mia", "orgId": org, "email": "mia@acme.test", "fullName": "Mia Member"},
+        {"id": f"{org}-nia", "userId": f"{org}-nia", "orgId": org, "email": "nia@acme.test", "fullName": "Nia Noreads"},
     ], users)
     await provider.batch_upsert_nodes(
         [{"id": app, "orgId": org, "name": "Docs", "type": Connectors.CONFLUENCE.value, "appGroup": "Docs",
@@ -80,7 +81,8 @@ async def _seed(provider: Any, org: str, other_org: str, app: str) -> None:  # n
     )
     ext = [("ext", "Quincy Outsider", "quincy@partner.test"), ("hid", "Hidden Hank", "hank@partner.test"),
            ("trash", "Trashed Tina", "tina@partner.test"), ("shared", "Mia Member", "mia@acme.test"),
-           ("pat", "Pat Paged", "pat@partner.test")]
+           ("pat", "Pat Paged", "pat@partner.test"), ("nia", "Nia Noreads", "nia@acme.test"),
+           *((f"c{i:02d}", "Common Name", f"common{i}@partner.test") for i in range(25))]
     await provider.batch_upsert_people(
         [Person(id=f"{org}-p-{k}", org_id=org, email=e, full_name=n) for k, n, e in ext]
         + [Person(id=f"{other_org}-p-olga", org_id=other_org, email="olga@partner.test", full_name="Olga Other")],
@@ -88,6 +90,7 @@ async def _seed(provider: Any, org: str, other_org: str, app: str) -> None:  # n
     records = {  # key: (readable, trashed, newest-first stamp)
         "ext": (True, False), "hid": (False, False), "trash": (True, True), "shared": (True, False),
         "mia": (True, False), "pat1": (True, False), "pat2": (True, False), "pat3": (True, False),
+        "nia": (True, False), "common": (True, False),
     }
     docs = [
         Record(
@@ -120,7 +123,8 @@ async def _seed(provider: Any, org: str, other_org: str, app: str) -> None:  # n
     people_coll = CollectionNames.PEOPLE.value
     links = [("ext", people_coll, f"{org}-p-ext"), ("hid", people_coll, f"{org}-p-hid"),
              ("trash", people_coll, f"{org}-p-trash"), ("shared", people_coll, f"{org}-p-shared"),
-             ("ext", people_coll, f"{other_org}-p-olga"), ("mia", users, f"{org}-mia"),
+             ("ext", people_coll, f"{other_org}-p-olga"), ("nia", people_coll, f"{org}-p-nia"),
+             ("common", people_coll, f"{org}-p-c24"), ("mia", users, f"{org}-mia"),
              *((f"pat{i}", people_coll, f"{org}-p-pat") for i in (1, 2, 3))]
     await provider.batch_create_entity_relations([
         {"_from": f"records/{org}-r-{k}", "_to": f"{c}/{i}", "edgeType": "AUTHORED_BY", "origin": "INFERRED",
@@ -178,3 +182,14 @@ async def test_a_non_member_pages_and_stops_at_the_last_readable_record(world) -
     text = await _ask(world, "Pat Paged", limit=2, cursor=cursor)
     seen += re.findall(r"Doc pat\d", text)
     assert sorted(seen) == ["Doc pat1", "Doc pat2", "Doc pat3"] and _cursor(text) is None
+
+
+async def test_a_member_with_no_readable_record_is_not_named_through_a_person_of_her_email(world) -> None:
+    text = await _ask(world, "Nia Noreads")
+    assert text.startswith("Records linked to Nia Noreads (not a member)") and "Doc nia" in text
+    assert "nia@acme.test" not in text and "not to" not in text and "(nia" not in text
+
+
+async def test_the_one_reachable_namesake_is_found_among_more_than_twenty(world) -> None:
+    text = await _ask(world, "Common Name")
+    assert "Doc common" in text and "(not a member)" in text
