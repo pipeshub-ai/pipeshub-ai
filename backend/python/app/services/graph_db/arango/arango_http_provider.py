@@ -1677,6 +1677,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             CollectionNames.PEOPLE.value, ["orgId", "sourceKey"], unique=True, sparse=True,
         )
 
+        # UNIQUE: entityRelations (_from, _to, edgeType) closes the UPSERT race of
+        # _upsert_entity_relations. Not sparse: edgeType is required by the schema.
+        # A unique index on a sharded collection must contain the shard key (_key
+        # by default), so this needs a single-shard collection, which these are
+        # (no shard settings are passed at creation). Existing duplicates would
+        # fail the build, so they go first; once the index exists the scan is skipped.
+        entity_fields = ["_from", "_to", "edgeType"]
+        if not any(
+            i.get("unique") and i.get("fields") == entity_fields
+            for i in await self.http_client.get_indexes(CollectionNames.ENTITY_RELATIONS.value)
+        ):
+            await self._dedupe_entity_relations()
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.ENTITY_RELATIONS.value, entity_fields, unique=True,
+        )
+
         # COMPOSITE: tableFqn + orgId on SQL column records
         # Pattern: a table's column records, or many tables' at once
         await self.http_client.ensure_persistent_index(
@@ -4035,6 +4051,59 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Create edges if absent failed: {str(e)}")
             raise
 
+    async def _upsert_entity_relations(self, edges: list[dict], update: str, txn: str | None) -> list:
+        """The one writer of ``entityRelations``: an UPSERT on (_from, _to, edgeType).
+
+        UPSERT is not atomic across concurrent writers, so two of them can both
+        miss and insert; the unique index then fails the second statement with
+        1210. The edge exists by then, so the statement runs once more and its
+        UPSERT takes the update branch."""
+        query = f"""
+        FOR edge IN @edges
+            UPSERT {{ _from: edge._from, _to: edge._to, edgeType: edge.edgeType }}
+            INSERT edge
+            {update}
+            IN @@collection
+            RETURN NEW
+        """
+        bind_vars = {"edges": edges, "@collection": CollectionNames.ENTITY_RELATIONS.value}
+        try:
+            return await self.http_client.execute_aql(query, bind_vars, txn_id=txn)
+        except ArangoQueryError as exc:
+            if exc.error_num != ARANGO_UNIQUE_CONSTRAINT_VIOLATED:
+                raise
+            return await self.http_client.execute_aql(query, bind_vars, txn_id=txn)
+
+    async def _dedupe_entity_relations(self, batch: int = 1000) -> int:
+        """Delete duplicate ``entityRelations`` edges so the unique index can be built.
+
+        Per (_from, _to, edgeType) the oldest edge (createdAtTimestamp, then _key)
+        stays. The duplicates differ at most in origin/source/extractedName/
+        timestamps, which the UPSERT rewrote on every write anyway. Bounded to
+        ``batch`` groups a pass, repeated until none is left; safe to re-run."""
+        removed = 0
+        while True:
+            rows = await self.http_client.execute_aql(
+                """
+                FOR e IN @@collection
+                    COLLECT f = e._from, t = e._to, ty = e.edgeType
+                        INTO g = { key: e._key, ts: e.createdAtTimestamp }
+                    FILTER LENGTH(g) > 1
+                    LIMIT @batch
+                    LET extra = SLICE((FOR x IN g SORT x.ts, x.key RETURN x.key), 1)
+                    FOR k IN extra
+                        REMOVE k IN @@collection
+                        RETURN 1
+                """,
+                {"@collection": CollectionNames.ENTITY_RELATIONS.value, "batch": batch},
+            )
+            removed += len(rows)
+            if not rows:
+                break
+        if removed:
+            self.logger.warning("Removed %d duplicate entityRelations edges", removed)
+        return removed
+
     async def batch_create_entity_relations(
         self,
         edges: list[dict],
@@ -4063,25 +4132,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Translate edges from generic format to ArangoDB format
             arango_edges = self._translate_edges_to_arango(edges)
 
-            # For entity relations, include edgeType in the UPSERT match condition
-            batch_query = """
-            FOR edge IN @edges
-                UPSERT { _from: edge._from, _to: edge._to, edgeType: edge.edgeType }
-                INSERT edge
-                UPDATE edge
-                IN @@collection
-                RETURN NEW
-            """
-            bind_vars = {
-                "edges": arango_edges,
-                "@collection": CollectionNames.ENTITY_RELATIONS.value
-            }
-
-            results = await self.http_client.execute_aql(
-                batch_query,
-                bind_vars,
-                txn_id=transaction
-            )
+            results = await self._upsert_entity_relations(arango_edges, "UPDATE edge", transaction)
 
             self.logger.debug(
                 f"✅ Successfully created {len(results)} entity relation edges."
@@ -8942,12 +8993,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if f"{edge['_from']}|{edge.get('edgeType')}" not in theirs
         ]
         if to_insert:
-            await self.http_client.execute_aql(
-                "FOR e IN @edges UPSERT {_from: e._from, _to: e._to, edgeType: e.edgeType} "
-                "INSERT e UPDATE {} IN @@collection",
-                bind_vars={"edges": to_insert, "@collection": CollectionNames.ENTITY_RELATIONS.value},
-                txn_id=txn,
-            )
+            await self._upsert_entity_relations(to_insert, "UPDATE {}", txn)
         await self.http_client.execute_aql(
             "FOR e IN @@collection FILTER e._to == @person_id REMOVE e IN @@collection",
             bind_vars={"@collection": CollectionNames.ENTITY_RELATIONS.value, "person_id": person_id},
