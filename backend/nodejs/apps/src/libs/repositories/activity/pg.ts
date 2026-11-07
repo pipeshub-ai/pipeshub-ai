@@ -5,7 +5,7 @@
  * touches a handful of rows however long the history is.
  */
 import { ValidationError } from '../../errors/validation.error';
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import {
   asOrg,
   assertOrg,

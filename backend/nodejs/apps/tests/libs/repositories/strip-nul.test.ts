@@ -1,5 +1,5 @@
 import { expect } from 'chai'
-import { stripNul } from '../../../src/libs/repositories/nul'
+import { stripNul } from '../../../src/libs/repositories/strip-nul'
 import { metricsBackend } from '../../../src/libs/services/telemetry/metrics-backend'
 
 const counter = async (): Promise<number> => {

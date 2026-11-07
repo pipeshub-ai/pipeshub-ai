@@ -10,7 +10,7 @@ import {
   PAT_APP_CLIENT_ID_PREFIX,
   SERVICE_TOKEN_APP_CLIENT_ID_PREFIX,
 } from '../../../modules/oauth_provider/constants/constants';
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import { Params, likeEscape, newObjectId, oidOf, inUnit } from '../pg-util';
 import { clientOrg, goodKey, inKeyUnit, inOrgUnit } from './pg-org';
 import {
