@@ -2,6 +2,7 @@ import logging
 from typing import TYPE_CHECKING, Optional
 
 from app.config.constants.arangodb import CollectionNames, EventTypes, ProgressStatus
+from app.modules.parsers.section_paths import section_paths_enabled
 from app.modules.reconciliation.service import ReconciliationMetadata, ReconciliationService
 from app.modules.transformers.blob_storage import StorageLookupUnavailableError
 from app.modules.transformers.block_container_validator import BlockContainerValidator
@@ -15,6 +16,7 @@ from app.modules.transformers.transformer import (
     ReconciliationContext,
     TransformContext,
 )
+from app.modules.transformers.vectorstore import embedding_title
 from app.services.graph_db.common.record_visibility import indexed_copy_fields
 from app.utils.indexing_timing import stage
 from app.utils.logger import create_logger
@@ -47,7 +49,8 @@ class IndexingPipeline:
         if not block_containers:
             return None
         reconciliation_service = ReconciliationService(logger)
-        new_metadata = reconciliation_service.build_metadata(block_containers)
+        record_title = embedding_title(record, block_containers) if section_paths_enabled() else None
+        new_metadata = reconciliation_service.build_metadata(block_containers, record_title)
 
         if ctx.event_type in (EventTypes.UPDATE_RECORD.value, EventTypes.REINDEX_RECORD.value) and record.virtual_record_id and record.org_id:
             prev_vrid = ctx.prev_virtual_record_id
@@ -67,7 +70,7 @@ class IndexingPipeline:
                         reconciliation_service.apply_preserved_ids(
                             block_containers, unchanged_id_map
                         )
-                        new_metadata = reconciliation_service.build_metadata(block_containers)
+                        new_metadata = reconciliation_service.build_metadata(block_containers, record_title)
 
                     logger.info(
                         f"📊 Reconciliation (1:1): {len(blocks_to_index_ids)} to index, "

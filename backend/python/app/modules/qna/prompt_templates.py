@@ -8,12 +8,12 @@ agent_block_group_prompt = """[{{label}} #{{block_group_index}}{% if file_path %
 {% endfor %}
 """
 
-table_prompt = """[Table #{{block_group_index}}: {{ table_summary }}]{% for row in table_rows %}
+table_prompt = """[Table #{{block_group_index}}: {{ table_summary }}]{{ section_note }}{% for row in table_rows %}
 [{{row.block_index}}|{{row.citation_ref}}] {{row.content}}
 {% endfor %}
 """
 
-block_group_prompt = """[{{label}} #{{block_group_index}}{% if file_path %} {{file_path|one_line}}{% endif %}]{% for block in blocks %}
+block_group_prompt = """[{{label}} #{{block_group_index}}{% if file_path %} {{file_path|one_line}}{% endif %}]{{ section_note }}{% for block in blocks %}
 [{{block.block_index}}|{{block.citation_ref}}]{% if block.qualified_name %} {{block.qualified_name|one_line}}{% endif %} {{block.content}}
 {% endfor %}
 """

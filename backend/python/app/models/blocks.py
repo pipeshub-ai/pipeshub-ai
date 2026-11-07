@@ -93,6 +93,8 @@ class CitationMetadata(BaseModel):
     """Citation-specific metadata for referencing source locations"""
     # All File formatsspecific
     section_title: Optional[str] = None
+    # Headings the block sits under, outermost first (parsers/section_paths.py)
+    heading_path: Optional[list[str]] = None
 
     # PDF specific
     page_number: Optional[int] = None
@@ -569,6 +571,9 @@ class BlocksContainer(BaseModel):
     blocks: list[Block] = Field(default_factory=list)
     # PARSER_VERSION of a code parse, so a stored blob says which fact schema it holds.
     code_facts_version: Optional[str] = None
+    # The title the document gives itself (an HTML page's og:title or <title>);
+    # the record keeps the name the user sees.
+    document_title: Optional[str] = None
 
     def extend(self, other: 'BlocksContainer') -> None:
         """Append *other*'s content, rebasing its indices onto this container.
@@ -581,6 +586,8 @@ class BlocksContainer(BaseModel):
         """
         block_offset = len(self.blocks)
         group_offset = len(self.block_groups)
+        if not self.document_title and other.document_title:
+            self.document_title = other.document_title
 
         for block in other.blocks:
             block.index += block_offset

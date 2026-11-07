@@ -46,6 +46,11 @@ from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import Block, BlocksContainer, BlockType, SemanticMetadata
 from app.models.entities import Record
 from app.modules.parsers.link_text import anchor_text_only
+from app.modules.parsers.section_paths import (
+    SECTION_PATH_SEPARATOR,
+    block_heading_path,
+    section_paths_enabled,
+)
 from app.modules.parsers.table_titles import table_titles
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
 from app.modules.transformers.code_units import code_units
@@ -93,6 +98,13 @@ from app.utils.image_utils import normalize_image_to_base64
 from app.utils.indexing_timing import stage
 from app.utils.llm import load_ai_models
 from app.utils.openai_hosts import is_openai_api_url
+from app.utils.record_titles import (
+    has_id_tokens,
+    is_mostly_ids,
+    is_weak_title,
+    readable_record_name,
+    title_words,
+)
 
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
 
@@ -127,7 +139,10 @@ def deterministic_point_id(metadata: dict[str, object], page_content: str) -> st
             and not metadata.get("isRecordSummary")
         )
         kind = "chunk" if is_sub_chunk else "unit"
-        name = f"{virtual_record_id}|{block_id}|{kind}|{page_content}"
+        # The text as embedded: the same words under another heading are another point.
+        context = metadata.get(_EMBED_CONTEXT)
+        text = f"{context}\n{page_content}" if context else page_content
+        name = f"{virtual_record_id}|{block_id}|{kind}|{text}"
     return str(uuid.uuid5(_POINT_ID_NAMESPACE, name))
 
 _DEFAULT_DOCUMENT_BATCH_SIZE = 50
@@ -164,6 +179,10 @@ _LOCAL_CPU_DOCUMENT_BATCH_SIZE = 20
 _DEFAULT_DOCUMENT_BATCH_CHARS = 100_000
 # Document metadata key for text that feeds the sparse (keyword) vector only.
 _SPARSE_EXTRA = "_sparseExtra"
+# Document metadata key for where a text block sits (record title, section
+# headings): embedded on the line before its text, never stored as its text.
+_EMBED_CONTEXT = "_embedContext"
+_MAX_EMBED_TITLE_CHARS = 100
 _LOCAL_CPU_DOCUMENT_BATCH_CHARS = 40_000
 
 # OpenAI and Azure OpenAI batches are bounded by tokens instead of by document
@@ -200,6 +219,13 @@ _OVERSIZED_CHUNK_SIZE = 1500
 _OVERSIZED_CHUNK_OVERLAP = 200
 _LANGUAGE_DETECTION_SAMPLE_CHARS = 2000
 _DEFAULT_SENTENCE_EMBED_MIN_WORDS = 100
+_TEXT_BLOCK_TYPES = frozenset({"text", "paragraph", "textsection", "heading", "quote"})
+_MAX_OPENING_TITLE_CHARS = 120
+
+
+def _block_type_name(block: object) -> str:
+    block_type = getattr(block, "type", None)
+    return str(getattr(block_type, "value", block_type)).lower()
 
 # How a record's text becomes points (``EMBED_POINT_POLICY``):
 #   A (default) sentence points plus the block, one point per table row.
@@ -810,22 +836,125 @@ def _bounded_documents(text: str, metadata: dict) -> list[Document]:
     ]
 
 
+def _embedding_context(record_title: str, block: object) -> str:
+    """``Title › Section › Subsection`` for a block, or "" when neither is known.
+
+    A section that repeats the title (a page's own top heading) is dropped.
+    """
+    title = " ".join(record_title.split())[:_MAX_EMBED_TITLE_CHARS]
+    sections = block_heading_path(block)
+    if sections and title and sections[0].strip().casefold() == title.casefold():
+        sections = sections[1:]
+    return SECTION_PATH_SEPARATOR.join(part for part in (title, *sections) if part)
+
+
+def _embed_under(
+    documents: list[Document], contexts: dict[str, str], window: _Window | None = None,
+) -> None:
+    """Mark each document to embed with its block's line in ``contexts`` before its text.
+
+    A document the line would push past the model's window (or the token
+    ceiling) is left without it. One count covers all of a record's documents,
+    so a model window asks the embedding server once; CPU-bound otherwise, so
+    async callers run this in a thread.
+    """
+    marked = [
+        (document, context) for document in documents
+        if (context := contexts.get(document.metadata.get("blockId")))
+    ]
+    if not marked:
+        return
+    texts = [f"{context}\n{document.page_content}" for document, context in marked]
+    if window is not None and window.count is not None:
+        fits = [n <= window.limit for n in window.count(texts)]
+    else:
+        limit = window.limit if window is not None else _embed_token_ceiling()
+        fits = [not _exceeds_token_ceiling(text, limit) for text in texts]
+    for (document, context), fit in zip(marked, fits, strict=True):
+        if fit:
+            document.metadata[_EMBED_CONTEXT] = context
+
+
+def _embedding_text(document: Document) -> str:
+    context = document.metadata.get(_EMBED_CONTEXT)
+    return f"{context}\n{document.page_content}" if context else document.page_content
+
+
+def _stored_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in metadata.items() if k not in (_SPARSE_EXTRA, _EMBED_CONTEXT)}
+
+
+def _opening_line(text_blocks: list[object]) -> str:
+    """A document's first block when it is one short line followed by more text."""
+    if len(text_blocks) < 2:
+        return ""
+    first = min(text_blocks, key=lambda b: getattr(b, "index", 0) or 0)
+    data = getattr(first, "data", None)
+    line = data.strip() if isinstance(data, str) else ""
+    if "\n" in line or len(line) > _MAX_OPENING_TITLE_CHARS or line.endswith((".", "?", "!", ":", ";", ",")):
+        return ""
+    return line
+
+
+def embedding_title(record: Optional["Record"], block_containers: BlocksContainer) -> str:
+    """What a record's text is embedded under as its title.
+
+    The title the document gives itself comes first, then the record's name (a
+    stored file name loses its extension). A name made of ids says little, so
+    such a record is titled by its opening line when that reads as a title
+    (three words or more, not ending like a sentence), or else by what its name
+    says once the ids go: a chat export opens with its channel ("plant-ops"),
+    and its name's slug says the rest.
+    """
+    document_title = getattr(block_containers, "document_title", None)
+    if isinstance(document_title, str) and document_title.strip():
+        return document_title.strip()
+    name = getattr(record, "record_name", None) if record is not None else None
+    name = name.strip() if isinstance(name, str) else ""
+    extension = getattr(record, "extension", None)
+    extension = extension if isinstance(extension, str) else ""
+    if extension and name.lower().endswith(f".{extension.lower()}"):
+        name = name[: -len(extension) - 1].strip()
+    # A ticket or page title with an id in it ("OPS-42 ...") is still its title.
+    says_little = has_id_tokens(name) if extension else is_mostly_ids(name)
+    if name and not says_little:
+        return name
+    text_blocks = [
+        b for b in getattr(block_containers, "blocks", None) or []
+        if _block_type_name(b) in _TEXT_BLOCK_TYPES
+    ]
+    opening = _opening_line(text_blocks)
+    if opening and not is_weak_title(opening):
+        return opening
+    readable = readable_record_name(name, strip_extension=False)
+    if opening:
+        if not readable:
+            return opening
+        if title_words(readable) - title_words(opening):
+            return f"{opening}{SECTION_PATH_SEPARATOR}{readable}"
+    return readable or name
+
+
 def _build_text_documents(
     text_blocks: List,
     virtual_record_id: str,
     org_id: str,
     language: str,
     window: _Window | None = None,
+    record_title: str | None = None,
 ) -> List[Document]:
     """Sentence-split each text block into embeddable Documents.
 
     Under policies B and C a block over the model's window is cut into as few
-    windows as fit, all carrying the block's id and index.
+    windows as fit, all carrying the block's id and index. With
+    ``record_title`` (section paths on), each is embedded under the record's
+    title and the headings its block sits under.
 
     CPU-bound (regex/rule-based sentence segmentation); callers should run
     this via ``asyncio.to_thread`` to keep the event loop responsive.
     """
     documents: List[Document] = []
+    contexts: dict[str, str] = {}
     policy = _point_policy()
     # Links stay in the stored block for citations; only the embedded
     # text loses their targets.
@@ -849,6 +978,9 @@ def _build_text_documents(
             "isBlockGroup": False,
             "blockType": BlockType.TEXT.value,
         }
+
+        if record_title is not None:
+            contexts[block.id] = _embedding_context(record_title, block)
 
         if policy != "A":
             documents.extend(
@@ -891,6 +1023,7 @@ def _build_text_documents(
                 metadata={**metadata, "isBlock": True},
             )
         )
+    _embed_under(documents, contexts, window)
     return documents
 
 
@@ -961,6 +1094,7 @@ def _process_text_blocks(
     virtual_record_id: str,
     org_id: str,
     window: _Window | None = None,
+    record_title: str | None = None,
 ) -> List[Document]:
     """Detect language and build embeddable Documents for a record's text blocks.
 
@@ -968,7 +1102,9 @@ def _process_text_blocks(
     ``asyncio.to_thread`` call (see call site in ``index_documents``).
     """
     language = _detect_record_language(text_blocks)
-    return _build_text_documents(text_blocks, virtual_record_id, org_id, language, window)
+    return _build_text_documents(
+        text_blocks, virtual_record_id, org_id, language, window, record_title
+    )
 
 
 def _storage_reconcile_enabled() -> bool:
@@ -1104,6 +1240,9 @@ class VectorStore(Transformer):
         is_reconciliation = False
         # A changed row's heading may be an unchanged block left out below.
         titles = table_titles(block_containers.blocks, block_containers.block_groups)
+        record_title = (
+            embedding_title(record, block_containers) if section_paths_enabled() else None
+        )
 
         if (
             ctx.reconciliation_context
@@ -1141,6 +1280,7 @@ class VectorStore(Transformer):
             is_reconciliation=is_reconciliation,
             record=record,
             titles=titles,
+            record_title=record_title,
         )
 
     # ------------------------------------------------------------------
@@ -1969,7 +2109,7 @@ class VectorStore(Transformer):
             )
             return
 
-        texts = [doc.page_content for doc in documents]
+        texts = [_embedding_text(doc) for doc in documents]
 
         with stage(
             "embed.dense",
@@ -1980,9 +2120,9 @@ class VectorStore(Transformer):
         # Sparse embeddings (provider-dependent). Code adds its subtokens here only.
         with stage("embed.sparse", detail=f"batch of {len(texts)} texts"):
             sparse_embeddings = await self._compute_sparse_embeddings([
-                f"{doc.page_content}\n{doc.metadata[_SPARSE_EXTRA]}"
-                if doc.metadata.get(_SPARSE_EXTRA) else doc.page_content
-                for doc in documents
+                f"{text}\n{doc.metadata[_SPARSE_EXTRA]}"
+                if doc.metadata.get(_SPARSE_EXTRA) else text
+                for doc, text in zip(documents, texts)
             ])
 
         points: List[VectorPoint] = [
@@ -1990,10 +2130,7 @@ class VectorStore(Transformer):
                 id=deterministic_point_id(doc.metadata, doc.page_content),
                 dense_vector=dense,
                 sparse_vector=sparse,
-                payload=vector_point_payload(
-                    {k: v for k, v in doc.metadata.items() if k != _SPARSE_EXTRA},
-                    doc.page_content,
-                ),
+                payload=vector_point_payload(_stored_metadata(doc.metadata), doc.page_content),
             )
             for doc, dense, sparse in zip(documents, dense_embeddings, sparse_embeddings)
         ]
@@ -2140,7 +2277,11 @@ class VectorStore(Transformer):
         is_reconciliation: bool = False,
         record: Optional["Record"] = None,
         titles: dict[int, str] | None = None,
+        record_title: str | None = None,
     ) -> bool | None:
+        """``record_title`` names the record in what text and table rows embed
+        under; left out, it is read from ``record`` while section paths are on.
+        """
         try:
             with stage("embed.setup"):
                 is_multimodal_embedding = await self.get_embedding_model_instance()
@@ -2159,6 +2300,10 @@ class VectorStore(Transformer):
         block_groups = block_containers.block_groups
         if titles is None:
             titles = table_titles(blocks, block_groups)
+        if not section_paths_enabled():
+            record_title = None
+        elif record_title is None:
+            record_title = embedding_title(record, block_containers)
 
         tokens = await self._bind_membership(virtual_record_id, record)
         try:
@@ -2200,7 +2345,7 @@ class VectorStore(Transformer):
                 )
                 if block_type == "code":
                     code_blocks.append(block)
-                elif block_type in ["text", "paragraph", "textsection", "heading", "quote"]:
+                elif block_type in _TEXT_BLOCK_TYPES:
                     text_blocks.append(block)
                 elif (
                     block_type in ["image", "drawing"]
@@ -2233,6 +2378,7 @@ class VectorStore(Transformer):
             )
 
             documents_to_embed: List = []
+            row_contexts: dict[str, str] = {}
 
             # ── Code blocks ──
             if code_blocks:
@@ -2251,7 +2397,7 @@ class VectorStore(Transformer):
                         text_documents = await asyncio.wait_for(
                             asyncio.to_thread(
                                 _process_text_blocks, text_blocks, virtual_record_id, org_id,
-                                self.model_window,
+                                self.model_window, record_title,
                             ),
                             timeout=_TEXT_PROCESSING_TIMEOUT_S,
                         )
@@ -2486,11 +2632,22 @@ class VectorStore(Transformer):
                                     **_row_group_meta(block.parent_index),
                                 },
                             ))
+                            if record_title is not None:
+                                row_contexts[block.id] = _embedding_context(record_title, block)
 
             if _point_policy() == "C":
                 # Counting tokens is a blocking request to the embedding server.
                 documents_to_embed = await asyncio.to_thread(
                     _group_table_row_documents, documents_to_embed, self.model_window
+                )
+            if row_contexts:
+                # After grouping, so a group point is checked against the window
+                # with its first row's line; counting may ask the embedding server.
+                await asyncio.to_thread(
+                    _embed_under,
+                    [d for d in documents_to_embed if isinstance(d, Document)],
+                    row_contexts,
+                    self.model_window,
                 )
 
             # Record summary (only on fresh full index, not reconciliation/partial update)

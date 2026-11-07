@@ -313,6 +313,31 @@ class TestBuildReconciliationContext1to1:
         pipeline.sink_orchestrator.blob_storage.get_reconciliation_metadata.assert_awaited_once()
 
 
+class TestReindexUnderSectionPaths:
+    async def test_turning_section_paths_on_re_embeds_text_on_the_next_reindex(self, monkeypatch) -> None:
+        from app.modules.reconciliation.service import ReconciliationService
+
+        block = Block(id="b-1", index=0, type=BlockType.TEXT, data="Water at dawn.")
+        before = ReconciliationService().build_metadata(BlocksContainer(blocks=[block.model_copy()]))
+        pipeline = _pipeline(blob_meta=before.to_dict())
+        record = _record(blocks=[block])
+        record.record_name = "Greenhouse Handbook"
+        record.extension = None
+        ctx = _ctx(record, event_type=EventTypes.REINDEX_RECORD.value, prev_vrid="vr-1")
+
+        monkeypatch.delenv("INDEXING_SECTION_PATHS", raising=False)
+        off = await IndexingPipeline.build_reconciliation_context(
+            ctx, pipeline.logger, pipeline.sink_orchestrator
+        )
+        monkeypatch.setenv("INDEXING_SECTION_PATHS", "true")
+        on = await IndexingPipeline.build_reconciliation_context(
+            ctx, pipeline.logger, pipeline.sink_orchestrator
+        )
+
+        assert off.blocks_to_index_ids == set()
+        assert len(on.blocks_to_index_ids) == 1
+
+
 class TestApplyEmptyCleanup:
     """Covers the 1:1 update cleanup branch for empty block containers."""
 

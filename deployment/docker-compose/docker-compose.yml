@@ -347,6 +347,8 @@ services:
       - TARGETED_RETRIEVAL=${TARGETED_RETRIEVAL:-}
       # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
       - SEARCH_SOURCE_DIVERSITY=${SEARCH_SOURCE_DIVERSITY:-}
+      # Opt-in only, read while indexing: HIGH_ACCURACY_MODE does not turn it on.
+      - INDEXING_SECTION_PATHS=${INDEXING_SECTION_PATHS:-}
 
       # Storage config
       - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-false}

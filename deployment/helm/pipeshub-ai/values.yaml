@@ -375,6 +375,11 @@ config:
   # "true" through extraEnv. With it on, no one connector type holds more than
   # 4 of the first 10 records of a search API result; the records it pushes
   # down come back after the first page.
+  # INDEXING_SECTION_PATHS is not part of this mode either: it is off unless
+  # set to "true" through extraEnv. With it on, HTML and Markdown documents
+  # store the headings each block sits under and an HTML page keeps its own
+  # title; text is embedded under them, and search results show them. Records
+  # indexed before keep their vectors until they are reindexed.
   highAccuracyMode: false
   # Custom (non-catalog) MCP servers with the STDIO transport run the command an
   # org admin enters as a process in this pod, with the app's identity, network
