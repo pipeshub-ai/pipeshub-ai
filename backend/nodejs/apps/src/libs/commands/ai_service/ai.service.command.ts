@@ -248,7 +248,8 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
       // caller's handleBackendError; only a request that got no answer is logged here.
       if (!(error as FetchCommandError).response) {
         logger.error('AI service streaming command failed', {
-          error: error.message,
+          // The error, not its message: fetch's "fetch failed" says why only in its cause (ECONNREFUSED).
+          error,
           url: url,
           method: this.method,
         });

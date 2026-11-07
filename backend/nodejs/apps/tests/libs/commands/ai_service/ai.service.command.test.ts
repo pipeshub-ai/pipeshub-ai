@@ -370,6 +370,33 @@ describe('AIServiceCommand', () => {
       expect(logged.calledWith('AI service streaming command failed')).to.equal(true)
     })
 
+    it('logs the error itself, so a refused connection keeps its cause', async () => {
+      const refused = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8000'), {
+        code: 'ECONNREFUSED',
+      })
+      const failure = new TypeError('fetch failed', { cause: refused })
+      fetchStub.rejects(failure)
+      const logged = sinon.stub(Logger.prototype, 'error')
+
+      const cmd = new AIServiceCommand({
+        uri: 'http://ai.local/stream',
+        method: HttpMethod.POST,
+        headers: { 'content-type': 'application/json' },
+        body: { prompt: 'refused' },
+      })
+
+      try {
+        await cmd.executeStream()
+        expect.fail('Should have thrown')
+      } catch (err) {
+        expect(err).to.equal(failure)
+      }
+      expect(logged.callCount).to.equal(1)
+      const [, meta] = logged.firstCall.args
+      expect(meta.error).to.equal(failure)
+      expect(meta.error.cause.code).to.equal('ECONNREFUSED')
+    })
+
     it('should throw an error with message field from JSON error response', async () => {
       const errorPayload = JSON.stringify({ message: 'Rate limit exceeded' })
       const mockResponse = {
