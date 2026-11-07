@@ -1629,9 +1629,10 @@ class TestHandleDelete:
         with current_coordinator() as mock_stm:
             mock_stm.cancel_sync = AsyncMock()
             assert await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}) is True
-        assert calls[:3] == [
+        assert calls[:4] == [
             "intent:/services/entityCleanup/pending/c1:org1",
             "intent:/services/storageRelease/pending/c1:org1",
+            "intent:/services/lateWriteSweep/pending/c1:org1",
             "graph-delete",
         ]
 

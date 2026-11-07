@@ -259,7 +259,10 @@ from app.services.graph_db.interface.graph_db_provider import (
     requested_scope_ids,
 )
 from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
-from app.services.graph_db.common.cascade_retry import CASCADE_ATTEMPTS
+from app.services.graph_db.common.cascade_retry import (
+    CASCADE_ATTEMPTS,
+    CONNECTOR_DELETE_BASE_SECONDS,
+)
 from app.services.graph_db.common.cascade_retry import backoff as cascade_backoff
 from app.services.graph_db.conditions import (
     EQ,
@@ -390,6 +393,7 @@ def _remove_opts(transaction: str | None) -> str:
     commit with deletes silently lost. Only a statement that runs on its own may
     keep the best-effort behaviour."""
     return "OPTIONS { ignoreErrors: true }" if transaction is None else ""
+
 
 
 def _is_write_conflict(exc: Exception) -> bool:
@@ -12269,6 +12273,71 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Error deleting from {collection}: {str(e)}")
             return (0, False)
 
+    async def sweep_deleted_connector_writes(self, connector_id: str) -> tuple[int, int]:
+        # A pass that cannot remove an edge fails, and the next one finds its block again.
+        # Either removal failing does not stop the other: a block that keeps conflicting
+        # must not hold back the connector's stage states, nor the reverse.
+        removed = 0
+        first_error: Exception | None = None
+        try:
+            removed += await self.delete_blocks_by_connector_id(connector_id, raise_edge_errors=True)
+        except Exception as e:
+            first_error = e
+        try:
+            removed += (await self._delete_stage_states_by_connector_id(None, connector_id))[0]
+        except Exception as e:
+            first_error = first_error or e
+        if first_error is not None:
+            raise first_error
+        return removed, await self._count_connector_blocks_and_stage_states(connector_id)
+
+    async def _sweep_writes_during_delete(self, connector_id: str) -> int | None:
+        """Remove the blocks and stage states in-flight indexing wrote for a connector after its
+        delete removed them: a duplicate code file projects its blocks, a stage job records its
+        state. The pass repeats, backing off, until nothing of the connector is left. Returns
+        what is left (None when it could not be counted). A writer may still commit after the
+        last pass, so the connectors service keeps sweeping after the delete returns
+        (``late_write_sweep``).
+        """
+        removed = 0
+        left: int | None = None
+        for attempt in range(CASCADE_ATTEMPTS):
+            try:
+                found, left = await self.sweep_deleted_connector_writes(connector_id)
+                removed += found
+            except Exception as e:
+                left = None
+                self.logger.warning(f"⚠️ Sweep of what indexing wrote during delete of {connector_id} failed: {e}")
+            if left == 0:
+                break
+            if attempt + 1 < CASCADE_ATTEMPTS:
+                await cascade_backoff(attempt, base=CONNECTOR_DELETE_BASE_SECONDS)
+        if removed:
+            self.logger.warning(
+                f"Connector {connector_id}: removed {removed} block(s) and stage state(s) written during its delete"
+            )
+        if left != 0:
+            self.logger.warning(
+                f"⚠️ Connector {connector_id} still has {left if left is not None else 'an unknown number of'} "
+                f"block(s) or stage state(s) after {CASCADE_ATTEMPTS} sweeps following its delete; "
+                "the late-write sweep removes them"
+            )
+        return left
+
+    async def _count_connector_blocks_and_stage_states(self, connector_id: str) -> int:
+        rows = await self.http_client.execute_aql(
+            query="""
+            RETURN LENGTH(FOR b IN @@blocks FILTER b.connectorId == @connector_id RETURN 1)
+                + LENGTH(FOR s IN @@states FILTER s.connectorId == @connector_id RETURN 1)
+            """,
+            bind_vars={
+                "@blocks": CollectionNames.BLOCKS.value,
+                "@states": CollectionNames.STAGE_STATES.value,
+                "connector_id": connector_id,
+            },
+        )
+        return int(rows[0]) if rows else 0
+
     async def _delete_stage_states_by_connector_id(
         self, transaction: str | None, connector_id: str
     ) -> tuple[int, bool]:
@@ -12301,6 +12370,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if deleted < _STAGE_STATE_DELETE_BATCH:
                     return (total, True)
         except Exception as e:
+            if self.is_write_conflict(e):
+                # The transaction is aborted; raised as it is, the cascade runs again.
+                raise
             self.logger.error(f"❌ Failed to delete the stage states of connector {connector_id}: {str(e)}")
             return (total, False)
 
@@ -12707,6 +12779,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     # delete is removing.
                     orphan_types = 0
                     orphan_labels = 0
+                    leftover: int | None = 0
                     if created_transaction:
                         try:
                             late_rows = await self.http_client.execute_aql(
@@ -12745,6 +12818,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             self.logger.warning(
                                 f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
                             )
+                        leftover = await self._sweep_writes_during_delete(connector_id)
                         try:
                             orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
                         except Exception as sweep_err:
@@ -12800,6 +12874,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         ),
                         "connector_id": connector_id,
                         "connector_name": connector.get("type"),
+                        # Blocks or stage states were still there when the delete returned; the
+                        # late-write sweep removes them.
+                        "cleanupPending": leftover != 0,
                     }
 
                 except Exception as tx_error:
@@ -12819,7 +12896,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             "Connector %s delete lost to a concurrent write (attempt %d); retrying",
                             connector_id, attempt + 1,
                         )
-                        await cascade_backoff(attempt)
+                        await cascade_backoff(attempt, base=CONNECTOR_DELETE_BASE_SECONDS)
                         continue
                     raise tx_error
 
@@ -16370,6 +16447,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         condition: str,
         bind_vars: dict[str, Any],
         transaction: str | None,
+        *,
+        raise_edge_errors: bool = False,
     ) -> int:
         """Delete every block matching an AQL ``condition`` on ``block``, edges first.
 
@@ -16399,7 +16478,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             (FOR bid IN @block_ids FOR e IN {edges} FILTER e._to == bid RETURN e._key)
         )
         FOR key IN edge_keys
-            REMOVE key IN {edges} {_remove_opts(transaction)}
+            REMOVE key IN {edges} {"" if raise_edge_errors else _remove_opts(transaction)}
             RETURN 1
         """
         node_query = f"""
@@ -16454,14 +16533,21 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         connector_id: str,
         transaction: str | None = None,
+        *,
+        raise_edge_errors: bool = False,
     ) -> int:
         """Delete every block a connector produced. The whole-connector form of
         ``delete_blocks_for_records``, which would otherwise have to carry a
-        repo's worth of record ids in a bind parameter."""
+        repo's worth of record ids in a bind parameter.
+
+        ``raise_edge_errors``: outside a transaction an edge REMOVE otherwise skips
+        what it cannot remove (a write conflict), and its block still goes, leaving
+        the edge pointing at nothing where no later pass looks."""
         if not connector_id:
             return 0
         return await self._delete_blocks_where(
-            "block.connectorId == @connector_id", {"connector_id": connector_id}, transaction
+            "block.connectorId == @connector_id", {"connector_id": connector_id}, transaction,
+            raise_edge_errors=raise_edge_errors,
         )
 
     async def get_uploaded_document_ids(

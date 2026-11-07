@@ -1189,6 +1189,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         name="storage_release",
     )
 
+    # Sweeps what indexing still writes for a connector after its delete.
+    from app.connectors.services.late_write_sweep import run_late_write_sweep_loop
+    app.state.late_write_sweep_task = spawn_detached(
+        run_late_write_sweep_loop(app_container, graph_provider), name="late_write_sweep",
+    )
+
     # Here, not in indexing: it publishes re-index events on this service's producer.
     from app.connectors.services.stored_content_heal import run_stored_content_heal_loop
     app.state.stored_content_heal_task = spawn_detached(
@@ -1220,7 +1226,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # sweep cannot start a build into the unwind.
     for task_name in (
         "connector_metrics_task", "trash_purge_task", "storage_release_task",
-        "stored_content_heal_task", "code_edge_build_reconcile_task",
+        "late_write_sweep_task", "stored_content_heal_task", "code_edge_build_reconcile_task",
         "flat_storage_migration_task",
     ):
         task = getattr(app.state, task_name, None)

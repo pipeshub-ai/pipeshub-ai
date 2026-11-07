@@ -870,9 +870,10 @@ class TestDeleteKnowledgeBase:
 
         result = await service.delete_knowledge_base("kb1", "user1", "org1")
         assert result["success"] is True
-        assert calls[:3] == [
+        assert calls[:4] == [
             "intent:/services/entityCleanup/pending/kb1",
             "intent:/services/storageRelease/pending/kb1",
+            "intent:/services/lateWriteSweep/pending/kb1",
             "graph-delete",
         ]
 
@@ -1028,7 +1029,8 @@ class TestDeleteKBStorageCleanup:
             mock_asyncio.create_task.call_args[0][0].close()
 
         assert calls == [
-            "/services/entityCleanup/pending/kb1", "/services/storageRelease/pending/kb1", "delete",
+            "/services/entityCleanup/pending/kb1", "/services/storageRelease/pending/kb1",
+            "/services/lateWriteSweep/pending/kb1", "delete",
         ]
 
     @pytest.mark.asyncio
