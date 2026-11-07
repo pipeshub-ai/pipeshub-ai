@@ -130,7 +130,8 @@ def in_repo(specifier: str, from_file: str, file_paths: set[str], index: SymbolI
         return True
     folder, stem = posixpath.split(from_file.removesuffix(".rs"))
     found = {f"{base}/{head}{tail}" for base in (folder, f"{folder}/{stem}") for tail in (".rs", "/mod.rs")}
-    return bool(found & file_paths - {from_file})   # caps/axum.rs's own `use axum::` is the axum crate
+    found.discard(from_file)   # caps/axum.rs's own `use axum::` is the axum crate
+    return any(path in file_paths for path in found)
 
 
 _MAX_USE_HOPS = 4

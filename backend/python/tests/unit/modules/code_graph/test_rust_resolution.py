@@ -242,6 +242,25 @@ async def test_a_type_a_use_binds_outside_the_repo_is_never_a_same_named_repo_ty
     assert _targets(graph, CALLS, "app/src/main.rs") == set()
 
 
+class _NoCopy(set):
+    """A repo's file set that fails when copied, as `files - {x}` does."""
+
+    def __sub__(self, other):
+        raise AssertionError("copied the repo's file set")
+
+    __rsub__ = __and__ = __rand__ = __sub__
+
+
+@pytest.mark.parametrize(("specifier", "from_file", "expected"), [
+    ("common::Env", "app/tests/it.rs", True),              # a module file beside the importing one
+    ("axum::http::HeaderName", "app/src/axum.rs", False),  # a file's own name is the outside crate
+    ("serde::Serialize", "app/src/main.rs", False),
+])
+def test_in_repo_checks_the_candidate_files_without_copying_the_repo_s(specifier, from_file, expected) -> None:
+    files = _NoCopy({"app/src/main.rs", "app/src/axum.rs", "app/tests/it.rs", "app/tests/common/mod.rs"})
+    assert rust.in_repo(specifier, from_file, files, None) is expected
+
+
 def test_the_rust_row_and_its_extension() -> None:
     rules = rules_for("rust")
     assert rules.bare_call_reaches_method == "never" and "Self" in rules.self_receivers
