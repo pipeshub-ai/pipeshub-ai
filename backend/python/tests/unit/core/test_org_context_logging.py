@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 
 import pytest
@@ -127,3 +128,34 @@ class TestSyncRoots:
 
         asyncio.run(main())
         assert seen == ["u1-req", "sys-from-node-scheduler"]
+
+    @pytest.mark.parametrize("detached", [True, False], ids=["detached-root", "no-root"])
+    def test_start_body_and_failure_lines_share_the_syncs_root(self, detached: bool) -> None:
+        manager = SyncTaskManager()
+        roots: dict[str, str] = {}
+
+        # Keyed by level, not text: the start line is INFO, the done callback's failure line ERROR.
+        class RootByLevel(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                roots[record.levelname] = rc.current_display_id()
+
+        async def sync() -> None:
+            roots["body"] = rc.current_display_id()
+            raise RuntimeError("boom")
+
+        async def trigger() -> None:
+            task = await manager.start_sync("c1", sync())
+            with pytest.raises(RuntimeError):
+                await task
+            await asyncio.sleep(0)  # let the done callback run
+
+        async def main() -> None:
+            await (oc.spawn_detached(trigger(), name="post_startup") if detached else trigger())
+
+        # A private logger: the module's level or handlers, set by other tests, cannot drop a line.
+        manager.logger = logging.getLogger(f"test.sync_roots.{detached}")
+        manager.logger.setLevel(logging.DEBUG)
+        manager.logger.propagate = False
+        manager.logger.addHandler(RootByLevel())
+        asyncio.run(main())
+        assert roots["INFO"] == roots["body"] == roots["ERROR"] and roots["body"].startswith("sys-")
