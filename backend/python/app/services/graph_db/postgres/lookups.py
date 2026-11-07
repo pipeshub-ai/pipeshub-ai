@@ -44,6 +44,8 @@ from app.services.graph_db.postgres.trash import _sweep_edges
 from app.services.graph_db.vector_membership_queries import PAGE_RECORD_FIELDS
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+SYSTEM_APPS_PAGE = 1000      # rows per cross-org read of connector instances: graph.system_apps returns at most 1000 a call
+
 if TYPE_CHECKING:
     from app.core.db import Tx
 
@@ -914,11 +916,19 @@ class LookupsMixin(PgBase):
         """The first connector instance (lowest id, byte order) not marked backfilled and not being deleted: under an org context that org's, under a system
         context (the indexing loop) any org's, through the vetted cross-org read of instances. Neo4j picks an arbitrary one; the order makes the walk repeatable."""
         if current_or_system().kind == "system":
-            apps = await self._system_apps_page(0, 1_000_000, None, None, None)      # shortcut: reads every instance to pick one; instances are few, a vetted filtered read when they are not
-            due = [a for a in apps if a.get("vectorMembershipBackfilled") in (None, False) and (a.get("status") or "") != "DELETING"]
+            # every instance is read, a page at a time to the end: a capped read would answer None while apps past the cap still need the walk.
             # graph.system_apps orders by the database collation; the walk's order is byte order, as under an org context (ORDER BY n.id COLLATE "C").
-            # min keeps the first of equal ids, so apps sharing an id across orgs keep the read's (id, org) order.
-            return min(due, key=lambda a: str(a["_key"]).encode(), default=None)
+            # a strict < keeps the first of equal ids, so apps sharing an id across orgs keep the read's (id, org) order.
+            best, best_id, after, after_org = None, b"", None, ""
+            while True:
+                page = await self._system_apps_page(0, SYSTEM_APPS_PAGE, None, after, None, after_org=after_org)
+                for a in page:
+                    key = str(a["_key"]).encode()
+                    if a.get("vectorMembershipBackfilled") in (None, False) and (a.get("status") or "") != "DELETING" and (best is None or key < best_id):
+                        best, best_id = a, key
+                if len(page) < SYSTEM_APPS_PAGE:
+                    return best
+                after, after_org = page[-1]["_key"], page[-1]["orgId"]
         d = await self._one("""/* pipeshub:graph.get_app_needing_vector_membership_backfill */ SELECT doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'apps'
             AND coalesce(n.doc->'vectorMembershipBackfilled', 'null'::jsonb) IN ('null'::jsonb, 'false'::jsonb) AND coalesce(n.doc->>'status', '') <> 'DELETING'
             ORDER BY n.id COLLATE "C" LIMIT 1""", current_org_id(), transaction=transaction)

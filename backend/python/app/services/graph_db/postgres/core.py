@@ -101,20 +101,22 @@ class CoreMixin(PgBase):
         return [{f: d.get(f) for f in return_fields} for d in docs] if return_fields else docs
 
 
-    async def _system_apps_page(self, skip: int, limit: int, filters: dict[str, Any] | None, after_key: str | None, return_fields: list[str] | None) -> list[dict]:
+    async def _system_apps_page(self, skip: int, limit: int, filters: dict[str, Any] | None, after_key: str | None, return_fields: list[str] | None,
+                                after_org: str = "") -> list[dict]:
         """The connector instances across orgs (vetted ``graph.system_apps``): in (id, org) order, optionally only the active ones. Nothing else is filterable.
-        ``after_key`` continues after that id, whichever orgs hold it."""
+        ``after_key`` continues after that id, whichever orgs hold it; with ``after_org`` too, after that one (id, org) row, so other orgs' copies of the id follow."""
         extra = set(filters or {}) - {"isActive"}
         if extra or (filters and filters.get("isActive") is not True):
             raise ValueError(f"a cross-org read of connector instances filters on isActive=true only, not on {sorted(extra) or 'isActive=false'}")
         docs: list[dict] = []
-        after, after_org, to_skip = after_key or "", "", skip
+        skip_id = after_key if after_key and not after_org else None      # after an id, whichever orgs hold it
+        after, cur_org, to_skip = after_key or "", after_org if after_key else "", skip
         while len(docs) < limit:
             want = min(1000, to_skip + (limit - len(docs)))
-            rows = await self._system_read(lambda tx, a=after, o=after_org, w=want: tx.fetch(
+            rows = await self._system_read(lambda tx, a=after, o=cur_org, w=want: tx.fetch(
                 "/* pipeshub:graph.system_apps */ SELECT org_id, app_id, node_json FROM graph.system_apps($1, $2, $3, $4)", bool(filters), a, o, w))
             for r in rows:
-                if after_key and r["app_id"] == after_key:
+                if skip_id is not None and r["app_id"] == skip_id:
                     continue
                 if to_skip:
                     to_skip -= 1
@@ -123,7 +125,7 @@ class CoreMixin(PgBase):
                 docs.append({**_arango(_doc(json.loads(r["node_json"])), "apps"), "orgId": r[0]})      # r[0]: the row's org_id
             if len(rows) < want:
                 break
-            after, after_org = rows[-1][1], rows[-1][0]      # (app_id, org_id) of the last row: the cursor
+            after, cur_org = rows[-1][1], rows[-1][0]      # (app_id, org_id) of the last row: the cursor
         docs = docs[:limit]
         return [{f: d.get(f) for f in return_fields} for d in docs] if return_fields else docs
 
