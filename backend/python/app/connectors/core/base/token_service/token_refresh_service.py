@@ -250,9 +250,14 @@ class TokenRefreshService:
                 orgs = await self.graph_provider.get_all_orgs(active=False)
             for org in orgs:
                 org_id = org.get("_key") or org.get("id")
-                if org_id:
+                if not org_id:
+                    continue
+                # One org's failure must not starve the orgs listed after it, pass after pass.
+                try:
                     with for_org(str(org_id), job="token_refresh"):
                         await self._refresh_org_tokens(str(org_id))
+                except Exception as exc:
+                    self.logger.warning("token refresh failed org=%s error=%s", org_id, type(exc).__name__)
 
         except Exception as e:
             self.logger.error(f"❌ Error refreshing tokens: {e}", exc_info=True)
