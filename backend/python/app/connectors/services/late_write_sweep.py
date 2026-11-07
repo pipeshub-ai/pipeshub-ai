@@ -28,7 +28,7 @@ from app.services.messaging.utils import MessagingUtils
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Sequence
     from logging import Logger
 
     from app.config.configuration_service import ConfigurationService
@@ -66,10 +66,28 @@ _STORE = ConnectorIntentStore(PENDING_DIRECTORY, LateWriteSweepIntentError, "lat
 
 
 async def record_pending_late_write_sweep(
-    config_service: ConfigurationService, *, org_id: str, connector_id: str, now_ms: int | None = None,
+    config_service: ConfigurationService,
+    *,
+    org_id: str,
+    connector_id: str,
+    record_group_ids: Sequence[str] = (),
+    now_ms: int | None = None,
 ) -> None:
-    """Raises ``LateWriteSweepIntentError`` when the KV store refuses the write."""
-    await _STORE.record(config_service, org_id=org_id, connector_id=connector_id, now_ms=now_ms)
+    """Raises ``LateWriteSweepIntentError`` when the KV store refuses the write.
+
+    ``record_group_ids`` are the connector's groups, read before the delete removes them:
+    the links indexing writes late carry a group and no connector (see
+    ``IGraphDBProvider.sweep_deleted_connector_writes``)."""
+    # A retried delete may run after the first attempt removed some groups; keep those too.
+    try:
+        earlier = await config_service.get_config(_STORE.key(connector_id), use_cache=False)
+    except Exception:
+        earlier = None
+    kept = earlier.get("recordGroupIds") if isinstance(earlier, dict) else None
+    groups = list(dict.fromkeys(str(g) for g in [*(kept if isinstance(kept, list) else []), *record_group_ids] if g))
+    await _STORE.record(
+        config_service, org_id=org_id, connector_id=connector_id, now_ms=now_ms, recordGroupIds=groups,
+    )
 
 
 async def list_pending_late_write_sweeps(config_service: ConfigurationService) -> list[dict[str, Any]]:
@@ -127,7 +145,9 @@ class LateWriteSweeper:
                 )
                 return "dropped"
             with for_org(org_id, job="late_write_sweep"):
-                removed, left = await self.graph.sweep_deleted_connector_writes(connector_id)
+                removed, left = await self.graph.sweep_deleted_connector_writes(
+                    connector_id, [str(g) for g in intent.get("recordGroupIds") or []],
+                )
         except Exception:
             self.logger.warning(
                 "Late-write sweep failed; kept for retry | org=%s connector=%s", org_id, connector_id, exc_info=True,

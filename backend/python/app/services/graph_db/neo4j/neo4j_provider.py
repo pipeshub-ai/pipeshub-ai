@@ -11617,7 +11617,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Failed to delete nodes from {collection} by connectorId: {str(e)}")
             return (0, False)
 
-    async def sweep_deleted_connector_writes(self, connector_id: str) -> tuple[int, int]:
+    async def sweep_deleted_connector_writes(
+        self, connector_id: str, record_group_ids: Sequence[str] = (),
+    ) -> tuple[int, int]:
+        # The relation upsert MATCHes both ends, so no edge outlives its block here and
+        # ``record_group_ids`` has nothing to sweep.
         # Either removal failing does not stop the other: a block that keeps failing must
         # not hold back the connector's stage states. The pass still fails, and the next
         # one finds what is left.

@@ -54,15 +54,17 @@ class Graph:
         self.app = app
         self.passes = list(passes or [])
         self.swept_in: list[str | None] = []
+        self.swept_groups: list[list[str]] = []
 
     async def get_document(self, key, collection, **_kw) -> object:
         if isinstance(self.app, Exception):
             raise self.app
         return self.app
 
-    async def sweep_deleted_connector_writes(self, connector_id: str) -> tuple[int, int]:
+    async def sweep_deleted_connector_writes(self, connector_id: str, record_group_ids=()) -> tuple[int, int]:
         assert connector_id == CONNECTOR
         self.swept_in.append(current_org_id())
+        self.swept_groups.append(list(record_group_ids))
         result = self.passes.pop(0)
         if isinstance(result, Exception):
             raise result
@@ -103,6 +105,35 @@ async def test_rows_written_after_the_delete_are_removed_and_the_watch_goes_on()
     kept = intent(config)
     assert kept["lastFoundAt"] == NOW and kept["attempts"] == 1 and kept["nextAttemptAt"] == NOW + RETRY_MS
     s.logger.warning.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_every_pass_sweeps_the_groups_read_before_the_delete() -> None:
+    """Links written late carry a record group and no connector; the groups are gone after the delete."""
+    config = Config()
+    await record_pending_late_write_sweep(
+        config, org_id=ORG, connector_id=CONNECTOR, record_group_ids=["rg1", "", "rg2", "rg1"],
+        now_ms=NOW - GRACE_MS - 1,
+    )
+    graph = Graph(passes=[(0, 0)])
+    assert await sweeper(graph, config).tick() == {"swept": 1}
+    assert graph.swept_groups == [["rg1", "rg2"]]
+
+
+@pytest.mark.asyncio
+async def test_a_retried_delete_keeps_the_groups_the_first_attempt_read() -> None:
+    """The first attempt may have removed some groups before it failed; their links still need sweeping."""
+    config = Config()
+    await record_pending_late_write_sweep(config, org_id=ORG, connector_id=CONNECTOR, record_group_ids=["rg1", "rg2"])
+    await record_pending_late_write_sweep(config, org_id=ORG, connector_id=CONNECTOR, record_group_ids=["rg2"])
+    assert intent(config)["recordGroupIds"] == ["rg1", "rg2"]
+
+
+@pytest.mark.asyncio
+async def test_a_pass_that_removes_only_links_restarts_the_quiet_clock() -> None:
+    config = await recorded(age_ms=QUIET_MS * 2, recordGroupIds=["rg1"])
+    assert await sweeper(Graph(passes=[(1, 0)]), config).tick() == {"swept": 1}
+    assert intent(config)["lastFoundAt"] == NOW
 
 
 @pytest.mark.asyncio

@@ -12148,10 +12148,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Error deleting from {collection}: {str(e)}")
             return (0, False)
 
-    async def sweep_deleted_connector_writes(self, connector_id: str) -> tuple[int, int]:
+    async def sweep_deleted_connector_writes(
+        self, connector_id: str, record_group_ids: Sequence[str] = (),
+    ) -> tuple[int, int]:
         # A pass that cannot remove an edge fails, and the next one finds its block again.
-        # Either removal failing does not stop the other: a block that keeps conflicting
-        # must not hold back the connector's stage states, nor the reverse.
+        # No removal failing stops the others: a block that keeps conflicting must not hold
+        # back the connector's stage states or links, nor the reverse.
+        groups = list(dict.fromkeys(g for g in record_group_ids if g))
         removed = 0
         first_error: Exception | None = None
         try:
@@ -12159,14 +12162,38 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             first_error = e
         try:
+            removed += await self._delete_record_group_links(groups)
+        except Exception as e:
+            first_error = first_error or e
+        try:
             removed += (await self._delete_stage_states_by_connector_id(None, connector_id))[0]
         except Exception as e:
             first_error = first_error or e
         if first_error is not None:
             raise first_error
-        return removed, await self._count_connector_blocks_and_stage_states(connector_id)
+        return removed, await self._count_connector_blocks_and_stage_states(connector_id, groups)
 
-    async def _sweep_writes_during_delete(self, connector_id: str) -> int | None:
+    async def _delete_record_group_links(self, record_group_ids: list[str]) -> int:
+        """The UPSERT behind ``batch_upsert_node_relations`` inserts an edge whether or not its
+        ends exist, and the code graph writes a file's edges after its blocks, so an edge can
+        land after the delete removed the block it points at. It carries the group, not the
+        connector, and the group is gone with the connector."""
+        if not record_group_ids:
+            return 0
+        rows = await self.http_client.execute_aql(
+            query="""
+            FOR e IN @@links
+                FILTER e.recordGroupId IN @groups
+                REMOVE e IN @@links
+                RETURN 1
+            """,
+            bind_vars={"@links": CollectionNames.RECORD_LINKS.value, "groups": record_group_ids},
+        )
+        return len(rows or [])
+
+    async def _sweep_writes_during_delete(
+        self, connector_id: str, record_group_ids: Sequence[str] = (),
+    ) -> int | None:
         """Remove the blocks and stage states in-flight indexing wrote for a connector after its
         delete removed them: a duplicate code file projects its blocks, a stage job records its
         state. The pass repeats, backing off, until nothing of the connector is left. Returns
@@ -12178,7 +12205,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         left: int | None = None
         for attempt in range(CASCADE_ATTEMPTS):
             try:
-                found, left = await self.sweep_deleted_connector_writes(connector_id)
+                found, left = await self.sweep_deleted_connector_writes(connector_id, record_group_ids)
                 removed += found
             except Exception as e:
                 left = None
@@ -12199,17 +12226,25 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
         return left
 
-    async def _count_connector_blocks_and_stage_states(self, connector_id: str) -> int:
+    async def _count_connector_blocks_and_stage_states(
+        self, connector_id: str, record_group_ids: list[str] | None = None,
+    ) -> int:
+        bind_vars: dict[str, Any] = {
+            "@blocks": CollectionNames.BLOCKS.value,
+            "@states": CollectionNames.STAGE_STATES.value,
+            "connector_id": connector_id,
+        }
+        links = ""
+        if record_group_ids:
+            links = "+ LENGTH(FOR e IN @@links FILTER e.recordGroupId IN @groups RETURN 1)"
+            bind_vars |= {"@links": CollectionNames.RECORD_LINKS.value, "groups": record_group_ids}
         rows = await self.http_client.execute_aql(
-            query="""
+            query=f"""
             RETURN LENGTH(FOR b IN @@blocks FILTER b.connectorId == @connector_id RETURN 1)
                 + LENGTH(FOR s IN @@states FILTER s.connectorId == @connector_id RETURN 1)
+                {links}
             """,
-            bind_vars={
-                "@blocks": CollectionNames.BLOCKS.value,
-                "@states": CollectionNames.STAGE_STATES.value,
-                "connector_id": connector_id,
-            },
+            bind_vars=bind_vars,
         )
         return int(rows[0]) if rows else 0
 
@@ -12693,7 +12728,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             self.logger.warning(
                                 f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
                             )
-                        leftover = await self._sweep_writes_during_delete(connector_id)
+                        leftover = await self._sweep_writes_during_delete(
+                            connector_id, collected["record_group_keys"],
+                        )
                         try:
                             orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
                         except Exception as sweep_err:

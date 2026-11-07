@@ -202,6 +202,49 @@ async def test_one_late_write_pass_removes_blocks_and_stage_states_then_counts(p
 
 
 @pytest.mark.asyncio
+async def test_a_late_write_pass_removes_the_links_of_the_deleted_groups(p) -> None:
+    """The relation upsert inserts an edge whether or not its block still exists, and the edge
+    carries its group, not the connector: a block delete never sees it."""
+    queries: list[tuple[str, dict]] = []
+
+    async def aql(query, bind_vars=None, txn_id=None) -> list:
+        queries.append((query, bind_vars or {}))
+        if "REMOVE e IN @@links" in query:
+            return [1, 1]
+        return [0]
+
+    p.http_client.execute_aql = AsyncMock(side_effect=aql)
+    del p._count_connector_blocks_and_stage_states  # the provider's own
+
+    assert await p.sweep_deleted_connector_writes("c1", ["rg1", "", "rg1"]) == (2, 0)
+    removal, count = (q for q in queries if q[1].get("@links") == "recordLinks")
+    assert "FILTER e.recordGroupId IN @groups" in removal[0] and removal[1]["groups"] == ["rg1"]
+    assert "FILTER e.recordGroupId IN @groups" in count[0] and count[1]["groups"] == ["rg1"]
+
+
+@pytest.mark.asyncio
+async def test_a_late_write_pass_without_groups_leaves_the_links_alone(p) -> None:
+    p.http_client.execute_aql = AsyncMock(return_value=[0])
+    del p._count_connector_blocks_and_stage_states
+
+    assert await p.sweep_deleted_connector_writes("c1") == (0, 0)
+    assert all("@@links" not in c.kwargs["query"] for c in p.http_client.execute_aql.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_during_the_delete_covers_the_connectors_groups(p) -> None:
+    p._collect_connector_entities.return_value = {
+        **p._collect_connector_entities.return_value, "record_group_keys": ["rg1"],
+    }
+    p.sweep_deleted_connector_writes = AsyncMock(return_value=(0, 0))
+
+    result = await p.delete_connector_instance("c1", "org1")
+
+    assert result["success"] is True, result
+    p.sweep_deleted_connector_writes.assert_awaited_with("c1", ["rg1"])
+
+
+@pytest.mark.asyncio
 async def test_a_late_write_pass_raises_what_the_store_raises(p) -> None:
     """The late-write sweep retries a pass that failed; it must not read as an empty connector."""
     p._delete_stage_states_by_connector_id = AsyncMock(side_effect=CONFLICT)

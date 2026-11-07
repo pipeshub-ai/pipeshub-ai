@@ -1639,6 +1639,23 @@ class EventService:
         finally:
             await cleanup_helper.close()
 
+    async def _record_group_ids_for_sweep(self, connector_id: str) -> list[str]:
+        # Without them the sweep still removes late blocks and stage states, only not the
+        # links that point at them, so a failed read does not hold the delete back.
+        try:
+            rows = await self.graph_provider.get_nodes_by_filters(
+                collection=CollectionNames.RECORD_GROUPS.value,
+                filters={"connectorId": connector_id},
+                return_fields=["_key"],
+                raise_on_error=True,
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"Could not read the record groups of connector {connector_id} for its late-write sweep: {e}"
+            )
+            return []
+        return [str(row["_key"]) for row in rows or [] if row.get("_key")]
+
     async def _handle_delete(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """
         Handle the async connector deletion event.
@@ -1715,6 +1732,7 @@ class EventService:
             )
             await record_pending_late_write_sweep(
                 config_service, org_id=org_id, connector_id=connector_id,
+                record_group_ids=await self._record_group_ids_for_sweep(connector_id),
             )
             self.logger.info(
                 f"Storage release intent recorded | org={org_id} connector={connector_id}"
