@@ -49,6 +49,12 @@ check() { # check "desc" actual expected_substring
     fail "$1"; printf "         expected to contain: %s\n         got: %s\n" "$3" "$2"; fi
 }
 
+# Exact comparison: `check` matches a substring, which cannot show that something was NOT added to a value.
+check_exact() { # check_exact "desc" actual expected
+  if [[ "$2" == "$3" ]]; then pass "$1"; else
+    fail "$1"; printf "         expected exactly: %s\n         got: %s\n" "$3" "$2"; fi
+}
+
 # Extract a top-level function definition (closing brace in column 0) from a
 # script so the real implementation can be exercised in isolation.
 extract_fn() { awk -v fn="$1" '$0 ~ "^"fn"\\(\\) \\{"{g=1} g{print} g&&/^\}/{exit}' "$2"; }
@@ -417,7 +423,7 @@ eval "$(extract_fn crash_looping_containers "$INNER_INSTALLER")"
 # --stop must tear down ALL profile-gated containers (not just the active
 # profile) so leftover graph/broker containers do not block network removal.
 stop_block="$(awk '/if \$FLAG_STOP; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")"
-check "stop enables all profiles" "$stop_block" 'COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox"'
+check "stop enables all profiles" "$stop_block" 'COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate"'
 check "stop removes orphans" "$stop_block" "down --remove-orphans"
 check "stop uses COMPOSE_PROJECT_NAME from .env" "$stop_block" 'PROJECT_NAME="$(resolve_project_name)"'
 check "stop validates project name from .env" "$stop_block" 'require_valid_project_name "$PROJECT_NAME"'
@@ -492,6 +498,8 @@ echo "== In-tree installer: COMPOSE_PROFILES derivation (real functions) =="
 # Pull the real function definitions out of the installer and exercise them in
 # isolation. Both are defined at top level with the closing brace in column 0.
 eval "$(extract_fn derive_compose_profiles "$INNER_INSTALLER")"
+eval "$(extract_fn opt_in_profiles "$INNER_INSTALLER")"
+_saved_env_val() { :; }
 eval "$(extract_fn persist_env_var "$INNER_INSTALLER")"
 
 dp() { DATA_STORE="$1" KV_STORE_TYPE="$2" MESSAGE_BROKER="$3" derive_compose_profiles; }
@@ -522,6 +530,97 @@ echo "== In-tree installer: persist_env_var replaces in place =="
   printf 'SECRET_KEY=abc\n' >"$ENV_FILE"
   persist_env_var COMPOSE_PROFILES "graph-neo4j"
   check "missing key appended" "$(cat "$ENV_FILE")" "COMPOSE_PROFILES=graph-neo4j"
+)
+
+echo "== In-tree installer: the opt-in postgres profiles =="
+check "keeps postgres in COMPOSE_PROFILES" "$(COMPOSE_PROFILES=graph-neo4j,postgres,postgres-migrate dp neo4j redis redis)" "graph-neo4j,sandbox,postgres,postgres-migrate"
+check_exact "does not invent postgres" "$(dp neo4j redis redis)" "graph-neo4j,sandbox"
+check_exact "does not match a longer profile name" "$(COMPOSE_PROFILES=postgres-extra dp neo4j redis redis)" "graph-neo4j,sandbox"
+check_exact "keeps exactly the two opt-in profiles and nothing else" "$(COMPOSE_PROFILES=graph-neo4j,postgres,postgres-migrate dp neo4j redis redis)" "graph-neo4j,sandbox,postgres,postgres-migrate"
+# the exact check does fail on a wrongly appended profile (the substring check did not)
+[[ "graph-neo4j,sandbox,postgres" != "graph-neo4j,sandbox" ]] && pass "an appended postgres is caught by the exact comparison" || fail "an appended postgres is caught by the exact comparison"
+check "uninstall also covers the postgres profiles" "$(awk '/if \$FLAG_UNINSTALL; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")" 'sandbox,postgres,postgres-migrate"'
+check "uninstall asks before deleting the PostgreSQL volume" "$(awk '/if \$FLAG_UNINSTALL; then/{g=1} g{print} g&&/^fi/{exit}' "$INNER_INSTALLER")" "Also delete the PostgreSQL data volume?"
+# The .env the wizard writes carries one random password per login; an existing value is kept across --reconfigure.
+wizard="$(awk '/PostgreSQL profile \(opt-in\): kept across/{g=1} g{print} g&&/^  done/{exit}' "$INNER_INSTALLER")"
+(
+  get_existing_val() { case "$1" in PG_NODE_PASSWORD) echo kept;; *) echo "${2:-}";; esac; }
+  gen_secret() { printf 'x%.0s' $(seq 1 "${1:-32}"); }
+  eval "$wizard"
+  check "wizard keeps an existing PG password" "$PG_NODE_PASSWORD" "kept"
+  check "wizard generates the others" "$PG_BACKUP_PASSWORD:$PG_ADMIN_PASSWORD" "xxxxxxxxxxxxxxxx:xxxxxxxxxxxxxxxx"
+  check "wizard pins the major" "$PG_MAJOR" "18"
+)
+check ".env writer lists all nine PG passwords" "$(grep -c '^PG_[A-Z]*_PASSWORD=\${PG_' "$INNER_INSTALLER")" "9"
+
+# --reconfigure rebuilds COMPOSE_PROFILES from the wizard's choices; the saved override needs the PostgreSQL profiles, so they must
+# survive it, and the project must still render afterwards.
+(
+  work="$TMP_ROOT/reconfigure-pg"; mkdir -p "$work"
+  cp "$INNER_INSTALLER" "$work/install.sh"
+  cp "$COMPOSE_DIR/docker-compose.yml" "$COMPOSE_DIR/docker-compose.postgres-docstore.yml" "$COMPOSE_DIR/env.template" "$work/"
+  mkdir -p "$work/postgres"
+  printf 'IMAGE_TAG=0.6.0-slim\nSECRET_KEY=abc\nMONGO_PASSWORD=m\nREDIS_PASSWORD=r\nNEO4J_PASSWORD=n\nAPP_PORT=3000\nPROJECT_NAME=testproj\nDATA_STORE=neo4j\nCOMPOSE_PROFILES=graph-neo4j,sandbox,postgres,postgres-migrate\nPIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml\nPG_NODE_PASSWORD=keepnode\n' >"$work/.env"
+  out="$(cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only 2>&1)" && pass "--reconfigure with the override exits 0" || fail "--reconfigure with the override exits 0"
+  profiles="$(grep '^COMPOSE_PROFILES=' "$work/.env" | cut -d= -f2-)"
+  check "--reconfigure keeps both PostgreSQL profiles" ",$profiles," ",postgres,postgres-migrate,"
+  check "--reconfigure keeps the override" "$(cat "$work/.env")" "PIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml"
+  check "--reconfigure keeps an existing PG password" "$(cat "$work/.env")" "PG_NODE_PASSWORD=keepnode"
+  check "the printed command lists the override" "$out" "docker-compose.postgres-docstore.yml"
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    (cd "$work" && docker compose --env-file .env -f docker-compose.yml -f docker-compose.postgres-docstore.yml config -q 2>&1) \
+      && pass "the project renders after --reconfigure" || fail "the project renders after --reconfigure"
+  else
+    pass "the project renders after --reconfigure (skipped: no docker compose here)"
+  fi
+  # An override with no profiles saved at all still gets both (a hand-written .env).
+  printf 'IMAGE_TAG=0.6.0-slim\nSECRET_KEY=abc\nAPP_PORT=3000\nPROJECT_NAME=testproj\nDATA_STORE=neo4j\nCOMPOSE_PROFILES=graph-neo4j\nPIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml\n' >"$work/.env"
+  (cd "$work" && bash ./install.sh --reconfigure --yes --print-env-only >/dev/null 2>&1)
+  check "the override alone brings both profiles" ",$(grep '^COMPOSE_PROFILES=' "$work/.env" | cut -d= -f2-)," ",postgres,postgres-migrate,"
+)
+
+# --uninstall keeps the PostgreSQL volume unless --delete-postgres is given, also with --yes (checked with a recording docker).
+(
+  work="$TMP_ROOT/uninstall-pg"; mkdir -p "$work/bin"
+  cp "$INNER_INSTALLER" "$work/install.sh"
+  cp "$COMPOSE_DIR/docker-compose.yml" "$COMPOSE_DIR/docker-compose.postgres-docstore.yml" "$work/"
+  printf 'COMPOSE_PROJECT_NAME=testproj\nPIPESHUB_COMPOSE_OVERRIDES=docker-compose.postgres-docstore.yml\nCOMPOSE_PROFILES=graph-neo4j,postgres,postgres-migrate\n' >"$work/.env"
+  cat >"$work/bin/docker" <<'STUB'
+#!/usr/bin/env bash
+echo "docker $*" >>"$DOCKER_LOG"
+case "$1 $2" in
+  "volume ls") printf 'testproj_postgres_data\ntestproj_neo4j_data\ntestproj_redis_data\n' ;;
+esac
+exit 0
+STUB
+  chmod +x "$work/bin/docker"
+  # run_uninstall <stdin text> <args...>: the text answers the prompts in order (printf %b, so \n separates answers)
+  run_uninstall() { local input="$1"; shift; : >"$work/docker.log"; (cd "$work" && printf '%b' "$input" | PATH="$work/bin:$PATH" DOCKER_LOG="$work/docker.log" bash ./install.sh --uninstall "$@" >"$work/out.txt" 2>&1); }
+  run_uninstall "" --yes
+  log="$(cat "$work/docker.log")"
+  check "--uninstall --yes does not run down -v" "$([[ "$log" != *"down -v"* ]] && echo no-down-v)" "no-down-v"
+  check "--uninstall --yes removes the other volumes" "$log" "volume rm testproj_neo4j_data"
+  check "--uninstall --yes keeps the PostgreSQL volume" "$([[ "$log" != *"volume rm testproj_postgres_data"* ]] && echo kept)" "kept"
+  check "--uninstall --yes says how to delete it" "$(cat "$work/out.txt")" "--delete-postgres"
+  run_uninstall "" --yes --delete-postgres
+  check "--uninstall --yes --delete-postgres removes everything with down -v" "$(cat "$work/docker.log")" "down -v --remove-orphans"
+  # interactive: the first answer confirms the uninstall, the second answers the PostgreSQL question (asked unless --delete-postgres)
+  run_uninstall "y\nn\n"
+  check "an interactive uninstall asks about the PostgreSQL volume" "$(cat "$work/out.txt")" "Also delete the PostgreSQL data volume?"
+  check "and keeps it when the answer is no" "$([[ "$(cat "$work/docker.log")" != *"down -v"* && "$(cat "$work/docker.log")" != *"volume rm testproj_postgres_data"* ]] && echo kept)" "kept"
+  run_uninstall "y\ny\n"
+  check "and deletes it with down -v when the answer is yes" "$(cat "$work/docker.log")" "down -v --remove-orphans"
+  run_uninstall "y\n" --delete-postgres
+  check "--delete-postgres skips the PostgreSQL question" "$([[ "$(cat "$work/out.txt")" != *"Also delete the PostgreSQL"* ]] && echo no-prompt)" "no-prompt"
+  check "--delete-postgres deletes it without being asked" "$(cat "$work/docker.log")" "down -v --remove-orphans"
+  # a failed volume lookup is not "no PostgreSQL volume": the uninstall stops with nothing changed, it never runs down -v
+  sed -i 's|^  "volume ls") |  "volume ls") [ -n "${LS_FAIL:-}" ] \&\& { echo "Cannot connect to the Docker daemon" >\&2; exit 1; }; |' "$work/bin/docker"
+  : >"$work/docker.log"
+  (cd "$work" && PATH="$work/bin:$PATH" DOCKER_LOG="$work/docker.log" LS_FAIL=1 bash ./install.sh --uninstall --yes >"$work/out.txt" 2>&1); code=$?
+  log="$(cat "$work/docker.log")"
+  check "a failed volume lookup aborts the uninstall" "$([[ $code -ne 0 ]] && echo aborted)" "aborted"
+  check "and says nothing was changed" "$(cat "$work/out.txt")" "Nothing was changed"
+  check "and never runs down or removes a volume" "$([[ "$log" != *" down "* && "$log" != *"volume rm"* ]] && echo untouched)" "untouched"
 )
 
 echo "== In-tree installer: image refresh policy (real function + guards) =="

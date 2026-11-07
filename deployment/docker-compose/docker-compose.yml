@@ -19,6 +19,8 @@
 #   kv-etcd       — etcd              (with KV_STORE_TYPE=etcd)
 #   broker-kafka  — Zookeeper + Kafka (with MESSAGE_BROKER=kafka)
 #   sandbox       — coding-sandbox image pull + Docker API proxy (SANDBOX_MODE=docker)
+#   postgres      — PostgreSQL + PgBouncer (opt-in; the app uses it only with docker-compose.postgres-docstore.yml, see ./postgres/README.md)
+#   postgres-migrate — the schema migration job (needs the `postgres` profile too)
 #   search-searxng — SearXNG metasearch (then add SearXNG at http://searxng:8080 under
 #                    Workspace → Web search)
 #   fetch-crawl4ai — Crawl4AI page reader for JavaScript-heavy sites (then add Crawl4AI at
@@ -611,6 +613,112 @@ services:
       timeout: 3s
       retries: 5
 
+  # ---------------------------------------------------------------------------
+  # PostgreSQL + PgBouncer — profile: postgres (opt-in)
+  # Image sources and the role/pooler setup: ./postgres/. Build it first (`docker compose --profile postgres build postgres`);
+  # no such image is published. Compose fills variables in before it drops inactive profiles, so the passwords are not checked
+  # with ${VAR:?}: the image's entrypoint refuses to start (exit 78) when one is empty.
+  # ---------------------------------------------------------------------------
+  postgres:
+    profiles: ["postgres"]
+    image: ${PG_IMAGE:-pipeshubai/postgres}:${PG_MAJOR:-18}-${PG_IMAGE_REV:-1}
+    pull_policy: build
+    build:
+      context: ./postgres
+      args:
+        PG_MAJOR: ${PG_MAJOR:-18}
+    restart: always
+    shm_size: ${PG_SHM:-1g}   # parallel index builds need more than Docker's 64 MB default
+    # The 18 image declares /var/lib/postgresql as a volume: without this it creates an anonymous, unused one on every container.
+    tmpfs:
+      - /var/lib/postgresql:size=16m
+    environment:
+      - POSTGRES_DB=pipeshub
+      - POSTGRES_PASSWORD=${PG_ADMIN_PASSWORD:-}
+      - PG_SHARED_BUFFERS=${PG_SHARED_BUFFERS:-1GB}
+      # The cluster lives in the named volume on both majors. The 18 image would put it in 18/docker under its own anonymous volume
+      # (and refuses a mount at .../data unless PGDATA names it); the 17 image declares .../data as a volume itself.
+      - PGDATA=/var/lib/postgresql/data
+      - PG_NODE_PASSWORD=${PG_NODE_PASSWORD:-}
+      - PG_CONNECTORS_PASSWORD=${PG_CONNECTORS_PASSWORD:-}
+      - PG_INDEXING_PASSWORD=${PG_INDEXING_PASSWORD:-}
+      - PG_QUERY_PASSWORD=${PG_QUERY_PASSWORD:-}
+      - PG_KV_PASSWORD=${PG_KV_PASSWORD:-}
+      - PG_JOBS_PASSWORD=${PG_JOBS_PASSWORD:-}
+      - PG_MIGRATE_PASSWORD=${PG_MIGRATE_PASSWORD:-}
+      - PG_BACKUP_PASSWORD=${PG_BACKUP_PASSWORD:-}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - pgbouncer_auth:/pgbouncer-auth
+    deploy:
+      resources:
+        limits:
+          memory: ${PG_MEMORY_LIMIT:-4G}
+        reservations:
+          memory: 1G
+    networks:
+      - pipeshub
+    healthcheck:
+      # TCP, not the socket: during first init the temporary server listens on the socket only
+      # Ready means answering AND role setup done: the verifier file is written last, only when it succeeded.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d pipeshub && test -s /pgbouncer-auth/userlist.txt"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      # first init, crash recovery of a large volume and the role setup can take longer than the retries allow
+      start_period: 300s
+
+  # Same image, other command. Transaction pooling with the session reset in postgres/pgbouncer.ini.
+  pgbouncer:
+    profiles: ["postgres"]
+    image: ${PG_IMAGE:-pipeshubai/postgres}:${PG_MAJOR:-18}-${PG_IMAGE_REV:-1}
+    user: postgres
+    # Waits for the verifier file the postgres service writes (pgbouncer reads it only at start). After a role or password change,
+    # restart this service so it reads the new file.
+    entrypoint: ["sh", "-c"]
+    command: ["until [ -s /pgbouncer-auth/userlist.txt ]; do sleep 1; done; exec pgbouncer /etc/pgbouncer/pgbouncer.ini"]
+    restart: always
+    # Both images declare a data volume (17: .../data, 18: the parent); the pooler stores nothing, so cover both instead of
+    # leaving an empty anonymous volume behind on every up.
+    tmpfs:
+      - /var/lib/postgresql:size=16m
+      - /var/lib/postgresql/data:size=16m
+    volumes:
+      - pgbouncer_auth:/pgbouncer-auth:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - pipeshub
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /pgbouncer-auth/userlist.txt && pg_isready -h 127.0.0.1 -p 6432"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Runs the schema migrations straight against postgres (a session and an advisory lock are needed, so not through the pooler; the
+  # runner refuses one). Idempotent: a database at head is left as it is, and a failed run changes nothing on an installed database.
+  # Exit 4 means the catalog check found violations. Built from backend/db/Dockerfile (a repository checkout is needed). An empty
+  # PG_MIGRATE_PASSWORD is not checked here (compose interpolates inactive services, so a required-variable check would break the default
+  # config); the postgres service refuses to start with one, so the job fails closed.
+  pipeshub-migrate:
+    profiles: ["postgres-migrate"]
+    image: ${PIPESHUB_MIGRATE_IMAGE:-pipeshubai/pipeshub-migrate}:${IMAGE_TAG:-latest}
+    pull_policy: build
+    build:
+      context: ../..
+      dockerfile: backend/db/Dockerfile
+    command: ["python", "-m", "db.migrate"]
+    environment:
+      - PG_MIGRATE_URL=postgresql+psycopg://pipeshub_migrate:${PG_MIGRATE_PASSWORD:-}@postgres:5432/pipeshub
+      - PG_MIGRATE_LOCK_TIMEOUT_S=${PG_MIGRATE_LOCK_TIMEOUT_S:-600}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - pipeshub
+
   qdrant:
     image: qdrant/qdrant:v1.15
     stop_grace_period: 120s
@@ -858,6 +966,11 @@ volumes:
   mongodb_data:
     driver: local
   redis_data:
+    driver: local
+  # PostgreSQL volumes (only populated when the postgres profile is active)
+  postgres_data:
+    driver: local
+  pgbouncer_auth:
     driver: local
   qdrant_storage:
     driver: local
