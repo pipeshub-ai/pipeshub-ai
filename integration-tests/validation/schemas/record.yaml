@@ -72,6 +72,9 @@ fields:
       code_facts_version:
         type: string
         required: false
+      document_title:
+        type: string
+        required: false
   child_record_ids:
     required: false
     type: array
