@@ -15,8 +15,18 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from app.modules.code_graph.symbol_index import SymbolIndex
 
-__all__ = ["RESOLVERS", "Resolver"]
+__all__ = ["IN_REPO", "RESOLVERS", "Resolver"]
 
 Resolver = Callable[[str, str, set[str], "SymbolIndex | None"], "str | None"]
+# Same arguments: whether a specifier the resolver cannot place still names repo code (a Rust `crate::`
+# path to a module, an item it cannot find), so it is unresolved rather than an outside library.
+InRepo = Callable[[str, str, set[str], "SymbolIndex | None"], bool]
 
-RESOLVERS: dict[str, Resolver] = {}
+
+def _registry() -> tuple[dict[str, Resolver], dict[str, InRepo]]:
+    from app.modules.code_graph.resolvers import rust
+
+    return {"rust": rust.resolve}, {"rust": rust.in_repo}
+
+
+RESOLVERS, IN_REPO = _registry()

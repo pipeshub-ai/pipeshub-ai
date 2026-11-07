@@ -26,6 +26,7 @@ from app.modules.code_graph.guards import (
 from app.modules.code_graph.import_resolution import ImportResolution
 from app.modules.code_graph.module_refs import module_refs_of_path
 from app.modules.code_graph.symbol_index import BlockRow, SymbolIndex
+from app.modules.parsers.code_parser.languages.rust import HELD, POINTED, PRELUDE
 from app.utils.env_config import env_int
 
 if TYPE_CHECKING:
@@ -260,6 +261,79 @@ _PY_BUILTIN_METHODS = frozenset(
 ) | {"read", "readline", "readlines", "write", "close", "seek", "flush", "group", "groups", "groupdict", "span"}
 _CLASS_ARG_CALLS = frozenset({"createInstance", "get"})
 _SEGMENT = re.compile(r"[A-Za-z_$][\w$]*")
+# Receiver chains (`typed_receiver_chains`): what a held value's methods (`?T`: an Option, a Result, a Mutex; Rust's
+# parser marks them, languages/rust.py) give back: the value inside, or a value still held.
+_UNWRAP_METHODS = frozenset({
+    "unwrap", "expect", "unwrap_or", "unwrap_or_default", "unwrap_or_else", "unwrap_unchecked", "into_inner",
+    "borrow", "borrow_mut", "get_mut",
+})
+_HOLDER_METHODS = frozenset({
+    "as_ref", "as_mut", "as_deref", "as_deref_mut", "ok", "ok_or", "ok_or_else", "take", "cloned", "copied",
+    "clone", "lock", "read", "write", "replace", "or", "or_else", "filter",
+})
+# A pointer's own methods (`*T`: Box, Rc, Arc, Cow): the derefs give the value, the rest stay the pointer's.
+_POINTER_DEREFS = frozenset({"as_ref", "as_mut", "borrow", "borrow_mut", "deref", "deref_mut", "to_mut",
+                             "into_owned", "get_mut", "make_mut"})
+_POINTER_METHODS = _POINTER_DEREFS | {"clone", "downgrade", "upgrade", "strong_count", "weak_count", "ptr_eq"}
+# Methods an unmarked type that does not define one hands on unchanged (a derived `clone()`).
+_PASS_THROUGH_METHODS = frozenset({"clone", "to_owned", "borrow", "borrow_mut", "deref", "deref_mut"})
+
+
+def _split_mark(value: str) -> tuple[str, str]:
+    """`?T` -> (`?`, `T`): what wraps a Rust chain value, and the value."""
+    return (value[0], value[1:]) if value[:1] in (HELD, POINTED) else ("", value)
+
+
+@dataclass
+class _ImplNames:
+    """Where impls name their type (`impl_blocks_name_their_type`): impl and type blocks by name, and the names a
+    `use ... as` links (`use s::Daemon as DaemonSettings; impl DaemonSettings`). Read without import bindings."""
+
+    impls: dict[str, list[str]]
+    types: dict[str, list[str]]
+    links: dict[str, set[str]]
+
+    @classmethod
+    def of(cls, index: SymbolIndex) -> _ImplNames:
+        out, wanted = cls({}, {}, {}), {}
+        for block_id in sorted(index.rows):
+            row = index.rows[block_id]
+            family = index.family_by_block.get(block_id) or lang_family(None, row.file_path)
+            if family not in wanted:
+                wanted[family] = rules_for(family).impl_blocks_name_their_type
+            if not wanted[family]:
+                continue
+            if row.name and row.kind == "impl":
+                out.impls.setdefault(row.name, []).append(block_id)
+            elif row.name and block_id in index.type_blocks:
+                out.types.setdefault(row.name, []).append(block_id)
+            for fact in row.pending_edges:
+                local, name = fact.get("localName"), fact.get("toName")
+                if fact.get("relation") == RecordRelations.IMPORTS.value and local and name and local != name:
+                    out.links.setdefault(name, set()).add(local)
+                    out.links.setdefault(local, set()).add(name)
+        return out
+
+    def group(self, name: str) -> set[str]:
+        """*name* and every name a chain of `use ... as` links to it."""
+        seen, queue = {name}, [name]
+        while queue:
+            for linked in self.links.get(queue.pop(), ()):
+                if linked not in seen:
+                    seen.add(linked)
+                    queue.append(linked)
+        return seen
+
+
+class _FileBindings:
+    """A file's import bindings, read only when a hook asks for a name, so an incremental build notes (and then
+    re-resolves) only the files whose bindings decided something."""
+
+    def __init__(self, bindings: dict[str, dict[str, str]], file_path: str) -> None:
+        self._bindings, self._file = bindings, file_path
+
+    def get(self, name: str, default: str | None = None) -> str | None:
+        return self._bindings.get(self._file, {}).get(name, default)
 
 
 def _receiver_segments(expr: str) -> list[tuple[str, bool, str]] | None:
@@ -342,6 +416,10 @@ class _Builder:
         # Python: file -> local name -> (file, name) of a module-level value it imports
         # (`from django.apps import apps`), whose type that file's assignment gives.
         self.value_imports: dict[str, dict[str, tuple[str, str]]] = _BindingMap(self.bindings_missing, lambda: self.resolving)
+        self._outside_imports: dict[str, dict[str, str]] = {}
+        self._impl_names: _ImplNames | None = None
+        self._impl_owners: dict[str, str | None] = {}
+        self._impls_of_type: dict[str, list[str]] = {}
         self._py_classes: dict[str, list[str]] | None = None
         self._py_reach: dict[str, tuple[set[str], set[str]]] = {}
         self.re_exports: dict[str, set[str]] = {}
@@ -395,6 +473,8 @@ class _Builder:
                   confidence: str, line: int | None, resolution: str | None = None) -> None:
         if from_key == to_key:  # self-loop
             return
+        if relation in _CALL_RELATIONS and self._uncallable(to_key.partition("/")[2]):
+            return
         dedup = (from_key, to_key, relation)
         if dedup in self.edges:
             return
@@ -406,6 +486,11 @@ class _Builder:
             if owner and not self._nested_in(to_key.partition("/")[2], owner):
                 self._add_edge(self._block_key(owner), to_key, relation, confidence=confidence,
                                line=line, resolution=resolution)
+
+    def _uncallable(self, block_id: str) -> bool:
+        """A block its family says no call can run, whichever rung resolved the call to it."""
+        row = self.index.rows.get(block_id)
+        return row is not None and row.kind in rules_for(self._family_of(block_id)).uncallable_kinds
 
     def _nested_in(self, block_id: str, ancestor: str) -> bool:
         row = self.index.rows.get(block_id)
@@ -540,8 +625,11 @@ class _Builder:
             self.result.external_refs += 1
             return
         target_file = self.imports.walk_barrel_chain(target_file, self.re_exports)
+        # A Rust `impl Foo` block shares its type's name but is never what `use m::Foo` imports.
+        skip_impls = rules_for(family).impl_blocks_name_their_type
         candidates = [cid for cid in self.index.candidates(name)
-                      if self.index.file_by_block.get(cid) == target_file]
+                      if self.index.file_by_block.get(cid) == target_file
+                      and not (skip_impls and self.index.rows[cid].kind == "impl")]
         top_level = [cid for cid in candidates if not self._parent_of(cid)]
         candidates = top_level or candidates
         if len(candidates) > 1 and family == "js":
@@ -708,16 +796,43 @@ class _Builder:
                         resolution=RESOLUTION_TYPE,
                     )
                     continue
-            target, confidence, resolution = self._resolve_direct(
-                name, call_file, family, relation, fact.get("qualifiedPrefix"),
-            )
+            source = self._source_key(block_id, fact)
+            if (relation in _TYPE_RELATIONS and rules_for(family).enclosing_type
+                    and block_id not in self.index.type_blocks):
+                # `impl Trait for Engine` is Engine's heritage, wherever the impl is written; an
+                # impl on a type outside the repo (`impl Ext for Vec<T>`) is nobody's.
+                owner = self._hooked_type(block_id)
+                if not owner:
+                    continue
+                source = self._block_key(owner)
+            if fact.get("context") == PRELUDE:
+                # `impl Copy for X`: std's Copy unless this file binds or defines a repo trait so named.
+                target, confidence, resolution = self._shadowing_trait(call_file, name)
+                if not target:
+                    self.result.external_refs += 1
+                    continue
+            else:
+                target, confidence, resolution = self._resolve_direct(
+                    name, call_file, family, relation, fact.get("qualifiedPrefix"),
+                )
             if not target:
                 continue
             self._add_edge(
-                self._source_key(block_id, fact), self._block_key(target),
+                source, self._block_key(target),
                 self._heritage_relation(relation, block_id, target),
                 confidence=confidence, line=fact.get("line"), resolution=resolution,
             )
+
+    def _shadowing_trait(self, file_path: str, name: str) -> tuple[str | None, str, str | None]:
+        """The repo trait a prelude name means in *file_path*: the one its import binds, else the one it
+        defines; (None, ...) when neither is a trait, so the name is the standard library's."""
+        bound = self.symbol_bindings.get(file_path, {}).get(name)
+        if bound and (row := self.index.rows.get(bound)) is not None and row.kind == "trait":
+            return bound, CONFIDENCE_EXTRACTED, RESOLUTION_IMPORT
+        own = [cid for cid in self._defined_in(file_path, name) if self.index.rows[cid].kind == "trait"]
+        if len(own) == 1:
+            return own[0], CONFIDENCE_EXTRACTED, RESOLUTION_SAME_FILE
+        return None, CONFIDENCE_INFERRED, None
 
     def _heritage_relation(self, relation: str, source: str, target: str) -> str:
         """`INHERITS` becomes `IMPLEMENTS` when the base turns out to be a contract.
@@ -822,6 +937,17 @@ class _Builder:
                 and (relation not in _TYPE_RELATIONS or bound in self.index.type_blocks)):
             return bound, CONFIDENCE_EXTRACTED, RESOLUTION_IMPORT
 
+        rules = rules_for(family)
+        if qualified_prefix and rules.qualified_path_separator and relation in _CALL_RELATIONS:
+            # `helpers::f()`, `crate::a::f()`: the path names the function, wherever the file's `use`s lead;
+            # `convert::usize()` beside an inline `mod convert { .. }` is that module's.
+            inline = self._namespace_member("", qualified_prefix.removeprefix("self::"), name,
+                                            self.index.record_by_file.get(call_file, ""))
+            if inline:
+                return inline, CONFIDENCE_EXTRACTED, RESOLUTION_SAME_FILE
+            return self._qualified_path_target(f"{qualified_prefix}{rules.qualified_path_separator}{name}",
+                                               name, call_file, family, relation)
+
         if not self.index.candidates(name):
             # Nothing in the repo defines this name at all: a third-party or
             # stdlib reference, not a resolution failure.
@@ -839,7 +965,12 @@ class _Builder:
             if pinned:
                 return pinned[0], CONFIDENCE_EXTRACTED, RESOLUTION_QUALIFIER
 
-        rules = rules_for(family)
+        if qualified_prefix and rules.qualified_path_separator and relation in _TYPE_RELATIONS:
+            # `impl sqlx::FromRow for X`: the whole path names the definition, and a path the
+            # family's resolver cannot place is outside the repo, never a same-named repo type.
+            return self._qualified_path_target(f"{qualified_prefix}{rules.qualified_path_separator}{name}",
+                                               name, call_file, family, relation)
+
         same_file = self._eligible(self._defined_in(call_file, name), family, relation)
         if rules.lexical_module_scope and relation in _CALL_RELATIONS:
             # A bare JS/TS call never reaches a method: that takes `this.` or a receiver.
@@ -878,6 +1009,25 @@ class _Builder:
             self.result.ambiguous_skipped += 1
             return None, confidence, None
         return candidates[0], confidence, resolution
+
+    def _qualified_path_target(self, path: str, name: str, call_file: str, family: str | None,
+                               relation: str) -> tuple[str | None, str, str | None]:
+        """The definition *path* names in the file the family's resolver places it in: the one whose qualified
+        name is the path's longest tail there (`a::testing::f` is `testing.f`, in an inline `mod testing`, before
+        a top-level `f`). A path the resolver cannot place is outside the repo, never a same-named definition."""
+        separator = rules_for(family).qualified_path_separator or "."
+        defining = self.imports.resolve(path, call_file, family)
+        if not defining:
+            self.result.external_refs += 1
+            return None, CONFIDENCE_INFERRED, None
+        segments = path.split(separator)
+        tails = {".".join(segments[i:]): i for i in range(len(segments))}
+        in_file = sorted((tails[tail], cid) for cid in self._eligible(self.index.candidates(name), family, relation)
+                         if self.index.file_by_block.get(cid) == defining
+                         and (tail := (self.index.rows[cid].qualified_name or "").partition(":")[2]) in tails)
+        if not in_file or (len(in_file) > 1 and in_file[0][0] == in_file[1][0]):
+            return None, CONFIDENCE_INFERRED, None
+        return in_file[0][1], CONFIDENCE_EXTRACTED, RESOLUTION_QUALIFIER
 
     def _defined_in(self, file_path: str, name: str) -> list[str]:
         record_id = self.index.record_by_file.get(file_path)
@@ -959,12 +1109,26 @@ class _Builder:
         # `a.f().g()` keeps `f()` as the receiver, which would match a bare `function f()`'s
         # return type; the chain is evaluated whole below instead.
         chained_call = receiver.endswith(")") and fact.get("qualifiedPrefix") != receiver if receiver else False
-        if not receiver_type and receiver and not scoped and not chained_call:
-            receiver_type = self._types(record_id).get(receiver)
-        if receiver_type and (receiver_type.startswith("=") or receiver_type.endswith("[]")):
-            receiver_type = None
         family = self._family_of(block_id)
         rules = rules_for(family)
+        if not receiver_type and receiver and not scoped and not chained_call and rules.file_wide_receiver_types:
+            receiver_type = self._types(record_id).get(receiver)
+        if receiver_type and receiver_type.startswith("=") and rules.typed_receiver_chains:
+            state = self._chain_type(receiver_type[1:], record_id, self._enclosing_type(block_id), family)
+            if state:   # a known value: its method or none (`self.f.take()` on an `Option<Foo>` field is Option's)
+                return self._call_on(state, name, record_id) or None, CONFIDENCE_INFERRED, RESOLUTION_TYPE
+            # Else what the file's table says the last name is (`self.client` typed by the field `client`), a guess
+            # by name that says nothing of how this use holds it: its wrapper mark goes.
+            # shortcut: also for a local the chain stands for (`let b = make(); b.build()` when `make()` cannot be
+            # typed), where another fn's same-named variable may be wrong; scope the guess if such calls show up.
+            file_wide = self._types(record_id).get(receiver) if receiver and not chained_call else None
+            receiver_type = _split_mark(file_wide)[1] if file_wide else None
+        if rules.typed_receiver_chains and receiver_type and _split_mark(receiver_type)[0]:
+            mark, receiver_type = _split_mark(receiver_type)
+            if mark == HELD or name in _POINTER_METHODS:
+                return None, CONFIDENCE_INFERRED, None   # the wrapper's own method: `opt.map(..)`, `arc.clone()`
+        if receiver_type and (receiver_type.startswith("=") or receiver_type.endswith("[]")):
+            receiver_type = None
         if not receiver_type and receiver in rules.self_receivers:
             owner = self._enclosing_type(block_id)
             if owner:
@@ -998,7 +1162,7 @@ class _Builder:
                     return target, CONFIDENCE_INFERRED, RESOLUTION_TYPE
             return None, CONFIDENCE_INFERRED, None
         if not receiver_type and receiver:
-            bound = self._resolve_bound_receiver(receiver, name, record_id)
+            bound = self._resolve_bound_receiver(receiver, name, record_id, fact.get("qualifiedPrefix"))
             if bound is not None:
                 return bound
         if not receiver_type and fact.get("qualifiedPrefix") and family in ("js", "py"):
@@ -1037,10 +1201,41 @@ class _Builder:
             if type_candidates:
                 self.result.ambiguous_skipped += 1
             return None, CONFIDENCE_INFERRED, None
-        return self._methods_on(type_candidates[0], name) or None, CONFIDENCE_INFERRED, RESOLUTION_TYPE
+        target = self._methods_on(type_candidates[0], name)
+        if self._out_of_scope(type_candidates[0], target, record_id):
+            target = None
+        return target or None, CONFIDENCE_INFERRED, RESOLUTION_TYPE
+
+    def _out_of_scope(self, owner: str, method: str | list[str] | None, record_id: str) -> bool:
+        """Whether *method*, found on the impls the repo writes for an outside type (`_foreign_impls`), is a trait's
+        the calling file does not bring into scope: `v.push(x)` on a `Vec` is Vec's own push, not the push of a
+        repo trait implemented for Vec, unless the file uses that trait (under any name, `as _` too)."""
+        row = self.index.rows.get(owner)
+        if row is None or row.kind != "impl" or not isinstance(method, str):
+            return False
+        parent = self.index.rows.get(self.index.rows[method].parent_block_id or "") if method in self.index.rows \
+            else None
+        if parent is None:
+            return False
+        if parent.kind != "impl":
+            traits = [parent.key]   # a trait's default method, reached through an impl of it
+        elif not any(fact.get("relation") in _TYPE_RELATIONS for fact in parent.pending_edges):
+            return False   # an inherent impl: the type is the repo's own, defined where the index does not see
+        else:
+            # That impl's own trait (not every impl's on the type); one outside the repo (`impl AsRef<X> for
+            # String`) is std's trait method, which no repo trait in scope makes the repo's.
+            traits = self._declared_bases(parent.key)
+        call_file = self.index.file_by_record.get(record_id) or ""
+        visible = set(self.symbol_bindings.get(call_file, {}).values())
+        return not any(t in visible or self.index.file_by_block.get(t) == call_file for t in traits)
 
     def _type_candidates(self, type_name: str, record_id: str, family: str | None) -> list[str]:
         """The types *type_name* can mean in a file: the one it imports or defines, if any."""
+        if rules_for(family).qualified_path_separator:
+            placed = self._placed_type_candidates(type_name, record_id, family)
+            if placed is not None:
+                return placed
+            type_name = type_name.rpartition(rules_for(family).qualified_path_separator)[2]
         type_candidates = [
             cid for cid in self.index.candidates(type_name)
             if cid in self.index.type_blocks
@@ -1056,6 +1251,64 @@ class _Builder:
             elif len(local) == 1:
                 type_candidates = local
         return type_candidates
+
+    def _placed_type_candidates(self, type_name: str, record_id: str, family: str | None) -> list[str] | None:
+        """`_type_candidates` where paths name items (`qualified_path_separator`): the decided answer, or None to
+        go on by the bare name. `ast::Expr` is the type the path places, as a `use` of it would; a path outside the
+        repo (`reqwest::Client`) or a name a `use` binds outside it is no repo type. A type `use`d under another
+        name (`use s::Daemon as DaemonSettings`) is that type; with none of that name, the impls the repo writes
+        for a type it does not define (`impl PathBufExt for PathBuf`) stand for it."""
+        separator = rules_for(family).qualified_path_separator or ""
+        call_file = self.index.file_by_record.get(record_id) or ""
+        if separator in type_name:
+            defining = self.imports.resolve(type_name, call_file, family)
+            if not defining and not self.imports.in_repo(type_name, call_file, family):
+                return []
+            type_name = type_name.rpartition(separator)[2]
+            placed = [cid for cid in self.index.candidates(type_name)
+                      if cid in self.index.type_blocks and self.index.file_by_block.get(cid) == defining]
+            if len(placed) == 1:
+                return placed
+        named = [cid for cid in self.index.candidates(type_name)
+                 if cid in self.index.type_blocks and self._family_of(cid) == family]
+        if not named and rules_for(family).impl_blocks_name_their_type:
+            if (bound := self.symbol_bindings.get(call_file, {}).get(type_name)) in self.index.type_blocks:
+                return [bound]
+            return self._foreign_impls(type_name)[:1]
+        outside = self._outside_imports_of(call_file, family).get(type_name)
+        if outside and not self._in_repo_copy(outside, named):
+            # shortcut: a repo trait impl on the outside type (`impl Ext for reqwest::Client`) is lost too;
+            # upgrade when receiver typing keeps the outside type's path.
+            return []
+        return None
+
+    def _outside_imports_of(self, file_path: str, family: str | None) -> dict[str, str]:
+        """Local name -> outside path, for each name the file's `use`s bind outside the repo (`use reqwest::Client`),
+        read from its own import facts: no binding of the file is needed, so no other file joins an incremental
+        build for it."""
+        if file_path not in self._outside_imports:
+            found: dict[str, str] = {}
+            for block_id in self.index.blocks_by_record.get(self.index.record_by_file.get(file_path, ""), ()):
+                for fact in self.index.rows[block_id].pending_edges:
+                    if fact.get("relation") != RecordRelations.IMPORTS.value:
+                        continue
+                    local, specifier = fact.get("localName") or fact.get("toName") or "", fact.get("qualifiedPrefix") or ""
+                    found.pop(local, None)   # the last `use` of a name binds it
+                    if not self.imports.resolve(specifier, file_path, family) \
+                            and not self.imports.in_repo(specifier, file_path, family):
+                        found[local] = specifier
+            self._outside_imports[file_path] = found
+        return self._outside_imports[file_path]
+
+    def _in_repo_copy(self, specifier: str, candidates: list[str]) -> bool:
+        """Whether an import the resolver cannot place still names repo code: a candidate's path has a folder
+        or file named like its first segment (a vendored copy of the crate)."""
+        package = specifier.split("::", 1)[0]
+        for cid in candidates:
+            parts = (self.index.rows[cid].file_path or "").split("/") if cid in self.index.rows else []
+            if package and parts and (package in parts[:-1] or parts[-1].rsplit(".", 1)[0] == package):
+                return True
+        return False
 
     def _expr_type(self, expr: str, record_id: str, this_type: str | None, depth: int = 0, *,
                    head_type: str | None = None, array: bool = False,
@@ -1289,6 +1542,12 @@ class _Builder:
 
         *suffix* `<>` asks for the type argument instead (`Foo` of `IObservable<Foo>`).
         """
+        found = self._member_declared(owner, field_name, suffix)
+        return self._declared_type(found[0], found[1], found[2], depth) if found else None
+
+    def _member_declared(self, owner: str, field_name: str, suffix: str = "") -> tuple[str, str, str] | None:
+        """(declared type, its file's record, the type declaring it) of `owner.field`, on the owner or the nearest
+        base declaring it."""
         seen, queue = set(), [owner]
         while queue:
             current = queue.pop(0)
@@ -1299,9 +1558,96 @@ class _Builder:
             if row is not None and row.name:
                 declared = self._types(row.record_id).get(f"{row.name}.{field_name}{suffix}")
                 if declared:
-                    return self._declared_type(declared, row.record_id, current, depth)
+                    return declared, row.record_id, current
             queue.extend(self._base_types_of(current))
         return None
+
+    def _chain_type(self, chain: str, record_id: str, this_type: str | None, family: str | None) -> str | None:
+        """The type block a receiver chain `head.field.method()` evaluates to (`typed_receiver_chains`), or None.
+
+        The head is `self`, a type, a call of a function, an associated function (`T::new()`, `Self::new()`) or a
+        module path's function (`db::open()`), or a variable of the file's table; then each field's declared type
+        and each method's return type, both read in their own file. A method the type lacks that only passes its
+        value on (`unwrap()`, `clone()`) keeps the type.
+        """
+        key = (record_id, this_type, "=" + chain)
+        if key not in self._expr_memo:
+            self._expr_memo[key] = None  # a cycle resolves to nothing
+            head, *rest = chain.split(".")
+            state = self._chain_head(head, record_id, this_type, family)
+            for segment in rest:
+                if state is None:
+                    break
+                state = self._chain_step(state, segment, record_id)
+            self._expr_memo[key] = state
+        return self._expr_memo[key]
+
+    def _chain_head(self, head: str, record_id: str, this_type: str | None, family: str | None) -> str | None:
+        if head == "self":
+            return this_type
+        if not head.endswith("()"):
+            # A variable of the file's table (a guess by name, its wrapper mark dropped), or a type the parser put
+            # in for a local one (marked as that local holds it).
+            file_wide = self._types(record_id).get(head)
+            declared = _split_mark(file_wide)[1] if file_wide else (
+                head if head.lstrip(HELD + POINTED).rpartition("::")[2][:1].isupper() else None)
+            return self._typed(declared, record_id, this_type) if declared else None
+        called = head[:-2]
+        owner_path, _, name = called.rpartition("::")
+        if not owner_path:
+            return self._returned(self._resolve_function(called, record_id))
+        owner_name = owner_path.rpartition("::")[2]
+        if owner_name == "Self" or owner_name[:1].isupper():
+            owner = this_type if owner_name == "Self" else self._declared_type(owner_path, record_id, this_type, 0)
+            method = self._resolve_self_method(owner, name) if owner else None
+            if method is None and (name == "default" or name[:1].isupper()):
+                # `T::default()` from `#[derive(Default)]`, which the index does not see, or a variant `E::Io(..)`
+                return owner
+            return self._returned(method)
+        call_file = self.index.file_by_record.get(record_id) or ""
+        target, _, _ = self._qualified_path_target(called, name, call_file, family, RecordRelations.CALLS.value)
+        return self._returned(target)
+
+    def _chain_step(self, state: str, segment: str, record_id: str) -> str | None:
+        """The chain's value after `.field` or `.method()`. A held value (`?T`: an Option, a Result, a Mutex) has its
+        wrapper's methods, the value reached through `unwrap()` and the like; a pointer's (`*T`) are the value's,
+        but for the pointer's own (`clone()`, `downgrade()`)."""
+        mark, owner = _split_mark(state)
+        if not segment.endswith("()"):
+            if mark == HELD:
+                return None
+            found = self._member_declared(owner, segment)
+            return self._typed(*found) if found else None
+        name = segment[:-2]
+        if mark == HELD:
+            return owner if name in _UNWRAP_METHODS else state if name in _HOLDER_METHODS else None
+        if mark == POINTED and name in _POINTER_METHODS:
+            return owner if name in _POINTER_DEREFS else state
+        method = self._resolve_self_method(owner, name)
+        if method is not None and not self._out_of_scope(owner, method, record_id):
+            return self._returned(method)
+        return owner if name in _PASS_THROUGH_METHODS else None
+
+    def _call_on(self, state: str, name: str, record_id: str) -> str | list[str] | None:
+        """The method `.name()` runs on a chain value; none when it is a wrapper's own (`_chain_step`)."""
+        mark, owner = _split_mark(state)
+        if mark == HELD or (mark == POINTED and name in _POINTER_METHODS):
+            return None
+        target = self._methods_on(owner, name)
+        return None if self._out_of_scope(owner, target, record_id) else target
+
+    def _typed(self, declared: str, record_id: str, this_type: str | None) -> str | None:
+        """A chain value from a type-table entry: the type block, marked by what wraps it (`?`, `*`)."""
+        mark, name = _split_mark(declared)
+        owner = self._declared_type(name, record_id, this_type, 0)
+        return f"{mark}{owner}" if owner else None
+
+    def _returned(self, target: str | None) -> str | None:
+        """What a function or method returns, as a chain value."""
+        declared, owner = self._declared_return(target)
+        if not declared or declared.startswith("<"):
+            return None
+        return self._typed(declared, self.index.rows[target].record_id, owner)
 
     def _declared_return(self, target: str | None) -> tuple[str | None, str | None]:
         """(declared return type, owner) of a function or method block."""
@@ -1364,18 +1710,21 @@ class _Builder:
         # INFERRED as for every language: the type table is per file, not per scope.
         return self._resolve_self_method(owner, name), CONFIDENCE_INFERRED, RESOLUTION_TYPE
 
-    def _resolve_bound_receiver(self, receiver: str, name: str, record_id: str,
+    def _resolve_bound_receiver(self, receiver: str, name: str, record_id: str, qualifier: str | None = None,
                                 ) -> tuple[str | None, str, str | None] | None:
         """`jobs.run()`, `ns.f()`, `Order.from_dict()`: a receiver an import or a
         same-file class names. None when the receiver is none of those."""
         call_file = self.index.file_by_record.get(record_id) or ""
-        module = self.module_bindings.get(call_file, {}).get(receiver)
+        # Where receiver chains are typed, `self.config.colors.matched()`'s `colors` is a field, never an import.
+        head = not (rules_for(lang_family(None, call_file)).typed_receiver_chains and qualifier
+                    and qualifier != receiver and qualifier.endswith(f".{receiver}"))
+        module = self.module_bindings.get(call_file, {}).get(receiver) if head else None
         if module == _EXTERNAL:
             return None, CONFIDENCE_INFERRED, _EXTERNAL
         if module:
             target = self._defined_or_reexported(module, name)
             return target, CONFIDENCE_EXTRACTED, RESOLUTION_IMPORT if target else None
-        bound = self.symbol_bindings.get(call_file, {}).get(receiver)
+        bound = self.symbol_bindings.get(call_file, {}).get(receiver) if head else None
         if bound == _EXTERNAL:
             return None, CONFIDENCE_INFERRED, _EXTERNAL
         member = self._namespace_member(bound or "", receiver, name, record_id)
@@ -1479,8 +1828,14 @@ class _Builder:
             if parent_id in self.index.type_blocks:
                 return parent_id
             row = self.index.rows.get(parent_id)
+        return self._hooked_type(block_id)
+
+    def _hooked_type(self, block_id: str) -> str | None:
+        """The family's `enclosing_type` hook for *block_id*, given its file's import bindings."""
         hook = rules_for(self._family_of(block_id)).enclosing_type
-        return hook(self.index, block_id) if hook else None
+        if hook is None:
+            return None
+        return hook(self.index, block_id, _FileBindings(self.symbol_bindings, self.index.file_by_block.get(block_id, "")))
 
     def _methods_on(self, owner: str, method_name: str) -> str | list[str] | None:
         """*method_name* on *owner*, or on each member when *owner* is a union alias."""
@@ -1517,6 +1872,11 @@ class _Builder:
         """
         if not method_name:
             return None
+        if rules_for(self._family_of(owner)).impl_blocks_name_their_type:
+            # A Rust type's impls are its parts, wherever they are: no lookup by name across the repo, which
+            # reached another crate's same-named type.
+            return next((found for _, parts in self._type_chain(owner) for part in parts
+                         if (found := self.index.method_index.get((part, method_name)))), None)
         direct = self.index.method_index.get((owner, method_name)) or self._method_by_owner_name(
             owner, method_name)
         if direct:
@@ -1583,21 +1943,65 @@ class _Builder:
         if cached is not None:
             return cached
 
-        bases: list[str] = []
-        row = self.index.rows.get(type_block)
-        if row is not None:
-            family = self._family_of(type_block)
-            for fact in row.pending_edges:
-                if fact.get("relation") not in _TYPE_RELATIONS:
-                    continue
-                target = self._resolve_type_name(
-                    fact.get("toName") or "", row.file_path or "", family,
-                    fact.get("qualifiedPrefix"),
-                )
-                if target:
-                    bases.append(target)
+        bases = [base for part in self._type_parts(type_block) for base in self._declared_bases(part)]
         self._bases_memo[type_block] = bases
         return bases
+
+    def _declared_bases(self, block_id: str) -> list[str]:
+        """The resolved bases one declaration names in its own heritage facts (one part of a type)."""
+        row = self.index.rows.get(block_id)
+        if row is None:
+            return []
+        family = self._family_of(block_id)
+        found = (self._resolve_type_name(fact.get("toName") or "", row.file_path or "", family,
+                                         fact.get("qualifiedPrefix"))
+                 for fact in row.pending_edges if fact.get("relation") in _TYPE_RELATIONS)
+        return [target for target in found if target]
+
+    def _type_chain(self, owner: str) -> Iterator[tuple[str, list[str]]]:
+        """(type, its parts) from *owner* through every base, nearest first, each once."""
+        seen: set[str] = set()
+        queue = [owner]
+        while queue:
+            current = queue.pop(0)
+            if current in seen:
+                continue
+            parts = self._type_parts(current)
+            seen.update(parts)
+            yield current, parts
+            queue.extend(self._base_types_of(current))
+
+    def _type_parts(self, type_block: str) -> list[str]:
+        """The type's declarations: itself, and where the family's impls name their type (Rust) its impls, whose
+        methods and implemented traits (with their default methods) are its own."""
+        if not rules_for(self._family_of(type_block)).impl_blocks_name_their_type:
+            return [type_block]
+        row = self.index.rows.get(type_block)
+        if row is not None and row.kind == "impl":   # the first of a type's impls stands for a foreign type
+            return self._foreign_impls(row.name or "") or [type_block]
+        if type_block not in self._impls_of_type:
+            # Only impls named like the type (or a `use ... as` name for it) can name it: their owners alone are
+            # looked up, so only their files' bindings are read.
+            names = self._impl_name_index().group(row.name) if row is not None and row.name else set()
+            self._impls_of_type[type_block] = sorted(
+                block_id for name in names for block_id in self._impl_name_index().impls.get(name, ())
+                if self._impl_owner(block_id) == type_block)
+        return [type_block, *self._impls_of_type[type_block]]
+
+    def _foreign_impls(self, name: str) -> list[str]:
+        """The impls of a type named *name* that the repo does not define, in a stable order."""
+        return [block_id for block_id in self._impl_name_index().impls.get(name, ())
+                if self._impl_owner(block_id) is None]
+
+    def _impl_owner(self, block_id: str) -> str | None:
+        if block_id not in self._impl_owners:
+            self._impl_owners[block_id] = self._hooked_type(block_id)
+        return self._impl_owners[block_id]
+
+    def _impl_name_index(self) -> _ImplNames:
+        if self._impl_names is None:
+            self._impl_names = _ImplNames.of(self.index)
+        return self._impl_names
 
     def _prefix_candidates(self, candidates: list[str], prefix: str | None,
                            from_file: str, family: str | None) -> list[str] | None:
@@ -1790,6 +2194,10 @@ async def build_code_graph_edges(
         reresolve |= await _records_pointing_into(
             graph_provider, index, org_id, record_group_id, touched_record_ids
         )
+    if touched_record_ids is not None:
+        dropped = await _type_imports_dropped(graph_provider, index, builder.imports, touched_record_ids)
+        reresolve = await asyncio.to_thread(
+            _with_impl_partners, index, reresolve, touched_record_ids, changed_names, dropped)
     builder.result.files_touched = len(touched_record_ids or ())
     builder.result.files_reresolved = len(reresolve)
 
@@ -1816,7 +2224,9 @@ async def build_code_graph_edges(
     if incremental:
         builder.track_unloaded(reresolve, set(reresolve))
     edges = await asyncio.to_thread(_resolve, builder, index, reresolve)
-    tried: set[str] = set()
+    # Tried apart: a file first read for its type table may later need its bindings too.
+    tried_bindings: set[str] = set()
+    tried_types: set[str] = set()
     unreadable: set[str] = set()
     while incremental:
         # A chain through another file read what this incremental build had not
@@ -1826,9 +2236,12 @@ async def build_code_graph_edges(
         # resolve again until nothing is missing, so what is written is what a full
         # build writes. Each round loads files no earlier round tried, so it ends.
         unbound = {index.record_by_file.get(f) for f in builder.bindings_missing}
-        unbound = {r for r in unbound if r in index.blocks_by_record} - reresolve - tried
-        missing_types = set(builder.types_missing) - builder.types_loaded - tried
-        tried |= unbound | missing_types
+        unbound = {r for r in unbound if r in index.blocks_by_record} - reresolve - tried_bindings
+        if unbound:   # a type file joining the build rewrites its heritage: its impls' files join too
+            unbound = await asyncio.to_thread(_with_impl_partners, index, unbound) - reresolve - tried_bindings
+        missing_types = set(builder.types_missing) - builder.types_loaded - tried_types
+        tried_bindings |= unbound
+        tried_types |= missing_types
         if unbound:
             unknown = await _load_facts(facts_source, index, org_id, unbound, builder.result, log)
             reresolve |= unbound - unknown
@@ -1996,6 +2409,55 @@ def _select_reresolve_set(index: SymbolIndex, touched: set[str] | None,
             if record_id not in selected and names & changed_names:
                 selected.add(record_id)
     return selected
+
+
+def _with_impl_partners(index: SymbolIndex, reresolve: set[str], touched: set[str] = frozenset(),
+                        changed_names: set[str] = frozenset(), dropped_imports: set[str] = frozenset()) -> set[str]:
+    """*reresolve* plus the files at the other end of an impl's heritage edge, which starts at the type the impl
+    names (Rust), in another file. A type's file deletes and rewrites its types' heritage, from their impls' facts:
+    every impl file of its types comes too. A touched file's impls may have changed or gone (a removed one's name is
+    in *changed_names*): their types' files come too, to drop what they no longer implement. Matched by name, so a
+    few same-named files more than needed may be re-resolved, never fewer. A link the current facts no longer hold
+    (a `use ... as` alias or path edited away) is not matched by name at all: the types a touched file imported
+    before this build and no longer does (*dropped_imports*) come too, whatever else shares their name.
+    """
+    names = _ImplNames.of(index)
+    record = index.rows
+    touched_impls = {name for name, blocks in names.impls.items() if any(record[b].record_id in touched for b in blocks)}
+    selected = set(reresolve) | {record[b].record_id for b in dropped_imports if b in record}
+    for name in set(changed_names) | touched_impls:
+        selected.update(record[b].record_id for linked in names.group(name) for b in names.types.get(linked, ()))
+    type_names = {name for name, blocks in names.types.items() if any(record[b].record_id in selected for b in blocks)}
+    for name in type_names:
+        selected.update(record[b].record_id for linked in names.group(name) for b in names.impls.get(linked, ()))
+    return selected
+
+
+async def _type_imports_dropped(graph_provider: IGraphDBProvider, index: SymbolIndex, imports: ImportResolution,
+                                touched: set[str]) -> set[str]:
+    """The type blocks a touched file imported in the previous build (its IMPORTS edges, which this build has not
+    replaced yet) that its current imports no longer reach, by the defining file and name, not the name alone. Only
+    for files whose family's impls name their type (`_with_impl_partners`)."""
+    found: set[str] = set()
+    for record_id in sorted(touched):
+        file_path = index.file_by_record.get(record_id)
+        family = lang_family(None, file_path)
+        if not file_path or not rules_for(family).impl_blocks_name_their_type:
+            continue
+        edges = await graph_provider.get_edges_from_node(
+            f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.RECORD_LINKS.value, raise_on_error=True)
+        before = {target for edge in edges or ()
+                  if edge.get("source") == CODE_GRAPH_SOURCE
+                  and edge.get("relationshipType") == RecordRelations.IMPORTS.value
+                  and (target := (edge.get("_to") or "").partition("/")[2]) in index.type_blocks}
+        if not before:
+            continue
+        now = {(imports.resolve(fact.get("qualifiedPrefix") or "", file_path, family), fact.get("toName"))
+               for block_id in index.blocks_by_record.get(record_id, ())
+               for fact in index.rows[block_id].pending_edges
+               if fact.get("relation") == RecordRelations.IMPORTS.value}
+        found.update(b for b in before if (index.file_by_block.get(b), index.rows[b].name) not in now)
+    return found
 
 
 def _source_keys_for(index: SymbolIndex, record_ids: set[str]) -> list[str]:
