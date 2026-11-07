@@ -112,6 +112,12 @@ _PAIR_VALUE = re.compile(
 # that was cut off, to the end of the line.
 _PYDANTIC_INPUT_VALUE = re.compile(r"(input_value=)(?!, input_type=)[^\n][^,\n]*(?:,(?! input_type=)[^,\n]*)*")
 
+# A traceback's source line: the line after `File "...", line N, in f`, two
+# spaces deeper under the same `|` gutter (exception groups). It is code read
+# from a source file, where `token = await f()` is no pair. `, in` ends the
+# digit run, and leaves out a SyntaxError's frame, whose line is the parsed input.
+_TRACEBACK_SOURCE_LINE = re.compile(r'^([ |]*)File "[^"\n]*", line \d+, in [^\n]*\n\1  (\S[^\n]*)', re.MULTILINE)
+
 _PAIR_TRIGGERS = ("pass", "pwd", "secret", "token", "sig", "credential", "api", "auth", "cookie", "private", "key", "connection")
 _AUTH_SCHEME_WORDS = frozenset({"bearer", "basic", "token"})
 # Counts, ports and limits next to a credential word (`token_limit=4096`).
@@ -153,6 +159,20 @@ def _redact_private_keys(text: str) -> str:
 
 
 def _redact_pairs(text: str) -> str:
+    if 'File "' not in text:
+        return _redact_pairs_in(text)
+    out = []
+    pos = 0
+    for source in _TRACEBACK_SOURCE_LINE.finditer(text):
+        out += (_redact_pairs_in(text[pos : source.start(2)]), _redact_pairs_in(source.group(2), literals_only=True))
+        pos = source.end(2)
+    out.append(_redact_pairs_in(text[pos:]))
+    return "".join(out)
+
+
+def _redact_pairs_in(text: str, *, literals_only: bool = False) -> str:
+    """``literals_only`` masks only a non-empty string literal: in code, any
+    other value is an expression, and a literal is a hard-coded secret."""
     out = []
     pos = 0
     for head in _PAIR_HEAD.finditer(text):
@@ -165,6 +185,8 @@ def _redact_pairs(text: str) -> str:
         if raw.lower() in _AUTH_SCHEME_WORDS or _SHORT_NUMBER.fullmatch(raw):
             continue
         opening = _QUOTED.match(raw)
+        if literals_only and (not opening or len(raw) <= len(opening.group()) + 1):
+            continue
         out.append(text[pos : head.end()])
         if opening:
             closing = opening.group(2) if len(raw) > len(opening.group()) and raw.endswith(opening.group(2)) else ""
@@ -208,7 +230,11 @@ def redact_secrets_in_text(text: str) -> str:
     """``text`` with credentials masked: private keys, this process's secret
     env values, known key shapes (``phpat_``, ``sk-``, ``AKIA``, ``xox*-``,
     ``AIza``, GitHub tokens, JWTs), credential-named ``name: value`` pairs,
-    ``Bearer``/``Basic`` credentials, and URL passwords and query secrets."""
+    ``Bearer``/``Basic`` credentials, and URL passwords and query secrets.
+
+    On a traceback's source lines a pair is masked only when its value is a
+    string literal, so ``token = await f()`` stays readable. Text laid out as a
+    fake frame line keeps a bare value on the line under it."""
     if not text:
         return text
     lower = text.lower()
