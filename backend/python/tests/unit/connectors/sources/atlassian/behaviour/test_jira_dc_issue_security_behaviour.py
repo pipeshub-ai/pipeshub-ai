@@ -484,7 +484,7 @@ class TestFailClosed:
 class TestUpgradeWhileTheLevelsCannotBeRead:
     """Issues stored open have no grants of their own to keep, so they are hidden until the levels can be read."""
 
-    async def _stored(self, jira, db, store, jql_search):
+    async def _stored(self, jira, db, store, jql_search) -> tuple[JiraDataCenterConnector, Any]:
         stub_site(jira, jql_search)
         secured, plain = sec_issue("2", "ENG-2", level=SECRET, updated=ts(2)), sec_issue("1", "ENG-1", updated=ts(1))
         jql_search.put(plain, secured)

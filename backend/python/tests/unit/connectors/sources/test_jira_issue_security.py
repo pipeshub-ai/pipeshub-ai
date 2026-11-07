@@ -678,7 +678,7 @@ class TestDeferredReadOnAProjectNeverTightened:
 
 
 class TestUnresolvedUserHolders:
-    def _grants(self, holder, users=None):
+    def _grants(self, holder, users=None) -> tuple:
         record = _record()
         context = IssueSecurityContext(
             knowledge=SchemeKnowledge.PRESENT, members_readable=True, members_by_level={"1": [holder]})
