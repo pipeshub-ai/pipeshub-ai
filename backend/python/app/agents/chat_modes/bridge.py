@@ -53,6 +53,10 @@ from app.agents.agent_loop.hooks import (
     ensure_fetch_full_record_available,
 )
 from app.agents.agent_loop.period_summary import timeline_replaces_prefetch
+from app.agents.agent_loop.project_timeline import (
+    finish_project_timeline,
+    start_project_timeline,
+)
 from app.agents.agent_loop.protocol.run_usage import emit_run_usage
 from app.agents.agent_loop.respond import AnswerFinalizer
 from app.agents.agent_loop.retrieval_ledger import emit_prefetch_retrieval_context
@@ -108,6 +112,7 @@ if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
 
     from app.agents.agent_loop.cancellation.registry import RunCancellationRegistry
+    from app.agents.agent_loop.project_timeline import Timeline
 
 logger = logging.getLogger(__name__)
 
@@ -551,6 +556,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         set_llm_time_zone(context.timezone)
         begin_run()
         agent: Any = None
+        timeline_task: asyncio.Task[Timeline | None] | None = None
         try:
             factory = PipesHubAgentFactory()
             # Shared with `retrieval.py`/`citations.py`'s tool-result image
@@ -581,6 +587,9 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 if policy.prefetch_retrieval and not timeline_replaces_prefetch(query_info.get("query"))
                 else None
             )
+            # A follow-up's own words rarely name its subject, as with the prefetch.
+            if policy.system_prompt_key == "internal_search" and not query_info.get("previous_conversations"):
+                timeline_task = start_project_timeline(context, query_info.get("query", ""))
 
             agent, _runtime, goal, clarifying_questions = await factory.create(
                 context, llm, policy.loop_chat_mode,
@@ -722,6 +731,10 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 )
                 await emit_run_usage(context, agent, model=model_name or None)
             else:
+                timeline_text = await finish_project_timeline(context, timeline_task)
+                if timeline_text:
+                    goal.constraints.append(timeline_text)
+                    ensure_fetch_full_record_available(context, registry=_runtime.tool_registry)
                 collector = CitationCollector(context)
                 streamer = TerminalAnswerStreamer(context, collector, context.event_sink)
                 async for event in agent.stream(goal):
@@ -755,6 +768,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             # First, and without awaiting: a disconnect can cancel the awaits
             # below, and this must still run.
             discard_tasks(query_info.get("conversationId"))
+            if timeline_task is not None:
+                timeline_task.cancel()
             if cancellation_registry is not None:
                 await cancellation_registry.unregister(run_id)
             await _cancel_orphaned_agent_tasks(agent)

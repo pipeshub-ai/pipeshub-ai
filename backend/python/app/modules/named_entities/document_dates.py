@@ -148,7 +148,7 @@ def _labelled_mentions(entity: NamedEntity, units: dict[int, _Unit]) -> list[_La
         in_header = unit.in_header and position < HEADER_CHARS
         if not (in_header or unit.is_message):
             continue
-        kind = _label_kind(unit.text, mention.char_start)
+        kind = label_kind(unit.text, mention.char_start)
         if kind is not None:
             labelled.append(_Labelled(position, mention.block_index, kind, day_ms, in_header, unit.is_message))
     return labelled
@@ -177,7 +177,7 @@ def _stated_day(value: object) -> int | None:
     return day_ms if day_ms >= _EARLIEST_MS else None
 
 
-def _label_kind(text: str, start: int) -> _LabelKind | None:
+def label_kind(text: str, start: int) -> _LabelKind | None:
     """What the label opening the line up to ``start`` dates, if it dates the document."""
     line_start = text.rfind("\n", 0, start) + 1
     # Some exports leave line breaks as a literal backslash-n.

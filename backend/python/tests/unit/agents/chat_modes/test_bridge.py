@@ -874,6 +874,65 @@ class TestRunChatStream:
         assert notice in context
         assert context.index(notice) < context.index("Refunds are processed")
 
+    async def _timeline_run(self, policy: ChatModePolicy, query_info: dict[str, Any]) -> tuple[MagicMock, list[str]]:
+        captured: dict[str, Any] = {}
+        start = MagicMock(return_value=MagicMock(name="timeline task"))
+        finish = AsyncMock(side_effect=lambda _context, task: (
+            'Records about the project "Badge reader rollout" ...' if task is not None else None
+        ))
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, ...]:
+            goal = MagicMock(constraints=[])
+            captured["goal"] = goal
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(), goal, []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        kwargs = self._base_kwargs(policy=policy)
+        kwargs["query_info"].update(query_info)
+        empty = PrefetchResult(
+            formatted_context="", final_results=[], virtual_record_id_to_result={},
+            tool_records=[], citation_ref_mapper=CitationRefMapper(), is_empty=True,
+        )
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": kwargs["query_info"]["query"]},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=AsyncMock(return_value=empty)),
+            patch("app.agents.chat_modes.bridge.start_project_timeline", new=start),
+            patch("app.agents.chat_modes.bridge.finish_project_timeline", new=finish),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**kwargs)]
+        assert events[-1].startswith("event: complete\n")
+        return start, [str(c) for c in captured["goal"].constraints]
+
+    async def test_a_first_enterprise_search_question_gets_the_project_timeline(self) -> None:
+        start, constraints = await self._timeline_run(
+            INTERNAL_SEARCH_POLICY, {"query": "Where does the badge reader rollout stand?"},
+        )
+        assert start.call_args.args[1] == "Where does the badge reader rollout stand?"
+        assert any(c.startswith('Records about the project "Badge reader rollout"') for c in constraints)
+
+    @pytest.mark.parametrize(("policy", "query_info"), [
+        (INTERNAL_SEARCH_POLICY, {"query": "and the next step?", "previous_conversations": [{"role": "user"}]}),
+        (AGENT_POLICY, {"query": "Where does the badge reader rollout stand?"}),
+    ])
+    async def test_a_follow_up_or_another_mode_starts_no_project_timeline(
+        self, policy: ChatModePolicy, query_info: dict[str, Any],
+    ) -> None:
+        start, constraints = await self._timeline_run(policy, query_info)
+        start.assert_not_called()
+        assert not any("Records about the project" in c for c in constraints)
+
     @pytest.mark.parametrize("high_accuracy", [False, True])
     async def test_internal_search_answer_rules_reach_the_agent_context(
         self, answer_rule_env: SetEnv, high_accuracy: bool,
