@@ -10337,7 +10337,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         )
                     except Exception as migrate_err:
                         self.logger.error(
-                            f"❌ Person adoption failed for {user.email}: {migrate_err}"
+                            "Person adoption failed for user %s in org %s: %s", user.id, org_id, migrate_err
                         )
 
                     # A guest is saved so grants to them resolve, but org membership
@@ -10362,7 +10362,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     # invite makes them active, and a real org member.
                     if user_record.is_active:
                         self.logger.info(
-                            f"Guest {user.email} is active in PipesHub; keeping their organization membership"
+                            "Guest user %s is active in PipesHub; keeping their organization membership", user_record.id
                         )
                     else:
                         await self.delete_edge(
@@ -10451,14 +10451,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             owner_assigned = existing_member_count > 0
 
             self.logger.debug(f"📊 All team for org {org_id}: existing_member_count={existing_member_count}, owner_assigned={owner_assigned}")
-            if team_with_users and team_with_users.get("members"):
-                self.logger.debug(
-                    "📊 Existing members: %s",
-                    [
-                        f"{m.get('userEmail') or '?'}:{m.get('role') or '?'}"
-                        for m in team_with_users.get("members", [])
-                    ],
-                )
 
             # 4. Add each user without a PERMISSION edge
             for user in users_sorted:
@@ -18731,8 +18723,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             row = results[0]
             self.logger.info(
-                "Person %s -> user %s: %s (%s permission, %s app-relation edges moved)",
-                email,
+                "Person -> user %s: %s (%s permission, %s app-relation edges moved)",
                 user_key,
                 row.get("mode"),
                 row.get("moved_permissions"),
@@ -18741,7 +18732,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return row.get("mode")
 
         except Exception as e:
-            self.logger.error(f"❌ Migrate person to user failed for {email}: {str(e)}")
+            self.logger.error("Migrate person to user failed for user %s in org %s: %s", user_key, org_id, e)
             raise
 
     async def reap_stale_external_app_relations(
