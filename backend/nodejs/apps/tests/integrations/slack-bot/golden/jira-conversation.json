@@ -1,0 +1,311 @@
+{
+ "_note": "Fictional data in the shape of a real conversation: every part in order, as the stream sends it.",
+ "question": "What are the latest tickets I have to work on?",
+ "parts": [
+  {
+   "type": "text",
+   "content": "I will check the connected ticket data for the most recently updated items assigned to you, then summarize what needs attention."
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call_1",
+   "toolName": "knowledgegraph__search_entities",
+   "status": "completed",
+   "args": "{\"query\": \"Alex Rivera assigned Jira tickets\", \"entity_types\": [\"record_group\"], \"top_k\": 10}",
+   "displayName": "Searched knowledge graph entities",
+   "argsSummary": "Searched entities for \"Alex Rivera assigned Jira tickets\"",
+   "resultPreview": "{\"status\": \"success\", \"results\": [{\"entityId\": \"11111111-2222-4333-8444-555555555555\", \"entityType\": \"record_group\", \"name\": \"demo-docs\"}]}",
+   "resultSummary": "Found 3 entities: demo-docs, demo-connector-sample-bucket, demo-archive"
+  },
+  {
+   "type": "text",
+   "content": ""
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call_2",
+   "toolName": "search_tools",
+   "status": "completed",
+   "args": "{\"query\": \"search Jira issues assigned to current user\", \"limit\": 5}",
+   "argsSummary": "Searching for tools matching \"search Jira issues assigned to current user\"",
+   "resultPreview": "{\"matches\": [{\"name\": \"mcp_atlassian_rovo_search\"}]}",
+   "resultSummary": "Found 5 matches"
+  },
+  {
+   "type": "text",
+   "content": ""
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call_3",
+   "toolName": "mcp_atlassian_rovo_search",
+   "status": "completed",
+   "args": "{\"query\": \"Jira issues assigned to Alex Rivera (alex@example.com), open or in progress, most recently updated\"}",
+   "displayName": "Atlassian Rovo · search",
+   "argsSummary": "query: \"Jira issues assigned to Alex Rivera (alex@example.com), open or…\"",
+   "resultPreview": "{\"results\": [{\"id\": \"ari:cloud:confluence:00000000-1111-4222-8333-444444444444:page/1001\", \"title\": \"Release checklist for the demo project\"}]}… [truncated: 10412 chars total]",
+   "resultSummary": "Found 17 results",
+   "resultView": {
+    "kind": "records",
+    "columns": [
+     "Title",
+     "Id",
+     "Url",
+     "Type"
+    ],
+    "total": 17,
+    "rows": [
+     {
+      "cells": [
+       "Release checklist for the demo project",
+       "ari:cloud:confluence:00000000-1111-4222-8333-444444444444:page/1001",
+       "https://example.atlassian.net/wiki/spaces/DEMO/pages/1001/Release+checklist+for+the+demo+project",
+       "page"
+      ],
+      "url": "https://example.atlassian.net/wiki/spaces/DEMO/pages/1001/Release+checklist+for+the+demo+project"
+     },
+     {
+      "cells": [
+       "Connector onboarding guide",
+       "ari:cloud:confluence:00000000-1111-4222-8333-444444444444:page/1002",
+       "https://example.atlassian.net/wiki/spaces/DEMO/pages/1002/Connector+onboarding+guide",
+       "page"
+      ],
+      "url": "https://example.atlassian.net/wiki/spaces/DEMO/pages/1002/Connector+onboarding+guide"
+     },
+     {
+      "cells": [
+       "DEMO-27 - Weekly ticket summary",
+       "ari:cloud:confluence:00000000-1111-4222-8333-444444444444:page/1003",
+       "https://example.atlassian.net/wiki/spaces/DEMO/pages/1003/DEMO-27+-+Weekly+ticket+summary",
+       "page"
+      ],
+      "url": "https://example.atlassian.net/wiki/spaces/DEMO/pages/1003/DEMO-27+-+Weekly+ticket+summary"
+     },
+     {
+      "cells": [
+       "DEMO-52 - Fix the flaky export test",
+       "ari:cloud:jira:00000000-1111-4222-8333-444444444444:issue/52",
+       "https://example.atlassian.net/browse/DEMO-52",
+       "issue"
+      ],
+      "url": "https://example.atlassian.net/browse/DEMO-52"
+     }
+    ]
+   }
+  },
+  {
+   "type": "text",
+   "content": "The first search found one open ticket assigned to you, but it may not be complete. I am narrowing the lookup to open tickets assigned to you."
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call_4",
+   "toolName": "mcp_atlassian_rovo_search",
+   "status": "completed",
+   "args": "{\"query\": \"Jira issues where assignee is Alex Rivera and status is not Done, most recently updated first\"}",
+   "displayName": "Atlassian Rovo · search",
+   "argsSummary": "query: \"Jira issues where assignee is Alex Rivera and status is not Done, most recently…\"",
+   "resultPreview": "{\"results\": [{\"id\": \"ari:cloud:confluence:00000000-1111-4222-8333-444444444444:page/1001\", \"title\": \"Release checklist for the demo project\"}]}… [truncated: 10412 chars total]",
+   "resultSummary": "Found 20 results",
+   "resultView": {
+    "kind": "records",
+    "columns": [
+     "Title",
+     "Id",
+     "Url",
+     "Type"
+    ],
+    "total": 20,
+    "rows": [
+     {
+      "cells": [
+       "Release checklist for the demo project",
+       "ari:cloud:confluence:00000000-1111-4222-8333-444444444444:page/1001",
+       "https://example.atlassian.net/wiki/spaces/DEMO/pages/1001/Release+checklist+for+the+demo+project",
+       "page"
+      ],
+      "url": "https://example.atlassian.net/wiki/spaces/DEMO/pages/1001/Release+checklist+for+the+demo+project"
+     },
+     {
+      "cells": [
+       "Sign-in issues: status review",
+       "ari:cloud:confluence:00000000-1111-4222-8333-444444444444:page/1004",
+       "https://example.atlassian.net/wiki/spaces/DEMO/pages/1004/Sign-in+issues+status+review",
+       "page"
+      ],
+      "url": "https://example.atlassian.net/wiki/spaces/DEMO/pages/1004/Sign-in+issues+status+review"
+     },
+     {
+      "cells": [
+       "Storage layout notes",
+       "ari:cloud:jira:00000000-1111-4222-8333-444444444444:issue/71",
+       "https://example.atlassian.net/browse/DEMO-71",
+       "issue"
+      ],
+      "url": "https://example.atlassian.net/browse/DEMO-71"
+     }
+    ]
+   }
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call_5",
+   "toolName": "knowledgegraph__search",
+   "status": "completed",
+   "args": "{\"query\": \"Jira ticket assignee Alex Rivera current status To Do In Progress updated\"}",
+   "displayName": "Searched the knowledge base",
+   "argsSummary": "Searched for \"Jira ticket assignee Alex Rivera current status To Do In Progress updated\"",
+   "resultPreview": "Top 10 blocks from 5 records (ranked sample).\n\n<record>\n\nRecord ID: 22222222-3333-4444-8555-666666666666\nName: Launch plan.xlsx … ",
+   "resultSummary": "Retrieved 10 blocks from 5 records\n- Launch plan.xlsx\n- Vendor agreement.pdf\n- Demo readme.md\n- Quarterly notes.pdf\n- README.md"
+  },
+  {
+   "type": "text",
+   "content": ""
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call_6",
+   "toolName": "mcp_atlassian_rovo_search",
+   "status": "completed",
+   "args": "{\"query\": \"\\\"Alex\\\" \\\"Assignee\\\" \\\"Updated\\\" Jira ticket latest open assigned issues DEMO-148\"}",
+   "displayName": "Atlassian Rovo · search",
+   "argsSummary": "query: \"\"Alex\" \"Assignee\" \"Updated\" Jira ticket latest open assigned issues DEMO-148\"",
+   "resultPreview": "{\"results\": [{\"id\": \"ari:cloud:confluence:00000000-1111-4222-8333-444444444444:page/1005\", \"title\": \"DEMO-148 - Table export and copy\"}]}… [truncated: 10412 chars total]",
+   "resultSummary": "Found 20 results",
+   "resultView": {
+    "kind": "records",
+    "columns": [
+     "Title",
+     "Id",
+     "Url",
+     "Type"
+    ],
+    "total": 20,
+    "rows": [
+     {
+      "cells": [
+       "DEMO-148 - Table export and copy",
+       "ari:cloud:confluence:00000000-1111-4222-8333-444444444444:page/1005",
+       "https://example.atlassian.net/wiki/spaces/DEMO/pages/1005/DEMO-148+-+Table+export+and+copy",
+       "page"
+      ],
+      "url": "https://example.atlassian.net/wiki/spaces/DEMO/pages/1005/DEMO-148+-+Table+export+and+copy"
+     },
+     {
+      "cells": [
+       "Ticket summary matched to pages",
+       "ari:cloud:confluence:00000000-1111-4222-8333-444444444444:page/1006",
+       "https://example.atlassian.net/wiki/spaces/DEMO/pages/1006/Ticket+summary+matched+to+pages",
+       "page"
+      ],
+      "url": "https://example.atlassian.net/wiki/spaces/DEMO/pages/1006/Ticket+summary+matched+to+pages"
+     },
+     {
+      "cells": [
+       "Indexing progress not advancing",
+       "ari:cloud:jira:00000000-1111-4222-8333-444444444444:issue/9",
+       "https://example.atlassian.net/browse/DEMO-9",
+       "issue"
+      ],
+      "url": "https://example.atlassian.net/browse/DEMO-9"
+     }
+    ]
+   }
+  },
+  {
+   "type": "text",
+   "content": ""
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call_7",
+   "toolName": "search_tools",
+   "status": "completed",
+   "args": "{\"query\": \"Jira issue search JQL assigned user updated order\", \"limit\": 10}",
+   "argsSummary": "Searching for tools matching \"Jira issue search JQL assigned user updated order\"",
+   "resultPreview": "{\"matches\": [{\"name\": \"mcp_atlassian_rovo_search\"}]}… [truncated: 3020 chars total]",
+   "resultSummary": "Found 10 matches"
+  },
+  {
+   "type": "text",
+   "content": ""
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call_8",
+   "toolName": "mcp_atlassian_rovo_searchJiraIssuesUsingJql",
+   "status": "completed",
+   "args": "{\"cloudId\": \"00000000-1111-4222-8333-444444444444\", \"jql\": \"assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC\", \"maxResults\": 50}",
+   "displayName": "Atlassian Rovo · searchJiraIssuesUsingJql",
+   "argsSummary": "cloudId: \"00000000-1111-4222-8333-444444444444\", jql: \"assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC\", maxResults: 50, …",
+   "resultPreview": "{\n  \"issues\": [\n    {\n      \"key\": \"DEMO-101\",\n      \"fields\": {\n        \"summary\": \"Update the setup guide\"… [truncated: 200000 chars total]",
+   "resultSummary": "{",
+   "artifactId": "33333333-4444-4555-8666-777777777777"
+  },
+  {
+   "type": "text",
+   "content": "I found the open ticket list. I am checking the newest results in a compact view so the answer focuses on your latest open items."
+  },
+  {
+   "type": "tool_call",
+   "toolCallId": "call_9",
+   "toolName": "mcp_atlassian_rovo_searchJiraIssuesUsingJql",
+   "status": "completed",
+   "args": "{\"cloudId\": \"00000000-1111-4222-8333-444444444444\", \"jql\": \"assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC\", \"maxResults\": 10}",
+   "displayName": "Atlassian Rovo · searchJiraIssuesUsingJql",
+   "argsSummary": "cloudId: \"00000000-1111-4222-8333-444444444444\", jql: \"assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC\", maxResults: 10, …",
+   "resultPreview": "{\n  \"issues\": [\n    {\n      \"key\": \"DEMO-101\"… [truncated: 14085 chars total]",
+   "resultSummary": "Found 10 issues",
+   "resultView": {
+    "kind": "records",
+    "columns": [
+     "Key",
+     "Summary",
+     "Status",
+     "Updated"
+    ],
+    "total": 10,
+    "rows": [
+     {
+      "cells": [
+       "DEMO-101",
+       "Update the setup guide",
+       "In review",
+       "2026-11-03"
+      ]
+     },
+     {
+      "cells": [
+       "DEMO-102",
+       "Add retries to the sync job",
+       "Testing",
+       "2026-11-03"
+      ]
+     },
+     {
+      "cells": [
+       "DEMO-103",
+       "Show progress while the agent works",
+       "Testing",
+       "2026-11-03"
+      ]
+     },
+     {
+      "cells": [
+       "DEMO-104",
+       "Tidy the sign-in scopes",
+       "Testing",
+       "2026-11-03"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "type": "text",
+   "isFinal": "True",
+   "content": "Here are your **10 most recently updated unresolved Jira tickets**, ordered newest first:\n\n| Ticket | Summary | Status | Priority | Last updated |\n|---|---|---|---|---|\n| [DEMO-101](https://example.atlassian.net/browse/DEMO-101) | Update the setup guide | In review | Medium | Tue, Nov 3, 11:35 AM |\n| [DEMO-102](https://example.atlassian.net/browse/DEMO-102) | Add retries to the sync job | Testing | High | Tue, Nov 3, 10:02 AM |\n| [DEMO-103](https://example.atlassian.net/browse/DEMO-103) | Show progress while the agent works | Testing | High | Mon, Nov 2, 6:40 PM |\n| [DEMO-104](https://example.atlassian.net/browse/DEMO-104) | Tidy the sign-in scopes | Testing | Medium | Mon, Nov 2, 4:15 PM |\n| [DEMO-105](https://example.atlassian.net/browse/DEMO-105) | Back off when indexing is busy | In progress | Medium | Mon, Nov 2, 1:05 PM |\n| [DEMO-106](https://example.atlassian.net/browse/DEMO-106) | Write the chat app setup page | To do | Low | Sun, Nov 1, 9:30 PM |\n| [DEMO-107](https://example.atlassian.net/browse/DEMO-107) | Tune search ranking | In progress | Medium | Sun, Nov 1, 3:12 PM |\n| [DEMO-108](https://example.atlassian.net/browse/DEMO-108) | Index page attachments | To do | Medium | Sat, Oct 31, 8:44 PM |\n| [DEMO-109](https://example.atlassian.net/browse/DEMO-109) | Add a rate-limit chart | In progress | Low | Sat, Oct 31, 11:20 AM |\n| [DEMO-110](https://example.atlassian.net/browse/DEMO-110) | Time out slow tool servers | To do | High | Fri, Oct 30, 7:58 PM |\n\nThe most immediate follow-ups by status are **DEMO-101** (In review) and **DEMO-102, DEMO-103, DEMO-104** (Testing)."
+  }
+ ]
+}

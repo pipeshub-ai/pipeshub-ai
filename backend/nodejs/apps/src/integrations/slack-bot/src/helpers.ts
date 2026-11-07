@@ -44,10 +44,6 @@ export interface StreamEvent {
   data: unknown;
 }
 
-export interface StreamStartResult {
-  ts?: string;
-}
-
 export type SlackBlock = Record<string, unknown>;
 
 export interface SlackMessagePayload {
@@ -108,6 +104,12 @@ export interface TypedSlackClient {
       unfurl_links?: boolean;
       unfurl_media?: boolean;
     }) => Promise<{ ts?: string }>;
+    postEphemeral: (params: {
+      channel: string;
+      user: string;
+      thread_ts?: string;
+      text: string;
+    }) => Promise<unknown>;
   };
   apiCall: (
     apiMethod: string,
@@ -173,8 +175,25 @@ export const FAILED_RESPONSE_GENERATION_MESSAGE = 'Something went wrong while ge
 export const STREAM_UPDATE_THROTTLE_MS = 400;
 /** Flush immediately once this much answer text is buffered (avoid huge appends). */
 export const STREAM_UPDATE_MAX_CHARS = 400;
+/**
+ * How much of a model call's text waits before it streams: text before a
+ * tool call is shown as a row of the plan, and narration is rarely this long.
+ */
+export const NARRATION_HOLD_CHARS = 1500;
+
+/**
+ * Held text that is clearly the answer, so it streams before the hold is
+ * full: a second paragraph has begun, or a heading, list item, table row or
+ * code fence starts a line. Narration before a tool call is one plain
+ * paragraph.
+ */
+const ANSWER_SHAPE =
+  /\n[ \t]*\n[ \t]*\S|(?:^|\n)[ \t]*(?:#{1,6}[ \t]|[-*+][ \t]|\d+[.)][ \t]|\||```|~~~)/;
+
+export function looksLikeAnswer(text: string): boolean {
+  return ANSWER_SHAPE.test(text);
+}
 /** Activity message updates can be slower; they must not block answer appends. */
-export const ACTIVITY_UPDATE_THROTTLE_MS = 900;
 export const SLACK_MAX_TEXT_LENGTH = 39000;
 export const SLACK_STREAM_MARKDOWN_LIMIT = 11500;
 export const SLACK_STREAM_MESSAGE_CHAR_LIMIT = 11500;
@@ -200,8 +219,6 @@ export const MAX_USER_VISIBLE_ERROR_LENGTH = 320;
 export const STREAM_FAILURE_MESSAGE =
   "I ran into an issue while streaming the response. Please try again.";
 export const BACKEND_STREAM_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
-export const TABLE_STREAMING_PAUSED_HINT =
-  "\n\n:hourglass_flowing_sand:";
 
 export const SUPPORTED_ATTACHMENT_MIMETYPES = new Set([
   "image/jpeg",
@@ -236,6 +253,19 @@ const TEXT_ATTACHMENT_MIMETYPES: Readonly<Record<string, string>> = {
 
 const GENERIC_MIMETYPES = new Set(["", "application/octet-stream", "binary/octet-stream"]);
 
+/** What Windows and Excel label a .csv file; the extension still says it is text. */
+const SPREADSHEET_CSV_MIMETYPES = new Set(["application/vnd.ms-excel", "application/csv"]);
+
+/**
+ * Word and Excel attachments by extension, with the MIME type the chat upload
+ * parses (the web app accepts the same two). They are zip archives, so Slack
+ * may label them application/zip.
+ */
+export const OFFICE_ATTACHMENT_EXTENSION_MIMETYPES: Readonly<Record<string, string>> = {
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+};
+
 /** Slack `filetype` values for text files, used only when the file name has no extension. */
 const SLACK_TEXT_FILETYPE_EXTENSIONS: Readonly<Record<string, string>> = {
   text: "txt",
@@ -248,7 +278,7 @@ export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 export const MAX_ATTACHMENT_MB = Math.floor(MAX_ATTACHMENT_BYTES / (1024 * 1024));
 
 export const SUPPORTED_ATTACHMENTS_HINT =
-  "I can read PDF, JPEG and PNG files, and text files: plain text (.txt), " +
+  "I can read PDF, JPEG and PNG files, Word (.docx) and Excel (.xlsx) files, and text files: plain text (.txt), " +
   "Markdown (.md, .markdown, .mdx), CSV (.csv) and TSV (.tsv). " +
   `Each file can be up to ${MAX_ATTACHMENT_MB} MB.`;
 
@@ -313,15 +343,33 @@ export function resolveTextAttachmentMimetype(file: SlackFile): string | null {
   if (extension) {
     const mimeForExtension = TEXT_ATTACHMENT_EXTENSION_MIMETYPES[extension];
     if (mimeForExtension === undefined) return null;
-    return mime.startsWith("text/") || GENERIC_MIMETYPES.has(mime) ? mimeForExtension : null;
+    const labelFits =
+      mime.startsWith("text/") ||
+      GENERIC_MIMETYPES.has(mime) ||
+      (mimeForExtension === "text/csv" && SPREADSHEET_CSV_MIMETYPES.has(mime));
+    return labelFits ? mimeForExtension : null;
   }
   return TEXT_ATTACHMENT_MIMETYPES[mime] ?? null;
+}
+
+/** The MIME type to upload a Word or Excel attachment with, or null when the file is not one. */
+export function resolveOfficeAttachmentMimetype(file: SlackFile): string | null {
+  const mime = normalizeMimetype(file.mimetype);
+  const extension = slackFileExtension(file);
+  const known = Object.values(OFFICE_ATTACHMENT_EXTENSION_MIMETYPES);
+  if (!extension) return known.includes(mime) ? mime : null;
+  if (!Object.prototype.hasOwnProperty.call(OFFICE_ATTACHMENT_EXTENSION_MIMETYPES, extension)) return null;
+  const mimeForExtension = OFFICE_ATTACHMENT_EXTENSION_MIMETYPES[extension]!;
+  return mime === mimeForExtension || GENERIC_MIMETYPES.has(mime) || mime === "application/zip"
+    ? mimeForExtension
+    : null;
 }
 
 export function isSlackSupportedAttachment(file: SlackFile): boolean {
   return (
     SUPPORTED_ATTACHMENT_MIMETYPES.has(normalizeMimetype(file.mimetype)) ||
-    resolveTextAttachmentMimetype(file) !== null
+    resolveTextAttachmentMimetype(file) !== null ||
+    resolveOfficeAttachmentMimetype(file) !== null
   );
 }
 
@@ -412,12 +460,12 @@ function isOwnBotMessage(
 }
 
 /**
- * Supported files posted in the thread after the bot's last reply, oldest first.
+ * Files posted in the thread after the bot's last reply, oldest first, sorted by
+ * whether the bot can read them.
  *
  * Files from before that reply went out with an earlier question in this thread and
  * stay in the conversation's history, so starting here sends each file once.
- * Unsupported and oversized files are dropped without a notice: the user didn't
- * attach them to this question. Pass only a thread read to its end
+ * Pass only a thread read to its end
  * (`PriorThreadMessages.complete`): on a partial read the bot's last reply may be
  * missing, and old files would be sent again.
  */
@@ -425,7 +473,7 @@ export function collectThreadFilesSinceLastBotReply(
   priorMessages: SlackMessagePayload[],
   botUserId?: string,
   botId?: string,
-): SlackFile[] {
+): SlackFileClassification {
   let start = 0;
   priorMessages.forEach((message, index) => {
     if (isOwnBotMessage(message, botUserId, botId)) start = index + 1;
@@ -433,7 +481,7 @@ export function collectThreadFilesSinceLastBotReply(
   const files = priorMessages
     .slice(start)
     .flatMap((message) => (Array.isArray(message.files) ? message.files : []));
-  return classifySlackFiles(files).supported;
+  return classifySlackFiles(files);
 }
 
 export class SlackFileTooLargeError extends Error {
@@ -508,7 +556,10 @@ export async function uploadSlackAttachments(
     const fileName = file.name || `attachment_${file.id}.${file.filetype || "bin"}`;
     form.append("files", binary, {
       filename: fileName,
-      contentType: textMimetype ?? (file.mimetype || "application/octet-stream"),
+      contentType:
+        textMimetype ??
+        resolveOfficeAttachmentMimetype(file) ??
+        (file.mimetype || "application/octet-stream"),
     });
     appended += 1;
   });
@@ -1280,6 +1331,67 @@ export function tryParseMarkdownTableAtLine(
   };
 }
 
+interface FencedLine {
+  line: string;
+  at: number;
+  fenced: boolean;
+}
+
+/** Each line with where it starts, and whether it is inside a code fence. */
+function linesOutsideFences(content: string): FencedLine[] {
+  const out: FencedLine[] = [];
+  let activeFenceMarker: FenceMarker | null = null;
+  let at = 0;
+  for (const line of content.split('\n')) {
+    let fenced = activeFenceMarker !== null;
+    if (activeFenceMarker !== null) {
+      if (isFenceClosingLine(line, activeFenceMarker)) activeFenceMarker = null;
+    } else {
+      activeFenceMarker = getFenceMarker(line);
+      fenced = activeFenceMarker !== null;
+    }
+    out.push({ line, at, fenced });
+    at += line.length + 1;
+  }
+  return out;
+}
+
+/** Where the first table outside code fences (a header row, then its separator) starts, or -1. */
+export function markdownTableStart(content: string): number {
+  const lines = linesOutsideFences(content);
+  for (const [i, current] of lines.entries()) {
+    const next = lines[i + 1];
+    if (
+      next !== undefined &&
+      !current.fenced &&
+      !next.fenced &&
+      isMarkdownTableRow(current.line) &&
+      isMarkdownTableSeparatorRow(next.line)
+    ) {
+      return current.at;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Where trailing lines that may still turn out to be a table start: lines
+ * beginning with `|` outside code fences, up to the end. -1 when there are none.
+ */
+export function trailingTableRowsStart(content: string): number {
+  const lines = linesOutsideFences(content);
+  let start = -1;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const current = lines[i];
+    if (current === undefined) break;
+    // The last line may be empty (text ended with a newline): a row can still come.
+    if (i === lines.length - 1 && current.line === '') continue;
+    if (current.fenced || !/^\s*\|/.test(current.line)) break;
+    start = current.at;
+  }
+  return start;
+}
+
 export function hasMarkdownTableStartOutsideCodeFences(content: string): boolean {
   if (!content) {
     return false;
@@ -1313,6 +1425,35 @@ export function hasMarkdownTableStartOutsideCodeFences(content: string): boolean
   }
 
   return false;
+}
+
+/**
+ * Splits markdown before its first table (outside code fences): Slack
+ * markdown text shows the part before it, and blocks show the table and the
+ * rest. The second part is empty when there is no table.
+ */
+export function splitBeforeFirstTable(content: string): [string, string] {
+  const lines = content.replace(/\r\n/g, '\n').split('\n');
+  let activeFenceMarker: FenceMarker | null = null;
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex] ?? '';
+    if (activeFenceMarker) {
+      if (isFenceClosingLine(line, activeFenceMarker)) activeFenceMarker = null;
+      continue;
+    }
+    const openingFenceMarker = getFenceMarker(line);
+    if (openingFenceMarker) {
+      activeFenceMarker = openingFenceMarker;
+      continue;
+    }
+    if (tryParseMarkdownTableAtLine(lines, lineIndex)) {
+      return [
+        lines.slice(0, lineIndex).join('\n'),
+        lines.slice(lineIndex).join('\n'),
+      ];
+    }
+  }
+  return [lines.join('\n'), ''];
 }
 
 export function splitMarkdownMessageIntoTableAwareSegments(content: string): MarkdownTableSegment[] {
@@ -1704,7 +1845,46 @@ export async function buildFinalSlackChunks(
     combinedBlocks.push(...buildSlackTableBlocksFromMarkdownSegment(segment));
   }
 
-  return splitSlackBlocksByLimit(combinedBlocks);
+  // Without expand, Slack folds a long section behind "see more"; only the thinking may fold.
+  return splitSlackBlocksByLimit(
+    combinedBlocks.map((block: SlackBlock): SlackBlock =>
+      block.type === 'section' ? { ...block, expand: true } : block,
+    ),
+  );
+}
+
+const SLACK_FALLBACK_TEXT_LIMIT = 3000;
+
+function collectSlackBlockText(node: unknown, out: string[]): void {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      collectSlackBlockText(child, out);
+    }
+    return;
+  }
+  if (node === null || typeof node !== 'object') {
+    return;
+  }
+  const record = node as Record<string, unknown>;
+  if (typeof record.text === 'string') {
+    out.push(record.text);
+  } else {
+    collectSlackBlockText(record.text, out);
+  }
+  collectSlackBlockText(record.elements, out);
+  collectSlackBlockText(record.rows, out);
+  collectSlackBlockText(record.fields, out);
+}
+
+/** Top-level `text` for a blocks message: Slack shows it in notifications and to screen readers. */
+export function slackBlocksFallbackText(blocks: unknown[]): string {
+  const parts: string[] = [];
+  collectSlackBlockText(blocks, parts);
+  const text = parts.join(' ').replace(/\s+/g, ' ').trim();
+  return truncateFromEnd(
+    text === '' ? 'Reply' : text,
+    SLACK_FALLBACK_TEXT_LIMIT,
+  );
 }
 
 // ---------------------------------------------------------------------------

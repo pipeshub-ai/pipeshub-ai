@@ -22,56 +22,84 @@ import {
 } from "../../../libs/services/redis/connectionProviderFactory";
 import { ConfigService } from "../../../modules/tokens_manager/services/cm.service";
 import { slackJwtGenerator } from "../../../libs/utils/createJwt";
-import { markdownToSlackMrkdwn } from "./utils/md_to_mrkdwn";
 import { createSlackAGUIEventHandler } from "./utils/agui-stream";
 import {
-  SlackActivityBuilder,
+  cleanNarration,
   stripSlackActivityTimeline,
 } from "./utils/activity-ui";
+import {
+  SlackPlanStream,
+  SlackTaskPlan,
+  type SlackTaskChunk,
+} from "./utils/plan-stream";
 import {
   formatAskUserQuestionMrkdwn,
   type AskUserQuestionEvent,
 } from "./utils/ask-user-format";
+import { toolActivityLabel } from "./utils/tool-display";
 import {
-  toolActivityLabel,
-  toolStatusLabel,
-} from "./utils/tool-display";
-import { parseArtifactMarkers } from "./utils/parse-artifact-markers";
+  parseArtifactMarkers,
+  stripArtifactMarkers,
+} from "./utils/parse-artifact-markers";
 import {
-  rewriteCitationsForSlack,
+  asSlackCitations,
   stripFragmentDirective,
-  stripTinyRefCitationLinks,
+  CitationMarkers,
+  splitOpenLinkTail,
+  withoutPlaceholderRefs,
+  buildNumberedSlackSources,
+  stripNumberedCitationLinkTargets,
+  citationRows,
+  numberedSourcesBlocks,
+  sourcesBlocks,
+  type SlackSourceRow,
+  type SlackCitationLike,
 } from "./utils/citations";
 
 import {
   type SlackBotConfig,
   getCurrentMatchedSlackBot,
+  runWithSlackRequestContext,
 } from "./botRegistry";
+import { runLimiterFromEnv } from "./utils/run-limiter";
+import {
+  MemoryThreadQueueStore,
+  ThreadQueue,
+  createThreadQueueStore,
+  threadQueueKey,
+} from "./utils/thread-queue";
+import {
+  batchText,
+  fromQueuedMessage,
+  mergeBatchMessage,
+  toQueuedMessage,
+  withoutBatchMessages,
+} from "./utils/turn-batch";
 
 import {
   type CitationData,
   type ConversationData,
-  type StreamStartResult,
   type SlackMessagePayload,
   type TypedSlackClient,
   type AttachmentRef,
   type SlackAttachmentUploadResult,
   type SlackFile,
+  type SlackFileClassification,
   FAILED_RESPONSE_GENERATION_MESSAGE,
   STREAM_UPDATE_THROTTLE_MS,
   STREAM_UPDATE_MAX_CHARS,
-  ACTIVITY_UPDATE_THROTTLE_MS,
-  SLACK_STREAM_MARKDOWN_LIMIT,
-  SLACK_STREAM_MESSAGE_CHAR_LIMIT,
+  NARRATION_HOLD_CHARS,
+  looksLikeAnswer,
   NO_UNFURL_OPTIONS,
   STREAM_FAILURE_MESSAGE,
   BACKEND_STREAM_TIMEOUT_MS,
-  TABLE_STREAMING_PAUSED_HINT,
   truncateForSlack,
   truncateForSlackStreamMarkdown,
-  splitByLengthPreferringNewlines,
-  hasMarkdownTableStartOutsideCodeFences,
+  markdownTableStart,
+  trailingTableRowsStart,
   buildFinalSlackChunks,
+  splitBeforeFirstTable,
+  slackBlocksFallbackText,
   splitSlackBlocksByLimit,
   classifySlackFiles,
   resolveSkippedAttachmentsAfterUpload,
@@ -116,9 +144,6 @@ interface TypedSlackContext {
   matchedBotAgentId?: string | null;
 }
 
-/** Mid-stream: hide normalized record citation links (final message rewrites them). */
-const INLINE_RECORD_CITATION_LINK_PATTERN =
-  /\[(\d+)\]\(([^)]*?\/record\/[^)]*?)\)/g;
 
 async function buildThreadContextualQuery(
   query: string,
@@ -180,16 +205,17 @@ async function collectThreadFiles(
   thread: PriorThreadMessages,
   botCacheKey: string,
   knownBotUserId: string | undefined,
-): Promise<SlackFile[]> {
+): Promise<SlackFileClassification> {
+  const none: SlackFileClassification = { supported: [], unsupported: [], oversized: [] };
   if (!thread.complete) {
-    return [];
+    return none;
   }
   const prior = thread.messages.filter((m) => m.ts !== typedMessage.ts);
   const hasFiles = prior.some(
     (m) => Array.isArray(m.files) && m.files.length > 0,
   );
   if (!hasFiles) {
-    return [];
+    return none;
   }
   const own = await resolveOwnBotIdentity(
     typedClient,
@@ -265,24 +291,13 @@ function getCitationWebUrl(webUrl?: string): string {
   return `${getFrontendBaseUrl()}${webUrl}`;
 }
 
-function rewriteInlineRecordCitationsForSlack(
-  answerBody: string,
-  citations?: CitationData[],
-): string {
-  return rewriteCitationsForSlack(
-    answerBody,
-    citations,
-    getFrontendBaseUrl(),
-  );
-}
-
 function buildCitationSources(citations?: CitationData[]): any[]  {
 
   // Deduplicate by recordId, keeping the first occurrence per unique record
   const seenRecordIds = new Set<string>();
   const uniqueRecords: Array<{ name: string; url: string }> = [];
 
-  for (const citation of citations || []) {
+  for (const citation of asSlackCitations(citations)) {
     const recordId = citation.citationData.metadata.recordId;
     if (!recordId) continue;
 
@@ -300,60 +315,8 @@ function buildCitationSources(citations?: CitationData[]): any[]  {
     uniqueRecords.push({ name: recordName, url: recordUrl });
   }
 
-  let blocks: any[] = [];
-  let elements: any[] = [];
-
-  for (const record of uniqueRecords) {
-    elements.push({
-      "type": "link",
-      "url": record.url,
-      "text": ` ${record.name}`,
-    });
-    elements.push({
-      "type": "text",
-      "text": `\n`,
-    });
-
-    if (elements.length === 20) {
-      blocks.push({
-        "type": "rich_text",
-        "elements": [
-          {
-            "type": "rich_text_section",
-            "elements": [
-              ...elements,
-            ]
-          }
-        ]
-      });
-      elements = [];
-    }
-  }
-
-  if (elements.length > 0) {
-    blocks.push({
-      "type": "rich_text",
-      "elements": [
-        {
-          "type": "rich_text_section",
-          "elements": [
-            ...elements,
-          ]
-        }
-      ]
-    });
-  }
-
-  if (blocks.length > 0) {
-    blocks = [ {
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: "*Sources:*",
-      },
-    }, ...blocks];
-  }
-  return blocks;
+  // Unnumbered, but shown like the numbered list: small, one line per document.
+  return sourcesBlocks(uniqueRecords.map((record) => ({ ...record, numbers: [] })));
 }
 
 // Middleware setup
@@ -434,10 +397,12 @@ async function processSlackMessage(
     currentBotId,
     email,
   );
-  let streamTs: string | null = null;
-  let streamStopped = false;
-  let streamCharCount = 0;
-  let rolledOverStreamTs: string[] = [];
+  const answerPlan = new SlackTaskPlan();
+  // Numbers citation placeholders as [n] while the answer streams, to match the
+  // Sources list: one counter for the reply, so a number never means two refs.
+  const citationMarkers = new CitationMarkers();
+  // Null when Slack can't stream here: the answer is then posted under a status message.
+  let answerStream: SlackPlanStream | null = null;
   let waitingMessageTs: string | null = null;
 
   const sendOrUpdateNonStreamMessage = async (
@@ -511,7 +476,7 @@ async function processSlackMessage(
       await typedClient.chat.postMessage({
         channel: typedMessage.channel!,
         thread_ts: threadId,
-        text: "",
+        text: slackBlocksFallbackText(chunk),
         blocks: chunk,
         ...NO_UNFURL_OPTIONS,
       });
@@ -526,55 +491,17 @@ async function processSlackMessage(
     }
   };
 
-  const stopSlackStream = async (markdownText?: string): Promise<boolean> => {
-    if (!streamTs || streamStopped) {
-      return true;
-    }
-
-    const payload: Record<string, unknown> = {
-      channel: typedMessage.channel!,
-      ts: streamTs,
-    };
-    if (typeof markdownText === "string" && markdownText.length > 0) {
-      payload.markdown_text = truncateForSlackStreamMarkdown(markdownText);
-    }
-
-    try {
-      await typedClient.apiCall("chat.stopStream", payload);
-      streamStopped = true;
-      return true;
-    } catch (error) {
-      if (
-        error &&
-        typeof error === "object" &&
-        "data" in error &&
-        (error as { data?: { error?: string } }).data?.error ===
-          "message_not_in_streaming_state"
-      ) {
-        streamStopped = true;
-        return true;
-      }
-      console.error("Error stopping Slack stream:", error);
-      return false;
-    }
-  };
-
-  const rolloverSlackStream = async (): Promise<void> => {
-    if (!streamTs) return;
-    try {
-      await typedClient.apiCall("chat.stopStream", {
-        channel: typedMessage.channel!,
-        ts: streamTs,
-      });
-    } catch (error) {
-      const code = (error as { data?: { error?: string } }).data?.error;
-      if (code !== "message_not_in_streaming_state") throw error;
-    }
-    rolledOverStreamTs.push(streamTs);
-    streamTs = null;
-    streamCharCount = 0;
-    // streamStopped stays false — the overall session is still active
-  };
+  const stopSlackStream = async (markdownText?: string): Promise<boolean> =>
+    answerStream
+      ? answerStream.stop(
+          markdownText
+            ? {
+                markdown: truncateForSlackStreamMarkdown(markdownText),
+                failed: true,
+              }
+            : {},
+        )
+      : true;
 
   try {
     const streamRecipientPayload: Record<string, unknown> = {};
@@ -583,17 +510,14 @@ async function processSlackMessage(
       streamRecipientPayload.recipient_team_id = typedContext.teamId;
     }
 
-    try {
-      const waitingMessage = await typedClient.chat.postMessage({
-        channel: typedMessage.channel!,
-        thread_ts: threadId,
-        text: "_Thinking..._",
-        ...NO_UNFURL_OPTIONS,
-      });
-      waitingMessageTs = waitingMessage.ts || null;
-    } catch (error) {
-      console.error("Error posting Slack waiting message:", error);
-    }
+    // Opens on the first step or answer text, so a run with neither shows no plan.
+    answerStream = new SlackPlanStream(
+      typedClient,
+      typedMessage.channel!,
+      threadId,
+      streamRecipientPayload,
+      answerPlan,
+    );
 
     // Handle file attachments for agents
     let attachmentRefs: AttachmentRef[] = [];
@@ -616,6 +540,8 @@ async function processSlackMessage(
           );
           if (hasSkipped && followUp === "none") {
             // Attachment-only and nothing usable is left: the notice is the reply.
+            await answerStream?.discard();
+            answerStream = null;
             await sendOrUpdateNonStreamMessage(buildSkippedAttachmentsNotice(skipped, followUp));
             return;
           }
@@ -626,6 +552,8 @@ async function processSlackMessage(
             ? JSON.stringify(errData)
             : (uploadError as any).message ?? String(uploadError);
           console.error("Error uploading attachments:", errMsg);
+          await answerStream?.discard();
+          answerStream = null;
           await sendUserFacingSlackErrorMessage(typedClient, typedMessage, uploadError);
           return;
         }
@@ -671,25 +599,29 @@ async function processSlackMessage(
     const responseStream = response.data as NodeJS.ReadableStream;
     let sseBuffer = "";
     let pendingAppendText = "";
-    let lastActivityAt = 0;
     let streamErrorMessage: string | null = null;
     let completionConversation: ConversationData["conversation"] | null = null;
-    // Answer appends and activity updates use separate queues so chat.update
-    // latency cannot stall chat.appendStream mid-answer.
+    // Plan updates and answer text share one queue: they go to the same stream, in order.
     let queuedStreamAppend: Promise<void> = Promise.resolve();
-    let queuedActivityUpdate: Promise<void> = Promise.resolve();
     let tableStreamingDisabled = false;
+    /** Tables (and what follows them) of text before a tool call: shown below the answer as blocks. */
+    const preambleTables: string[] = [];
     let streamTableProbeText = "";
-    let tablePauseHintSent = false;
     let streamedAnswerLength = 0;
     let ignoreAnswerChunks = false;
     let askUserShown = false;
     let conversationPersisted = Boolean(conversation);
     let conversationPersistPromise: Promise<void> = Promise.resolve();
-    const activityBuilder = new SlackActivityBuilder();
-    let pendingActivityUpdate = false;
+    // Raw answer text handed to the stream, and the latest full answer: a table
+    // stops streaming, and the part after it is posted as blocks at the end.
+    let pushedAnswerLength = 0;
+    let lastAnswerText = "";
+    let answerTextStreamed = false;
+    // The end of a flushed piece that may be half a link, sent with the next one.
+    let heldAnswerText = "";
+    // As it was when the current model call's text began, to restore on a discard.
+    let streamedBeforeSegment = false;
     let answerFlushTimer: ReturnType<typeof setTimeout> | null = null;
-    let activityFlushTimer: ReturnType<typeof setTimeout> | null = null;
     const postedArtifactKeys = new Set<string>();
 
     const updateActivityMessage = async (
@@ -715,86 +647,81 @@ async function processSlackMessage(
       }
     };
 
-    const flushActivityUpdate = (): void => {
-      if (!pendingActivityUpdate || askUserShown) {
-        pendingActivityUpdate = false;
+    // Slack refused to stream here: say "Thinking" in a plain status message instead.
+    const fallBackToStatusMessage = async (): Promise<void> => {
+      if (!answerStream?.unavailable) {
         return;
       }
-      pendingActivityUpdate = false;
-      // Format at write time so a later setStatus("") isn't overwritten by a
-      // stale snapshot captured when the flush was queued.
-      queuedActivityUpdate = queuedActivityUpdate
-        .then(async () => updateActivityMessage(activityBuilder.format()))
-        .catch((error) => {
-          console.error("Error flushing Slack activity update:", error);
+      answerStream = null;
+      if (waitingMessageTs) {
+        return;
+      }
+      try {
+        const waitingMessage = await typedClient.chat.postMessage({
+          channel: typedMessage.channel!,
+          thread_ts: threadId,
+          text: "_Thinking..._",
+          ...NO_UNFURL_OPTIONS,
+        });
+        waitingMessageTs = waitingMessage.ts || null;
+      } catch (error) {
+        console.error("Error posting Slack waiting message:", error);
+      }
+    };
+
+    let pendingStreamText = "";
+    // The current model call's citations as the backend refreshes them: they give [n] its link.
+    let liveCitationRows: ReadonlyMap<number, SlackSourceRow> = new Map();
+    let textSendQueued = false;
+    const pendingPlanRows = new Map<string, SlackTaskChunk>();
+    let planSendQueued = false;
+    const pushPlan = (
+      chunks: (SlackTaskChunk | SlackTaskChunk[] | null)[],
+    ): void => {
+      // Rows sealed since the last send carry their details and output, once.
+      const ready = [...answerPlan.takeSealed(), ...chunks.flat()].filter(
+        (chunk): chunk is SlackTaskChunk => chunk !== null,
+      );
+      if (!answerStream || askUserShown || ready.length === 0) {
+        return;
+      }
+      // Rapid updates coalesce: one queued send carries each changed row's latest state.
+      for (const chunk of ready) {
+        pendingPlanRows.delete(chunk.id);
+        pendingPlanRows.set(chunk.id, chunk);
+      }
+      if (planSendQueued) {
+        return;
+      }
+      planSendQueued = true;
+      queuedStreamAppend = queuedStreamAppend
+        .then(async () => {
+          planSendQueued = false;
+          const rows = [...pendingPlanRows.values()];
+          pendingPlanRows.clear();
+          await answerStream?.tasks(rows);
+          await fallBackToStatusMessage();
+        })
+        .catch((error: unknown) => {
+          console.error("Error updating Slack plan:", error);
         });
     };
 
-    const scheduleActivityUpdate = (): void => {
-      // Ask-user replaces the activity message with questions; don't overwrite it.
-      if (askUserShown) {
+    // Text the agent wrote before a step: its own rows in the plan, once, in full.
+    const pushNarration = (text: string): void => {
+      const narration = withoutPlaceholderRefs(
+        cleanNarration(parseArtifactMarkers(text).text),
+      );
+      answerPlan.endGroup();
+      if (!answerStream || askUserShown || narration === "") {
         return;
       }
-      pendingActivityUpdate = true;
-      const now = Date.now();
-      if (now - lastActivityAt >= ACTIVITY_UPDATE_THROTTLE_MS) {
-        lastActivityAt = now;
-        if (activityFlushTimer) {
-          clearTimeout(activityFlushTimer);
-          activityFlushTimer = null;
-        }
-        flushActivityUpdate();
-        return;
-      }
-      if (!activityFlushTimer) {
-        const waitMs = Math.max(
-          0,
-          ACTIVITY_UPDATE_THROTTLE_MS - (now - lastActivityAt),
-        );
-        activityFlushTimer = setTimeout(() => {
-          activityFlushTimer = null;
-          lastActivityAt = Date.now();
-          flushActivityUpdate();
-        }, waitMs);
-      }
+      // Reasoning came before this text, so its row goes first.
+      pushPlan([answerPlan.flushReasoning(), answerPlan.narration(narration)]);
     };
 
     const deleteStreamMessages = async (): Promise<void> => {
-      if (streamTs) {
-        try {
-          await stopSlackStream();
-        } catch (error) {
-          console.error("Error stopping Slack stream before reset:", error);
-        }
-        try {
-          await typedClient.apiCall("chat.delete", {
-            channel: typedMessage.channel!,
-            ts: streamTs,
-          });
-        } catch (deleteError) {
-          const code = (deleteError as { data?: { error?: string } }).data?.error;
-          if (code !== "message_not_found") {
-            console.error("Error deleting Slack stream message:", deleteError);
-          }
-        }
-        streamTs = null;
-        streamStopped = false;
-        streamCharCount = 0;
-      }
-      for (const oldTs of rolledOverStreamTs) {
-        try {
-          await typedClient.apiCall("chat.delete", {
-            channel: typedMessage.channel!,
-            ts: oldTs,
-          });
-        } catch (deleteError) {
-          const code = (deleteError as { data?: { error?: string } }).data?.error;
-          if (code !== "message_not_found") {
-            console.error("Error deleting rolled-over stream message:", deleteError);
-          }
-        }
-      }
-      rolledOverStreamTs = [];
+      await answerStream?.discard();
     };
 
     const persistConversationId = async (conversationId: string): Promise<void> => {
@@ -830,27 +757,37 @@ async function processSlackMessage(
       }
 
       streamTableProbeText += nextChunk;
-      if (hasMarkdownTableStartOutsideCodeFences(streamTableProbeText)) {
+      const tableAt = markdownTableStart(streamTableProbeText);
+      if (tableAt >= 0) {
+        // The text before the table shows as text, even the part in this delta; the table and the rest go below it as blocks.
+        const unsent = heldAnswerText + pendingAppendText + nextChunk;
+        const unsentAt = streamTableProbeText.length - unsent.length;
+        heldAnswerText = "";
+        pendingAppendText = unsent.slice(0, Math.max(0, tableAt - unsentAt));
+        flushPendingAppend(true);
         tableStreamingDisabled = true;
-        pendingAppendText = "";
-        clearAnswerFlushTimer();
-        queuedStreamAppend = queuedStreamAppend
-          .then(async () => sendTableStreamingPausedHint())
-          .catch((error) => {
-            console.error("Error sending Slack table formatting hint:", error);
-          });
         return;
       }
 
       pendingAppendText += nextChunk;
       // Large buffer → flush now. Otherwise arm a short idle timer so a pause
       // in token arrival still pushes what's buffered (avoids multi-second stalls).
-      if (pendingAppendText.length >= STREAM_UPDATE_MAX_CHARS) {
+      // Until a model call's text is clearly the answer it waits, so text
+      // before a tool call can still become a row of the plan. Its first
+      // paragraph break, heading, list, table or fence releases it early.
+      const held = pushedAnswerLength === 0;
+      const flushAt = held ? NARRATION_HOLD_CHARS : STREAM_UPDATE_MAX_CHARS;
+      if (
+        pendingAppendText.length >= flushAt ||
+        (held && looksLikeAnswer(heldAnswerText + pendingAppendText))
+      ) {
         clearAnswerFlushTimer();
         flushPendingAppend();
         return;
       }
-      if (!answerFlushTimer) {
+      // Text before a tool call becomes a row of the plan, so each model
+      // call's short opening waits until it is clearly answer text.
+      if (!answerFlushTimer && pushedAnswerLength > 0) {
         answerFlushTimer = setTimeout(() => {
           answerFlushTimer = null;
           flushPendingAppend();
@@ -864,15 +801,9 @@ async function processSlackMessage(
       }
       if (accumulated.length < streamedAnswerLength) {
         // Preamble cleared — reset stream before applying the new buffer.
-        clearAnswerFlushTimer();
-        pendingAppendText = "";
-        streamedAnswerLength = 0;
-        queuedStreamAppend = queuedStreamAppend
-          .then(async () => deleteStreamMessages())
-          .catch((error) => {
-            console.error("Error clearing Slack answer preamble:", error);
-          });
+        resetAnswerStream();
       }
+      lastAnswerText = accumulated;
       if (accumulated.length <= streamedAnswerLength) {
         streamedAnswerLength = accumulated.length;
         return;
@@ -901,18 +832,12 @@ async function processSlackMessage(
       clearAnswerFlushTimer();
       pendingAppendText = "";
       streamedAnswerLength = 0;
-      pendingActivityUpdate = false;
-      if (activityFlushTimer) {
-        clearTimeout(activityFlushTimer);
-        activityFlushTimer = null;
-      }
 
-      // Replace the Thinking/activity placeholder with the questions so
-      // "_Thinking..._" is not left sitting above the clarification.
+      // The questions replace the plan or status message, so "Thinking" is not
+      // left sitting above the clarification.
       queuedStreamAppend = queuedStreamAppend
         .then(async () => {
           await deleteStreamMessages();
-          await queuedActivityUpdate.catch(() => undefined);
           if (waitingMessageTs) {
             await updateActivityMessage(questionText, { allowAfterAskUser: true });
           } else {
@@ -975,85 +900,193 @@ async function processSlackMessage(
         });
     };
 
-    const resetAnswerStream = (): void => {
+    // Text already shown stays (no delete and repost); the answer goes on after it.
+    function resetAnswerStream(): void {
+      clearAnswerFlushTimer();
+      // A table in one model call's text must not stop the next call's text from streaming.
+      tableStreamingDisabled = false;
+      streamTableProbeText = '';
+      pendingAppendText = '';
+      heldAnswerText = '';
+      streamedAnswerLength = 0;
+      pushedAnswerLength = 0;
+      lastAnswerText = '';
+      startAnswerSegment();
+    }
+
+    function startAnswerSegment(): void {
+      citationMarkers.checkpoint();
+      liveCitationRows = new Map();
+      streamedBeforeSegment = answerTextStreamed;
+      queuedStreamAppend = queuedStreamAppend
+        .then(() => {
+          answerStream?.markSegment();
+        })
+        .catch((error: unknown) => {
+          console.error('Error marking Slack answer segment:', error);
+        });
+    }
+
+    // Held lines that may start a table never go out as text: they go below it, as blocks if they are a table.
+    function holdTrailingTableRows(): void {
+      const rowsAt = trailingTableRowsStart(streamTableProbeText);
+      if (tableStreamingDisabled || rowsAt < 0) return;
+      const unsent = heldAnswerText + pendingAppendText;
+      const unsentAt = streamTableProbeText.length - unsent.length;
+      heldAnswerText = '';
+      pendingAppendText = unsent.slice(0, Math.max(0, rowsAt - unsentAt));
+      tableStreamingDisabled = true;
+    }
+
+    // A tool call ends the text before it: send what is still buffered, then start over after it.
+    function settleAnswerPreamble(): void {
+      if (pushedAnswerLength > 0) {
+        holdTrailingTableRows();
+        flushPendingAppend(true);
+        if (tableStreamingDisabled) {
+          // Its table never streamed: keep it, with its citations linked while they are known.
+          const rest = lastAnswerText.slice(pushedAnswerLength);
+          if (rest.trim() !== '') {
+            preambleTables.push(
+              citationMarkers.resolve(citationMarkers.mark(rest), liveCitationRows, true)[0],
+            );
+          }
+        }
+        // Its citations are known only while this call lasts: link them now.
+        const [ready] = citationMarkers.resolve(
+          pendingStreamText,
+          liveCitationRows,
+          true,
+        );
+        pendingStreamText = "";
+        if (ready !== "") {
+          queuedStreamAppend = queuedStreamAppend
+            .then(async () => pushTextToSlackStream(ready))
+            .catch((error: unknown) => {
+              console.error("Error appending Slack stream text:", error);
+            });
+        }
+      }
+      resetAnswerStream();
+    }
+
+    // The backend dropped the model call and retries it: its shown text must go.
+    function discardAnswerSegment(): void {
+      const shown = pushedAnswerLength > 0;
       clearAnswerFlushTimer();
       pendingAppendText = '';
+      heldAnswerText = '';
       streamedAnswerLength = 0;
+      pushedAnswerLength = 0;
+      lastAnswerText = '';
+      answerTextStreamed = streamedBeforeSegment;
+      // The discarded call's numbers are free again, so [n] keeps matching the Sources list.
+      citationMarkers.rollback();
+      liveCitationRows = new Map();
+      pendingStreamText = "";
+      if (!shown) {
+        return;
+      }
       queuedStreamAppend = queuedStreamAppend
-        .then(async () => deleteStreamMessages())
+        .then(async () => {
+          await answerStream?.dropSegment();
+        })
         .catch((error: unknown) => {
-          console.error('Error clearing Slack answer preamble:', error);
+          console.error('Error taking back a discarded Slack answer:', error);
         });
-    };
+    }
 
     const aguiHandler = createSlackAGUIEventHandler({
-      onStatus: (message) => {
-        activityBuilder.setStatus(message);
-        scheduleActivityUpdate();
-      },
       onReasoning: (delta, done) => {
         if (delta) {
-          activityBuilder.appendReasoning(delta);
-          scheduleActivityUpdate();
+          answerPlan.reasoningDelta(delta);
         }
         if (done) {
-          activityBuilder.finishReasoning();
-          scheduleActivityUpdate();
+          answerPlan.reasoningDone();
         }
       },
       onModelCallDiscarded: () => {
-        activityBuilder.dropTrailingReasoning();
-        scheduleActivityUpdate();
-        // A table in the failed attempt paused streaming; its retry may have none.
-        if (tablePauseHintSent) {
-          resetAnswerStream();
-          // With no stream open yet, the hint replaced the activity message.
-          queuedStreamAppend = queuedStreamAppend
-            .then(async () => updateActivityMessage(activityBuilder.format()))
-            .catch((error: unknown) => {
-              console.error(
-                'Error restoring Slack activity after a discard:',
-                error,
-              );
-            });
-        }
+        answerPlan.dropReasoning();
+        // The retry streams its answer again, and may have no table.
+        discardAnswerSegment();
         tableStreamingDisabled = false;
         streamTableProbeText = '';
-        tablePauseHintSent = false;
       },
       onNarration: (text) => {
-        activityBuilder.appendNarration(text);
-        scheduleActivityUpdate();
+        // Already shown as streamed text: don't repeat it.
+        if (pushedAnswerLength === 0) {
+          pushNarration(text);
+        }
       },
-      onToolStart: (toolName, displayName) => {
-        activityBuilder.startTool(
-          toolName,
-          toolStatusLabel(toolName, displayName),
-        );
-        scheduleActivityUpdate();
+      onToolProgress: (toolName, progress) => {
+        pushPlan([answerPlan.toolProgress(toolName, progress)]);
       },
-      onToolResult: (toolName, displayName, status) => {
-        activityBuilder.finishTool(
-          toolName,
-          toolActivityLabel(toolName, displayName),
-          status === "failed" || status === "blocked",
-        );
-        scheduleActivityUpdate();
+      onToolStart: (toolName, displayName, toolCallId, call) => {
+        // The dashboard's label from the start, so a row doesn't change its wording when the call ends.
+        pushPlan([
+          answerPlan.flushReasoning(),
+          answerPlan.toolStarted(
+            toolName,
+            toolActivityLabel(toolName, displayName),
+            toolCallId,
+            call,
+          ),
+        ]);
+      },
+      onToolArgs: (toolName, args, toolCallId) => {
+        pushPlan([answerPlan.toolArgs(toolName, args, toolCallId)]);
+      },
+      onToolResult: (toolName, displayName, status, toolCallId, result) => {
+        pushPlan([
+          answerPlan.toolFinished(
+            toolName,
+            toolActivityLabel(toolName, displayName),
+            status,
+            toolCallId,
+            result,
+          ),
+        ]);
       },
       onSubAgent: (role, phase) => {
-        if (phase === "started") {
-          activityBuilder.startSubAgent(role);
-        } else {
-          activityBuilder.finishSubAgent(role, phase);
-        }
-        scheduleActivityUpdate();
+        pushPlan([answerPlan.flushReasoning(), answerPlan.subAgent(role, phase)]);
       },
       onAnswerAccumulated: handleAnswerAccumulated,
-      onClearAnswerPreamble: resetAnswerStream,
+      onClearAnswerPreamble: settleAnswerPreamble,
       onAskUserQuestion: handleAskUserQuestion,
       onArtifact: handleArtifact,
       onConversationCreated: (conversationId) => {
         conversationPersistPromise = persistConversationId(conversationId);
+      },
+      onCitations: (citations) => {
+        // A known citation keeps its link for the rest of the call: the backend clears them before a tool call.
+        liveCitationRows = new Map([
+          ...liveCitationRows,
+          ...citationRows(
+            citations as SlackCitationLike[],
+            getFrontendBaseUrl(),
+          ),
+        ]);
+        if (pendingStreamText === "" || textSendQueued) {
+          return;
+        }
+        // A citation came in: text that waited for it can go now.
+        textSendQueued = true;
+        queuedStreamAppend = queuedStreamAppend
+          .then(async () => {
+            textSendQueued = false;
+            const [ready, waiting] = citationMarkers.resolve(
+              pendingStreamText,
+              liveCitationRows,
+              false,
+            );
+            pendingStreamText = waiting;
+            if (ready !== "") {
+              await pushTextToSlackStream(ready);
+            }
+          })
+          .catch((error: unknown) => {
+            console.error("Error appending Slack stream text:", error);
+          });
       },
       onComplete: (conv) => {
         completionConversation = conv as ConversationData["conversation"];
@@ -1064,9 +1097,8 @@ async function processSlackMessage(
     });
 
     const pushTextToSlackStream = async (text: string): Promise<void> => {
-      // Bail out early if the stream is already stopped or an error was recorded —
-      // prevents the independent-catch queue items from firing redundant API calls.
-      if (streamStopped || streamErrorMessage) {
+      // No stream (status-message reply) or an error was recorded: nothing to append.
+      if (!answerStream || streamErrorMessage) {
         return;
       }
 
@@ -1074,103 +1106,61 @@ async function processSlackMessage(
         return;
       }
 
-      // Raw `[source](refN)` becomes broken `<refN|source>` in Slack mrkdwn.
-      text = stripTinyRefCitationLinks(text);
-      text = text.replace(INLINE_RECORD_CITATION_LINK_PATTERN, "");
-      text = parseArtifactMarkers(text).text;
+      // Slack renders markdown_text as markdown: send it as written.
+      text = stripArtifactMarkers(text);
       if (text.length === 0) {
         return;
       }
 
-      const renderedDeltaText = markdownToSlackMrkdwn(text, {
-        preserveTrailingWhitespace: true,
-      });
-      if (renderedDeltaText.length === 0) {
-        return;
-      }
-
-      const markdownChunks = splitByLengthPreferringNewlines(
-        renderedDeltaText,
-        SLACK_STREAM_MARKDOWN_LIMIT,
-      );
-      if (markdownChunks.length === 0) {
-        return;
-      }
-
-      for (let chunk of markdownChunks) {
-        while (chunk.length > 0) {
-          if (streamStopped || streamErrorMessage) {
-            return;
-          }
-
-          // If this chunk would overflow the current message, split at a clean boundary first
-          if (streamTs && streamCharCount + chunk.length > SLACK_STREAM_MESSAGE_CHAR_LIMIT) {
-            const spaceLeft = SLACK_STREAM_MESSAGE_CHAR_LIMIT - streamCharCount;
-
-            if (spaceLeft > 0) {
-              // Prefer splitting at the last newline within the remaining space
-              const candidate = chunk.slice(0, spaceLeft);
-              const lastNewline = candidate.lastIndexOf("\n");
-              const splitIndex = lastNewline > -1 ? lastNewline + 1 : spaceLeft;
-              const fitsInCurrent = chunk.slice(0, splitIndex);
-
-              if (fitsInCurrent.length > 0) {
-                await typedClient.apiCall("chat.appendStream", {
-                  channel: typedMessage.channel!,
-                  ts: streamTs,
-                  markdown_text: fitsInCurrent,
-                });
-                streamCharCount += fitsInCurrent.length;
-              }
-              chunk = chunk.slice(splitIndex);
-            }
-
-            await rolloverSlackStream();
-            continue; // re-evaluate the overflow with a fresh streamCharCount = 0
-          }
-
-          // No overflow — start a new stream or append to existing
-          if (!streamTs) {
-            const startStreamResult = (await typedClient.apiCall(
-              "chat.startStream",
-              {
-                channel: typedMessage.channel!,
-                thread_ts: threadId,
-                markdown_text: chunk,
-                ...NO_UNFURL_OPTIONS,
-                ...streamRecipientPayload,
-              },
-            )) as StreamStartResult;
-
-            if (!startStreamResult.ts) {
-              throw new Error("Failed to start Slack stream");
-            }
-            streamTs = startStreamResult.ts;
-            streamCharCount = chunk.length;
-            // Keep the activity message above the answer stream.
-          } else {
-            await typedClient.apiCall("chat.appendStream", {
-              channel: typedMessage.channel!,
-              ts: streamTs,
-              markdown_text: chunk,
-            });
-            streamCharCount += chunk.length;
-          }
-          break; // chunk fully consumed
-        }
-      }
+      await answerStream.answer(text);
+      await fallBackToStatusMessage();
     };
 
-    const flushPendingAppend = (): void => {
+    const flushPendingAppend = (final = false): void => {
       clearAnswerFlushTimer();
-      const textToAppend = pendingAppendText;
+      const unsent = heldAnswerText + pendingAppendText;
+      let [ready, held] = final
+        ? [unsent, ""]
+        : splitOpenLinkTail(unsent);
+      // Lines starting with `|` may be a table's first rows: they wait until it is known, so no row goes out as text.
+      const rowsAt = final ? -1 : trailingTableRowsStart(streamTableProbeText);
+      const cut = rowsAt - (streamTableProbeText.length - unsent.length);
+      if (rowsAt >= 0 && cut < ready.length) {
+        [ready, held] = [unsent.slice(0, Math.max(0, cut)), unsent.slice(Math.max(0, cut))];
+      }
+      pendingAppendText = "";
+      heldAnswerText = held;
+      const textToAppend = ready;
       if (!textToAppend) {
         return;
       }
 
-      pendingAppendText = "";
+      answerPlan.endGroup();
+      // A "Thinking…" row shown in the gap now says the answer is being written.
+      pushPlan([answerPlan.flushReasoning(), answerPlan.answerStarted()]);
+      pushedAnswerLength += textToAppend.length;
+      answerTextStreamed = true;
+      // Numbered now, in order: a reset may come before this is sent.
+      pendingStreamText += citationMarkers.mark(textToAppend);
+      if (textSendQueued) {
+        return;
+      }
+      // Pieces that arrive while a send waits go out together in it.
+      textSendQueued = true;
       queuedStreamAppend = queuedStreamAppend
-        .then(async () => pushTextToSlackStream(textToAppend))
+        .then(async () => {
+          textSendQueued = false;
+          // Text from a citation whose link isn't known yet waits for the next refresh.
+          const [ready, waiting] = citationMarkers.resolve(
+            pendingStreamText,
+            liveCitationRows,
+            false,
+          );
+          pendingStreamText = waiting;
+          if (ready !== "") {
+            await pushTextToSlackStream(ready);
+          }
+        })
         .catch((error) => {
           console.error("Error appending Slack stream text:", error);
           if (!streamErrorMessage) {
@@ -1179,51 +1169,6 @@ async function processSlackMessage(
         });
     };
 
-    const sendTableStreamingPausedHint = async (): Promise<void> => {
-      if (tablePauseHintSent) {
-        return;
-      }
-      tablePauseHintSent = true;
-
-      if (streamTs) {
-        if (streamStopped || streamErrorMessage) {
-          return;
-        }
-
-        const renderedHint = markdownToSlackMrkdwn(TABLE_STREAMING_PAUSED_HINT, {
-          preserveTrailingWhitespace: true,
-        });
-        if (!renderedHint) {
-          return;
-        }
-
-        try {
-          await typedClient.apiCall("chat.appendStream", {
-            channel: typedMessage.channel!,
-            ts: streamTs,
-            markdown_text: renderedHint,
-          });
-        } catch (error) {
-          console.error("Error appending Slack table formatting hint:", error);
-        }
-        return;
-      }
-
-      if (!waitingMessageTs) {
-        return;
-      }
-
-      try {
-        await typedClient.chat.update({
-          channel: typedMessage.channel!,
-          ts: waitingMessageTs,
-          text: TABLE_STREAMING_PAUSED_HINT,
-          ...NO_UNFURL_OPTIONS,
-        });
-      } catch (error) {
-        console.error("Error updating Slack waiting message with table hint:", error);
-      }
-    };
 
     await new Promise<void>((resolve, reject) => {
       responseStream.setEncoding("utf8");
@@ -1286,21 +1231,12 @@ async function processSlackMessage(
     });
 
     clearAnswerFlushTimer();
-    if (activityFlushTimer) {
-      clearTimeout(activityFlushTimer);
-      activityFlushTimer = null;
-    }
-    flushPendingAppend();
-    // Never flush activity after ask-user — that would wipe the questions text.
-    if (!askUserShown) {
-      flushActivityUpdate();
-    } else {
-      pendingActivityUpdate = false;
-    }
-    await Promise.all([queuedStreamAppend, queuedActivityUpdate]);
+    holdTrailingTableRows();
+    flushPendingAppend(true);
+    await queuedStreamAppend;
 
     if (streamErrorMessage) {
-      if (streamTs) {
+      if (answerStream) {
         const stopStreamSucceeded = await stopSlackStream(streamErrorMessage);
         if (!stopStreamSucceeded) {
           await sendOrUpdateNonStreamMessage(streamErrorMessage);
@@ -1323,9 +1259,7 @@ async function processSlackMessage(
     // re-read historical ask_user tool_calls from conversation.messages — that
     // re-posts old questions on the next turn instead of the real answer.
     if (askUserShown) {
-      if (streamTs) {
-        await deleteStreamMessages();
-      }
+      await deleteStreamMessages();
       await conversationPersistPromise;
       if (!conversationData && !conversationPersisted) {
         await sendOrUpdateNonStreamMessage(
@@ -1338,7 +1272,7 @@ async function processSlackMessage(
     if (!conversationData) {
       const incompleteResponseMessage =
         "Received an incomplete response from the backend. Please try again later.";
-      if (streamTs) {
+      if (answerStream) {
         const stopStreamSucceeded = await stopSlackStream(incompleteResponseMessage);
         if (!stopStreamSucceeded) {
           await sendOrUpdateNonStreamMessage(incompleteResponseMessage);
@@ -1356,7 +1290,7 @@ async function processSlackMessage(
     if (!botResponse) {
       const invalidResponseMessage =
         "Received an unexpected response format from the backend. Please try again later.";
-      if (streamTs) {
+      if (answerStream) {
         const stopStreamSucceeded = await stopSlackStream(invalidResponseMessage);
         if (!stopStreamSucceeded) {
           await sendOrUpdateNonStreamMessage(invalidResponseMessage);
@@ -1367,136 +1301,146 @@ async function processSlackMessage(
       return;
     }
 
-    // Keep tools/thinking timeline above the answer; remove a bare Thinking placeholder.
-    if (activityBuilder.hasTimeline()) {
-      activityBuilder.setStatus("");
-      await updateActivityMessage(activityBuilder.format());
-    } else if (waitingMessageTs) {
-      try {
-        await typedClient.apiCall("chat.delete", {
-          channel: typedMessage.channel!,
-          ts: waitingMessageTs,
-        });
-      } catch (error) {
-        const code = (error as { data?: { error?: string } }).data?.error;
-        if (code !== "message_not_found") {
-          console.error("Error deleting Slack activity placeholder:", error);
-        }
-      } finally {
-        waitingMessageTs = null;
-      }
-    }
-
-    if (!streamTs && !tableStreamingDisabled && botResponse.content) {
-      await pushTextToSlackStream(botResponse.content);
-    }
-
     const citationBlocks = buildCitationSources(botResponse.citations);
     const citationBlockChunks = splitSlackBlocksByLimit(citationBlocks);
     // Frontend strips ::artifact markers into an Artifacts panel; Slack must
     // not show the raw wire syntax in the final answer body.
-    const { text: contentWithoutArtifacts, artifacts: contentArtifacts } =
-      parseArtifactMarkers(botResponse.content || "");
-    let answerBody = rewriteInlineRecordCitationsForSlack(
-      contentWithoutArtifacts,
-      botResponse.citations,
+    const { artifacts: contentArtifacts } = parseArtifactMarkers(
+      botResponse.content || "",
     );
-    answerBody = removeContinuousDuplicateMarkdownLinks(answerBody);
-    answerBody = addSpaceBetweenMarkdownLinks(answerBody);
-    const finalChunks = await buildFinalSlackChunks(answerBody);
-
-    const [firstFinalChunk, ...remainingFinalChunks] = finalChunks;
-
-    if (firstFinalChunk) {
-      let firstChunkSent = false;
-
-      if (streamTs) {
-        await stopSlackStream();
-
-        // Delete any earlier rolled-over stream messages — the final blocks
-        // represent the full answer so those partial-text messages are redundant.
-        for (const oldTs of rolledOverStreamTs) {
-          try {
-            await typedClient.apiCall("chat.delete", {
-              channel: typedMessage.channel!,
-              ts: oldTs,
-            });
-          } catch (deleteError) {
-            const code = (deleteError as { data?: { error?: string } }).data?.error;
-            if (code !== "message_not_found") {
-              console.error("Error deleting rolled-over stream message:", deleteError);
-            }
-          }
-        }
-        rolledOverStreamTs = [];
-
-        try {
-          await typedClient.chat.update({
-            channel: typedMessage.channel!,
-            ts: streamTs,
-            text: "",
-            blocks: firstFinalChunk,
-            ...NO_UNFURL_OPTIONS,
-          });
-          firstChunkSent = true;
-        } catch (updateError) {
-          console.error(
-            "Error updating final streamed Slack message with blocks, trying delete and repost:",
-            updateError,
+    // `plainMarkers`: keep [N] as streamed, so the tail matches the numbered sources.
+    const finalRows = citationRows(botResponse.citations, getFrontendBaseUrl());
+    const toSlackBlocks = async (
+      markdown: string,
+      plainMarkers = false,
+    ): ReturnType<typeof buildFinalSlackChunks> => {
+      const text = parseArtifactMarkers(markdown).text;
+      // Citations as clickable [n] to absolute links, numbered like the Sources list.
+      let body = plainMarkers
+        ? citationMarkers.resolve(
+            citationMarkers.mark(text),
+            finalRows,
+            true,
+          )[0]
+        : stripNumberedCitationLinkTargets(
+            text,
+            botResponse.citations,
+            getFrontendBaseUrl(),
           );
-          try {
-            try {
-              await typedClient.apiCall("chat.delete", {
-                channel: typedMessage.channel!,
-                ts: streamTs,
-              });
-            } catch (deleteError) {
-              // If the message is already gone, we can still post a fresh one
-              const code = (deleteError as { data?: { error?: string } }).data?.error;
-              if (code !== "message_not_found") {
-                throw deleteError;
-              }
-            }
-            await typedClient.chat.postMessage({
-              channel: typedMessage.channel!,
-              thread_ts: threadId,
-              text: "",
-              blocks: firstFinalChunk,
-              ...NO_UNFURL_OPTIONS,
-            });
-            firstChunkSent = true;
-          } catch (replacementError) {
-            console.error(
-              "Error replacing failed streamed Slack message, sending fallback error message:",
-              replacementError,
+      body = removeContinuousDuplicateMarkdownLinks(body);
+      body = addSpaceBetweenMarkdownLinks(body);
+      return buildFinalSlackChunks(body);
+    };
+
+    // Reasoning with no step after it still gets its place in the plan, above the answer.
+    pushPlan([answerPlan.flushReasoning()]);
+    await queuedStreamAppend;
+
+    // Text still waiting for a citation goes out with the finished answer's citations.
+    if (pendingStreamText !== "") {
+      const [ready] = citationMarkers.resolve(
+        pendingStreamText,
+        finalRows,
+        true,
+      );
+      pendingStreamText = "";
+      if (ready !== "") {
+        await pushTextToSlackStream(ready);
+      }
+    }
+
+    if (answerStream && pushedAnswerLength === 0 && !tableStreamingDisabled && botResponse.content) {
+      // An answer that came only with the run's end still gets its tables as blocks.
+      // Its citations are numbered like the markers shown before it, so they match the Sources list.
+      const finalText = citationMarkers.renumber(
+        botResponse.content,
+        botResponse.citations,
+        getFrontendBaseUrl(),
+      );
+      const [beforeTable, fromTable] = splitBeforeFirstTable(finalText);
+      if (fromTable !== "") {
+        tableStreamingDisabled = true;
+        lastAnswerText = finalText;
+      }
+      pushedAnswerLength = beforeTable.length;
+      // A "Thinking…" row says the answer is being written, as when it streams.
+      pushPlan([answerPlan.answerStarted()]);
+      await queuedStreamAppend;
+      if (beforeTable.trim() !== "") {
+        await pushTextToSlackStream(citationMarkers.mark(beforeTable));
+      }
+    }
+
+    if (answerStream) {
+      // A table stops the text stream; the rest of the answer goes below it as blocks.
+      const unstreamed = tableStreamingDisabled
+        ? (lastAnswerText || botResponse.content || "").slice(pushedAnswerLength)
+        : "";
+      // The markers actually shown, numbered as they were; else the finished answer's.
+      const numberedSources =
+        citationMarkers.sources().size > 0
+          ? numberedSourcesBlocks(citationMarkers.sources())
+          : buildNumberedSlackSources(
+              botResponse.citations,
+              getFrontendBaseUrl(),
             );
-            await typedClient.chat.postMessage({
-              channel: typedMessage.channel!,
-              thread_ts: threadId,
-              text: FAILED_RESPONSE_GENERATION_MESSAGE,
-              ...NO_UNFURL_OPTIONS,
-            });
+      const preambleBlocks = (
+        await Promise.all(preambleTables.map(async (text) => toSlackBlocks(text, true)))
+      ).flat();
+      const tailChunks = [
+        ...preambleBlocks,
+        ...(unstreamed.trim() ? await toSlackBlocks(unstreamed, true) : []),
+        ...(numberedSources.length > 0
+          ? splitSlackBlocksByLimit(numberedSources)
+          : citationBlockChunks),
+      ];
+      const [stopBlocks, ...moreChunks] = tailChunks;
+      const answered = pushedAnswerLength > 0 || tailChunks.length > 0;
+      const stopped = await answerStream.stop(
+        stopBlocks
+          ? { blocks: stopBlocks }
+          : answered
+            ? {}
+            : { markdown: FAILED_RESPONSE_GENERATION_MESSAGE, failed: true },
+      );
+      if (!stopped && !answered) {
+        await sendOrUpdateNonStreamMessage(FAILED_RESPONSE_GENERATION_MESSAGE);
+      }
+      for (const chunk of stopped ? moreChunks : tailChunks) {
+        await postThreadChunkMessage(chunk);
+      }
+    } else {
+      const finalChunks = await toSlackBlocks(botResponse.content || "");
+      if (finalChunks.length === 0) {
+        // Nothing to post: the failure notice replaces the status message.
+        await sendOrUpdateNonStreamMessage(FAILED_RESPONSE_GENERATION_MESSAGE);
+        return;
+      }
+      const fallbackSources = buildNumberedSlackSources(
+        botResponse.citations,
+        getFrontendBaseUrl(),
+      );
+      for (const chunk of [
+        ...finalChunks,
+        ...(fallbackSources.length > 0
+          ? splitSlackBlocksByLimit(fallbackSources)
+          : citationBlockChunks),
+      ]) {
+        await postThreadChunkMessage(chunk);
+      }
+      if (waitingMessageTs) {
+        try {
+          await typedClient.apiCall("chat.delete", {
+            channel: typedMessage.channel!,
+            ts: waitingMessageTs,
+          });
+        } catch (error) {
+          const code = (error as { data?: { error?: string } }).data?.error;
+          if (code !== "message_not_found") {
+            console.error("Error deleting Slack status message:", error);
           }
         }
-      } else {
-        // Post answer as a new message so the activity timeline stays above it.
-        await typedClient.chat.postMessage({
-          channel: typedMessage.channel!,
-          thread_ts: threadId,
-          text: "",
-          blocks: firstFinalChunk,
-          ...NO_UNFURL_OPTIONS,
-        });
-        firstChunkSent = true;
-      }
-
-      if (firstChunkSent) {
-        for (const remainingChunk of remainingFinalChunks) {
-          await postThreadChunkMessage(remainingChunk);
-        }
-        for (const citationChunk of citationBlockChunks) {
-          await postThreadChunkMessage(citationChunk);
-        }
+        waitingMessageTs = null;
       }
     }
 
@@ -1523,7 +1467,7 @@ async function processSlackMessage(
   } catch (error) {
     try {
       const errorMessage = await resolveSlackErrorMessageAsync(error);
-      if (streamTs) {
+      if (answerStream) {
         const stopStreamSucceeded = await stopSlackStream(errorMessage);
         if (!stopStreamSucceeded) {
           await sendOrUpdateNonStreamMessage(errorMessage);
@@ -1535,6 +1479,164 @@ async function processSlackMessage(
       console.error("Error in Slack message error handler:", handlerError);
     }
   }
+}
+
+const QUEUED_NOTE = "I'll answer this right after my current reply.";
+const QUEUE_FULL_NOTE =
+  "I already have several messages from you waiting. Send this again once I reply.";
+const BUSY_NOTE = "I'm busy right now. Please try again in a minute.";
+
+const runLimiter = runLimiterFromEnv();
+// Replaced at startup by the Redis-backed store when Redis is reachable.
+let threadQueue = new ThreadQueue(new MemoryThreadQueueStore(), runLimiter);
+let threadQueueNamespace = "";
+
+async function postQueueNote(
+  client: TypedSlackClient,
+  message: SlackMessagePayload,
+  text: string,
+): Promise<void> {
+  if (!message.channel || !message.user) return;
+  try {
+    await client.chat.postEphemeral({
+      channel: message.channel,
+      user: message.user,
+      thread_ts: resolveThreadId(message),
+      text,
+    });
+  } catch (error) {
+    console.error("Failed to post Slack queue note:", error);
+  }
+}
+
+/** Answer one turn: one message, or several queued ones from the same person in the same thread. */
+async function prepareAndProcess(
+  kind: "dm" | "mention",
+  batch: SlackMessagePayload[],
+  typedClient: TypedSlackClient,
+  typedContext: TypedSlackContext,
+  resolvedSlackBot: SlackBotConfig | null,
+): Promise<void> {
+  const typedMessage = batch.length === 1 ? batch[0]! : mergeBatchMessage(batch);
+  const { shouldAnswer, hasSupported } = await handleIncomingAttachments(
+    typedClient,
+    typedMessage,
+    typedContext.botUserId,
+  );
+  if (!shouldAnswer) return;
+
+  let query = batchText(
+    await Promise.all(batch.map((m) => resolveMentionsInText(m.text, typedClient))),
+  );
+  if (!query) {
+    if (hasSupported) query = kind === "dm" ? "See below attached file(s)." : "Attached file(s).";
+    else query = "Hi";
+  }
+
+  try {
+    if (kind === "dm") {
+      await processSlackMessage(
+        typedMessage,
+        typedClient,
+        typedContext,
+        query,
+        resolvedSlackBot,
+      );
+      return;
+    }
+    const fetched = await fetchThreadContext(typedClient, typedMessage);
+    // Messages after this turn belong to the next one; as context here they would be answered twice.
+    const newestTs = Math.max(...batch.map((m) => Number(m.ts)));
+    const thread = {
+      ...fetched,
+      messages: withoutBatchMessages(fetched.messages, new Set(batch.map((m) => m.ts))).filter(
+        (m) => !(Number(m.ts) > newestTs),
+      ),
+    };
+    const contextualQuery = await buildQueryWithThreadContext(
+      typedClient,
+      thread.messages,
+      query,
+      typedMessage.user,
+      typedContext.botUserId,
+    );
+    const collected = await collectThreadFiles(
+      typedClient,
+      typedMessage,
+      thread,
+      resolvedSlackBot?.botId ?? 'default',
+      typedContext.botUserId,
+    );
+    // A file sent with the batch is attached already; don't send it twice.
+    const sent = new Set(((typedMessage.files ?? []) as SlackFile[]).map((f) => f.id));
+    const notSent = (files: SlackFile[]) =>
+      files.filter((f) => f.id === undefined || !sent.has(f.id));
+    const threadFiles = {
+      supported: notSent(collected.supported),
+      unsupported: notSent(collected.unsupported),
+      oversized: notSent(collected.oversized),
+    };
+    const { unsupported, oversized } = threadFiles;
+    if (unsupported.length > 0 || oversized.length > 0) {
+      await postSkippedAttachmentsNotice(typedClient, typedMessage, { unsupported, oversized }, 'messageOnly');
+    }
+    await processSlackMessage(
+      typedMessage,
+      typedClient,
+      typedContext,
+      contextualQuery,
+      resolvedSlackBot,
+      threadFiles.supported,
+    );
+  } catch (error) {
+    console.error(kind === "dm" ? "Error handling DM message:" : "Error handling app mention:", error);
+    await sendUserFacingSlackErrorMessage(typedClient, typedMessage, error);
+  }
+}
+
+/** Answer now, or queue behind this person's running answer in the thread. */
+async function submitTurn(
+  kind: "dm" | "mention",
+  message: SlackMessagePayload,
+  client: TypedSlackClient,
+  context: TypedSlackContext,
+  bot: SlackBotConfig | null,
+): Promise<void> {
+  const key = threadQueueKey(
+    {
+      botId: bot?.botId ?? "default",
+      channel: message.channel ?? "",
+      threadTs: resolveThreadId(message),
+      user: message.user ?? "",
+    },
+    threadQueueNamespace,
+  );
+  const outcome = await threadQueue.submit(
+    key,
+    toQueuedMessage(kind, message),
+    // A later batch runs after its own handler returned, so the bot is set again here.
+    (batch) =>
+      runWithSlackRequestContext(bot, () =>
+        prepareAndProcess(
+          kind,
+          // This handler's own message keeps Slack's full payload; queued ones carry metadata only.
+          batch.map((item) => (item.ts === message.ts ? message : fromQueuedMessage(item))),
+          client,
+          context,
+          bot,
+        ),
+      ),
+    async (batch) => {
+      const told = new Set<string>();
+      for (const item of batch) {
+        if (told.has(item.user)) continue;
+        told.add(item.user);
+        await postQueueNote(client, fromQueuedMessage(item), BUSY_NOTE);
+      }
+    },
+  );
+  if (outcome === "queued") await postQueueNote(client, message, QUEUED_NOTE);
+  else if (outcome === "full") await postQueueNote(client, message, QUEUE_FULL_NOTE);
 }
 
 // Handle DMs via message.im events.
@@ -1557,31 +1659,7 @@ app.message(async ({ message, client, context }) => {
   }
 
   const resolvedSlackBot = await resolveSlackBotForEvent(getCurrentMatchedSlackBot);
-  const { shouldAnswer, hasSupported } = await handleIncomingAttachments(
-    typedClient,
-    typedMessage,
-    typedContext.botUserId,
-  );
-  if (!shouldAnswer) return;
-
-  let query = await resolveMentionsInText(typedMessage.text, typedClient);
-  if (!query) {
-    if (hasSupported) query = "See below attached file(s).";
-    else query = "Hi";
-  }
-
-  try {
-    await processSlackMessage(
-      typedMessage,
-      typedClient,
-      typedContext,
-      query,
-      resolvedSlackBot,
-    );
-  } catch (error) {
-    console.error("Error handling DM message:", error);
-    await sendUserFacingSlackErrorMessage(typedClient, typedMessage, error);
-  }
+  await submitTurn("dm", typedMessage, typedClient, typedContext, resolvedSlackBot);
 });
 
 // Handle @mentions in channels via app_mention events.
@@ -1594,47 +1672,7 @@ app.event("app_mention", async ({ event, client, context }) => {
   }
 
   const resolvedSlackBot = await resolveSlackBotForEvent(getCurrentMatchedSlackBot);
-  const { shouldAnswer, hasSupported } = await handleIncomingAttachments(
-    typedClient,
-    typedMessage,
-    typedContext.botUserId,
-  );
-  if (!shouldAnswer) return;
-
-  let query = await resolveMentionsInText(typedMessage.text, typedClient);
-  if (!query) {
-    if (hasSupported) query = "Attached file(s).";
-    else query = "Hi";
-  }
-
-  try {
-    const thread = await fetchThreadContext(typedClient, typedMessage);
-    const contextualQuery = await buildQueryWithThreadContext(
-      typedClient,
-      thread.messages,
-      query,
-      typedMessage.user,
-      typedContext.botUserId,
-    );
-    const threadFiles = await collectThreadFiles(
-      typedClient,
-      typedMessage,
-      thread,
-      resolvedSlackBot?.botId ?? 'default',
-      typedContext.botUserId,
-    );
-    await processSlackMessage(
-      typedMessage,
-      typedClient,
-      typedContext,
-      contextualQuery,
-      resolvedSlackBot,
-      threadFiles,
-    );
-  } catch (error) {
-    console.error("Error handling app mention:", error);
-    await sendUserFacingSlackErrorMessage(typedClient, typedMessage, error);
-  }
+  await submitTurn("mention", typedMessage, typedClient, typedContext, resolvedSlackBot);
 });
 
 (async () => {
@@ -1652,6 +1690,12 @@ app.event("app_mention", async ({ event, client, context }) => {
 
   // Drop legacy threadId + botId index if it exists
   if (usesMongo()) await dropLegacyThreadBotIndex();
+
+  const queueStore = await createThreadQueueStore(
+    await getPreparedRedisProvider().catch(() => null),
+  );
+  threadQueue = new ThreadQueue(queueStore.store, runLimiter);
+  threadQueueNamespace = queueStore.namespace;
 
   await app.start(process.env.SLACK_BOT_PORT || 3020);
   console.log("Bolt app is running on 3020.");

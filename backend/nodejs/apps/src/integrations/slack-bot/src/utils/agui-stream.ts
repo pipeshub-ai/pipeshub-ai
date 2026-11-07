@@ -1,4 +1,3 @@
-import { toolStatusLabel } from "./tool-display";
 import {
   coerceAskUserQuestionEvent,
   isAskUserQuestionToolName,
@@ -57,19 +56,44 @@ export interface SlackConversationComplete {
   [key: string]: unknown;
 }
 
+/** Where a tool call belongs, as the dashboard shows it. */
+export interface SlackToolCallMeta {
+  /** The sub-agent whose run made the call. */
+  agent?: string;
+  /** How a call that waited for approval was settled. */
+  approvalAnswer?: string;
+}
+
 export interface SlackAGUICallbacks {
-  onStatus?: (message: string) => void;
+  /** What an MCP server says about a running tool: its message, or "3/10" / "25%". */
+  onToolProgress?: (toolName: string, progress: string) => void;
   onReasoning?: (delta: string, done: boolean) => void;
   /**
    * Settled root TEXT_MESSAGE preamble that preceded a tool call — same
    * narration the frontend keeps in the activity timeline.
    */
   onNarration?: (text: string) => void;
-  onToolStart?: (toolName: string, displayName?: string) => void;
+  onToolStart?: (
+    toolName: string,
+    displayName?: string,
+    toolCallId?: string,
+    call?: SlackToolCallMeta,
+  ) => void;
   onToolResult?: (
     toolName: string,
     displayName?: string,
     status?: string,
+    toolCallId?: string,
+    result?: { summary?: string; view?: unknown; artifactId?: string },
+  ) => void;
+  /**
+   * A call's arguments: the server's summary (e.g. `Searched for "Q3 revenue"`)
+   * and the raw arguments it was sent, for the details the summary leaves out.
+   */
+  onToolArgs?: (
+    toolName: string,
+    args: { summary?: string; raw?: string },
+    toolCallId?: string,
   ) => void;
   onSubAgent?: (role: string, phase: "started" | "completed" | "failed") => void;
   /** Full current answer text (caller diffs against last streamed length). */
@@ -81,6 +105,8 @@ export interface SlackAGUICallbacks {
   onArtifact?: (artifact: SlackArtifactPayload) => void;
   onConversationCreated?: (conversationId: string) => void;
   onComplete?: (conversation: SlackConversationComplete) => void;
+  /** The current model call's citations, as the backend refreshes them while it streams. */
+  onCitations?: (citations: unknown[]) => void;
   onError?: (message: string) => void;
 }
 
@@ -91,12 +117,12 @@ interface AGUIStreamState {
   rawLength: number;
 }
 
-/** A third party's text kept plain in Slack mrkdwn, where `<…>` is a link or a mention. */
+/**
+ * A third party's text shown as a step's output: `<…>` would be a link or a
+ * mention, so the brackets go. Not entity-escaped: the output is not mrkdwn.
+ */
 function slackPlainText(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+  return text.replace(/[<>]/g, '');
 }
 
 /**
@@ -203,6 +229,11 @@ class RootRunTracker {
     return role;
   }
 
+  /** The sub-agent a child run belongs to; undefined for the root run. */
+  roleOf(runId: string | undefined): string | undefined {
+    return runId ? this.childRoleByRunId.get(runId) : undefined;
+  }
+
   isRootRun(runId: string | undefined): boolean {
     if (!runId) return true;
     if (this.childRunIds.has(runId)) return false;
@@ -219,6 +250,8 @@ export function createSlackAGUIEventHandler(
 ): (event: SlackStreamEvent) => void {
   let textBuffer = "";
   let rawTextReceived = 0;
+  /** A model call was discarded: its late snapshots are skipped until the one marked /discarded. */
+  let awaitingRetryAfterDiscard = false;
   let state: AGUIStreamState = {
     citations: [],
     normalizedAnswer: "",
@@ -256,10 +289,7 @@ export function createSlackAGUIEventHandler(
       case "STEP_STARTED": {
         const stepName = typeof data?.stepName === "string" ? data.stepName : "";
         const runId = typeof data?.runId === "string" ? data.runId : undefined;
-        const role = runs.handleStepStarted(stepName, runId);
-        if (role) {
-          callbacks.onStatus?.(`Delegating to ${role}...`);
-        }
+        runs.handleStepStarted(stepName, runId);
         break;
       }
 
@@ -270,7 +300,6 @@ export function createSlackAGUIEventHandler(
         const role = runs.handleRunStarted(runId, parentRunId);
         if (role) {
           callbacks.onSubAgent?.(role, "started");
-          callbacks.onStatus?.(`Delegating to ${role}...`);
         }
         break;
       }
@@ -292,14 +321,6 @@ export function createSlackAGUIEventHandler(
         textBuffer += delta;
         rawTextReceived += delta.length;
         emitAnswer();
-        break;
-      }
-
-      case "TEXT_MESSAGE_END": {
-        const runId = typeof data?.runId === "string" ? data.runId : undefined;
-        if (runs.isRootRun(runId)) {
-          callbacks.onStatus?.("Thinking...");
-        }
         break;
       }
 
@@ -342,8 +363,13 @@ export function createSlackAGUIEventHandler(
           emitAnswer();
         }
 
-        callbacks.onStatus?.(`${toolStatusLabel(toolCallName)}...`);
-        callbacks.onToolStart?.(toolCallName, displayName);
+        const agent = runs.roleOf(runId);
+        const approvalAnswer =
+          typeof data?.approvalAnswer === "string" ? data.approvalAnswer : undefined;
+        callbacks.onToolStart?.(toolCallName, displayName, toolCallId, {
+          ...(agent ? { agent } : {}),
+          ...(approvalAnswer ? { approvalAnswer } : {}),
+        });
         break;
       }
 
@@ -362,6 +388,21 @@ export function createSlackAGUIEventHandler(
             emitAskUserFromRaw(data.delta, toolCallId);
           }
         }
+        const summary =
+          typeof data?.argsSummary === "string" ? data.argsSummary : undefined;
+        const raw =
+          typeof data?.argsPreview === "string"
+            ? data.argsPreview
+            : typeof data?.delta === "string"
+              ? data.delta
+              : undefined;
+        if (toolCallName && (summary || raw)) {
+          callbacks.onToolArgs?.(
+            toolCallName,
+            { ...(summary ? { summary } : {}), ...(raw ? { raw } : {}) },
+            toolCallId,
+          );
+        }
         break;
       }
 
@@ -377,17 +418,30 @@ export function createSlackAGUIEventHandler(
         const toolCallName = meta?.name ?? "tool";
         const displayName = meta?.displayName;
         const status = typeof data?.status === "string" ? data.status : "completed";
-        callbacks.onToolResult?.(toolCallName, displayName, status);
+        callbacks.onToolResult?.(
+          toolCallName,
+          displayName,
+          status,
+          toolCallId,
+          {
+            ...(typeof data?.resultSummary === "string"
+              ? { summary: data.resultSummary }
+              : // A blocked call's reason comes as its content.
+                status === "blocked" && typeof data?.content === "string"
+                ? { summary: data.content }
+                : {}),
+            view: data?.resultView,
+            ...(typeof data?.artifactId === "string"
+              ? { artifactId: data.artifactId }
+              : {}),
+          },
+        );
 
         if (isAskUserQuestionToolName(toolCallName)) {
           // Prefer full args; content is a 200-char preview and usually invalid JSON.
           emitAskUserFromRaw(stashedArgs ?? data?.content, toolCallId);
         }
 
-        const runId = typeof data?.runId === "string" ? data.runId : undefined;
-        if (runs.isRootRun(runId) && !isAskUserQuestionToolName(toolCallName)) {
-          callbacks.onStatus?.("Thinking...");
-        }
         break;
       }
 
@@ -407,8 +461,15 @@ export function createSlackAGUIEventHandler(
             textOps.push(op);
           }
         }
+        // Snapshots of a discarded call can come after its discard; the one marked /discarded ends them.
+        const endsDiscard = textOps.some((op) => op.path === "/discarded");
+        if (awaitingRetryAfterDiscard && !endsDiscard) break;
+        if (endsDiscard) awaitingRetryAfterDiscard = false;
         if (textOps.length > 0) {
           state = applyStatePatch(state, textOps);
+          if (textOps.some((op) => op.path === "/citations")) {
+            callbacks.onCitations?.(state.citations);
+          }
         }
         break;
       }
@@ -441,6 +502,7 @@ export function createSlackAGUIEventHandler(
             textBuffer = '';
             rawTextReceived = 0;
             state = { ...state, normalizedAnswer: '', rawLength: 0 };
+            awaitingRetryAfterDiscard = true;
             callbacks.onModelCallDiscarded?.();
             emitAnswer();
           }
@@ -487,21 +549,12 @@ export function createSlackAGUIEventHandler(
             ? (data.snapshot as Record<string, unknown>)
             : undefined;
         if (!snapshot || snapshot.final === true) break;
-        const status = typeof snapshot.status === "string" ? snapshot.status : "";
-        const STATUS_MESSAGES: Record<string, string> = {
-          starting: "Thinking...",
-          calling_llm: "Thinking...",
-          running_tool: "Executing tool...",
-        };
-        let message = STATUS_MESSAGES[status];
-        if (message) {
-          if (
-            status === "running_tool" &&
-            typeof snapshot.current_tool === "string"
-          ) {
-            message = `${toolStatusLabel(snapshot.current_tool)}...${toolProgressText(snapshot)}`;
-          }
-          callbacks.onStatus?.(message);
+        if (
+          snapshot.status === "running_tool" &&
+          typeof snapshot.current_tool === "string"
+        ) {
+          const progress = toolProgressText(snapshot);
+          if (progress) callbacks.onToolProgress?.(snapshot.current_tool, progress);
         }
         break;
       }

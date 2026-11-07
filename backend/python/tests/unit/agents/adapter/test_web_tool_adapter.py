@@ -277,3 +277,14 @@ class TestWebToolAdapterResultView:
         adapter = WebToolAdapter(_web_search_tool(failed), "dynamic", "web_search", make_context())
         output = await adapter.execute(query="x")
         assert adapter.result_view({}, ToolResult(tool_call_id="c1", name="dynamic__web_search", content=output.data)) is None
+
+
+class TestDisplayName:
+    """Step cards label a call by its display name; the raw name reads as "Fetch Url"."""
+
+    def test_web_tools_name_what_they_did(self) -> None:
+        context = make_context()
+        search = WebToolAdapter(_web_search_tool(_web_search_payload()), "dynamic", "web_search", context)
+        fetch = WebToolAdapter(_fetch_url_tool(_url_content_payload()), "dynamic", "fetch_url", context)
+        assert search.display_name == "Searched the web"
+        assert fetch.display_name == "Read a web page"
