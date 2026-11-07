@@ -63,6 +63,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-noto-cjk \
     fonts-wqy-zenhei \
     fonts-wqy-microhei \
+    ripgrep \
  && rm -rf /var/lib/apt/lists/*
 
 # Ensure executable permission

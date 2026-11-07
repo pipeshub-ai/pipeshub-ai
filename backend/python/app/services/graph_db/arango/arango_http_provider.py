@@ -254,6 +254,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     CodeFileInfo,
     FolderChangedDuringDelete,
     IGraphDBProvider,
+    SharedContentCount,
     _distinct_connector_types,
     _unsupported_container_filters,
     requested_scope_ids,
@@ -26219,6 +26220,48 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if vid and row.get("id"):
                 holders.setdefault(vid, []).append(row)
         return holders
+
+    async def get_content_owner_connector_ids(
+        self,
+        scope_connector_ids: list[str],
+        org_id: str,
+        transaction: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, SharedContentCount]:
+        if not scope_connector_ids or not org_id:
+            return {}
+        records = CollectionNames.RECORDS.value
+        query = f"""
+        LET vids = UNIQUE(
+            FOR r IN {records}
+                FILTER r.connectorId IN @scope_ids AND r.orgId == @org_id
+                    AND r.virtualRecordId != null AND {aql_live_record("r")}
+                RETURN r.virtualRecordId
+        )
+        FOR vid IN vids
+            FOR o IN {records}
+                FILTER o.virtualRecordId == vid AND o.orgId == @org_id
+                    AND o.connectorId != null AND o.connectorId NOT IN @scope_ids
+                COLLECT cid = o.connectorId, shared_vid = vid
+        COLLECT owner = cid WITH COUNT INTO shared
+        LET held = LENGTH(UNIQUE(
+            FOR a IN {records}
+                FILTER a.connectorId == owner AND a.orgId == @org_id AND a.virtualRecordId != null
+                RETURN a.virtualRecordId
+        ))
+        RETURN {{cid: owner, shared: shared, held: held}}
+        """
+        results = await self.http_client.execute_aql(
+            query,
+            {"scope_ids": sorted(set(scope_connector_ids)), "org_id": org_id},
+            transaction,
+            **({"max_runtime": timeout_seconds} if timeout_seconds is not None else {}),
+        )
+        return {
+            row["cid"]: SharedContentCount(shared=int(row["shared"]), held=int(row["held"] or 0))
+            for row in results or []
+            if isinstance(row, dict) and row.get("cid")
+        }
 
     async def get_virtual_record_ids_in_use(
         self,
