@@ -1145,6 +1145,10 @@ class CodeGraph:
                     walk = await impact_impl(**common, file_path=base_path, qualified_name=base_name,
                                              depth=impact_depth, edge_types=edge_types)
                     rows = walk.get("impacted_files") or []
+                if walk.get("error"):
+                    self._log.warning("codegraph: walk from overridden method %s failed: %s",
+                                      base_name, walk["error"])
+                    continue
                 if rows:
                     through[f"{base_path}::{base_name}"] = rows
         except Exception:
