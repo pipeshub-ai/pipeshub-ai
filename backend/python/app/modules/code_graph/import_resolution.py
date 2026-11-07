@@ -59,6 +59,7 @@ class ImportResolution:
     """
 
     def __init__(self, file_paths: set[str], index: SymbolIndex | None = None) -> None:
+        """*file_paths*: every file of the repo; *index*: the build's symbol index, handed to registered resolvers."""
         self._files = file_paths
         self._index = index
         # Every trailing run of a Python module's path segments -> its files, so
@@ -282,6 +283,8 @@ class ImportResolution:
     # -- public ---------------------------------------------------------
 
     def resolve(self, specifier: str, from_file: str, family: str | None) -> str | None:
+        """The repo file *specifier* imports from *from_file*: a built-in branch, else the family's registered
+        resolver; None when it is outside the repo or the family has neither."""
         if not specifier or not from_file:
             return None
         try:
