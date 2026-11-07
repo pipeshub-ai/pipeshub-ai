@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from app.services.resource_governor.kinds import ParseKind
 from tests.unit.services.resource_governor import policy_off_trace as trace
 
 RECORDED = json.loads(trace.FIXTURE.read_text())
@@ -89,14 +90,14 @@ def test_consumer_helpers_make_the_same_calls_and_admissions(monkeypatch: pytest
     assert not {k for k in now if json.loads(json.dumps(now[k], default=str)) != recorded[k]}
 
 
-def test_consumer_trace_with_a_kind_is_the_same_in_off(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("kind", [k.value for k in ParseKind])
+def test_consumer_trace_with_a_kind_is_the_same_in_off(monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
     """A kind passed in off changes no call and no Admission field: the excess is zero and nothing is reserved."""
     import asyncio
     import logging
     from types import SimpleNamespace
 
     from app.services.messaging import consumer_concurrency as cc
-    from app.services.resource_governor.kinds import ParseKind
     from app.services.resource_governor.models import ParseTier
     from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
@@ -124,9 +125,7 @@ def test_consumer_trace_with_a_kind_is_the_same_in_off(monkeypatch: pytest.Monke
         governor.close()
         return [out, calls]
 
-    plain = asyncio.run(run(None))
-    for kind in ParseKind:
-        assert asyncio.run(run(kind)) == plain, kind
+    assert asyncio.run(run(ParseKind(kind))) == asyncio.run(run(None))
 
 
 def test_governor_limits_and_health_fields_are_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
