@@ -165,3 +165,25 @@ def test_off_never_asks_the_memory_budget_for_an_excess_on_the_route(monkeypatch
     ws = resolve_heavy_working_set()
     for kind in ParseKind:
         assert permit_excess_bytes(kind, ws.gb, ws.source) == 0
+
+
+def test_governor_trace_ignores_downstream_feedback_left_by_other_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Throttles reported to the process-wide feedback by an earlier test must not narrow the trace."""
+    from app.services.resource_governor.feedback import (
+        DownstreamFeedback,
+        set_default_downstream_feedback,
+    )
+
+    monkeypatch.delenv("PARSE_LANES", raising=False)
+    left_over = DownstreamFeedback()
+    for _ in range(50):
+        left_over.report_throttle("embedding")
+        left_over.report_timeout("vector_db")
+    set_default_downstream_feedback(left_over)
+    try:
+        now = json.loads(json.dumps(trace.governor_trace(), default=str))
+    finally:
+        set_default_downstream_feedback(None)
+    for value in (*now.values(), *RECORDED["governor"].values()):
+        value["lanes"] = {"mode": value["lanes"]["mode"]}
+    assert now == RECORDED["governor"]

@@ -207,6 +207,33 @@ def test_excel_batch_through_the_pool_is_not_throttled_by_spawn_allowance(
 # -- T80: growth in the pool ------------------------------------------------------------------------------
 
 
+def test_a_heavier_job_that_takes_a_worker_freed_while_its_spawn_was_refused_is_charged_growth(
+    make_budget: Callable[..., LaneBudget], make_pool: Callable[..., LanePool], hub: StubHub
+) -> None:
+    """A spawn refused for memory takes the worker another job returns (the idle take in ``admit``);
+    that worker was charged for a text job, so the PDF layout job must still be charged its growth."""
+    mem = Mem(4 * GIB, 0)
+    budget = make_budget(2, mem=mem)
+    pool = make_pool(budget, hub=hub)
+    release = threading.Event()
+    text = submit(pool, hold, release, kind=ParseKind.TEXT, size=100 * 1024)
+    assert wait_for(lambda: pool.stats()["busy"] == 1)
+    mem.at(0.9)
+    time.sleep(1.2)
+    pdf = submit(pool, quick, kind=ParseKind.PDF_LAYOUT, size=2 * MIB)
+    time.sleep(0.4)
+    assert len(hub.workers) == 1 and not pdf.future.done(), "the PDF job's spawn must be refused"
+
+    release.set()
+    text.future.result(timeout=10)
+    pdf.future.result(timeout=10)
+
+    (entry,) = entries(pool)
+    assert len(hub.workers) == 1
+    assert entry.charged_bytes >= int(1.25 * GIB)
+    assert budget.stats()["growth_by_kind"].get(ParseKind.PDF_LAYOUT.value)
+
+
 def test_heavier_job_on_a_light_worker_is_admitted_as_growth(
     make_budget: Callable[..., LaneBudget], make_pool: Callable[..., LanePool], hub: StubHub
 ) -> None:
@@ -383,6 +410,37 @@ def test_an_explicit_lane_working_set_is_one_flat_charge(
 # -- T85: every call site declares a kind ---------------------------------------------------------------------
 
 
+_POOL_MODULE = "app.modules.parsers.parse_pool"
+_POOL_FUNCTIONS = ("submit", "run_blocking")
+
+
+def _pool_calls_in(tree: ast.AST) -> list[ast.Call]:
+    """Calls to the pool's ``submit``/``run_blocking`` however the module imported them."""
+    modules: set[str] = set()  # names bound to the parse_pool module
+    functions: set[str] = set()  # names bound to submit / run_blocking themselves
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == _POOL_MODULE and alias.asname:
+                    modules.add(alias.asname)
+        elif isinstance(node, ast.ImportFrom) and node.module == "app.modules.parsers":
+            modules.update(a.asname or a.name for a in node.names if a.name == "parse_pool")
+        elif isinstance(node, ast.ImportFrom) and node.module == _POOL_MODULE:
+            functions.update(a.asname or a.name for a in node.names if a.name in _POOL_FUNCTIONS)
+    calls = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id in functions:
+            calls.append(node)
+        elif isinstance(func, ast.Attribute) and func.attr in _POOL_FUNCTIONS:
+            owner = ast.unparse(func.value)
+            if owner in modules or owner == _POOL_MODULE:
+                calls.append(node)
+    return calls
+
+
 def _pool_calls() -> list[tuple[str, int, ast.Call]]:
     found = []
     for path in APP.rglob("*.py"):
@@ -392,16 +450,27 @@ def _pool_calls() -> list[tuple[str, int, ast.Call]]:
             tree = ast.parse(path.read_text())
         except SyntaxError:
             continue
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr in ("submit", "run_blocking")
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "parse_pool"
-            ):
-                found.extend([(str(path.relative_to(APP)), node.lineno, node)])
+        found.extend((str(path.relative_to(APP)), call.lineno, call) for call in _pool_calls_in(tree))
     return found
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from app.modules.parsers import parse_pool\nparse_pool.submit(f)",
+        "from app.modules.parsers import parse_pool as pp\npp.submit(f)",
+        "import app.modules.parsers.parse_pool as pp\npp.run_blocking(f)",
+        "import app.modules.parsers.parse_pool\napp.modules.parsers.parse_pool.submit(f)",
+        "from app.modules.parsers.parse_pool import submit as sub\nsub(f)",
+        "from app.modules.parsers.parse_pool import run_blocking\nrun_blocking(f)",
+    ],
+)
+def test_the_call_site_scan_follows_import_aliases(source: str) -> None:
+    assert len(_pool_calls_in(ast.parse(source))) == 1
+
+
+def test_the_call_site_scan_ignores_other_submits() -> None:
+    assert _pool_calls_in(ast.parse("executor.submit(f)\nfrom concurrent import futures\nfutures.submit(f)")) == []
 
 
 def test_every_pool_call_site_declares_a_kind() -> None:

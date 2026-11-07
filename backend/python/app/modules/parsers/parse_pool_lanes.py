@@ -366,6 +366,8 @@ class _LaneRunner(_Lane):
         ticket, charged = self._lane_pool.admit(job, self._abandoned)
         if isinstance(ticket, _Entry):  # a worker came free while the spawn was refused: use it
             self._entry, self._worker = ticket, ticket.worker
+            # It was charged for the job it last ran; the pre-run growth check saw no worker yet.
+            self.grow(job)
             return ticket.worker
         try:
             worker = super()._start_worker(job)

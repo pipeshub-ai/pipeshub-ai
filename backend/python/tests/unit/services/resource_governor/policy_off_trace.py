@@ -88,6 +88,7 @@ def cost_grid() -> dict[str, object]:
 async def _consumer_trace() -> dict[str, object]:
     from app.services.messaging import consumer_concurrency as cc
     from app.services.resource_governor import ResourceGovernor
+    from app.services.resource_governor.feedback import DownstreamFeedback
     from app.services.resource_governor.models import ParseTier, ResourceSnapshot
 
     snapshot = ResourceSnapshot(
@@ -103,7 +104,7 @@ async def _consumer_trace() -> dict[str, object]:
     for tier in (ParseTier.HEAVY, ParseTier.LIGHT, None):
         for size in (None, 1000, 20 * 2**20, 100 * 2**20):
             governor = ResourceGovernor(
-                logger=logging.getLogger("trace"), env_index=24, probe=Probe(),
+                logger=logging.getLogger("trace"), env_index=24, probe=Probe(), feedback=DownstreamFeedback(),
             )
             host = SimpleNamespace(governor=governor, logger=logging.getLogger("trace"))
             calls: list[object] = []
@@ -142,6 +143,7 @@ async def _consumer_trace() -> dict[str, object]:
 
 def governor_trace() -> dict[str, object]:
     from app.services.resource_governor import ResourceGovernor
+    from app.services.resource_governor.feedback import DownstreamFeedback
     from app.services.resource_governor.models import Pool
 
     class Clock:
@@ -164,8 +166,10 @@ def governor_trace() -> dict[str, object]:
                 return snap
 
         clock = Clock()
+        # Its own feedback: the process-wide one holds whatever earlier tests in this process reported.
         governor = ResourceGovernor(
-            logger=logging.getLogger("trace"), probe=Probe(), clock=clock, sample_interval=1.0, env_index=24
+            logger=logging.getLogger("trace"), probe=Probe(), clock=clock, sample_interval=1.0, env_index=24,
+            feedback=DownstreamFeedback(),
         )
 
         async def run():
