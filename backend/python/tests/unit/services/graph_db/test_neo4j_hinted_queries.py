@@ -70,3 +70,31 @@ class TestPageRecordIdsByType:
             await _provider(AsyncMock(side_effect=_error("Neo.ClientError.Statement.SyntaxError"))).page_record_ids_by_type(
                 "org-1", ["MAIL"],
             )
+
+
+class TestRecordQueryUndecidedSeed:
+    """A topic seed also reads the org's records not classified yet, on the
+    (orgId, extractionStatus) index: hinted, so the plan does not hang on the
+    planner's statistics, with the unhinted query when the index is not ready."""
+
+    _PUSHED = {"entities": [{"type": "topic", "id": "t1"}]}
+
+    async def test_a_missing_index_falls_back_with_the_same_parameters_and_timeout(self) -> None:
+        execute = AsyncMock(side_effect=[_error("Neo.ClientError.Schema.IndexNotFound"), [{"id": "r1", "sort_ts": 5}]])
+        provider = _provider(execute)
+        found = await provider.get_record_query_candidates(
+            "org-1", connector_ids=["c1"], pushdown=self._PUSHED, timeout_seconds=7.0,
+        )
+        assert [k.id for k in found.keys] == ["r1"]
+        hinted, unhinted = execute.await_args_list
+        assert "USING INDEX rec:Record(orgId, extractionStatus)" in hinted.args[0]
+        assert "USING INDEX" not in unhinted.args[0]
+        assert hinted.kwargs["parameters"] == unhinted.kwargs["parameters"]
+        assert hinted.kwargs["timeout"] == unhinted.kwargs["timeout"] == 7.0
+
+    async def test_a_query_without_the_seed_carries_no_hint(self) -> None:
+        execute = AsyncMock(return_value=[])
+        await _provider(execute).get_record_query_candidates(
+            "org-1", connector_ids=["c1"], pushdown={"sources": ["JIRA"]},
+        )
+        assert execute.await_count == 1 and "USING INDEX" not in execute.await_args.args[0]

@@ -719,6 +719,13 @@ _INDEX_NOT_FOUND = "Neo.ClientError.Schema.IndexNotFound"
 # The record-people backfill's paging index, created by ensure_schema. By its
 # statistics the planner can prefer (orgId, recordType) and then sort every page.
 _RECORD_ORG_ID_INDEX = "record_org_id_key"
+# The record query's seed of records not classified yet; by statistics alone the
+# planner may scan the org's records, which classify on first use makes most of them.
+_RECORD_UNDECIDED_INDEX = "record_org_extraction_status"
+_RECORD_UNDECIDED_HINT = "USING INDEX rec:Record(orgId, extractionStatus)"
+_RECORD_UNDECIDED_HINT_WARNING = (
+    "The record query's index %s is not ready; reading records not classified yet without it until it is: %s"
+)
 _RECORD_ORG_ID_HINT = "USING INDEX record:Record(orgId, id)"
 _RECORD_ORG_ID_HINT_WARNING = (
     "The record-people backfill's index %s is not ready; paging records without it until it is: %s"
@@ -15402,10 +15409,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *,
         index: str,
         warning: str,
+        **options: Any,  # noqa: ANN401 - passed through to execute_query, such as a timeout
     ) -> list[dict[str, Any]]:
         """Run *hinted*; if its hinted *index* is not ready, run *unhinted* and log *warning* once."""
         try:
-            rows = await self.client.execute_query(hinted, parameters=parameters, txn_id=transaction)
+            rows = await self.client.execute_query(hinted, parameters=parameters, txn_id=transaction, **options)
         except ClientError as exc:
             # Raised only where the server sets dbms.cypher.hints_error; elsewhere a
             # missing or building index is a notification and the plan goes without it.
@@ -15414,7 +15422,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if index not in self._hint_indexes_missing:
                 self.logger.warning(warning, index, exc)
                 self._hint_indexes_missing.add(index)
-            return await self.client.execute_query(unhinted, parameters=parameters, txn_id=transaction)
+            return await self.client.execute_query(unhinted, parameters=parameters, txn_id=transaction, **options)
         self._hint_indexes_missing.discard(index)
         return rows
 
@@ -23461,7 +23469,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     _RECORD_QUERY_UNDECIDED = "(rec.extractionStatus IS NULL OR rec.extractionStatus IN $undecided_extraction)"
 
-    def _with_pending(self, linked: str) -> str:
+    def _with_pending(self, linked: str, *, hinted: bool) -> str:
         """``linked``, clauses binding ``rec`` from ``ref``, joined with every
         record of the org not classified yet, which no classification edge
         reaches. The seed reads only stored statuses, which the
@@ -23472,11 +23480,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               RETURN rec
               UNION
               WITH ref
-              MATCH (rec:Record) WHERE rec.orgId = $org_id AND rec.extractionStatus IN $undecided_extraction
+              MATCH (rec:Record) {_RECORD_UNDECIDED_HINT if hinted else ""}
+              WHERE rec.orgId = $org_id AND rec.extractionStatus IN $undecided_extraction
               RETURN rec
             }}"""
 
-    def _record_query_cypher(self, pushed: Pushdown) -> tuple[str, dict[str, Any]] | None:
+    def _record_query_cypher(self, pushed: Pushdown, *, hinted: bool = True) -> tuple[str, dict[str, Any]] | None:
         """The candidate query for ``pushed`` and its parameters, or None when
         it names an entity type no record can be connected to. Fragments are
         chosen by which keys are present; every value is a parameter."""
@@ -23560,7 +23569,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 relationship, entity_match = self._entity_node_match(entity_type)
                 linked = f"""{entity_match}
             MATCH (rec:Record)-[:{relationship}]{self._candidate_arrow(entity_type)}(e)"""
-                scan = f"""{self._with_pending(linked) if seed.with_pending else linked}
+                scan = f"""{self._with_pending(linked, hinted=hinted) if seed.with_pending else linked}
             WITH DISTINCT {carry} WHERE"""
         elif seed.key == "records":
             params["seed_ids"] = list(seed.entry)
@@ -23584,7 +23593,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             params["seed_ids"] = list(seed.entry)
             linked = """MATCH (seed:Organization) WHERE seed.id IN $seed_ids
             MATCH (rec:Record)-[:ENTITYRELATIONS]->(seed)"""
-            scan = f"""{self._with_pending(linked) if seed.with_pending else linked}
+            scan = f"""{self._with_pending(linked, hinted=hinted) if seed.with_pending else linked}
             WITH DISTINCT {carry} WHERE"""
         elif seed.key == "containers":
             scan = "MATCH (rec:Record) WHERE rec.recordGroupId IN container_groups AND"
@@ -23624,18 +23633,23 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return RecordCandidates()
         query, params = built
         cap = max(1, scan_cap)
-        rows = await self.client.execute_query(
-            query,
-            parameters={
-                **params,
-                "org_id": org_id,
-                "connector_ids": list(connector_ids),
-                "within": within_param(within),
-                "completed": ProgressStatus.COMPLETED.value,
-                "scan_cap": cap,
-            },
-            **({"timeout": timeout_seconds} if timeout_seconds is not None else {}),
-        )
+        parameters = {
+            **params,
+            "org_id": org_id,
+            "connector_ids": list(connector_ids),
+            "within": within_param(within),
+            "completed": ProgressStatus.COMPLETED.value,
+            "scan_cap": cap,
+        }
+        options = {"timeout": timeout_seconds} if timeout_seconds is not None else {}
+        unhinted = self._record_query_cypher(pushdown, hinted=False)
+        if unhinted is not None and unhinted[0] != query:
+            rows = await self._execute_hinted(
+                query, unhinted[0], parameters, None, index=_RECORD_UNDECIDED_INDEX,
+                warning=_RECORD_UNDECIDED_HINT_WARNING, **options,
+            )
+        else:
+            rows = await self.client.execute_query(query, parameters=parameters, **options)
         keys = [CandidateKey(str(r["id"]), int(r.get("sort_ts") or 0)) for r in rows or []]
         return RecordCandidates(keys, capped=len(keys) >= cap)
 
