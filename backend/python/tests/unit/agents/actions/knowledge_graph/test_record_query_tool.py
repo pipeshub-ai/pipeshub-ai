@@ -212,3 +212,60 @@ async def test_one_line_says_when_unclassified_records_dominate_the_answer(
     _, text = await op.execute_find_records(_state(), where=[{"entity": {"type": "topic", "id": "t"}}])
     assert ("answer is mostly unknown" in text) is noted
     assert text.count("mostly unknown") <= 1
+
+
+def _caller_state() -> dict[str, Any]:
+    state = _state()
+    state["user_email"] = "kim@acme.example"
+    state["graph_provider"].find_users = AsyncMock(return_value=[
+        {"id": "u-kim", "fullName": "Kim Lee", "email": "kim@acme.example"},
+    ])
+    return state
+
+
+class TestTheCallerAsked:
+    """A listing by "me" that finds nothing says who "me" is and whether the
+    caller holds any role at all, so an empty answer is not read as a failed
+    lookup to retry by name or by text search."""
+
+    @pytest.fixture(autouse=True)
+    def _user_key(self, engine: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(op, "load_entity_access_context", AsyncMock(
+            return_value=MagicMock(org_id="org", row_scopes=(), user_key="u-kim")))
+
+    async def test_an_empty_listing_names_the_caller_and_the_records_they_hold(self, engine: AsyncMock) -> None:
+        engine.side_effect = [RecordQueryResult(total=0), RecordQueryResult(total=12)]
+        ok, text = await op.execute_find_records(
+            _caller_state(), where=[{"person": {"role": "assignee", "name": "me"}}])
+        assert ok
+        assert 'Person "me" is you: Kim Lee (kim@acme.example).' in text
+        assert op.CALLER_HOLDS_OTHER_MSG.format(n=12) in text
+        held = engine.await_args_list[1].args[2]
+        assert [c.model_dump(exclude_none=True) for c in held.where] == [{"person": {"ids": ["me"]}}]
+
+    async def test_a_caller_with_no_role_anywhere_is_told_so(self, engine: AsyncMock) -> None:
+        engine.side_effect = [RecordQueryResult(total=0), RecordQueryResult(total=0)]
+        _ok, text = await op.execute_find_records(
+            _caller_state(), where=[{"person": {"role": "assignee", "name": "me"}}])
+        assert op.CALLER_HOLDS_NONE_MSG in text
+
+    async def test_the_callers_own_email_is_the_caller_not_a_search_for_a_name(self, engine: AsyncMock) -> None:
+        engine.side_effect = [RecordQueryResult(total=0), RecordQueryResult(total=0)]
+        ok, text = await op.execute_find_records(
+            _caller_state(), where=[{"person": {"role": "assignee", "name": "KIM@acme.example"}}])
+        assert ok and "No readable records are linked" not in text
+        assert engine.await_args_list[0].args[2].where[0].person.ids == ["me"]
+        assert op.CALLER_HOLDS_NONE_MSG in text
+
+    async def test_a_listing_with_matches_runs_no_second_query(self, engine: AsyncMock) -> None:
+        engine.return_value = RecordQueryResult(total=3)
+        await op.execute_find_records(_caller_state(), where=[{"person": {"role": "assignee", "name": "me"}}])
+        assert engine.await_count == 1
+
+
+def test_the_callers_own_email_is_no_search_term() -> None:
+    from app.modules.retrieval.record_query.model import RecordQuery
+    from app.modules.retrieval.record_query.recall import recall_terms
+
+    query = RecordQuery.model_validate({"where": [{"person": {"name": "kim@acme.example", "ids": ["me"]}}]})
+    assert recall_terms(query, {"kim@acme.example": "you: Kim Lee"}) == []

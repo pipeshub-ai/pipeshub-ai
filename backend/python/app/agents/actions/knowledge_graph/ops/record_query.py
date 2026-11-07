@@ -43,6 +43,7 @@ from app.modules.retrieval.record_fields import (
 )
 from app.modules.retrieval.record_query import judge as judge_module
 from app.modules.retrieval.record_query.engine import (
+    SELF_ID,
     QueryNotRunnable,
     row_view,
     run_record_query,
@@ -84,6 +85,9 @@ logger = logging.getLogger(__name__)
 
 NOT_ENABLED_MSG = "find_records is not enabled for this request."
 LOOKUP_FAILED_MSG = "The record query failed - try again, or narrow it. This is not an empty result."
+# An empty listing by the caller reads like a lookup that missed them: these say it did not.
+CALLER_HOLDS_OTHER_MSG = "You hold a role on {n} records you can open; none of them meets these conditions."
+CALLER_HOLDS_NONE_MSG = "You hold no role on any record you can open, so no listing by you can find records."
 PEOPLE_NOT_ALLOWED_MSG = (
     "People and organisation conditions are not available in this workspace; filter by the other fields."
 )
@@ -205,6 +209,7 @@ async def execute_find_records(
             if recall_task is not None:
                 recall_task.cancel()
             raise
+        caller_note = await _caller_note(state, context, query, result, apps=apps or None, correlation_id=qid)
     except QueryNotRunnable as exc:
         return False, str(exc)
     except EntityAccessError:
@@ -251,7 +256,28 @@ async def execute_find_records(
     )
     return True, render(query, result, shortener=get_record_id_shortener_if_enabled(state), cite_refs=cite_refs,
                         scope_note=limited_scope_note(context), people=people, recall=recall, possible=possible,
-                        judged=judged)
+                        judged=judged, caller_note=caller_note)
+
+
+def _asks_for_caller(query: RecordQuery) -> bool:
+    return any(isinstance(c, PersonCondition) and SELF_ID in (c.person.ids or ()) for c in query.where)
+
+
+async def _caller_note(
+    state: ChatState, context: EntityAccessContext, query: RecordQuery, result: RecordQueryResult, *,
+    apps: list[str] | None, correlation_id: str,
+) -> str:
+    """For an empty listing by the caller, whether they hold any role on a
+    readable record at all: counted by the engine, so through the same access check."""
+    if result.total or result.approximate or not _asks_for_caller(query):
+        return ""
+    anyone = RecordQuery.model_validate({"where": [{"person": {"ids": [SELF_ID]}}]})
+    if [c.model_dump(exclude_none=True) for c in query.where] == [c.model_dump(exclude_none=True)
+                                                                  for c in anyone.where]:
+        return CALLER_HOLDS_NONE_MSG
+    held = await run_record_query(state["graph_provider"], context, anyone, apps=apps,
+                                  correlation_id=correlation_id, user_id=state.get("user_id") or "")
+    return CALLER_HOLDS_OTHER_MSG.format(n=held.total) if held.total else CALLER_HOLDS_NONE_MSG
 
 
 def _names_by_id(conditions: list[Any]) -> bool:
@@ -408,8 +434,11 @@ async def resolve_person_names(
         if not isinstance(cond, PersonCondition) or cond.person.ids or cond.person.name is None:
             continue
         asked, role = cond.person.name, cond.person.role
-        if asked.casefold() in people_op.SELF_NAMES:
-            cond.person.ids = ["me"]
+        email = (state.get("user_email") or "").strip()
+        if asked.casefold() in people_op.SELF_NAMES or (email and asked.strip().casefold() == email.casefold()):
+            cond.person.ids = [SELF_ID]
+            label = people_op._label(await people_op._caller(state, graph, context))
+            labels[asked] = label if label.startswith("you") else f"you: {label}"
             continue
         edges = list(ROLE_EDGES[role]) if role else list(PERSON_EDGES)
         try:
@@ -449,7 +478,7 @@ def render(
     query: RecordQuery, result: RecordQueryResult, *, shortener: Any = None,  # noqa: ANN401
     cite_refs: Mapping[str, str] | None = None, scope_note: str = "", people: Mapping[str, str] | None = None,
     recall: RecallCheck | None = None, possible: list[dict[str, Any]] | None = None,
-    judged: JudgeOutcome | None = None,
+    judged: JudgeOutcome | None = None, caller_note: str = "",
 ) -> str:
     """Totals first, then what was computed, then a page of rows to cite."""
     cite_refs = cite_refs or {}
@@ -465,6 +494,8 @@ def render(
         lines.append(f"Conditions as applied: {_applied(query)}")
     for asked, label in (people or {}).items():
         lines.append(f'Person "{asked}" is {label}.')
+    if caller_note:
+        lines.append(caller_note)
     if any(isinstance(c, MentionCondition) for c in query.where):
         lines.append(MENTIONS_NOTE)
     # A stopped scan saw only part of the matches: every figure from it is partial, not just the total.

@@ -86,7 +86,10 @@ def recall_terms(query: RecordQuery, names: Mapping[str, str]) -> list[str]:
     terms: list[str] = []
     for cond in walk_conditions(query.where):
         if isinstance(cond, PersonCondition):
-            if cond.person.name and cond.person.name.casefold() not in ("me", "myself", "i"):
+            # The caller, however asked (``me`` or their own email), is not a name to search for.
+            if cond.person.name and SELF_ID not in (cond.person.ids or ()) and cond.person.name.casefold() not in (
+                "me", "myself", "i",
+            ):
                 terms.append(names.get(cond.person.name, cond.person.name))
             terms += [names[i] for i in cond.person.ids or () if i in names and i != SELF_ID]
         elif isinstance(cond, OrganizationCondition):
