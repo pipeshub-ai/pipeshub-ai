@@ -197,8 +197,11 @@ class CodeMetadata(BaseModel):
     signature: Optional[str] = None
     docstring: Optional[str] = None
     decorators: Optional[list[str]] = None
-    # Words resolution reads (C/C++: "declaration" for no body, "static", "returns:<Class>").
+    # Words resolution reads (C/C++: "declaration" for no body, "static", "returns:<Class>"; C#: "declaration",
+    # "partial", "extension", "this:<Type>", "explicit:<Interface>").
     modifiers: Optional[list[str]] = None
+    # Type parameters the declaration takes (`Foo<T, U>`: 2); None when it takes none.
+    type_param_count: Optional[int] = None
     # Repo-unique, human-readable resolution identity. The graph block key is
     # hashed from this, so the blob and the graph must agree on it exactly.
     qualified_name: Optional[str] = None  # "method:Outer.Inner.run"

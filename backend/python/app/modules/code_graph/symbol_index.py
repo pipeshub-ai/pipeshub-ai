@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.modules.code_graph.guards import CALLABLE_KINDS, TYPE_KINDS, lang_family
-from app.modules.parsers.code_parser.models import DECLARATION
+from app.modules.parsers.code_parser.models import DECLARATION, EXPLICIT
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -77,6 +77,7 @@ class BlockRow:
     modifiers: tuple[str, ...] = ()
     # The file-summary block's `macroTable`: C/C++ function-like macro -> [line, names its body calls].
     macro_table: dict[str, list] = field(default_factory=dict)
+    type_param_count: int = 0
 
     @staticmethod
     def from_doc(doc: dict[str, Any], paths: dict[str, str]) -> "BlockRow":
@@ -102,6 +103,7 @@ class BlockRow:
             referenced_names=_ensure_str_list(doc.get("referencedNames")),
             modifiers=_ensure_str_list(doc.get("modifiers")),
             macro_table=_ensure_dict(doc.get("macroTable")),
+            type_param_count=doc.get("typeParamCount") or 0,
         )
 
 
@@ -119,6 +121,8 @@ class SymbolIndex:
     # (parent_block_id, method_name) -> block key. Derived from parentBlockId +
     # kind rather than re-reading the METHOD edges, which saves a query.
     method_index: dict[tuple[str, str], str] = field(default_factory=dict)
+    # Explicit interface implementations (block key -> the interface's name), kept out of method_index.
+    explicit_impls: dict[str, str] = field(default_factory=dict)
     blocks_by_record: dict[str, list[str]] = field(default_factory=lambda: defaultdict(list))
     file_by_record: dict[str, str] = field(default_factory=dict)
     record_by_file: dict[str, str] = field(default_factory=dict)
@@ -180,7 +184,12 @@ class SymbolIndex:
             self.by_name[row.name].append(row.key)
             self.names_by_record[row.record_id].add(row.name)
             if row.parent_block_id and row.kind in ("method", "constructor"):
-                self.method_index[(row.parent_block_id, row.name)] = row.key
+                explicit = next((m[len(EXPLICIT):] for m in row.modifiers if m.startswith(EXPLICIT)), None)
+                if explicit:
+                    # `Task IHandler.Handle(..)` is IHandler.Handle's implementation, never `Handle` of its type.
+                    self.explicit_impls[row.key] = explicit
+                else:
+                    self.method_index[(row.parent_block_id, row.name)] = row.key
         if row.kind in CALLABLE_KINDS:
             self.callable_blocks.add(row.key)
         elif row.kind in TYPE_KINDS:

@@ -99,27 +99,35 @@ class _Repo:
         return f"{BLOCKS}/{self.block(path, qualified_name)}"
 
 
+_LANGUAGES = {"py": ("python", "text/x-python"), "cs": ("csharp", "text/x-csharp"), "php": ("php", "text/x-php")}
+
+
 async def _write_repo(graph: IGraphDBProvider, org_id: str, connector_id: str,
-                      group_id: str) -> tuple[dict[str, str], _Blobs]:
+                      group_id: str, files: dict[str, str]) -> tuple[dict[str, str], _Blobs]:
     parser = CodeFileParser()
     blobs = _Blobs()
-    record_ids = {path: str(uuid.uuid4()) for path in FILES}
+    record_ids = {path: str(uuid.uuid4()) for path in files}
+
+    def language(path: str) -> tuple[str, str, str]:
+        extension = path.rpartition(".")[2]
+        return (*_LANGUAGES[extension], extension)
+
     records = [
         CodeFileRecord(
             id=record_ids[path], org_id=org_id, record_name=path.rsplit("/", 1)[-1],
             record_type=RecordType.CODE_FILE, external_record_id=f"ext-{record_ids[path]}",
             version=1, origin=OriginTypes.CONNECTOR, connector_name=Connectors.GITHUB,
-            connector_id=connector_id, mime_type="text/x-python", extension="py",
-            file_path=path, file_hash=uuid.uuid4().hex, language="python",
+            connector_id=connector_id, mime_type=language(path)[1], extension=language(path)[2],
+            file_path=path, file_hash=uuid.uuid4().hex, language=language(path)[0],
             indexing_status=ProgressStatus.COMPLETED.value,
         )
-        for path in FILES
+        for path in files
     ]
     await graph.batch_upsert_records(records)
     for path, rid in record_ids.items():
         await graph.update_node(rid, RECORDS, {"recordGroupId": group_id})
-        container = parser.parse_to_blocks(FILES[path].encode(), path.rsplit("/", 1)[-1],
-                                           path, "python")
+        container = parser.parse_to_blocks(files[path].encode(), path.rsplit("/", 1)[-1],
+                                           path, language(path)[0])
         blobs.records[rid] = {
             "block_containers": container.model_dump(mode="json", exclude_none=True)
         }
@@ -127,16 +135,16 @@ async def _write_repo(graph: IGraphDBProvider, org_id: str, connector_id: str,
             graph_provider=graph,
             context=BlockProjectionContext(org_id=org_id, record_id=rid,
                                            record_group_id=group_id,
-                                           connector_id=connector_id, language="python",
+                                           connector_id=connector_id, language=language(path)[0],
                                            file_path=path),
             block_containers=container,
         )
     return record_ids, blobs
 
 
-@pytest.fixture(params=["neo4j", "arango"])
-async def repo(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
-               ) -> AsyncIterator[_Repo]:
+@contextlib.asynccontextmanager
+async def _connected_repo(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
+                          files: dict[str, str]) -> AsyncIterator[_Repo]:
     async with contextlib.AsyncExitStack() as cleanup:
         try:
             graph = await (
@@ -151,7 +159,7 @@ async def repo(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
 
         run = uuid.uuid4().hex[:10]
         org_id, connector_id, group_id = f"org-cg-{run}", f"conn-cg-{run}", f"g-cg-{run}"
-        record_ids, blobs = await _write_repo(graph, org_id, connector_id, group_id)
+        record_ids, blobs = await _write_repo(graph, org_id, connector_id, group_id, files)
 
         async def remove() -> None:
             with contextlib.suppress(Exception):
@@ -162,6 +170,13 @@ async def repo(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
 
         cleanup.push_async_callback(remove)
         yield _Repo(graph, request.param, org_id, connector_id, group_id, record_ids, blobs)
+
+
+@pytest.fixture(params=["neo4j", "arango"])
+async def repo(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
+               ) -> AsyncIterator[_Repo]:
+    async with _connected_repo(request, monkeypatch, FILES) as built:
+        yield built
 
 
 async def _build(repo: _Repo, touched: set[str] | None = None):  # noqa: ANN202 -- EdgeBuildResult
@@ -529,3 +544,57 @@ async def test_full_text_search_is_scoped_to_the_org_inside_the_index(repo: _Rep
         BLOCKS, "name", ["target"], filters={"orgId": repo.org_id}, raise_on_error=True,
     )
     assert hits and all(h.get("orgId") == repo.org_id for h in hits)
+
+
+# -- C# and PHP resolve through the same provider methods ---------------------
+
+CS_PHP_FILES = {
+    "cs/Data/IRepo.cs": "namespace Shop.Data;\npublic interface IRepo { void Save(); }\n",
+    "cs/Data/Repo.cs": "namespace Shop.Data;\npublic class Repo : IRepo { public void Save() {} }\n",
+    "cs/Data/RepoExt.cs": "namespace Shop.Data;\npublic static class RepoExt { public static void Touch(this Repo r) {} }\n",
+    "cs/App/Svc.cs": "using Shop.Data;\nnamespace Shop.App;\n"
+                     "public class Svc { public void Run(Repo repo) { repo.Save(); repo.Touch(); } }\n",
+    "php/Models/Model.php": "<?php\nnamespace App\\Models;\nclass Model { public function boot() {} }\n",
+    "php/Models/User.php": "<?php\nnamespace App\\Models;\nclass User extends Model { public function save() {} }\n",
+    "php/Http/UserCtl.php": "<?php\nnamespace App\\Http;\nuse App\\Models\\User;\n"
+                            "class UserCtl { public function show(User $u) { $u->save(); $u->boot(); } }\n",
+}
+
+
+@pytest.fixture(params=["neo4j", "arango"])
+async def cs_php_repo(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
+                      ) -> AsyncIterator[_Repo]:
+    async with _connected_repo(request, monkeypatch, CS_PHP_FILES) as built:
+        yield built
+
+
+async def _outbound(repo: _Repo, path: str, qualified_name: str, relation: RecordRelations) -> set[str]:
+    rows = await repo.graph.get_neighbors_for_nodes_by_relationship_types(
+        node_keys=[repo.block(path, qualified_name)], node_collection=BLOCKS,
+        relationship_types=[relation.value], direction="outbound", raise_on_error=True,
+    )
+    return {r["key"] for r in rows}
+
+
+async def test_csharp_namespaces_extension_methods_and_interfaces_come_back(cs_php_repo: _Repo) -> None:
+    repo = cs_php_repo
+    await _build(repo)
+    assert await _outbound(repo, "cs/App/Svc.cs", "method:Shop.App.Svc.Run", RecordRelations.CALLS) == {
+        repo.block("cs/Data/Repo.cs", "method:Shop.Data.Repo.Save"),
+        repo.block("cs/Data/RepoExt.cs", "method:Shop.Data.RepoExt.Touch"),
+    }
+    assert await _outbound(repo, "cs/Data/Repo.cs", "class:Shop.Data.Repo", RecordRelations.IMPLEMENTS) == {
+        repo.block("cs/Data/IRepo.cs", "interface:Shop.Data.IRepo")}
+    assert await _outbound(repo, "cs/Data/Repo.cs", "method:Shop.Data.Repo.Save", RecordRelations.OVERRIDES) == {
+        repo.block("cs/Data/IRepo.cs", "method:Shop.Data.IRepo.Save")}
+
+
+async def test_php_use_and_inherited_methods_come_back(cs_php_repo: _Repo) -> None:
+    repo = cs_php_repo
+    await _build(repo)
+    assert await _outbound(repo, "php/Http/UserCtl.php", "method:App.Http.UserCtl.show", RecordRelations.CALLS) == {
+        repo.block("php/Models/User.php", "method:App.Models.User.save"),
+        repo.block("php/Models/Model.php", "method:App.Models.Model.boot"),
+    }
+    assert await _outbound(repo, "php/Models/User.php", "class:App.Models.User", RecordRelations.INHERITS) == {
+        repo.block("php/Models/Model.php", "class:App.Models.Model")}

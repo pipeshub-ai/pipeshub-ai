@@ -61,6 +61,7 @@ _WRITE_CHUNK = 500
 _BLOCK_SCAN_FIELDS = [
     "_key", "recordId", "name", "kind", "qualifiedName", "language",
     "isBlockGroup", "parentBlockId", "pendingEdges", "typeTable", "referencedNames", "modifiers", "macroTable",
+    "typeParamCount",
 ]
 
 _CALL_RELATIONS = {RecordRelations.CALLS.value}
@@ -98,6 +99,7 @@ RESOLUTION_QUALIFIER = "qualifier"
 RESOLUTION_MODULE = "module-import"
 RESOLUTION_TYPE = "receiver-type"
 RESOLUTION_NAME = "name-heuristic"
+RESOLUTION_EXTENSION = "extension-method"
 # `opts.onClick()`: a call through a function-typed property runs whatever was
 # assigned to it, so the property is not the code that runs. Kept for "who
 # triggers onClick", tagged so a caller can tell it from a call to a definition.
@@ -110,6 +112,16 @@ _MAX_MACRO_DEPTH = 8
 # A local name an import binds to something outside the repo (`from requests
 # import get`). It shadows every repo definition of that name in the file.
 _EXTERNAL = ""
+
+
+def _split_arity(type_name: str, family: str | None) -> tuple[str, int]:
+    """(name, type-argument count) of a type-table name: `IHandler`1` -> ("IHandler", 1) where the family's
+    rule writes arity (C#); any other name, a TS template-literal type among them, untouched with 0."""
+    name, _, arity = type_name.partition("`")
+    if rules_for(family).disambiguate_repeats_by_arity and arity.isdigit():
+        return name, int(arity)
+    return type_name, 0
+
 
 # Above this share of re-resolved files without readable facts (and at least
 # this many), the store is presumed unavailable rather than a few blobs being
@@ -805,6 +817,8 @@ class _Builder:
 
             if fact.get("isMemberCall"):
                 target, confidence, resolution = self._resolve_member_call(block_id, fact, record_id)
+                if not target and resolution != _EXTERNAL and relation == RecordRelations.CALLS.value:
+                    target, confidence, resolution = self._extension_method(fact, record_id, family)
                 if target:
                     for one in target if isinstance(target, list) else [target]:
                         self._add_edge(
@@ -859,6 +873,7 @@ class _Builder:
             else:
                 target, confidence, resolution = self._resolve_direct(
                     name, call_file, family, relation, fact.get("qualifiedPrefix"),
+                    type_args=fact.get("typeArgs"),
                 )
             if not target:
                 continue
@@ -919,7 +934,7 @@ class _Builder:
 
     # -- step 7b: overrides ---------------------------------------------
 
-    def link_overrides(self) -> None:
+    def link_overrides(self, records: set[str]) -> None:
         """``C.m --OVERRIDES--> B.m`` for every resolved base that defines ``m``.
 
         The base does not have to be an interface. A call typed as the base
@@ -938,6 +953,20 @@ class _Builder:
         methods_by_owner: dict[str, list[tuple[str, str]]] = {}
         for (owner, method_name), block_id in self.index.method_index.items():
             methods_by_owner.setdefault(owner, []).append((method_name, block_id))
+        # `Task IHandler.Handle(..)` beside `Task Handle(T e)`: the explicit one implements IHandler.Handle,
+        # so the type's own same-named member does not.
+        # An explicit impl names its interface with its arity (`IHandler`0` beside an `IHandler<T>` base).
+        interfaces = {b: _split_arity(interface, self._family_of(b))
+                      for b, interface in self.index.explicit_impls.items()}
+        explicitly = {(self.index.rows[b].parent_block_id, self.index.rows[b].name, interface)
+                      for b, interface in interfaces.items()}
+
+        def name_and_arity(type_block: str | None) -> tuple[str | None, int] | None:
+            row = self.index.rows.get(type_block or "")
+            return (row.name, row.type_param_count) if row is not None else None
+
+        def declaring_type(method: str) -> tuple[str | None, int] | None:
+            return name_and_arity(self.index.rows[method].parent_block_id)
 
         for from_key, to_key, relation in list(self.edges):
             if relation not in _TYPE_RELATIONS:
@@ -950,7 +979,8 @@ class _Builder:
                 # Start at the base, not the child: the child's own method
                 # would otherwise match and the edge would be a self-loop.
                 base_method = self._resolve_self_method(base, method_name, prefer_body=False)
-                if not base_method or base_method == block_id:
+                if not base_method or base_method == block_id \
+                        or (child, method_name, declaring_type(base_method)) in explicitly:
                     continue
                 self._add_edge(
                     self._block_key(block_id), self._block_key(base_method),
@@ -959,6 +989,19 @@ class _Builder:
                     # plus an exact name match on the base chain.
                     confidence=CONFIDENCE_EXTRACTED, line=None, resolution=RESOLUTION_TYPE,
                 )
+        for block_id, interface in interfaces.items():
+            row = self.index.rows[block_id]
+            if row.record_id not in records:
+                continue
+            self.resolving = row.record_id
+            # `Task IHandler.Handle(..)` overrides IHandler's Handle: the nearest base of its type so named,
+            # direct or reached through another interface (`class C : IDerived`, `IDerived : IA`).
+            named = next((t for t, _ in self._type_chain(row.parent_block_id or "")
+                          if t != row.parent_block_id and name_and_arity(t) == interface), None)
+            target = self._resolve_self_method(named, row.name or "", prefer_body=False) if named else None
+            if target and target != block_id:
+                self._add_edge(self._block_key(block_id), self._block_key(target), RecordRelations.OVERRIDES.value,
+                               confidence=CONFIDENCE_EXTRACTED, line=None, resolution=RESOLUTION_TYPE)
         self.resolving = None
 
     def _resolve_within_record(self, record_id: str, name: str) -> str | None:
@@ -1035,7 +1078,7 @@ class _Builder:
         return list(dict.fromkeys([*(own_callees or ()), *(scoped or ())]))
 
     def _resolve_direct(self, name: str, call_file: str, family: str | None,
-                        relation: str, qualified_prefix: str | None = None,
+                        relation: str, qualified_prefix: str | None = None, *, type_args: int | None = None,
                         ) -> tuple[str | None, str, str | None]:
         """Name -> definition, strongest evidence first.
 
@@ -1099,6 +1142,12 @@ class _Builder:
                 [cid for module in sorted(modules) for cid in self._defined_in(module, name)],
                 family, relation,
             )
+            if len(imported) > 1 and rules.scope_levels:
+                for level in rules.scope_levels(self.index, call_file):
+                    nearest = [cid for cid in imported if self.index.file_by_block.get(cid) in level]
+                    if nearest:
+                        imported = nearest
+                        break
             inferred = self._linkable(self._eligible(
                 [cid for module in (rules.inferred_scope(self.index, call_file) if rules.inferred_scope else ())
                  for cid in self._defined_in(module, name)], family, relation), call_file, family) \
@@ -1124,6 +1173,7 @@ class _Builder:
                 confidence, resolution = CONFIDENCE_INFERRED, RESOLUTION_NAME
 
         candidates = prefer_non_test(candidates, self.index.file_by_block, call_file)
+        candidates = self._by_arity(candidates, type_args, family)
         candidates = path_proximity_winner(candidates, self.index.file_by_block, call_file)
         if len(candidates) != 1:
             self.result.ambiguous_skipped += 1
@@ -1294,7 +1344,8 @@ class _Builder:
                 return self._py_unique_method(name, fact, record_id)
         two_arg = _PY_SUPER.fullmatch(receiver or "") if family == "py" else None
         if not receiver_type and (receiver in rules.super_receivers or two_arg):
-            # `super().__init__()`, `super.save()`: the nearest base that defines it.
+            # `super().__init__()`, `super.save()`: the nearest base that defines it. A declared
+            # interface is never one (C# `base.`, Java `super.`, PHP `parent::`); a Python ABC is a class.
             # `super(C, self).m()` starts above C, which need not be the enclosing class.
             owner = self._enclosing_type(block_id)
             start = owner
@@ -1312,6 +1363,8 @@ class _Builder:
                         return target, CONFIDENCE_INFERRED, RESOLUTION_TYPE
                 return None, CONFIDENCE_INFERRED, None
             for base in self._base_types_of(start) if start else ():
+                if self._declared_interface(base):
+                    continue
                 target = self._resolve_self_method(base, name)
                 if target:
                     return target, CONFIDENCE_INFERRED, RESOLUTION_TYPE
@@ -1446,18 +1499,59 @@ class _Builder:
         found = self._member_type(owner, field_name, 0, suffix) if owner else None
         return found if found and not found.startswith("[]") else None
 
+    def _extension_method(self, fact: dict, record_id: str, family: str | None,
+                          ) -> tuple[str | None, str, str | None]:
+        """`services.AddCatalog()`: the extension method of that name the file sees whose `this` type is the
+        receiver's, else one whose `this` type may be (unknown on either side, generic, or a base of the
+        receiver's type); path proximity only breaks a tie among those."""
+        hook = rules_for(family).extension_methods
+        call_file = self.index.file_by_record.get(record_id) or ""
+        visible = hook(self.index, call_file, fact.get("toName") or "") if hook else []
+        if not visible:
+            return None, CONFIDENCE_INFERRED, None
+        receiver = fact.get("receiver")
+        receiver_type = fact.get("receiverType") or (
+            self.index.type_table_by_record.get(record_id, {}).get(receiver) if receiver else None)
+        if receiver_type:
+            exact = [cid for cid in visible if self._extended_type(cid) == _split_arity(receiver_type, family)[0]]
+            accepted = self._receiver_type_names(receiver_type, record_id, family)
+            if exact:
+                visible = exact
+            elif accepted is not None:  # else a type outside the repo (`List<T>`): its bases are unseen
+                visible = [cid for cid in visible if self._extended_type(cid) in (None, *accepted)
+                           or self.index.rows[cid].type_param_count]
+        found = path_proximity_winner(visible, self.index.file_by_block, call_file)
+        return (found[0], CONFIDENCE_INFERRED, RESOLUTION_EXTENSION) if len(found) == 1 \
+            else (None, CONFIDENCE_INFERRED, None)
+
+    def _extended_type(self, block_id: str) -> str | None:
+        """The `this T` type an extension method extends, from its `this:T` modifier."""
+        return next((m[5:] for m in self.index.rows[block_id].modifiers if m.startswith("this:")), None)
+
+    def _receiver_type_names(self, type_name: str, record_id: str, family: str | None) -> set[str] | None:
+        """*type_name* and the names of every base of the one repo type it means; None when it means no
+        single repo type, so its bases are unknown."""
+        candidates = self._type_candidates(type_name, record_id, family)
+        if len(candidates) != 1:
+            return None
+        return {_split_arity(type_name, family)[0]} | {
+            self.index.rows[t].name or "" for t, _ in self._type_chain(candidates[0])}
+
     def _type_candidates(self, type_name: str, record_id: str, family: str | None) -> list[str]:
-        """The types *type_name* can mean in a file: the one it imports or defines, if any."""
+        """The types *type_name* can mean in a file: the one it imports or defines, if any. A C# type-table
+        name carries its type-argument count (`IHandler`1`; none written is 0)."""
         if rules_for(family).qualified_path_separator:
             placed = self._placed_type_candidates(type_name, record_id, family)
             if placed is not None:
                 return placed
             type_name = type_name.rpartition(rules_for(family).qualified_path_separator)[2]
+        type_name, arity = _split_arity(type_name, family)
         type_candidates = [
             cid for cid in self.index.candidates(type_name)
             if cid in self.index.type_blocks
             and (family is None or self._family_of(cid) == family)
         ]
+        type_candidates = self._by_arity(type_candidates, arity, family)
         if len(type_candidates) > 1:
             call_file = self.index.file_by_record.get(record_id) or ""
             bound = self.symbol_bindings.get(call_file, {}).get(type_name)
@@ -2142,25 +2236,18 @@ class _Builder:
             # reached another crate's same-named type.
             return next((found for _, parts in self._type_chain(owner) for part in parts
                          if (found := self.index.method_index.get((part, method_name)))), None)
-        direct = self.index.method_index.get((owner, method_name)) or self._method_by_owner_name(
-            owner, method_name)
-        if direct:
-            return direct
-
         declared_only = None
-        seen = {owner}
-        queue = list(self._base_types_of(owner))
-        while queue:
-            base = queue.pop(0)
-            if base in seen:
-                continue
-            seen.add(base)
-            inherited = self.index.method_index.get((base, method_name)) or self._method_by_owner_name(
-                base, method_name)
-            if inherited and (not prefer_body or DECLARATION not in self.index.rows[inherited].modifiers):
-                return inherited
-            declared_only = declared_only or inherited
-            queue.extend(self._base_types_of(base))
+        for current, parts in self._type_chain(owner):
+            for part in parts:
+                found = self.index.method_index.get((part, method_name)) or self._method_by_owner_name(
+                    part, method_name)
+                # The owner's own `m` is the target even when abstract. On a base a declaration (interface,
+                # abstract, pure virtual) only names `m`: a base further along holds the body that runs (PHP
+                # `implements HasDescription` + `use ContainerTrait`, a C++ mixin), whatever the base-list order.
+                if found and (not prefer_body or current == owner
+                              or DECLARATION not in self.index.rows[found].modifiers):
+                    return found
+                declared_only = declared_only or found
         return declared_only
 
     def _py_mro(self, cls: str, seen: frozenset[str] = frozenset()) -> list[str]:
@@ -2207,7 +2294,7 @@ class _Builder:
         return hits[0] if len(hits) == 1 else None
 
     def _base_types_of(self, type_block: str) -> list[str]:
-        """Resolved base classes of a type, from its own heritage facts.
+        """Resolved base classes of a type, from its own heritage facts and its other parts'.
 
         Read from `pending_edges` rather than `self.edges`: `resolve_rest`
         interleaves heritage and call facts, so a subclass's heritage edge may
@@ -2228,7 +2315,7 @@ class _Builder:
             return []
         family = self._family_of(block_id)
         found = (self._resolve_type_name(fact.get("toName") or "", row.file_path or "", family,
-                                         fact.get("qualifiedPrefix"))
+                                         fact.get("qualifiedPrefix"), type_args=fact.get("typeArgs"))
                  for fact in row.pending_edges if fact.get("relation") in _TYPE_RELATIONS)
         return [target for target in found if target]
 
@@ -2246,9 +2333,13 @@ class _Builder:
             queue.extend(self._base_types_of(current))
 
     def _type_parts(self, type_block: str) -> list[str]:
-        """The type's declarations: itself, and where the family's impls name their type (Rust) its impls, whose
-        methods and implemented traits (with their default methods) are its own."""
-        if not rules_for(self._family_of(type_block)).impl_blocks_name_their_type:
+        """The type's declarations: itself, then its other parts where the family has them: a C# `partial` type's
+        other declarations, or where the family's impls name their type (Rust) its impls, whose methods and
+        implemented traits (with their default methods) are its own."""
+        rules = rules_for(self._family_of(type_block))
+        if rules.type_parts:
+            return [type_block, *rules.type_parts(self.index, type_block)]
+        if not rules.impl_blocks_name_their_type:
             return [type_block]
         row = self.index.rows.get(type_block)
         if row is not None and row.kind == "impl":   # the first of a type's impls stands for a foreign type
@@ -2310,7 +2401,7 @@ class _Builder:
         return parent.name if parent else None
 
     def _resolve_type_name(self, name: str, from_file: str, family: str | None,
-                           qualified_prefix: str | None = None) -> str | None:
+                           qualified_prefix: str | None = None, *, type_args: int | None = None) -> str | None:
         """Name -> type block. Deliberately without `_resolve_direct`'s counters:
         a heritage hop taken while resolving a call is not itself a resolution
         the run should report on."""
@@ -2345,10 +2436,19 @@ class _Builder:
             ]
             candidates = with_evidence or candidates
             candidates = prefer_non_test(candidates, self.index.file_by_block, from_file)
+            candidates = self._by_arity(candidates, type_args, family)
             candidates = path_proximity_winner(
                 candidates, self.index.file_by_block, from_file
             )
         return candidates[0] if len(candidates) == 1 else None
+
+    def _by_arity(self, candidates: list[str], type_args: int | None, family: str | None) -> list[str]:
+        """`IHandler<int>` beside `IHandler<T>` and a plain `IHandler`: the one taking that many type
+        parameters, where the family's rule says arity names a type; else the candidates unchanged."""
+        if type_args is None or len(candidates) < 2 or not rules_for(family).disambiguate_repeats_by_arity:
+            return candidates
+        matching = [cid for cid in candidates if self.index.rows[cid].type_param_count == type_args]
+        return matching if len(matching) == 1 else candidates
 
     # -- step 8: prune ---------------------------------------------------
 
@@ -2581,7 +2681,7 @@ def _resolve(builder: _Builder, index: SymbolIndex, reresolve: set[str]) -> list
     builder.resolve_imports(work)
     builder.resolve_rest(work)
     builder.resolving = None
-    builder.link_overrides()
+    builder.link_overrides(reresolve)
     return builder.prune_dangling()
 
 

@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames
-from app.modules.code_graph.block_projection import changed_includes, changed_macros
+from app.modules.code_graph.block_projection import changed_folder_scope, changed_includes, changed_macros
 from app.modules.code_graph.edge_build_trigger import is_code_record, record_scope
 from app.modules.code_graph.module_refs import module_refs_of_path
 
@@ -69,6 +69,8 @@ async def defined_names(graph_provider: IGraphDBProvider, org_id: str, record_id
     file_info = info.get(record_id)
     if file_info is not None and file_info.file_path:
         names |= module_refs_of_path(file_info.file_path) | changed_includes(file_info.file_path, rows, ())
+        # A deleted GlobalUsings.cs takes its project's `global using`s with it.
+        names |= changed_folder_scope(file_info.file_path, rows, ())
     return names
 
 
