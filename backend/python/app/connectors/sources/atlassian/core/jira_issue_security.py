@@ -99,6 +99,17 @@ class IssueSecurityContext:
     read_status: int | None = None
     # Jira said the token lacks a scope. Any other 401 is a token Jira no longer accepts.
     scope_refused: bool = False
+    # Browse Projects holders that name people on each issue (reporter, assignee, user or group
+    # field). None when the project's permission scheme could not be read.
+    browse_holders: list[dict[str, Any]] | None = field(default_factory=list)
+
+    def browse_fingerprint(self) -> str:
+        """"?" when the holders are unknown, "" when there are none, else a digest of them."""
+        if self.browse_holders is None:
+            return "?"
+        return hashlib.sha256(",".join(sorted(
+            f"{h.get('type')}:{h.get('parameter') or h.get('value')}" for h in self.browse_holders
+        )).encode()).hexdigest()[:16] if self.browse_holders else ""
 
     def level_fingerprints(
         self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
@@ -553,6 +564,23 @@ def _field_entries(value: object) -> list[dict[str, Any]]:
     return []
 
 
+def browse_holder_grants(
+    holders: list[dict[str, Any]], *, project_key: str, fields: dict[str, Any], user_by_id: dict[str, Any],
+    reporter_email: str | None, assignee_email: str | None,
+) -> list[Permission]:
+    """The people a project's Browse holders name on this issue. A holder whose field is not
+    in the payload grants nobody; it does not stop the others."""
+    grants: list[Permission] = []
+    seen: set[str] = set()
+    for holder in holders:
+        portion, _unreadable, _skipped = _permissions_for_holder(
+            holder, project_key=project_key, fields=fields, user_by_id=user_by_id, app_roles_mapping=None,
+            reporter_email=reporter_email, assignee_email=assignee_email, seen=seen,
+        )
+        grants.extend(portion)
+    return grants
+
+
 def level_grants(
     holders: list[dict[str, Any]],
     *,
@@ -631,9 +659,18 @@ def apply_issue_access_settled(
         return [], [], False
 
     def project_open() -> tuple[list[Permission], list[str], bool]:
-        record.access_rule = AccessRule.STRICT
+        # An issue filed under another one, or a stub, only follows it. A top-level issue is
+        # also read by the people the project's Browse holders name on it (its reporter, say),
+        # who need not read the project, so a direct grant must be enough: OPEN, not STRICT.
+        grants = [] if record.parent_external_record_id or getattr(record, "is_placeholder", False) else (
+            browse_holder_grants(
+                context.browse_holders or [], project_key=project_key, fields=fields or {},
+                user_by_id=users, reporter_email=reporter_email, assignee_email=assignee_email,
+            )
+        )
+        record.access_rule = AccessRule.OPEN if grants else AccessRule.STRICT
         record.rewrite_permissions = True
-        return [], [], True
+        return grants, [], context.browse_holders is not None
 
     if present and security is None:
         # A null level is a positive "no level", whatever the scheme state: replace any stale grants.

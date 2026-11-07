@@ -527,3 +527,90 @@ class TestLevelReadsAlike:
 
     def test_a_personal_connector_enforces_no_levels(self) -> None:
         assert not level_reads_alike(self._context([{"type": "group"}], enforce=False), "10")
+
+
+class TestBrowseHoldersNamingPeoplePerIssue:
+    """Browse Projects granted to the reporter, the assignee or a user or group field."""
+
+    @staticmethod
+    def _apply(browse: list[dict] | None, fields: dict | None = None, record: Record | None = None, **kw: object,
+    ) -> tuple[Record, set, bool]:
+        record = record or _record()
+        context = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, browse_holders=browse)
+        grants, _skipped, settled = apply_issue_access_settled(
+            record, {"security": None, **(fields or {})}, is_subtask=False, project_key="PROJ", context=context,
+            **{"reporter_email": "rep@ex.com", "assignee_email": "asg@ex.com", **kw},
+        )
+        return record, {(p.entity_type, p.email or p.external_id) for p in grants}, settled
+
+    def test_the_reporter_of_a_top_level_issue_reads_it_though_the_project_is_closed_to_them(self) -> None:
+        record, grants, _ = self._apply([{"type": "reporter"}])
+        assert grants == {(EntityType.USER, "rep@ex.com")}
+        # A direct grant must be enough: STRICT would also ask for the project.
+        assert record.access_rule == AccessRule.OPEN and record.rewrite_permissions is True
+
+    def test_a_reassigned_assignee_loses_the_issue_and_the_new_one_gains_it(self) -> None:
+        holders = [{"type": "assignee"}]
+        _, before, _ = self._apply(holders, assignee_email="old@ex.com")
+        _, after, _ = self._apply(holders, assignee_email="new@ex.com")
+        assert before == {(EntityType.USER, "old@ex.com")}
+        assert after == {(EntityType.USER, "new@ex.com")}  # the write replaces the grants
+
+    def test_a_scheme_with_no_such_holder_gives_the_reporter_nothing(self) -> None:
+        record, grants, _ = self._apply([])
+        assert grants == set()
+        assert record.access_rule == AccessRule.STRICT
+
+    def test_only_the_named_role_is_granted(self) -> None:
+        _, grants, _ = self._apply([{"type": "reporter"}])
+        assert (EntityType.USER, "asg@ex.com") not in grants
+
+    def test_an_account_outside_the_directory_gets_no_grant_and_the_issue_stays_strict(self) -> None:
+        record, grants, _ = self._apply([{"type": "reporter"}], reporter_email=None)
+        assert grants == set() and record.access_rule == AccessRule.STRICT
+
+    def test_an_issue_filed_under_another_follows_it_and_gets_no_grant(self) -> None:
+        record, grants, _ = self._apply([{"type": "reporter"}], record=_record(parent_external_record_id="99"))
+        assert grants == set() and record.access_rule == AccessRule.STRICT
+
+    def test_a_stub_gets_no_grant(self) -> None:
+        record, grants, _ = self._apply([{"type": "reporter"}], record=_record(is_placeholder=True))
+        assert grants == set() and record.access_rule == AccessRule.STRICT
+
+    def test_a_leveled_issue_keeps_the_level_grants_alone(self) -> None:
+        record = _record()
+        context = _present(members={"20": [{"type": "group", "value": "g-1"}]})
+        context.browse_holders = [{"type": "reporter"}]
+        grants, _ = apply_issue_access(
+            record, {"security": {"id": "20"}}, is_subtask=False, project_key="PROJ", context=context,
+            reporter_email="rep@ex.com",
+        )
+        assert {(p.entity_type, p.external_id) for p in grants} == {(EntityType.GROUP, "g-1")}
+        assert record.access_rule == AccessRule.RESTRICTED
+
+    def test_user_and_group_fields_are_granted_and_an_absent_field_spares_the_other_holders(self) -> None:
+        holders = [
+            {"type": "reporter"},
+            {"type": "userCustomField", "parameter": "customfield_10"},
+            {"type": "groupCustomField", "parameter": "customfield_11"},
+            {"type": "userCustomField", "parameter": "customfield_12"},
+        ]
+        _, grants, _ = self._apply(holders, {
+            "customfield_10": [{"accountId": "acc-7"}], "customfield_11": {"groupId": "g-9"},
+        }, user_by_account_id={"acc-7": type("U", (), {"email": "seven@ex.com"})()})
+        assert grants == {(EntityType.USER, "rep@ex.com"), (EntityType.USER, "seven@ex.com"), (EntityType.GROUP, "g-9")}
+
+    def test_the_same_person_in_two_roles_is_granted_once(self) -> None:
+        _, grants, _ = self._apply([{"type": "reporter"}, {"type": "assignee"}], assignee_email="rep@ex.com")
+        assert grants == {(EntityType.USER, "rep@ex.com")}
+
+    def test_unread_holders_are_not_settled(self) -> None:
+        _, grants, settled = self._apply(None)
+        assert grants == set() and settled is False
+
+    def test_the_fingerprint_tells_none_unknown_and_a_change(self) -> None:
+        def fp(holders: list[dict] | None) -> str:
+            return IssueSecurityContext(knowledge=SchemeKnowledge.NONE, browse_holders=holders).browse_fingerprint()
+        assert fp([]) == "" and fp(None) == "?"
+        assert fp([{"type": "reporter"}]) not in ("", "?")
+        assert fp([{"type": "reporter"}]) != fp([{"type": "assignee"}])
