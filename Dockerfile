@@ -30,9 +30,10 @@ FROM ${RUNTIME_BASE_IMAGE} AS runtime-base
 # wrapper present but unable to load PPT/PPTX files.
 # Install CJK fallback fonts until they are available in the published runtime
 # base image. LibreOffice uses these when documents reference unavailable fonts.
+# ripgrep runs keyword-search grep stages when PATTERN_MATCH_ENGINE=ripgrep.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
-    libreoffice-impress-nogui fonts-noto-cjk \
+    libreoffice-impress-nogui fonts-noto-cjk ripgrep \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # -----------------------------------------------------------------------------

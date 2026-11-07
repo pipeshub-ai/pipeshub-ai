@@ -171,9 +171,10 @@ jobs:
           python-version: '3.12'
 
       - name: Install system dependencies
+        # ripgrep: the keyword search's rg engine is tested against GNU grep's output.
         run: |
           sudo apt-get update
-          sudo apt-get install -y libmariadb-dev
+          sudo apt-get install -y libmariadb-dev ripgrep
 
       - name: Install uv
         run: pip install uv
