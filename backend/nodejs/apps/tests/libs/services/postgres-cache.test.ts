@@ -11,7 +11,7 @@ import { RedisCacheError } from '../../../src/libs/errors/redis.errors'
  */
 type Call = { sql: string; params: unknown[] }
 
-function fakeDb(rows: (sql: string) => unknown[] = () => [], failPurge = false) {
+function fakeDb(rows: (sql: string) => unknown[] = () => [], failPurge = false, purged = 0) {
   const calls: Call[] = []
   const savepoints: string[] = []
   const writes: boolean[] = []
@@ -19,7 +19,7 @@ function fakeDb(rows: (sql: string) => unknown[] = () => [], failPurge = false) 
     query: sinon.stub().callsFake(async (sql: string, params: unknown[] = []) => {
       calls.push({ sql, params })
       if (failPurge && sql.includes('cache.purge')) throw new Error('canceling statement due to statement timeout')
-      return { rows: rows(sql) }
+      return { rows: rows(sql), rowCount: sql.includes('cache.purge') ? purged : 0 }
     }),
     savepoint: async (name: string, fn: () => Promise<unknown>) => {
       savepoints.push(name)
@@ -111,6 +111,24 @@ describe('PostgresCacheService', () => {
     clock.tick(5_500)
     await c.set('c', 3)
     expect(db.tags().filter((t) => t === 'cache.purge')).to.have.length(2)
+  })
+
+  it('purges again a second later while each purge removes a full batch, so a backlog drains', async () => {
+    const db = fakeDb(() => [], false, 1000)
+    const c = new PostgresCacheService()
+    await c.set('a', 1)
+    expect(db.calls.find((x) => x.sql.includes('cache.purge'))!.params).to.deep.equal([1000])
+    await c.set('b', 2)                      // the same second: no second batch in this write's moment
+    clock.tick(1_100)
+    await c.set('c', 3)
+    expect(db.tags().filter((t) => t === 'cache.purge')).to.have.length(2)
+    sinon.restore(); clock = sinon.useFakeTimers({ now: 1_000_000, toFake: ['Date'] })
+    const quiet = fakeDb(() => [], false, 10)  // a partial batch: nothing waiting, back to once a minute
+    const d = new PostgresCacheService()
+    await d.set('a', 1)
+    clock.tick(1_100)
+    await d.set('b', 2)
+    expect(quiet.tags().filter((t) => t === 'cache.purge')).to.have.length(1)
   })
 
   it('reports itself connected until disconnected, without closing the shared pool', async () => {

@@ -7,6 +7,8 @@ import type { ICacheService } from './cacheService.interface';
 const DEFAULT_TTL_SECONDS = 3600; // as RedisService
 const PURGE_EVERY_MS = 60_000;
 const PURGE_RETRY_MS = 5_000;
+const PURGE_BATCH = 1000;
+const PURGE_BACKLOG_MS = 1_000; // a full batch means more are waiting: purge again a second later, not a minute
 
 /**
  * The Node API's cache on PostgreSQL (`platform.cache_entries`), for a deployment with no Redis server (`REDIS_MODE=postgres`).
@@ -46,16 +48,22 @@ export class PostgresCacheService implements ICacheService {
   /**
    * Housekeeping after a write: delete a batch of expired rows. In its own savepoint, so a purge that fails (a timeout, a lost
    * lock) never fails the caller's write; rows another replica is purging are skipped, not waited for. A failed purge is tried
-   * again a few seconds later, not on every write.
+   * again a few seconds later, not on every write. A purge that removes a full batch is followed by another a second later, so a
+   * backlog (many counters expiring at once) drains at up to a batch a second instead of a batch a minute; each write still
+   * carries at most one batch.
    */
   private async purge(tx: Tx): Promise<void> {
     try {
-      await tx.savepoint('cache_purge', () =>
+      const r = await tx.savepoint('cache_purge', () =>
         tx.query(
-          '/* pipeshub:cache.purge */ DELETE FROM platform.cache_entries WHERE key IN (SELECT key FROM platform.cache_entries WHERE expires_at <= now() LIMIT 1000 FOR UPDATE SKIP LOCKED)',
+          '/* pipeshub:cache.purge */ DELETE FROM platform.cache_entries WHERE key IN (SELECT key FROM platform.cache_entries WHERE expires_at <= now() LIMIT $1 FOR UPDATE SKIP LOCKED)',
+          [PURGE_BATCH],
         ),
       );
-      this.lastPurge = Date.now();
+      this.lastPurge =
+        (r.rowCount ?? 0) >= PURGE_BATCH
+          ? Date.now() - PURGE_EVERY_MS + PURGE_BACKLOG_MS
+          : Date.now();
     } catch {
       this.lastPurge = Date.now() - PURGE_EVERY_MS + PURGE_RETRY_MS;
     }
