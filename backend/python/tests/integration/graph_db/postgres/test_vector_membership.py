@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import uuid
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -19,12 +20,14 @@ from app.core import org_context
 from app.modules.indexing.vector_membership_backfill import (
     run_vector_membership_backfill_tick,
 )
-from app.services.graph_db.postgres import lookups
 from app.services.graph_db.vector_membership_queries import PAGE_RECORD_FIELDS
 
 from .test_access import World, _org
 from .test_access import w as w
 from .test_grants import failing, in_org
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 pytestmark = pytest.mark.integration
 
@@ -141,11 +144,12 @@ async def test_one_tick_of_the_job_pages_syncs_and_advances_in_each_apps_own_org
     with org_ctx(outsider):                                     # sorts before the test's apps: left alone only because the listing is narrowed
         await pg_provider.batch_upsert_nodes([{"_key": f"0000-early-{tag}", "type": "DRIVE", "orgId": outsider}], "apps")
         before = await pg_provider.get_document(f"0000-early-{tag}", "apps")
-    real = pg_provider._system_apps_page
+    real = pg_provider._system_app_pages
 
-    async def narrowed(*a: object, **k: object) -> list[dict]:
-        return [d if d.get("orgId") in orgs else {**d, "vectorMembershipBackfilled": True} for d in await real(*a, **k)]
-    monkeypatch.setattr(pg_provider, "_system_apps_page", narrowed)
+    async def narrowed(*a: object, **k: object) -> AsyncIterator[list[dict]]:
+        async for page in real(*a, **k):
+            yield [d if d.get("orgId") in orgs else {**d, "vectorMembershipBackfilled": True} for d in page]
+    monkeypatch.setattr(pg_provider, "_system_app_pages", narrowed)
     for o in orgs:
         with org_ctx(o):
             await pg_provider.batch_upsert_nodes([{"_key": cid, "type": "DRIVE", **({"orgId": o} if o == orgs[0] else {})}], "apps")
@@ -180,9 +184,9 @@ async def test_one_tick_of_the_job_pages_syncs_and_advances_in_each_apps_own_org
 async def test_a_system_scope_skips_the_apps_that_are_done_or_being_deleted(pg_provider, monkeypatch: pytest.MonkeyPatch) -> None:
     apps = [{"_key": "a", "vectorMembershipBackfilled": True}, {"_key": "b", "status": "DELETING"}, {"_key": "c", "vectorMembershipBackfilled": False, "status": "ACTIVE"}, {"_key": "d"}]
 
-    async def listed(*a: object, **k: object) -> list[dict]:
-        return apps
-    monkeypatch.setattr(pg_provider, "_system_apps_page", listed)
+    async def listed(*a: object, **k: object) -> AsyncIterator[list[dict]]:
+        yield apps
+    monkeypatch.setattr(pg_provider, "_system_app_pages", listed)
     with org_context.system("test.vector-membership"):
         assert (await pg_provider.get_app_needing_vector_membership_backfill())["_key"] == "c"
         apps[2]["vectorMembershipBackfilled"] = True
@@ -196,9 +200,9 @@ async def test_a_system_scope_picks_the_lowest_id_in_byte_order(pg_provider, mon
     sharing an id keep the read's org order."""
     apps = [{"_key": "a", "orgId": "o2"}, {"_key": "b", "orgId": "o1"}, {"_key": "B", "orgId": "o0"}, {"_key": "B", "orgId": "o3"}]
 
-    async def listed(*a: object, **k: object) -> list[dict]:
-        return apps
-    monkeypatch.setattr(pg_provider, "_system_apps_page", listed)
+    async def listed(*a: object, **k: object) -> AsyncIterator[list[dict]]:
+        yield apps
+    monkeypatch.setattr(pg_provider, "_system_app_pages", listed)
     with org_context.system("test.vector-membership"):
         got = await pg_provider.get_app_needing_vector_membership_backfill()
     assert (got["_key"], got["orgId"]) == ("B", "o0")
@@ -210,33 +214,37 @@ async def test_a_system_scope_reads_every_page_before_it_picks(pg_provider, monk
     apps = [{"_key": k, "orgId": o, **x} for k, o, x in (("a", "o1", {"vectorMembershipBackfilled": True}), ("a", "o2", {"status": "DELETING"}),
             ("b", "o1", {"vectorMembershipBackfilled": True}), ("c", "o1", {}), ("c", "o2", {}), ("B", "o1", {}), ("B", "o3", {}))]
     rows = sorted(apps, key=lambda d: (d["_key"].swapcase(), d["orgId"]))      # a collation that is not byte order: "B" after "c", split over pages 3 and 4
-    limits: list[int] = []
+    pages_read: list[int] = []
 
-    async def paged(skip: int, limit: int, filters: object, after_key: str | None, return_fields: object, after_org: str = "") -> list[dict]:
-        limits.append(limit)
-        start = 0 if after_key is None else next(i for i, d in enumerate(rows) if (d["_key"], d["orgId"]) == (after_key, after_org)) + 1
-        return rows[start:start + limit]
-    monkeypatch.setattr(pg_provider, "_system_apps_page", paged)
-    monkeypatch.setattr(lookups, "SYSTEM_APPS_PAGE", 2)
+    async def paged(*a: object, **k: object) -> AsyncIterator[list[dict]]:
+        for i in range(0, len(rows), 2):
+            pages_read.append(i // 2)
+            yield rows[i:i + 2]
+    monkeypatch.setattr(pg_provider, "_system_app_pages", paged)
     with org_context.system("test.vector-membership"):
         got = await pg_provider.get_app_needing_vector_membership_backfill()
-        assert (got["_key"], got["orgId"]) == ("B", "o1") and max(limits) == 2 and len(limits) == 4
+        assert (got["_key"], got["orgId"]) == ("B", "o1") and pages_read == [0, 1, 2, 3]
         for d in apps:
             d["vectorMembershipBackfilled"] = True
         assert await pg_provider.get_app_needing_vector_membership_backfill() is None
 
 
 async def test_the_cross_org_read_of_instances_continues_after_one_id_and_org(pg_provider, org_ctx) -> None:
-    """With an org as well as an id, the read continues after that one row: the other orgs' copies of the id follow. With an id alone, after the id."""
+    """The pages continue after the last row's (id, org): the other orgs' copies of an id that ends a page follow it. The capped read continues after an
+    id, whichever orgs hold it."""
     orgs, cid = sorted([_org(), _org(), _org()]), f"0000-cursor-{uuid.uuid4().hex[:8]}"
     try:
         for o in orgs:
             with org_ctx(o):
                 await pg_provider.batch_upsert_nodes([{"_key": cid, "type": "DRIVE", "orgId": o}], "apps")
         with org_context.system("test.vector-membership"):
-            after_first = await pg_provider._system_apps_page(0, 2, None, cid, None, after_org=orgs[0])
+            pages = []
+            async for page in pg_provider._system_app_pages(after_key=cid, after_org=orgs[0], page_size=1):
+                pages.append([(d["_key"], d["orgId"]) for d in page])
+                if len(pages) == 2:
+                    break
             after_id = await pg_provider._system_apps_page(0, 1, None, cid, None)
-        assert [(d["_key"], d["orgId"]) for d in after_first] == [(cid, orgs[1]), (cid, orgs[2])]
+        assert pages == [[(cid, orgs[1])], [(cid, orgs[2])]]
         assert [d["_key"] for d in after_id] != [cid]
     finally:
         for o in orgs:

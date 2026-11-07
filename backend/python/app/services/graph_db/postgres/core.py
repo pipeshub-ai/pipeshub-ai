@@ -9,6 +9,8 @@ from app.config.constants.neo4j import parse_node_id
 from app.core.org_context import current_or_system, current_org_id
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from app.core.db import Tx
 
 from app.services.graph_db.postgres.base import (
@@ -101,33 +103,35 @@ class CoreMixin(PgBase):
         return [{f: d.get(f) for f in return_fields} for d in docs] if return_fields else docs
 
 
-    async def _system_apps_page(self, skip: int, limit: int, filters: dict[str, Any] | None, after_key: str | None, return_fields: list[str] | None,
-                                after_org: str = "") -> list[dict]:
+    async def _system_apps_page(self, skip: int, limit: int, filters: dict[str, Any] | None, after_key: str | None, return_fields: list[str] | None) -> list[dict]:
         """The connector instances across orgs (vetted ``graph.system_apps``): in (id, org) order, optionally only the active ones. Nothing else is filterable.
-        ``after_key`` continues after that id, whichever orgs hold it; with ``after_org`` too, after that one (id, org) row, so other orgs' copies of the id follow."""
+        ``after_key`` continues after that id, whichever orgs hold it."""
         extra = set(filters or {}) - {"isActive"}
         if extra or (filters and filters.get("isActive") is not True):
             raise ValueError(f"a cross-org read of connector instances filters on isActive=true only, not on {sorted(extra) or 'isActive=false'}")
+        if limit <= 0:
+            return []
         docs: list[dict] = []
-        skip_id = after_key if after_key and not after_org else None      # after an id, whichever orgs hold it
-        after, cur_org, to_skip = after_key or "", after_org if after_key else "", skip
-        while len(docs) < limit:
-            want = min(1000, to_skip + (limit - len(docs)))
-            rows = await self._system_read(lambda tx, a=after, o=cur_org, w=want: tx.fetch(
-                "/* pipeshub:graph.system_apps */ SELECT org_id, app_id, node_json FROM graph.system_apps($1, $2, $3, $4)", bool(filters), a, o, w))
-            for r in rows:
-                if skip_id is not None and r["app_id"] == skip_id:
-                    continue
-                if to_skip:
-                    to_skip -= 1
-                    continue
-                # the partition is the app's org: a legacy instance whose document has no orgId still names it
-                docs.append({**_arango(_doc(json.loads(r["node_json"])), "apps"), "orgId": r[0]})      # r[0]: the row's org_id
-            if len(rows) < want:
+        async for page in self._system_app_pages(only_active=bool(filters), after_key=after_key or "", page_size=min(1000, skip + limit)):
+            docs.extend(d for d in page if not (after_key and d["_key"] == after_key))
+            if len(docs) >= skip + limit:
                 break
-            after, cur_org = rows[-1][1], rows[-1][0]      # (app_id, org_id) of the last row: the cursor
-        docs = docs[:limit]
+        docs = docs[skip:skip + limit]
         return [{f: d.get(f) for f in return_fields} for d in docs] if return_fields else docs
+
+    async def _system_app_pages(self, *, only_active: bool = False, after_key: str = "", after_org: str = "", page_size: int = 1000) -> AsyncIterator[list[dict]]:
+        """Every connector instance across orgs after the (``after_key``, ``after_org``) row, in (id, org) order, ``page_size`` (1..1000) at a time to the end.
+        The cursor is the last row's (id, org): an id alone would skip the other orgs' copies of an id that ends a page."""
+        after, cur_org = after_key, after_org
+        while True:
+            rows = await self._system_read(lambda tx, a=after, o=cur_org: tx.fetch(
+                "/* pipeshub:graph.system_apps */ SELECT org_id, app_id, node_json FROM graph.system_apps($1, $2, $3, $4)", only_active, a, o, page_size))
+            if rows:
+                # the partition is the app's org: a legacy instance whose document has no orgId still names it
+                yield [{**_arango(_doc(json.loads(r["node_json"])), "apps"), "orgId": r[0]} for r in rows]      # r[0]: the row's org_id
+            if len(rows) < page_size:
+                return
+            after, cur_org = rows[-1][1], rows[-1][0]      # (app_id, org_id) of the last row
 
     async def batch_upsert_nodes(self, nodes: list[dict], collection: str, transaction: str | None = None) -> bool | None:
         if not nodes:
