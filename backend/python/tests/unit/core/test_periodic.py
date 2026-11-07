@@ -131,3 +131,25 @@ def test_failures_log_by_class_and_the_loop_continues(jobs_log) -> None:
 def test_cancel_propagates_without_a_failure_line(jobs_log) -> None:
     _run([])
     assert _ticks(jobs_log) == []
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_a_tick_awaited_in_place_leaves_the_callers_context_as_it_was(jobs_log, fails: bool) -> None:
+    from app.core.periodic import _tick
+
+    async def fn() -> None:
+        if fails:
+            raise KeyError("k")
+
+    async def main() -> tuple[object, dict]:
+        token = rc.set_context("caller-root")
+        try:
+            with oc.for_org("o1", job="parent"):
+                before = (rc.get_context(), dict(current_log_fields()))
+                await _tick("kh-keeper", fn)
+                return before, (rc.get_context(), dict(current_log_fields()))
+        finally:
+            rc.reset_context(token)
+
+    before, after = asyncio.run(main())
+    assert after == before

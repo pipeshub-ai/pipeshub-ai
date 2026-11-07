@@ -8,15 +8,15 @@ from typing import NoReturn
 
 from app.core.org_context import spawn_detached
 from app.utils.error_class import log_failure
-from app.utils.logging_fields import bind_log_fields, log_event
-from app.utils.request_context import new_system_root, set_context
+from app.utils.logging_fields import bind_log_fields, log_event, reset_log_fields
+from app.utils.request_context import new_system_root, reset_context, set_context
 
 _logger = logging.getLogger("app.jobs")
 
 
 async def _tick(name: str, fn: Callable[[], Awaitable[object]]) -> None:
-    set_context(new_system_root(name))
-    bind_log_fields(job=name)
+    context_token = set_context(new_system_root(name))
+    fields_token = bind_log_fields(job=name)
     start = time.monotonic()
     try:
         await fn()
@@ -25,6 +25,9 @@ async def _tick(name: str, fn: Callable[[], Awaitable[object]]) -> None:
     else:
         log_event(_logger, "job.tick.end", level=logging.DEBUG, outcome="success",
                   duration_ms=round((time.monotonic() - start) * 1000))
+    finally:
+        reset_log_fields(fields_token)
+        reset_context(context_token)
 
 
 async def run_periodic(name: str, interval_s: float, fn: Callable[[], Awaitable[object]]) -> NoReturn:
