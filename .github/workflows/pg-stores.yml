@@ -90,6 +90,7 @@ jobs:
         run: npm run test:pg-stores -- --reporter xunit --reporter-option output="$RUNNER_TEMP/pg-stores-junit.xml"
 
       - name: Count the fingerprint tests defined for the PostgreSQL leg
+        if: ${{ always() }}
         working-directory: backend/nodejs/apps
         env:
           PG_TEST_BINS: /usr/lib/postgresql/${{ matrix.pg }}/bin

@@ -9,6 +9,7 @@ import pytest
 
 from app.config.constants.arangodb import Connectors, PermissionModel
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+from app.models.entities import EntityType
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
@@ -471,3 +472,32 @@ class TestRecordTaxonomyLinksDepartments:
         assert "belongsToTopic" in query
         assert "departments" in _bind_vars(provider)[0]["collections"]
         assert "NOT_NULL(v.name, v.departmentName)" in query
+
+
+def _entity_types(provider: ArangoHTTPProvider) -> list[str]:
+    return [EntityType.RECORD.value, *provider._ENTITY_CANDIDATE_EDGE_TARGETS]
+
+
+class TestPermittedEntityRecordsDeclaresEveryBindVar:
+    """ArangoDB rejects a query passed a bind variable it never references, so
+    a filter added to one entity type's branch and not another's fails every
+    lookup of that type."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("with_record_types", [False, True])
+    async def test_every_entity_type(self, provider: ArangoHTTPProvider, with_record_types: bool) -> None:
+        for entity_type in _entity_types(provider):
+            provider.execute_query.reset_mock()
+            await provider.get_permitted_entity_records(
+                [{"type": entity_type, "id": "e1", "connectorIds": ["c1"]}],
+                "org1",
+                "uk1",
+                app_level_connector_ids=[],
+                record_types=["FILE"] if with_record_types else None,
+                within=[{"groups": ["rg1"]}],
+            )
+            queries = _queries(provider)
+            assert queries, entity_type
+            for query, bind_vars in zip(queries, _bind_vars(provider)):
+                undeclared = [name for name in bind_vars if f"@{name}" not in query]
+                assert not undeclared, (entity_type, undeclared)

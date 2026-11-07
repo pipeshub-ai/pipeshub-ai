@@ -834,6 +834,26 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def page_record_ids_by_type(
+        self,
+        org_id: str,
+        record_types: list[str],
+        *,
+        after_key: str | None = None,
+        limit: int = 500,
+    ) -> list[str]:
+        """Ids of ``org_id``'s non-deleted records whose ``recordType`` is in
+        ``record_types``, in key order, after ``after_key``, at most ``limit``.
+        For operator backfills that page through one org's records. A zero
+        ``limit`` returns no ids.
+
+        Raises:
+            ValueError: if ``limit`` is negative.
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
     async def get_typed_records_batch(
         self,
         record_ids: list[str],
@@ -1716,6 +1736,7 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        after: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Walk one hop from many nodes at once along the given relationship types.
@@ -1731,6 +1752,10 @@ class IGraphDBProvider(ABC):
             relationship_types (List[str]): Relationship type values to follow
             direction (str): "outbound", "inbound", or "any"
             limit (int): Maximum rows to return across the whole frontier
+            after (Optional[str]): Keyset paging. ``None`` keeps the unordered
+                single query. Any string (``""`` for the first page) returns rows
+                in ascending ``cursor`` order whose ``cursor`` is greater than it;
+                pass the last row's ``cursor`` to get the next page.
             transaction (Optional[str]): Optional transaction context
 
         Returns:
@@ -3399,13 +3424,16 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        org_id: str | None = None,
     ) -> Optional['User']:
         """
-        Get a user by email address.
+        Get a user by email address. Several organisations can hold a user with
+        the same address; ``org_id`` restricts the answer to that organisation's.
 
         None means there is no such user. A read that fails also answers None unless
         ``raise_on_error`` is set, which a caller needs when it would act on "no such
-        user" (replacing a record's permissions without them, say).
+        user" (replacing a record's permissions without them, say). With ``org_id``,
+        only that org's users are read: an address is not unique across orgs.
 
         Args:
             email (str): User email
@@ -3413,6 +3441,26 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Optional[Dict]: User data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_users_by_emails(
+        self,
+        emails: list[str],
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+        org_id: str | None = None,
+    ) -> dict[str, 'User']:
+        """
+        Get the users whose email is any of ``emails``, in one query.
+
+        Matching ignores case. The result maps each matched address, lowercased,
+        to its user; an address with no user is absent, and no addresses give
+        ``{}`` without a query. Scoping, and a failed read, follow
+        :meth:`get_user_by_email`: a failed read answers ``{}`` unless
+        ``raise_on_error`` is set.
         """
         pass
 
@@ -4136,6 +4184,31 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+
+    @abstractmethod
+    async def get_person_by_source_key(
+        self, source_key: str, org_id: str, transaction: str | None = None, *, raise_on_error: bool = False,
+    ) -> Optional['Person']:
+        """The Person keyed (org_id, source_key) — see ``Person.source_key`` — or
+        None. A read that fails answers None unless ``raise_on_error`` is set."""
+        pass
+
+    @abstractmethod
+    async def upsert_person_by_source_key(
+        self,
+        person: Person,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> str | None:
+        """Upsert a Person a source names without an email, keyed on
+        (org_id, source_key), returning the id of the surviving node.
+
+        Same contract as :meth:`upsert_person_by_email`: callers use the
+        returned id, an existing node is never updated, and a failed write
+        answers None unless ``raise_on_error`` is set.
+        """
+        pass
     @abstractmethod
     async def ensure_app_membership(
         self,
@@ -8453,6 +8526,54 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_record_people(self, record_id: str, org_id: str) -> list[dict[str, Any]]:
+        """Members of ``org_id`` linked to the record, itself of ``org_id``, by an ``entityRelations``
+        edge in either direction (record -> user from ``record_people``,
+        user -> record from message mentions), each once:
+        ``{"id", "name", "email"}``. ``name`` is the user's full name or
+        None.
+
+        Raises:
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_organizations(self, record_id: str, org_id: str) -> list[dict[str, Any]]:
+        """External organisations of ``org_id`` (``isExternal``, with
+        ``parentOrgId == org_id``) linked to the record by an
+        ``entityRelations`` edge, each once: ``{"id", "name"}``.
+
+        Raises:
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_group_organization(
+        self, record_group_id: str, org_id: str, transaction: str | None = None,
+    ) -> str | None:
+        """The external organisation of ``org_id`` a CRM account's record
+        group belongs to (its ``dealOf`` edge), or None.
+
+        Raises:
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
+    async def stamp_external_org_parents(self, org_id: str) -> int:
+        """Set ``parentOrgId = org_id`` on the external organisations the
+        org ``org_id`` has a ``prospect`` or ``customer`` edge to and
+        that carry no owning org yet (written before accounts recorded one).
+        Returns how many were stamped.
+
+        Raises:
+            Exception: on query failure.
+        """
+        pass
+
+    @abstractmethod
     async def get_permitted_entity_records(
         self,
         refs: list[dict[str, Any]],
@@ -8546,9 +8667,11 @@ class IGraphDBProvider(ABC):
         org_id: str,
         transaction: str | None = None,
     ) -> dict[tuple[str, str], dict[str, list[str]]]:
-        """Which connectors and record groups still reach each taxonomy entity,
-        from the graph: the distinct ``connectorId`` / ``recordGroupId`` of
-        non-deleted records in ``org_id`` with a ``belongsTo*`` edge to it.
+        """Which connectors and record groups still reach each taxonomy entity
+        or person, from the graph: the distinct ``connectorId`` /
+        ``recordGroupId`` of non-deleted records in ``org_id`` with a
+        ``belongsTo*`` edge to it, or for a person an ``entityRelations`` edge
+        in either direction (a person of another org reaches nothing).
 
         The entity vector store's stored membership is only a projection of
         this; connector cleanup uses it before deleting a point that looks
@@ -8556,8 +8679,8 @@ class IGraphDBProvider(ABC):
 
         Args:
             refs: ``{"id": str, "type": str}`` for ``department``, ``category``,
-                ``subcategory`` (levels 1-3), ``topic`` or ``language``; other
-                types are ignored.
+                ``subcategory`` (levels 1-3), ``topic``, ``language`` or
+                ``person``; other types are ignored.
             org_id: Organization scope. Empty returns ``{}`` without querying.
             transaction: Optional transaction id.
 
@@ -8696,6 +8819,98 @@ class IGraphDBProvider(ABC):
 
         Returns:
             ``[{"_key", "name", "records"}]``, at most ``limit``.
+        """
+        pass
+
+    @abstractmethod
+    async def find_merged_taxonomy_nodes_with_edges(
+        self,
+        collection: str,
+        org_id: str,
+        limit: int,
+        after_key: str | None = None,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Nodes of ``org_id`` in ``collection`` that were merged into another
+        (``mergedInto`` set) yet still have record edges from the org's
+        records, trashed ones included, with how many distinct such records
+        each has, ordered by key after ``after_key``. Indexing that resolved
+        to a node just before it was merged links to it afterwards; these are
+        the edges a re-run of the merge would move.
+
+        Returns:
+            ``[{"_key", "name", "mergedInto", "records"}]``, at most ``limit``.
+        """
+        pass
+
+    @abstractmethod
+    async def find_organizations(
+        self,
+        org_id: str,
+        keys: list[str],
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """External organisations of org ``org_id`` (CRM accounts and
+        extracted ones) whose ``normalizedName`` is one of ``keys``.
+
+        Returns:
+            ``[{"id", "name", "normalizedName"}]``.
+        """
+        pass
+
+    @abstractmethod
+    async def create_organization_if_absent(
+        self,
+        org_id: str,
+        node: dict[str, Any],
+        transaction: str | None = None,
+    ) -> None:
+        """Create an extracted organisation of org ``org_id`` unless a node
+        with ``node["id"]`` exists; an existing node is left as it is.
+
+        ``node`` carries ``id``, ``name`` and ``normalizedName``; the node is
+        external and active, so every organisation query treats it like a
+        CRM account.
+        """
+        pass
+
+    @abstractmethod
+    async def delete_record_entity_relations(
+        self,
+        record_id: str,
+        to_collection: str,
+        origin: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete the ``entityRelations`` edges from record ``record_id`` to
+        nodes of ``to_collection`` whose ``origin`` is ``origin``. An edge
+        without one predates origins and counts as INFERRED, so a connector
+        sync and a re-extraction each replace only their own edges.
+
+        Returns:
+            How many edges were deleted.
+        """
+        pass
+
+    @abstractmethod
+    async def get_organization_record_reach(
+        self,
+        org_id: str,
+        keys: list[str],
+        transaction: str | None = None,
+        *,
+        record_cap: int | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """For each of ``keys`` that is an external organisation of org
+        ``org_id``: how many live records of the org name it (EXTRACTED
+        edges), and whether a connector knows it (a record group's ``dealOf``
+        edge, an org's ``prospect``/``customer`` edge, or an INFERRED
+        record edge). Trashed records count for neither. With
+        ``record_cap``, counting stops there: deciding the searchability
+        threshold need not walk every record of a much-named organisation.
+
+        Returns:
+            ``{key: {"records": int, "inferred": bool}}``; other keys are left out.
         """
         pass
 

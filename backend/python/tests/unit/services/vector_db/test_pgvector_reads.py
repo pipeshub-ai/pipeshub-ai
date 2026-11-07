@@ -229,3 +229,11 @@ async def test_scroll_and_retrieve_pin_the_org_the_collection_the_space_and_the_
         assert "p.org_id = $1" in statement and "p.collection_id = $2" in statement and "p.space_id = $3" in statement
         assert "point_tombstones t WHERE t.org_id = $1" in statement
     assert len(tx.sql) == 2
+
+
+def test_a_stamped_group_comes_back_with_its_scope_keys_and_an_unstamped_one_with_none() -> None:
+    stamped = reads.to_point(row(scope_version=5, scope_stamp="union", path_ids=["s", "p"], acl_scope=None, scope_generation=3), None, A)
+    assert (stamped.payload["scopeStamp"], stamped.payload["pathIds"], stamped.payload["aclScope"]) == ("union", ["s", "p"], [])
+    assert (stamped.payload["scopeFieldsVersion"], stamped.payload["scopeGeneration"]) == (5, 3)
+    plain = reads.to_point(row(), None, A).payload
+    assert not {"scopeStamp", "pathIds", "aclScope", "scopeFieldsVersion", "scopeGeneration"} & set(plain)       # never stamped: not "container"

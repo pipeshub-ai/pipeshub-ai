@@ -69,10 +69,10 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
 # the modules besides the kernel: platform (the store fence, background jobs and the runtime tables), the document store's branches and the vector retrieval module
 DOCSTORE_BRANCHES = ("content", "conversation", "identity", "integrations", "oauth", "platform_data")
 MODULES = ("platform", *DOCSTORE_BRANCHES, "retrieval")
-HEADS = {"kernel": (17, 11), "platform": (4, 0), "content": (3, 0), "conversation": (2, 0), "identity": (4, 0), "integrations": (2, 0), "oauth": (4, 0), "platform_data": (4, 0),
-         "graph": (2, 0), "kg": (4, 0), "retrieval": (1, 0)}
+HEADS = {"kernel": (17, 11), "platform": (5, 0), "content": (3, 0), "conversation": (2, 0), "identity": (5, 0), "integrations": (2, 0), "oauth": (4, 0), "platform_data": (4, 0),
+         "graph": (5, 0), "kg": (7, 0), "retrieval": (2, 0)}
 # platform_data_0002 depends on the last revision of most other document-store branches, so those are not heads
-REVISION_HEADS = {"platform_0004", "identity_0004", "content_0003", "oauth_0004", "platform_data_0004", "kg_0004", "retrieval_0001"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
+REVISION_HEADS = {"platform_0005", "identity_0005", "content_0003", "oauth_0004", "platform_data_0004", "kg_0007", "retrieval_0002", "graph_0005"}      # kg depends on kernel_0017 and graph_0002, which are no longer heads
 
 
 def test_fresh_install(db):
@@ -491,34 +491,43 @@ def test_a_downgrade_to_the_previous_revision_leaves_a_clean_catalog_and_upgrade
     assert epochs(cluster, name) == HEADS
 
 
-def test_the_jobs_role_keeps_only_what_the_organisation_gauges_read_and_the_revision_round_trips(db):
+def test_the_jobs_role_can_read_the_organisation_gauges_through_functions_and_the_revision_round_trips(db):
     cluster, name = db
     url = cluster.url(name, MIGRATE)
     assert run_migrate(url).returncode == 0
     policies = "SELECT count(*) FROM pg_policies WHERE schemaname = 'identity' AND policyname = 'jobs_all'"
+    gauges = {"gauge_user_counts": ["org_id", "n"], "gauge_live_orgs": ["org_id", "account_type", "domain"], "gauge_auth_configs": ["org_id", "auth_steps"]}
     with connect(cluster, name) as c:
         for org in ("a" * 24, "b" * 24):
             c.execute("INSERT INTO identity.orgs (org_id, domain, contact_email, account_type, created_at, updated_at) VALUES (%s, 'x.test', 'a@x.test', 'business', now(), now())", (org,))
             c.execute("INSERT INTO identity.users (org_id, id, slug, email, created_at, updated_at) VALUES (%s, %s, 'user-1', 'a@x.test', now(), now())", (org, "a" * 24))
             c.execute("INSERT INTO identity.org_auth_config (org_id, id, auth_steps, created_at, updated_at) VALUES (%s, %s, '[1]', now(), now())", (org, "a" * 24))
-        assert c.execute(policies).fetchone()[0] == 3
-        c.execute("SET ROLE pipeshub_jobs")
-        for sql in ("SELECT u.org_id, count(*) FROM identity.users u WHERE NOT u.is_deleted GROUP BY u.org_id",
-                    "SELECT o.org_id, o.account_type, o.domain FROM identity.orgs o WHERE NOT o.is_deleted",
-                    "SELECT c.org_id, c.auth_steps FROM identity.org_auth_config c WHERE NOT c.is_deleted"):
-            assert len(c.execute(sql).fetchall()) == 2
-        for sql in ("SELECT 1 FROM identity.user_credentials", "UPDATE identity.user_credentials SET wrong_count = 0",
-                    "SELECT 1 FROM identity.user_groups", "UPDATE identity.users SET is_deleted = true",
-                    "INSERT INTO identity.users (org_id, id, slug, email, created_at, updated_at) VALUES ('" + "a" * 24 + "', '" + "b" * 24 + "', 'user-2', 'b@x.test', now(), now())"):
-            with pytest.raises(psycopg.errors.InsufficientPrivilege):
-                c.execute(sql)
+        assert c.execute(policies).fetchone()[0] == 3      # this revision only adds the functions: the jobs role keeps its three tables
+        tables = [r[0] for r in c.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'identity' AND table_type = 'BASE TABLE'").fetchall()]
+        assert len(tables) == 11
+        c.execute("SET ROLE pipeshub_jobs")      # no app.org_id: the system context of the gauges
+        for fn, cols in gauges.items():
+            cur = c.execute(f"SELECT * FROM identity.{fn}()")
+            assert [d.name for d in cur.description] == cols and len(cur.fetchall()) == 2
+        readable = ("users", "orgs", "org_auth_config")
+        for t in tables:
+            if t in readable:
+                assert len(c.execute(f"SELECT 1 FROM identity.{t}").fetchall()) == 2
+            else:
+                with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                    c.execute(f"SELECT 1 FROM identity.{t}")
         c.execute("RESET ROLE")
+        for fn in gauges:
+            who = [r[0] for r in c.execute("SELECT r.rolname FROM pg_roles r WHERE has_function_privilege(r.oid, %s::regprocedure, 'EXECUTE') AND NOT r.rolsuper ORDER BY 1", (f"identity.{fn}()",))]
+            assert who == ["pipeshub_jobs", "pipeshub_vetted_identity"], who      # the grant, and the owner
         c.execute("DELETE FROM identity.org_auth_config; DELETE FROM identity.users; DELETE FROM identity.orgs")
-    r = run_migrate(url, "downgrade", "identity_0003", PG_MIGRATE_ALLOW_DOWNGRADE="1")
+    r = run_migrate(url, "downgrade", "identity_0004", PG_MIGRATE_ALLOW_DOWNGRADE="1")
     assert r.returncode == 0, r.stdout
     with connect(cluster, name) as c:
-        assert c.execute("SELECT count(*) FROM information_schema.role_table_grants WHERE grantee = 'pipeshub_jobs' AND table_schema = 'identity'").fetchone()[0] == 11 * 4
-        assert c.execute(policies).fetchone()[0] == 11
+        assert [tuple(x) for x in c.execute("SELECT table_name, privilege_type FROM information_schema.role_table_grants WHERE grantee = 'pipeshub_jobs' AND table_schema = 'identity' ORDER BY 1, 2")] == [
+            (t, "SELECT") for t in ("org_auth_config", "orgs", "users")]
+        assert c.execute(policies).fetchone()[0] == 3
+        assert c.execute("SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'identity' AND p.proname LIKE 'gauge\\_%%'").fetchone()[0] == 0
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
     with connect(cluster, name) as c:      # PGOPTIONS does not reach the migration session (env.py sets its own options), a role setting does
         c.execute("ALTER ROLE pipeshub_migrate SET search_path = identity, public")
@@ -527,6 +536,8 @@ def test_the_jobs_role_keeps_only_what_the_organisation_gauges_read_and_the_revi
     assert epochs(cluster, name) == HEADS
     with connect(cluster, name) as c:      # the tables are found whatever the session's search_path is
         assert c.execute(policies).fetchone()[0] == 3
+        assert c.execute("SELECT count(*) FROM information_schema.role_table_grants WHERE grantee = 'pipeshub_jobs' AND table_schema = 'identity'").fetchone()[0] == 3
+        assert c.execute("SELECT count(*) FROM information_schema.routine_privileges WHERE grantee = 'pipeshub_jobs' AND routine_schema = 'identity'").fetchone()[0] == 3
         assert [tuple(x) for x in c.execute("SELECT rule, object FROM kernel.rls_violations")] == []
 
 
@@ -549,17 +560,17 @@ def test_the_one_running_job_index_comes_and_goes_with_the_platform_job_function
         assert c.execute(index).fetchone()[0] is True
 
 
-def test_the_runtime_tables_come_and_go_with_platform_0003_and_0004(db):
-    """The key-value, queue and scheduler tables are internal tables the four service roles may use; a downgrade takes them and their registry rows away."""
+def test_the_runtime_tables_come_and_go_with_platform_0003_to_0005(db):
+    """The key-value, queue, scheduler and cache tables are internal tables the service roles may use; a downgrade takes them and their registry rows away."""
     cluster, name = db
     url = cluster.url(name, MIGRATE)
-    tables = ("kv_entries", "queue_messages", "queue_groups", "queue_deliveries", "sched_jobs", "sched_repeats")
+    tables = ("kv_entries", "queue_messages", "queue_groups", "queue_deliveries", "sched_jobs", "sched_repeats", "cache_entries")
     assert run_migrate(url).returncode == 0
     with connect(cluster, name) as c:
         for t in tables:
             assert c.execute("SELECT class FROM kernel.rls_registry WHERE rel = %s::regclass", (f"platform.{t}",)).fetchone()[0] == "internal"
             who = {  # who may use each table: the Node API everything; the Python services the key-value and queue tables; the config-only role just key-value
-                "sched_jobs": {"pipeshub_node"}, "sched_repeats": {"pipeshub_node"},
+                "sched_jobs": {"pipeshub_node"}, "sched_repeats": {"pipeshub_node"}, "cache_entries": {"pipeshub_node"},
                 "kv_entries": {"pipeshub_node", "pipeshub_connectors", "pipeshub_indexing", "pipeshub_query", "pipeshub_kv"},
             }.get(t, {"pipeshub_node", "pipeshub_connectors", "pipeshub_indexing", "pipeshub_query"})
             for role in ("pipeshub_node", "pipeshub_connectors", "pipeshub_indexing", "pipeshub_query", "pipeshub_kv", "pipeshub_jobs"):
@@ -714,7 +725,7 @@ def test_skipping_the_surface_check_is_loud_and_remembered(db):
 
 # ---- a build older than the database (helm rollback of a deployment whose migrate Job is created again) ----------------------------
 
-def _as_newer_build(cluster, name, revision="platform_0004", min_code=None):
+def _as_newer_build(cluster, name, revision="platform_0005", min_code=None):
     """Emulate a database migrated by a newer build: one head carries a revision id this tree does not have."""
     with cluster.admin(name) as c:
         c.execute("UPDATE kernel.alembic_version SET version_num = 'platform_0099' WHERE version_num = %s", (revision,))

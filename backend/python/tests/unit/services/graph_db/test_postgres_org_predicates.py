@@ -18,7 +18,7 @@ from sqlglot import exp, parse_one
 PROVIDER = Path(__file__).resolve().parents[4] / "app" / "services" / "graph_db" / "postgres"
 MODULES = [p.name for p in sorted(PROVIDER.glob("*.py")) if p.name not in ("__init__.py", "provider.py")]      # every module that holds statements
 PARTITIONED = {"graph.nodes", "graph.edges"}
-CALLS = {"fetch", "fetchrow", "fetchval", "execute", "_qrows", "_lrows", "_drows", "_rows", "_one", "_id_rows"}      # the helpers pass their SQL on
+CALLS = {"fetch", "fetch_custom_plan", "fetchrow", "fetchval", "execute", "_qrows", "_lrows", "_drows", "_rows", "_one", "_id_rows"}      # the helpers pass their SQL on
 
 
 def unbound_tables(sql: str) -> list[str]:

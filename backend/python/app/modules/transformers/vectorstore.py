@@ -1003,6 +1003,7 @@ class _RecordPresence:
         self._present_since: float | None = None
 
     async def check(self) -> bool:
+        """Whether the record exists. A failed read raises: it must not read as a deletion."""
         async with self._lock:
             started = time.monotonic()
             if (
@@ -1011,7 +1012,7 @@ class _RecordPresence:
             ):
                 return True
             record_doc = await self._graph_provider.get_document(
-                self._record_id, CollectionNames.RECORDS.value
+                self._record_id, CollectionNames.RECORDS.value, raise_on_error=True
             )
             self._present_since = started if record_doc is not None else None
             return record_doc is not None
@@ -1802,7 +1803,7 @@ class VectorStore(Transformer):
         Guard: skip entirely if the record was deleted mid-flight.
         """
         record_doc = await self.graph_provider.get_document(
-            record_id, CollectionNames.RECORDS.value
+            record_id, CollectionNames.RECORDS.value, raise_on_error=True
         )
         if record_doc is None:
             self.logger.warning(

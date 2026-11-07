@@ -86,6 +86,7 @@ CODE_RELATIONS = [*STRUCTURAL_RELATIONS, *CROSS_FILE_RELATIONS]
 # count ranks the wrong symbol first, which is worse than no ranking at all.
 _DEGREE_CANDIDATES = 400
 _DEGREE_ROW_LIMIT = 50000
+_DEGREE_PAGE = 5000
 
 _BLOCKS = CollectionNames.BLOCKS.value
 _RECORDS = CollectionNames.RECORDS.value
@@ -488,28 +489,37 @@ async def _readable_blocks(
     return out
 
 
-async def _readable_keys(
+async def _readable_block_records(
     graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess, keys: "Iterable[str]",
-) -> set[str]:
-    """The keys among ``keys`` of blocks in this org whose file the caller may read.
+    connector_id: str | None = None,
+) -> dict[str, str]:
+    """Block key -> record id, for the blocks among ``keys`` in this org (and ``connector_id``) the caller may read.
 
     The one check a traversal applies at every hop (S-7): what is reached
     through a file the caller cannot read, and what is counted, must not
-    depend on that file. Loads only key, record and org.
+    depend on that file. Loads only key, record, org and connector.
     """
     wanted = sorted({k for k in keys if k})
     if not wanted:
-        return set()
+        return {}
     rows = [
         _unwrap(row) for row in await graph_provider.get_nodes_by_field_in(
             collection=_BLOCKS, field_name="_key", field_values=wanted,
-            return_fields=["_key", "recordId", "orgId"], raise_on_error=True,
+            return_fields=["_key", "recordId", "orgId", "connectorId"], raise_on_error=True,
         ) or []
     ]
-    rows = [r for r in rows if r.get("orgId") == org_id]
+    rows = [r for r in rows if r.get("orgId") == org_id
+            and (connector_id is None or r.get("connectorId") == connector_id)]
     readable = await access.readable(r.get("recordId") for r in rows)
-    return {key for r in rows
+    return {key: r["recordId"] for r in rows
             if r.get("recordId") in readable and (key := r.get("_key") or r.get("id"))}
+
+
+async def _readable_keys(
+    graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess, keys: "Iterable[str]",
+) -> set[str]:
+    """The keys among ``keys`` of blocks in this org whose file the caller may read."""
+    return set(await _readable_block_records(graph_provider, org_id, access, keys))
 
 
 async def attach_file_paths(
@@ -540,6 +550,79 @@ def _key_of(block: dict) -> str:
     return block.get("_key") or block.get("id") or ""
 
 
+class _WalkFailed(RuntimeError):
+    """The store's neighbour query failed (as opposed to the access check)."""
+
+
+async def _readable_neighbour_rows(
+    graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess | None, keys: list[str],
+    relations: list[str], direction: str, *, page: int, budget: int, want: int | None = None,
+    connector_id: str | None = None, include_tests: bool = True,
+    accept: "Callable[[dict[str, Any]], bool] | None" = None,
+) -> tuple[list[dict[str, Any]], bool, bool]:
+    """Edge rows from ``keys`` whose far end the caller can read: ``(rows, over, incomplete)``.
+
+    Pages the store in a fixed order and filters each page before counting, so
+    rows the caller cannot read, rows ``accept`` refuses, blocks outside
+    ``connector_id`` and (unless ``include_tests``) test-file blocks neither
+    fill ``want`` nor move ``over``. Test rows are still returned, uncounted, so
+    the caller can say how many it hid. ``over`` is true when more than ``want``
+    counted rows exist (the first ``want`` are returned). ``incomplete`` is true
+    when ``budget`` raw rows were scanned before the store ran out or ``want``
+    was passed. ``access=None`` skips the readability check.
+    """
+    counted: list[dict[str, Any]] = []
+    tests: list[tuple[int, dict[str, Any]]] = []
+    counted_at: list[int] = []     # stream position of each counted row, in the store's own order
+    scanned, after = 0, ""
+    while True:
+        try:
+            raw = list(await graph_provider.get_neighbors_for_nodes_by_relationship_types(
+                node_keys=keys, node_collection=_BLOCKS, relationship_types=relations,
+                direction=direction, limit=page, after=after, raise_on_error=True,
+            ) or [])
+        except Exception as exc:
+            logger.exception("Neighbour walk failed")
+            raise _WalkFailed("Failed to walk the code graph") from exc
+        first = scanned
+        scanned += len(raw)
+        raw_kept = [(first + i, r) for i, r in enumerate(raw)
+                    if r.get("collection") in (_BLOCKS, _RECORDS) and (accept is None or accept(r))]
+        block_keys = [r.get("key") for _, r in raw_kept if r.get("collection") == _BLOCKS]
+        if access is None:
+            ok_blocks, ok_records = dict.fromkeys(k for k in block_keys if k), None
+        else:
+            ok_blocks = await _readable_block_records(graph_provider, org_id, access, block_keys, connector_id)
+            ok_records = await access.readable(r.get("key") for _, r in raw_kept if r.get("collection") == _RECORDS)
+        roles = {} if include_tests else await get_record_roles(graph_provider, org_id, set(ok_blocks.values()))
+        for pos, r in raw_kept:
+            if r.get("collection") == _BLOCKS:
+                if r.get("key") not in ok_blocks:
+                    continue
+                if roles.get(ok_blocks[r["key"]]) == TEST_ROLE:
+                    tests.append((pos, r))
+                    continue
+            elif ok_records is not None and r.get("key") not in ok_records:
+                continue
+            counted.append(r)
+            counted_at.append(pos)
+        if want is not None and len(counted) > want:
+            # Test rows past the last kept row would depend on where hidden rows put the page breaks.
+            # Compared by stream position, not by cursor text: the store's collation is not ours.
+            cut = counted_at[want - 1] if want > 0 else -1
+            return counted[:want] + [t for pos, t in tests if pos < cut], True, False
+        if len(raw) < page:
+            return counted + [t for _, t in tests], False, False
+        if scanned >= budget:
+            # shortcut: the scan stops after `budget` raw rows; filter readability in the store query if hubs routinely exceed it.
+            return counted + [t for _, t in tests], False, True
+        # A provider that ignores `after` would repeat a page for ever (equality only: the store's collation is not ours).
+        if not (nxt := raw[-1].get("cursor")) or nxt == after:
+            logger.error("Neighbour query did not advance its cursor")
+            raise _WalkFailed("Failed to walk the code graph")
+        after = nxt
+
+
 async def _degrees(
     graph_provider: IGraphDBProvider, blocks: list[dict], relations: list[str],
     org_id: str, access: RecordAccess,
@@ -561,33 +644,16 @@ async def _degrees(
     if len(keys) < 2:
         return {}, False
     try:
-        rows = await graph_provider.get_neighbors_for_nodes_by_relationship_types(
-            node_keys=keys,
-            node_collection=_BLOCKS,
-            relationship_types=relations,
-            direction="any",
-            limit=_DEGREE_ROW_LIMIT,
+        rows, _, incomplete = await _readable_neighbour_rows(
+            graph_provider, org_id, access, keys, relations, "any",
+            page=_DEGREE_PAGE, budget=_DEGREE_ROW_LIMIT,
         )
-    except Exception as exc:
-        logger.warning("Degree lookup failed: %s", exc)
+    except _WalkFailed as exc:
+        logger.warning("Degree lookup failed: %s", exc.__cause__ or exc)
         return {}, False
-    rows = list(rows or [])
-    # Only edges to what the caller can read: a count over hidden files says
-    # how much is hidden there (S-7).
-    readable_blocks = await _readable_keys(
-        graph_provider, org_id, access,
-        (r.get("key") for r in rows if r.get("collection") == _BLOCKS),
-    )
-    readable_records = await access.readable(
-        r.get("key") for r in rows if r.get("collection") == _RECORDS
-    )
-    counts: Counter = Counter()
-    for row in rows:
-        anchor = row.get("anchorKey")
-        key = row.get("key")
-        if anchor and (key in readable_blocks or key in readable_records):
-            counts[anchor] += 1
-    capped = len(rows) >= _DEGREE_ROW_LIMIT or len(blocks) > _DEGREE_CANDIDATES
+    counts: Counter = Counter(r["anchorKey"] for r in rows if r.get("anchorKey"))
+    # Capped only when the scan budget ran out: hidden edges below it change nothing.
+    capped = incomplete or len(blocks) > _DEGREE_CANDIDATES
     return dict(counts), capped
 
 

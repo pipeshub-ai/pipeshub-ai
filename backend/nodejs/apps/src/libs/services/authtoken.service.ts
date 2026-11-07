@@ -67,7 +67,7 @@ function isSignatureMismatch(error: unknown): boolean {
 
 @injectable()
 export class AuthTokenService {
-  private readonly logger = Logger.getInstance();
+  private readonly logger = Logger.getInstance({ service: 'AuthTokenService' });
   private readonly jwtSecret: string;
   private readonly scopedJwtSecret: string;
   private readonly jwtVerificationKey: KeyObject;

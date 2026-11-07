@@ -1,6 +1,8 @@
 import { Response } from 'express';
+import axios from 'axios';
 import { BaseError } from '../errors/base.error';
 import { Logger } from '../services/logger.service';
+import { axiosErrorForLog } from './log-redaction.utils';
 
 /**
  * 'warn' for a 4xx of ours: the caller's request answered as intended (a taken
@@ -18,20 +20,14 @@ export const extractErrorData = (error: any, includeStack = true): any => {
   if (!error) return null;
 
   try {
+    // Before toJSON: an AxiosError's toJSON serialises the request it carried.
+    if (axios.isAxiosError(error)) return axiosErrorForLog(error, includeStack);
+
     // For errors with a toJSON method (like BaseError)
     // Include stack trace for logging purposes only (not for client responses)
-    if (typeof error.toJSON === 'function') {
-      const json: unknown = error.toJSON(includeStack);
-      // An AxiosError's toJSON ignores the argument and always adds the stack.
-      if (includeStack || !json || typeof json !== 'object') return json;
-      const { stack: _stack, ...withoutStack } = json as Record<
-        string,
-        unknown
-      >;
-      return withoutStack;
-    }
+    if (typeof error.toJSON === 'function') return error.toJSON(includeStack);
 
-    // Handle Axios error response data
+    // Another HTTP client's error that carries the upstream answer (e.g. GaxiosError)
     if (error.response?.data) {
       const data = error.response.data;
       return {

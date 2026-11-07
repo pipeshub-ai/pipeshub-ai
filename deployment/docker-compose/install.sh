@@ -112,6 +112,7 @@ FLAG_RECONFIGURE=false
 FLAG_UPGRADE=false
 FLAG_STOP=false
 FLAG_UNINSTALL=false
+FLAG_DELETE_POSTGRES=false
 FLAG_BUILD=false
 FLAG_NO_PULL=false
 FLAG_ROTATE_SIGNING_SECRETS=false
@@ -141,6 +142,8 @@ Options:
                        an image refresh. Pass --yes to skip the confirm prompt.
       --stop           Stop the running stack (data preserved)
       --uninstall      Stop and remove ALL data volumes (irreversible)
+      --delete-postgres  With --uninstall: also delete the PostgreSQL data volume. Without it, --yes keeps that volume and an
+                       interactive run asks.
   -h, --help           Show this help
 
 Environment overrides (bypass prompts in CI):
@@ -174,6 +177,7 @@ while [[ $# -gt 0 ]]; do
     --rotate-signing-secrets) FLAG_ROTATE_SIGNING_SECRETS=true ;;
     --stop)              FLAG_STOP=true ;;
     --uninstall)         FLAG_UNINSTALL=true ;;
+    --delete-postgres)   FLAG_DELETE_POSTGRES=true ;;
     -h|--help)           usage; exit 0 ;;
     *) die "Unknown option: $1. Use --help for usage." ;;
   esac
@@ -265,6 +269,15 @@ optional_env_line() {
   fi
 }
 
+# The opt-in PostgreSQL profiles are not derived from a selector: keep the ones already set (in the shell or in the saved .env), and
+# both of them whenever the document-store override is in use, since it depends on services of both.
+opt_in_profiles() {
+  local o have="${COMPOSE_PROFILES:-},$(_saved_env_val COMPOSE_PROFILES)"
+  for o in postgres postgres-migrate; do
+    if [[ ",${have}," == *",${o},"* || "${PIPESHUB_COMPOSE_OVERRIDES:-}" == *docker-compose.postgres-docstore.yml* ]]; then echo "$o"; fi
+  done
+}
+
 # Derive the COMPOSE_PROFILES that the *currently configured* services require,
 # from the canonical selectors persisted in .env. The app talks to whatever
 # DATA_STORE / MESSAGE_BROKER / KV_STORE_TYPE say, so the profiles that start the
@@ -282,6 +295,8 @@ derive_compose_profiles() {
   # Coding sandbox image. Eval skips it: Neo4j stays (search ACLs live there);
   # run_code is the cut. Slim/full keep the profile so SANDBOX_MODE=docker works.
   [[ "${DEPLOY_TYPE:-}" != "eval" ]] && p+=("sandbox")
+  local o
+  while IFS= read -r o; do [[ -n "$o" ]] && p+=("$o"); done < <(opt_in_profiles)
   # Guard the empty-array case: on bash 3.2 under `set -u`, "${p[*]}" on an empty
   # array is an unbound-variable error.
   if (( ${#p[@]} == 0 )); then echo ""; return; fi
@@ -664,7 +679,7 @@ if $FLAG_STOP; then
   # profile stays attached to the network and blocks its removal
   # ("Resource is still in use"). --remove-orphans clears containers left by a
   # previously-active profile too.
-  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox"
+  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate"
   docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" down --remove-orphans
   success "PipesHub stopped (project ${PROJECT_NAME}). Data volumes are preserved."
   info "To start again: ./install.sh"
@@ -687,7 +702,35 @@ if $FLAG_UNINSTALL; then
   # profile was active for this deployment.  Without this, volumes from a
   # previously-used profile (e.g. arango_data after switching to neo4j) would
   # be silently left behind.
-  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox"
+  export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox,postgres,postgres-migrate"
+  # `down -v` with the postgres profile would delete the database with everything else: keep it unless asked.
+  _keep_pg=false
+  _pg_vol=""
+  if ! $FLAG_DELETE_POSTGRES; then
+    # A failed lookup must not read as "no PostgreSQL volume": down -v would then delete it.
+    _pg_vol="$(docker volume ls -q --filter "name=^${PROJECT_NAME}_postgres_data$" 2>&1)" \
+      || { error "Could not list Docker volumes (${_pg_vol}). Nothing was changed."; exit 1; }
+  fi
+  if [[ -n "$_pg_vol" ]]; then
+    if $FLAG_YES; then
+      _keep_pg=true
+      info "Keeping the PostgreSQL data volume; pass --delete-postgres to remove it too."
+    else
+      printf "\n  ${BOLD}%s${RESET} [y/N]: " "Also delete the PostgreSQL data volume?"
+      read -r _confirm_pg
+      [[ "${_confirm_pg:-N}" =~ ^[Yy]$ ]] || _keep_pg=true
+    fi
+  fi
+  if $_keep_pg; then
+    # Stop and remove every container (all profiles), then every volume of the project except the database's.
+    docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" down --remove-orphans
+    while IFS= read -r _vol; do
+      [[ -z "$_vol" || "$_vol" == "${PROJECT_NAME}_postgres_data" ]] && continue
+      docker volume rm "$_vol" >/dev/null || warn "Could not remove volume $_vol"
+    done < <(docker volume ls -q --filter "label=com.docker.compose.project=${PROJECT_NAME}")
+    success "PipesHub stopped and data volumes removed, except PostgreSQL (project ${PROJECT_NAME})."
+    exit 0
+  fi
   docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" down -v --remove-orphans
   success "PipesHub stopped and all data volumes removed (project ${PROJECT_NAME})."
   exit 0
@@ -1137,6 +1180,8 @@ if ! ${SKIP_WIZARD:-false}; then
   [[ "$KV_STORE"  == "etcd"  ]] && PROFILES+=("kv-etcd")
   [[ "$BROKER"    == "kafka" ]] && PROFILES+=("broker-kafka")
   [[ "$DEPLOY_TYPE" != "eval" ]] && PROFILES+=("sandbox")
+  # --reconfigure rebuilds the profiles from the choices above: the opt-in ones must survive it (the saved override needs them).
+  while IFS= read -r _opt; do [[ -n "$_opt" ]] && PROFILES+=("$_opt"); done < <(opt_in_profiles)
   COMPOSE_PROFILES="$(IFS=','; echo "${PROFILES[*]}")"
 
   case "$GRAPH_DB" in
@@ -1193,6 +1238,11 @@ if ! ${SKIP_WIZARD:-false}; then
   MONGO_PASSWORD="$(get_existing_val MONGO_PASSWORD "$(gen_secret 16)")"
   REDIS_PASSWORD="$(get_existing_val REDIS_PASSWORD "$(gen_secret 16)")"
   QDRANT_API_KEY="$(get_existing_val QDRANT_API_KEY "$(gen_secret 20)")"
+  # PostgreSQL profile (opt-in): kept across --reconfigure like the other credentials.
+  PG_MAJOR="$(get_existing_val PG_MAJOR "18")"
+  for _pg in ADMIN NODE CONNECTORS INDEXING QUERY KV JOBS MIGRATE BACKUP; do
+    printf -v "PG_${_pg}_PASSWORD" '%s' "$(get_existing_val "PG_${_pg}_PASSWORD" "$(gen_secret 16)")"
+  done
 
   # Optional MongoDB knobs from env.template. The wizard never asks about these,
   # but .env is rewritten in full below, so read back anything the operator set
@@ -1202,6 +1252,15 @@ if ! ${SKIP_WIZARD:-false}; then
   MONGO_IMAGE_TAG="$(get_existing_val MONGO_IMAGE_TAG "")"
   MONGO_CACHE_GB="$(get_existing_val MONGO_CACHE_GB "")"
   MONGO_MEMORY_LIMIT="$(get_existing_val MONGO_MEMORY_LIMIT "")"
+  MONGO_MEMORY_RESERVATION="$(get_existing_val MONGO_MEMORY_RESERVATION "")"
+  # Datastore memory sizing (docs/deployment/vector-db-sizing.md): an operator
+  # lowers these on a small machine, so a rewrite must not put the defaults back.
+  NEO4J_HEAP_INITIAL="$(get_existing_val NEO4J_HEAP_INITIAL "")"
+  NEO4J_HEAP_MAX="$(get_existing_val NEO4J_HEAP_MAX "")"
+  NEO4J_PAGECACHE="$(get_existing_val NEO4J_PAGECACHE "")"
+  NEO4J_MEMORY_LIMIT="$(get_existing_val NEO4J_MEMORY_LIMIT "")"
+  NEO4J_MEMORY_RESERVATION="$(get_existing_val NEO4J_MEMORY_RESERVATION "")"
+  QDRANT_MEMORY_RESERVATION="$(get_existing_val QDRANT_MEMORY_RESERVATION "")"
   # Qdrant's memory limit decides search speed once the index grows
   # (docs/deployment/vector-db-sizing.md); keep an operator's value.
   QDRANT_MEMORY_LIMIT="$(get_existing_val QDRANT_MEMORY_LIMIT "${QDRANT_MEMORY_LIMIT:-}")"
@@ -1327,6 +1386,13 @@ ARANGO_PASSWORD=${ARANGO_PASSWORD}
 NEO4J_USERNAME=neo4j
 NEO4J_PASSWORD=${NEO4J_PASSWORD}
 NEO4J_DATABASE=neo4j
+# Neo4j memory. Keep heap max + page cache clearly below the container limit,
+# and the initial heap no larger than the maximum.
+$(optional_env_line NEO4J_HEAP_INITIAL "$NEO4J_HEAP_INITIAL" "1G")
+$(optional_env_line NEO4J_HEAP_MAX "$NEO4J_HEAP_MAX" "2G")
+$(optional_env_line NEO4J_PAGECACHE "$NEO4J_PAGECACHE" "1G")
+$(optional_env_line NEO4J_MEMORY_LIMIT "$NEO4J_MEMORY_LIMIT" "3G")
+$(optional_env_line NEO4J_MEMORY_RESERVATION "$NEO4J_MEMORY_RESERVATION" "2G")
 
 # ── Key-value / config store ─────────────────────────────────────────────────
 # "redis" (default, uses always-on Redis) | "etcd" (dedicated container)
@@ -1339,6 +1405,19 @@ REDIS_STREAMS_MAXLEN=500000
 
 # ── Redis ────────────────────────────────────────────────────────────────────
 REDIS_PASSWORD=${REDIS_PASSWORD}
+
+# ── PostgreSQL (opt-in profile "postgres"; unused unless it is in COMPOSE_PROFILES) ──
+# The major is pinned so --upgrade never swaps it under an existing data directory.
+PG_MAJOR=${PG_MAJOR}
+PG_ADMIN_PASSWORD=${PG_ADMIN_PASSWORD}
+PG_NODE_PASSWORD=${PG_NODE_PASSWORD}
+PG_CONNECTORS_PASSWORD=${PG_CONNECTORS_PASSWORD}
+PG_INDEXING_PASSWORD=${PG_INDEXING_PASSWORD}
+PG_QUERY_PASSWORD=${PG_QUERY_PASSWORD}
+PG_KV_PASSWORD=${PG_KV_PASSWORD}
+PG_JOBS_PASSWORD=${PG_JOBS_PASSWORD}
+PG_MIGRATE_PASSWORD=${PG_MIGRATE_PASSWORD}
+PG_BACKUP_PASSWORD=${PG_BACKUP_PASSWORD}
 
 # ── MongoDB ──────────────────────────────────────────────────────────────────
 MONGO_USERNAME=${MONGO_USERNAME}
@@ -1355,6 +1434,7 @@ $(optional_env_line MONGO_IMAGE_TAG "$MONGO_IMAGE_TAG" "8.0.17")
 # larger or dedicated hosts; avoid dropping the cache below 1 GB.
 $(optional_env_line MONGO_CACHE_GB "$MONGO_CACHE_GB" "1")
 $(optional_env_line MONGO_MEMORY_LIMIT "$MONGO_MEMORY_LIMIT" "2G")
+$(optional_env_line MONGO_MEMORY_RESERVATION "$MONGO_MEMORY_RESERVATION" "512M")
 
 # App container memory ceiling and its combined memory+swap ceiling. Derived
 # from this machine on a fresh install; set them yourself to pin. The governor
@@ -1374,6 +1454,7 @@ QDRANT_API_KEY=${QDRANT_API_KEY}
 # warning. Search stays fast only while the index fits; size it from
 # docs/deployment/vector-db-sizing.md.
 $(optional_env_line QDRANT_MEMORY_LIMIT "$QDRANT_MEMORY_LIMIT" "6G")
+$(optional_env_line QDRANT_MEMORY_RESERVATION "$QDRANT_MEMORY_RESERVATION" "2G")
 
 # ── Indexing concurrency ─────────────────────────────────────────────────────
 # Do not write MAX_CONCURRENT_* / EMBEDDING_*_CONCURRENCY here. Empty values
@@ -1491,7 +1572,6 @@ _app_memswap_mb="$(_parse_mem_mb "${APP_MEMSWAP_LIMIT:-16G}")" || _app_memswap_m
 if [[ -n "$_app_mem_mb" && -n "$_app_memswap_mb" ]] && (( _app_memswap_mb < _app_mem_mb )); then
   die "APP_MEMSWAP_LIMIT (${APP_MEMSWAP_LIMIT:-16G}) must be >= APP_MEMORY_LIMIT (${APP_MEMORY_LIMIT:-10G}). Raise APP_MEMSWAP_LIMIT in .env (or raise both together) before launching."
 fi
-
 # Resolve APP_PORT from .env when wizard was skipped (upgrade / reuse)
 APP_PORT="${APP_PORT:-3000}"
 HEALTH_URL="http://localhost:${APP_PORT}/api/v1/health/services"
@@ -1561,6 +1641,37 @@ case "${DATA_STORE:-}" in
     ;;
 esac
 
+# Byte size in Neo4j's setting syntax (plain bytes, or k/m/g/t with an optional
+# B or iB suffix, any case; all binary) -> bytes. Returns 1 if not recognised.
+_parse_neo4j_bytes() {
+  local v n unit
+  # tr, not ${1,,}: the installer supports bash 3.2 (macOS), which lacks it.
+  v="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  [[ "$v" =~ ^([0-9]+)([kmgt]?)(ib|b)?$ ]] || return 1
+  # 10#: a leading zero (010G) would otherwise be read as octal.
+  n=$(( 10#${BASH_REMATCH[1]} )); unit="${BASH_REMATCH[2]}"
+  case "$unit" in
+    k) n=$(( n * 1024 )) ;;
+    m) n=$(( n * 1024 ** 2 )) ;;
+    g) n=$(( n * 1024 ** 3 )) ;;
+    t) n=$(( n * 1024 ** 4 )) ;;
+  esac
+  echo "$n"
+}
+
+# The JVM refuses to start when the initial heap exceeds the maximum, and Neo4j
+# would then restart in a loop with only a JVM error in its log. Only Neo4j
+# reads these settings, so an ArangoDB deployment is not held to them.
+if [[ "$DATA_STORE" == "neo4j" ]]; then
+  _neo4j_heap_init="$(_parse_neo4j_bytes "${NEO4J_HEAP_INITIAL:-1G}")" || _neo4j_heap_init=""
+  _neo4j_heap_max="$(_parse_neo4j_bytes "${NEO4J_HEAP_MAX:-2G}")" || _neo4j_heap_max=""
+  if [[ -z "$_neo4j_heap_init" || -z "$_neo4j_heap_max" ]]; then
+    warn "Could not read NEO4J_HEAP_INITIAL (${NEO4J_HEAP_INITIAL:-1G}) or NEO4J_HEAP_MAX (${NEO4J_HEAP_MAX:-2G}) as a size; not checking that the initial heap fits the maximum."
+  elif (( _neo4j_heap_init > _neo4j_heap_max )); then
+    die "NEO4J_HEAP_INITIAL (${NEO4J_HEAP_INITIAL:-1G}) must be <= NEO4J_HEAP_MAX (${NEO4J_HEAP_MAX:-2G}). Lower NEO4J_HEAP_INITIAL in .env before launching."
+  fi
+fi
+
 # Repair COMPOSE_PROFILES if it disagrees with the configured services. Without
 # this, reusing an .env written by an older installer (or hand-edited) can start
 # the app while leaving its graph DB / broker container down, so the health
@@ -1572,6 +1683,11 @@ if [[ "${COMPOSE_PROFILES:-}" != "$_EXPECTED_PROFILES" ]]; then
   warn "Repairing to '${_EXPECTED_PROFILES:-(none)}' so the required containers start."
   COMPOSE_PROFILES="$_EXPECTED_PROFILES"
   persist_env_var "COMPOSE_PROFILES" "$COMPOSE_PROFILES"
+fi
+
+# The migration job is built from backend/db/Dockerfile, which only a repository checkout has (a curl-installed directory does not).
+if [[ ",${COMPOSE_PROFILES:-}," == *",postgres-migrate,"* && ! -f "${SCRIPT_DIR}/../../backend/db/Dockerfile" ]]; then
+  warn "The postgres-migrate profile builds its job image from backend/db/Dockerfile, which is missing here (run from a repository checkout)."
 fi
 
 # On reuse/upgrade the wizard's interactive port scan was skipped. Confirm the
@@ -1630,8 +1746,8 @@ if $FLAG_PRINT_ENV_ONLY; then
   [[ "${IMAGE_SOURCE:-prebuilt}" == "local" ]] && _build_flag=" --build"
   printf "\n"
   info "Run the following to start PipesHub:"
-  printf "\n  ${BOLD}COMPOSE_PROFILES=%s \\\\\n    docker compose -f %s -p %s up -d%s${RESET}\n\n" \
-    "${COMPOSE_PROFILES:-}" "$COMPOSE_FILE" "$PROJECT_NAME" "$_build_flag"
+  printf "\n  ${BOLD}COMPOSE_PROFILES=%s \\\\\n    docker compose %s -p %s up -d%s${RESET}\n\n" \
+    "${COMPOSE_PROFILES:-}" "${COMPOSE_FILES[*]}" "$PROJECT_NAME" "$_build_flag"
   success "Done (--print-env-only mode; not launching)."
   if $FLAG_ROTATE_SIGNING_SECRETS; then
     warn "ROTATE_SIGNING_SECRETS is set. Recreate the app container so secrets rotate:"

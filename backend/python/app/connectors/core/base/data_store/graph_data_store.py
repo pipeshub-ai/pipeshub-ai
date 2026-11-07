@@ -25,7 +25,7 @@ from app.connectors.core.base.data_store.data_store import (
     TransactionStore,
 )
 from app.core import org_context
-from app.exceptions.graph_db_exceptions import GraphWriteError
+from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, GraphWriteError
 from app.models.entities import (
     AppMetadata,
     AppRole,
@@ -45,12 +45,19 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.structure_generation import (
+    CLOSED_KEY,
+    OPENED_KEY,
     UNSAFE_KEY,
     ScopeGenerationConflict,
+    ScopeGenerationError,
+    new_unsafe_mark,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 _T = TypeVar("_T")
+
+#: Tries of one unsafe mark written after a write that could not be undone.
+_MARK_ATTEMPTS = 3
 
 # An ArangoDB write-write conflict (1200) clears only once the other transaction
 # commits, and an indexing stream transaction can hold a record for seconds. So
@@ -124,7 +131,9 @@ def ends_explicit_transaction(exception: BaseException) -> bool:
     """A failure the Neo4j server or driver reported. The explicit transaction
     it was raised in runs no further statement, so going on after it only moves
     the failure to the next one."""
-    return NEO4J_AVAILABLE and isinstance(exception, (Neo4jError, DriverError))
+    return (NEO4J_AVAILABLE and isinstance(exception, (Neo4jError, DriverError))) or isinstance(
+        exception, GraphMemoryLimitError
+    )
 
 
 def _is_retryable(instance: object, exception: Exception) -> bool:
@@ -312,6 +321,11 @@ class GraphTransactionStore(TransactionStore):
         self._connector_of: dict[tuple[str, str], str | None] = {}
         # nodes this transaction created: no stamp can be stale for them, whatever edges it then gives them
         self.new_nodes: set[tuple[str, str]] = set()
+        # Connectors this transaction counted as opened (before an unclassified write outside a transaction), the ones whose unsafe mark was then
+        # written, and the ones counted as closed: only a connector marked is closed, so a closing step never covers a mark that did not land.
+        self.opened: set[str] = set()
+        self.marked: set[str] = set()
+        self.closed: set[str] = set()
 
     def _note_unclassified(self) -> None:
         # Before the write is forwarded: with no organisation it could not be charged to one at the end, and outside an explicit
@@ -330,7 +344,10 @@ class GraphTransactionStore(TransactionStore):
         seen = {c for c in self._connector_of.values() if c} | self.structural_connectors
         ids = seen | {str(k) for a in apps if (k := a.get("_key") or a.get("id"))}
         for connector_id in sorted(ids):
-            await self.graph_provider._provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: True}, None)
+            # One atomic increment each: concurrent blocks each count, and the connector is not current while opened > closed.
+            if await self.graph_provider._provider.increment_node_field(connector_id, CollectionNames.APPS.value, OPENED_KEY) is None:
+                raise ScopeGenerationError(f"could not open the unclassified write on connector {connector_id}: no such connector")
+            self.opened.add(connector_id)
         self._org_marked_for_unclassified = True
 
     async def _connector_of_node(self, collection: str, node_id: str) -> str | None:
@@ -542,18 +559,40 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.create_record_groups_relation(child_id, parent_id, transaction=self.txn)
 
-    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Optional[User]:
+    async def get_user_by_email(
+        self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> Optional[User]:
         # Every record in a batch carries the same owner, so this is the same
         # lookup a hundred times over. Users are not created inside a record
         # transaction, so the answer cannot go stale within it.
-        key = ("user_email", email)
+        key = ("user_email", email, org_id)
         if key in self._memo:
             return self._memo[key]  # type: ignore[return-value]
+        scope = {"org_id": org_id} if org_id is not None else {}
         value = await self.graph_provider.get_user_by_email(
-            email, transaction=self.txn, raise_on_error=raise_on_error
+            email, transaction=self.txn, raise_on_error=raise_on_error, **scope
         )
         self._memo_put(key, value)
         return value
+
+    async def get_users_by_emails(
+        self, emails: list[str], *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> dict[str, User]:
+        """The members for ``emails`` (lowercased keys), one provider call for the addresses the memo lacks."""
+        wanted = list(dict.fromkeys(e.lower() for e in emails if e))
+        keys = {e: ("user_email", e, org_id) for e in wanted}
+        found = {e: self._memo[k] for e, k in keys.items() if k in self._memo}
+        missing = [e for e in wanted if e not in found]
+        if missing:
+            scope = {"org_id": org_id} if org_id is not None else {}
+            got = await self.graph_provider.get_users_by_emails(
+                missing, transaction=self.txn, raise_on_error=raise_on_error, **scope
+            )
+            for e in missing:
+                self._memo_put(keys[e], got.get(e))
+                if got.get(e) is not None:
+                    found[e] = got[e]
+        return found
 
     async def get_user_by_source_id(
         self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
@@ -655,8 +694,14 @@ class GraphTransactionStore(TransactionStore):
     async def delete_edges_to_groups(self, from_id: str, from_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edges_to_groups(from_id, from_collection, collection, transaction=self.txn)
 
+    async def get_record_group_organization(self, record_group_id: str, org_id: str) -> str | None:
+        return await self.graph_provider.get_record_group_organization(record_group_id, org_id, transaction=self.txn)
+
     async def delete_edges_between_collections(self, from_id: str, from_collection: str, edge_collection: str, to_collection: str) -> None:
         return await self.graph_provider.delete_edges_between_collections(from_id, from_collection, edge_collection, to_collection, transaction=self.txn)
+
+    async def delete_record_entity_relations(self, record_id: str, to_collection: str, origin: str) -> int:
+        return await self.graph_provider.delete_record_entity_relations(record_id, to_collection, origin, transaction=self.txn)
 
     async def delete_edges_by_relationship_types(
         self,
@@ -798,6 +843,19 @@ class GraphTransactionStore(TransactionStore):
             person, transaction=self.txn, raise_on_error=raise_on_error
         )
 
+
+    async def get_person_by_source_key(self, source_key: str, org_id: str) -> Person | None:
+        return await self.graph_provider.get_person_by_source_key(
+            source_key, org_id, transaction=self.txn, raise_on_error=True
+        )
+
+    def is_transient_error(self, error: BaseException) -> bool:
+        return self.graph_provider.is_transient_error(error)
+
+    async def upsert_person_by_source_key(self, person: Person, *, raise_on_error: bool = False) -> str | None:
+        return await self.graph_provider.upsert_person_by_source_key(
+            person, transaction=self.txn, raise_on_error=raise_on_error
+        )
     async def ensure_app_membership(
         self,
         principal_id: str,
@@ -920,6 +978,8 @@ class GraphTransactionStore(TransactionStore):
         except Exception as e:
             if self.graph_provider.is_transient_error(e) is True:
                 raise  # the transaction is aborted; its owner runs it again
+            if isinstance(e, GraphMemoryLimitError):
+                raise  # the transaction is aborted and sending it again fails the same way
             self.logger.error(
                 f"Failed to create user group membership ({user_source_id} -> {group_external_id}): {str(e)}",
                 exc_info=True
@@ -1225,11 +1285,14 @@ class GraphTransactionStore(TransactionStore):
             raise_on_error=raise_on_error,
         )
 
-    async def get_all_orgs(self, *, active: bool = True, is_external: bool = False) -> list[Org]:
+    async def get_all_orgs(
+        self, *, active: bool = True, is_external: bool = False, raise_on_error: bool = False,
+    ) -> list[Org]:
         return await self.graph_provider.get_all_orgs(
             active=active,
             is_external=is_external,
             transaction=self.txn,
+            raise_on_error=raise_on_error,
         )
 
     async def create_user_groups(self, user_groups: list[AppUserGroup]) -> None:
@@ -1357,9 +1420,13 @@ class GraphTransactionStore(TransactionStore):
             node_id, edge_collection, transaction=self.txn, raise_on_error=raise_on_error
         )
 
-    async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> list[dict]:
+    async def get_edges_from_node(
+        self, from_node_id: str, edge_collection: str, *, raise_on_error: bool = False,
+    ) -> list[dict]:
         """Get all edges originating from a specific node"""
-        return await self.graph_provider.get_edges_from_node(from_node_id, edge_collection, transaction=self.txn)
+        return await self.graph_provider.get_edges_from_node(
+            from_node_id, edge_collection, transaction=self.txn, raise_on_error=raise_on_error,
+        )
 
     async def get_edges_from_node_with_target_name(
         self, from_node_id: str, edge_collection: str, *, raise_on_error: bool = False
@@ -1557,7 +1624,17 @@ class GraphDataStore(DataStoreProvider):
         without one the statements of the block already committed one by one, so the mark is written on its own and survives the failure."""
         transaction = tx_store.txn if tx_store.explicit else None
         for connector_id in sorted(connector_ids):
-            await self.graph_provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: True}, transaction)
+            # Retried; if it never lands the connector stays opened (not current) and is not closed.
+            for attempt in range(_MARK_ATTEMPTS):
+                try:
+                    # False: no such app document, so no mark was written and the opening must not be counted as closed
+                    if await self.graph_provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: new_unsafe_mark()}, transaction) is not False:
+                        tx_store.marked.add(connector_id)
+                    break
+                except Exception:
+                    if attempt + 1 == _MARK_ATTEMPTS:
+                        raise
+                    await asyncio.sleep(0.2 * (attempt + 1))
 
     async def _mark_unsafe_after_unclassified_write(self, tx_store: "GraphTransactionStore") -> None:
         """A write nobody classified reached the provider, and which connector it touched is not known (the proxy sees a method
@@ -1570,6 +1647,21 @@ class GraphDataStore(DataStoreProvider):
         org_id = org_context.current().org_id
         apps = await self.graph_provider.get_org_apps(org_id, active_only=False, raise_on_error=True) or []
         await self._mark_unsafe(tx_store, {str(k) for a in apps if (k := a.get("_key") or a.get("id"))} - seen)
+        await self._close_opened(tx_store)
+
+    async def _close_opened(self, tx_store: "GraphTransactionStore") -> None:
+        """Count the connectors this block opened as closed, those whose unsafe mark has been written. Tried once: an exception proves nothing (a timeout
+        can arrive after the provider applied the increment), and a second increment of an applied one would count a write that is still running as
+        closed. A closing step with an unknown or negative outcome (logged) leaves the connector opened, which is not current: the fail-closed side."""
+        for connector_id in sorted((tx_store.opened & tx_store.marked) - tx_store.closed):
+            try:
+                if await self.graph_provider.increment_node_field(connector_id, CollectionNames.APPS.value, CLOSED_KEY) is not None:
+                    tx_store.closed.add(connector_id)
+                    continue
+            except Exception:
+                pass
+            self.logger.error("could not close the unclassified write on connector %s: it stays not current until the next pass is run "
+                              "with --close-open-mark", connector_id)
 
     async def _mark_unsafe_after_failed_block(self, tx_store: "GraphTransactionStore") -> None:
         """A block that failed without an explicit transaction left its earlier statements committed: the connectors a structural (or an
@@ -1589,6 +1681,10 @@ class GraphDataStore(DataStoreProvider):
                 await self._mark_unsafe(tx_store, [connector_id])
             except BaseException:
                 self.logger.error("could not mark connector %s scope-unsafe after a failed block", connector_id)
+        try:
+            await self._close_opened(tx_store)
+        except BaseException:
+            self.logger.error("could not close the unclassified writes of a failed block")
 
     async def _flush_scope_generation(self, tx_store: "GraphTransactionStore") -> None:
         if not tx_store.tracked:
@@ -1957,7 +2053,7 @@ _wrap_patch("batch_upsert_nodes")
 # writes that move no structure: grants, memberships, people, sync points, content and indexing state, and the transaction itself
 _HARMLESS_WRITERS = frozenset({
     "batch_upsert_nodes", "batch_update_nodes", "batch_upsert_people",
-    "upsert_person_by_email", "ensure_app_membership", "reap_stale_external_app_relations", "create_user_group_hierarchy",
+    "upsert_person_by_email", "upsert_person_by_source_key", "ensure_app_membership", "reap_stale_external_app_relations", "create_user_group_hierarchy",
     "create_user_group_membership", "batch_create_user_app_edges", "batch_upsert_user_groups",
     "batch_upsert_app_roles", "batch_upsert_app_users", "ensure_team_app_edge", "upsert_authenticated_as", "remove_authenticated_as",
     "batch_upsert_orgs", "commit", "rollback", "create_user_groups", "create_users", "create_orgs", "create_sync_point",
@@ -1967,6 +2063,8 @@ _HARMLESS_WRITERS = frozenset({
     "delete_record_by_external_id", "compare_and_set_indexing_status",
     # a push claim writes the document id and version of the record, never a field that decides access or place
     "claim_push_record", "retag_push_record",
+    # clears a record's entityRelations edges to one entity collection: never a hierarchy, group, inherit or grant edge
+    "delete_record_entity_relations",
 })
 CLASSIFIED_WRITERS = frozenset(_STRUCTURAL_WRITERS) | frozenset(_CONNECTOR_WRITERS) | _HARMLESS_WRITERS
 

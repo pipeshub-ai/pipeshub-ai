@@ -309,6 +309,11 @@ class MCPToolAdapter(SchemaShallowValidationMixin, Tool):
         can carry an API key) and stack detail stay in the server log."""
         server = self._server.display_name
         if isinstance(exc, (MCPTokenRefreshError, MCPOAuthError)):
+            if classify_mcp_failure(exc) is MCPFailureReason.UNREACHABLE:
+                return (
+                    f"The sign-in to the {server} MCP server couldn't be renewed: its sign-in provider is down or busy. "
+                    "Try again in a few minutes."
+                )
             return (
                 f"Authentication with the {server} MCP server has expired and could not be refreshed. "
                 "Reconnect it in Workspace → MCP Servers."

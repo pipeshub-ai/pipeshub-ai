@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import * as crypto from 'crypto';
 import { AuthenticatedUserRequest } from './../../../libs/middlewares/types';
+import { injectRequestHeaders } from '../../../libs/context/request-context';
 import { NextFunction, Response } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
 import {
@@ -2194,10 +2195,10 @@ export const getRecordBuffer =
         // Already validated as `^\d+$` by getRecordByIdSchema.
         queryParams.append('version', version);
       }
-      const headers: Record<string, string> = {
+      const headers = injectRequestHeaders({
         Authorization: req.headers.authorization as string,
         'Content-Type': 'application/json',
-      };
+      });
 
       // Make request to FastAPI backend
       const response = await axios.get(

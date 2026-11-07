@@ -168,6 +168,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         provider: "IRedisConnectionProvider | None" = None,
         connector_off_filter: ConnectorOffFilter | None = None,
         stage_admission: "concurrency.StageAdmission | None" = None,
+        priority_lane: "concurrency.PriorityLane | None" = None,
         worker: "WorkerLoop | None" = None,
     ) -> None:
         self.logger = logger
@@ -197,6 +198,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         if stage_admission is not None and governor is not None:
             raise ValueError("a pipeline-stage consumer admits through its own limit, not a governor")
         self.stage_admission = stage_admission
+        if priority_lane is not None and stage_admission is not None:
+            raise ValueError("a consumer is a pipeline stage or the priority lane, not both")
+        # The consumer of the priority topic: reads past the backlog, on caps of its own.
+        self.priority_lane = priority_lane
         # Shared by every indexing consumer in the process (see WorkerLoop); None runs a loop of
         # this consumer's own.
         self._shared_worker = worker
@@ -478,7 +483,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         else:
             self.parsing_semaphore = asyncio.Semaphore(messaging_env.max_concurrent_parsing)
             self.indexing_semaphore = asyncio.Semaphore(
-                self.stage_admission.limit if self.stage_admission else messaging_env.max_concurrent_indexing
+                concurrency.local_index_permits(self)
             )
             self.logger.info(
                 "Worker thread event loop started with semaphores initialized"
@@ -510,7 +515,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self._shared_worker.add_exit_listener(self._stop_taking_work)
             self._shared_worker.call(lambda: self._on_worker_loop_started(loop))
             # Reported once, under the record consumer: every consumer on the loop sees the same lag.
-            self.loop_lag_monitor = self._shared_worker.lag_monitor if self.stage_admission is None else None
+            self.loop_lag_monitor = self._shared_worker.lag_monitor if self.stage_admission is None and self.priority_lane is None else None
             self.worker_loop_ready.set()
             return
 
@@ -3201,7 +3206,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                     parse_tier = event.data.tier if event.data else None
                                     timeline.mark(timing.PARSE_REQUESTED)
                                     if self.governor is not None:
-                                        parse_lease_pool = concurrency.parse_lease_pool(parse_tier)
+                                        parse_lease_pool = concurrency.parse_lease_pool(parse_tier, self)
                                     # Node-local gate first, cluster lease
                                     # second. The gate is an asyncio Event and
                                     # costs nothing to queue on, so it absorbs

@@ -184,10 +184,10 @@ class FakeGraphProvider:
 
     async def get_neighbors_for_nodes_by_relationship_types(self, node_keys, node_collection,
                                                             relationship_types, direction,
-                                                            limit=5000, transaction=None, raise_on_error=False) -> list[dict]:
+                                                            limit=5000, transaction=None, raise_on_error=False, after=None) -> list[dict]:
         anchors = {f"{node_collection}/{k}" for k in node_keys}
         out = []
-        for edge in self.edges:
+        for n, edge in enumerate(self.edges):
             if edge.get("relationshipType") not in relationship_types:
                 continue
             for anchor_f, other_f, label in (("_from", "_to", "outbound"),
@@ -199,8 +199,18 @@ class FakeGraphProvider:
                 collection, _, key = edge[other_f].partition("/")
                 _, _, anchor_key = edge[anchor_f].partition("/")
                 out.append({"anchorKey": anchor_key, "collection": collection, "key": key,
-                            "direction": label, "relationshipType": edge["relationshipType"]})
-        return out[:limit]
+                            "direction": label, "relationshipType": edge["relationshipType"],
+                            "_edge": n})
+        if after is None:
+            for row in out:
+                row.pop("_edge")
+            return out[:limit]
+        # The real stores' paging contract: ascending cursor, strictly after `after`.
+        for row in out:
+            # The edge's own number ends the key, as the stores' edge keys do, so parallel edges never tie.
+            row["cursor"] = "\x01".join((row["anchorKey"], row["direction"], row["collection"], row["key"],
+                                         row["relationshipType"], f"{row.pop('_edge'):08d}"))
+        return sorted((r for r in out if r["cursor"] > after), key=lambda r: r["cursor"])[:limit]
 
 
 class FakeBlobStore:

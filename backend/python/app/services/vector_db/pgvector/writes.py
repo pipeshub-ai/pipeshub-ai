@@ -10,6 +10,14 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app.services.permissions.scope_fields import (
+    ACL_SCOPE_FIELD,
+    PATH_IDS_FIELD,
+    SCOPE_GENERATION_FIELD,
+    SCOPE_KEYS,
+    SCOPE_STAMP_FIELD,
+    SCOPE_VERSION_FIELD,
+)
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
@@ -32,6 +40,8 @@ if TYPE_CHECKING:
 UPSERT_BATCH = 500          # points per unit of work (one org, one collection, one space)
 DELETE_BATCH = 5000         # rows per transaction, keyed on (org_id, point_sk)
 MEMBERSHIP_KEYS = (CONNECTOR_IDS_FIELD, RECORD_GROUP_IDS_FIELD, ROOT_RECORD_GROUP_IDS_FIELD)
+# group-level too: the permission scope fields of a virtual record, written with the membership arrays behind the same fence
+GROUP_KEYS = (*MEMBERSHIP_KEYS, *SCOPE_KEYS)
 # metadata keys that live in columns: a payload merge must not change them (the columns would go stale)
 PROMOTED_METADATA = ("orgId", "virtualRecordId", "blockId", "entityType", "entityId", "kind", "level")
 # The change in a collection's point count is a row of ``lexical_df_delta`` under this term (term ids are never negative); the fold
@@ -117,10 +127,10 @@ def prepare(points: list[VectorPoint]) -> Prepared:
             out.terms.extend(terms)          # one entry per term: a repeated index would count twice in the document frequency
             out.weights.extend(terms.values())
         out.term_end.append(len(out.terms))
-        stored = {k: v for k, v in payload.items() if k != "page_content" and k not in MEMBERSHIP_KEYS}
+        stored = {k: v for k, v in payload.items() if k != "page_content" and k not in GROUP_KEYS}
         out.payloads.append(json.dumps(stored, separators=(",", ":")))
         out.contents.append(payload.get("page_content"))
-        if any(k in payload for k in MEMBERSHIP_KEYS):
+        if any(k in payload for k in GROUP_KEYS):
             # Only the arrays a payload carries, merged per key over the batch's other points of the same group (a group is one record, so its
             # points should agree; where they do not, the later point of the batch wins that key).
             out.groups.setdefault(out.group_keys[-1], {}).update(membership_of(payload))
@@ -275,20 +285,26 @@ async def upsert(tx: Tx, collection_id: int, space_id: int, b: Prepared, compute
 
 
 _GROUP_ROWS = """/* pipeshub:pgvector.write_groups */
-        WITH g AS (SELECT * FROM jsonb_to_recordset($3::jsonb) AS g(k text, c text[], r text[], x text[]))
+        WITH g AS (SELECT * FROM jsonb_to_recordset($3::jsonb) AS g(k text, c text[], r text[], x text[], p text[], a text[], s text, v int, n int))
         INSERT INTO retrieval.point_groups AS pg (org_id, collection_id, group_key, connector_ids, record_group_ids,
-                                                  root_record_group_ids, computed_at)
-        SELECT $1, $2, g.k, coalesce(g.c, '{}'), coalesce(g.r, '{}'), coalesce(g.x, '{}'), $4::timestamptz FROM g
+                                                  root_record_group_ids, path_ids, acl_scope, scope_stamp, scope_version, scope_generation,
+                                                  computed_at)
+        SELECT $1, $2, g.k, coalesce(g.c, '{}'), coalesce(g.r, '{}'), coalesce(g.x, '{}'), g.p, g.a, g.s, g.v, g.n, $4::timestamptz FROM g
         ORDER BY g.k         -- one order for every writer, so two writers of overlapping groups cannot deadlock
         ON CONFLICT (org_id, collection_id, group_key) DO UPDATE
           SET connector_ids = coalesce((SELECT g.c FROM g WHERE g.k = EXCLUDED.group_key), pg.connector_ids),
               record_group_ids = coalesce((SELECT g.r FROM g WHERE g.k = EXCLUDED.group_key), pg.record_group_ids),
               root_record_group_ids = coalesce((SELECT g.x FROM g WHERE g.k = EXCLUDED.group_key), pg.root_record_group_ids),
+              path_ids = coalesce((SELECT g.p FROM g WHERE g.k = EXCLUDED.group_key), pg.path_ids),
+              acl_scope = coalesce((SELECT g.a FROM g WHERE g.k = EXCLUDED.group_key), pg.acl_scope),
+              scope_stamp = coalesce((SELECT g.s FROM g WHERE g.k = EXCLUDED.group_key), pg.scope_stamp),
+              scope_version = coalesce((SELECT g.v FROM g WHERE g.k = EXCLUDED.group_key), pg.scope_version),
+              scope_generation = coalesce((SELECT g.n FROM g WHERE g.k = EXCLUDED.group_key), pg.scope_generation),
               computed_at = EXCLUDED.computed_at
           WHERE pg.computed_at < EXCLUDED.computed_at
             AND ($5::boolean OR cardinality(EXCLUDED.connector_ids) + cardinality(EXCLUDED.record_group_ids)
                                 + cardinality(EXCLUDED.root_record_group_ids) > 0)
-        RETURNING pg.group_key, pg.connector_ids, pg.record_group_ids, pg.root_record_group_ids"""
+        RETURNING pg.group_key, pg.connector_ids, pg.record_group_ids, pg.root_record_group_ids, pg.path_ids, pg.acl_scope"""
 
 # A separate statement, so it has a snapshot of its own: the group rows above are locked by this transaction, a writer that waited for
 # them has seen the members the earlier writer committed, and the diff below is against those, not against the state at its start.
@@ -303,20 +319,23 @@ _GROUP_MEMBERS = """/* pipeshub:pgvector.write_group_members */
         INSERT INTO retrieval.group_members (org_id, collection_id, group_key, kind, member_id)
         SELECT $1, $2, group_key, kind, member_id FROM want ON CONFLICT DO NOTHING"""
 _KIND_OF = {CONNECTOR_IDS_FIELD: (1, "connector_ids"), RECORD_GROUP_IDS_FIELD: (2, "record_group_ids"),
-            ROOT_RECORD_GROUP_IDS_FIELD: (3, "root_record_group_ids")}
+            ROOT_RECORD_GROUP_IDS_FIELD: (3, "root_record_group_ids"), PATH_IDS_FIELD: (4, "path_ids"), ACL_SCOPE_FIELD: (5, "acl_scope")}
+# the key of a group's payload row -> the recordset column of ``_GROUP_ROWS``
+_ROW_COLUMNS = ((CONNECTOR_IDS_FIELD, "c"), (RECORD_GROUP_IDS_FIELD, "r"), (ROOT_RECORD_GROUP_IDS_FIELD, "x"), (PATH_IDS_FIELD, "p"),
+                (ACL_SCOPE_FIELD, "a"), (SCOPE_STAMP_FIELD, "s"), (SCOPE_VERSION_FIELD, "v"), (SCOPE_GENERATION_FIELD, "n"))
 
 
-async def write_groups(tx: Tx, org: str, collection_id: int, groups: dict[str, dict[str, list[str]]], computed_at: datetime,
+async def write_groups(tx: Tx, org: str, collection_id: int, groups: dict[str, dict[str, Any]], computed_at: datetime,
                        *, allow_empty: bool) -> int:
-    """Membership of groups, behind the compare-and-set fence: a row is replaced only by a writer with a later ``computed_at``,
-    so of two concurrent writers the one that read the graph later wins whatever the order they commit in. A group row that
-    does not exist yet is created. Only the arrays a group carries are replaced (a caller that supplies ``connectorIds`` alone leaves
-    the other two as they are, as a payload merge does on the other providers). ``allow_empty=False`` (indexing) never replaces arrays
-    with empty ones: an upsert that carries no membership must not erase what the membership sync wrote."""
-    rows = [{"k": k, **{col: v[key] if key in v else None for key, col in (
-        (CONNECTOR_IDS_FIELD, "c"), (RECORD_GROUP_IDS_FIELD, "r"), (ROOT_RECORD_GROUP_IDS_FIELD, "x"))}} for k, v in groups.items()]
+    """Membership and scope fields of groups, behind the compare-and-set fence: a row is replaced only by a writer with a later
+    ``computed_at``, so of two concurrent writers the one that read the graph later wins whatever the order they commit in. A group
+    row that does not exist yet is created. Only the keys a group carries are replaced (a caller that supplies ``connectorIds`` alone
+    leaves the rest as it is, as a payload merge does on the other providers). ``allow_empty=False`` (indexing) never replaces arrays
+    with empty ones: an upsert that carries no membership must not erase what the membership sync wrote. The rows of ``group_members``
+    (kinds 1-3 membership, 4 path, 5 override scope) are made to match the arrays that result."""
+    rows = [{"k": k, **{col: v[key] if key in v else None for key, col in _ROW_COLUMNS}} for k, v in groups.items()]
     won = await tx.fetch(_GROUP_ROWS, org, collection_id, json.dumps(rows), computed_at, allow_empty)
-    members = [{"k": r["group_key"], "kind": kind, "members": list(r[column])}
+    members = [{"k": r["group_key"], "kind": kind, "members": list(r[column] or [])}
                for r in won for key, (kind, column) in _KIND_OF.items() if key in groups[r["group_key"]]]
     if members:
         await tx.execute(_GROUP_MEMBERS, org, collection_id, json.dumps(members))
@@ -382,6 +401,19 @@ async def delete_batch(tx: Tx, org: str, collection_id: int, c: Compiled, *, saf
     return len(sks)
 
 
+async def point_ids_matching(tx: Tx, org: str, collection_id: int, c: Compiled) -> list[uuid.UUID]:
+    """The ids of the live points matching ``c`` (compiled with ``first_param=3``), read once so that a write that changes what the filter
+    reads (a membership or scope write) does not change which points the rest of the same update reaches."""
+    rows = await tx.fetch(
+        f"""/* pipeshub:pgvector.point_ids_matching */
+        SELECT p.point_id FROM retrieval.points p{_from(c)}
+        WHERE p.org_id = $1 AND p.collection_id = $2 AND ({c.where})
+          AND NOT EXISTS (SELECT 1 FROM retrieval.point_tombstones t WHERE t.org_id = $1 AND t.point_sk = p.point_sk)""",
+        org, collection_id, *c.params,
+    )
+    return [r["point_id"] for r in rows]
+
+
 async def group_keys_matching(tx: Tx, org: str, collection_id: int, c: Compiled) -> list[str]:
     rows = await tx.fetch(
         f"""/* pipeshub:pgvector.group_keys */
@@ -397,7 +429,7 @@ def _merge_args(payload: dict[str, Any]) -> tuple[str, str | None]:
     meta = payload.get("metadata")
     if isinstance(meta, dict) and any(k in meta for k in PROMOTED_METADATA):
         raise PgVectorError("a payload update may not change orgId, virtualRecordId, blockId or the entity keys")
-    rest = {k: v for k, v in payload.items() if k not in MEMBERSHIP_KEYS and k != "page_content"}
+    rest = {k: v for k, v in payload.items() if k not in GROUP_KEYS and k != "page_content"}
     return json.dumps(rest, separators=(",", ":")), payload.get("page_content")
 
 
@@ -434,5 +466,39 @@ async def group_keys_of_ids(tx: Tx, org: str, collection_id: int, ids: list[uuid
     return [r["group_key"] for r in rows]
 
 
-def membership_of(payload: dict[str, Any]) -> dict[str, list[str]]:
-    return {k: _ids(payload[k]) for k in MEMBERSHIP_KEYS if k in payload}
+_PG_INT = (-(2**31), 2**31 - 1)
+
+
+def _stamp_int(payload: dict[str, Any], key: str) -> int:
+    value = payload[key]
+    if isinstance(value, bool) or not isinstance(value, int) or not _PG_INT[0] <= value <= _PG_INT[1]:
+        raise PgVectorError(f"{key} must be an integer in the range of a PostgreSQL integer, not {value!r}")
+    return value
+
+
+def _stamp_ids(payload: dict[str, Any], key: str) -> list[str]:
+    value = payload[key]
+    if not isinstance(value, (list, tuple)) or any(not isinstance(v, str) for v in value):
+        raise PgVectorError(f"{key} must be a list of strings, not {value!r}")
+    return list(value)
+
+
+def scope_row(payload: dict[str, Any]) -> dict[str, Any]:
+    """The scope fields of a payload: none when it carries no scope key, else all five, well-typed (a non-empty string stamp, integer
+    version and generation within PostgreSQL's range, lists of strings), or ``PgVectorError`` naming the field and nothing is stored. A
+    partial stamp is refused rather than completed with a default: a default would be read as a stamp of the current meaning."""
+    present = [k for k in SCOPE_KEYS if k in payload]
+    if not present:
+        return {}
+    if len(present) != len(SCOPE_KEYS):
+        raise PgVectorError(f"the scope fields are written together; missing {sorted(set(SCOPE_KEYS) - set(present))}")
+    stamp = payload[SCOPE_STAMP_FIELD]
+    if not isinstance(stamp, str) or not stamp:
+        raise PgVectorError(f"{SCOPE_STAMP_FIELD} must be a non-empty string, not {stamp!r}")
+    return {SCOPE_STAMP_FIELD: stamp, PATH_IDS_FIELD: _stamp_ids(payload, PATH_IDS_FIELD), ACL_SCOPE_FIELD: _stamp_ids(payload, ACL_SCOPE_FIELD),
+            SCOPE_VERSION_FIELD: _stamp_int(payload, SCOPE_VERSION_FIELD), SCOPE_GENERATION_FIELD: _stamp_int(payload, SCOPE_GENERATION_FIELD)}
+
+
+def membership_of(payload: dict[str, Any]) -> dict[str, Any]:
+    """The group-level part of a payload: the membership arrays it carries and its scope fields (``scope_row``)."""
+    return {**{k: _ids(payload[k]) for k in MEMBERSHIP_KEYS if k in payload}, **scope_row(payload)}

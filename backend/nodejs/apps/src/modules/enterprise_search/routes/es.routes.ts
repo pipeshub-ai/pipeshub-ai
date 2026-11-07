@@ -1,3 +1,11 @@
+import { requireChatCompareEnabled } from '../utils/chat-compare-feature';
+import {
+  chooseCompare,
+  createCompareBranchHandler,
+  type CompareArtifacts,
+  listCompareBranches,
+  purgeBranchArtifacts,
+} from '../controller/compare.controller';
 import { NextFunction, Router, Response } from 'express';
 import { Container } from 'inversify';
 import {
@@ -68,8 +76,13 @@ import {
   forkConversation,
   forkAgentConversation,
   shareAgentConversation,
+  forkArtifactCopier,
   unshareAgentConversation,
 } from '../controller/es_controller';
+import {
+  deleteArtifactById,
+  deleteConversationArtifacts,
+} from '../../artifacts/services/conversation-artifacts.service';
 import {
   addMessage,
   addMessageToAgentConversation,
@@ -102,6 +115,9 @@ import {
   agentConversationProjectLinkSchema,
   agentConversationProjectVisibilitySchema,
   regenerateAnswersParamsSchema,
+  compareBranchParamsSchema,
+  compareListParamsSchema,
+  compareChooseParamsSchema,
   cancelConversationStreamParamsSchema,
   cancelAgentConversationStreamParamsSchema,
   updateFeedbackParamsSchema,
@@ -159,6 +175,11 @@ export function createConversationalRouter(container: Container): Router {
   guardPathParams(router, 'recordId');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const appConfig = container.get<AppConfig>('AppConfig');
+  const compareArtifacts: CompareArtifacts = {
+    copier: (req) => forkArtifactCopier(appConfig, req),
+    remove: (id, req) => deleteConversationArtifacts(appConfig, id, req),
+    removeOne: (id, req) => deleteArtifactById(appConfig, id, req),
+  };
   const defaultChatModel = fillDefaultChatModel(
     container.isBound('KeyValueStoreService')
       ? container.get<KeyValueStoreService>('KeyValueStoreService')
@@ -372,6 +393,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
     ValidationMiddleware.validate(conversationIdParamsSchema),
+    purgeBranchArtifacts(compareArtifacts),
     deleteConversationById(appConfig),
   );
 
@@ -454,6 +476,48 @@ export function createConversationalRouter(container: Container): Router {
   const authenticate = authMiddleware.authenticate.bind(authMiddleware);
 
   /**
+   * @route POST /api/v1/conversations/:conversationId/compare/branch
+   * @desc Compare models: create the hidden branch conversation that re-asks a saved question with a second model
+   * @access Private
+   */
+  router.post(
+    '/:conversationId/compare/branch',
+    authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
+    requireChatCompareEnabled,
+    ValidationMiddleware.validate(compareBranchParamsSchema),
+    createCompareBranchHandler(compareArtifacts),
+  );
+
+  /**
+   * @route GET /api/v1/conversations/:conversationId/compare
+   * @desc Compare models: the hidden branches of this conversation, to restore the compare view
+   * @access Private
+   */
+  router.get(
+    '/:conversationId/compare',
+    authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_READ),
+    requireChatCompareEnabled,
+    ValidationMiddleware.validate(compareListParamsSchema),
+    listCompareBranches(),
+  );
+
+  /**
+   * @route POST /api/v1/conversations/:conversationId/compare/choose
+   * @desc Compare models: keep the conversation's own answer (`primary`) or move a branch's turn in; the branches are deleted
+   * @access Private
+   */
+  router.post(
+    '/:conversationId/compare/choose',
+    authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
+    requireChatCompareEnabled,
+    ValidationMiddleware.validate(compareChooseParamsSchema),
+    chooseCompare(compareArtifacts),
+  );
+
+  /**
    * @route POST /api/v1/conversations/:conversationId/message/:messageId/fork
    * @desc Copy this conversation into a new chat, including every message up to messageId
    */
@@ -520,6 +584,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
     ValidationMiddleware.validate(conversationIdParamsSchema),
+    purgeBranchArtifacts(compareArtifacts),
     archiveConversation,
   );
 

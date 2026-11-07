@@ -51,12 +51,16 @@ logger = logging.getLogger(__name__)
 
 RECORD_ENTITY_TYPE = "record"
 RECORD_GROUP_ENTITY_TYPE = "record_group"
+# An external organisation (a CRM account), reached through its records (KG-13).
+ORGANIZATION_ENTITY_TYPE = "organization"
 TAXONOMY_ENTITY_TYPES: frozenset[str] = frozenset(
     {"department", "category", "subcategory", "topic", "language"}
 )
 SEARCHABLE_ENTITY_TYPES: frozenset[str] = TAXONOMY_ENTITY_TYPES | {
     RECORD_ENTITY_TYPE,
     RECORD_GROUP_ENTITY_TYPE,
+    PERSON_ENTITY_TYPE,
+    ORGANIZATION_ENTITY_TYPE,
     "named_entity",
 }
 # Named by the records extracted into them; departments are the org's list.
@@ -1192,6 +1196,7 @@ __all__ = [
     "EntityRecordPage",
     "PREVIEW_RECORD_COUNT",
     "RECORD_ENTITY_TYPE",
+    "ORGANIZATION_ENTITY_TYPE",
     "PERSON_ENTITY_TYPE",
     "RECORD_GROUP_ENTITY_TYPE",
     "SEARCHABLE_ENTITY_TYPES",

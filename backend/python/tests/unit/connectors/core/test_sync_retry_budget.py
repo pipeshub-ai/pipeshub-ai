@@ -66,22 +66,6 @@ def test_changed_content_is_indexed_and_its_budget_starts_over() -> None:
     assert out.auto_retry_count == 0
 
 
-@pytest.mark.parametrize(
-    "stored",
-    [
-        ProgressStatus.EMPTY.value,
-        ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
-        ProgressStatus.ENABLE_MULTIMODAL_MODELS.value,
-        ProgressStatus.IN_PROGRESS.value,
-        ProgressStatus.QUEUED.value,
-    ],
-)
-def test_outcomes_the_same_bytes_cannot_change_are_kept(stored: str) -> None:
-    out = _settle(_record(), _record(stored))
-    assert out.indexing_status == stored
-    assert out.keeps_indexing_state
-
-
 def test_a_status_the_connector_chose_stands() -> None:
     out = _settle(_record(ProgressStatus.AUTO_INDEX_OFF.value), _record(ProgressStatus.FAILED.value))
     assert out.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
@@ -106,8 +90,8 @@ def test_a_content_update_is_indexed_whatever_the_revision_says() -> None:
     assert not out.keeps_indexing_state
 
 
-@pytest.mark.parametrize("used, sent", [(MAX_SYNC_RETRIES, 0), (0, 1)])
-async def test_a_failure_is_sent_to_indexing_only_while_its_budget_lasts(used: int, sent: int) -> None:
+@pytest.mark.parametrize("used, sent", [(MAX_SYNC_RETRIES, 0), (0, 0)])
+async def test_a_failure_is_sent_to_indexing_never_for_unchanged_content(used: int, sent: int) -> None:
     from unittest.mock import patch
 
     from app.connectors.core.sync.sync_progress import (

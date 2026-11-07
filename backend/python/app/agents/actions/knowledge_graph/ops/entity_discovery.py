@@ -105,9 +105,10 @@ async def execute_search_entities(
     requested = [str(t).strip().lower() for t in (entity_types or []) if str(t).strip()]
     kinds = [str(k).strip().lower() for k in (named_entity_kinds or []) if str(k).strip()]
     # A kind put in entity_types ("organization") was ignored, leaving only the
-    # other types searched; it is a named-entity kind.
+    # other types searched; it is a named-entity kind. One that is also an
+    # entity type ("person") stays one too, so it is searched with extraction off.
     kinds = list(dict.fromkeys([*kinds, *(t for t in requested if t in _ENTITY_KIND_NAMES)]))
-    requested = [t for t in requested if t not in _ENTITY_KIND_NAMES]
+    requested = [t for t in requested if t not in _ENTITY_KIND_NAMES or t in SEARCHABLE_ENTITY_TYPES]
     kind_notes: list[str] = []
     asked_kinds = bool(kinds)
     if entity_search_offered:

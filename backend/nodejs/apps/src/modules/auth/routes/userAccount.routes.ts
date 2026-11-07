@@ -3,10 +3,7 @@ import { z } from 'zod';
 import { Container } from 'inversify';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 
-import {
-  authSessionMiddleware,
-  userValidator,
-} from '../middlewares/userAuthentication.middleware';
+import { authSessionMiddleware } from '../middlewares/userAuthentication.middleware';
 import { attachContainerMiddleware } from '../middlewares/attachContainer.middleware';
 import { AuthSessionRequest } from '../middlewares/types';
 import {
@@ -15,6 +12,7 @@ import {
   UserAccountController,
 } from '../controller/userAccount.controller';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
+import { requireSessionAuth } from '../../../libs/middlewares/require-session-auth.middleware';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
 import {
@@ -70,6 +68,7 @@ export function createUserAccountRouter(container: Container) {
 
   router.use(attachContainerMiddleware(container));
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
+  const authenticate = authMiddleware.authenticate.bind(authMiddleware);
   const logger = container.get<Logger>('Logger');
   const { maxAuthRequestsPerMinute } = container.get<AppConfig>('AppConfig');
   // Shared by all credential/OTP/email routes below: one bucket per account
@@ -210,7 +209,8 @@ export function createUserAccountRouter(container: Container) {
 
   router.get(
     '/password/status',
-    userValidator,
+    authenticate,
+    requireSessionAuth,
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         const userAccountController = container.get<UserAccountController>(
@@ -225,7 +225,8 @@ export function createUserAccountRouter(container: Container) {
 
   router.post(
     '/password/setup/email',
-    userValidator,
+    authenticate,
+    requireSessionAuth,
     authRateLimiter,
     ValidationMiddleware.validate(z.object({ body: z.object({}).optional() })),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
@@ -242,7 +243,8 @@ export function createUserAccountRouter(container: Container) {
 
   router.post(
     '/password/reset',
-    userValidator,
+    authenticate,
+    requireSessionAuth,
     authRateLimiter,
     ValidationMiddleware.validate(resetPasswordValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
@@ -278,7 +280,8 @@ export function createUserAccountRouter(container: Container) {
 
   router.post(
     '/logout/manual',
-    userValidator,
+    authenticate,
+    requireSessionAuth,
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         const userAccountController = container.get<UserAccountController>(

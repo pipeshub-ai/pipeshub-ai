@@ -34,7 +34,11 @@ from app.config.constants.arangodb import (
     normalize_file_extension,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+    IncompleteSyncError,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -109,6 +113,7 @@ from app.connectors.sources.atlassian.core.oauth import (
     OAUTH_JIRA_CONFIG_PATH,
     AtlassianScope,
 )
+from app.connectors.sources.atlassian.core.people import atlassian_person, jira_user, ticket_people
 from app.connectors.sources.atlassian.core.read_outcome import (
     JiraReadError,
     StoredAccessReadError,
@@ -143,15 +148,17 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
     RelatedExternalRecord,
+    SourcePerson,
     TicketRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import (
     NotificationOutcome,
     NotificationSeverity,
     NotificationType,
 )
-from app.sources.client.jira.jira import JiraClient, JiraRESTClientViaApiKey
+from app.sources.client.jira.jira import JiraClient
 from app.sources.external.common.atlassian import (
     AtlassianMultiSiteError,
     atlassian_cloud_site_root,
@@ -526,6 +533,8 @@ class JiraConnector(BaseConnector):
         # are held back. A read refused from its first page is the account's lasting answer
         # and does not set this: the sync then fails closed.
         self._user_read_unfinished: bool = False
+        # Members of the product groups this run, by account id; None when they could not be read.
+        self._licensed_account_ids: set[str] | None = None
         # True when this sync kept stored groups, roles, a lead, a project or its issues after
         # a read that may pass on a later run (408, 429, 5xx, a transport error);
         # full_sync_coverage() then reports the read as incomplete.
@@ -672,8 +681,9 @@ class JiraConnector(BaseConnector):
         try:
             client = await self._build_jira_client()
             rest_client = client.get_client()
-            if isinstance(rest_client, JiraRESTClientViaApiKey):
-                # Email + API token goes straight to the configured URL (OAuth goes to api.atlassian.com).
+            # Email + API token goes straight to the configured URL (OAuth goes to api.atlassian.com).
+            # So does a basic-auth or bare-token client, which only a rewritten authType builds here.
+            if not rest_client.get_base_url().startswith("https://api.atlassian.com/"):
                 rest_client.base_url = atlassian_cloud_site_root(rest_client.get_base_url())
                 client.site_url = rest_client.base_url
             self.external_client = client
@@ -849,13 +859,14 @@ class JiraConnector(BaseConnector):
     async def _keep_stored_records(self, project_id: str) -> None:
         """Note this project's stored records as seen by a full sync in progress: its issues
         could not be read, so they stay as stored and must survive the unlink after it. So does
-        the project's record group, even with no grants of its own, for the records' links into it."""
+        the project's record group, even with no grants of its own, for the records' links into it. Soft-deleted
+        records too: a restored issue must come back with its edges."""
         await self.data_entities_processor.note_kept_record_group(self.connector_id, project_id)
         page_size = 1000
         after_key: Optional[str] = None
         while True:
             page = await self.data_entities_processor.get_records_in_record_group(
-                self.connector_id, project_id, page_size, after_key,
+                self.connector_id, project_id, page_size, after_key, visibility=RecordVisibility.ALL,
             )
             self.data_entities_processor.note_kept_records(self.connector_id, [record.id for record in page])
             if len(page) < page_size:
@@ -1020,9 +1031,17 @@ class JiraConnector(BaseConnector):
             # 9. Outcome: notify when any project failed issue sync (include keys)
             failed_keys = sync_stats.get("failed_project_keys") or []
             failed_statuses = sync_stats.get("failed_project_statuses") or {}
+            # A read that may pass next time fails the run below, but must not hold back the whole full sync's unlink: the
+            # project's stored issues are noted as seen, so only what a read in full shows gone is unlinked.
+            transient = [k for k in failed_keys
+                         if failed_statuses.get(k) is None or (failed_statuses[k] != HttpStatusCode.FORBIDDEN.value
+                                                               and is_inconclusive_status(failed_statuses[k]))]
             for key in failed_keys:
-                # Issues not read would look gone to a full sync's unlink.
-                self._note_unread(failed_statuses.get(key), ("project_issues", key))
+                if key in transient:
+                    self._kept_after_refusal.append(("project_issues", key))
+                else:
+                    # Issues not read would look gone to a full sync's unlink.
+                    self._note_unread(failed_statuses.get(key), ("project_issues", key))
             await self._note_kept_after_refusal(projects)
             if failed_keys:
                 preview = ", ".join(failed_keys[:10])
@@ -1041,6 +1060,17 @@ class JiraConnector(BaseConnector):
                         "Retry sync; check Jira access if it keeps failing."
                     ),
                 )
+
+            # A refusal (403) or a missing project (400, 404) is the account's lasting answer, already notified and kept
+            # as stored: failing every run for it would hide the others. A read that may pass next time leaves the graph
+            # without that project's newest issues, so this run must not look like a success.
+            if transient:
+                incomplete = IncompleteSyncError(
+                    f"Jira sync incomplete: {len(transient)} project(s) failed to sync issues: "
+                    f"{', '.join(transient[:10])}{f', and {len(transient) - 10} more' if len(transient) > 10 else ''}"
+                )
+                incomplete._notification_sent = True  # the notification above already said it
+                raise incomplete
 
             self.logger.info(
                 f"✅ Jira sync completed. Total: {sync_stats['total_synced']} issues "
@@ -1314,6 +1344,7 @@ class JiraConnector(BaseConnector):
             reporter_name=issue_data["reporter_name"],
             assignee=issue_data["assignee_name"],
             assignee_email=issue_data["assignee_email"],
+            **issue_data["ticket_people"],
             external_record_id=stub.external_record_id,
             external_revision_id=f"{PLACEHOLDER_REVISION_PREFIX}{issue_data['updated_at']}",
             record_name=issue_data["issue_name"],
@@ -2160,6 +2191,7 @@ class JiraConnector(BaseConnector):
     _SYNC_STATE = (
         "_kept_unread_access", "_kept_after_refusal", "_user_read_unfinished", "_user_bulk_forbidden",
         "_group_bulk_forbidden", "_app_roles_unread", "_projects_naming_unread_roles", "_app_roles_mapping",
+        "_licensed_account_ids",
     )
     user_link_steps = ("_link_users_groups_and_roles",)
 
@@ -2615,6 +2647,7 @@ class JiraConnector(BaseConnector):
         Jira treats any other account as anonymous, so its group, role and user grants never
         reach it. When the roles or a role group's members can't be read, every user is kept.
         """
+        self._licensed_account_ids = None
         if self._app_roles_unread:
             # Some roles are missing from the mapping, so their members are unknown, not unlicensed.
             self.logger.warning("⚠️ Not every application role could be read; keeping every Jira user")
@@ -2635,6 +2668,7 @@ class JiraConnector(BaseConnector):
                 return jira_users
             licensed.update(members)
         kept = [u for u in jira_users if u.source_user_id in licensed]
+        self._licensed_account_ids = licensed
         if len(kept) < len(jira_users):
             self.logger.info(
                 f"👥 {len(jira_users) - len(kept)} Jira user(s) without Jira product access left out"
@@ -2928,7 +2962,14 @@ class JiraConnector(BaseConnector):
                 # A deactivated account can no longer sign in to Jira; the grant is dormant.
                 self.logger.debug(f"  {project_key}: User permission skipped - account '{holder_param}' is inactive")
                 return grant_permissions
-            elif user_email:
+            elif (
+                user_email and self._user_read_unfinished
+                and (self._licensed_account_ids is None or holder_param in self._licensed_account_ids)
+                and user_data.get("accountType", "atlassian") == "atlassian"
+            ):
+                # Only a user list cut short leaves out a licensed account. After a complete read,
+                # one missing from it has no Jira product access (or is a portal customer), and
+                # Jira treats it as anonymous whatever the scheme names.
                 resolved_email = user_email
 
             if resolved_email:
@@ -4972,28 +5013,10 @@ class JiraConnector(BaseConnector):
         raw_priority = priority_obj.get("name") if priority_obj else None
         priority = self.value_mapper.map_priority(raw_priority)
 
-        # Extract user information by accountId (email not available in issue fields)
-        creator = fields.get("creator")
-        creator_account_id = creator.get("accountId") if creator else None
-        creator_name = creator.get("displayName") if creator else None
-        creator_email = None
-        if creator_account_id and creator_account_id in user_by_account_id:
-            creator_email = user_by_account_id[creator_account_id].email
-
-        # Reporter (can be changed, unlike creator which is immutable)
-        reporter = fields.get("reporter")
-        reporter_account_id = reporter.get("accountId") if reporter else None
-        reporter_name = reporter.get("displayName") if reporter else None
-        reporter_email = None
-        if reporter_account_id and reporter_account_id in user_by_account_id:
-            reporter_email = user_by_account_id[reporter_account_id].email
-
-        assignee = fields.get("assignee")
-        assignee_account_id = assignee.get("accountId") if assignee else None
-        assignee_name = assignee.get("displayName") if assignee else None
-        assignee_email = None
-        if assignee_account_id and assignee_account_id in user_by_account_id:
-            assignee_email = user_by_account_id[assignee_account_id].email
+        # The issue payload rarely carries emailAddress; the synced directory fills it.
+        creator = jira_user(fields.get("creator"), user_by_account_id)
+        reporter = jira_user(fields.get("reporter"), user_by_account_id)
+        assignee = jira_user(fields.get("assignee"), user_by_account_id)
 
         created_at = self._parse_jira_timestamp(fields.get("created"))
         updated_at = self._parse_jira_timestamp(fields.get("updated"))
@@ -5014,12 +5037,13 @@ class JiraConnector(BaseConnector):
             # Jira's own name ("Backlog"); `status` is the normalised value (NEW).
             "source_status": raw_status,
             "priority": priority,
-            "creator_email": creator_email,
-            "creator_name": creator_name,
-            "reporter_email": reporter_email,
-            "reporter_name": reporter_name,
-            "assignee_email": assignee_email,
-            "assignee_name": assignee_name,
+            "creator_email": creator.email if creator else None,
+            "creator_name": creator.display_name if creator else None,
+            "reporter_email": reporter.email if reporter else None,
+            "reporter_name": reporter.display_name if reporter else None,
+            "assignee_email": assignee.email if assignee else None,
+            "assignee_name": assignee.display_name if assignee else None,
+            "ticket_people": ticket_people(creator, reporter, assignee),
             "created_at": created_at,
             "updated_at": updated_at,
             "resolved_at": resolved_at,
@@ -5209,6 +5233,7 @@ class JiraConnector(BaseConnector):
             reporter_name=reporter_name,
             assignee=assignee_name,
             assignee_email=assignee_email,
+            **issue_data["ticket_people"],
             external_record_id=issue_id,
             external_revision_id=str(updated_at) if updated_at else None,
             record_name=issue_name,
@@ -5588,6 +5613,7 @@ class JiraConnector(BaseConnector):
                         weburl=weburl,
                         record_id=record_id,
                         version=version,
+                        authored_by=atlassian_person(attachment.get("author")),
                     )
 
                     # Attachments inherit permissions from parent issue
@@ -6188,6 +6214,7 @@ class JiraConnector(BaseConnector):
                         parent_node_id=issue_node_id,
                         project_id=project_id,
                         weburl=issue_weburl,
+                        authored_by=atlassian_person(attachment.get("author")),
                     )
 
                     new_file_records.append((file_record, []))
@@ -6550,6 +6577,7 @@ class JiraConnector(BaseConnector):
         version: int = 0,
         external_id_prefix: str = "attachment_",
         skip_filter_check: bool = False,
+        authored_by: SourcePerson | None = None,
     ) -> FileRecord:
         """
         Create a FileRecord for an attachment with consistent settings.
@@ -6603,6 +6631,7 @@ class JiraConnector(BaseConnector):
             is_file=True,
             is_dependent_node=True,
             parent_node_id=parent_node_id,
+            authored_by=authored_by,
         )
 
         # Set indexing status based on filters (if loaded and not skipping filter check)
@@ -7092,6 +7121,7 @@ class JiraConnector(BaseConnector):
                 reporter_name=issue_data["reporter_name"],
                 assignee=issue_data["assignee_name"],
                 assignee_email=issue_data["assignee_email"],
+                **issue_data["ticket_people"],
                 external_record_id=issue_id,
                 external_revision_id=str(current_updated_at) if current_updated_at else None,
                 record_name=issue_data["issue_name"],
@@ -7252,6 +7282,7 @@ class JiraConnector(BaseConnector):
                 record_id=record.id,
                 version=version,
                 skip_filter_check=True,
+                authored_by=atlassian_person(attachment_data.get("author")),
             )
 
             # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True

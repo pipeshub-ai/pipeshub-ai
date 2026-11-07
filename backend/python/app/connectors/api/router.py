@@ -188,6 +188,7 @@ from app.utils.chat_helpers import (
 from app.utils.render_budget import FETCH_MAX_CHARS
 from app.utils.egress_ips import get_egress_ips
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
+from app.modules.pipeline.parse_now import ParseNow, optional_redis
 from app.utils.not_indexed import not_indexed_note
 from app.utils.user_messages import (
     EPUB_PREVIEW_UNAVAILABLE,
@@ -1960,6 +1961,9 @@ async def get_record_content(
             user_id=user_id,
             connection_sources=connection_limit(request.state.user),
             accessible=accessible,
+            parse_now=ParseNow(
+                container.config_service(), logger, container.messaging_producer, await optional_redis(container.config_service(), logger),
+            ),
         )
     except Exception as e:
         logger.error(f"Error fetching record content for {record_id}: {str(e)}", exc_info=True)
@@ -1971,7 +1975,9 @@ async def get_record_content(
         # missing: "No record found" reads as "does not exist".
         unindexed = (result.get("not_indexed_records") or {}).get(record_id)
         if unindexed:
-            return {"content": f"{unindexed['context']}\n\n{not_indexed_note(unindexed['status'])}"}
+            preparing = unindexed.get("preparing")
+            body = {"content": f"{unindexed['context']}\n\n{not_indexed_note(unindexed['status'], preparing)}"}
+            return {**body, "preparing": True} if preparing == "waiting" else body
         return {"content": "No record found"}
 
     try:
@@ -5503,6 +5509,10 @@ async def update_connector_instance_auth_config(
         # Start with existing config, then overlay with new values
         merged_auth_config = existing_auth_config.copy()
         merged_auth_config.update(auth_config_clean)
+        # The auth type is fixed once a connector exists. A body's own authType would pick
+        # another client (Jira Cloud's BASIC_AUTH skips the Atlassian-site check).
+        if auth_type:
+            merged_auth_config["authType"] = auth_type
 
         _require_valid_auth_config(connector_type, merged_auth_config)
         new_config[OAuthConfigKeys.AUTH] = merged_auth_config

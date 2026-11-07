@@ -55,7 +55,7 @@ def terms_of(sparse: SparseVector) -> tuple[list[int], list[float]]:
 
 def rows_asked(leg: int, scope: Scope, t: Tuning) -> int:
     """Rows the first statement asks the function for: ``lexical_overfetch`` per row wanted when the extra conditions filter them."""
-    return min(leg * (t.lexical_overfetch if scope.extra is not None else 1), MAX_LEG)
+    return min(leg * (t.lexical_overfetch if scope.filtered else 1), MAX_LEG)
 
 
 async def _run(tx: Tx, org: str, collection_id: int, sparse: SparseVector, scope: Scope, leg: int, t: Tuning) -> tuple[list[tuple[int, str]], bool]:
@@ -69,7 +69,7 @@ async def _run(tx: Tx, org: str, collection_id: int, sparse: SparseVector, scope
         rows = await tx.fetch(lexical_sql(extra), org, collection_id, terms, weights, *scope.args(), asked, *extra_params)
         kept = [(r["point_sk"], str(r["point_id"])) for r in rows if r["ok"]][:leg]
         more = len(rows) >= asked                       # the function had at least as many as asked: there may be more
-        if len(kept) >= leg or not more or scope.extra is None:
+        if len(kept) >= leg or not more or not scope.filtered:
             return kept, False
         if asked >= MAX_LEG:
             return kept, True
@@ -85,6 +85,8 @@ async def search(
     if not 1 <= leg <= MAX_LEG:
         raise ValueError(f"a lexical leg is 1..{MAX_LEG} rows")
     terms_of(sparse)             # validated before any statement
+    if scope.matches_nothing:    # every row fails the filter: an empty, complete answer, not a search that is repeated up to MAX_LEG and reported partial
+        return [], None
     try:
         rows, partial = await db.run(
             lambda tx: _run(tx, org, collection_id, sparse, scope, leg, t), timeout_ms=t.h_timeout_ms(leg), custom_plan=True)

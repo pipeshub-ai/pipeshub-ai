@@ -20,9 +20,10 @@ from typing import TYPE_CHECKING
 from app.core.org_context import OrgContext, bind
 from app.services.graph_db.postgres.kg import flush, modes
 from app.services.graph_db.postgres.kg.drainer import drain_org
-from app.services.graph_db.postgres.kg.locks import lock_apps
+from app.services.graph_db.postgres.kg.locks import NeedLocks, lock_apps
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH, Key
 from app.services.graph_db.postgres.kg.project import project
+from app.services.graph_db.postgres.kg.stamp import stamp_app
 from app.services.graph_db.postgres.kg.verify import (
     PAGE,
     Result,
@@ -119,7 +120,7 @@ async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: in
                 if not nodes:
                     await w.projection_set(app_sk, epoch=0, mode="legacy", digest=None, cursor="done", verified_at=None)
                     return False
-                await project(tx, org, set(nodes), lock_for={app_id} if app_id else None, expand_neighbours=False)     # locks first, reads after
+                await project(tx, org, set(nodes), lock_for={app_id} if app_id else None, expand_neighbours=False, stamps=False)     # locks first, reads after; the stamps come once the connector is copied
                 await w.projection_set(app_sk, epoch=0, mode="legacy", digest=None, cursor=_fmt(nodes[-1]), verified_at=None)
                 return True
             if not await db.run(batch, write=True):
@@ -129,9 +130,33 @@ async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: in
     return done
 
 
+async def restamp_app(db: KernelDB, org: str, app_id: str, *, page: int = 2000) -> int:
+    """Stamp every record and record group of a connector, a page at a time under its lock; returns the pages. The structural rows come first: a page's classes are compiled from the
+    graph, whose closure the pages share. A stamp that reaches another connector takes its lock too and redoes the page."""
+    pages = 0
+    after: str | None = None
+    extra: set[str] = set()
+    with bind(_ctx(org)):
+        while True:
+            async def go(tx: Tx, cursor: str | None = after, held: frozenset[str] = frozenset(extra)) -> str | None:
+                await lock_apps(tx, org, {app_id} | held, org_wide=False)
+                return await stamp_app(tx, org, app_id, cursor, page, locked={app_id} | held)
+            try:
+                after = await db.run(go, write=True)
+            except NeedLocks as e:
+                extra |= e.apps
+                continue
+            if after is None:
+                return pages
+            pages += 1
+
+
 async def _pending(tx: Tx, org: str, app_id: str) -> int:
-    """Changes waiting in the log that can alter this connector: its own and those of no connector (edges, principals)."""
-    return await tx.fetchval("/* pipeshub:kg.pending */ SELECT count(*) FROM kg.graph_changes WHERE org_id = $1 AND app_id IN ($2, '') AND txid <> pg_current_xact_id()", org, app_id)
+    """Changes waiting that can alter this connector: its own in the log and those of no connector (edges, principals), and the restamp jobs queued for it (a queued job is a change the
+    stamps have not caught up with)."""
+    n = await tx.fetchval("/* pipeshub:kg.pending */ SELECT count(*) FROM kg.graph_changes WHERE org_id = $1 AND app_id IN ($2, '') AND txid <> pg_current_xact_id()", org, app_id)
+    return n + await tx.fetchval("""/* pipeshub:kg.pending_jobs */ SELECT count(*) FROM kg.restamp_queue q JOIN kg.node_keys k ON k.org_id = q.org_id AND k.sk = q.app_sk
+        WHERE q.org_id = $1 AND k.coll = 1 AND k.id = $2""", org, app_id)
 
 
 async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max_batches: int | None = None, drain_rounds: int | None = None, restart: bool = False) -> Outcome:
@@ -145,6 +170,8 @@ async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max
             if not (await drain_org(db, org)).rows:
                 break
             rounds += 1
+
+        await restamp_app(db, org, app_id)
 
         async def flip(tx: Tx) -> Outcome:
             await lock_apps(tx, org, {app_id}, org_wide=False)

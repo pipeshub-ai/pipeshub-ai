@@ -68,7 +68,7 @@ function bodyParserError(error: Error): HttpError | null {
 }
 
 export class ErrorMiddleware {
-  private static logger = Logger.getInstance();
+  private static logger = Logger.getInstance({ service: 'ErrorMiddleware' });
 
   private static sanitizeErrorResponse(errorResponse: any): any {
     if (!errorResponse || typeof errorResponse !== 'object') {

@@ -192,6 +192,7 @@ class TestAbstractMethodInventory:
         "get_document",
         "get_record_by_id",
         "get_typed_records_batch",
+        "page_record_ids_by_type",
         "get_node_depths_batch",
         "get_all_documents",
         "get_documents_paginated",
@@ -263,6 +264,11 @@ class TestAbstractMethodInventory:
         "get_records_pending_duplicate_reconcile",
         "move_taxonomy_edges",
         "find_legacy_taxonomy_nodes",
+        "find_merged_taxonomy_nodes_with_edges",
+        "find_organizations",
+        "create_organization_if_absent",
+        "delete_record_entity_relations",
+        "get_organization_record_reach",
         "update_node_fields_if_match",
         "create_node_if_absent",
         "get_switch_pointers",
@@ -305,6 +311,10 @@ class TestAbstractMethodInventory:
         "get_entity_candidate_records",
         "get_permitted_entity_records",
         "find_users",
+        "get_record_people",
+        "get_record_organizations",
+        "get_record_group_organization",
+        "stamp_external_org_parents",
         "get_taxonomy_entity_membership",
         "get_unreached_taxonomy_entities",
         "find_taxonomy_nodes",
@@ -313,6 +323,7 @@ class TestAbstractMethodInventory:
         "ensure_taxonomy_hierarchy_edge",
         # User operations
         "get_user_by_email",
+        "get_users_by_emails",
         "get_user_by_source_id",
         "get_user_by_user_id",
         "apply_verified_user_email",
@@ -360,6 +371,8 @@ class TestAbstractMethodInventory:
         "batch_upsert_people",
         "get_person_by_email",
         "upsert_person_by_email",
+        "upsert_person_by_source_key",
+        "get_person_by_source_key",
         "ensure_app_membership",
         "create_edges_if_absent",
         "migrate_person_to_user",
@@ -582,6 +595,19 @@ class TestAbstractMethodInventory:
 
 class TestConcreteMethodCalls:
     """Verify that async abstract methods on a concrete subclass can be awaited."""
+
+    @pytest.mark.asyncio
+    async def test_replace_edges_to_default_deletes_then_creates(self) -> None:
+        """The default (ArangoDB) path is not the diffed Neo4j statement: delete all, then create."""
+        instance = _make_concrete_class()()
+        calls: list[str] = []
+        instance.delete_edges_to = AsyncMock(side_effect=lambda *a, **k: calls.append("delete"))
+        instance.batch_create_edges = AsyncMock(side_effect=lambda *a, **k: calls.append("create"))
+        await instance.replace_edges_to("g1", "groups", [{"x": 1}], "permission")
+        assert calls == ["delete", "create"]
+        calls.clear()
+        await instance.replace_edges_to("g1", "groups", [], "permission")
+        assert calls == ["delete"]
 
     @pytest.mark.asyncio
     async def test_connect_can_be_awaited(self):

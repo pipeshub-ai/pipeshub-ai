@@ -78,6 +78,7 @@ class TestMCPRegistry:
         assert "atlassian_rovo" in type_ids
         assert "linear" in type_ids
         assert "notion" in type_ids
+        assert "airtable" in type_ids
         assert "slack" in type_ids
         assert "exa" in type_ids
         assert "box" in type_ids
@@ -90,6 +91,31 @@ class TestMCPRegistry:
         assert "docusign" in type_ids
         assert "okta" in type_ids
         assert "zoom" in type_ids
+        assert "trello" in type_ids
+        assert "cloudflare" in type_ids
+        assert "paypal" in type_ids
+
+    def test_airtable_catalog_entry(self) -> None:
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        airtable = registry.get_template("airtable")
+
+        assert airtable is not None
+        assert airtable.display_name == "Airtable"
+        assert airtable.transport == MCPTransport.STREAMABLE_HTTP
+        assert airtable.default_url == "https://mcp.airtable.com/mcp"
+        assert airtable.default_auth_mode == MCPAuthMode.OAUTH
+        assert airtable.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert airtable.supports_dcr is True
+        assert airtable.require_oauth_client is False
+        assert airtable.url_editable is False
+        assert airtable.authorization_url == "https://airtable.com/oauth2/v1/authorize"
+        assert airtable.token_url == "https://airtable.com/oauth2/v1/token"
+        assert airtable.default_scopes == []
+        assert airtable.icon == "/icons/connectors/airtable.svg"
+        assert airtable.documentation_url == (
+            "https://airtable.com/developers/agents/mcp/getting-started"
+        )
 
     def test_okta_and_docusign_catalog_entries(self) -> None:
         """Okta's address is per org, so it has no fixed URL and always asks for an OAuth app.
@@ -141,6 +167,25 @@ class TestMCPRegistry:
             "hub:read:content",
             "hub:write:content",
         }
+
+    def test_paypal_catalog_entry(self) -> None:
+        """PayPal is the official production host, Streamable HTTP, and it registers clients itself."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        paypal = registry.get_template("paypal")
+        assert paypal is not None
+        assert paypal.display_name == "PayPal"
+        assert paypal.transport == MCPTransport.STREAMABLE_HTTP
+        assert paypal.default_auth_mode == MCPAuthMode.OAUTH
+        assert paypal.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert paypal.default_url == "https://mcp.paypal.com/mcp"
+        assert paypal.url_editable is False
+        assert paypal.supports_dcr is True
+        assert paypal.authorization_url == "https://mcp.paypal.com/authorize"
+        assert paypal.token_url == "https://mcp.paypal.com/token"
+        assert paypal.default_scopes == []
+        assert paypal.icon == "/icons/connectors/paypal.svg"
+        assert paypal.documentation_url == "https://developer.paypal.com/tools/mcp-server/"
 
     def test_auto_discover_templates_are_well_formed(self) -> None:
         """Every registered template must carry the fields its own transport/auth mode

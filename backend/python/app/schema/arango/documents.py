@@ -28,6 +28,11 @@ orgs_schema = {
             "phone": {"type": ["string", "null"]},
             "dunsId": {"type": ["string", "null"]},
             "isExternal": {"type": "boolean", "default": False},
+            # The org an external organisation (a CRM account) belongs to.
+            "parentOrgId": {"type": ["string", "null"]},
+            # organization_key of the name (app.modules.entity_resolution.organizations):
+            # how an extracted name finds an external organisation.
+            "normalizedName": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
             "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
@@ -220,12 +225,16 @@ app_schema = {
             "vectorMembershipBackfillExhausted": {"type": ["boolean", "null"]},
             # app.services.permissions.structure_generation: moves with every structural write of the connector
             "scopeProjectionGeneration": {"type": ["number", "null"]},  # incremented in AQL, which computes in doubles
-            "scopeProjectionUnsafe": {"type": ["boolean", "null"]},
+            "scopeProjectionUnsafe": {"type": ["boolean", "number", "null"]},  # a mark: true (older code) or a time
+            "scopeProjectionOpened": {"type": ["number", "null"]},  # writes started that could not be undone, and finished (see unclosed_writes)
+            "scopeProjectionClosed": {"type": ["number", "null"]},
             # app.services.vector_db.scope_backfill: the checkpoint of the permission scope-field back-fill
             "scopeBackfillState": {"type": ["string", "null"]},
             "scopeBackfillAfter": {"type": ["string", "null"]},
             "scopeBackfillVersion": {"type": ["integer", "null"]},
             "scopeBackfillGeneration": {"type": ["integer", "null"]},
+            "scopeBackfillStructureGeneration": {"type": ["number", "null"]},  # what the pass read first
+            "scopeBackfillUnsafe": {"type": ["boolean", "number", "null"]},
             "scopeBackfillRecords": {"type": ["integer", "null"]},
             "scopeBackfillStale": {"type": ["integer", "null"]},
             "scopeBackfillError": {"type": ["string", "null"]},
@@ -346,7 +355,7 @@ record_schema = {
             "uploadSourceTimestampOrigin": {"type": "string", "pattern": "^[a-z_]{1,32}$"},
             "isDeleted": {"type": "boolean", "default": False},
             "isArchived": {"type": "boolean", "default": False},
-            "isVLMOcrProcessed": {"type": "boolean", "default": False},
+            "isVLMOcrProcessed": {"type": ["boolean", "null"], "default": False},
             "deletedByUserId": {"type": ["string", "null"]},
             # Soft delete: when the record entered the trash, who put it there,
             # the batch a restore brings back together, and the purge's retries.
@@ -739,6 +748,7 @@ meeting_record_schema = {
             "startTime": {"type": ["string", "null"]},
             "endTime": {"type": ["string", "null"]},
             "timezone": {"type": ["string", "null"]},
+            "recordingUrl": {"type": ["string", "null"]},
         },
         "additionalProperties": False,
     },
@@ -821,8 +831,8 @@ code_file_record_schema={
             "orgId": {"type": "string"},
             "summary": {"type": ["string", "null"]},
             "description": {"type": ["string", "null"]},
-            "filePath": {"type": "string", "minLength": 0},
-            "fileHash": {"type": "string", "minLength": 0},
+            "filePath": {"type": ["string", "null"]},
+            "fileHash": {"type": ["string", "null"]},
             "language": {"type": ["string", "null"]},
             # source | test | config | build | migration | script |
             # type_definition | generated -- see parsers/code_parser/file_role.py
@@ -1227,7 +1237,6 @@ agent_template_schema = {
                         "name": {"type": "string", "minLength": 1},
                         "description": {"type": "string", "minLength": 1},
                     },
-                    "nullable": True,
                     "required": ["name"],
                     "additionalProperties": True,
                 },
@@ -1243,7 +1252,6 @@ agent_template_schema = {
                         "provider": {"type": "string", "minLength": 1},
                         "config": {"type": "object"},
                     },
-                    "nullable": True,
                     "required": ["name", "role", "provider"],
                     "additionalProperties": True,
                 },
@@ -1254,7 +1262,6 @@ agent_template_schema = {
                 "properties": {
                     "type": {"type": "array", "items": {"type": "string", "enum": ["CONVERSATIONS", "KNOWLEDGE_BASE", "APPS", "ACTIVITIES", "VECTOR_DB"]}},
                 },
-                "nullable": True,
                 "required": ["type"],
                 "additionalProperties": True,
             },
@@ -1630,8 +1637,10 @@ people_schema = {
     "rule": {
         "type": "object",
         "properties": {
-            "_key": {"type": "string"},  # uuid4; (orgId, email) is the business key (composite unique index)
-            "email": {"type": "string"},
+            "_key": {"type": "string"},  # uuid4; (orgId, email), else (orgId, sourceKey), is the business key
+            "email": {"type": ["string", "null"]},
+            # "<connector id>:<source user id>" for a person a source names without an email
+            "sourceKey": {"type": ["string", "null"]},
             # Not in "required": pre-existing documents written before org-scoping
             # was added have no orgId and must stay schema-valid.
             "orgId": {"type": ["string", "null"]},
@@ -1642,7 +1651,7 @@ people_schema = {
             "lastName": {"type": ["string", "null"]},
             "phone": {"type": ["string", "null"]},
         },
-        "required": ["email", "createdAtTimestamp", "updatedAtTimestamp"],
+        "required": ["createdAtTimestamp", "updatedAtTimestamp"],
         "additionalProperties": False,
     },
     "level": "strict",
@@ -1772,7 +1781,7 @@ agent_skills_schema = {
             "concepts": {"type": "array", "items": {"type": "string"}, "default": []},
             "related": {"type": "array", "items": {"type": "string"}, "default": []},
             "requires": {"type": "array", "items": {"type": "string"}, "default": []},
-            "status": {"type": "string", "enum": ["active", "deprecated", "disabled"]},
+            "status": {"type": "string", "enum": ["active", "draft", "candidate", "deprecated", "disabled"]},
             "source": {"type": "string"},
             "version": {"type": "string"},
             "deprecatedReason": {"type": ["string", "null"]},

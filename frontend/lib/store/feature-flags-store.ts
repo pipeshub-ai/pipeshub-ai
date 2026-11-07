@@ -104,6 +104,9 @@ export const selectVectorStoreRebuildEnabled = (s: FeatureFlagsStore) =>
 /** Projects defaults to disabled; admins opt in from Labs. */
 export const selectProjectsEnabled = (s: FeatureFlagsStore) =>
   s.flags?.ENABLE_PROJECTS === true;
+/** Chat "Compare models" defaults to disabled; admins opt in from Labs. */
+export const selectChatCompareEnabled = (s: FeatureFlagsStore) =>
+  s.flags?.ENABLE_CHAT_COMPARE === true;
 /** Skills default to enabled (Beta); admins opt out from Labs. */
 export const selectSkillsEnabled = (s: FeatureFlagsStore) => s.flags?.ENABLE_SKILLS !== false;
 /** The trash ("Move Deleted Records to the Trash") defaults to disabled; admins opt in from Labs. */

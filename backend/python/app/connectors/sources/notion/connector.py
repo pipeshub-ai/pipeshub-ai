@@ -13,7 +13,7 @@ import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, NoReturn, Optional, Tuple, Union
+from typing import Any, AsyncGenerator, Awaitable, Callable, Collection, Dict, List, NoReturn, Optional, Tuple, Union
 from http import HTTPStatus
 from urllib.parse import quote, unquote, urlparse
 from uuid import uuid4
@@ -43,6 +43,11 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.core.base.data_store.data_store import DataStoreProvider, TransactionStore
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
+from app.connectors.core.sync_routing import (
+    carry_stored_version,
+    save_synced_records,
+    synced,
+)
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import NotificationSeverity, NotificationType
 from app.connectors.core.base.sync_point.sync_point import (
@@ -99,6 +104,7 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    SourcePerson,
     WebpageRecord,
 )
 from app.models.permission import Permission
@@ -187,6 +193,20 @@ def _indexing_status_outdated(record: Record, *, enabled: bool) -> bool:
     if enabled:
         return status == ProgressStatus.AUTO_INDEX_OFF.value
     return status in _WAITING_FOR_INDEXING
+
+
+def notion_person(
+    user: dict[str, Any] | None, bot_ids: Collection[str] = (), *, bots_known: bool = True,
+) -> SourcePerson | None:
+    """A Notion partial user ({object, id}, ``type`` only sometimes) as a SourcePerson. A partial user
+    without its type is a bot when the user sync listed its id as one; while that list is incomplete
+    (``bots_known`` False) such a user is left out, as it may be a bot read as a person."""
+    if not isinstance(user, dict) or not user.get("id"):
+        return None
+    is_bot = user.get("type") == "bot" or user["id"] in bot_ids
+    if not is_bot and user.get("type") is None and not bots_known:
+        return None
+    return SourcePerson(source_id=user["id"], is_service_account=is_bot)
 
 
 def _edit_part(revision: str | None) -> str | None:
@@ -445,6 +465,8 @@ class NotionConnector(BaseConnector):
         # Tracking state for deduplication
         # Workspace information from bot owner
         self.workspace_id: Optional[str] = None
+        self._bot_user_ids: set[str] = set()  # from the user sync; marks a page's untyped partial users
+        self._bot_ids_complete = False  # every page of the user listing was read
         self.workspace_name: Optional[str] = None
         # Set during a sync when part of the source was not read (a walk cut short, a page
         # whose attachments or comments failed, a user read that stopped early). Read by
@@ -905,7 +927,7 @@ class NotionConnector(BaseConnector):
                     elif records == []:
                         self._sync_incomplete = True
                 if batch:
-                    await self.data_entities_processor.on_new_records(batch)
+                    await self._save_content_records(batch)
 
             if object_type == "page":
                 await self._recheck_page_comments(live, stored_ids)
@@ -977,7 +999,7 @@ class NotionConnector(BaseConnector):
                 self._sync_incomplete = True
                 failed.append(obj_id)
         if batch:
-            await self.data_entities_processor.on_new_records(batch)
+            await self._save_content_records(batch)
         point: dict[str, Any] = {"after": slice_ids[-1]}
         if failed:
             point["retry"] = failed[: self._COMMENT_RECHECK_MAX_PAGES_PER_SYNC]
@@ -1013,7 +1035,7 @@ class NotionConnector(BaseConnector):
                 self._sync_incomplete = True
                 self._touched_data_sources.add(ds_id)
         if batch:
-            await self.data_entities_processor.on_new_records(batch)
+            await self._save_content_records(batch)
         await self._persist_touched_data_sources()
 
     def _touched_sync_point_key(self) -> str:
@@ -1823,8 +1845,10 @@ class NotionConnector(BaseConnector):
 
             self.logger.info(f"Starting reindex for {len(records)} Notion records")
             await self._ensure_workspace_from_bot()
+            if not self._bot_ids_complete:  # a reindex before a complete user sync: a page's untyped bot must not read as a person
+                await self._load_bot_user_ids()
 
-            updated_records: List[Tuple[Record, List[Permission]]] = []
+            updated_records: list[tuple[Record, list[Permission], Record]] = []
             non_updated_records: List[Record] = []
             gone_count = 0
             gone: list[Record] = []
@@ -1841,7 +1865,8 @@ class NotionConnector(BaseConnector):
                             gone.append(record)
                         continue
                     if updated:
-                        updated_records.append(updated)
+                        fresh, permissions = updated
+                        updated_records.append((fresh, permissions, record))
                     else:
                         non_updated_records.append(record)
                 except Exception as e:
@@ -1860,7 +1885,11 @@ class NotionConnector(BaseConnector):
                     await self._delete_records(gone)
 
             if updated_records:
-                await self.data_entities_processor.on_new_records(updated_records)
+                routed = []
+                for fresh, permissions, stored in updated_records:
+                    carry_stored_version(fresh, stored)
+                    routed.append(synced(fresh, permissions, stored))
+                await save_synced_records(self.data_entities_processor, routed)
                 self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
 
             if non_updated_records:
@@ -2060,6 +2089,7 @@ class NotionConnector(BaseConnector):
             total_synced = 0
             total_skipped = 0
             user_details_complete = True
+            listing_complete = True
             workspace_emails: List[str] = []
             persons_seen = 0
             persons_without_email = 0
@@ -2091,6 +2121,7 @@ class NotionConnector(BaseConnector):
                         has_more,
                     )
                     user_details_complete = False
+                    listing_complete = False
 
                 if not users_data:
                     self.logger.info("No more users to process")
@@ -2107,6 +2138,8 @@ class NotionConnector(BaseConnector):
                     if user_type == "person" and user.get("id"):
                         person_user_ids.append(user.get("id"))
                     elif user_type == "bot":
+                        if user.get("id"):
+                            self._bot_user_ids.add(user["id"])
                         # Bot users contain workspace information
                         bot_data = user.get("bot", {})
                         workspace_id = bot_data.get("workspace_id")
@@ -2203,6 +2236,7 @@ class NotionConnector(BaseConnector):
                 if next_cursor == cursor:
                     self.logger.warning("Notion users pagination stopping: next_cursor equals start_cursor (%s)", cursor)
                     user_details_complete = False
+                    listing_complete = False
                     break
                 cursor = next_cursor
 
@@ -2215,6 +2249,7 @@ class NotionConnector(BaseConnector):
                     "\"Read user information including email addresses\" on the integration, "
                     "then sync again."
                 )
+            self._bot_ids_complete = listing_complete
             if self.workspace_id and workspace_emails:
                 await self._add_users_to_workspace_permissions(workspace_emails)
             if user_details_complete:
@@ -2486,7 +2521,7 @@ class NotionConnector(BaseConnector):
                 if records_with_permissions:
                     # Before the rows: a crash after them must still find their tables touched.
                     await self._persist_touched_data_sources()
-                    await self.data_entities_processor.on_new_records(records_with_permissions)
+                    await self._save_content_records(records_with_permissions)
                     self.logger.info(f"Saved batch of {len(records_with_permissions)} {object_type}(s) and files")
 
                 # Pagination - only continue if we haven't hit the sync point threshold
@@ -2544,6 +2579,25 @@ class NotionConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ {type_display} sync failed: {e}", exc_info=True)
             raise
+
+    async def _save_content_records(
+        self, rows: list[tuple[Record, list[Permission]]],
+    ) -> None:
+        """Write pages, data sources and their files on the path their revision asks for.
+
+        A stored record whose source revision moved publishes ``updateRecord``.
+        A first write, a placeholder and an unchanged revision stay on ``newRecord``.
+        """
+        if not rows:
+            return
+        routed = []
+        for record, permissions in rows:
+            existing = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, record.external_record_id,
+            )
+            carry_stored_version(record, existing)
+            routed.append(synced(record, permissions, existing))
+        await save_synced_records(self.data_entities_processor, routed)
 
     async def _records_for_search_object(
         self,
@@ -4507,6 +4561,28 @@ class NotionConnector(BaseConnector):
 
     # ==================== Transform Helpers ====================
 
+    async def _load_bot_user_ids(self) -> None:
+        """The bots the workspace lists, as the user sync records them; a failure leaves them unknown."""
+        cursor = None
+        try:
+            while True:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.list_users(start_cursor=cursor, page_size=100)
+                if not response or not response.success or not response.data:
+                    return
+                data = response.data.json()
+                self._bot_user_ids.update(
+                    u["id"] for u in data.get("results") or [] if u.get("type") == "bot" and u.get("id"))
+                next_cursor = data.get("next_cursor")
+                if not data.get("has_more") or not next_cursor:
+                    self._bot_ids_complete = True
+                    return
+                if next_cursor == cursor:
+                    return
+                cursor = next_cursor
+        except Exception as e:
+            self.logger.warning("Could not load Notion bot users: %s", e)
+
     async def _ensure_workspace_from_bot(self, *, refresh: bool = False) -> None:
         """Load the token's workspace from ``/users/me``; with ``refresh``, even when one is known.
 
@@ -4941,6 +5017,10 @@ class NotionConnector(BaseConnector):
                 weburl=obj_data.get("url"),
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
+                authored_by=notion_person(
+                    obj_data.get("created_by"), self._bot_user_ids, bots_known=self._bot_ids_complete),
+                last_modified_by=notion_person(
+                    obj_data.get("last_edited_by"), self._bot_user_ids, bots_known=self._bot_ids_complete),
             )
 
         except _DatabaseUnavailable:

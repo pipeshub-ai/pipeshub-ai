@@ -29,7 +29,7 @@ export class PgOrgMetricsJobRepository implements OrgMetricsJobRepository {
   countUsersByOrg(): Promise<Array<{ _id: string | null; count: number }>> {
     return readAll(async (tx) => {
       const { rows } = await tx.query<{ org_id: string; n: string }>(
-        '/* pipeshub:identity.metrics_users_by_org */ SELECT u.org_id, count(*) AS n FROM identity.users u WHERE NOT u.is_deleted GROUP BY u.org_id',
+        '/* pipeshub:identity.metrics_users_by_org */ SELECT org_id, n FROM identity.gauge_user_counts()',
       );
       return rows.map((r) => ({ _id: r.org_id, count: Number(r.n) }));
     }, []);
@@ -42,7 +42,7 @@ export class PgOrgMetricsJobRepository implements OrgMetricsJobRepository {
         account_type: string;
         domain: string;
       }>(
-        '/* pipeshub:identity.metrics_live_orgs */ SELECT o.org_id, o.account_type, o.domain FROM identity.orgs o WHERE NOT o.is_deleted',
+        '/* pipeshub:identity.metrics_live_orgs */ SELECT org_id, account_type, domain FROM identity.gauge_live_orgs()',
       );
       return rows.map((r) => ({
         _id: r.org_id,
@@ -60,7 +60,7 @@ export class PgOrgMetricsJobRepository implements OrgMetricsJobRepository {
           auth_steps: AuthConfigMetricRow['authSteps'];
         }
       >(
-        '/* pipeshub:identity.metrics_auth_configs */ SELECT c.org_id, c.auth_steps FROM identity.org_auth_config c WHERE NOT c.is_deleted',
+        '/* pipeshub:identity.metrics_auth_configs */ SELECT org_id, auth_steps FROM identity.gauge_auth_configs()',
       );
       return rows.map((r) => ({ orgId: r.org_id, authSteps: r.auth_steps }));
     }, []);

@@ -57,7 +57,7 @@ from app.services.redis.connection_provider_factory import (
 if TYPE_CHECKING:
     from app.services.messaging.backpressure import BackpressureCoordinator
     from app.services.messaging.connector_off import ConnectorOffFilter
-    from app.services.messaging.consumer_concurrency import StageAdmission
+    from app.services.messaging.consumer_concurrency import PriorityLane, StageAdmission
     from app.services.messaging.disposition import AbandonedMessageSink
     from app.services.messaging.lanes.interface import LaneRouter
     from app.services.messaging.worker_loop import WorkerLoop
@@ -338,6 +338,7 @@ class MessagingFactory:
         disposition_sink: "AbandonedMessageSink | None" = None,
         connector_off_filter: "ConnectorOffFilter | None" = None,
         stage_admission: "StageAdmission | None" = None,
+        priority_lane: "PriorityLane | None" = None,
         worker: "WorkerLoop | None" = None,
     ) -> IMessagingConsumer:
         """Create a messaging consumer based on broker type.
@@ -374,6 +375,9 @@ class MessagingFactory:
             connector_off_filter: Optional (INDEXING consumers only). Settles, as they
                       are read, the record events the handler would only skip because
                       their connector is turned off or removed.
+            priority_lane: Optional (INDEXING consumers only). Makes this the consumer of
+                      the priority topic: records are admitted ahead of the queued
+                      backlog but under the lane's own caps and lease pools.
 
         Returns:
             IMessagingConsumer instance
@@ -382,6 +386,10 @@ class MessagingFactory:
             broker_type = get_message_broker_type()
 
         effective_fair_config = fair_scheduler_config or _fair_scheduler_config_from_env()
+        if priority_lane is not None:
+            # The lane's per-org share is the fair scheduler's, and a priority record is not
+            # ordered against its partition's others: its cap, not the partition, bounds it.
+            effective_fair_config = dataclasses.replace(effective_fair_config, enabled=True, parallel_partitions=True)
         if stage_admission is not None:
             # Stage jobs are independent and serialised per job, so one partition may run
             # several at once; the stage's admission limit bounds concurrency, not the
@@ -403,6 +411,7 @@ class MessagingFactory:
                 disposition_sink=disposition_sink,
                 concurrency_manager=concurrency_manager,
                 stage_admission=stage_admission,
+                priority_lane=priority_lane,
                 worker=worker if consumer_type == ConsumerType.INDEXING else None,
             )
         if broker_type == MessageBrokerType.KAFKA:
@@ -434,6 +443,7 @@ class MessagingFactory:
                     disposition_sink=disposition_sink,
                     connector_off_filter=connector_off_filter,
                     stage_admission=stage_admission,
+                    priority_lane=priority_lane,
                     worker=worker,
                 )
             return KafkaMessagingConsumer(logger, config, retry_manager)
@@ -459,6 +469,7 @@ class MessagingFactory:
                     disposition_sink=disposition_sink,
                     connector_off_filter=connector_off_filter,
                     stage_admission=stage_admission,
+                    priority_lane=priority_lane,
                     worker=worker,
                 )
             return RedisStreamsConsumer(logger, config, retry_manager)

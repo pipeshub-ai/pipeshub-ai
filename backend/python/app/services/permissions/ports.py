@@ -7,7 +7,10 @@ and ArangoDB, `fakes.py` over plain dicts. Dependency direction: retrieval -> pe
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 @dataclass(frozen=True)
@@ -119,6 +122,10 @@ class StampApp:
     has_group_level: bool
 
 
+#: How deep `subtree_vrids` walks; a subtree with anything below this depth is refused (`ViewerScopesUnavailable`), not cut.
+SUBTREE_DEPTH = 200
+
+
 class StampGraph(Protocol):
     """What a stamper reads. Read-only, independent of any viewer, and not cached by the implementation."""
 
@@ -131,4 +138,11 @@ class StampGraph(Protocol):
 
     async def record_page(self, org_id: str, app_id: str, after: str | None, limit: int) -> list[str]:
         """Up to `limit` record ids of the app, ordered, strictly after `after` (deleted ones included). A failed read raises."""
+        ...
+
+    async def subtree_vrids(self, org_id: str, ids: Sequence[str]) -> list[str]:
+        """The virtual record ids of these records and of the records of these groups, and of everything below them over hierarchy edges only (PARENT_CHILD and
+        ATTACHMENT; every edge of the path must be one, so a record reached only through a link edge such as SIBLING is not in the subtree), in no
+        particular order. A restriction, a move or a delete reaches the descendants. Ids that do not exist in this organisation add nothing. A failed
+        read raises, and so does a subtree deeper than `SUBTREE_DEPTH` (200); the caller must then treat the whole connector as reached: a record that deep would never be hidden by an answer cut short."""
         ...

@@ -34,6 +34,7 @@ from app.services.vector_db.collections import CollectionType, sanitize_collecti
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     PAYLOAD_KEYWORD_INDEXES,
+    SCOPE_INTEGER_INDEXES,
     SCOPE_KEYWORD_INDEXES,
 )
 from app.services.vector_db.interface.vector_db import IVectorDBService
@@ -373,7 +374,7 @@ class CollectionRegistry:
         return info.dense_dimension if info.exists else None
 
     async def _ensure_payload_indexes(self, name: str) -> None:
-        indexes = PAYLOAD_KEYWORD_INDEXES + (SCOPE_KEYWORD_INDEXES if scope_fields_enabled() else ())
+        indexes = PAYLOAD_KEYWORD_INDEXES + ((*SCOPE_KEYWORD_INDEXES, *SCOPE_INTEGER_INDEXES) if scope_fields_enabled() else ())
         for field_name, schema in indexes:
             try:
                 await self._vector_db_service.create_index(

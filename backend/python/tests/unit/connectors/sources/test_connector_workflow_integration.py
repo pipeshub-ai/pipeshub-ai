@@ -174,6 +174,18 @@ class _InMemoryGraphStore:
         self.edges[edge_collection] = [e for e in edges if e.get("_from") != _from]
         return before - len(self.edges[edge_collection])
 
+    def delete_edges_between_collections(
+        self, edge_collection: str, from_id: str, from_collection: str, to_collection: str,
+    ) -> int:
+        _from = f"{from_collection}/{from_id}"
+        edges = self.edges.get(edge_collection, [])
+        before = len(edges)
+        self.edges[edge_collection] = [
+            e for e in edges
+            if not (e.get("_from") == _from and str(e.get("_to", "")).startswith(f"{to_collection}/"))
+        ]
+        return before - len(self.edges[edge_collection])
+
     def delete_edges_to(self, edge_collection: str, to_id: str, to_collection: str) -> int:
         _to = f"{to_collection}/{to_id}"
         edges = self.edges.get(edge_collection, [])
@@ -431,9 +443,25 @@ class MockTransactionStore:
 
     # -- users ---
 
-    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> User | None:
+    async def get_user_by_source_id(
+        self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False,
+    ) -> User | None:
+        return None  # this store keeps no userAppRelation edges
+
+    def is_transient_error(self, error: BaseException) -> bool:
+        return False
+
+    async def get_users_by_emails(
+        self, emails: list[str], *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> dict[str, User]:
+        found = {e.lower(): await self.get_user_by_email(e, org_id=org_id) for e in emails}
+        return {e: u for e, u in found.items() if u is not None}
+
+    async def get_user_by_email(
+        self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> User | None:
         for doc in self._s.collections.get(CollectionNames.USERS.value, {}).values():
-            if doc.get("email") == email:
+            if doc.get("email") == email and (org_id is None or doc.get("orgId") == org_id):
                 return User(
                     id=doc["_key"],
                     email=doc["email"],
@@ -450,6 +478,15 @@ class MockTransactionStore:
             if doc.get("email") == email.lower() and doc.get("orgId") == org_id:
                 return Person.from_arango_person(doc)
         return None
+
+    async def get_person_by_source_key(self, source_key: str, org_id: str) -> Person | None:
+        for doc in self._s.collections.get(CollectionNames.PEOPLE.value, {}).values():
+            if doc.get("sourceKey") == source_key and doc.get("orgId") == org_id:
+                return Person.from_arango_person(doc)
+        return None
+
+    async def upsert_person_by_source_key(self, person: Person, *, raise_on_error: bool = False) -> str | None:
+        return self._s.upsert_node(CollectionNames.PEOPLE.value, person.to_arango_person())["_key"]
 
     async def upsert_person_by_email(self, person: Person, *, raise_on_error: bool = False) -> str | None:
         existing = await self.get_person_by_email(person.email, person.org_id)
@@ -617,6 +654,11 @@ class MockTransactionStore:
 
     async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> int:
         return self._s.delete_edges_from(collection, from_id, from_collection)
+
+    async def delete_edges_between_collections(
+        self, from_id: str, from_collection: str, edge_collection: str, to_collection: str,
+    ) -> int:
+        return self._s.delete_edges_between_collections(edge_collection, from_id, from_collection, to_collection)
 
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str,
                           to_collection: str, collection: str) -> bool:
@@ -1447,8 +1489,9 @@ class TestJiraFullSyncWorkflow:
         assert EntityRelations.REPORTED_BY.value in edge_types
 
     @pytest.mark.asyncio
-    async def test_sync_ticket_missing_user_no_edge(self, processor, graph_store):
-        """If user doesn't exist in graph, entity relation edges are not created."""
+    async def test_sync_ticket_naming_a_non_member_links_one_person_node(self, processor, graph_store):
+        """Someone a ticket names who is not a member gets one person node
+        (decision D2), linked once per role; no user is created."""
         ticket = make_ticket_record(
             external_id="ticket-nousers-001",
             assignee_email="ghost@example.com",
@@ -1457,7 +1500,12 @@ class TestJiraFullSyncWorkflow:
         )
         await processor.on_new_records([(ticket, [])])
         entity_edges = graph_store.edges.get(CollectionNames.ENTITY_RELATIONS.value, [])
-        assert len(entity_edges) == 0
+        assert {e["_to"].split("/")[0] for e in entity_edges} == {CollectionNames.PEOPLE.value}
+        assert len({e["_to"] for e in entity_edges}) == 1
+        assert sorted(e["edgeType"] for e in entity_edges) == sorted([
+            EntityRelations.ASSIGNED_TO.value, EntityRelations.REPORTED_BY.value, EntityRelations.CREATED_BY.value,
+        ])
+        assert graph_store.count_collection(CollectionNames.USERS.value) == 0
 
     @pytest.mark.asyncio
     async def test_sync_project_lead_edge(self, processor, graph_store):

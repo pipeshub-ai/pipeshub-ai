@@ -26,6 +26,7 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     BATCH_PROCESSING_SIZE,
     DEFAULT_MAX_RESULTS,
     ISSUE_SEARCH_FIELDS,
+    IncompleteSyncError,
     JiraConnector,
 )
 from app.models.entities import (
@@ -2228,7 +2229,8 @@ class TestNotificationPreviewTruncation:
             connector._update_issues_sync_checkpoint = AsyncMock()
             connector._handle_issue_deletions = AsyncMock()
 
-            await connector.run_sync()
+            with pytest.raises(IncompleteSyncError):
+                await connector.run_sync()
 
         assert "and 3 more" in connector.notify.await_args.kwargs["message"]
 

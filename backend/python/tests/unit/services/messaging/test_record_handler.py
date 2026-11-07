@@ -145,6 +145,32 @@ class TestProcessEventEdgeCases:
             )
 
 
+@pytest.mark.asyncio
+async def test_a_retry_clears_the_vectors_of_the_vrid_on_the_record_not_the_one_in_the_message() -> None:
+    """The first attempt's vectors are under the VRID it saved on the record."""
+    handler = _make_handler()
+    handler.event_processor.graph_provider.get_document = AsyncMock(
+        return_value=_vector_only_graph_doc(virtualRecordId="saved-by-attempt-1")
+    )
+    pipeline = handler.event_processor.processor.indexing_pipeline
+    pipeline.bulk_delete_embeddings = AsyncMock(side_effect=RuntimeError("stop after the clear"))
+
+    with pytest.raises(RuntimeError, match="stop after the clear"):
+        await _collect_events(
+            handler,
+            EventTypes.REINDEX_RECORD.value,
+            {
+                "recordId": "rec-1",
+                "orgId": "org-1",
+                "virtualRecordId": "vrid-in-the-message",
+                "mimeType": MimeTypes.XLSX.value,
+                "extension": "xlsx",
+            },
+        )
+
+    pipeline.bulk_delete_embeddings.assert_awaited_once_with(["saved-by-attempt-1"], org_id="org-1")
+
+
 # ===================================================================
 # Bulk delete event
 # ===================================================================

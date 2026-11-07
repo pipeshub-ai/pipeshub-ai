@@ -1,3 +1,5 @@
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,6 +37,16 @@ class AssertNoSkips(unittest.TestCase):
         self.assertEqual(main([f, "--expect-suite", "s one"]), 1)
         broken = self._report('<testsuites><testsuite><testcase classname="s" name="a"><failure/></testcase></testsuite></testsuites>')
         self.assertEqual(main([broken, "--expect-suite", "s=1"]), 1)
+
+    def test_failed_case_outside_expected_suites_is_named_and_fails(self) -> None:
+        f = self._report(
+            '<testsuites><testsuite><testcase classname="s" name="ok"/>'
+            '<testcase classname="other" name="boom"><failure message="expected 1\nto equal 2"/></testcase></testsuite></testsuites>'
+        )
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(main([f, "--expect-suite", "s=1"]), 1)
+        self.assertIn("FAILED other :: boom: expected 1", out.getvalue())
 
 
 if __name__ == "__main__":

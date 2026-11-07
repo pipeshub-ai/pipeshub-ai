@@ -84,6 +84,7 @@ def _request(limit: dict | None = LIMIT, graph: AsyncMock | None = None) -> Magi
     request = MagicMock()
     request.state.user = user
     request.app.state.graph_provider = graph
+    request.app.container.redis_provider = AsyncMock(return_value=None)
     return request
 
 
@@ -1105,6 +1106,7 @@ class TestReviewFindingsOnTheRelatedStack:
         assert response["kb"] == {} and record["recordName"] == "budget.xlsx"
         for field in ("parentNodeId", "externalParentId", "recordGroupId", "externalGroupId"):
             assert record[field] is None, field
+        assert response["userPermission"] is None   # unknown, not "NONE": that reads as a revoked permission
 
     @pytest.mark.asyncio
     async def test_an_unlimited_update_whose_enrichment_fails_is_unchanged(self) -> None:

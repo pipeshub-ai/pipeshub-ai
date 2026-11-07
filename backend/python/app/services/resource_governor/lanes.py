@@ -14,6 +14,7 @@ import logging
 import os
 import random
 import re
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
@@ -24,11 +25,15 @@ from app.exceptions.indexing_exceptions import IndexingError
 from app.services.resource_governor.lane_ledger import (
     BLANK,
     BRAKE_SPACING_SECONDS,
+    LEDGER_VERSION,
     LOCAL_OVERLAY_SECONDS,
+    WAITER_COOLDOWN_SECONDS,
+    WAITER_REWRITE_SECONDS,
     DomainLedger,
     LedgerRecord,
     LedgerTxn,
     Presence,
+    active_waiter,
     decide_spawn,
     effective_cap,
     next_lane_cap,
@@ -54,6 +59,11 @@ logger = logging.getLogger(__name__)
 # Upper bound on lanes in one container (the legacy pool capped itself at 4).
 MAX_LANES = 64
 LANE_SLOT_CAPACITY = MAX_LANES
+LANE_DIRECTORY_PREFIX = "pipeshub-cpu-lanes"
+# Lease weights of the local Docling conversion (CPU cores measured in 2a').
+DOCLING_PDF_WEIGHT = 3
+DOCLING_OTHER_WEIGHT = 1
+DOCLING_AUTO_LANES_PER_CHILD = 3
 # 0.85 GiB for the parse worker plus 0.40 GiB for its persistent raster child.
 DEFAULT_WORKING_SET_GB = 1.25
 DEFAULT_WARMUP_SECONDS = 20.0
@@ -91,6 +101,22 @@ THREADS_RULE: dict[tuple[int, int], int] = {
     (4, 4): 1,
     (8, 4): 2,
 }
+
+
+def docling_pdf_weight(plan: LanePlan) -> int:
+    """Lease units of a Docling PDF conversion: 3 cores' worth, but never so many that one
+    PDF takes every lane of a small plan and serialises the other conversions behind it."""
+    return min(DOCLING_PDF_WEIGHT, max(1, plan.lanes - 1))
+
+
+def docling_auto_width(plan: LanePlan) -> int:
+    """Executor children for ``LOCAL_DOCLING_PARSE_WORKERS=auto``.
+
+    A PDF conversion holds three lease units and one lane stays free of Docling at the
+    full limit, so more children than this could never run together. 0 or 1 means the
+    leased thread path.
+    """
+    return max(0, (plan.lanes - 1) // DOCLING_AUTO_LANES_PER_CHILD)
 
 
 def threads_rule(cpus: int, lanes: int) -> int:
@@ -162,9 +188,28 @@ def lanes_health(governor: ResourceGovernor | None, cpus: int) -> dict[str, Any]
         block["pool"] = gauges.get("pool")
         block["interactive_pool"] = gauges.get("interactive")
         block["explicit_private"]["parse_pool"] = gauges.get("explicit_private")
+        _add_consumer_blocks(block)
         return block
     plan = plan_for_governor(governor, cpus)
     return {"mode": LANES_MODE, "plan": asdict(plan), "in_use_domain": None}
+
+
+def _add_consumer_blocks(block: dict[str, Any]) -> None:
+    """Docling, the rasterizer and the SVG renderers, from the modules this process loaded
+    (importing them here would load Docling into a service that never uses it)."""
+    modules = sys.modules
+    docling = modules.get("app.modules.parsers.pdf.docling_processor")
+    if docling is not None:
+        block["docling"] = docling.docling_lane_stats()
+        explicit = explicit_setting(DOCLING_WORKERS_ENV)
+        block["explicit_private"]["docling"] = explicit
+    raster = modules.get("app.modules.parsers.pdf.pdf_rasterizer")
+    if raster is not None:
+        block["raster_jobs"] = raster.raster_jobs()
+        block["explicit_private"]["raster"] = explicit_setting(RASTER_WORKERS_ENV)
+    svg = modules.get("app.modules.parsers.image_parser.svg_worker")
+    live = len(getattr(getattr(svg, "_renderers", None), "_all", ())) if svg is not None else 0
+    block["unleased"]["svg_renderers_live"] = live
 
 
 # ---------------------------------------------------------------------------
@@ -474,6 +519,14 @@ class BudgetOptions(TypedDict, total=False):
 _LEDGER_OPTIONS = ("view_ttl", "lock_budget", "fallback_seconds")
 
 
+class _WaiterRequest:
+    """One weighted acquire: whether it holds the waiter flag and when it last wrote it."""
+
+    def __init__(self) -> None:
+        self.registered = False
+        self.last_write = float("-inf")
+
+
 class LaneBudget:
     """One budget of CPU lanes for every process in a memory domain.
 
@@ -536,6 +589,7 @@ class LaneBudget:
         self._mismatch_logged = False
         self._live_cache: tuple[float, int] | None = None
         self._presence_registered = False
+        self._waiter_owner: _WaiterRequest | None = None
 
     # -- construction ----------------------------------------------------------
 
@@ -690,14 +744,37 @@ class LaneBudget:
 
     # -- run leases --------------------------------------------------------------
 
-    def try_acquire(self, *, weight: int = 1) -> LaneLease | None:
+    def _waiter_limit(self, limit: int, weight: int, request: _WaiterRequest | None) -> int | None:
+        """The limit to use while a weighted request waits, or None to take nothing.
+
+        Everyone but the waiter leaves room for it: a weight-1 caller may take a unit
+        only if the waiter still fits, and nothing is taken at all when the waiter can
+        only run alone.
+        """
+        waiter = active_waiter(self._ledger.read(), self._clock())
+        if waiter is None:
+            return limit
+        waiter_weight, waiter_pid = waiter
+        if request is not None and request is self._waiter_owner and waiter_pid == self._pid:
+            return limit
+        if waiter_weight >= limit:
+            return None
+        room = limit - waiter_weight
+        return room if weight <= room else None
+
+    def try_acquire(self, *, weight: int = 1, _request: _WaiterRequest | None = None) -> LaneLease | None:
         if in_lane_scope():
             return LaneLease(None, 0)
+        weight = max(1, weight)
         limit = self.limit()
+        self._check_open()
+        limit_now = self._waiter_limit(limit, weight, _request)
+        if limit_now is None:
+            return None
         with self._guard:
             self._check_open()
-            hold = self._run.try_acquire(limit, max(1, weight))
-        return None if hold is None else LaneLease(hold, max(1, weight))
+            hold = self._run.try_acquire(limit_now, weight)
+        return None if hold is None else LaneLease(hold, weight)
 
     def _backoff(self, delay: float) -> float:
         time.sleep(delay * (0.5 + self._rng()))
@@ -706,6 +783,66 @@ class LaneBudget:
     def _wait_done(self, started: float, *, waited: bool) -> None:
         if waited:
             self._waits.append(self._clock() - started)
+
+    def _hold_place(self, request: _WaiterRequest, weight: int) -> None:
+        """Keep a denied weighted request's place in the queue: register as the waiter,
+        or rewrite the stamp, at most every ``WAITER_REWRITE_SECONDS``."""
+        now = self._clock()
+        if weight <= 1 or now - request.last_write < WAITER_REWRITE_SECONDS:
+            return
+        request.last_write = now
+        mine = False
+
+        def change(record: LedgerRecord) -> LedgerRecord | None:
+            nonlocal mine
+            if now < record.waiter_clear_at:
+                return None
+            if active_waiter(record, now) is not None and not (
+                self._waiter_owner is request and record.waiter_pid == self._pid
+            ):
+                return None
+            mine = True
+            return replace(record, waiter_at=now, waiter_weight=weight, waiter_pid=self._pid)
+
+        try:
+            self._update(change)
+        except Exception:
+            logger.warning("lane budget: could not write the waiter flag", exc_info=True)
+            return
+        if mine:
+            self._waiter_owner = request
+            request.registered = True
+            self._ledger.invalidate()
+
+    def _release_place(self, request: _WaiterRequest) -> None:
+        """Clear the flag (best effort) and start the cooldown, on admission or giving up."""
+        if not request.registered:
+            return
+        request.registered = False
+        if self._waiter_owner is request:
+            self._waiter_owner = None
+        now = self._clock()
+
+        def change(record: LedgerRecord) -> LedgerRecord | None:
+            if record.waiter_pid != self._pid:
+                return None
+            return replace(
+                record,
+                waiter_at=0.0,
+                waiter_weight=0,
+                waiter_pid=0,
+                waiter_clear_at=now + WAITER_COOLDOWN_SECONDS,
+            )
+
+        if self._closed:
+            return
+        try:
+            for _ in range(3):
+                if self._update(change):
+                    break
+        except Exception:
+            logger.warning("lane budget: could not clear the waiter flag", exc_info=True)
+        self._ledger.invalidate()
 
     def acquire(
         self,
@@ -716,9 +853,10 @@ class LaneBudget:
     ) -> LaneLease:
         """Block the calling thread (never an event loop) until a lane is free."""
         started, delay, waited = self._clock(), 0.01, False
+        request = _WaiterRequest()
         try:
             while True:
-                lease = self.try_acquire(weight=weight)
+                lease = self.try_acquire(weight=weight, _request=request)
                 if lease is not None:
                     lease.waited_seconds = self._clock() - started
                     return lease
@@ -730,8 +868,10 @@ class LaneBudget:
                     raise LaneWaitCancelled("cancelled while waiting for a lane")
                 if timeout is not None and self._clock() - started >= timeout:
                     raise LaneWaitTimeout("no lane became free in time")
+                self._hold_place(request, weight)
                 delay = self._backoff(delay)
         finally:
+            self._release_place(request)
             if waited:
                 with self._state:
                     self._waiting -= 1
@@ -745,9 +885,10 @@ class LaneBudget:
         timeout: float | None = None,
     ) -> LaneLease:
         started, delay, waited = self._clock(), 0.01, False
+        request = _WaiterRequest()
         try:
             while True:
-                lease = self.try_acquire(weight=weight)
+                lease = self.try_acquire(weight=weight, _request=request)
                 if lease is not None:
                     lease.waited_seconds = self._clock() - started
                     return lease
@@ -759,9 +900,11 @@ class LaneBudget:
                     raise LaneWaitCancelled("cancelled while waiting for a lane")
                 if timeout is not None and self._clock() - started >= timeout:
                     raise LaneWaitTimeout("no lane became free in time")
+                self._hold_place(request, weight)
                 await asyncio.sleep(delay * (0.5 + self._rng()))
                 delay = min(0.1, delay * 2)
         finally:
+            self._release_place(request)
             if waited:
                 with self._state:
                     self._waiting -= 1
@@ -1012,6 +1155,7 @@ class LaneBudget:
             "resident_domain": resident,
             "spawns_in_window": record.spawns_in_window,
             "waiting": self._waiting,
+            "waiter_active": active_waiter(record, self._clock()) is not None,
             "wait_seconds_p95": p95,
             "slots": self._slots_kind,
             "ledger": "none" if self._slots_kind == "local" else ("degraded" if degraded else "ok"),
@@ -1055,7 +1199,7 @@ def open_lane_budget(
             from app.services.resource_governor.probe import memory_domain_id
 
             domain = memory_domain_id()
-            name = f"pipeshub-cpu-lanes-v1-{LANE_SLOT_CAPACITY}" + (f"-{domain}" if domain else "")
+            name = f"{LANE_DIRECTORY_PREFIX}-v{LEDGER_VERSION}-{LANE_SLOT_CAPACITY}" + (f"-{domain}" if domain else "")
             directory = shared_slots_directory(name)
             if directory is None:
                 raise OSError("shared slots need POSIX file locks")

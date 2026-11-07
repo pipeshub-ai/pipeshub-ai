@@ -6,6 +6,7 @@
  *   2. @pipeshub-ai/mcp/esm/core.js                (ESM-only — would ERR_REQUIRE_ESM)
  *   3. @modelcontextprotocol/sdk/server/streamableHttp.js  (needs mock for unit tests)
  *   4. @pipeshub-ai/mcp/esm/lib/http.js            (ESM-only — would ERR_REQUIRE_ESM)
+ *   5. @pipeshub-ai/mcp/esm/mcp-server/oauth-scopes.js  (ESM-only — would ERR_REQUIRE_ESM)
  *
  * Tests can mutate the exports on the cached modules to override behaviour
  * (e.g. make createMCPServer throw) — the controller destructures from the
@@ -103,3 +104,12 @@ class FakeHTTPClient {
 }
 
 patchRequireCache(mcpHttpPath, { HTTPClient: FakeHTTPClient });
+
+// ---------------------------------------------------------------------------
+// 5. @pipeshub-ai/mcp  — requiredOAuthScopes (tests set the map they need)
+// ---------------------------------------------------------------------------
+const mcpOAuthScopesPath = require.resolve('@pipeshub-ai/mcp/esm/mcp-server/oauth-scopes.js');
+
+patchRequireCache(mcpOAuthScopesPath, {
+  requiredOAuthScopes: (): readonly string[] | undefined => undefined,
+});

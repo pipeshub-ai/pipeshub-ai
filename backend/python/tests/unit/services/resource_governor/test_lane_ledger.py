@@ -129,7 +129,7 @@ class TestInitialisation:
         budget.report_incident()
         good = bytearray((lane_dir / "ledger").read_bytes())
         other_version = bytearray(good)
-        other_version[8] = 2
+        other_version[8] = 1
         assert LedgerRecord.decode(bytes(other_version)) is None
         other_magic = bytearray(good)
         other_magic[0] = ord("Q")
@@ -897,3 +897,51 @@ class TestAtomicRecord:
             txn.write(replace(good, cap=3))
         assert record_on_disk(lane_dir) == replace(good, cap=3)
         ledger.close()
+
+
+class TestWaiterFields:
+    """Ledger v2 (T65): the waiter flag lives in the record, and the version in the directory name."""
+
+    def test_waiter_fields_roundtrip(self) -> None:
+        record = LedgerRecord(
+            cap=3, waiter_at=1234.5, waiter_weight=3, waiter_pid=4242, waiter_clear_at=1237.0, reap_request_at=9.0
+        )
+        again = LedgerRecord.decode(record.encode())
+        assert again == record
+        assert len(record.encode()) == RECORD_SIZE
+
+    def test_a_v1_record_is_not_accepted(self) -> None:
+        import zlib
+
+        raw = bytearray(LedgerRecord(cap=3).encode())
+        lane_ledger._HEADER.pack_into(raw, 0, lane_ledger._MAGIC, 1, 0)
+        lane_ledger._HEADER.pack_into(raw, 0, lane_ledger._MAGIC, 1, zlib.crc32(bytes(raw)))  # a whole, valid v1 record
+        assert LedgerRecord.decode(bytes(raw)) is None
+
+    def test_directory_name_carries_ledger_version(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from app.services.resource_governor import lanes
+
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+        monkeypatch.setattr(lanes, "LEDGER_VERSION", 7)  # the name follows the constant, not a literal
+        budget = lanes.open_lane_budget(
+            lanes.plan_lanes(cpus=4, heavy=4), local_share=1, environ={"PARSE_LANES": "on"}, memory_reader=Mem()
+        )
+        assert budget is not None
+        budget.close()
+        assert [p.name.split("-")[3] for p in tmp_path.iterdir() if "cpu-lanes" in p.name] == ["v7"]
+        assert lane_ledger.LEDGER_VERSION == 2
+
+    def test_v2_never_opens_a_v1_directory(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from app.services.resource_governor import lanes
+
+        old = tmp_path / "pipeshub-cpu-lanes-v1-64"
+        old.mkdir(mode=0o700)
+        (old / "marker").write_text("v1")
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+        budget = lanes.open_lane_budget(
+            lanes.plan_lanes(cpus=4, heavy=4), local_share=1, environ={"PARSE_LANES": "on"}, memory_reader=Mem()
+        )
+        assert budget is not None
+        budget.close()
+        assert sorted(p.name for p in old.iterdir()) == ["marker"]  # untouched
+        assert any(p.name.startswith("pipeshub-cpu-lanes-v2-64") for p in tmp_path.iterdir())

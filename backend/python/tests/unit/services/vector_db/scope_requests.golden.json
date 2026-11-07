@@ -1,0 +1,975 @@
+{
+ "opensearch/dense_only": [
+  {
+   "kwargs": {
+    "body": {
+     "_source": {
+      "exclude": [
+       "dense_embedding"
+      ]
+     },
+     "query": {
+      "knn": {
+       "dense_embedding": {
+        "filter": {
+         "bool": {
+          "must": [
+           {
+            "term": {
+             "metadata.orgId": "aaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+           },
+           {
+            "terms": {
+             "metadata.virtualRecordId": [
+              "r1",
+              "r2"
+             ]
+            }
+           }
+          ],
+          "must_not": [
+           {
+            "term": {
+             "metadata.blockId": "b1"
+            }
+           }
+          ]
+         }
+        },
+        "k": 20,
+        "vector": [
+         0.1,
+         0.2,
+         0.3,
+         0.4
+        ]
+       }
+      }
+     },
+     "size": 3
+    },
+    "index": "col"
+   }
+  }
+ ],
+ "opensearch/dense_text_arms": [
+  {
+   "kwargs": {
+    "body": {
+     "_source": {
+      "exclude": [
+       "dense_embedding"
+      ]
+     },
+     "query": {
+      "hybrid": {
+       "queries": [
+        {
+         "bool": {
+          "filter": [
+           {
+            "bool": {
+             "minimum_should_match": 1,
+             "must": [
+              {
+               "term": {
+                "metadata.orgId": "aaaaaaaaaaaaaaaaaaaaaaaa"
+               }
+              }
+             ],
+             "should": [
+              {
+               "terms": {
+                "recordGroupIds": [
+                 "g1",
+                 "g2"
+                ]
+               }
+              },
+              {
+               "terms": {
+                "connectorIds": [
+                 "c1"
+                ]
+               }
+              }
+             ]
+            }
+           }
+          ],
+          "must": [
+           {
+            "multi_match": {
+             "fields": [
+              "page_content",
+              "page_content.stemmed"
+             ],
+             "query": "hello",
+             "type": "most_fields"
+            }
+           }
+          ]
+         }
+        },
+        {
+         "knn": {
+          "dense_embedding": {
+           "filter": {
+            "bool": {
+             "minimum_should_match": 1,
+             "must": [
+              {
+               "term": {
+                "metadata.orgId": "aaaaaaaaaaaaaaaaaaaaaaaa"
+               }
+              }
+             ],
+             "should": [
+              {
+               "terms": {
+                "recordGroupIds": [
+                 "g1",
+                 "g2"
+                ]
+               }
+              },
+              {
+               "terms": {
+                "connectorIds": [
+                 "c1"
+                ]
+               }
+              }
+             ]
+            }
+           },
+           "k": 20,
+           "vector": [
+            0.1,
+            0.2,
+            0.3,
+            0.4
+           ]
+          }
+         }
+        }
+       ]
+      }
+     },
+     "size": 5
+    },
+    "index": "col",
+    "params": {
+     "search_pipeline": "col-rrf-pipeline"
+    }
+   }
+  }
+ ],
+ "opensearch/dense_text_org": [
+  {
+   "kwargs": {
+    "body": {
+     "_source": {
+      "exclude": [
+       "dense_embedding"
+      ]
+     },
+     "query": {
+      "hybrid": {
+       "queries": [
+        {
+         "bool": {
+          "filter": [
+           {
+            "bool": {
+             "must": [
+              {
+               "term": {
+                "metadata.orgId": "aaaaaaaaaaaaaaaaaaaaaaaa"
+               }
+              }
+             ]
+            }
+           }
+          ],
+          "must": [
+           {
+            "multi_match": {
+             "fields": [
+              "page_content",
+              "page_content.stemmed"
+             ],
+             "query": "hello world",
+             "type": "most_fields"
+            }
+           }
+          ]
+         }
+        },
+        {
+         "knn": {
+          "dense_embedding": {
+           "filter": {
+            "bool": {
+             "must": [
+              {
+               "term": {
+                "metadata.orgId": "aaaaaaaaaaaaaaaaaaaaaaaa"
+               }
+              }
+             ]
+            }
+           },
+           "k": 20,
+           "vector": [
+            0.1,
+            0.2,
+            0.3,
+            0.4
+           ]
+          }
+         }
+        }
+       ]
+      }
+     },
+     "size": 7
+    },
+    "index": "col",
+    "params": {
+     "search_pipeline": "col-rrf-pipeline"
+    }
+   }
+  }
+ ],
+ "opensearch/empty_filter": [
+  {
+   "kwargs": {
+    "body": {
+     "_source": {
+      "exclude": [
+       "dense_embedding"
+      ]
+     },
+     "query": {
+      "hybrid": {
+       "queries": [
+        {
+         "multi_match": {
+          "fields": [
+           "page_content",
+           "page_content.stemmed"
+          ],
+          "query": "free",
+          "type": "most_fields"
+         }
+        },
+        {
+         "knn": {
+          "dense_embedding": {
+           "k": 20,
+           "vector": [
+            0.1,
+            0.2,
+            0.3,
+            0.4
+           ]
+          }
+         }
+        }
+       ]
+      }
+     },
+     "size": 2
+    },
+    "index": "col",
+    "params": {
+     "search_pipeline": "col-rrf-pipeline"
+    }
+   }
+  }
+ ],
+ "opensearch/no_filter": [
+  {
+   "kwargs": {
+    "body": {
+     "_source": {
+      "exclude": [
+       "dense_embedding"
+      ]
+     },
+     "query": {
+      "hybrid": {
+       "queries": [
+        {
+         "multi_match": {
+          "fields": [
+           "page_content",
+           "page_content.stemmed"
+          ],
+          "query": "free",
+          "type": "most_fields"
+         }
+        },
+        {
+         "knn": {
+          "dense_embedding": {
+           "k": 20,
+           "vector": [
+            0.1,
+            0.2,
+            0.3,
+            0.4
+           ]
+          }
+         }
+        }
+       ]
+      }
+     },
+     "size": 2
+    },
+    "index": "col",
+    "params": {
+     "search_pipeline": "col-rrf-pipeline"
+    }
+   }
+  }
+ ],
+ "opensearch/sparse_dense": [
+  {
+   "kwargs": {
+    "body": {
+     "_source": {
+      "exclude": [
+       "dense_embedding"
+      ]
+     },
+     "query": {
+      "knn": {
+       "dense_embedding": {
+        "filter": {
+         "bool": {
+          "minimum_should_match": 1,
+          "must": [
+           {
+            "term": {
+             "metadata.orgId": "aaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+           }
+          ],
+          "should": [
+           {
+            "terms": {
+             "recordGroupIds": [
+              "g1",
+              "g2"
+             ]
+            }
+           },
+           {
+            "terms": {
+             "connectorIds": [
+              "c1"
+             ]
+            }
+           }
+          ]
+         }
+        },
+        "k": 20,
+        "vector": [
+         0.1,
+         0.2,
+         0.3,
+         0.4
+        ]
+       }
+      }
+     },
+     "size": 6
+    },
+    "index": "col"
+   }
+  }
+ ],
+ "opensearch/text_only": [
+  {
+   "kwargs": {
+    "body": {
+     "_source": {
+      "exclude": [
+       "dense_embedding"
+      ]
+     },
+     "query": {
+      "bool": {
+       "filter": [
+        {
+         "bool": {
+          "must": [
+           {
+            "term": {
+             "metadata.orgId": "aaaaaaaaaaaaaaaaaaaaaaaa"
+            }
+           }
+          ]
+         }
+        }
+       ],
+       "must": [
+        {
+         "multi_match": {
+          "fields": [
+           "page_content",
+           "page_content.stemmed"
+          ],
+          "query": "only words",
+          "type": "most_fields"
+         }
+        }
+       ]
+      }
+     },
+     "size": 4
+    },
+    "index": "col"
+   }
+  }
+ ],
+ "qdrant/dense_only": [
+  {
+   "filter": {
+    "must": [
+     {
+      "key": "metadata.orgId",
+      "match": {
+       "value": "aaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+     },
+     {
+      "key": "metadata.virtualRecordId",
+      "match": {
+       "any": [
+        "r1",
+        "r2"
+       ]
+      }
+     }
+    ],
+    "must_not": [
+     {
+      "key": "metadata.blockId",
+      "match": {
+       "value": "b1"
+      }
+     }
+    ]
+   },
+   "limit": 5,
+   "prefetch": [
+    {
+     "limit": 6,
+     "params": {
+      "exact": false,
+      "hnsw_ef": 256,
+      "indexed_only": false,
+      "quantization": {
+       "ignore": false,
+       "oversampling": 1.5,
+       "rescore": true
+      }
+     },
+     "query": [
+      0.1,
+      0.2,
+      0.3,
+      0.4
+     ],
+     "using": "dense"
+    }
+   ],
+   "query": {
+    "fusion": "rrf"
+   },
+   "with_payload": true
+  }
+ ],
+ "qdrant/dense_text_arms": [
+  {
+   "filter": {
+    "must": [
+     {
+      "key": "metadata.orgId",
+      "match": {
+       "value": "aaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+     }
+    ],
+    "should": [
+     {
+      "key": "recordGroupIds",
+      "match": {
+       "any": [
+        "g1",
+        "g2"
+       ]
+      }
+     },
+     {
+      "key": "connectorIds",
+      "match": {
+       "any": [
+        "c1"
+       ]
+      }
+     }
+    ]
+   },
+   "limit": 7,
+   "prefetch": [
+    {
+     "limit": 10,
+     "params": {
+      "exact": false,
+      "hnsw_ef": 256,
+      "indexed_only": false,
+      "quantization": {
+       "ignore": false,
+       "oversampling": 1.5,
+       "rescore": true
+      }
+     },
+     "query": [
+      0.1,
+      0.2,
+      0.3,
+      0.4
+     ],
+     "using": "dense"
+    }
+   ],
+   "query": {
+    "fusion": "rrf"
+   },
+   "with_payload": true
+  }
+ ],
+ "qdrant/dense_text_org": [
+  {
+   "filter": {
+    "must": [
+     {
+      "key": "metadata.orgId",
+      "match": {
+       "value": "aaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+     }
+    ]
+   },
+   "limit": 9,
+   "prefetch": [
+    {
+     "limit": 14,
+     "params": {
+      "exact": false,
+      "hnsw_ef": 256,
+      "indexed_only": false,
+      "quantization": {
+       "ignore": false,
+       "oversampling": 1.5,
+       "rescore": true
+      }
+     },
+     "query": [
+      0.1,
+      0.2,
+      0.3,
+      0.4
+     ],
+     "using": "dense"
+    }
+   ],
+   "query": {
+    "fusion": "rrf"
+   },
+   "with_payload": true
+  }
+ ],
+ "qdrant/empty_filter": [
+  {
+   "filter": {
+    "should": []
+   },
+   "limit": 4,
+   "prefetch": [
+    {
+     "limit": 4,
+     "params": {
+      "exact": false,
+      "hnsw_ef": 256,
+      "indexed_only": false,
+      "quantization": {
+       "ignore": false,
+       "oversampling": 1.5,
+       "rescore": true
+      }
+     },
+     "query": [
+      0.1,
+      0.2,
+      0.3,
+      0.4
+     ],
+     "using": "dense"
+    }
+   ],
+   "query": {
+    "fusion": "rrf"
+   },
+   "with_payload": true
+  }
+ ],
+ "qdrant/no_filter": [
+  {
+   "limit": 4,
+   "prefetch": [
+    {
+     "limit": 4,
+     "params": {
+      "exact": false,
+      "hnsw_ef": 256,
+      "indexed_only": false,
+      "quantization": {
+       "ignore": false,
+       "oversampling": 1.5,
+       "rescore": true
+      }
+     },
+     "query": [
+      0.1,
+      0.2,
+      0.3,
+      0.4
+     ],
+     "using": "dense"
+    }
+   ],
+   "query": {
+    "fusion": "rrf"
+   },
+   "with_payload": true
+  }
+ ],
+ "qdrant/sparse_dense": [
+  {
+   "filter": {
+    "must": [
+     {
+      "key": "metadata.orgId",
+      "match": {
+       "value": "aaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+     }
+    ],
+    "should": [
+     {
+      "key": "recordGroupIds",
+      "match": {
+       "any": [
+        "g1",
+        "g2"
+       ]
+      }
+     },
+     {
+      "key": "connectorIds",
+      "match": {
+       "any": [
+        "c1"
+       ]
+      }
+     }
+    ]
+   },
+   "limit": 8,
+   "prefetch": [
+    {
+     "limit": 12,
+     "params": {
+      "exact": false,
+      "hnsw_ef": 256,
+      "indexed_only": false,
+      "quantization": {
+       "ignore": false,
+       "oversampling": 1.5,
+       "rescore": true
+      }
+     },
+     "query": [
+      0.1,
+      0.2,
+      0.3,
+      0.4
+     ],
+     "using": "dense"
+    },
+    {
+     "limit": 12,
+     "query": {
+      "indices": [
+       3,
+       9
+      ],
+      "values": [
+       0.5,
+       0.25
+      ]
+     },
+     "using": "sparse"
+    }
+   ],
+   "query": {
+    "fusion": "rrf"
+   },
+   "with_payload": true
+  }
+ ],
+ "qdrant/text_only": [
+  {
+   "filter": {
+    "must": [
+     {
+      "key": "metadata.orgId",
+      "match": {
+       "value": "aaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+     }
+    ]
+   },
+   "limit": 6,
+   "prefetch": [],
+   "query": {
+    "fusion": "rrf"
+   },
+   "with_payload": true
+  }
+ ],
+ "redis/dense_only": [
+  [
+   "FT.HYBRID",
+   "col_idx",
+   "SEARCH",
+   "@metadata_orgId:{aaaaaaaaaaaaaaaaaaaaaaaa} @metadata_virtualRecordId:{r1|r2} -(@metadata_blockId:{b1})",
+   "VSIM",
+   "@dense_embedding",
+   "$vec",
+   "KNN",
+   "2",
+   "K",
+   "20",
+   "FILTER",
+   "@metadata_orgId:{aaaaaaaaaaaaaaaaaaaaaaaa} @metadata_virtualRecordId:{r1|r2} -(@metadata_blockId:{b1})",
+   "COMBINE",
+   "RRF",
+   "4",
+   "WINDOW",
+   "20",
+   "CONSTANT",
+   "60",
+   "LIMIT",
+   "0",
+   "3",
+   "LOAD",
+   "2",
+   "@__key",
+   "@__score",
+   "PARAMS",
+   "2",
+   "vec",
+   "<bytes:8:51b1b8aea6268264>"
+  ]
+ ],
+ "redis/dense_text_arms": [
+  [
+   "FT.HYBRID",
+   "col_idx",
+   "SEARCH",
+   "hello @metadata_orgId:{aaaaaaaaaaaaaaaaaaaaaaaa} ((@recordGroupIds:{g1|g2})|(@connectorIds:{c1}))",
+   "VSIM",
+   "@dense_embedding",
+   "$vec",
+   "KNN",
+   "2",
+   "K",
+   "20",
+   "FILTER",
+   "@metadata_orgId:{aaaaaaaaaaaaaaaaaaaaaaaa} ((@recordGroupIds:{g1|g2})|(@connectorIds:{c1}))",
+   "COMBINE",
+   "RRF",
+   "4",
+   "WINDOW",
+   "20",
+   "CONSTANT",
+   "60",
+   "LIMIT",
+   "0",
+   "5",
+   "LOAD",
+   "2",
+   "@__key",
+   "@__score",
+   "PARAMS",
+   "2",
+   "vec",
+   "<bytes:8:51b1b8aea6268264>"
+  ]
+ ],
+ "redis/dense_text_org": [
+  [
+   "FT.HYBRID",
+   "col_idx",
+   "SEARCH",
+   "(hello | world) @metadata_orgId:{aaaaaaaaaaaaaaaaaaaaaaaa}",
+   "VSIM",
+   "@dense_embedding",
+   "$vec",
+   "KNN",
+   "2",
+   "K",
+   "20",
+   "FILTER",
+   "@metadata_orgId:{aaaaaaaaaaaaaaaaaaaaaaaa}",
+   "COMBINE",
+   "RRF",
+   "4",
+   "WINDOW",
+   "20",
+   "CONSTANT",
+   "60",
+   "LIMIT",
+   "0",
+   "7",
+   "LOAD",
+   "2",
+   "@__key",
+   "@__score",
+   "PARAMS",
+   "2",
+   "vec",
+   "<bytes:8:51b1b8aea6268264>"
+  ]
+ ],
+ "redis/empty_filter": [
+  [
+   "FT.HYBRID",
+   "col_idx",
+   "SEARCH",
+   "free",
+   "VSIM",
+   "@dense_embedding",
+   "$vec",
+   "KNN",
+   "2",
+   "K",
+   "20",
+   "COMBINE",
+   "RRF",
+   "4",
+   "WINDOW",
+   "20",
+   "CONSTANT",
+   "60",
+   "LIMIT",
+   "0",
+   "2",
+   "LOAD",
+   "2",
+   "@__key",
+   "@__score",
+   "PARAMS",
+   "2",
+   "vec",
+   "<bytes:8:51b1b8aea6268264>"
+  ]
+ ],
+ "redis/no_filter": [
+  [
+   "FT.HYBRID",
+   "col_idx",
+   "SEARCH",
+   "free",
+   "VSIM",
+   "@dense_embedding",
+   "$vec",
+   "KNN",
+   "2",
+   "K",
+   "20",
+   "COMBINE",
+   "RRF",
+   "4",
+   "WINDOW",
+   "20",
+   "CONSTANT",
+   "60",
+   "LIMIT",
+   "0",
+   "2",
+   "LOAD",
+   "2",
+   "@__key",
+   "@__score",
+   "PARAMS",
+   "2",
+   "vec",
+   "<bytes:8:51b1b8aea6268264>"
+  ]
+ ],
+ "redis/sparse_dense": [
+  [
+   "FT.HYBRID",
+   "col_idx",
+   "SEARCH",
+   "@metadata_orgId:{aaaaaaaaaaaaaaaaaaaaaaaa} ((@recordGroupIds:{g1|g2})|(@connectorIds:{c1}))",
+   "VSIM",
+   "@dense_embedding",
+   "$vec",
+   "KNN",
+   "2",
+   "K",
+   "20",
+   "FILTER",
+   "@metadata_orgId:{aaaaaaaaaaaaaaaaaaaaaaaa} ((@recordGroupIds:{g1|g2})|(@connectorIds:{c1}))",
+   "COMBINE",
+   "RRF",
+   "4",
+   "WINDOW",
+   "20",
+   "CONSTANT",
+   "60",
+   "LIMIT",
+   "0",
+   "6",
+   "LOAD",
+   "2",
+   "@__key",
+   "@__score",
+   "PARAMS",
+   "2",
+   "vec",
+   "<bytes:8:51b1b8aea6268264>"
+  ]
+ ],
+ "redis/text_only": [
+  [
+   "FT.SEARCH",
+   "col_idx",
+   "(only | words) @metadata_orgId:{aaaaaaaaaaaaaaaaaaaaaaaa}",
+   "LIMIT",
+   "0",
+   "4"
+  ]
+ ]
+}

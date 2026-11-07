@@ -260,6 +260,10 @@ jobs:
         if: steps.changes.outputs.changed == 'true'
         run: bash deployment/docker-compose/tests/mongodb_stability_test.sh
 
+      - name: Validate datastore memory sizing variables
+        if: steps.changes.outputs.changed == 'true'
+        run: bash deployment/docker-compose/tests/compose_sizing_test.sh
+
       # installer_test.sh has existed with ~184 assertions and was not run by
       # any workflow. It needs neither Docker nor network, so there is no
       # reason for it not to gate a deployment change.

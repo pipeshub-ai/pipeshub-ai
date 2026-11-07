@@ -105,6 +105,11 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.core.registry.types import FieldType
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
+from app.connectors.core.sync_routing import (
+    carry_stored_version,
+    save_synced_records,
+    synced,
+)
 from app.connectors.sources.servicenow.common.apps import ServicenowApp
 from app.connectors.sources.servicenow.servicenow.constants import (
     ORGANIZATIONAL_ENTITIES,
@@ -3363,7 +3368,7 @@ class ServiceNowConnector(BaseConnector):
                         total_attachments_synced += 0 if access_only else len(updates) - 1
 
                 if records:
-                    await self.data_entities_processor.on_new_records(records)
+                    await self._save_article_records(records)
 
                 if attachment_listing.partial:
                     # An ACL hid attachments: what the listing lacks may still be there.
@@ -3709,6 +3714,28 @@ class ServiceNowConnector(BaseConnector):
         await self.article_sync_point.update_sync_point(
             ServiceNowSyncPointKeys.AUDIT_DELETE, {ServiceNowSyncPointKeys.LAST_SYNC_TIME: checkpoint or self._utc_now()}
         )
+
+    async def _save_article_records(
+        self, rows: list[tuple[Record, list[Permission]]],
+    ) -> None:
+        """Write articles and attachments on the path their content revision asks for.
+
+        ``sys_updated_on`` moves when the article was only touched, so it is not
+        the revision. The record's ``external_revision_id`` is a hash of the body,
+        feedback and images the article streams, and an attachment's hash is its
+        bytes. A stored record whose hash moved publishes ``updateRecord``. A
+        first write and an unchanged hash stay on ``newRecord``, which still
+        replaces grants when the article rewrites them and publishes nothing
+        when the record is already complete.
+        """
+        routed = []
+        for record, permissions in rows:
+            existing = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, record.external_record_id,
+            )
+            carry_stored_version(record, existing)
+            routed.append(synced(record, permissions, existing))
+        await save_synced_records(self.data_entities_processor, routed)
 
     async def _process_single_article(
         self, article_data: TableAPIRecord, attachments_data: list[AttachmentMetadata],

@@ -7,9 +7,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional, Tup
 from app.config.constants.ai_models import AzureDocIntelligenceModel, OCRProvider
 from app.config.constants.arangodb import (
     CollectionNames,
-    Connectors,
     ExtensionTypes,
-    OriginTypes,
     ProgressStatus,
     RecordTypes,
 )
@@ -34,13 +32,18 @@ from app.models.blocks import (
     GroupType,
     Point,
 )
-from app.models.entities import Record, RecordType
-from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD
+from app.models.entities import Record
+from app.models.record_convert import convert_record_dict_to_record  # re-exported for existing importers
 from app.modules.code_graph import enabled as code_graph_switch
 from app.modules.code_graph.block_projection import (
     BlockProjectionContext,
     drop_code_file_blocks,
     write_code_file_blocks_to_graph,
+)
+from app.modules.indexing.parse_now_marker import (
+    run_settings,
+    shape_status_write,
+    store_only_active,
 )
 from app.modules.parsers import parse_pool
 from app.modules.parsers.code_parser import engine as code_parser_engine
@@ -49,7 +52,6 @@ from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_fil
 from app.modules.parsers.markdown.image_references import extract_and_replace_images
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.excel.excel_parser import ExcelParser
-from app.connectors.sources.localKB.push.contract import PUSH_ORIGIN_FIELD
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.lightweight_group_parsers import lightweight_group_parsers
 from app.modules.parsers.push_origin import (
@@ -88,65 +90,6 @@ if TYPE_CHECKING:
 
 SCANNED_PDF_NO_OCR_MESSAGE = SCANNED_DOCUMENT_NEEDS_OCR
 
-
-def convert_record_dict_to_record(record_dict: dict[str, Any]) -> Record:
-    conn_name_value = record_dict.get("connectorName")
-    try:
-        connector_name = (
-            Connectors(conn_name_value)
-            if conn_name_value is not None
-            else Connectors.KNOWLEDGE_BASE
-        )
-    except ValueError:
-        connector_name = Connectors.KNOWLEDGE_BASE
-    origin_value = record_dict.get("origin", OriginTypes.UPLOAD.value)
-    try:
-        origin = OriginTypes(origin_value)
-    except ValueError:
-        origin = OriginTypes.UPLOAD
-
-    mime_type = cast(str, record_dict.get("mimeType"))
-
-    # Record validates the required string fields; a document missing one fails there.
-    return Record(
-        id=cast(str, record_dict.get("_key") or record_dict.get("id")),
-        org_id=cast(str, record_dict.get("orgId")),
-        record_name=cast(str, record_dict.get("recordName")),
-        record_type=RecordType(record_dict.get("recordType", "FILE")),
-        record_status=ProgressStatus(record_dict.get("indexingStatus", "NOT_STARTED")),
-        indexing_status=record_dict.get("indexingStatus", ProgressStatus.QUEUED.value),
-        extraction_status=record_dict.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
-        external_record_id=cast(str, record_dict.get("externalRecordId")),
-        version=record_dict.get("version", 1),
-        origin=origin,
-        summary_document_id=record_dict.get("summaryDocumentId"),
-        created_at=(
-            record_dict["createdAtTimestamp"]
-            if record_dict.get("createdAtTimestamp") is not None
-            else get_epoch_timestamp_in_ms()
-        ),
-        updated_at=(
-            record_dict["updatedAtTimestamp"]
-            if record_dict.get("updatedAtTimestamp") is not None
-            else get_epoch_timestamp_in_ms()
-        ),
-        source_created_at=record_dict.get("sourceCreatedAtTimestamp"),
-        source_updated_at=record_dict.get("sourceLastModifiedTimestamp"),
-        source_timestamp_origin=record_dict.get(SOURCE_TIMESTAMP_ORIGIN_FIELD),
-        weburl=record_dict.get("webUrl"),
-        mime_type=mime_type,
-        external_revision_id=record_dict.get("externalRevisionId"),
-        connector_name=connector_name,
-        is_vlm_ocr_processed=record_dict.get("isVLMOcrProcessed", False),
-        connector_id=cast(str, record_dict.get("connectorId")),
-        md5_hash=record_dict.get("md5Checksum"),
-        record_group_id=record_dict.get("recordGroupId"),
-        external_record_group_id=record_dict.get("externalGroupId"),
-        # A named-entity persist retry rebuilds the record from its document and finds the
-        # stored extraction by this.
-        virtual_record_id=record_dict.get("virtualRecordId"),
-        push_origin=record_dict.get(PUSH_ORIGIN_FIELD) is True,
-    )
 
 class Processor:
     def __init__(
@@ -201,10 +144,13 @@ class Processor:
         prev_virtual_record_id: Optional[str] = None,
     ) -> TransformContext:
         """Create TransformContext with per-invocation reconciliation context."""
+        # The parse-now run, if any, rides in the settings (see parse_now_marker).
+        extra = {"settings": settings} if (settings := run_settings()) else {}
         return TransformContext(
             record=record,
             event_type=event_type,
             prev_virtual_record_id=prev_virtual_record_id,
+            **extra,
         )
 
     async def process_image(self, record_id, content, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
@@ -233,10 +179,14 @@ class Processor:
                         "extractionStatus": ProgressStatus.NOT_STARTED.value,
                         "processingStartedAt": None,
                     }
+                    # Left IN_PROGRESS with processingStartedAt cleared, the record reads as a
+                    # crashed parse and stale recovery requeues it on every pass.
+                    if record.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
+                        status_fields["parsingStatus"] = ProgressStatus.ENABLE_MULTIMODAL_MODELS.value
                     success = await self.graph_provider.update_node(
                         record_id,
                         CollectionNames.RECORDS.value,
-                        status_fields,
+                        shape_status_write(status_fields),
                     )
                     if not success:
                         self.logger.warning(
@@ -1599,7 +1549,7 @@ class Processor:
         success = await self.graph_provider.update_node(
             record_id,
             CollectionNames.RECORDS.value,
-            status_update,
+            shape_status_write(status_update),
         )
         if not success:
             self.logger.warning(
@@ -1883,8 +1833,10 @@ class Processor:
         self.logger.info(
             f"Not indexing {record_name} ({size_bytes} bytes): {cause}; marking as not supported"
         )
-        await self._drop_code_blocks(record_id)
-        await self._release_skipped_content(org_id, record_id, virtual_record_id)
+        # A store-only run never touched the code graph or what is stored, so it has nothing to take back.
+        if not store_only_active():
+            await self._drop_code_blocks(record_id)
+            await self._release_skipped_content(org_id, record_id, virtual_record_id)
         await self._mark_record(record_id, ProgressStatus.FILE_TYPE_NOT_SUPPORTED, reason=reason)
         yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
         yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -1919,6 +1871,8 @@ class Processor:
         longer exists. Raises, like the projection: the status written next
         would otherwise claim a state the graph does not have.
         """
+        if store_only_active():
+            return
         await drop_code_file_blocks(self.graph_provider, record_id, self.logger)
 
     async def project_code_blocks_to_graph(
@@ -1953,7 +1907,7 @@ class Processor:
         table the file is missing from, which yields wrong edges rather than
         absent ones.
         """
-        if not code_graph_switch.CODE_GRAPH_ENABLED:
+        if not code_graph_switch.CODE_GRAPH_ENABLED or store_only_active():
             return
         try:
             if not file_path:

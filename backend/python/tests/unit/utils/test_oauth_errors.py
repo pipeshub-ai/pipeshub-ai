@@ -4,8 +4,16 @@ import pytest
 from app.utils.oauth_errors import (
     PERMANENT_GRANT_ERROR_CODES,
     is_permanent_grant_rejection,
+    is_transient_status,
     oauth_error_code,
 )
+
+
+@pytest.mark.parametrize(("status", "transient"), [
+    (None, False), (200, False), (400, False), (428, False), (429, True), (499, False), (500, True), (503, True), (599, True),
+])
+def test_only_an_overloaded_or_rate_limiting_status_is_transient(status: int | None, transient: bool) -> None:
+    assert is_transient_status(status) is transient
 
 
 class TestIsPermanentGrantRejection:

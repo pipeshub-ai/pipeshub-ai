@@ -33,7 +33,7 @@ Targets the ~607 uncovered lines to achieve 95%+ coverage by testing:
 import logging
 from datetime import datetime, timezone
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock, call, patch
 from uuid import uuid4
 
 import httpx
@@ -51,6 +51,7 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     GROUP_PAGE_SIZE,
     ISSUE_SEARCH_FIELDS,
     USER_PAGE_SIZE,
+    IncompleteSyncError,
     JiraConnector,
 )
 from app.models.entities import (
@@ -64,6 +65,7 @@ from app.models.entities import (
     TicketRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import NotificationSeverity, NotificationType
 
 
@@ -302,6 +304,42 @@ class TestInitCoverage:
                 await connector.init()
         data_source.assert_not_called()  # nothing was sent to that host
         assert connector.data_source is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", ["basic", "bare_token"])
+    async def test_init_refuses_any_direct_client_to_a_host_that_is_not_atlassian(self, kind: str) -> None:
+        """A rewritten authType (BASIC_AUTH, or API_TOKEN without email) builds these; they must not reach the private network."""
+        from app.connectors.core.base.connector.connector_service import (
+            ConnectorInitError,
+        )
+        from app.sources.client.jira.jira import (
+            JiraClient,
+            JiraRESTClientViaToken,
+            JiraRESTClientViaUsernamePassword,
+        )
+
+        rest = (JiraRESTClientViaUsernamePassword("http://10.1.2.3:8529/x?", "u", "p", "Basic") if kind == "basic"
+                else JiraRESTClientViaToken("http://arango:8529/x?", "t", "Bearer"))
+        connector = _make_connector()
+        with patch.object(connector, "_build_jira_client", AsyncMock(return_value=JiraClient(rest))), \
+                patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraDataSource") as data_source:
+            with pytest.raises(ConnectorInitError, match="your-company.atlassian.net"):
+                await connector.init()
+        data_source.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_init_keeps_the_oauth_gateway_url(self) -> None:
+        from app.sources.client.jira.jira import JiraClient, JiraRESTClientViaToken
+
+        gateway = "https://api.atlassian.com/ex/jira/cloud-1"
+        client = JiraClient(JiraRESTClientViaToken(gateway, "t"))
+        client.site_url = "https://acme.atlassian.net"
+        connector = _make_connector()
+        with patch.object(connector, "_build_jira_client", AsyncMock(return_value=client)), \
+                patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraDataSource") as data_source:
+            data_source.return_value.get_current_user = AsyncMock(side_effect=Exception("offline"))
+            assert await connector.init() is True
+        assert client.get_client().get_base_url() == gateway
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("base_url", [
@@ -620,7 +658,13 @@ class TestRunSync:
         connector._sync_all_project_issues.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_run_sync_notifies_when_any_project_fails(self):
+    @pytest.mark.parametrize(
+        ("status", "raises", "kept"),
+        [(None, True, True), (500, True, True), (429, True, True), (403, False, True), (404, False, False)],
+    )
+    async def test_run_sync_notifies_when_any_project_fails(self, status, raises, kept):
+        # A read that may pass next time fails the run; a lasting answer (403, 404) does not. Either way the
+        # project's stored issues stay (noted as seen) and the full sync's removal is not held back for the others.
         connector = _make_connector()
         connector.data_source = MagicMock()
         connector.site_url = "https://company.atlassian.net"
@@ -646,24 +690,50 @@ class TestRunSync:
             "new_count": 1,
             "updated_count": 1,
             "failed_count": 1,
-            "failed_project_keys": ["KAN"],
+            "failed_project_keys": ["PROJ"],
+            "failed_project_statuses": {} if status is None else {"PROJ": status},
         })
         connector._update_issues_sync_checkpoint = AsyncMock()
         connector._handle_issue_deletions = AsyncMock()
+        connector._keep_stored_records = AsyncMock()
 
         with patch(
             "app.connectors.sources.atlassian.jira_cloud.connector.load_connector_filters",
             new_callable=AsyncMock,
             return_value=(None, None),
         ):
-            await connector.run_sync()
+            if raises:
+                with pytest.raises(IncompleteSyncError, match="PROJ"):
+                    await connector.run_sync()
+            else:
+                await connector.run_sync()
 
+        assert connector._keep_stored_records.await_args_list == ([call("proj-id-1")] if kept else [])
+        assert connector.full_sync_coverage().complete is True
         connector.notify.assert_awaited_once()
         notify_kwargs = connector.notify.await_args.kwargs
         assert notify_kwargs["type"] == NotificationType.CONNECTOR_SYNC_ERROR
         assert notify_kwargs["severity"] == NotificationSeverity.ERROR
-        assert "KAN" in notify_kwargs["message"]
+        assert "PROJ" in notify_kwargs["message"]
         connector._handle_issue_deletions.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_keeping_a_projects_records_as_stored_covers_soft_deleted_ones(self) -> None:
+        """A restored issue must come back with its edges, so the removal after a full sync must not take them."""
+        connector = _make_connector()
+        live, deleted = MagicMock(id="r-live"), MagicMock(id="r-deleted")
+        processor = connector.data_entities_processor
+        processor.note_kept_record_group = AsyncMock()
+        processor.note_kept_records = MagicMock()
+
+        async def records_in_group(connector_id, group_id, limit, after_key=None, *, visibility=RecordVisibility.LIVE) -> list[MagicMock]:
+            return [live, deleted] if visibility == RecordVisibility.ALL else [live]
+
+        processor.get_records_in_record_group = records_in_group
+
+        await connector._keep_stored_records("proj-id-1")
+
+        processor.note_kept_records.assert_called_once_with(connector.connector_id, ["r-live", "r-deleted"])
 
     @pytest.mark.asyncio
     async def test_run_sync_error_raises(self):
@@ -1182,6 +1252,7 @@ class TestFetchUsersPhases:
 
         assert await connector._keep_licensed_users([licensed, unlicensed], mapping) == [licensed]
         connector._fetch_group_members.assert_awaited_once_with("g1", "jira-software-users")
+        assert connector._licensed_account_ids == {"lic"}, "kept for the scheme's user grants"
 
     @pytest.mark.asyncio
     async def test_product_access_unknown_keeps_every_user(self) -> None:
@@ -4368,3 +4439,40 @@ class TestGroupSyncForbiddenNotification:
         connector._group_bulk_forbidden = False
         await connector._sync_user_groups([])
         connector.notify.assert_not_awaited()
+
+
+@pytest.mark.parametrize("read_unfinished,account_type,licensed,granted", [
+    (False, "atlassian", None, False),       # a complete user read without them: no Jira product access
+    (True, "atlassian", None, True),         # a cut-short read may have missed a licensed account
+    (True, "customer", None, False),         # a portal customer never browses the project
+    (True, "atlassian", set(), False),       # outside the product groups, listed or not
+    (True, "atlassian", {"acc-u"}, True),    # in a product group but missing from the cut-short user read
+])
+def test_a_browse_grant_to_an_account_outside_the_licensed_users(read_unfinished, account_type, licensed, granted) -> None:
+    connector = _make_connector()
+    connector._user_read_unfinished = read_unfinished
+    connector._licensed_account_ids = licensed
+    grant = {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "acc-u", "user": {
+        "accountId": "acc-u", "emailAddress": "u@acme.com", "active": True, "accountType": account_type}}}
+
+    perms = connector._permissions_for_browse_grant(grant, "ENG", {}, {"acc-x": _make_app_user("x@acme.com", "acc-x")}, set())
+
+    assert [p.email for p in perms] == (["u@acme.com"] if granted else [])
+
+
+@pytest.mark.asyncio
+async def test_an_unresolved_account_outside_the_product_groups_gets_no_browse_grant() -> None:
+    """A hidden-email account whose lookup failed never reaches the licence filter; the groups still decide."""
+    connector = _make_connector()
+    connector._fetch_group_members = AsyncMock(return_value=(["acc-x", "acc-lic"], True))
+    listed = [_make_app_user("x@acme.com", "acc-x")]
+    kept = await connector._keep_licensed_users(listed, {"jira-software": [{"groupId": "g1", "name": "jira-software-users"}]})
+    connector._user_read_unfinished = True  # what a failed email lookup leaves
+
+    def grant(account_id: str) -> dict:
+        return {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": account_id, "user": {
+            "accountId": account_id, "emailAddress": f"{account_id}@acme.com", "active": True, "accountType": "atlassian"}}}
+
+    users = {u.source_user_id: u for u in kept}
+    assert connector._permissions_for_browse_grant(grant("acc-unlic"), "ENG", {}, users, set()) == []
+    assert [p.email for p in connector._permissions_for_browse_grant(grant("acc-lic"), "ENG", {}, users, set())] == ["acc-lic@acme.com"]

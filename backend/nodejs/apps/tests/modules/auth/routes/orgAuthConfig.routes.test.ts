@@ -15,6 +15,17 @@ import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfig
 import { ValidationError } from '../../../../src/libs/errors/validation.error';
 import type { Request, Response, NextFunction } from 'express';
 import { useCommunitySignInLists } from '../../../helpers/sign-in-lists';
+import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
+import { requireSessionAuth } from '../../../../src/libs/middlewares/require-session-auth.middleware';
+import { userAdminCheck } from '../../../../src/modules/user_management/middlewares/userAdminCheck';
+
+const mockAuthMiddleware = { authenticate: sinon.stub() };
+
+function bindAuthMiddleware(container: Container): void {
+  container
+    .bind<AuthMiddleware>('AuthMiddleware')
+    .toConstantValue(mockAuthMiddleware as unknown as AuthMiddleware);
+}
 
 describe('createOrgAuthConfigRouter', () => {
   let container: Container;
@@ -42,6 +53,7 @@ describe('createOrgAuthConfigRouter', () => {
     container
       .bind<AppConfig>('AppConfig')
       .toConstantValue(mockConfig as any);
+    bindAuthMiddleware(container);
   });
 
   afterEach(() => {
@@ -107,6 +119,20 @@ describe('createOrgAuthConfigRouter', () => {
     );
     expect(middlewareLayers.length).to.be.greaterThanOrEqual(1);
   });
+
+  // A PAT or OAuth token signed with the same secret as a session must not be
+  // able to change how the workspace signs in, nor may a revoked session.
+  it('should require an admin with a live interactive session before every route', () => {
+    const router = createOrgAuthConfigRouter(container);
+    const firstRoute = router.stack.findIndex((layer: any) => layer.route);
+    const guards = router.stack
+      .slice(0, firstRoute)
+      .map((layer: any) => layer.handle);
+    mockAuthMiddleware.authenticate.resetHistory();
+    guards[1]({}, {}, () => undefined);
+    expect(mockAuthMiddleware.authenticate.calledOnce).to.be.true;
+    expect(guards.slice(2)).to.deep.equal([requireSessionAuth, userAdminCheck]);
+  });
 });
 
 describe('POST /updateAuthMethod policy validation', () => {
@@ -139,6 +165,7 @@ describe('POST /updateAuthMethod policy validation', () => {
     container
       .bind<UserAccountController>('UserAccountController')
       .toConstantValue(controller);
+    bindAuthMiddleware(container);
 
     savedDoc = { orgId: 'o1', authSteps: [], save: sinon.stub().resolves() };
     findOne = sinon.stub(OrgAuthConfig, 'findOne').resolves(savedDoc as never);
@@ -148,8 +175,8 @@ describe('POST /updateAuthMethod policy validation', () => {
     sinon.restore();
   });
 
-  // Starts after userValidator and adminValidator, which need a live token and
-  // session; req.user is set here the way they would set it.
+  // The router-level auth guards need a live token and session; req.user is set
+  // here the way authenticate would set it.
   async function postPolicy(authMethod: unknown): Promise<{
     res: { status: sinon.SinonStub; json: sinon.SinonStub };
     error: unknown;
@@ -159,7 +186,7 @@ describe('POST /updateAuthMethod policy validation', () => {
       (l) => l.route?.path === '/updateAuthMethod',
     );
     if (!layer?.route) throw new Error('updateAuthMethod route not registered');
-    const handlers = layer.route.stack.slice(2).map((l) => l.handle);
+    const handlers = layer.route.stack.map((l) => l.handle);
 
     const req = {
       user: { orgId: 'o1', userId: 'u1' },
@@ -250,6 +277,7 @@ describe('GET /signInRemoval', () => {
     container
       .bind<UserAccountController>('UserAccountController')
       .toConstantValue({} as UserAccountController);
+    bindAuthMiddleware(container);
     const layer = createOrgAuthConfigRouter(container).stack.find(
       (l) => l.route?.path === '/signInRemoval' && (l.route as any).methods.get,
     );

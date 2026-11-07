@@ -17,7 +17,7 @@ Redis treats as special inside ``{}``.
 """
 
 import struct
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 from app.services.permissions.scope_fields import SCOPE_GENERATION_FIELD, SCOPE_KEYS, SCOPE_LIST_KEYS, SCOPE_VERSION_FIELD
 from app.services.vector_db.const.const import (
@@ -25,6 +25,7 @@ from app.services.vector_db.const.const import (
     RECORD_GROUP_IDS_FIELD,
     ROOT_RECORD_GROUP_IDS_FIELD,
 )
+from app.services.vector_db import scope_expr as sx
 from app.services.vector_db.models import (
     FieldCondition,
     FilterExpression,
@@ -32,9 +33,12 @@ from app.services.vector_db.models import (
     VectorPoint,
 )
 
+if TYPE_CHECKING:
+    from app.services.vector_db.filters import ScopeFilter
+
 
 # Characters that need escaping inside a Redis tag value
-_TAG_ESCAPE_CHARS = set(r",.<>{}[]\"':;!@#$%^&*()\- +=/\\|~`")
+_TAG_ESCAPE_CHARS = set(r",.<>{}[]\"':;!@#$%^&*()\- +=/\\|~`") | set("\t\n\r\x0b\x0c")      # whitespace ends a token unless escaped
 
 # Characters that must be escaped in a RediSearch full-text (TEXT field) query.
 # See https://redis.io/docs/latest/develop/interact/search-and-query/advanced-concepts/query_syntax/
@@ -102,6 +106,45 @@ def field_conditions_to_redis_query(conditions: List[FieldCondition]) -> str:
             escaped = escape_tag_value(str(cond.value))
             parts.append(f"{redis_field}:{{{escaped}}}")
     return " ".join(parts)
+
+
+_NOTHING = "(@metadata_orgId:{x} -@metadata_orgId:{x})"      # a tag cannot both be and not be "x": matches nothing
+
+
+def scope_query(node: "sx.Node", outside: dict[str, tuple[str, ...]], *, top: bool = True) -> str:
+    """A scope tree (:mod:`~app.services.vector_db.scope_expr`) as an FT query. Every group is parenthesised (the union binds loosely).
+    ``outside[field]``: the values of a list field that are NOT in a :class:`~app.services.vector_db.scope_expr.Within` (the tag values the index
+    holds minus the allowed ones): RediSearch has no "all values are in the set", only "has none of these". Tag values compare without case,
+    so an id with capitals is refused (:func:`refuse_unsafe_ids`)."""
+    if isinstance(node, sx.Has):
+        return f"@{node.field}:{{{'|'.join(escape_tag_value(v) for v in node.values)}}}" if node.values else _NOTHING
+    if isinstance(node, sx.Is):
+        return f"@{node.field}:[{node.value} {node.value}]"
+    if isinstance(node, sx.Within):
+        allowed = f"@{node.field}:{{{'|'.join(escape_tag_value(v) for v in node.values)}}}" if node.values else _NOTHING
+        gone = outside.get(node.field, ())
+        return f"({allowed} -@{node.field}:{{{'|'.join(escape_tag_value(v) for v in gone)}}})" if gone else f"({allowed})"
+    if isinstance(node, sx.All):
+        return "(" + " ".join(scope_query(p, outside, top=False) for p in node.parts) + ")" if node.parts else "*"
+    if isinstance(node, sx.Some):
+        return "(" + " | ".join(f"({scope_query(p, outside, top=False)})" for p in node.parts) + ")" if node.parts else _NOTHING
+    return f"-({scope_query(node.part, outside, top=False)})" if not top else f"(* -({scope_query(node.part, outside, top=False)}))"
+
+
+def refuse_unsafe_ids(flt: "ScopeFilter") -> None:
+    """Redis tags are matched without case (``c1`` would meet ``C1``), and a control character other than the whitespace ones cannot be written into a
+    tag query at all, even escaped. Ids are lowercase (UUIDs, ObjectIds): a filter that names one with a capital or such a character is refused
+    rather than allowed to meet a different id or to fail inside the server."""
+    from app.services.vector_db.filters import ScopeFilterUnsupported
+
+    if flt.trusts_nothing:  # matches nothing, no id is written
+        return
+    for name in ("current", "open_apps", "readable_groups", "readable_scopes", "excluded", "pending", "blocked"):
+        for v in getattr(flt, name):
+            if v != v.lower():
+                raise ScopeFilterUnsupported(f"Redis: the filter's {name} list holds an id with capital letters, which a tag query cannot tell from a lowercase one")
+            if any((ord(c) < 32 and c not in "\t\n\r\x0b\x0c" and c != "\x00") or ord(c) == 127 for c in v):
+                raise ScopeFilterUnsupported(f"Redis: the filter's {name} list holds an id with a control character that a tag query cannot carry")
 
 
 def filter_expression_to_redis_query(expr: FilterExpression) -> str:

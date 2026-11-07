@@ -9,7 +9,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
-from app.services.graph_db.common.utils import person_query_ref
+from app.services.graph_db.common.utils import (
+    PERSON_EDGES_FROM_USER,
+    PERSON_EDGES_TO_USER,
+    person_query_ref,
+)
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 PERSON_REF = {
@@ -45,6 +49,19 @@ class TestPersonQueryRef:
     def test_user_ids_default_to_the_ref_id(self) -> None:
         assert person_query_ref({"id": "u9"})["userIds"] == ["u9"]
 
+    def test_a_ref_naming_no_relation_links_by_every_person_relation(self) -> None:
+        """A person entity from search carries only its id, and lists every
+        record naming them; an explicit empty list still names none."""
+        assert person_query_ref({"id": "u9", "type": "person"}) == {
+            "userIds": ["u9"],
+            "outTypes": list(PERSON_EDGES_TO_USER),
+            "inTypes": list(PERSON_EDGES_FROM_USER),
+        }
+        assert person_query_ref({"id": "u9", "outTypes": [], "inTypes": []})["outTypes"] == []
+
+    def test_naming_one_direction_leaves_the_other_empty(self) -> None:
+        assert person_query_ref({"id": "u9", "inTypes": ["MENTIONED_IN"]})["outTypes"] == []
+
 
 class TestNeo4jPersonQuery:
     async def test_both_directions_with_the_person_at_the_user_end(self) -> None:
@@ -77,6 +94,14 @@ class TestNeo4jPersonQuery:
         assert ref["userIds"] == ["u1", "u2"]
         assert params["within"] == WITHIN
 
+    async def test_the_person_must_be_a_member_of_the_org_in_both_directions(self) -> None:
+        """The record filter alone would let this org's record surface a user
+        of another org that it names."""
+        p = _neo4j()
+        await p.get_entity_candidate_records([PERSON_REF], "org1")
+        query = p.client.execute_query.call_args.args[0]
+        assert query.count("p.id IN ref.userIds AND p.orgId = $org_id") == 2
+
     async def test_candidate_listing_supports_person_too(self) -> None:
         p = _neo4j()
         await p.get_entity_candidate_records([PERSON_REF], "org1")
@@ -103,6 +128,13 @@ class TestArangoPersonQuery:
         assert "edge._to IN people AND edge.edgeType IN ref.outTypes" in query
         assert "edge._from IN people AND edge.edgeType IN ref.inTypes" in query
         assert "FOR edge IN entityRelations" in query
+
+    async def test_the_person_must_be_a_member_of_the_org(self) -> None:
+        p = _arango()
+        await p.get_entity_candidate_records([PERSON_REF], "org1")
+        query = p.execute_query.await_args.args[0]
+        people = query[query.index("LET people"):query.index("UNION_DISTINCT(")]
+        assert "person_node.orgId == @org_id" in people
 
     async def test_ids_are_distinct_then_filtered_and_narrowed_before_the_cap(self) -> None:
         p = _arango()

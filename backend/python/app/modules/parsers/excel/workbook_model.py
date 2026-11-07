@@ -738,17 +738,19 @@ _CPU_SLACK_SECONDS = 2
 
 
 @contextlib.contextmanager
-def _cpu_limited(max_seconds: float | None) -> Iterator[None]:
+def _cpu_limited(max_seconds: float | None) -> Iterator[threading.Event]:
     """Refuse the load as too large once the worker has used *max_seconds* of CPU, however little
     memory it holds: SIGXCPU from ``RLIMIT_CPU`` (counted from this process's CPU time now, since a
     pool worker lives across jobs) raises ``_CpuLimit`` in the main thread. The soft limit is put
     back afterwards; the hard limit is never touched. Where it cannot be set, only the parent's
-    timeout bounds the load."""
+    timeout bounds the load. Yields an event set when the limit fired: openpyxl has bare ``except:``
+    clauses (``descriptors.base._convert``) that turn even a BaseException into a TypeError."""
+    fired = threading.Event()
     if max_seconds is None or resource is None or not hasattr(resource, "RLIMIT_CPU"):
-        yield
+        yield fired
         return
     if threading.current_thread() is not threading.main_thread():
-        yield
+        yield fired
         return
     soft, hard = resource.getrlimit(resource.RLIMIT_CPU)
     used = resource.getrusage(resource.RUSAGE_SELF)
@@ -757,16 +759,17 @@ def _cpu_limited(max_seconds: float | None) -> Iterator[None]:
         target = min(target, hard)
 
     def on_cpu_limit(_signum: int, _frame: object) -> None:
+        fired.set()
         raise _CpuLimit
 
     try:
         previous = signal.signal(signal.SIGXCPU, on_cpu_limit)
         resource.setrlimit(resource.RLIMIT_CPU, (target, hard))
     except (ValueError, OSError):
-        yield
+        yield fired
         return
     try:
-        yield
+        yield fired
     finally:
         # Both must be undone for the worker's next job, even if one of them fails.
         try:
@@ -797,9 +800,10 @@ def load_workbook_model(
     """
     restore, cap = _enforce_growth_limit(limit_bytes)
     over = False
+    cpu_fired = threading.Event()
     with _GrowthWatcher() as growth:
         try:
-            with _cpu_limited(max_seconds):
+            with _cpu_limited(max_seconds) as cpu_fired:
                 try:
                     _precheck(
                         file_binary,
@@ -813,6 +817,8 @@ def load_workbook_model(
                     if restore is not None:
                         restore()
                         restore = None
+            if cpu_fired.is_set():  # the interrupt was swallowed and the model may be half built
+                raise WorkbookRefused("too_large", f"the load used more than {max_seconds} s of CPU")
             if max_text_bytes is not None and model.text_bytes > max_text_bytes:
                 raise WorkbookRefused("too_large", f"{model.text_bytes} bytes of text in the blocks")
             return model
@@ -823,6 +829,8 @@ def load_workbook_model(
         except WorkbookRefused:
             raise
         except Exception as exc:
+            if cpu_fired.is_set():  # openpyxl swallowed the interrupt and raised its own error
+                raise WorkbookRefused("too_large", f"the load used more than {max_seconds} s of CPU") from None
             # openpyxl catches MemoryError in places and re-raises it as another error (a
             # TypeError from a half-built range); a load that came near the allowance died of it.
             if cap is not None and growth.peak_growth_kb() * 1024 >= limit_bytes * _NEAR_LIMIT:

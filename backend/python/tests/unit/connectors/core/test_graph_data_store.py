@@ -6,7 +6,7 @@ import logging
 import random
 from collections.abc import Callable
 from typing import Never
-from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
+from unittest.mock import AsyncMock, MagicMock, call, create_autospec, patch
 
 import pytest
 
@@ -471,6 +471,31 @@ class TestGraphTransactionStore:
         )
 
     @pytest.mark.asyncio
+    async def test_get_users_by_emails_asks_once_and_remembers_the_members(self, tx_store, mock_graph_provider) -> None:
+        ann = MagicMock(id="u1")
+        mock_graph_provider.get_users_by_emails = AsyncMock(return_value={"ann@x.io": ann})
+        assert await tx_store.get_users_by_emails(["Ann@x.io", "bob@x.io"], org_id="org-1") == {"ann@x.io": ann}
+        assert await tx_store.get_users_by_emails(["ann@x.io", "bob@x.io", "cat@x.io"], org_id="org-1") == {"ann@x.io": ann}
+        assert mock_graph_provider.get_users_by_emails.await_args_list == [
+            call(["ann@x.io", "bob@x.io"], transaction="txn-123", raise_on_error=False, org_id="org-1"),
+            call(["bob@x.io", "cat@x.io"], transaction="txn-123", raise_on_error=False, org_id="org-1"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_get_user_by_email_in_an_org_is_scoped_and_memoised_per_org(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        mock_graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="u1"))
+        await tx_store.get_user_by_email("test@example.com", org_id="org-1")
+        await tx_store.get_user_by_email("test@example.com", org_id="org-1")
+        await tx_store.get_user_by_email("test@example.com", org_id="org-2")
+
+        assert mock_graph_provider.get_user_by_email.await_args_list == [
+            call("test@example.com", transaction="txn-123", raise_on_error=False, org_id="org-1"),
+            call("test@example.com", transaction="txn-123", raise_on_error=False, org_id="org-2"),
+        ]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("method", "args"),
         [
@@ -898,6 +923,13 @@ class TestGraphTransactionStore:
         mock_graph_provider.get_all_orgs.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_get_all_orgs_passes_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.get_all_orgs(is_external=True, raise_on_error=True)
+        mock_graph_provider.get_all_orgs.assert_awaited_once_with(
+            active=True, is_external=True, transaction="txn-123", raise_on_error=True
+        )
+
+    @pytest.mark.asyncio
     async def test_create_user_groups(self, tx_store, mock_graph_provider) -> None:
         group = MagicMock()
         group.to_arango_base_user_group.return_value = {"_key": "g1"}
@@ -969,7 +1001,14 @@ class TestGraphTransactionStore:
     async def test_get_edges_from_node(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_edges_from_node("node1", "edge_coll")
         mock_graph_provider.get_edges_from_node.assert_awaited_once_with(
-            "node1", "edge_coll", transaction="txn-123"
+            "node1", "edge_coll", transaction="txn-123", raise_on_error=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_edges_from_node_passes_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.get_edges_from_node("node1", "edge_coll", raise_on_error=True)
+        mock_graph_provider.get_edges_from_node.assert_awaited_once_with(
+            "node1", "edge_coll", transaction="txn-123", raise_on_error=True
         )
 
     @pytest.mark.asyncio
