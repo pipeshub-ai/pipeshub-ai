@@ -721,8 +721,9 @@ _INDEX_NOT_FOUND = "Neo.ClientError.Schema.IndexNotFound"
 _RECORD_ORG_ID_INDEX = "record_org_id_key"
 # The record query's seed of records not classified yet; by statistics alone the
 # planner may scan the org's records, which classify on first use makes most of them.
+# SEEK, because a plain hint lets it scan the whole index (every org's records) and filter.
 _RECORD_UNDECIDED_INDEX = "record_org_extraction_status"
-_RECORD_UNDECIDED_HINT = "USING INDEX rec:Record(orgId, extractionStatus)"
+_RECORD_UNDECIDED_HINT = "USING INDEX SEEK rec:Record(orgId, extractionStatus)"
 _RECORD_UNDECIDED_HINT_WARNING = (
     "The record query's index %s is not ready; reading records not classified yet without it until it is: %s"
 )

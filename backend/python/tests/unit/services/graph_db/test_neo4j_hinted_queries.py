@@ -87,7 +87,7 @@ class TestRecordQueryUndecidedSeed:
         )
         assert [k.id for k in found.keys] == ["r1"]
         hinted, unhinted = execute.await_args_list
-        assert "USING INDEX rec:Record(orgId, extractionStatus)" in hinted.args[0]
+        assert "USING INDEX SEEK rec:Record(orgId, extractionStatus)" in hinted.args[0]
         assert "USING INDEX" not in unhinted.args[0]
         assert hinted.kwargs["parameters"] == unhinted.kwargs["parameters"]
         assert hinted.kwargs["timeout"] == unhinted.kwargs["timeout"] == 7.0
