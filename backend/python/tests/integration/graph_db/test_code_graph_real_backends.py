@@ -12,6 +12,7 @@ NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import uuid
@@ -431,6 +432,42 @@ async def test_deleting_a_files_blocks(repo: _Repo) -> None:
     rid = repo.record_ids["src/shop/a.py"]
     assert await repo.graph.delete_blocks_for_records([rid]) >= 1
     assert not await repo.graph.has_nodes_by_filters(BLOCKS, filters={"recordId": rid})
+
+
+# Neo4j only: ArangoDB writes an edge without taking its endpoints' locks, so there is no wait to lose.
+@pytest.mark.parametrize("repo", ["neo4j"], indirect=True)
+async def test_a_build_writing_into_a_file_deleted_under_it_skips_that_file(repo: _Repo) -> None:
+    """B3: a branch reset deletes files while the build they asked for runs. The build
+    read b.py; its write matched it, waited on the delete's lock, and lost it (EntityNotFound)."""
+    rid = repo.record_ids["src/shop/b.py"]
+    # As the connector deletes a file (GraphDataStore.delete_record_by_key): the record, then its blocks.
+    delete = await repo.graph.begin_transaction([], [RECORDS, BLOCKS], explicit=True)
+    await repo.graph.delete_nodes_and_edges([rid], RECORDS, transaction=delete)
+    await repo.graph.delete_blocks_for_records([rid], transaction=delete)
+    writing = asyncio.Event()
+
+    async def fence() -> None:
+        writing.set()
+
+    build = asyncio.create_task(build_code_graph_edges(
+        graph_provider=repo.graph, org_id=repo.org_id, record_group_id=repo.group_id,
+        facts_source=repo.blobs, fence=fence,
+    ))
+    try:
+        await asyncio.wait_for(writing.wait(), timeout=60)
+        for _ in range(200):   # until the write waits on the delete's lock
+            rows = await repo.graph.client.execute_query("SHOW TRANSACTIONS YIELD status RETURN status")
+            if any(str(r["status"]).startswith("Blocked") for r in rows):
+                break
+            await asyncio.sleep(0.05)
+        else:
+            pytest.fail("the build's write never waited on the delete")
+    finally:
+        await repo.graph.commit_transaction(delete)
+
+    await asyncio.wait_for(build, timeout=60)
+    into_b = [f"{RECORDS}/{rid}", repo.block_id("src/shop/b.py", "function:target")]
+    assert await repo.graph.get_edges_by_target_keys(into_b, RELATIONS, raise_on_error=True) == []
 
 
 async def test_a_deleted_files_names_are_kept_and_served_once(repo: _Repo) -> None:
