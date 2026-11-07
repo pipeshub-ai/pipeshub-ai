@@ -1567,25 +1567,10 @@ class EventService:
                     ProgressStatus.COMPLETED.value if _is_folder(record)
                     else ProgressStatus.NOT_STARTED.value
                 )
-                record.auto_retry_count = 0
             for status in (ProgressStatus.NOT_STARTED.value, ProgressStatus.COMPLETED.value):
                 ids = [r.id for r in records if r.id and r.indexing_status == status]
                 if ids:
                     await self.graph_provider.update_indexing_status_for_record_ids(ids, status)
-
-            # Someone asked for these, so syncs may retry them again if they fail again.
-            # Every id, not just those with a count in memory: most typed loaders don't read it.
-            # Best effort: the statuses above are stored already, and the records must
-            # still reach the connector.
-            record_ids_to_update = [r.id for r in records if r.id]
-            if record_ids_to_update:
-                try:
-                    await self.graph_provider.batch_update_nodes(
-                        [{"id": rid, "autoRetryCount": 0} for rid in record_ids_to_update],
-                        CollectionNames.RECORDS.value,
-                    )
-                except Exception as e:
-                    self.logger.warning(f"Could not reset sync retries for {len(record_ids_to_update)} record(s): {e}")
 
             await connector.reindex_records(records)
 

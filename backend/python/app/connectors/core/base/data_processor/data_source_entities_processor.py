@@ -195,11 +195,6 @@ _DELETE_CONFLICT_ATTEMPTS = 3
 # than per statement, bounded so a slice stays inside the transaction timeout.
 _RECORDS_PER_TRANSACTION = 100
 
-# How many times syncs re-queue a record that failed while its content stayed
-# the same. Past this it waits for a change at the source or a manual retry,
-# instead of paying to fail again on every sync.
-MAX_SYNC_RETRIES = 3
-
 # The statuses a connector leaves on a record it has no opinion about.
 _SYNC_DEFAULT_STATUSES = frozenset({ProgressStatus.QUEUED.value, ProgressStatus.NOT_STARTED.value})
 
@@ -3518,55 +3513,29 @@ class DataSourceEntitiesProcessor:
         publishes_event: bool,
         content_changed: bool,
     ) -> None:
-        """Decide what happens to a stored connector record that is not COMPLETED.
+        """Decide the indexing status of a stored connector record whose stored state is not kept.
 
-        Re-sending every such record on every sync, as this used to, paid to
-        re-index files that cannot change outcome (empty, unsupported), flipped
-        records mid-pipeline back to QUEUED, and retried a broken file on every
-        sync for ever. Now:
+        Reached only when ``_keeps_stored_indexing`` said no, for a save that still
+        carries the connector's default status:
 
         - a status the connector chose (AUTO_INDEX_OFF from a filter) stands;
-        - changed content is indexed again, and its retry budget starts over;
-        - a FAILED record with unchanged content is retried at most
-          ``MAX_SYNC_RETRIES`` times by syncs, then waits for a change at the
-          source or for someone to ask for a retry;
-        - EMPTY, unsupported, in-flight and paused records keep their state, and
-          no event is published for them;
-        - anything else (NOT_STARTED whose event may never have gone out,
-          AUTO_INDEX_OFF the filters now allow) is indexed.
+        - changed content is indexed again;
+        - a write that publishes nothing changes no state;
+        - anything else (a record not yet indexed, a stored status the save may now
+          answer) is indexed.
         """
-        incoming = record.indexing_status
-        if incoming not in _SYNC_DEFAULT_STATUSES:
-            return
-        stored = existing_record.indexing_status
-        if content_changed:
-            record.auto_retry_count = 0 if existing_record.auto_retry_count else None
+        if record.indexing_status not in _SYNC_DEFAULT_STATUSES or content_changed:
             return
         if record.external_revision_id != existing_record.external_revision_id:
             record.indexing_status = ProgressStatus.NOT_STARTED.value
-            record.auto_retry_count = 0 if existing_record.auto_retry_count else None
             return
         if not publishes_event:
             # Nothing will be published from this write, so nothing may change state.
-            self._keep_indexing_state(record, existing_record)
-            return
-        if stored == ProgressStatus.FAILED.value:
-            used = existing_record.auto_retry_count or 0
-            if used >= MAX_SYNC_RETRIES:
-                self._keep_indexing_state(record, existing_record)
-                return
-            record.indexing_status = ProgressStatus.NOT_STARTED.value
-            record.auto_retry_count = used + 1
-            self._stamp_queued_at(record)
+            self._preserve_indexing_state(record, existing_record)
+            record.keeps_indexing_state = True
             return
         record.indexing_status = ProgressStatus.NOT_STARTED.value
-        record.auto_retry_count = existing_record.auto_retry_count
         self._stamp_queued_at(record)
-
-    def _keep_indexing_state(self, record: Record, existing_record: Record) -> None:
-        self._preserve_indexing_state(record, existing_record)
-        record.auto_retry_count = existing_record.auto_retry_count
-        record.keeps_indexing_state = True
 
     def _preserve_indexing_state(self, record: Record, existing_record: Record) -> None:
         """Carry the stored indexing lifecycle onto a metadata-only write.

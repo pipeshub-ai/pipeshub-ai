@@ -8,9 +8,6 @@ fields:
       - OPEN
       - STRICT
       - RESTRICTED
-  auto_retry_count:
-    required: false
-    type: integer
   authored_by:
     required: false
     type: object

@@ -384,7 +384,6 @@ record_schema = {
             # How many times a sync re-queued this record after it failed with no
             # change at the source; capped, and reset when the content changes or
             # someone asks for a retry (DataSourceEntitiesProcessor).
-            "autoRetryCount": {"type": ["integer", "null"]},
             "rateLimitedSince": {"type": ["number", "null"]},
             "parsingStatus": {"type": "string", "enum": PROGRESS_STATUS_VALUES},
             "indexingStatus": {

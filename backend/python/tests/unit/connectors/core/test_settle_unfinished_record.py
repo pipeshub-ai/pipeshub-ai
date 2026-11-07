@@ -1,26 +1,21 @@
 """A sync re-indexes a stored record only when that can change the outcome.
 
-Every unchanged record that was not COMPLETED used to be re-queued on every sync:
-empty and unsupported files were paid for again, records mid-pipeline flipped
-back to QUEUED, and a broken file failed again on every sync for ever. A failed
-record now gets MAX_SYNC_RETRIES sync-driven retries, which start over when its
-content changes; everything else keeps its state and publishes nothing.
+An unchanged FAILED record is not sent again: it stays failed until its content
+changes or someone asks for a retry. Changed content and records the filters now
+allow are indexed.
 """
 
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from app.config.constants.arangodb import Connectors as ConnectorsEnum
 from app.config.constants.arangodb import OriginTypes, ProgressStatus
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    MAX_SYNC_RETRIES,
     DataSourceEntitiesProcessor,
 )
 from app.models.entities import FileRecord, RecordType
 
 
-def _record(status: str = ProgressStatus.QUEUED.value, revision: str = "rev-1", retries: int | None = None) -> FileRecord:
+def _record(status: str = ProgressStatus.QUEUED.value, revision: str = "rev-1") -> FileRecord:
     return FileRecord(
         org_id="org-1",
         external_record_id="ext-1",
@@ -36,7 +31,6 @@ def _record(status: str = ProgressStatus.QUEUED.value, revision: str = "rev-1", 
         extension="txt",
         size_in_bytes=1,
         indexing_status=status,
-        auto_retry_count=retries,
     )
 
 
@@ -48,22 +42,9 @@ def _settle(incoming: FileRecord, stored: FileRecord, *, publishes_event: bool =
     return incoming
 
 
-def test_a_failed_record_is_retried_by_syncs_until_its_budget_is_spent() -> None:
-    for used in range(MAX_SYNC_RETRIES):
-        out = _settle(_record(), _record(ProgressStatus.FAILED.value, retries=used or None))
-        assert out.indexing_status == ProgressStatus.NOT_STARTED.value
-        assert out.auto_retry_count == used + 1
-        assert not out.keeps_indexing_state
-    spent = _settle(_record(), _record(ProgressStatus.FAILED.value, retries=MAX_SYNC_RETRIES))
-    assert spent.indexing_status == ProgressStatus.FAILED.value
-    assert spent.keeps_indexing_state
-    assert spent.auto_retry_count == MAX_SYNC_RETRIES
-
-
-def test_changed_content_is_indexed_and_its_budget_starts_over() -> None:
-    out = _settle(_record(revision="rev-2"), _record(ProgressStatus.FAILED.value, retries=MAX_SYNC_RETRIES))
+def test_changed_content_is_indexed() -> None:
+    out = _settle(_record(revision="rev-2"), _record(ProgressStatus.FAILED.value))
     assert out.indexing_status == ProgressStatus.NOT_STARTED.value
-    assert out.auto_retry_count == 0
 
 
 def test_a_status_the_connector_chose_stands() -> None:
@@ -84,14 +65,12 @@ def test_a_write_that_publishes_nothing_changes_no_state() -> None:
 
 
 def test_a_content_update_is_indexed_whatever_the_revision_says() -> None:
-    out = _settle(_record(), _record(ProgressStatus.FAILED.value, retries=MAX_SYNC_RETRIES), content_changed=True)
+    out = _settle(_record(), _record(ProgressStatus.FAILED.value), content_changed=True)
     assert out.indexing_status == ProgressStatus.QUEUED.value
-    assert out.auto_retry_count == 0
     assert not out.keeps_indexing_state
 
 
-@pytest.mark.parametrize("used, sent", [(MAX_SYNC_RETRIES, 0), (0, 0)])
-async def test_a_failure_is_sent_to_indexing_never_for_unchanged_content(used: int, sent: int) -> None:
+async def test_an_unchanged_failed_record_is_not_sent_to_indexing() -> None:
     from unittest.mock import patch
 
     from app.connectors.core.sync.sync_progress import (
@@ -107,7 +86,7 @@ async def test_a_failure_is_sent_to_indexing_never_for_unchanged_content(used: i
 
     proc = _make_processor()
     tx_store = _make_tx_store()
-    stored = _record(ProgressStatus.FAILED.value, retries=used)
+    stored = _record(ProgressStatus.FAILED.value)
     stored.id = "rec-1"
     tx_store.get_record_by_external_id = AsyncMock(return_value=stored)
     proc.data_store_provider.transaction = MagicMock(return_value=_make_ctx(tx_store))
@@ -125,4 +104,4 @@ async def test_a_failure_is_sent_to_indexing_never_for_unchanged_content(used: i
         for call in proc.messaging_producer.send_messages.await_args_list
         for msg in call.args[1]
     ]
-    assert len(published) == sent
+    assert len(published) == 0

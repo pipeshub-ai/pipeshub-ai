@@ -15,7 +15,6 @@ import pytest
 
 from app.config.constants.arangodb import ProgressStatus
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    MAX_SYNC_RETRIES,
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.registry.filters import FilterCollection
@@ -350,21 +349,16 @@ class TestChangedTablesAreQueued:
         assert await h.sync() == [("updateRecord", h.record("orders").id)]
 
     @pytest.mark.asyncio
-    async def test_an_unchanged_table_that_failed_indexing_is_retried_a_few_times(self) -> None:
+    async def test_an_unchanged_table_that_failed_indexing_stays_failed(self) -> None:
         h = await _indexed_harness()
-        customers = h.record("customers").id
         h.record("customers").indexing_status = ProgressStatus.FAILED.value
         # Restarts and writes that leave the rows alone move the catalog markers,
-        # so the table is looked at on every sync with the same content.
-        markers = [h.source.restart, lambda: h.source.write("customers")] * MAX_SYNC_RETRIES
-        for move_markers in markers[:MAX_SYNC_RETRIES]:
+        # so the table is looked at with the same content. A sync is not a retry:
+        # it waits for a change at the source or a manual retry.
+        for move_markers in (h.source.restart, lambda: h.source.write("customers")):
             move_markers()
-            assert await h.sync() == [("newRecord", customers)]
-            h.record("customers").indexing_status = ProgressStatus.FAILED.value
-        # Past the cap it waits for a change at the source or a manual retry.
-        markers[MAX_SYNC_RETRIES]()
-        assert await h.sync() == []
-        assert h.record("customers").indexing_status == ProgressStatus.FAILED.value
+            assert await h.sync() == []
+            assert h.record("customers").indexing_status == ProgressStatus.FAILED.value
 
     @pytest.mark.asyncio
     async def test_a_changed_table_that_failed_indexing_is_retried(self) -> None:

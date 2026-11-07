@@ -5960,10 +5960,6 @@ components:
           format: int64
           nullable: true
           description: Epoch ms the platform last queued this record for indexing; absent until first queued. Platform-owned, unlike updatedAtTimestamp
-        autoRetryCount:
-          type: integer
-          nullable: true
-          description: How many times syncs re-queued this record after it failed with no change at the source; capped at 3, reset when the content changes or someone retries it
         parsingStatus:
           type: string
           enum: [NOT_STARTED, PAUSED, IN_PROGRESS, FAILED, COMPLETED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED, SKIPPED]
@@ -6324,10 +6320,6 @@ components:
               type: integer
               format: int64
               nullable: true
-            autoRetryCount:
-              type: integer
-              nullable: true
-              description: How many times syncs re-queued this record after it failed with no change at the source; capped at 3, reset when the content changes or someone retries it
             retryNotBefore:
               type: integer
               format: int64
@@ -12419,10 +12411,6 @@ components:
         queuedAtTimestamp:
           type: number
           nullable: true
-        autoRetryCount:
-          type: integer
-          nullable: true
-          description: How many times syncs re-queued this record after it failed with no change at the source; capped at 3, reset when the content changes or someone retries it
         retryNotBefore:
           type: number
           nullable: true
