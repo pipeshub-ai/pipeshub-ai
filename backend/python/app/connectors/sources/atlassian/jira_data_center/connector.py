@@ -3484,7 +3484,7 @@ class JiraDataCenterConnector(BaseConnector):
             reread, changed_levels = "project", None
         if reread:
             self.logger.info(
-                f"🔐 Issue security of project {project_key} changed: reading again "
+                f"Issue security of project {project_key} changed: reading again "
                 + {"levels": f"the stored issues in levels {changed_levels}",
                    "leveled": "every stored issue that has a level",
                    "project": "every stored issue"}[reread]
