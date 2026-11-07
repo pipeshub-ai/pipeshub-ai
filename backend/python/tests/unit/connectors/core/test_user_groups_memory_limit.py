@@ -31,9 +31,12 @@ class _Store:
         *,
         contended: frozenset[str] = frozenset(),
         full_at: int | None = None,
+        broken_on_retry: frozenset[str] = frozenset(),
     ) -> None:
         self.refused = refused
         self.broken = broken
+        self.broken_on_retry = broken_on_retry
+        self.attempts: dict[str, int] = {}
         # groups whose write the pool refuses with the driver's own error (not marked as bulk)
         self.contended = contended
         # a transaction that has already written this many groups is refused by the pool on the next
@@ -71,9 +74,9 @@ def _pool_error() -> TransientError:
     return err
 
 
-def _group(name: str) -> AppUserGroup:
+def _group(name: str, connector_id: str = "conn-1") -> AppUserGroup:
     return AppUserGroup(
-        app_name=ConnectorsEnum.GOOGLE_MAIL, connector_id="conn-1", source_user_group_id=name, name=name,
+        app_name=ConnectorsEnum.GOOGLE_MAIL, connector_id=connector_id, source_user_group_id=name, name=name,
     )
 
 
@@ -87,6 +90,9 @@ def _processor(store: _Store) -> DataSourceEntitiesProcessor:
         store.replaces += 1
         # to_id is the group's id: the upsert stub below records which group this is
         name = tx_store.current
+        store.attempts[name] = store.attempts.get(name, 0) + 1
+        if name in store.broken_on_retry and store.attempts[name] > 1:
+            raise RuntimeError(f"{name} broke on its second write")
         if name in store.refused:
             raise GraphMemoryLimitError(f"{name} too large", operation="group replace", size=9)
         if name in store.contended or (store.full_at is not None and len(tx_store.written) >= store.full_at):
@@ -146,6 +152,21 @@ class TestIsolation:
 
         assert store.committed == ["A"]
         proc._access_changed.assert_awaited_once_with({"conn-1"})
+
+    @pytest.mark.asyncio
+    async def test_access_written_by_the_combined_attempt_is_dropped_even_if_the_fallback_fails(self) -> None:
+        """Without explicit transactions each statement commits on its own, so a group the combined
+        attempt wrote before the refusal stays written; its access must drop even when the fallback
+        fails before rewriting it."""
+        store = _Store({"B"}, broken_on_retry=frozenset({"A"}))
+        proc = _processor(store)
+        _wire(proc)
+
+        with pytest.raises(RuntimeError, match="A broke on its second write"):
+            await proc.on_new_user_groups([(_group("A", "conn-a"), []), (_group("B", "conn-b"), [])])
+
+        proc._access_changed.assert_awaited_once()
+        assert "conn-a" in proc._access_changed.await_args.args[0]
 
     @pytest.mark.asyncio
     async def test_without_an_error_the_call_is_one_transaction(self) -> None:

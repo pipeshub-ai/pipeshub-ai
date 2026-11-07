@@ -5594,11 +5594,13 @@ class DataSourceEntitiesProcessor:
                 refused = True
             skipped: list[str] = []
             if refused:
-                # The transaction rolled back, so none of the call is written. A group the server's memory
-                # pool refused must not take the others with it: write them apart, each group's
-                # upsert and its replace still in one transaction of their own. Done after the handler
-                # has ended, so the aggregated error below carries no earlier error as its context.
-                rewritten = set()
+                # With explicit transactions the combined write rolled back whole; without them each
+                # statement committed on its own, so groups written before the refusal stand. Either
+                # way, a group the server's memory pool refused must not take the others with it: write
+                # them apart, each group's upsert and its replace in one transaction of their own. The
+                # connectors collected by the combined attempt stay in ``rewritten``: dropping access
+                # for a superset is harmless, missing one leaves a stale access list. Done after the
+                # handler has ended, so the aggregated error below carries no earlier error as its context.
                 try:
                     skipped = await self._write_user_groups_apart(user_groups, rewritten, replace_members=replace_members)
                 finally:
