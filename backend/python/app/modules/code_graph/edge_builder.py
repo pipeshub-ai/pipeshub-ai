@@ -24,7 +24,7 @@ from app.modules.code_graph.guards import (
     prefer_non_test,
 )
 from app.modules.code_graph.import_resolution import ImportResolution
-from app.modules.code_graph.module_refs import MODULE_PREFIX, module_refs_of_path
+from app.modules.code_graph.module_refs import module_refs_of_path
 from app.modules.code_graph.symbol_index import BlockRow, SymbolIndex
 from app.modules.parsers.code_parser.languages.rust import HELD, POINTED, PRELUDE
 from app.utils.env_config import env_int
@@ -2195,9 +2195,9 @@ async def build_code_graph_edges(
             graph_provider, index, org_id, record_group_id, touched_record_ids
         )
     if touched_record_ids is not None:
-        imported_before = await _types_imported_before(graph_provider, index, touched_record_ids)
+        dropped = await _type_imports_dropped(graph_provider, index, builder.imports, touched_record_ids)
         reresolve = await asyncio.to_thread(
-            _with_impl_partners, index, reresolve, touched_record_ids, changed_names, imported_before)
+            _with_impl_partners, index, reresolve, touched_record_ids, changed_names, dropped)
     builder.result.files_touched = len(touched_record_ids or ())
     builder.result.files_reresolved = len(reresolve)
 
@@ -2412,45 +2412,51 @@ def _select_reresolve_set(index: SymbolIndex, touched: set[str] | None,
 
 
 def _with_impl_partners(index: SymbolIndex, reresolve: set[str], touched: set[str] = frozenset(),
-                        changed_names: set[str] = frozenset(), imported_before: set[str] = frozenset()) -> set[str]:
+                        changed_names: set[str] = frozenset(), dropped_imports: set[str] = frozenset()) -> set[str]:
     """*reresolve* plus the files at the other end of an impl's heritage edge, which starts at the type the impl
     names (Rust), in another file. A type's file deletes and rewrites its types' heritage, from their impls' facts:
     every impl file of its types comes too. A touched file's impls may have changed or gone (a removed one's name is
     in *changed_names*): their types' files come too, to drop what they no longer implement. Matched by name, so a
-    few same-named files more than needed may be re-resolved, never fewer. An impl name no type answers to any more
-    (its `use ... as` alias edited away) brings the files of the types the touched files imported before this build
-    (*imported_before*), since that alias may have named one of them.
+    few same-named files more than needed may be re-resolved, never fewer. A link the current facts no longer hold
+    (a `use ... as` alias or path edited away) is not matched by name at all: the types a touched file imported
+    before this build and no longer does (*dropped_imports*) come too, whatever else shares their name.
     """
     names = _ImplNames.of(index)
     record = index.rows
     touched_impls = {name for name, blocks in names.impls.items() if any(record[b].record_id in touched for b in blocks)}
-    selected = set(reresolve)
+    selected = set(reresolve) | {record[b].record_id for b in dropped_imports if b in record}
     for name in set(changed_names) | touched_impls:
-        typed = {record[b].record_id for linked in names.group(name) for b in names.types.get(linked, ())}
-        # A changed name still defined but not as an impl (an added function), or a module ref, names no type.
-        aliased = not typed and (name in touched_impls
-                                 or not (index.candidates(name) or name.startswith(MODULE_PREFIX)))
-        selected |= typed or ({record[b].record_id for b in imported_before if b in record} if aliased else set())
+        selected.update(record[b].record_id for linked in names.group(name) for b in names.types.get(linked, ()))
     type_names = {name for name, blocks in names.types.items() if any(record[b].record_id in selected for b in blocks)}
     for name in type_names:
         selected.update(record[b].record_id for linked in names.group(name) for b in names.impls.get(linked, ()))
     return selected
 
 
-async def _types_imported_before(graph_provider: IGraphDBProvider, index: SymbolIndex,
-                                 touched: set[str]) -> set[str]:
-    """The type blocks the touched files imported in the previous build: their IMPORTS edges, which this build has
-    not replaced yet. Only for files whose family's impls name their type (`_with_impl_partners`)."""
+async def _type_imports_dropped(graph_provider: IGraphDBProvider, index: SymbolIndex, imports: ImportResolution,
+                                touched: set[str]) -> set[str]:
+    """The type blocks a touched file imported in the previous build (its IMPORTS edges, which this build has not
+    replaced yet) that its current imports no longer reach, by the defining file and name, not the name alone. Only
+    for files whose family's impls name their type (`_with_impl_partners`)."""
     found: set[str] = set()
     for record_id in sorted(touched):
-        if not rules_for(lang_family(None, index.file_by_record.get(record_id))).impl_blocks_name_their_type:
+        file_path = index.file_by_record.get(record_id)
+        family = lang_family(None, file_path)
+        if not file_path or not rules_for(family).impl_blocks_name_their_type:
             continue
         edges = await graph_provider.get_edges_from_node(
             f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.RECORD_LINKS.value, raise_on_error=True)
-        found.update(target for edge in edges or ()
-                     if edge.get("source") == CODE_GRAPH_SOURCE
-                     and edge.get("relationshipType") == RecordRelations.IMPORTS.value
-                     and (target := (edge.get("_to") or "").partition("/")[2]) in index.type_blocks)
+        before = {target for edge in edges or ()
+                  if edge.get("source") == CODE_GRAPH_SOURCE
+                  and edge.get("relationshipType") == RecordRelations.IMPORTS.value
+                  and (target := (edge.get("_to") or "").partition("/")[2]) in index.type_blocks}
+        if not before:
+            continue
+        now = {(imports.resolve(fact.get("qualifiedPrefix") or "", file_path, family), fact.get("toName"))
+               for block_id in index.blocks_by_record.get(record_id, ())
+               for fact in index.rows[block_id].pending_edges
+               if fact.get("relation") == RecordRelations.IMPORTS.value}
+        found.update(b for b in before if (index.file_by_block.get(b), index.rows[b].name) not in now)
     return found
 
 

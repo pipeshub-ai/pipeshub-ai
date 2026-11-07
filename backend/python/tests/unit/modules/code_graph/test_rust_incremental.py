@@ -109,14 +109,20 @@ ALIASED = {
 }
 
 
+# A type named like the alias, elsewhere: it must not stand in for the type the alias named.
+UNRELATED = {**ALIASED, "core/src/lib.rs": ALIASED["core/src/lib.rs"] + b"pub mod config;\n",
+             "core/src/config.rs": b"pub struct Settings {}\n"}
+
+
 @pytest.mark.asyncio
+@pytest.mark.parametrize("files", [ALIASED, UNRELATED], ids=["alone", "unrelated-type-of-the-alias-name"])
 @pytest.mark.parametrize("edited", [
     b"use crate::store::Store;\n",                                                     # the impl and its alias go
     b"use crate::store::Store;\nimpl Store for Settings { fn save(&self) {} }\n",     # only the alias goes
 ], ids=["impl-and-alias", "alias"])
 async def test_dropping_the_alias_an_impl_names_its_type_by_drops_the_type_s_heritage(graph, index_file,
-                                                                                    edited) -> None:
-    await _repo(index_file, ALIASED)
+                                                                                    files, edited) -> None:
+    await _repo(index_file, files)
     await _build(graph)
     assert _targets(graph, IMPLEMENTS, "core/src/daemon.rs") == {STORE}
     graph.changed_names.clear()
@@ -126,3 +132,67 @@ async def test_dropping_the_alias_an_impl_names_its_type_by_drops_the_type_s_her
     assert _targets(graph, IMPLEMENTS, "core/src/daemon.rs") == set()
     await _build(graph)
     assert _targets(graph, IMPLEMENTS, "core/src/daemon.rs") == set()
+
+
+TWO_DAEMONS = {**ALIASED, "core/src/lib.rs": ALIASED["core/src/lib.rs"] + b"pub mod other;\n",
+               "core/src/other.rs": b"pub struct Daemon {}\n"}
+
+
+@pytest.mark.asyncio
+async def test_repointing_an_alias_at_a_same_named_type_moves_the_heritage(graph, index_file) -> None:
+    # The alias keeps its name and so does the type it names: only the defining file says the import changed.
+    await _repo(index_file, TWO_DAEMONS)
+    await _build(graph)
+    assert _targets(graph, IMPLEMENTS, "core/src/daemon.rs") == {STORE}
+    graph.changed_names.clear()
+    edited = TWO_DAEMONS["core/src/impls.rs"].replace(b"crate::daemon::Daemon", b"crate::other::Daemon")
+    await index_file("r3", "core/src/impls.rs", edited, "rust")
+    await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
+                                 touched_record_ids={"r3"}, facts_source=graph)
+    moved = (_targets(graph, IMPLEMENTS, "core/src/daemon.rs"), _targets(graph, IMPLEMENTS, "core/src/other.rs"))
+    assert moved == (set(), {STORE})
+    await _build(graph)
+    assert (_targets(graph, IMPLEMENTS, "core/src/daemon.rs"), _targets(graph, IMPLEMENTS, "core/src/other.rs")) == moved
+
+
+NEAREST = {
+    "core/src/lib.rs": b"pub mod store;\npub mod far;\npub mod near;\n",
+    "core/src/store.rs": b"pub trait Store { fn save(&self); }\n",
+    "core/src/far/mod.rs": b"pub mod row;\n",
+    "core/src/far/row.rs": b"pub struct Row {}\n",
+    "core/src/near/mod.rs": b"pub mod impls;\n",
+    "core/src/near/impls.rs": b"use crate::store::Store;\nimpl Store for Row { fn save(&self) {} }\n",
+}
+
+
+@pytest.mark.asyncio
+async def test_a_new_nearer_type_takes_an_impl_from_the_farther_one(graph, index_file) -> None:
+    # Guard: an added name is a changed name, so the farther type's file is re-resolved too.
+    await _repo(index_file, NEAREST)
+    await _build(graph)
+    assert _targets(graph, IMPLEMENTS, "core/src/far/row.rs") == {STORE}
+    graph.changed_names.clear()
+    await index_file("r6", "core/src/near/row.rs", b"pub struct Row {}\n", "rust")
+    await index_file("r4", "core/src/near/mod.rs", b"pub mod impls;\npub mod row;\n", "rust")
+    await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
+                                 touched_record_ids={"r6", "r4"}, facts_source=graph)
+    after = (_targets(graph, IMPLEMENTS, "core/src/far/row.rs"), _targets(graph, IMPLEMENTS, "core/src/near/row.rs"))
+    await _build(graph)
+    assert (_targets(graph, IMPLEMENTS, "core/src/far/row.rs"),
+            _targets(graph, IMPLEMENTS, "core/src/near/row.rs")) == after
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("files", [ALIASED, UNRELATED], ids=["alone", "unrelated-type-of-the-alias-name"])
+async def test_renaming_the_type_an_alias_names_drops_its_heritage(graph, index_file, files) -> None:
+    # Guard: the renamed type's old block, and its edges, go with the projection.
+    await _repo(index_file, files)
+    await _build(graph)
+    graph.changed_names.clear()
+    await index_file("r2", "core/src/daemon.rs", b"pub struct Daemon2 {}\n", "rust")
+    await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
+                                 touched_record_ids={"r2"}, facts_source=graph)
+    incremental = {path: _targets(graph, IMPLEMENTS, path) for path in files if path.endswith(".rs")}
+    assert incremental["core/src/daemon.rs"] == set()
+    await _build(graph)
+    assert {path: _targets(graph, IMPLEMENTS, path) for path in files if path.endswith(".rs")} == incremental
