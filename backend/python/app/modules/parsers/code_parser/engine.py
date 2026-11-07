@@ -1317,10 +1317,17 @@ def _note_assigned(assigned: dict[tuple[int | None, str], Node | None], key: int
         assigned[slot] = value if seen is not None and _text(seen, src) == _text(value, src) else None
 
 
-def _python_chain(value: Node, src: bytes, name_type: Callable[[Node, str], str | None]) -> str | None:
+# Links of a receiver chain the parser spells for the builder: one more each recurses, so a generated `a.b.c...` of
+# hundreds of links would exhaust the stack and lose the whole file. A fluent builder runs to ~40 links.
+_PY_MAX_CHAIN_LINKS = 128
+
+
+def _python_chain(value: Node, src: bytes, name_type: Callable[[Node, str], str | None], depth: int = 0) -> str | None:
     """*value* as a receiver chain the edge builder evaluates (`typed_receiver_chains`): a typed name, a class
     constructed (`Foo(..)` is a Foo) or a function called (`make()`, typed by what it returns, in its own file);
-    None for anything else. *name_type* types a name where it is read."""
+    None for anything else, or past `_PY_MAX_CHAIN_LINKS`. *name_type* types a name where it is read."""
+    if depth > _PY_MAX_CHAIN_LINKS:
+        return None
     while value.type in ("await", "parenthesized_expression") and value.named_children:
         value = value.named_children[0]
     if value.type in ("identifier", "attribute"):
@@ -1331,7 +1338,7 @@ def _python_chain(value: Node, src: bytes, name_type: Callable[[Node, str], str 
         if typ:
             return typ.removeprefix("=") if not typ.startswith(FIXTURE_MARK) else None
     if value.type == "attribute":   # `self.a.b`, `User.objects`: each attribute's type on what precedes it
-        head = _python_member_head(_field(value, "object"), src, name_type)
+        head = _python_member_head(_field(value, "object"), src, name_type, depth + 1)
         return f"{head}.{_text(_field(value, 'attribute'), src)}" if head else None
     fn = _field(value, "function") if value.type == "call" else None
     if fn is not None and fn.type == "identifier":
@@ -1340,14 +1347,15 @@ def _python_chain(value: Node, src: bytes, name_type: Callable[[Node, str], str 
             return None   # `super().f()`, `dict()`: no repo function's return
         return "self" if name == "cls" else name if name[:1].isupper() else f"{name}()"
     if fn is not None and fn.type == "attribute":   # `obj.make()`, `Foo.create()`: the method's return type
-        head = _python_member_head(_field(fn, "object"), src, name_type)
+        head = _python_member_head(_field(fn, "object"), src, name_type, depth + 1)
         return f"{head}.{_text(_field(fn, 'attribute'), src)}()" if head else None
     return None
 
 
-def _python_member_head(obj: Node, src: bytes, name_type: Callable[[Node, str], str | None]) -> str | None:
+def _python_member_head(obj: Node, src: bytes, name_type: Callable[[Node, str], str | None],
+                        depth: int = 0) -> str | None:
     """The chain `obj.<member>` continues: *obj*'s own, else a class the file names (`Foo.create()`, `User.objects`)."""
-    head = _python_chain(obj, src, name_type)
+    head = _python_chain(obj, src, name_type, depth)
     if head is None and obj.type == "identifier" and _text(obj, src)[:1].isupper():
         return _text(obj, src)
     return head

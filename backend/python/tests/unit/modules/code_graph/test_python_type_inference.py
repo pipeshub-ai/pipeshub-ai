@@ -228,3 +228,22 @@ async def test_a_type_imported_from_a_module_the_resolver_cannot_place_starts_no
     # `from app.lib.missing import Ghost` fails at run time; the repo's one Ghost is no guess down a chain.
     calls = await _calls(graph, index_file)
     assert "method:Client.send" not in calls.get("function:broken_import", set())
+
+
+LONG_CHAIN = ("class Client:\n    def send(self):\n        return 1\n\n\n"
+              "class Http:\n    def client(self) -> Client:\n        return Client()\n\n\n"
+              "def short(h: Http):\n    return h.client().send()\n\n\n"
+              "def generated(h: Http):\n    return h." + ".".join(f"a{i}" for i in range(600)) + ".send()\n").encode()
+
+
+async def test_a_generated_chain_hundreds_of_links_long_leaves_the_file_parsed(graph, index_file) -> None:
+    """A 600-link `h.a0.a1...` chain is not spelled for the builder (it would exhaust the stack and lose the
+    file); the file still parses and a short chain in it is still typed."""
+    await index_file("recG", "app/gen.py", LONG_CHAIN, "python")
+    await _build(graph)
+    calls = {}
+    for edge in graph.code_edges(CALLS):
+        src = graph.blocks.get(edge["_from"].partition("/")[2]) or {}
+        dst = graph.blocks.get(edge["_to"].partition("/")[2]) or {}
+        calls.setdefault(src.get("qualifiedName"), set()).add(dst.get("qualifiedName"))
+    assert "method:Client.send" in calls["function:short"]
