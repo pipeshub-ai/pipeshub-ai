@@ -1474,12 +1474,55 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         c._browse_issue_holders = {}
         record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
         assert record.source_updated_at == c._parse_jira_timestamp("2025-01-01T00:00:00.000+0000")
+        # The payload says the level is null: the old level grants go, as on main.
+        assert perms == [] and record.rewrite_permissions is True and record.access_rule == AccessRule.STRICT
+
+    @pytest.mark.asyncio
+    async def test_a_sync_with_unread_holders_does_not_rewrite_a_top_level_issue_whose_level_was_not_returned(self) -> None:
+        issue = _issue()
+        del issue["fields"]["security"]
+        record, perms, _ = await _build(_connector(), issue, self._none(None))
         assert perms == [] and record.rewrite_permissions is False and record.access_rule == AccessRule.OPEN
 
     @pytest.mark.asyncio
-    async def test_a_sync_with_unread_holders_does_not_rewrite_a_top_level_issue(self) -> None:
-        record, perms, _ = await _build(_connector(), _issue(), self._none(None))
-        assert perms == [] and record.rewrite_permissions is False and record.access_rule == AccessRule.OPEN
+    async def test_a_level_cleared_while_the_holders_are_unread_removes_the_old_level_grants(self) -> None:
+        record, perms, _ = await _build(_connector(), _issue(None), self._none(None))
+        assert perms == [] and record.rewrite_permissions is True and record.access_rule == AccessRule.STRICT
+
+    @pytest.mark.asyncio
+    async def test_an_issue_that_keeps_its_grants_is_written_by_the_content_update_not_a_full_sync_rewrite(self) -> None:
+        """A full sync's first write through on_new_records replaces an existing record's grants."""
+        c = _connector()
+        issue = _issue()
+        del issue["fields"]["security"]
+        record, perms, _ = await _build(c, issue, self._none(None))
+        record.version = 1
+        c.data_entities_processor.on_record_content_update = AsyncMock()
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        await c._process_new_records([(record, perms, False)], "PROJ", {"new_count": 0, "updated_count": 0})
+        c.data_entities_processor.on_record_content_update.assert_awaited_once()
+        c.data_entities_processor.on_new_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_stored_unread_marker_followed_by_a_good_read_rereads_every_stored_issue(self) -> None:
+        c = _connector()
+        c._browse_issue_holders["PROJ"] = []
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(return_value={
+            "last_sync_time": 5, "last_issue_updated": 1_700_000_000_000, "issue_placement": ISSUE_PLACEMENT,
+            "security_levels": json.dumps(_present().level_fingerprints()), "browse_holders": "?"})
+        c.issues_sync_point.update_sync_point = AsyncMock()
+        c._load_issue_security = AsyncMock(return_value=_present())
+        calls = []
+
+        async def fetch(*a, **kw) -> AsyncIterator:
+            calls.append(kw)
+            return
+            yield
+
+        c._fetch_issues_batched = fetch
+        await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
+        assert len(calls) == 2 and calls[1]["stored_only"] is True and self._saved_digests(c) == [""]
 
     def test_a_story_stays_where_it_was_filed_while_the_holders_are_unread(self) -> None:
         c = _connector()

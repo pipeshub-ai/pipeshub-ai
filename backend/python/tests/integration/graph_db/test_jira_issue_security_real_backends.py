@@ -468,6 +468,24 @@ async def test_an_unread_scheme_keeps_the_reporter_of_a_stored_issue_and_the_sto
     await _write(world, [_edited(label, "2024-06-16T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})],
                  again=True)
 
-    context.browse_holders = None  # the scheme could not be read
-    await _write(world, [_edited(label, "2024-06-17T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})])
+    # The scheme could not be read, and the project has no issue security scheme.
+    world["connector"]._issue_security[PROJECT_ID] = IssueSecurityContext(
+        knowledge=SchemeKnowledge.NONE, browse_holders=None)
+    kept = _edited(label, "2024-06-17T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})
+    del kept["fields"]["security"]  # a payload that does not return the level: the stored grants stay
+    await _write(world, [kept])
     assert not await _mismatches(world, {**readers, "PROJ-10": PROJECT_READERS | {"dave"}}, by_key)
+
+
+async def test_a_level_cleared_while_the_scheme_is_unread_takes_the_issue_from_its_old_level_members(
+    world: dict[str, Any],
+) -> None:
+    """dave held the level but cannot browse the project; OPEN with his stored grant would still let him in."""
+    await _sync_project(world)
+    context = world["connector"]._issue_security[PROJECT_ID]
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    context.browse_holders = None
+    await _write(world, [_edited("task leveled for someone outside the project", "2024-06-17T10:00:00.000+0000",
+                                 security=None)])
+    assert not await _mismatches(world, {**readers, "PROJ-9": PROJECT_READERS}, by_key)

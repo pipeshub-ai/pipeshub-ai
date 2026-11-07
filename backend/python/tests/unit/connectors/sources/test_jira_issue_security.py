@@ -533,12 +533,12 @@ class TestBrowseHoldersNamingPeoplePerIssue:
     """Browse Projects granted to the reporter, the assignee or a user or group field."""
 
     @staticmethod
-    def _apply(browse: list[dict] | None, fields: dict | None = None, record: Record | None = None, **kw: object,
-    ) -> tuple[Record, set, bool]:
+    def _apply(browse: list[dict] | None, fields: dict | None = None, record: Record | None = None,
+               level_returned: bool = True, **kw: object) -> tuple[Record, set, bool]:
         record = record or _record()
         context = IssueSecurityContext(knowledge=SchemeKnowledge.NONE, browse_holders=browse)
         grants, _skipped, settled = apply_issue_access_settled(
-            record, {"security": None, **(fields or {})}, is_subtask=False, project_key="PROJ", context=context,
+            record, {**({"security": None} if level_returned else {}), **(fields or {})}, is_subtask=False, project_key="PROJ", context=context,
             **{"reporter_email": "rep@ex.com", "assignee_email": "asg@ex.com", **kw},
         )
         return record, {(p.entity_type, p.email or p.external_id) for p in grants}, settled
@@ -605,10 +605,15 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         assert grants == {(EntityType.USER, "rep@ex.com")}
 
     def test_unread_holders_keep_the_stored_grants_of_a_top_level_issue(self) -> None:
-        record, grants, settled = self._apply(None)
+        record, grants, settled = self._apply(None, level_returned=False)
         assert grants == set() and settled is True
         # Not rewritten, so a stored reporter grant stays; OPEN so that grant still opens the issue.
         assert record.rewrite_permissions is False and record.access_rule == AccessRule.OPEN
+
+    def test_a_level_cleared_while_the_holders_are_unread_drops_the_old_level_grants(self) -> None:
+        """An explicit null level: the issue was RESTRICTED (project and grant), OPEN would take the grant alone."""
+        record, grants, _ = self._apply(None)
+        assert grants == set() and record.rewrite_permissions is True and record.access_rule == AccessRule.STRICT
 
     def test_unread_holders_still_close_a_child_to_its_parent_alone(self) -> None:
         record, grants, _ = self._apply(None, record=_record(parent_external_record_id="99"))

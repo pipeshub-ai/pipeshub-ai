@@ -2906,6 +2906,13 @@ class JiraConnector(BaseConnector):
                 return None
         return self._browse_issue_holders[project_key]
 
+    def _keeps_stored_grants(self, record: Record) -> bool:
+        context = self._issue_security.get(getattr(record, "external_record_group_id", None))
+        return (
+            context is not None and context.enforce and context.browse_holders is None
+            and isinstance(record, TicketRecord) and not getattr(record, "rewrite_permissions", False)
+        )
+
     def _permissions_for_browse_grant(
         self,
         grant: dict[str, Any],
@@ -4799,7 +4806,9 @@ class JiraConnector(BaseConnector):
                 if record.version == 0:
                     to_upsert.append((record, record_permissions))
                     new_count += 1
-                elif content_changed:
+                elif content_changed or self._keeps_stored_grants(record):
+                    # The second case is an issue whose grants are kept (holders unread): the
+                    # content-update path leaves them alone, where a full sync's first write would replace them.
                     changed_records.append((record, record_permissions))
                 else:
                     to_upsert.append((record, record_permissions))
