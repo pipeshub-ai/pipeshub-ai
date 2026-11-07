@@ -277,12 +277,12 @@ The UI finds logos in two ways, so there are two places to update:
 
 ## Re-enabling a disabled entry
 
-Twelve modules in `servers/` are commented out. Each one starts with `# Disabled: temporarily removed from the MCP server catalog`: `brave_search`, `datadog`, `dropbox`, `gitlab`, `greenhouse`, `hubspot`, `outreach`, `pagerduty`, `posthog`, `redshift`, `sentry` and `servicenow`.
+Eleven modules in `servers/` are commented out. Each one starts with `# Disabled: temporarily removed from the MCP server catalog`: `brave_search`, `datadog`, `dropbox`, `greenhouse`, `hubspot`, `outreach`, `pagerduty`, `posthog`, `redshift`, `sentry` and `servicenow`.
 
 To bring one back, uncomment it and run the discovery from step 1 again. Vendors change their servers, and the "Confirmed live" comments are only as current as the day they were written. Fix whatever changed, then do steps 3 and 4. Two things to watch for:
 
 - `servicenow.py`'s URLs are per-customer placeholders, so it can't work as a catalog entry (see "One URL for everyone").
-- The comments in `datadog.py` and `gitlab.py` about overriding `default_url` can only mean adding a custom server: a catalog instance always uses the template's URL.
+- The comment in `datadog.py` about overriding `default_url` can only mean adding a custom server: a catalog instance always uses the template's URL.
 
 ## Settings
 
