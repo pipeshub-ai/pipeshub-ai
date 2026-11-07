@@ -19,6 +19,7 @@ const LLM_PROVIDER_ICON_FILE: Record<string, string> = {
   lmStudio: 'lm-studio.svg',
   litellmProxy: 'litellm.svg',
   openAICompatible: 'openai.svg',
+  openLLM: 'openllm.svg',
   together: 'together-color.svg',
   anthropic: 'claude-color.svg',
   groq: 'groq.svg',
