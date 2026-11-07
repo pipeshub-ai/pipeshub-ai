@@ -24,7 +24,7 @@ from neo4j.exceptions import (
     TransientError,
 )
 
-from app.exceptions.graph_db_exceptions import GraphMemoryLimitError
+from app.exceptions.graph_db_exceptions import MEMORY_LIMIT_CODES, GraphMemoryLimitError
 from app.services.resource_governor.feedback import get_default_downstream_feedback
 
 if TYPE_CHECKING:
@@ -60,13 +60,6 @@ WRITE_CONFLICT_CODES = frozenset({
     "Neo.TransientError.Transaction.LockAcquisitionTimeout",
 })
 WRITE_CONFLICT_ATTEMPTS = 6
-# The server-wide transaction memory pool (dbms.memory.transaction.total.max) ran
-# out, or one transaction hit its own limit. Neither clears by sending the same
-# statement again.
-MEMORY_LIMIT_CODES = frozenset({
-    "Neo.TransientError.General.MemoryPoolOutOfMemoryError",
-    "Neo.TransientError.General.TransactionMemoryLimit",
-})
 # CALL { ... } IN TRANSACTIONS commits batch by batch, so a later batch's
 # conflict leaves the earlier ones written: such a statement is not sent again.
 COMMITS_IN_BATCHES = re.compile(r"\}\s*IN\s+(?:\S+\s+)?(?:CONCURRENT\s+)?TRANSACTIONS\b", re.IGNORECASE)

@@ -22,7 +22,8 @@ from app.connectors.core.base.data_store.graph_data_store import (
     retry_on_deadlock,
 )
 from app.connectors.sources.localKB.push.retry import is_attempt_lost
-from app.exceptions.graph_db_exceptions import GraphMemoryLimitError
+from app.exceptions import graph_db_exceptions as exceptions
+from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, is_graph_memory_refusal
 from app.services.graph_db.neo4j.neo4j_client import MEMORY_LIMIT_CODES, Neo4jClient
 from app.services.graph_db.neo4j.neo4j_provider import BULK_EDGE_ROWS, Neo4jProvider
 
@@ -129,6 +130,9 @@ def _edge(n: int, to_id: str = "g1") -> dict:
     }
 
 
+BIG = [_edge(i) for i in range(BULK_EDGE_ROWS)]
+
+
 class _Writer:
     """What a connector method looks like: the real decorator over a store transaction."""
 
@@ -144,7 +148,7 @@ class _Writer:
             await self.write(tx_store)
 
 
-def _replace(n: int = 3) -> Callable[[GraphTransactionStore], Awaitable[None]]:
+def _replace(n: int = BULK_EDGE_ROWS) -> Callable[[GraphTransactionStore], Awaitable[None]]:
     async def write(tx_store: GraphTransactionStore) -> None:
         await tx_store.replace_edges_to("g1", "groups", [_edge(i) for i in range(n)], "permission")
     return write
@@ -177,9 +181,9 @@ class TestPoolErrorOnABulkStatement:
         sleep.assert_not_awaited()
         _assert_not_retryable(raised.value, provider)
         assert raised.value.operation == "group replace"
-        assert raised.value.size == 3
+        assert raised.value.size == BULK_EDGE_ROWS
         assert "NEO4J_HEAP_MAX" in str(raised.value)
-        assert "3 rows" in str(raised.value)
+        assert "10,000 rows" in str(raised.value)
 
     @pytest.mark.asyncio
     async def test_it_fails_once_in_auto_commit_mode(self) -> None:
@@ -187,7 +191,7 @@ class TestPoolErrorOnABulkStatement:
         provider = _provider(server, explicit=False)
 
         with pytest.raises(GraphMemoryLimitError) as raised:
-            await provider.replace_edges_to("g1", "groups", [_edge(1)], "permission")
+            await provider.replace_edges_to("g1", "groups", BIG, "permission")
 
         assert server.attempts == 1
         _assert_not_retryable(raised.value, provider)
@@ -198,12 +202,12 @@ class TestPoolErrorOnABulkStatement:
         provider = _provider(server)
 
         with pytest.raises(GraphMemoryLimitError):
-            await provider.replace_edges_to("g1", "groups", [_edge(1), _edge(2)], "permission")
+            await provider.replace_edges_to("g1", "groups", BIG, "permission")
 
         logged = [c for c in provider.client.logger.error.call_args_list if "memory limit" in str(c.args[0])]
         assert len(logged) == 1
         assert "group replace" in str(logged[0].args[1])
-        assert "2 rows" in str(logged[0].args[1])
+        assert "10,000 rows" in str(logged[0].args[1])
 
     @pytest.mark.asyncio
     async def test_execute_in_transaction_runs_it_once(self) -> None:
@@ -230,7 +234,7 @@ class TestPoolErrorOnABulkStatement:
         provider = _provider(server)
 
         with pytest.raises(GraphMemoryLimitError):
-            await provider.replace_edges_to("g1", "groups", [_edge(1)], "permission")
+            await provider.replace_edges_to("g1", "groups", BIG, "permission")
 
     @pytest.mark.asyncio
     async def test_a_deadlock_on_the_same_statement_is_still_transient_and_retried(self) -> None:
@@ -259,11 +263,69 @@ class TestPoolErrorOnABulkStatement:
 
 class TestWhichStatementsAreBulk:
     @pytest.mark.asyncio
-    async def test_a_record_permission_replace_is_bulk_at_any_size(self) -> None:
+    async def test_a_record_permission_replace_is_bulk_from_the_threshold(self) -> None:
+        provider = _provider(_Server("run"))
+        edges = [_edge(i) for i in range(BULK_EDGE_ROWS)]
+        with pytest.raises(GraphMemoryLimitError) as raised:
+            await provider.replace_record_permissions("r1", edges, None, inherit=False)
+        assert raised.value.operation == "record permission replace"
+        assert raised.value.size == BULK_EDGE_ROWS
+
+    @pytest.mark.asyncio
+    async def test_a_group_replace_is_bulk_from_the_threshold(self) -> None:
         provider = _provider(_Server("run"))
         with pytest.raises(GraphMemoryLimitError) as raised:
-            await provider.replace_record_permissions("r1", [], None, inherit=False)
-        assert raised.value.operation == "record permission replace"
+            await provider.replace_edges_to("g1", "groups", [_edge(i) for i in range(BULK_EDGE_ROWS)], "permission")
+        assert raised.value.operation == "group replace"
+
+    @pytest.mark.asyncio
+    async def test_a_smaller_replace_keeps_the_driver_error_and_its_retries(self) -> None:
+        server = _Server("run")
+        provider = _provider(server)
+        writer = _Writer(GraphDataStore(MagicMock(), provider), _replace(BULK_EDGE_ROWS - 1))
+
+        with patch(SLEEP, AsyncMock()), pytest.raises(TransientError) as raised:
+            await writer.run()
+
+        assert not isinstance(raised.value, GraphMemoryLimitError)
+        assert writer.calls == 6
+
+    @pytest.mark.asyncio
+    async def test_a_smaller_record_permission_replace_keeps_the_driver_error_and_its_retries(self) -> None:
+        provider = _provider(_Server("run"))
+        writer = _Writer(
+            GraphDataStore(MagicMock(), provider),
+            lambda tx: provider.replace_record_permissions(
+                "r1", [_edge(i) for i in range(BULK_EDGE_ROWS - 1)], None, inherit=False, transaction=tx.txn,
+            ),
+        )
+
+        with patch(SLEEP, AsyncMock()), pytest.raises(TransientError) as raised:
+            await writer.run()
+
+        assert not isinstance(raised.value, GraphMemoryLimitError)
+        assert writer.calls == 6
+
+    @pytest.mark.asyncio
+    async def test_a_small_replace_succeeds_once_the_pool_is_free_again(self) -> None:
+        server = _Server("run")
+        provider = _provider(server)
+        failures = [_pool_error()]
+        real_run = _Tx.run
+
+        async def run(self, query, parameters=None) -> object:
+            if failures:
+                raise failures.pop()
+            return await real_run(self, query, parameters)
+
+        server.fail_at = "never"
+        writer = _Writer(GraphDataStore(MagicMock(), provider), _replace(3))
+
+        with patch(SLEEP, AsyncMock()), patch.object(_Tx, "run", run):
+            await writer.run()
+
+        assert writer.calls == 2
+        assert server.commits == 1
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("method", ["batch_create_edges", "create_edges_if_absent"])
@@ -314,6 +376,18 @@ class TestWhichStatementsAreBulk:
 
         assert writer.calls == 3
         assert server.commits == 1
+
+
+def test_is_graph_memory_refusal_covers_the_marked_and_the_unmarked_error() -> None:
+    assert is_graph_memory_refusal(GraphMemoryLimitError("full"))
+    assert is_graph_memory_refusal(_pool_error())
+    assert is_graph_memory_refusal(_pool_error("Neo.TransientError.General.TransactionMemoryLimit"))
+    assert not is_graph_memory_refusal(_pool_error("Neo.TransientError.Transaction.DeadlockDetected"))
+    assert not is_graph_memory_refusal(RuntimeError("x"))
+
+
+def test_the_pool_codes_live_in_one_place() -> None:
+    assert MEMORY_LIMIT_CODES is exceptions.MEMORY_LIMIT_CODES
 
 
 def test_the_bulk_boundary_is_ten_thousand_rows() -> None:

@@ -48,7 +48,7 @@ from app.connectors.core.sync.full_sync_coverage import (
 from app.connectors.core.sync.run_context import get_run_sync_id
 from app.connectors.core.sql.graph_links import move_incoming_relations
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
-from app.exceptions.graph_db_exceptions import GraphMemoryLimitError
+from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, is_graph_memory_refusal
 from app.models.entities import (
     AppMetadata,
     AppRole,
@@ -5586,14 +5586,16 @@ class DataSourceEntitiesProcessor:
                     for user_group, members in user_groups:
                         if await self._write_user_group(tx_store, user_group, members, replace_members=replace_members):
                             rewritten.add(user_group.connector_id)
-            except GraphMemoryLimitError:
-                if len(user_groups) == 1:
+            except Exception as e:
+                # A refusal of the combined write: a marked one, or the pool's own error from groups that
+                # are each small and add up. Either way the groups are written apart.
+                if len(user_groups) == 1 or not is_graph_memory_refusal(e):
                     raise
                 refused = True
             skipped: list[str] = []
             if refused:
-                # The transaction rolled back, so none of the call is written. One group the server's
-                # memory pool refused must not take the others with it: write them apart, each group's
+                # The transaction rolled back, so none of the call is written. A group the server's memory
+                # pool refused must not take the others with it: write them apart, each group's
                 # upsert and its replace still in one transaction of their own. Done after the handler
                 # has ended, so the aggregated error below carries no earlier error as its context.
                 rewritten = set()
@@ -5637,6 +5639,8 @@ class DataSourceEntitiesProcessor:
                         rewritten.add(user_group.connector_id)
             except GraphMemoryLimitError:
                 refused = True
+            # Any other error, the pool's own unmarked one included, propagates: a group under the bulk
+            # size is refused for want of room a neighbour holds, which the caller's bounded retry outlasts.
             if refused:
                 # Its transaction rolled back whole, so its previous members stand.
                 skipped.append(user_group.source_user_group_id or user_group.id)

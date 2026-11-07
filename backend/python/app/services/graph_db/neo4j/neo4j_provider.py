@@ -602,7 +602,7 @@ def _created_ends(rows: list[dict] | None) -> list[str]:
     return [i for pair in made for i in pair]
 
 
-# From this many rows a batch edge write fails for good when the server's transaction memory pool refuses it
+# From this many rows an edge write or replace fails for good when the server's transaction memory pool refuses it
 # (GraphMemoryLimitError). A smaller one is likely the victim of a big statement holding the shared pool, and
 # keeps the bounded retry, which usually outlasts it.
 BULK_EDGE_ROWS = 10_000
@@ -2603,7 +2603,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         statement, parameters = self._replace_edges_to_cypher(to_id, to_collection, edges, collection)
         await self.client.execute_query(
             f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction,
-            bulk="group replace", size=len(edges),
+            **_bulk_rows("group replace", len(edges)),
         )
 
     @staticmethod
@@ -2673,7 +2673,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             {_cypher_kh_tree_refresh(edge_collection_to_relationship(CollectionNames.INHERIT_PERMISSIONS.value), "n")}"""
         await self.client.execute_query(
             f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction,
-            bulk="record permission replace", size=len(edges),
+            **_bulk_rows("record permission replace", len(edges)),
         )
 
     async def link_record_to_group(
