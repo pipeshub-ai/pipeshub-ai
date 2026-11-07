@@ -166,3 +166,27 @@ class TestBuildScheduleRefreshKwargs:
         result = build_schedule_refresh_kwargs("org-1")
         assert result == {}
         assert isinstance(result, dict)
+
+
+# ---------------------------------------------------------------------------
+# unusable_agent_mcp_server_ids
+# ---------------------------------------------------------------------------
+
+
+class TestUnusableAgentMcpServerIds:
+    """OSS edition: every MCP server attached to an agent may be used."""
+
+    async def test_returns_no_ids(self) -> None:
+        from app.api.routes.mcp_resolvers import unusable_agent_mcp_server_ids
+
+        attached = [{"instanceId": "i1", "name": "Server A"}]
+        assert await unusable_agent_mcp_server_ids(attached, AsyncMock(), "org-1", "user-1") == frozenset()
+
+
+class TestKeepsAttachedMcpServersOnEdit:
+    """OSS edition: saving an agent checks every MCP server in the edit."""
+
+    def test_is_off(self) -> None:
+        from app.api.routes.mcp_resolvers import keeps_attached_mcp_servers_on_edit
+
+        assert keeps_attached_mcp_servers_on_edit() is False

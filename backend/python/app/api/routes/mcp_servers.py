@@ -2101,6 +2101,15 @@ async def _require_mcp_agent_edit_access(agent_key: str, request: Request) -> di
     )
 
 
+async def _get_agent_org_instance(
+    instance_id: str, config_service: ConfigurationService, user_context: dict[str, Any],
+) -> dict[str, Any] | None:
+    """An org server as the person editing the agent may see it: one they may not use is not found
+    here either. An agent that runs on its own credentials never holds a personal server."""
+    instance = await _get_org_instance(instance_id, config_service, user_context["org_id"], user_context["user_id"])
+    return None if instance is None or mcp_service.is_personal(instance) else instance
+
+
 @router.get("/agents/{agent_key}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
 async def get_agent_mcp_servers(
     request: Request,
@@ -2124,7 +2133,14 @@ async def get_agent_mcp_servers(
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
 
-    instances = await resolve_mcp_instances_with_inheritance(config_service, user_context["org_id"])
+    # The org servers this person may use; an agent running on its own credentials holds no personal one.
+    instances = [
+        instance
+        for instance in await resolve_mcp_instances_with_inheritance(
+            config_service, user_context["org_id"], user_context["user_id"],
+        )
+        if not mcp_service.is_personal(instance)
+    ]
     is_admin = await _check_user_is_admin(user_context["user_id"], request, config_service)
     namespaces = assign_namespaces(instances)
     discovery = _ListingDiscovery()
@@ -2154,7 +2170,7 @@ async def authenticate_agent_instance(
     user_context = _get_user_context(request)
     org_id = user_context["org_id"]
 
-    instance = await _get_org_instance(instance_id, config_service, user_context["org_id"])
+    instance = await _get_agent_org_instance(instance_id, config_service, user_context)
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
@@ -2196,7 +2212,7 @@ async def remove_agent_instance_credentials(request: Request, agent_key: str, in
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
 
-    instance = await _get_org_instance(instance_id, config_service, user_context["org_id"])
+    instance = await _get_agent_org_instance(instance_id, config_service, user_context)
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
@@ -2222,7 +2238,7 @@ async def reauthenticate_agent_instance(request: Request, agent_key: str, instan
     config_service = _get_config_service(request)
     user_context = _get_user_context(request)
 
-    instance = await _get_org_instance(instance_id, config_service, user_context["org_id"])
+    instance = await _get_agent_org_instance(instance_id, config_service, user_context)
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
@@ -2264,7 +2280,7 @@ async def get_agent_oauth_authorization_url(
     user_context = _get_user_context(request)
     org_id, user_id = user_context["org_id"], user_context["user_id"]
 
-    instance = await _get_org_instance(instance_id, config_service, user_context["org_id"])
+    instance = await _get_agent_org_instance(instance_id, config_service, user_context)
     if not instance:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 

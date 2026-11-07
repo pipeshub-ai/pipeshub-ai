@@ -201,3 +201,76 @@ class TestSharingIsRefusedWhenTheServersCantBeChecked:
         response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"name": "Renamed"})
 
         assert response.status_code == 200
+
+
+@pytest.fixture
+def bobs(graph: InMemoryGraph) -> InMemoryGraph:
+    """Bob's agent with his own server on it, which Alice may edit but cannot see that server of."""
+    graph.add_agent("bobs", "bob")
+    graph.add_edge(PERMISSION, {
+        "_from": "users/k-alice", "_to": f"{AGENTS}/bobs", "type": "USER", "role": "ORGANIZER",
+    })
+    _seed_attached(graph, "bobs", "bob-own")
+    return graph
+
+
+def _keeps_attached(monkeypatch: pytest.MonkeyPatch, keeps: bool) -> None:
+    monkeypatch.setattr("app.edition_config.keeps_attached_mcp_servers_on_edit", lambda: keeps)
+
+
+class TestEverySavedServerIsChecked:
+    """`keeps_attached_mcp_servers_on_edit` off, the default: a save checks every server in it."""
+
+    @pytest.fixture(autouse=True)
+    def _checks_every_server(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _keeps_attached(monkeypatch, False)
+
+    def test_a_co_editor_cannot_save_a_server_they_cannot_see(self, client, bobs) -> None:
+        response = client.put("/api/v1/agent/bobs", headers=as_user("alice"), json={
+            "name": "Renamed", "mcpServers": _attach("bob-own"),
+        })
+
+        assert response.status_code == 400
+        assert "MCP server(s) not found: bob-own" in response.json()["detail"]
+        assert not bobs.calls_to("update_agent")
+
+    def test_the_owner_still_saves_their_own_server(self, client, bobs) -> None:
+        response = client.put("/api/v1/agent/bobs", headers=as_user("bob"), json={
+            "name": "Renamed", "mcpServers": _attach("bob-own"),
+        })
+
+        assert response.status_code == 200
+
+
+class TestCoEditorsKeepServersTheyCannotSee:
+    """`keeps_attached_mcp_servers_on_edit` on: a co-editor may not see every server on an agent.
+    Saving keeps those as they are; adding a server still needs the editor to see it, and the
+    sharing rule still reads every kept one."""
+
+    @pytest.fixture(autouse=True)
+    def _keeps_servers(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _keeps_attached(monkeypatch, True)
+
+    def test_saving_keeps_a_server_the_co_editor_cannot_see(self, client, bobs) -> None:
+        response = client.put("/api/v1/agent/bobs", headers=as_user("alice"), json={
+            "name": "Renamed", "mcpServers": _attach("bob-own"),
+        })
+
+        assert response.status_code == 200
+        assert [m["instanceId"] for m in bobs.nodes["agentMcpServers"].values()] == ["bob-own"]
+
+    def test_adding_a_server_the_editor_cannot_see_is_still_refused(self, client, graph) -> None:
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"mcpServers": _attach("bob-own")})
+
+        assert response.status_code == 400
+        assert "MCP server(s) not found: bob-own" in response.json()["detail"]
+        assert not graph.calls_to("update_agent")
+
+    def test_sharing_while_keeping_the_owners_personal_server_is_still_refused(self, client, bobs) -> None:
+        response = client.put("/api/v1/agent/bobs", headers=as_user("alice"), json={
+            "shareWithOrg": True, "mcpServers": _attach("bob-own"),
+        })
+
+        assert response.status_code == 400
+        assert "Personal MCP servers (bob-own)" in response.json()["detail"]
+        assert _org_edges(bobs, "bobs") == []

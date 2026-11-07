@@ -159,6 +159,8 @@ export interface AgentMcpServer {
   /** Absent on attachments saved before it existed — those use exactly `tools`. */
   allTools?: boolean;
   tools: AgentMcpTool[];
+  /** `false` when the person viewing may not use this server: chat leaves it out, the builder still shows it. */
+  usableByViewer?: false;
 }
 
 /**
