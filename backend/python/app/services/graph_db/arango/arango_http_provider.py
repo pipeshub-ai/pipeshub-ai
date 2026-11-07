@@ -7839,9 +7839,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     if k and (k not in found or (u.is_active and not found[k].is_active)):
                         found[k] = u
                 for w in wanted:
-                    if w.strip() == stripped:
-                        if w not in found or (u.is_active and not found[w].is_active):
-                            found[w] = u
+                    if w.strip() == stripped and (w not in found or (u.is_active and not found[w].is_active)):
+                        found[w] = u
             return found
         except Exception as e:
             self.logger.error(f"❌ Get users by emails failed: {str(e)}")
