@@ -30,11 +30,17 @@ class FullSyncCoverage:
     ``windowed_group_types``: record group types that the window applies to as
     well (a Slack thread, which is read only when its first message is inside
     the window). A group of another type is always read, so an unseen one is gone.
+
+    ``lists_everything``: False for a source that only ever shows part of what it
+    holds (an RSS feed lists only its latest entries). A node the sync did not see
+    may still be there, so nothing is unlinked; a retry would see no more, so none
+    is owed. Overrides ``complete``.
     """
 
     complete: bool = True
     window_start_ms: int | None = None
     windowed_group_types: frozenset[str] = frozenset()
+    lists_everything: bool = True
 
 
 #: Not a collection: the records whose permission edges this full sync has

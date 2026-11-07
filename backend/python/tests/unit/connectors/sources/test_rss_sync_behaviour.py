@@ -11,6 +11,7 @@ keeps an existing record's id.
 """
 
 import hashlib
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -18,9 +19,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import AppStatus, CollectionNames
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
+from app.connectors.core.base.data_processor.data_source_entities_processor import (
+    DataSourceEntitiesProcessor,
+)
+from app.connectors.core.constants import ConnectorStateKeys
+from app.connectors.core.sync import sync_runner
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
+from app.connectors.core.sync.sync_runner import run_sync_task
 from app.connectors.sources.rss.connector import (
     MAX_ARTICLES_PER_FEED_LIMIT,
     MAX_FETCH_SIZE_MB,
@@ -394,10 +401,6 @@ class TestRemovedFeeds:
 
         assert f"{FEED_A}#1" in store.records
 
-    def test_a_full_sync_never_unlinks_what_it_did_not_see(self) -> None:
-        conn = _connector(FakeStore(), [FEED_A])
-        assert conn.full_sync_coverage() == FullSyncCoverage(complete=False)
-
     @pytest.mark.asyncio
     async def test_each_sync_reads_the_saved_settings(self) -> None:
         store = FakeStore()
@@ -408,6 +411,41 @@ class TestRemovedFeeds:
         conn.config_service.get_config.assert_any_await(
             "/services/connectors/rss-conn-1/config", use_cache=False
         )
+
+
+class TestFullSyncCoverage:
+    def test_a_full_sync_never_unlinks_what_it_did_not_see(self) -> None:
+        conn = _connector(FakeStore(), [FEED_A])
+        assert conn.full_sync_coverage() == FullSyncCoverage(lists_everything=False)
+
+    @pytest.mark.asyncio
+    async def test_back_to_back_full_syncs_end_clean_and_owe_no_full_sync(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Not unlinking is how RSS always works, not an error: no warning, and no
+        full sync owed after it (on main every second full sync owed one)."""
+        monkeypatch.setattr(sync_runner, "_INCOMPLETE_FULL_SYNC_RETRYING", set())
+        log = logging.getLogger("test.rss.full_sync")
+        owed = []
+        for _ in range(3):
+            conn = _connector(FakeStore(), [FEED_A])
+            conn.data_entities_processor = DataSourceEntitiesProcessor(log, MagicMock(), MagicMock())
+
+            async def run_sync(conn: RSSConnector = conn) -> None:
+                conn.data_entities_processor._note_full_sync_seen("rss-conn-1", CollectionNames.RECORDS.value, "r1")
+
+            conn.run_sync = run_sync  # type: ignore[method-assign]
+            gp = AsyncMock()
+            gp.get_document = AsyncMock(return_value={"id": "rss-conn-1", "status": "FULL_SYNCING"})
+            with caplog.at_level(logging.WARNING, logger=log.name):
+                await run_sync_task(conn, "rss-conn-1", gp, log, start_status=AppStatus.FULL_SYNCING.value)
+            gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+            owed.append(any(
+                c.args[2].get(ConnectorStateKeys.PENDING_FULL_SYNC) for c in gp.update_node.await_args_list
+            ))
+
+        assert owed == [False, False, False]
+        assert not [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 class TestSettings:

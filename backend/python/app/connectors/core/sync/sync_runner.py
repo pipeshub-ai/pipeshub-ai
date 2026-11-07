@@ -663,6 +663,9 @@ async def _unlink_what_full_sync_missed(
     coverage = coverage() if callable(coverage) else None
     if not isinstance(coverage, FullSyncCoverage):
         coverage = FullSyncCoverage()
+    if not coverage.lists_everything:
+        logger.debug(f"Full sync of {connector_id}: the source lists only part of itself; nothing is unlinked")
+        return True
     if not coverage.complete:
         logger.warning(
             f"Full sync of {connector_id} skipped part of the source after an error; "

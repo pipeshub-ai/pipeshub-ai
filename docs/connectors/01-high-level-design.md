@@ -76,6 +76,7 @@ During a full sync, the processor notes every node the connector writes. When th
 
 - In a full sync, write every node you can see, changed or not. A node you skip because it looks unchanged loses its links. To keep a stored node without re-writing it, note it with the processor's `note_kept_records` (Jira Cloud does this).
 - If you skip part of the source after an error, return `FullSyncCoverage(complete=False)`. Nothing is unlinked after that run, so the skipped part is not treated as deleted, and deletions elsewhere wait for the next complete full sync.
+- If the source only ever lists part of what it holds by design (an RSS feed shows only its latest entries), return `FullSyncCoverage(lists_everything=False)`. Nothing is unlinked after any full sync, and, unlike `complete=False`, no retry is owed and nothing is logged as an error. It overrides `complete`.
 - If the sync reads only a date window by design (a "sync from" filter), return `FullSyncCoverage(window_start_ms=...)` and leave `complete` true, adding `windowed_group_types` for group types read only inside the window (a Slack thread). Only these unseen nodes are kept: records created before the window, groups of a type in `windowed_group_types` created before it, and every record in such a group (even one created inside the window). A node with no usable creation time counts as inside the window. Kept nodes keep their hierarchy and inheritance but lose their direct grants, since the run could not check who may see them: an `OPEN` or `STRICT` node that inherits stays readable through its parent, while a `RESTRICTED` node, or one that lived only on its own grants, is hidden until a sync re-reads it. Every other unseen node is fully unlinked: records and windowed groups created inside the window, record groups of any other type (whatever their creation time), user groups and roles. Do not use `complete=False` for a window: deletions would then never be cleaned up.
 
 `run_incremental_sync()` and `handle_webhook_notification()` are abstract methods you must implement, but nothing in the platform calls them today. Do not rely on webhooks for freshness; scheduled sync is the supported path.
@@ -91,13 +92,15 @@ flowchart TD
   R --> W[Processor writes what the run saw]
   W --> Q{Was this a full sync?}
   Q -->|no| N[Leave existing links in place]
-  Q -->|yes| C{Wrote at least one node, and complete?}
+  Q -->|yes| L{lists_everything?}
+  L -->|no| K
+  L -->|yes| C{Wrote at least one node, and complete?}
   C -->|no| K[Unlink nothing]
   C -->|yes, no window| U[Unlink every node the run did not write]
   C -->|yes, window_start_ms| Win[Keep pre-window records and windowed groups, drop their direct grants, unlink the rest]
 ```
 
-`complete=false` is an error skip. Never use it for a date window: deletions would then never be cleaned up.
+`complete=false` is an error skip: the next sync runs in full once to retry. Never use it for a date window: deletions would then never be cleaned up. Nor for a source that never lists everything: use `lists_everything=false`.
 
 ## The data model, in one picture
 

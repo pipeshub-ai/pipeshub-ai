@@ -182,6 +182,48 @@ async def test_a_sync_that_skipped_part_of_the_source_unlinks_nothing_and_owes_o
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("complete", [True, False])
+async def test_a_source_that_lists_only_part_of_itself_unlinks_nothing_and_owes_nothing(
+    complete: bool, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A feed, say: not seeing a node is normal, so it is no error and a retry would see no more.
+    It overrides ``complete``."""
+    monkeypatch.setattr(sync_runner, "_INCOMPLETE_FULL_SYNC_RETRYING", set())
+    for _ in range(3):
+        gp = _graph_provider()
+        connector = _connector(None, FullSyncCoverage(complete=complete, lists_everything=False))
+        connector.run_sync = _writes_one_record(connector)
+        connector.data_entities_processor.finish_full_sync_memberships = AsyncMock()
+        caplog.clear()
+
+        with caplog.at_level(logging.WARNING, logger=_LOG.name):
+            await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
+
+        gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        connector.data_entities_processor.finish_full_sync_memberships.assert_not_awaited()
+        assert not _owed(gp)
+        assert not [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert sync_runner._INCOMPLETE_FULL_SYNC_RETRYING == set()
+
+
+@pytest.mark.asyncio
+async def test_a_source_that_lists_only_part_of_itself_still_owes_a_full_sync_when_it_raised() -> None:
+    gp = _graph_provider()
+    connector = _connector(None, FullSyncCoverage(lists_everything=False))
+
+    async def run_sync() -> None:
+        connector.data_entities_processor._note_full_sync_seen("c1", RECORDS, "r1")
+        raise RuntimeError("no feed could be read")
+
+    connector.run_sync = run_sync
+    with pytest.raises(RuntimeError):
+        await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
+
+    gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+    assert _owed(gp)
+
+
+@pytest.mark.asyncio
 async def test_a_sync_that_wrote_nothing_unlinks_nothing() -> None:
     """Most likely a sync that failed without raising: unlinking everything
     would empty the connector."""

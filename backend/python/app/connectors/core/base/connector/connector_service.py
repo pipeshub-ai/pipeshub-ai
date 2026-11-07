@@ -375,7 +375,8 @@ class BaseConnector(ABC):
         records and groups that sync did not write are then removed, except what
         this says it did not read. The default says it read everything, so a node
         it did not write is gone from the source. A connector whose sync reads
-        only a date window, or that carries on past errors, should say so here.
+        only a date window, that carries on past errors, or whose source only ever
+        lists part of itself (a feed), should say so here.
         """
         return FullSyncCoverage()
 
