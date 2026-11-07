@@ -13,7 +13,14 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    field_validator,
+    model_validator,
+)
 
 from app.modules.retrieval.record_fields import FIELDS, FieldKind, canonical_role, field
 from app.modules.retrieval.record_query.paging import NEWEST, OLDEST, decode_cursor

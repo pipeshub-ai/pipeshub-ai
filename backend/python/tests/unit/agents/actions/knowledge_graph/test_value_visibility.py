@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.agents.actions.knowledge_graph.ops import values
+from tests.unit.agents.actions.knowledge_graph.policy_fakes import full_arm
 from tests.unit.agents.actions.knowledge_graph.test_find_records_by_value import (
     APP,
     _context,
@@ -22,7 +23,6 @@ from tests.unit.agents.actions.knowledge_graph.test_find_records_by_value import
     _rows,
     _state,
 )
-from tests.unit.agents.actions.knowledge_graph.policy_fakes import full_arm
 
 pytestmark = pytest.mark.asyncio
 

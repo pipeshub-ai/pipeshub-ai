@@ -24,12 +24,12 @@ from app.agents.agent_loop.knowledge_graph_policy import (
 )
 from app.api.routes import knowledge_search as ks
 from app.core.org_context import OrgContext, bind
-from tests.unit.agents.actions.knowledge_graph.policy_fakes import full_arm
 from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
     EntityRecordPage,
 )
 from app.services.graph_db.interface.graph_db_provider import AccessibleContainers
+from tests.unit.agents.actions.knowledge_graph.policy_fakes import full_arm
 
 ORG, USER, RID, VRID = "org-1", "user-1", "rec-1", "vrid-1"
 

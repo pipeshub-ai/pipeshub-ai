@@ -18,6 +18,7 @@ from app.modules.named_entities.linking.service import Linking, LinkResult, Link
 from app.modules.retrieval.entity_permissions import EntityAccessContext
 from app.modules.retrieval.selection_scope import SelectionScope
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from tests.unit.agents.actions.knowledge_graph.policy_fakes import full_arm
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -27,7 +28,6 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.asyncio
 
 APP = "app-1"
-from tests.unit.agents.actions.knowledge_graph.policy_fakes import full_arm
 
 
 def _context(**extra: object) -> EntityAccessContext:

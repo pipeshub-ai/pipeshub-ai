@@ -51,10 +51,10 @@ from .catalog import ConnectorCatalog
 from .listing_citations import cite_listed_records, context_facts, row_facts
 from .models import NavigationView
 from .navigator import GraphNavigator, ListingFailedError
-from .ops.results import result_text, search_result_summary
-from .ops.record_query import field_guide as _record_field_guide
 from .ops.record_query import MENTIONS_CONDITION_TEXT as _MENTIONS_CONDITION_TEXT
+from .ops.record_query import field_guide as _record_field_guide
 from .ops.record_query import roles_guide as _record_roles_guide
+from .ops.results import result_text, search_result_summary
 from .ops.scope import (
     NODE_NOT_FOUND_MESSAGE,
     _has_selection,

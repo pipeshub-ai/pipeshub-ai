@@ -29,7 +29,10 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.tools.base import ParameterType, ToolParameter
 from app.agent_loop_lib.tools.decorators import TOOL_META_ATTR, BoundMethodTool
-from app.agents.actions.knowledge_graph.ops.record_query import MENTIONS_CONDITION_TEXT, roles_guide
+from app.agents.actions.knowledge_graph.ops.record_query import (
+    MENTIONS_CONDITION_TEXT,
+    roles_guide,
+)
 from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_TOOL_NAME
 from app.agents.agent_loop.knowledge_graph_policy import SEARCH_BY_ENTITIES_TOOL_NAME
 

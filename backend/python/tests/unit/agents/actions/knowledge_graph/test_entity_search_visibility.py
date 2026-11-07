@@ -23,8 +23,8 @@ from app.modules.retrieval.entity_permissions import (
     probe_permitted_entities,
 )
 from app.services.graph_db.common.utils import EntityCandidateRows
-from tests.unit.modules.retrieval.entity_access_fakes import entity_graph
 from tests.unit.agents.actions.knowledge_graph.policy_fakes import full_arm
+from tests.unit.modules.retrieval.entity_access_fakes import entity_graph
 
 ORG = "org-1"
 JIRA = "jira-1"

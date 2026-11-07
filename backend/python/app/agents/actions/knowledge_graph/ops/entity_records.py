@@ -16,7 +16,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.agents.actions.knowledge_graph.listing_citations import cite_listed_records
-from app.agents.actions.knowledge_graph.ops.entity_discovery import NAMED_ENTITIES_DISABLED_MSG
+from app.agents.actions.knowledge_graph.ops.entity_discovery import (
+    NAMED_ENTITIES_DISABLED_MSG,
+)
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     ENTITY_INDEX_CACHE_KEY,
     limited_scope_note,
