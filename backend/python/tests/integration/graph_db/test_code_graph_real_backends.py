@@ -103,7 +103,7 @@ _LANGUAGES = {"py": ("python", "text/x-python"), "cs": ("csharp", "text/x-csharp
 
 
 async def _write_repo(graph: IGraphDBProvider, org_id: str, connector_id: str,
-                      group_id: str, files: dict[str, str]) -> tuple[dict[str, str], _Blobs]:
+                      group_id: str, files: dict[str, str] = FILES) -> tuple[dict[str, str], _Blobs]:
     parser = CodeFileParser()
     blobs = _Blobs()
     record_ids = {path: str(uuid.uuid4()) for path in files}
