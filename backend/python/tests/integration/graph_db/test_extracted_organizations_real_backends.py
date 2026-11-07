@@ -117,19 +117,10 @@ async def test_a_replace_keeps_the_other_origin_and_survives_a_failed_write(back
     old = [(f"{org}-acme", "FOR_ACCOUNT", "INFERRED"), (f"{org}-globex", "MENTIONS", "EXTRACTED")]
     assert await _edges_from(provider, f"{org}-deal") == old
 
-    # A failed write replaces nothing; Neo4j fails inside its one statement, ArangoDB rolls back the transaction.
+    # A failed write replaces nothing, with no transaction to roll it back: a caller may log it and carry on.
+    bad = {**new, "extra": {"a": 1}} if hasattr(provider, "client") else {**new, "edgeType": "NOT_A_TYPE"}
     with pytest.raises(Exception):  # noqa: B017
-        if hasattr(provider, "client"):
-            await provider.replace_record_entity_relations(f"{org}-deal", [ORGS], inferred, [{**new, "extra": {"a": 1}}])
-        else:
-            tx = await provider.begin_transaction(read=[], write=[CollectionNames.ENTITY_RELATIONS.value])
-            try:
-                await provider.replace_record_entity_relations(
-                    f"{org}-deal", [ORGS], inferred, [{**new, "edgeType": "NOT_A_TYPE"}], tx,
-                )
-            except Exception:
-                await provider.rollback_transaction(tx)
-                raise
+        await provider.replace_record_entity_relations(f"{org}-deal", [ORGS], inferred, [bad])
     assert await _edges_from(provider, f"{org}-deal") == old
 
     await provider.replace_record_entity_relations(f"{org}-deal", [ORGS], inferred, [new])

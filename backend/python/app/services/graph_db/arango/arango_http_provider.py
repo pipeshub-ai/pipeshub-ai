@@ -22572,6 +22572,35 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return len(rows or [])
 
+    async def replace_record_entity_relations(
+        self,
+        record_id: str,
+        to_collections: list[str],
+        origin: str,
+        edges: list[dict],
+        transaction: str | None = None,
+    ) -> None:
+        """See :meth:`IGraphDBProvider.replace_record_entity_relations`."""
+        if not record_id or not to_collections or not origin:
+            raise ValueError("replacing a record's entity relations needs a record, collections and an origin")
+        # Writes first: a caller may log a failed write and commit, which must not commit a delete with it.
+        if edges:
+            await self.batch_create_entity_relations(edges, transaction)
+        await self.http_client.execute_aql(
+            f"""
+            FOR e IN {CollectionNames.ENTITY_RELATIONS.value}
+                FILTER e._from == @from AND PARSE_IDENTIFIER(e._to).collection IN @collections
+                FILTER NOT_NULL(e.origin, @inferred) == @origin AND [e._to, e.edgeType] NOT IN @kept
+                REMOVE e IN {CollectionNames.ENTITY_RELATIONS.value}
+            """,
+            bind_vars={
+                "from": f"{CollectionNames.RECORDS.value}/{record_id}", "collections": to_collections,
+                "origin": origin, "inferred": EntityOrigin.INFERRED.value,
+                "kept": [[e["_to"], e["edgeType"]] for e in self._translate_edges_to_arango(edges)],
+            },
+            txn_id=transaction,
+        )
+
     async def get_organization_record_reach(
         self,
         org_id: str,

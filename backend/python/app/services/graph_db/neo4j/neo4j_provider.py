@@ -23691,8 +23691,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "record_id": record_id, "origin": origin, "inferred": EntityOrigin.INFERRED.value,
             "labels": [collection_to_label(c) for c in to_collections],
         }
+        grouped = self._edges_by_labels(edges)
+        if sum(len(rows) for rows in grouped.values()) != len(edges):
+            raise ValueError("an edge has no endpoints; the record's links are kept")
         creates = []
-        for i, ((from_label, to_label), rows) in enumerate(self._edges_by_labels(edges).items()):
+        for i, ((from_label, to_label), rows) in enumerate(grouped.items()):
             parameters[f"edges_{i}"] = rows
             creates.append(f"""
             CALL {{
