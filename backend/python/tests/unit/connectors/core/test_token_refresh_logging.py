@@ -372,6 +372,47 @@ class TestFailedRefresh:
         assert "RefreshTokenInvalidError" not in line.exc_text
         _assert_no_secrets(caplog)
 
+    async def test_a_bug_in_the_strike_handler_on_the_scan_is_internal_not_an_expired_grant(
+        self, service: trs.TokenRefreshService, config: FakeConfigStore, graph: MagicMock,
+        endpoint: FakeTokenEndpoint, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Review R1: handled inside `except RefreshTokenInvalidError`, the KeyError was chained to the rejection and classed by it.
+        endpoint.answers = [INVALID_GRANT]
+        config.store[_key("c1")] = _expired()
+        _connectors(graph, _doc("c1", "o1"))
+        service._stored_refresh_token = AsyncMock(side_effect=KeyError("bug"))
+
+        await service._refresh_all_tokens()
+
+        [line] = _events(caplog, CR.EVENT_CHECK_FAILED)
+        assert (line.levelno, _fields(line)["error_class"], _fields(line)["error_type"]) == (logging.ERROR, "internal", "KeyError")
+        assert "reason" not in _fields(line)
+        _assert_no_secrets(caplog)
+
+    async def test_a_deauth_failure_keeps_its_own_cause_in_the_stack(
+        self, service: trs.TokenRefreshService, config: FakeConfigStore, graph: MagicMock,
+        endpoint: FakeTokenEndpoint, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Review R2: the graph driver wraps a refused connection without `from`; that context is the real cause.
+        async def update_node(*_: object) -> bool:
+            try:
+                raise ConnectionRefusedError("graph refused")
+            except ConnectionRefusedError:
+                raise RuntimeError("update failed")  # noqa: B904 - the implicit context is the case under test
+
+        endpoint.answers = [INVALID_GRANT] * 3
+        config.store[_key("c1")] = _expired()
+        _connectors(graph, _doc("c1", "o1"))
+        graph.update_node = update_node
+
+        for _ in range(trs.MAX_REFRESH_TOKEN_INVALID_FAILURES):
+            await service._refresh_all_tokens()
+
+        [line] = _events(caplog, CR.EVENT_DEAUTHENTICATE_FAILED)
+        assert (line.levelno, _fields(line)["error_class"]) == (logging.ERROR, "unavailable")
+        assert "ConnectionRefusedError: graph refused" in line.exc_text
+        _assert_no_secrets(caplog)
+
     async def test_strike_handler_failing_in_a_timer_keeps_the_provider_text_out(
         self, service: trs.TokenRefreshService, config: FakeConfigStore, endpoint: FakeTokenEndpoint,
         caplog: pytest.LogCaptureFixture,

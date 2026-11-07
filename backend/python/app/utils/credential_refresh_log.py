@@ -29,7 +29,7 @@ from enum import StrEnum
 
 from app.core import org_context
 from app.services.messaging.error_classifier import extract_status_code
-from app.utils.error_class import classify_error, log_failure
+from app.utils.error_class import classify_error, level_for, log_failure
 from app.utils.logging_fields import current_log_fields, log_event, log_fields, log_once
 from app.utils.request_context import (
     get_context,
@@ -132,11 +132,9 @@ async def refresh_attempt(logger: logging.Logger, *, once_key: str) -> AsyncIter
     log_event(logger, EVENT_END, outcome="success", reason=attempt.reason, duration_ms=_ms_since(start))
 
 
-def log_check_failed(logger: logging.Logger, exc: BaseException, *, once_key: str, while_handling: bool = False) -> None:
+def log_check_failed(logger: logging.Logger, exc: BaseException, *, once_key: str) -> None:
     """An outer handler's failure line: DEBUG when the attempt's ``end`` already logged ``exc``,
-    the full line for errors raised outside the attempt (loading the token, scheduling).
-    ``while_handling``: see :func:`log_refresh_failure`."""
-    _new_failure(exc, while_handling=while_handling)
+    the full line for errors raised outside the attempt (loading the token, scheduling)."""
     _log_failed(logger, EVENT_CHECK_FAILED, exc, once_key)
 
 
@@ -160,48 +158,54 @@ def log_deauthenticated(logger: logging.Logger, *, reason: str, strikes: int, pa
 
 def log_refresh_failure(
     logger: logging.Logger, event: str, exc: BaseException, /, *, level: int | None = None,
-    error_class: str | None = None, while_handling: bool = False, **fields: object,
+    error_class: str | None = None, **fields: object,
 ) -> None:
     """``log_failure`` for every failure line of a refresh service. When anything in the chain came
     from the token endpoint, its text is left out of the line and the stack: it can quote the refresh
     token, the token URL or the redirect URI in prose the redactor cannot recognise. Its status and
-    OAuth code are fields instead. An error raised while handling a rejected refresh carries that
-    rejection as its context, so plain ``log_failure`` is not safe anywhere on these paths.
+    OAuth code are fields instead.
 
     A failure this module already logged (the attempt's ``end``, even at a level that was not emitted)
-    is DEBUG here, so a caller of ``refresh_now`` can log what it catches without a second line.
+    is DEBUG here unless a higher level is asked for, as in ``log_failure``, so a caller of
+    ``refresh_now`` can log what it catches without a second line. Never raises."""
+    try:
+        handled_at = max(level_for(error_class or classify_error(exc)), level or 0)
+        want = level if level is not None else handled_at
+        prior = _logged_level(exc)
+        emit = want if prior is None or want > prior else logging.DEBUG
+        if isinstance(exc, RecursionError):
+            # No stack and no text: formatting a RecursionError's frames can recurse again.
+            log_event(logger, event, level=emit, **{
+                **fields, "outcome": "failure", "error_class": "internal", "error_type": "RecursionError",
+                "reason": "recursion",
+            })
+        else:
+            log_failure(
+                logger, event, exc, level=emit, error_class=error_class,
+                http_status=_first(exc, _status), oauth_error=_first(exc, _oauth_error),
+                include_error_text=_first(exc, _from_token_endpoint) is None, **fields,
+            )
+        # log_failure marks only what it emitted, so a misconfigured repeat logged at a disabled DEBUG would come back at ERROR.
+        with contextlib.suppress(AttributeError, TypeError):
+            setattr(exc, _LOGGED_ATTR, max(prior or 0, handled_at))
+    except Exception:
+        # Text-free on purpose, as log_failure's own fallback: this runs inside except blocks.
+        with contextlib.suppress(Exception):
+            logger.log(level or logging.ERROR, event, extra={"error_type": type(exc).__name__}, stacklevel=2)
 
-    ``while_handling=True``: ``exc`` was raised while another failure (the rejection) was being handled
-    and is not caused by it, so that context is left out of its class, fields and stack, as with
-    ``raise ... from None``. Only for an exception the caller swallows."""
-    _new_failure(exc, while_handling=while_handling)
-    already = _logged(exc)
-    if isinstance(exc, RecursionError):
-        # No stack and no text: formatting a RecursionError's frames can recurse again.
-        log_event(logger, event, level=logging.DEBUG if already else logging.ERROR, **{
-            **fields, "outcome": "failure", "error_class": "internal", "error_type": "RecursionError", "reason": "recursion",
-        })
-    else:
-        log_failure(
-            logger, event, exc, level=logging.DEBUG if already else level, error_class=error_class,
-            http_status=_first(exc, _status), oauth_error=_first(exc, _oauth_error),
-            include_error_text=_first(exc, _from_token_endpoint) is None, **fields,
-        )
-    # log_failure marks only what it emitted, so a misconfigured repeat logged at a disabled DEBUG would come back at ERROR.
-    with contextlib.suppress(AttributeError, TypeError):
-        setattr(exc, _LOGGED_ATTR, True)
 
-
-def _logged(exc: BaseException) -> bool:
-    """Whether this module logged ``exc`` or one it was raised ``from`` (explicit causes only, as in log_failure)."""
+def _logged_level(exc: BaseException) -> int | None:
+    """The highest level this module handled ``exc`` (or one it was raised ``from``) at; explicit causes only, as in log_failure."""
+    levels: list[int] = []
     seen: set[int] = set()
     link: BaseException | None = exc
     while link is not None and id(link) not in seen:
         seen.add(id(link))
-        if getattr(link, _LOGGED_ATTR, False):
-            return True
+        value = getattr(link, _LOGGED_ATTR, None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            levels.append(value)
         link = link.__cause__
-    return False
+    return max(levels) if levels else None
 
 
 def _log_failed(logger: logging.Logger, event: str, exc: BaseException, once_key: str, **fields: object) -> None:
@@ -214,11 +218,6 @@ def _log_failed(logger: logging.Logger, event: str, exc: BaseException, once_key
         cls = tagged
     quiet = cls == "misconfigured" and not log_once(f"{JOB}:{once_key}", MISCONFIGURED_REPEAT_S)
     log_refresh_failure(logger, event, exc, level=logging.DEBUG if quiet else None, error_class=cls, reason=reason, **fields)
-
-
-def _new_failure(exc: BaseException, *, while_handling: bool) -> None:
-    if while_handling and exc.__cause__ is None:
-        exc.__suppress_context__ = True
 
 
 def _first(exc: BaseException, read: Callable[[BaseException], object]) -> object:

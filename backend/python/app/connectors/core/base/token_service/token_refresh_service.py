@@ -667,8 +667,10 @@ class TokenRefreshService:
                     connector_id, connector_type, refresh_token
                 )
             except RefreshTokenInvalidError as e:
-                await self._handle_refresh_token_invalid(connector_id, e, refresh_token)
-                raise
+                rejected = e
+            # After the except block, so an error the strike handler raises is not chained to the rejection.
+            await self._handle_refresh_token_invalid(connector_id, rejected, refresh_token)
+            raise rejected
 
     async def _stored_refresh_token(self, connector_id: str) -> Optional[str]:
         """The refresh token currently persisted for this connector, if any."""
@@ -744,7 +746,7 @@ class TokenRefreshService:
             else:
                 log_event(self.logger, EVENT_DEAUTHENTICATE_FAILED, level=logging.ERROR, outcome="failure", reason="not_updated")
         except Exception as e:
-            log_refresh_failure(self.logger, EVENT_DEAUTHENTICATE_FAILED, e, level=logging.ERROR, while_handling=True)
+            log_refresh_failure(self.logger, EVENT_DEAUTHENTICATE_FAILED, e, level=logging.ERROR)
 
     async def _send_app_disabled_event(self, connector_id: str) -> bool:
         """Publish the platform appDisabled event for this connector instance."""
@@ -785,7 +787,7 @@ class TokenRefreshService:
             return True
         except Exception as e:
             # The caller falls back to writing isActive itself.
-            log_refresh_failure(self.logger, EVENT_APP_DISABLED_EVENT_FAILED, e, while_handling=True)
+            log_refresh_failure(self.logger, EVENT_APP_DISABLED_EVENT_FAILED, e)
             return False
 
     async def _perform_token_refresh(
@@ -994,24 +996,29 @@ class TokenRefreshService:
         # Bound before the try so the RefreshTokenInvalidError handler below can
         # tell which token was rejected even when the load itself raised.
         token = None
+        rejected = None
 
         try:
-            # Load token from config
-            token, has_credentials = await self._load_token_from_config(connector_id)
+            try:
+                # Load token from config
+                token, has_credentials = await self._load_token_from_config(connector_id)
 
-            if not has_credentials:
-                self.logger.debug(f"Connector {connector_id} has no credentials to refresh")
-                return
+                if not has_credentials:
+                    self.logger.debug(f"Connector {connector_id} has no credentials to refresh")
+                    return
 
-            # Handle refresh workflow
-            await self._handle_token_refresh_workflow(connector_id, connector_type, token)
+                # Handle refresh workflow
+                await self._handle_token_refresh_workflow(connector_id, connector_type, token)
 
-        except RefreshTokenInvalidError as e:
-            await self._handle_refresh_token_invalid(
-                connector_id, e, getattr(token, "refresh_token", None)
-            )
-        except Exception as e:
-            log_check_failed(self.logger, e, once_key=_once_key(connector_id))
+            except RefreshTokenInvalidError as e:
+                rejected = e
+            except Exception as e:
+                log_check_failed(self.logger, e, once_key=_once_key(connector_id))
+            if rejected is not None:
+                # After the except block, so an error the strike handler raises is not chained to the rejection.
+                await self._handle_refresh_token_invalid(
+                    connector_id, rejected, getattr(token, "refresh_token", None)
+                )
         finally:
             # Always remove from processing set
             self._unmark_connector_processing(connector_id)
@@ -1062,11 +1069,13 @@ class TokenRefreshService:
             new_token = await self._perform_token_refresh(connector_id, connector_type, token.refresh_token)
             return new_token, True
         except RefreshTokenInvalidError as e:
-            await self._handle_refresh_token_invalid(connector_id, e, token.refresh_token)
-            return None, False
+            rejected = e
         except Exception as e:
             log_check_failed(self.logger, e, once_key=_once_key(connector_id))
             return None, False
+        # After the except block, so an error the strike handler raises is not chained to the rejection.
+        await self._handle_refresh_token_invalid(connector_id, rejected, token.refresh_token)
+        return None, False
 
     def _cancel_existing_refresh_task(self, connector_id: str) -> None:
         """Cancel existing refresh task for connector if one exists."""
@@ -1190,9 +1199,9 @@ class TokenRefreshService:
             self.logger.debug(f"Token refresh task cancelled for connector {connector_id} (likely rescheduled)")
             raise
         except Exception as e:
-            # Reached only when the strike handler itself fails, inside `except RefreshTokenInvalidError`.
+            # What _refresh_connector_token lets through: a failing strike handler, the processing-set or scope calls.
             with self._scope(connector_id, connector_type, trigger=Trigger.SCHEDULED):
-                log_check_failed(self.logger, e, once_key=_once_key(connector_id), while_handling=True)
+                log_check_failed(self.logger, e, once_key=_once_key(connector_id))
         finally:
             # Remove task from tracking only if it's this task
             if connector_id in self._refresh_tasks and self._refresh_tasks[connector_id].done():

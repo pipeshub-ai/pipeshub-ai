@@ -331,17 +331,6 @@ class TestLogRefreshFailure:
             assert seeded not in text
         assert "RuntimeError: <message omitted>" in line.exc_text
 
-    def test_while_handling_cuts_the_unrelated_context(self, records: _Records) -> None:
-        CR.log_refresh_failure(_logger(), "x.failed", self._while_handling_a_rejection(), while_handling=True)
-
-        [line] = records
-        fields = log_record_fields(line)
-        assert (line.levelno, fields["error_class"], fields["error_message"]) == (
-            logging.ERROR, "internal", "RuntimeError: graph down",
-        )
-        assert "http_status" not in fields
-        assert "RefreshTokenInvalidError" not in line.exc_text
-
     @pytest.mark.parametrize("make", [
         lambda: _provider_error(503), lambda: RefreshConfigError("missing"),
         lambda: RecursionError("maximum recursion depth exceeded"),
@@ -359,12 +348,26 @@ class TestLogRefreshFailure:
 
         assert caplog.records == []
 
-    def test_while_handling_keeps_an_explicit_cause(self, records: _Records) -> None:
-        exc = _raised(RuntimeError("wrapped"), _provider_error(503))
+    async def test_a_caller_asking_for_a_higher_level_still_gets_it(self, records: _Records) -> None:
+        exc = await _attempt(_provider_error(503))  # the end: WARNING
 
-        CR.log_refresh_failure(_logger(), "x.failed", exc, while_handling=True)
+        CR.log_refresh_failure(_logger(), CR.EVENT_CHECK_FAILED, exc, level=logging.ERROR)
+        CR.log_refresh_failure(_logger(), CR.EVENT_CHECK_FAILED, exc, level=logging.ERROR)
 
-        assert log_record_fields(records[0])["http_status"] == 503
+        assert [r.levelno for r in records if r.getMessage() == CR.EVENT_CHECK_FAILED] == [logging.ERROR, logging.DEBUG]
+
+    def test_never_raises_and_falls_back_to_a_text_free_line(self, records: _Records) -> None:
+        class Exotic(Exception):
+            def __getattribute__(self, name: str) -> object:
+                if name in ("status", "status_code", "error_code", "refresh_reason"):
+                    raise RuntimeError("attribute access exploded")
+                return super().__getattribute__(name)
+
+        CR.log_refresh_failure(_logger(), "x.failed", Exotic(SEEDED_RT))
+
+        [line] = records
+        assert (line.getMessage(), line.levelno, line.error_type) == ("x.failed", logging.ERROR, "Exotic")
+        assert SEEDED_RT not in TextFormatter().format(line)
 
 
 class TestRefreshScope:
