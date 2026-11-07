@@ -56,6 +56,7 @@ def _state(users: list[dict] | Exception = (), **overrides: object) -> dict:
     graph.find_users = AsyncMock(side_effect=users) if isinstance(users, Exception) else AsyncMock(
         return_value=list(users),
     )
+    graph.find_people = AsyncMock(return_value=[])
     return {"org_id": "org-1", "user_id": "user-1", "user_email": "me@x.io", "graph_provider": graph,
             "include_retrieval_context": True, **overrides}
 
@@ -70,10 +71,10 @@ def listing(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     page has records, else not at all."""
     pages: dict[str, EntityRecordPage] = {}
     visible: dict[str, int] = {}
-    mock = AsyncMock(side_effect=lambda graph, context, *, user_ids, **_: pages.get(user_ids[0], _EMPTY))
+    mock = AsyncMock(side_effect=lambda graph, context, *, nodes, **_: pages.get(nodes[0][1], _EMPTY))
 
-    async def _offsets(graph: object, context: object, groups: list[list[str]], **_: object) -> list[int | None]:
-        return [visible.get(ids[0], 0 if pages.get(ids[0], _EMPTY).records else None) for ids in groups]
+    async def _offsets(graph: object, context: object, groups: list[list[tuple[str, str]]], **_: object) -> list[int | None]:
+        return [visible.get(ids[0][1], 0 if pages.get(ids[0][1], _EMPTY).records else None) for ids in groups]
 
     mock.pages, mock.visible = pages, visible
     mock.probe = AsyncMock(side_effect=_offsets)
@@ -120,7 +121,7 @@ class TestResolvingThePerson:
         ok, text = await execute_find_records_by_person(_state([DARSHAN, DARSHAN_STUB]), "Darshan Godase")
         assert ok is True and "Ticket r1" in text
         listing.assert_awaited_once()
-        assert listing.await_args.kwargs["user_ids"] == ["u-d", "u-d2"]
+        assert listing.await_args.kwargs["nodes"] == [("users", "u-d"), ("users", "u-d2")]
 
     async def test_namesakes_with_readable_records_are_listed_without_records(self, listing) -> None:
         listing.pages["u-d"] = EntityRecordPage(records=[_row("r1")], next_cursor=None)
@@ -172,7 +173,7 @@ class TestResolvingThePerson:
         _, nobody = await execute_find_records_by_person(_state([]), "Alex Kim")
         assert text == nobody
         assert listing.probe.await_count == 1
-        assert listing.probe.await_args.args[2] == [[f"u-{i}"] for i in range(7)]
+        assert listing.probe.await_args.args[2] == [[("users", f"u-{i}")] for i in range(7)]
         listing.assert_not_awaited()
 
     async def test_the_listing_starts_where_the_probe_found_the_first_readable_record(self, listing) -> None:
@@ -191,7 +192,52 @@ class TestResolvingThePerson:
         ok, text = await execute_find_records_by_person(state, me)
         assert ok is True and "Ticket r1" in text
         state["graph_provider"].find_users.assert_awaited_once_with("org-1", "me@x.io", limit=20)
-        assert listing.await_args.kwargs["user_ids"] == ["ukey", "u-me2"]
+        assert listing.await_args.kwargs["nodes"] == [("users", "ukey"), ("users", "u-me2")]
+
+
+QUINCY = {"id": "p-q", "fullName": "Quincy Outsider", "email": "quincy@partner.test"}
+
+
+class TestPeopleWhoAreNotMembers:
+    def _with(self, outsiders: list[dict], members: list[dict] = ()) -> dict:
+        state = _state(members)
+        state["graph_provider"].find_people = AsyncMock(return_value=list(outsiders))
+        return state
+
+    async def test_a_non_member_with_a_readable_record_is_named_without_an_email(self, listing) -> None:
+        listing.pages["p-q"] = EntityRecordPage(records=[_row("r1")], next_cursor=None)
+        _, text = await execute_find_records_by_person(self._with([QUINCY]), "Quincy Outsider")
+        assert text.startswith("Records linked to Quincy Outsider (not a member)")
+        assert "Ticket r1" in text and "quincy@partner.test" not in text
+        assert listing.await_args.kwargs["nodes"] == [("person", "p-q")]
+
+    async def test_a_non_member_with_no_readable_record_reads_as_no_match(self, listing) -> None:
+        _, nobody = await execute_find_records_by_person(self._with([]), "Quincy Outsider")
+        _, hidden = await execute_find_records_by_person(self._with([QUINCY]), "Quincy Outsider")
+        assert hidden == nobody and "not a member" not in hidden
+        listing.assert_not_awaited()
+
+    async def test_the_same_lookups_run_whether_or_not_anything_matches(self, listing) -> None:
+        for outsiders in ([], [QUINCY]):
+            state = self._with(outsiders)
+            await execute_find_records_by_person(state, "Quincy Outsider")
+            graph = state["graph_provider"]
+            assert graph.find_users.await_count == 1 and graph.find_people.await_count == 1
+
+    async def test_a_member_and_a_person_of_one_email_are_one_person_with_each_records_own_link(self, listing) -> None:
+        member = {"id": "u-m", "fullName": "Mia Member", "email": "mia@acme.test"}
+        person = {"id": "p-m", "fullName": "Mia Member", "email": "mia@acme.test"}
+        listing.pages["u-m"] = EntityRecordPage(records=[_row("r-own"), _row("r-ext")], next_cursor=None)
+        state = self._with([person], [member])
+        state["graph_provider"].get_record_people = AsyncMock(
+            side_effect=lambda rid, org: [{"id": "u-m"}] if rid == "r-own" else [],
+        )
+        _, text = await execute_find_records_by_person(state, "Mia Member")
+        own, ext = (next(line for line in text.splitlines() if f"Ticket {k}" in line) for k in ("r-own", "r-ext"))
+        assert text.startswith("Records linked to Mia Member (mia@acme.test)")
+        assert "not a member" not in own and "(not a member)" in ext
+        assert listing.await_args.kwargs["nodes"] == [("users", "u-m"), ("person", "p-m")]
+        assert listing.probe.await_args.args[2] == [[("users", "u-m"), ("person", "p-m")]]
 
 
 class TestRoles:

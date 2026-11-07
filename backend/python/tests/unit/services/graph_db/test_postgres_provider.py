@@ -212,3 +212,9 @@ async def test_get_user_by_email_reads_only_the_ambient_org(org_id: str | None, 
         assert p._one.await_args.args[1:] == ("o1", "A@x.io")
     else:
         p._one.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_find_people_matches_nobody_and_never_raises_on_postgres() -> None:
+    """People who are not members are not resolved on PostgreSQL yet; the members path of the person tool must keep working."""
+    assert await IdentityMixin.find_people(object.__new__(IdentityMixin), "org", "Quincy Outsider") == []

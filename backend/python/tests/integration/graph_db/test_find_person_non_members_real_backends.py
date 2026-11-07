@@ -18,10 +18,18 @@ import pytest
 
 from app.agents.actions.knowledge_graph.ops import entity_filters, people
 from app.agents.actions.knowledge_graph.ops.people import execute_find_records_by_person
-from app.config.constants.arangodb import CollectionNames, Connectors, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    CollectionNames,
+    Connectors,
+    OriginTypes,
+    ProgressStatus,
+)
 from app.models.entities import Person, Record, RecordType
 from app.modules.retrieval.entity_permissions import EntityAccessContext
-from tests.integration.graph_db.test_record_graph_write_concurrency import _open_arango, _open_neo4j
+from tests.integration.graph_db.test_record_graph_write_concurrency import (
+    _open_arango,
+    _open_neo4j,
+)
 from tests.integration.graph_db.test_record_people_real_backends import _cleanup
 
 if TYPE_CHECKING:

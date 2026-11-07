@@ -66,6 +66,7 @@ def _state(users: list[dict], candidates: dict[str, list[dict]], *, readable: tu
         u for u in users
         if query.casefold() in (u["email"].casefold(), u["fullName"].casefold())
     ])
+    graph.find_people = AsyncMock(return_value=[])
     return {"org_id": "org-1", "user_id": "user-1", "user_email": "me@x.io", "graph_provider": graph}
 
 
@@ -177,6 +178,6 @@ class TestEntityListing:
 class TestProbe:
     async def test_offsets_are_each_refs_first_readable_candidate(self) -> None:
         state = _state([], {"u-a": _rows("a", 900), "u-b": _rows("b", 30), "u-c": []}, readable=("a850", "b3"))
-        refs = [entity_permissions._person_ref([uid], ["ASSIGNED_TO"]) for uid in ("u-a", "u-b", "u-c")]
+        refs = [entity_permissions._person_ref([("users", uid)], ["ASSIGNED_TO"]) for uid in ("u-a", "u-b", "u-c")]
         found = await entity_permissions.first_readable_offsets(state["graph_provider"], CONTEXT, refs)
         assert found == {(PERSON_ENTITY_TYPE, "u-a"): 850, (PERSON_ENTITY_TYPE, "u-b"): 3}
