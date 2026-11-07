@@ -99,3 +99,10 @@ async def test_a_write_conflict_outside_a_transaction_is_retried() -> None:
     conflict = Exception('write-write conflict "errorNum": 1200')
     p.http_client.execute_aql = AsyncMock(side_effect=[conflict, [{"_key": "e"}]])
     assert await p._upsert_entity_relations([], "UPDATE edge", None) == [{"_key": "e"}]
+
+
+async def test_a_write_conflict_on_the_retry_after_a_unique_violation_is_retried_too() -> None:
+    p = _provider()
+    conflict = Exception('write-write conflict "errorNum": 1200')
+    p.http_client.execute_aql = AsyncMock(side_effect=[_unique_violation(), conflict, [{"_key": "e"}]])
+    assert await p._upsert_entity_relations([], "UPDATE edge", None) == [{"_key": "e"}]
