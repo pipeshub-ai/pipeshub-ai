@@ -3554,28 +3554,6 @@ class TestUpdateToolsetOAuthConfig:
 
 
 # ===========================================================================
-# Route handler tests — Configured Toolsets (backward compat)
-# ===========================================================================
-
-
-class TestGetConfiguredToolsets:
-    @pytest.mark.asyncio
-    async def test_delegates_to_my_toolsets(self) -> None:
-        from app.api.routes.toolsets import get_configured_toolsets
-
-        request = MagicMock()
-        config_service = AsyncMock()
-        config_service.get_config = AsyncMock(return_value=[])
-
-        with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
-             patch("app.api.routes.toolsets.get_my_toolsets", new_callable=AsyncMock, return_value={"status": "success", "toolsets": []}) as mock_my:
-
-            result = await get_configured_toolsets(request, config_service=config_service)
-            assert result["status"] == "success"
-            mock_my.assert_awaited_once()
-
-
-# ===========================================================================
 # Route handler tests — Authenticate with BASIC_AUTH
 # ===========================================================================
 

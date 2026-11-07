@@ -2062,6 +2062,8 @@ async def update_toolset_tool_rules(
 # ============================================================================
 
 @router.get("/my-toolsets", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+# Legacy path served by the same handler, so FastAPI resolves its Query defaults (a direct call got Query objects).
+@router.get("/configured", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def get_my_toolsets(
     request: Request,
@@ -2995,24 +2997,6 @@ async def delete_toolset_oauth_config(
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete OAuth configuration.") from e
 
     return {"status": "success", "message": "OAuth configuration deleted successfully."}
-
-
-# ============================================================================
-# Backward-Compatible Configured Toolsets Endpoint
-# ============================================================================
-
-@router.get("/configured", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
-@inject
-async def get_configured_toolsets(
-    request: Request,
-    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-) -> dict[str, Any]:
-    """
-    Backward-compatible endpoint: returns toolsets the user has authenticated.
-    Merges admin-created instances with user's auth status.
-    Delegates to get_my_toolsets logic.
-    """
-    return await get_my_toolsets(request=request, search=None, config_service=config_service)
 
 
 # ============================================================================
