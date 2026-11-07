@@ -25,6 +25,7 @@ from app.modules.code_graph.family_rules import rules_for
 from app.modules.code_graph.guards import lang_family
 from app.modules.code_graph.module_refs import includes_changed_ref, module_ref
 from app.modules.code_graph.version import PARSER_VERSION
+from app.modules.parsers.code_parser.languages.csharp import GLOBAL_USING
 from app.modules.parsers.code_parser.models import DECLARATION, RETURNS, STATIC
 
 if TYPE_CHECKING:
@@ -38,6 +39,7 @@ __all__ = [
     "FILE_SUMMARY_QUALIFIED_NAME",
     "RESIDENT_RELATIONS",
     "block_key_for",
+    "changed_folder_scope",
     "changed_includes",
     "changed_macros",
     "drop_code_file_blocks",
@@ -169,6 +171,7 @@ def serialize_block_for_graph(
         "kind": ((meta.kind or "").lower() or None) if meta else None,
         "modifiers": (meta.modifiers or None) if meta else None,
         "qualifiedName": meta.qualified_name if meta else None,
+        "typeParamCount": (meta.type_param_count or None) if meta else None,
         "startLine": meta.start_line if meta else None,
         "endLine": meta.end_line if meta else None,
         "language": (meta.language or ctx.language) if meta else None,
@@ -200,10 +203,36 @@ def _resident_facts(facts: list[dict] | None, *, package_init: bool = False, imp
     Model` makes `models.Model`), which every build follows, so they stay too; so
     do the IMPORTS_FROM of a family whose rules keep them (`resident_imports`: a
     C/C++ file sees what its includes include, through headers an incremental
-    build is not re-resolving)."""
+    build is not re-resolving), and a C# `global using`, which scopes every file
+    of its project."""
     keep = RESIDENT_RELATIONS | ({RecordRelations.IMPORTS.value} if package_init else frozenset()) \
         | ({RecordRelations.IMPORTS_FROM.value} if imports else frozenset())
-    return [fact for fact in facts or () if fact.get("relation") in keep]
+    return [fact for fact in facts or () if fact.get("relation") in keep or fact.get("context") == GLOBAL_USING]
+
+
+
+def _folder_scope(folder: str) -> str:
+    """The name a file under *folder* references so a change to the folder's `global using`s re-resolves it."""
+    return f"folder-scope:{folder}"
+
+
+def _folder_scopes(file_path: str | None) -> set[str]:
+    if not file_path or not file_path.endswith(".cs"):
+        return set()
+    parts = file_path.split("/")[:-1]
+    return {_folder_scope("/".join(parts[:i])) for i in range(len(parts) + 1)}
+
+
+def _global_usings(rows: Iterable[dict]) -> set[str]:
+    return {fact.get("toName") for row in rows for fact in row.get("pendingEdges") or ()
+            if fact.get("context") == GLOBAL_USING}
+
+
+def changed_folder_scope(file_path: str | None, before: Iterable[dict], after: Iterable[dict]) -> set[str]:
+    """The file's folder scope when its `global using`s changed (added, edited or removed)."""
+    if not file_path or _global_usings(before) == _global_usings(after):
+        return set()
+    return {_folder_scope(file_path.rpartition("/")[0])}
 
 
 def _referenced_names(container: BlocksContainer, file_path: str | None = None) -> list[str] | None:
@@ -214,7 +243,7 @@ def _referenced_names(container: BlocksContainer, file_path: str | None = None) 
     without the facts themselves. Modules go in as ``module:<path>``
     (``module_refs``), resolved against *file_path* where relative.
     """
-    names: set[str] = set()
+    names: set[str] = _folder_scopes(file_path)
     # A C++ receiver is typed by declarations elsewhere: its class (`Conn* c; c->open()`, which a second Conn or a
     # forward declaration given a body makes ambiguous) and, for a field (`m_list.notify()`), the field's own
     # declaration (_changed_member_types). Either changing re-resolves this file.
@@ -485,7 +514,7 @@ async def write_code_file_blocks_to_graph(
         name for key, name in (*before.items(), *after.items())
         if name and key[1] != "file_summary" and (key not in before or key not in after)
     } | changed_macros(existing, docs) | _changed_linkage(existing, docs) | _changed_member_types(existing, docs) \
-        | changed_includes(context.file_path, existing, docs)
+        | changed_includes(context.file_path, existing, docs) | changed_folder_scope(context.file_path, existing, docs)
 
     # referencedNames is written to the codeFiles node, not a block. The edge
     # builder queries it alongside filePath, avoiding a block-scan join.
@@ -578,7 +607,8 @@ async def drop_code_file_blocks(
             ),
             what="load codeFiles node", log=log,
         )
-        removed |= changed_includes((code_file or {}).get("filePath"), existing, ())
+        removed |= changed_includes((code_file or {}).get("filePath"), existing, ()) \
+            | changed_folder_scope((code_file or {}).get("filePath"), existing, ())
         if code_file and removed:
             await _with_retry(
                 lambda: graph_provider.update_node(

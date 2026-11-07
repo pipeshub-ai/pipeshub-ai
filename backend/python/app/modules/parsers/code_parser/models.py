@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 __all__ = [
     "CONSTRUCT",
     "DECLARATION",
+    "EXPLICIT",
     "FILLER_KINDS",
     "HEADER_KIND",
     "INITIALIZER",
@@ -59,6 +60,9 @@ RETURNS = "returns:"
 CONSTRUCT = "construct"
 # The context of a CALLS fact from a C++ constructor's `: Name(..)` initializer: a base (constructed) or a member.
 INITIALIZER = "initializer"
+# The modifier prefix of an explicit interface implementation (`explicit:IHandler` on C#'s
+# `Task IHandler.Handle(..)`): it implements IHandler.Handle and is no member of its own type by that name.
+EXPLICIT = "explicit:"
 
 # A container's members are what its children tile around; `header` covers the
 # span from the container's start to its first member.
@@ -85,8 +89,8 @@ class ParsedSymbol:
     parent_chain: tuple[str, ...] = ()
     text: str = ""
     decorators: tuple[str, ...] = ()
-    # Words resolution reads, from the language's handler (languages.MODIFIER_HANDLERS; C/C++: STATIC,
-    # DECLARATION for a callable with no body).
+    # Words resolution reads, from the language's handler (languages.MODIFIER_HANDLERS; C/C++: STATIC; C#:
+    # "partial", "extension", "this:<Type>", EXPLICIT), after DECLARATION for a callable with no body.
     modifiers: tuple[str, ...] = ()
     is_exported: bool = False
     # Index into ParsedFile.symbols of the immediately enclosing container, or
@@ -94,6 +98,8 @@ class ParsedSymbol:
     parent: int | None = None
     # True when this container has members that tile it.
     is_container: bool = False
+    # Type parameters the declaration takes (`class Foo<T, U>`: 2).
+    type_param_count: int = 0
 
     @property
     def is_filler(self) -> bool:
@@ -134,6 +140,8 @@ class PendingEdgeFact:
     # CALLS: "construct" for a C++ construction (`new Conn(..)`, `Conn c(..)`), which names a type, never a
     # function; "initializer" for a constructor's `: Name(..)`, which names a base or a member.
     context: str | None = None
+    # A type reference's type-argument count (`IHandler<int>`: 1), where the language reads it (C# bases).
+    type_args: int | None = None
     # EXPORTS names a symbol in *this* file; resolving it against the whole repo
     # would happily bind to a same-named symbol elsewhere.
     restrict_to_file: bool = False
@@ -168,6 +176,8 @@ class PendingEdgeFact:
             out["localName"] = self.local_name
         if self.context:
             out["context"] = self.context
+        if self.type_args is not None:
+            out["typeArgs"] = self.type_args
         if self.restrict_to_file:
             out["restrictToFile"] = True
         return out

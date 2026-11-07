@@ -24,8 +24,8 @@ def test_the_rows_reproduce_the_former_family_branches() -> None:
     assert go.bare_call_reaches_method == "never" and not go.bare_names_from_imported_modules
     js = rules_for("js")
     assert js.lexical_module_scope and js.bare_call_reaches_method == "any"
-    # The rust row: test_rust_resolution.
-    for family in ("py", "php", "ruby", None, "no-such-family"):
+    # The rust row: test_rust_resolution; php's: test_php_resolution.
+    for family in ("py", "ruby", None, "no-such-family"):
         assert rules_for(family) == FamilyRules(), family
     # C/C++: includes seen transitively, a header's source as INFERRED, `this->` first, out-of-line methods
     # repo-wide with their owner class, types through includes (test_c_includes, test_cpp_receivers).

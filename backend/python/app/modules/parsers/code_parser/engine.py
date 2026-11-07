@@ -317,6 +317,16 @@ def _walk_types(node: Node) -> list[Node]:
     return out
 
 
+_TYPE_PARAMETER_LISTS = frozenset({"type_parameter_list", "type_parameters"})
+
+
+def _type_param_count(def_node: Node | None) -> int:
+    """`class Foo<T, U>` / `Foo<T>()`: 2 / 1, telling `Foo<T>` from a plain `Foo` of the same name."""
+    params = next((c for c in def_node.named_children if c.type in _TYPE_PARAMETER_LISTS), None) \
+        if def_node is not None else None
+    return sum(1 for c in params.named_children if c.type != "comment") if params is not None else 0
+
+
 def _body_of(node: Node, cfg: LanguageConfig) -> Node | None:
     body = _field(node, cfg.body_field)
     if body is not None:
@@ -1249,6 +1259,8 @@ class _Span:
     name: str | None = None
     decorators: tuple[str, ...] = ()
     is_exported: bool = False
+    # The statement namespace (`namespace X;`) above the span, prefixed to its chain.
+    namespace: tuple[str, ...] = ()
 
 
 # Filler kinds that absorb an adjacent run of the same kind.
@@ -1339,7 +1351,7 @@ class _Walker:
         spans = self._collect(members_parent, in_container=is_container, in_type=in_type)
         spans = self._tile(spans, scope_start, scope_end, is_container=is_container)
         for span in spans:
-            self._emit(span, chain, parent_idx, in_type=in_type)
+            self._emit(span, (*chain, *span.namespace), parent_idx, in_type=in_type)
 
     def _collect(self, members_parent: Node | None, *,
                  in_container: bool, in_type: bool) -> list[_Span]:
@@ -1367,6 +1379,7 @@ class _Walker:
             attached = []
 
         seen_member = False
+        namespace: tuple[str, ...] = ()
         for child in self._flatten(members_parent.named_children if members_parent is not None else []):
             if child.type in cfg.attached_types:
                 attached.append(child)
@@ -1394,6 +1407,14 @@ class _Walker:
             span = self._classify(child, in_container=in_container, in_type=in_type)
             if span is None:
                 continue
+            if child.type in cfg.module_types and span.name:
+                # `App\Models` is `App.Models`, as the namespace's classes are named.
+                span.name = span.name.replace("\\", ".")
+            if child.type in cfg.statement_namespace_types and _body_of(child, cfg) is None:
+                # `namespace X;` owns no body: it names everything after it, up to the next one.
+                namespace = (span.name,) if span.name else ()
+            else:
+                span.namespace = namespace
 
             if attached:
                 if self._blank_lines_between(attached[-1].end_byte, span.start) <= _COMMENT_ATTACH_MAX_BLANK_LINES:
@@ -1707,6 +1728,7 @@ class _Walker:
             modifiers=self._modifiers(span.def_node, kind) if span.kind == "definition" else (),
             is_exported=span.is_exported,
             parent=parent_idx,
+            type_param_count=_type_param_count(span.def_node) if span.kind == "definition" else 0,
         ))
 
         if span.kind != "definition":
@@ -2044,7 +2066,7 @@ class _Walker:
 
     def _modifiers(self, def_node: Node | None, kind: str) -> tuple[str, ...]:
         """The words of a language with a modifier handler, after DECLARATION for a function or method with no
-        body (a C++ pure virtual): what runs is elsewhere. A language without a handler has none."""
+        body (a C++ pure virtual, a C# or PHP interface or abstract method): what runs is elsewhere. A language without a handler has none."""
         handler = languages.MODIFIER_HANDLERS.get(self.cfg.name)
         if def_node is None or handler is None:
             return ()
