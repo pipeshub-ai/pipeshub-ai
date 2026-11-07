@@ -106,4 +106,9 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId="trello" name="Trello" />)).toBe('trello icon');
     expect(logo(<McpServerIcon typeId={null} name="Trello" />)).toBe('trello icon');
   });
+
+  it("shows Cloudflare's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="cloudflare" name="Cloudflare" />)).toBe('cloudflare icon');
+    expect(logo(<McpServerIcon typeId={null} name="Cloudflare" />)).toBe('cloudflare icon');
+  });
 });

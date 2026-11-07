@@ -25,7 +25,7 @@ from app.connectors.core.base.data_store.data_store import (
     TransactionStore,
 )
 from app.core import org_context
-from app.exceptions.graph_db_exceptions import GraphWriteError
+from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, GraphWriteError
 from app.models.entities import (
     AppMetadata,
     AppRole,
@@ -131,7 +131,9 @@ def ends_explicit_transaction(exception: BaseException) -> bool:
     """A failure the Neo4j server or driver reported. The explicit transaction
     it was raised in runs no further statement, so going on after it only moves
     the failure to the next one."""
-    return NEO4J_AVAILABLE and isinstance(exception, (Neo4jError, DriverError))
+    return (NEO4J_AVAILABLE and isinstance(exception, (Neo4jError, DriverError))) or isinstance(
+        exception, GraphMemoryLimitError
+    )
 
 
 def _is_retryable(instance: object, exception: Exception) -> bool:
@@ -976,6 +978,8 @@ class GraphTransactionStore(TransactionStore):
         except Exception as e:
             if self.graph_provider.is_transient_error(e) is True:
                 raise  # the transaction is aborted; its owner runs it again
+            if isinstance(e, GraphMemoryLimitError):
+                raise  # the transaction is aborted and sending it again fails the same way
             self.logger.error(
                 f"Failed to create user group membership ({user_source_id} -> {group_external_id}): {str(e)}",
                 exc_info=True

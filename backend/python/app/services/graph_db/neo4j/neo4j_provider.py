@@ -70,6 +70,7 @@ from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.config.constants.service_accounts import cypher_not_a_service_account
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
+    GraphMemoryLimitError,
     GraphQueryError,
     KnowledgeHubListingBusy,
     KnowledgeHubListingTooLarge,
@@ -601,6 +602,17 @@ def _created_ends(rows: list[dict] | None) -> list[str]:
     return [i for pair in made for i in pair]
 
 
+# From this many rows an edge write or replace fails for good when the server's transaction memory pool refuses it
+# (GraphMemoryLimitError). A smaller one is likely the victim of a big statement holding the shared pool, and
+# keeps the bounded retry, which usually outlasts it.
+BULK_EDGE_ROWS = 10_000
+
+
+def _bulk_rows(operation: str, rows: int) -> dict[str, Any]:
+    """execute_query's ``bulk`` keywords for a batch edge write of this many rows, none for a small one."""
+    return {"bulk": operation, "size": rows} if rows >= BULK_EDGE_ROWS else {}
+
+
 # Set on an edge by the MERGE that creates it and read in the same statement: tells a created edge from a found one.
 _EDGE_NEW = "edgeNew"
 # Written, then removed or deleted, inside one purge statement to take a node's write lock.
@@ -1074,6 +1086,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         failed block passed to ``begin_transaction``."""
         if self.client is None or not self.client.opens_explicit_transaction(explicit):
             return False
+        if isinstance(error, GraphMemoryLimitError):
+            return False  # the memory pool refused it; the same statement is refused again
         return isinstance(error, TransientError)
 
     def is_write_conflict(self, error: BaseException) -> bool:
@@ -2588,7 +2602,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # and a group whose rewrite failed was left with no members.
         statement, parameters = self._replace_edges_to_cypher(to_id, to_collection, edges, collection)
         await self.client.execute_query(
-            f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction
+            f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction,
+            **_bulk_rows("group replace", len(edges)),
         )
 
     @staticmethod
@@ -2657,7 +2672,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (n:{collection_to_label(CollectionNames.RECORDS.value)} {{id: $record_id}})
             {_cypher_kh_tree_refresh(edge_collection_to_relationship(CollectionNames.INHERIT_PERMISSIONS.value), "n")}"""
         await self.client.execute_query(
-            f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction
+            f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction,
+            **_bulk_rows("record permission replace", len(edges)),
         )
 
     async def link_record_to_group(
@@ -2816,6 +2832,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     query,
                     parameters={"edges": group_edges},
                     txn_id=transaction,
+                    **_bulk_rows("batch edge create", len(group_edges)),
                 )
                 if report:
                     made = _created_ends(rows)
@@ -2866,6 +2883,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     query,
                     parameters={"edges": group_edges},
                     txn_id=transaction,
+                    **_bulk_rows("edge create if absent", len(group_edges)),
                 )
                 if report:
                     made = _created_ends(rows)
