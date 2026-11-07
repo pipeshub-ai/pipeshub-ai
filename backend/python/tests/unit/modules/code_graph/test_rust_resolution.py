@@ -245,7 +245,7 @@ async def test_a_type_a_use_binds_outside_the_repo_is_never_a_same_named_repo_ty
 class _NoCopy(set):
     """A repo's file set that fails when copied, as `files - {x}` does."""
 
-    def __sub__(self, other):
+    def __sub__(self, other: object) -> set[str]:
         raise AssertionError("copied the repo's file set")
 
     __rsub__ = __and__ = __rand__ = __sub__
