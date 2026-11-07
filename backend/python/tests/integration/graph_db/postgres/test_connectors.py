@@ -87,7 +87,7 @@ async def test_a_deleted_instance_takes_all_of_it_and_nothing_of_another_connect
     assert await w.p.delete_connector_instance("c1", w.org) == {"success": False, "error": "Connector instance c1 not found"}
 
 
-async def test_the_late_write_pass_removes_what_indexing_wrote_after_the_delete_and_nothing_else(w: World) -> None:  # noqa: F811 - the fixture
+async def test_the_late_write_pass_removes_what_indexing_wrote_after_the_delete_and_nothing_else(w: World) -> None:
     """A stage job and a duplicate code file can still write for a connector after its delete committed."""
     await connector(w, "c1")
     await connector(w, "c2", vrid="x")
