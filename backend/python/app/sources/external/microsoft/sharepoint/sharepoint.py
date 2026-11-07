@@ -262,6 +262,8 @@ class SharePointDataSource:
         """
         try:
             all_sites_dict = {}  # For deduplication by webUrl
+            raw_hits = 0  # hits consumed from Graph, before dedupe
+            more_available = None
             page_size = min(top or 10, 50)
 
             # Build KQL query for site search
@@ -306,8 +308,11 @@ class SharePointDataSource:
 
                     if hits_containers:
                         for container in hits_containers:
+                            if getattr(container, 'more_results_available', None) is not None:
+                                more_available = bool(more_available) or bool(container.more_results_available)
                             if hasattr(container, 'hits') and container.hits:
                                 for hit in container.hits:
+                                    raw_hits += 1
                                     if hasattr(hit, 'resource'):
                                         site_dict = self._serialize_site(hit.resource)
                                         web_url = site_dict.get("webUrl")
@@ -323,7 +328,12 @@ class SharePointDataSource:
 
             return SharePointResponse(
                 success=True,
-                data={"sites": all_sites, "count": len(all_sites)},
+                data={
+                    "sites": all_sites,
+                    "count": len(all_sites),
+                    "raw_count": raw_hits,
+                    "more_results_available": more_available,
+                },
                 message=f"Found {len(all_sites)} sites using Graph Search API (security-trimmed to user)",
             )
 
@@ -388,13 +398,18 @@ class SharePointDataSource:
             response = await self.client.search.query.post(request_body)
 
             pages: list[dict[str, Any]] = []
+            raw_hits = 0  # hits consumed from Graph, including ones skipped below
+            more_available = None
             if response and hasattr(response, "value") and response.value:
                 for search_response in response.value:
                     hits_containers = getattr(search_response, "hits_containers", None)
                     if hits_containers:
                         for container in hits_containers:
+                            if getattr(container, "more_results_available", None) is not None:
+                                more_available = bool(more_available) or bool(container.more_results_available)
                             if hasattr(container, "hits") and container.hits:
                                 for hit in container.hits:
+                                    raw_hits += 1
                                     resource = getattr(hit, "resource", None)
                                     if resource:
                                         page_dict = self._serialize_page_from_list_item(resource)
@@ -404,7 +419,12 @@ class SharePointDataSource:
             logger.info(f"✅ Page search returned {len(pages)} results")
             return SharePointResponse(
                 success=True,
-                data={"pages": pages, "count": len(pages)},
+                data={
+                    "pages": pages,
+                    "count": len(pages),
+                    "raw_count": raw_hits,
+                    "more_results_available": more_available,
+                },
                 message=f"Found {len(pages)} pages matching '{query}'",
             )
 
