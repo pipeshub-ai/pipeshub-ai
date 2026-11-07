@@ -24,7 +24,7 @@ _DRAIN_OVERALL_TIMEOUT_S = 60.0
 # conversation finished. With a well-behaved tool this is always 1 or 2.
 _MAX_DRAIN_PASSES = 10
 
-_conversation_tasks: dict[str, list[asyncio.Task]] = {}
+_conversation_tasks: dict[str, list[asyncio.Task[Any]]] = {}
 
 # The tasks registered by the run in flight. Set by `begin_run` inside the
 # run's own asyncio task, so every tool call of that run (and the tasks it
@@ -41,7 +41,7 @@ def begin_run() -> None:
     _run_tasks.set(set())
 
 
-def register_task(conversation_id: str, task: asyncio.Task) -> None:
+def register_task(conversation_id: str, task: asyncio.Task[Any]) -> None:
     """Append an asyncio.Task to the list for *conversation_id*."""
     if conversation_id not in _conversation_tasks:
         _conversation_tasks[conversation_id] = []
@@ -63,7 +63,7 @@ def _rows_to_csv_bytes(columns: list[str], rows: list[tuple]) -> bytes:
     writer.writerows(rows)
     return buf.getvalue().encode("utf-8")
 
-def pop_tasks(conversation_id: str) -> list[asyncio.Task]:
+def pop_tasks(conversation_id: str) -> list[asyncio.Task[Any]]:
     """Remove and return all tasks for *conversation_id*."""
     return _conversation_tasks.pop(conversation_id, [])
 

@@ -33,7 +33,7 @@ import json
 import logging
 import uuid
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from app.agent_loop_lib.core.context import CancellationToken
 from app.agents.actions.knowledge_graph.ops.scope import ATTACHMENT_RECORD_IDS_KEY
@@ -41,6 +41,16 @@ from app.agents.agent_loop.answer_rules import (
     READ_RECORDS_IN_FULL_STATE_KEY,
     answer_composition_rules_enabled,
     thorough_retrieval_enabled,
+)
+from app.agents.agent_loop.answer_selection import (
+    Draft,
+    DraftEventSink,
+    ProgressGate,
+    answer_draft_runs,
+    discard_draft_tasks,
+    fork_chat_state,
+    pool_usage,
+    select_among_drafts,
 )
 from app.agents.agent_loop.answer_streamer import TerminalAnswerStreamer
 from app.agents.agent_loop.cancellation.registry import RunOwner
@@ -107,7 +117,11 @@ from app.web.config import resolve_web_search
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
 
+    from app.agent_loop_lib.agent import Agent
+    from app.agent_loop_lib.core.types import AgentResult, Goal
+    from app.agent_loop_lib.runtime.runtime import AgentRuntime
     from app.agents.agent_loop.cancellation.registry import RunCancellationRegistry
+    from app.agents.chat_modes.prefetch import PrefetchResult
 
 logger = logging.getLogger(__name__)
 
@@ -532,17 +546,283 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
 
     queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=sse_queue_maxsize())
     event_sink = QueueEventSink(queue)
-    # Store event_sink and protocol in chat_state so ArtifactManager tools
-    # (promote_artifact, etc.) can emit live SSE events without needing
-    # direct access to AgentContext — chat_state IS tool_state in AgentContext.
-    chat_state["event_sink"] = event_sink
-    chat_state["sse_protocol"] = protocol
-    context = AgentContext.from_chat_state(
-        chat_state, event_sink=event_sink, protocol=protocol,
-        llm_provider=llm_provider, context_length=context_length,
-        configured_context_window=configured_context_window,
-        run_id=run_id, cancellation_token=cancellation_token,
-    )
+
+    def _new_context(state: dict[str, Any], sink: QueueEventSink | DraftEventSink) -> AgentContext:
+        # Store event_sink and protocol in chat_state so ArtifactManager tools
+        # (promote_artifact, etc.) can emit live SSE events without needing
+        # direct access to AgentContext — chat_state IS tool_state in AgentContext.
+        state["event_sink"] = sink
+        state["sse_protocol"] = protocol
+        return AgentContext.from_chat_state(
+            state, event_sink=sink, protocol=protocol,
+            llm_provider=llm_provider, context_length=context_length,
+            configured_context_window=configured_context_window,
+            run_id=run_id, cancellation_token=cancellation_token,
+        )
+
+    # Forked before the request's own context seeds `chat_state`, so no run starts with another's accumulators.
+    draft_states = [
+        fork_chat_state(chat_state)
+        for _ in range(answer_draft_runs(
+            knowledge_answer=policy.system_prompt_key == "internal_search",
+            resumes_a_call=bool(query_info.get("toolApproval")),
+        ))
+    ]
+    context = _new_context(chat_state, event_sink)
+
+    def _start_prefetch(
+        run_context: AgentContext, run_ref_mapper: CitationRefMapper,
+    ) -> asyncio.Future[PrefetchResult | None] | None:
+        # Shared with `retrieval.py`/`citations.py`'s tool-result image
+        # collection so the 50-image cap is enforced across the whole
+        # turn regardless of whether an image came from prefetch or a
+        # later search/fetch tool call -- see `ImageBudget`.
+        image_budget = run_context.tool_state.setdefault("image_budget", ImageBudget())
+        return (
+            asyncio.ensure_future(
+                prefetch_retrieval(
+                    query=query_info.get("query", ""), org_id=run_context.org_id, user_id=run_context.user_id,
+                    retrieval_service=retrieval_service, graph_provider=graph_provider,
+                    blob_store=blob_store, filters=query_info.get("filters"), limit=query_info.get("limit"),
+                    is_multimodal_llm=is_multimodal_llm,
+                    previous_conversations=query_info.get("previous_conversations"), logger=log,
+                    # Same mapper `web_search`/`fetch_url` (via
+                    # `tool_loader.py`) already closed over inside
+                    # `factory.create()` -- see
+                    # `prefetch_retrieval`'s `ref_mapper` docstring.
+                    ref_mapper=run_ref_mapper,
+                    image_budget=image_budget,
+                    image_admission=admission_from_state(run_context.tool_state),
+                    # Set by `_apply_mode_instructions` before this runs: under the
+                    # full-read policy the fetch tool takes no `query`.
+                    read_in_full=bool(run_context.tool_state.get(READ_RECORDS_IN_FULL_STATE_KEY)),
+                )
+            )
+            if policy.prefetch_retrieval and not timeline_replaces_prefetch(query_info.get("query"))
+            else None
+        )
+
+    async def _create_agent(run_context: AgentContext) -> tuple[Agent, AgentRuntime, Goal, list[Any]]:
+        return await PipesHubAgentFactory().create(
+            run_context, llm, policy.loop_chat_mode,
+            query=query_info.get("query", ""), model_name=model_name or "",
+            model_key=model_key,
+        )
+
+    async def _merge_prefetch(
+        run_context: AgentContext,
+        prefetch_task: asyncio.Future[PrefetchResult | None] | None,
+        goal: Goal,
+        runtime: AgentRuntime,
+    ) -> None:
+        prefetch_result = await prefetch_task if prefetch_task is not None else None
+        if prefetch_result is not None and prefetch_result.filter_notice:
+            goal.constraints.append(filter_notice_constraint(prefetch_result.filter_notice))
+        elif prefetch_result is not None and prefetch_result.failure_notice:
+            goal.constraints.append(
+                search_failure_constraint(prefetch_result.failure_notice, can_search=True)
+            )
+        if prefetch_result is not None and not prefetch_result.is_empty:
+            run_context.tool_state["final_results"] = [
+                *run_context.tool_state.get("final_results", []), *prefetch_result.final_results,
+            ]
+            run_context.tool_state["virtual_record_id_to_result"] = {
+                **run_context.tool_state.get("virtual_record_id_to_result", {}),
+                **prefetch_result.virtual_record_id_to_result,
+            }
+            run_context.tool_state["tool_records"] = [
+                *run_context.tool_state.get("tool_records", []), *prefetch_result.tool_records,
+            ]
+            remember_shown_results(
+                run_context.tool_state,
+                prefetch_result.ranked_results,
+                prefetch_result.virtual_record_id_to_result,
+            )
+            note_retrieved_by(run_context.tool_state, "prefetch", [
+                (vrid, record.get("id"), record.get("record_name"))
+                for vrid, record in prefetch_result.virtual_record_id_to_result.items()
+                if isinstance(record, dict)
+            ])
+            # No `citation_ref_mapper` reassignment here: `prefetch_result.
+            # citation_ref_mapper` IS the mapper `_start_prefetch` passed in,
+            # the same instance `run_context.tool_state["citation_ref_mapper"]`
+            # already holds and web_search/fetch_url already closed over.
+
+            if prefetch_result.collected_images:
+                # Prefetch produces plain text folded into
+                # `goal.constraints`, not a tool result -- so its images
+                # ride the SAME `shape_image_injection` PRE_MODEL hook
+                # that already delivers user-attachment images, rather
+                # than a multipart `ToolMessage`. Extend (not overwrite):
+                # `factory.create()` already ran above and may have
+                # populated this from the user's own attachments.
+                run_context.attachment_image_blocks = [
+                    *run_context.attachment_image_blocks,
+                    *prefetch_result.collected_images,
+                ]
+
+            # Compute coverage and candidate list for the prefetched results.
+            # The retrieval TOOL never runs in prefetch mode, so this is the
+            # only place where we can produce the "you have N of M blocks"
+            # coverage counts the model needs to judge whether a full fetch
+            # would add anything. Without this, the model is handed document
+            # blocks with no basis for knowing how much is missing.
+            from app.modules.agents.record_escalation import (
+                analyze_coverage,
+                build_candidates,
+                render_candidate_table,
+                render_coverage_note,
+            )
+            all_final = run_context.tool_state["final_results"]
+            vr_map = run_context.tool_state["virtual_record_id_to_result"]
+            coverage = analyze_coverage(all_final, vr_map)
+
+            # Build records in prefetch relevance order (final_results order,
+            # de-duped on first appearance), matching retrieval.py's approach.
+            seen_rids: set[str] = set()
+            records_in_order: list[dict] = []
+            for entry in all_final:
+                vrid = entry.get("virtual_record_id")
+                if not vrid:
+                    continue
+                rec = vr_map.get(vrid)
+                if not rec:
+                    continue
+                rid = rec.get("id")
+                if rid and rid not in seen_rids:
+                    seen_rids.add(rid)
+                    records_in_order.append(rec)
+
+            plan = build_candidates(
+                coverage=coverage,
+                records_in_relevance_order=records_in_order,
+                already_fetched_ids=set(),
+            )
+            run_context.tool_state["fetch_coverage"] = coverage
+            run_context.tool_state["fetch_plan"] = plan
+
+            candidate_suffix = ""
+            coverage_note = ""
+            read_in_full = bool(run_context.tool_state.get(READ_RECORDS_IN_FULL_STATE_KEY))
+            if plan.has_candidates:
+                candidate_suffix = render_candidate_table(
+                    plan, needs_whole_document=run_context.needs_whole_document,
+                    read_in_full=read_in_full,
+                )
+                # Leads the constraint: the table lands after the whole
+                # prefetched context, far enough down that the model may
+                # already be answering from the blocks by the time it
+                # reads how little of each record it holds.
+                coverage_note = render_coverage_note(
+                    plan, needs_whole_document=run_context.needs_whole_document,
+                    read_in_full=read_in_full,
+                )
+            log.info(
+                "prefetch: needs_whole_document=%s | candidates=%s",
+                run_context.needs_whole_document,
+                [c.record_id for c in plan.candidates],
+            )
+
+            incomplete_note = (
+                search_incomplete_constraint(prefetch_result.incomplete_notice, can_search=True)
+                if prefetch_result.incomplete_notice else ""
+            )
+            context_with_candidates = (
+                incomplete_note + coverage_note + prefetch_result.formatted_context + candidate_suffix
+            )
+            goal.constraints.append(
+                "Relevant internal knowledge base context retrieved for this query "
+                f"(cite using the Citation IDs shown, e.g. [source](ref1)):\n{context_with_candidates}"
+            )
+            ensure_fetch_full_record_available(
+                run_context, registry=runtime.tool_registry,
+            )
+        # After the merge above, so the frame reports what actually
+        # reached the model. Emitted even when prefetch was skipped or
+        # found nothing, so a consumer can tell those apart.
+        await emit_prefetch_retrieval_context(
+            run_context, scheduled=prefetch_task is not None, result=prefetch_result,
+        )
+
+    async def _stream(
+        run_context: AgentContext, run_agent: Agent, goal: Goal,
+    ) -> tuple[CitationCollector, TerminalAnswerStreamer, AgentResult]:
+        collector = CitationCollector(run_context)
+        streamer = TerminalAnswerStreamer(run_context, collector, run_context.event_sink)
+        async for event in run_agent.stream(goal):
+            await streamer.on_event(event)
+        return collector, streamer, cast("AgentResult", run_agent.last_stream_result)
+
+    async def _finalize(
+        run_context: AgentContext, run_agent: Agent | None, collector: CitationCollector,
+        result: AgentResult, reasoning_turns: list[dict[str, Any]], *, streamed_answer: str, cancelled: bool,
+    ) -> None:
+        await emit_run_usage(run_context, run_agent, result, model=model_name or None)
+        finalizer = AnswerFinalizer(run_context, collector)
+        await finalizer.run(
+            agent_success=result.success, agent_error=result.error,
+            agent_output=result.output, event_sink=run_context.event_sink,
+            streamed_answer=streamed_answer, reasoning_turns=reasoning_turns,
+            agent_cancelled=cancelled,
+        )
+
+    async def _clarify(
+        run_context: AgentContext, run_agent: Agent | None, goal: Goal, clarifying_questions: list[Any],
+    ) -> None:
+        await emit_pre_run_clarification(
+            run_context, goal.description, clarifying_questions, event_sink=run_context.event_sink,
+        )
+        await emit_run_usage(run_context, run_agent, model=model_name or None)
+
+    async def _release(run_context: AgentContext, run_agent: Agent | None) -> None:
+        await _cancel_orphaned_agent_tasks(run_agent)
+        if run_context.sandbox_manager is not None:
+            try:
+                await run_context.sandbox_manager.destroy_all()
+            except Exception:
+                log.warning("run_chat_stream: sandbox cleanup failed", exc_info=True)
+
+    async def _run_draft(draft: Draft) -> None:
+        run_context = draft.context
+        prefetch_task = _start_prefetch(run_context, run_context.tool_state["citation_ref_mapper"])
+        draft.agent, runtime, goal, draft.clarifying_questions = await _create_agent(run_context)
+        draft.goal = goal
+        await _merge_prefetch(run_context, prefetch_task, goal, runtime)
+        if not draft.clarifying_questions:
+            draft.collector, draft.streamer, draft.result = await _stream(run_context, draft.agent, goal)
+
+    async def _answer_from_drafts() -> None:
+        """Answers with the run `select_among_drafts` chooses. The client watches one run's progress and gets the
+        chosen answer whole, once chosen: no run's text streams, since it may not be the one kept."""
+        gate = ProgressGate()
+        drafts: list[Draft] = []
+        for index, state in enumerate(draft_states):
+            sink = DraftEventSink(event_sink, gate, index)
+            drafts.append(Draft(index, _new_context(state, sink), sink))
+        try:
+            choice = await select_among_drafts(
+                drafts, _run_draft, client_sink=event_sink, question=query_info.get("query", ""), llm=llm,
+                cancellation_token=cancellation_token,
+            )
+            chosen = choice.draft
+            if chosen is None:
+                # The error path sends the usage frame from the request's own context.
+                pool_usage(context, drafts)
+                raise next((d.error for d in drafts if d.error is not None), None) or RuntimeError(
+                    "no answer run finished",
+                )
+            if chosen.collector is not None and chosen.streamer is not None and chosen.result is not None:
+                await _finalize(
+                    chosen.context, chosen.agent, chosen.collector, chosen.result, chosen.streamer.reasoning_turns,
+                    streamed_answer="", cancelled=choice.stopped or chosen.result.cancelled,
+                )
+            elif chosen.goal is not None:
+                await _clarify(chosen.context, chosen.agent, chosen.goal, chosen.clarifying_questions)
+        finally:
+            # Before any await, as in `_produce`: a disconnect can cancel the awaits below.
+            discard_draft_tasks(drafts)
+            for draft in drafts:
+                await _release(draft.context, draft.agent)
 
     async def _produce() -> None:
         # Record headers rendered by tools show dates in the user's zone,
@@ -552,196 +832,26 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         begin_run()
         agent: Any = None
         try:
-            factory = PipesHubAgentFactory()
-            # Shared with `retrieval.py`/`citations.py`'s tool-result image
-            # collection so the 50-image cap is enforced across the whole
-            # turn regardless of whether an image came from prefetch or a
-            # later search/fetch tool call -- see `ImageBudget`.
-            image_budget = context.tool_state.setdefault("image_budget", ImageBudget())
-            prefetch_task = (
-                asyncio.ensure_future(
-                    prefetch_retrieval(
-                        query=query_info.get("query", ""), org_id=context.org_id, user_id=context.user_id,
-                        retrieval_service=retrieval_service, graph_provider=graph_provider,
-                        blob_store=blob_store, filters=query_info.get("filters"), limit=query_info.get("limit"),
-                        is_multimodal_llm=is_multimodal_llm,
-                        previous_conversations=query_info.get("previous_conversations"), logger=log,
-                        # Same mapper `web_search`/`fetch_url` (via
-                        # `tool_loader.py`) already closed over inside
-                        # `factory.create()` below -- see
-                        # `prefetch_retrieval`'s `ref_mapper` docstring.
-                        ref_mapper=ref_mapper,
-                        image_budget=image_budget,
-                        image_admission=admission_from_state(context.tool_state),
-                        # Set by `_apply_mode_instructions` before this runs: under the
-                        # full-read policy the fetch tool takes no `query`.
-                        read_in_full=bool(context.tool_state.get(READ_RECORDS_IN_FULL_STATE_KEY)),
-                    )
-                )
-                if policy.prefetch_retrieval and not timeline_replaces_prefetch(query_info.get("query"))
-                else None
-            )
-
-            agent, _runtime, goal, clarifying_questions = await factory.create(
-                context, llm, policy.loop_chat_mode,
-                query=query_info.get("query", ""), model_name=model_name or "",
-                model_key=model_key,
-            )
-
-            prefetch_result = await prefetch_task if prefetch_task is not None else None
-            if prefetch_result is not None and prefetch_result.filter_notice:
-                goal.constraints.append(filter_notice_constraint(prefetch_result.filter_notice))
-            elif prefetch_result is not None and prefetch_result.failure_notice:
-                goal.constraints.append(
-                    search_failure_constraint(prefetch_result.failure_notice, can_search=True)
-                )
-            if prefetch_result is not None and not prefetch_result.is_empty:
-                context.tool_state["final_results"] = [
-                    *context.tool_state.get("final_results", []), *prefetch_result.final_results,
-                ]
-                context.tool_state["virtual_record_id_to_result"] = {
-                    **context.tool_state.get("virtual_record_id_to_result", {}),
-                    **prefetch_result.virtual_record_id_to_result,
-                }
-                context.tool_state["tool_records"] = [
-                    *context.tool_state.get("tool_records", []), *prefetch_result.tool_records,
-                ]
-                remember_shown_results(
-                    context.tool_state,
-                    prefetch_result.ranked_results,
-                    prefetch_result.virtual_record_id_to_result,
-                )
-                note_retrieved_by(context.tool_state, "prefetch", [
-                    (vrid, record.get("id"), record.get("record_name"))
-                    for vrid, record in prefetch_result.virtual_record_id_to_result.items()
-                    if isinstance(record, dict)
-                ])
-                # No `citation_ref_mapper` reassignment here: `prefetch_result.
-                # citation_ref_mapper` IS `ref_mapper` (passed in above), the
-                # same instance `context.tool_state["citation_ref_mapper"]`
-                # already holds and web_search/fetch_url already closed over.
-
-                if prefetch_result.collected_images:
-                    # Prefetch produces plain text folded into
-                    # `goal.constraints`, not a tool result -- so its images
-                    # ride the SAME `shape_image_injection` PRE_MODEL hook
-                    # that already delivers user-attachment images, rather
-                    # than a multipart `ToolMessage`. Extend (not overwrite):
-                    # `factory.create()` already ran above and may have
-                    # populated this from the user's own attachments.
-                    context.attachment_image_blocks = [
-                        *context.attachment_image_blocks,
-                        *prefetch_result.collected_images,
-                    ]
-
-                # Compute coverage and candidate list for the prefetched results.
-                # The retrieval TOOL never runs in prefetch mode, so this is the
-                # only place where we can produce the "you have N of M blocks"
-                # coverage counts the model needs to judge whether a full fetch
-                # would add anything. Without this, the model is handed document
-                # blocks with no basis for knowing how much is missing.
-                from app.modules.agents.record_escalation import (
-                    analyze_coverage,
-                    build_candidates,
-                    render_candidate_table,
-                    render_coverage_note,
-                )
-                all_final = context.tool_state["final_results"]
-                vr_map = context.tool_state["virtual_record_id_to_result"]
-                coverage = analyze_coverage(all_final, vr_map)
-
-                # Build records in prefetch relevance order (final_results order,
-                # de-duped on first appearance), matching retrieval.py's approach.
-                seen_rids: set[str] = set()
-                records_in_order: list[dict] = []
-                for entry in all_final:
-                    vrid = entry.get("virtual_record_id")
-                    if not vrid:
-                        continue
-                    rec = vr_map.get(vrid)
-                    if not rec:
-                        continue
-                    rid = rec.get("id")
-                    if rid and rid not in seen_rids:
-                        seen_rids.add(rid)
-                        records_in_order.append(rec)
-
-                plan = build_candidates(
-                    coverage=coverage,
-                    records_in_relevance_order=records_in_order,
-                    already_fetched_ids=set(),
-                )
-                context.tool_state["fetch_coverage"] = coverage
-                context.tool_state["fetch_plan"] = plan
-
-                candidate_suffix = ""
-                coverage_note = ""
-                read_in_full = bool(context.tool_state.get(READ_RECORDS_IN_FULL_STATE_KEY))
-                if plan.has_candidates:
-                    candidate_suffix = render_candidate_table(
-                        plan, needs_whole_document=context.needs_whole_document,
-                        read_in_full=read_in_full,
-                    )
-                    # Leads the constraint: the table lands after the whole
-                    # prefetched context, far enough down that the model may
-                    # already be answering from the blocks by the time it
-                    # reads how little of each record it holds.
-                    coverage_note = render_coverage_note(
-                        plan, needs_whole_document=context.needs_whole_document,
-                        read_in_full=read_in_full,
-                    )
-                log.info(
-                    "prefetch: needs_whole_document=%s | candidates=%s",
-                    context.needs_whole_document,
-                    [c.record_id for c in plan.candidates],
-                )
-
-                incomplete_note = (
-                    search_incomplete_constraint(prefetch_result.incomplete_notice, can_search=True)
-                    if prefetch_result.incomplete_notice else ""
-                )
-                context_with_candidates = (
-                    incomplete_note + coverage_note + prefetch_result.formatted_context + candidate_suffix
-                )
-                goal.constraints.append(
-                    "Relevant internal knowledge base context retrieved for this query "
-                    f"(cite using the Citation IDs shown, e.g. [source](ref1)):\n{context_with_candidates}"
-                )
-                ensure_fetch_full_record_available(
-                    context, registry=_runtime.tool_registry,
-                )
-            # After the merge above, so the frame reports what actually
-            # reached the model. Emitted even when prefetch was skipped or
-            # found nothing, so a consumer can tell those apart.
-            await emit_prefetch_retrieval_context(
-                context, scheduled=prefetch_task is not None, result=prefetch_result,
-            )
+            if draft_states:
+                await _answer_from_drafts()
+                return
+            prefetch_task = _start_prefetch(context, ref_mapper)
+            agent, _runtime, goal, clarifying_questions = await _create_agent(context)
+            await _merge_prefetch(context, prefetch_task, goal, _runtime)
             if clarifying_questions:
-                await emit_pre_run_clarification(
-                    context, goal.description, clarifying_questions, event_sink=context.event_sink,
-                )
-                await emit_run_usage(context, agent, model=model_name or None)
+                await _clarify(context, agent, goal, clarifying_questions)
             else:
-                collector = CitationCollector(context)
-                streamer = TerminalAnswerStreamer(context, collector, context.event_sink)
-                async for event in agent.stream(goal):
-                    await streamer.on_event(event)
-                result = agent.last_stream_result
-
-                await emit_run_usage(context, agent, result, model=model_name or None)
-
-                finalizer = AnswerFinalizer(context, collector)
-                await finalizer.run(
-                    agent_success=result.success, agent_error=result.error,
-                    agent_output=result.output, event_sink=context.event_sink,
-                    streamed_answer=streamer.streamed_answer, reasoning_turns=streamer.reasoning_turns,
+                collector, streamer, result = await _stream(context, agent, goal)
+                await _finalize(
+                    context, agent, collector, result, streamer.reasoning_turns,
+                    streamed_answer=streamer.streamed_answer,
                     # Stop Generation (Phase 3b) — see the matching call in
                     # `stream_bridge.py::run_agent_loop_stream` for why this
                     # reads `result.cancelled` (an immutable snapshot taken
                     # when the agent loop itself observed cancellation)
                     # rather than live-checking `cancellation_token.
                     # is_cancelled` here.
-                    agent_cancelled=result.cancelled,
+                    cancelled=result.cancelled,
                 )
         except Exception as exc:
             log.error("run_chat_stream: run failed: %s", exc, exc_info=True)
@@ -757,12 +867,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             discard_tasks(query_info.get("conversationId"))
             if cancellation_registry is not None:
                 await cancellation_registry.unregister(run_id)
-            await _cancel_orphaned_agent_tasks(agent)
-            if context.sandbox_manager is not None:
-                try:
-                    await context.sandbox_manager.destroy_all()
-                except Exception:
-                    log.warning("run_chat_stream: sandbox cleanup failed", exc_info=True)
+            await _release(context, agent)
             await event_sink.flush()
             await queue.put(_DONE)
 
