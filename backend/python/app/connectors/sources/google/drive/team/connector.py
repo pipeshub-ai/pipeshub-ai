@@ -596,12 +596,12 @@ class GoogleDriveTeamConnector(BaseConnector):
     def _service_account_client_id(self) -> str | None:
         """The service account's client ID from the saved key, the one an admin authorizes for delegation."""
         auth = ((self.config or {}).get("credentials") or {}).get("auth") or {}
-        client_id = None
         try:
-            client_id = json.loads(auth.get("serviceAccountJson") or "{}").get("client_id")
+            key = json.loads(auth.get("serviceAccountJson") or "{}")
         except (TypeError, ValueError):
-            client_id = auth.get("client_id")
-        return client_id or auth.get("client_id")
+            key = None
+        # A key that parses to a list, a string or null is the unreadable-key case, not a crash.
+        return (key.get("client_id") if isinstance(key, dict) else None) or auth.get("client_id")
 
     def _new_run_report(self) -> DriveRunReport:
         auth = ((self.config or {}).get("credentials") or {}).get("auth") or {}

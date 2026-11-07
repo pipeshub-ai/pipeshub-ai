@@ -15,16 +15,19 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, RecordRelations
+from app.modules.code_graph.family_rules import rules_for
+from app.modules.code_graph.guards import lang_family
 from app.modules.code_graph.module_refs import module_ref
 from app.modules.code_graph.version import PARSER_VERSION
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterator
+    from collections.abc import Awaitable, Callable, Iterable, Iterator
 
     from app.models.blocks import Block, BlockGroup, BlocksContainer
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -178,7 +181,8 @@ def serialize_block_for_graph(
 
 
 def _is_package_init(file_path: str | None) -> bool:
-    return bool(file_path) and (file_path == "__init__.py" or file_path.endswith("/__init__.py"))
+    # Any Rust module can re-export with `pub use` (`time.rs` beside `time/`), not only mod.rs and lib.rs.
+    return bool(file_path) and (file_path.rsplit("/", 1)[-1] == "__init__.py" or file_path.endswith(".rs"))
 
 
 def _resident_facts(facts: list[dict] | None, *, package_init: bool = False) -> list[dict]:
@@ -200,6 +204,12 @@ def _referenced_names(container: BlocksContainer, file_path: str | None = None) 
     for item in (*container.block_groups, *container.blocks):
         meta = item.code_metadata
         for fact in (meta.pending_edges if meta else None) or ():
+            receiver_type = fact.get("receiverType")
+            if isinstance(receiver_type, str) and receiver_type.startswith("=") \
+                    and rules_for(lang_family(meta.language, file_path)).typed_receiver_chains:
+                # `=self.config().colors` is typed through `config` and `colors` wherever they are declared, so a
+                # file changing one re-resolves this one.
+                names.update(re.findall(r"\w+", receiver_type))
             name = fact.get("toName")
             if not isinstance(name, str) or not name:
                 continue
@@ -225,6 +235,16 @@ def _referenced_names(container: BlocksContainer, file_path: str | None = None) 
 # again within the TTL re-selects their referencers; clear them conditionally
 # (on changedNamesAt) after a successful build if that shows up in build sizes.
 _CHANGED_NAMES_TTL_MS = 7 * 24 * 3600 * 1000
+
+
+def _changed_member_types(before: Iterable[dict[str, Any]], after: Iterable[dict[str, Any]]) -> set[str]:
+    """Fields kept under one id whose text changed, where a field's declared type types a receiver chain in another
+    file (`typed_receiver_chains`): Rust's `colors: Colors` becoming `colors: Paint` retypes `a.config.colors.matched()`
+    elsewhere."""
+    was = {row.get("_key") or row.get("id"): row.get("contentHash") for row in before if row.get("kind") == "field"}
+    return {doc["name"] for doc in after if doc.get("name") and doc["id"] in was
+            and was[doc["id"]] != doc.get("contentHash")
+            and rules_for(lang_family(doc.get("language"), None)).typed_receiver_chains}
 
 
 def _merge_changed_names(code_file: dict[str, Any], changed: set[str]) -> dict[str, Any]:
@@ -369,7 +389,7 @@ async def write_code_file_blocks_to_graph(
             lambda: graph_provider.get_nodes_by_filters(
                 collection=CollectionNames.BLOCKS.value,
                 filters={"recordId": context.record_id},
-                return_fields=["_key", "name", "kind"],
+                return_fields=["_key", "name", "kind", "contentHash"],
             ),
             what="load existing blocks", log=log,
         ),
@@ -390,7 +410,7 @@ async def write_code_file_blocks_to_graph(
     changed = {
         name for key, name in (*before.items(), *after.items())
         if name and key[1] != "file_summary" and (key not in before or key not in after)
-    }
+    } | _changed_member_types(existing, docs)
 
     # referencedNames is written to the codeFiles node, not a block. The edge
     # builder queries it alongside filePath, avoiding a block-scan join.
