@@ -394,7 +394,10 @@ class TestLogFailure:
         (record,) = records
         fields = log_record_fields(record)
         assert "error_message" not in fields and fields["error_type"] == "RuntimeError"
-        assert record.levelno == logging.ERROR and record.exc_info is not None
-        assert "secret-arg" not in record.exc_text and "secret-arg" not in TextFormatter().format(record)
+        # No exc_info: a handler or formatter that formats it itself would print the raw message.
+        assert record.levelno == logging.ERROR and record.exc_info is None
+        for line in (TextFormatter().format(record), logging.Formatter().format(record), JsonFormatter().format(record)):
+            assert "secret-arg" not in line and "<message omitted>" in line
+        assert "secret-arg" not in record.exc_text
         assert "RuntimeError: <message omitted>" in record.exc_text and "KeyError: <message omitted>" in record.exc_text
         assert "direct cause" in record.exc_text and "test_error_class.py" in record.exc_text

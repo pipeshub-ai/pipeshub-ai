@@ -193,7 +193,8 @@ def log_failure(
     exception, or one raised ``from`` it, logs at DEBUG unless it asks for a higher level than
     the one already written. ``include_error_text=False`` leaves ``error_message`` out, for errors
     whose text can echo what was sent (tool arguments in an MCP or OpenAPI server's answer); the
-    stack written at ERROR then keeps its frames but shows each exception as ``Type: <message omitted>``. Never raises: it runs inside ``except`` blocks.
+    stack written at ERROR then keeps its frames but shows each exception as ``Type: <message omitted>``, and the record
+    carries that stack as ``exc_text`` only, with no ``exc_info``. Never raises: it runs inside ``except`` blocks.
     """
     try:
         cls = error_class or classify_error(exc)
@@ -213,7 +214,8 @@ def log_failure(
             ),
         })
         filename, lineno, func, _ = logger.findCaller(stacklevel=2)
-        exc_info = (type(exc), exc, exc.__traceback__) if with_stack else None
+        # Without error text, no exc_info: a handler or formatter that reads it would print the raw message.
+        exc_info = (type(exc), exc, exc.__traceback__) if with_stack and include_error_text else None
         record = logger.makeRecord(logger.name, emitted, filename, lineno, event, (), exc_info, func, extra)
         if with_stack:
             record.exc_text = _stack_text(exc, with_messages=include_error_text)  # the formatters print it instead of formatting exc_info unredacted
