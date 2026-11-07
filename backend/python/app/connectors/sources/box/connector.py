@@ -643,7 +643,7 @@ class BoxConnector(BaseConnector):
                 if not isinstance(accessible_by, dict):
                     continue
                 role = collab.get('role', 'viewer')
-                # An uploader can add files but cannot see or download anything.
+                # Box shows an uploader item names, but no preview or download.
                 if role == 'uploader':
                     continue
 
