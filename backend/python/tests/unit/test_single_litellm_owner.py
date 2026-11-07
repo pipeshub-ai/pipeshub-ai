@@ -8,6 +8,10 @@ catch any other distribution that starts writing into litellm/.
 """
 
 import importlib.metadata
+import os
+import re
+import shutil
+import subprocess
 import tomllib
 from collections import defaultdict
 from pathlib import Path
@@ -73,3 +77,38 @@ def test_images_built_over_an_older_base_drop_the_fork(path) -> None:
     text = (REPO_ROOT / path).read_text(encoding="utf-8")
     uninstall = text.index(f"uv pip uninstall --system {FORK}")
     assert uninstall < text.index("--reinstall-package litellm -e .")
+
+
+def _bash_repair() -> str:
+    text = (REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    blocks = re.findall(r"```bash\n(.*?)```", text, flags=re.S)
+    (block,) = [b for b in blocks if f"uninstall -y {FORK}" in b]
+    return block
+
+
+def _run_repair(tmp_path: Path, version_lookup: str) -> list[str]:
+    """Run the documented bash repair with stub python and pip; return the pip calls it made."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "pip-calls"
+    (bin_dir / "python").write_text(f"#!/bin/sh\n{version_lookup}\n")
+    (bin_dir / "pip").write_text(f'#!/bin/sh\necho "$*" >> "{calls}"\n')
+    for stub in bin_dir.iterdir():
+        stub.chmod(0o755)
+    env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    subprocess.run(["bash", "-c", _bash_repair()], env=env, timeout=30, check=False)
+    return calls.read_text().splitlines() if calls.exists() else []
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.parametrize("version_lookup", ["exit 1", "echo ''"], ids=["lookup-fails", "lookup-empty"])
+def test_bash_repair_touches_nothing_without_a_version(tmp_path, version_lookup) -> None:
+    assert _run_repair(tmp_path, version_lookup) == []
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_bash_repair_reinstalls_the_version_it_read(tmp_path) -> None:
+    assert _run_repair(tmp_path, "echo 1.2.3") == [
+        f"uninstall -y {FORK}",
+        "install --force-reinstall --no-deps litellm==1.2.3",
+    ]

@@ -197,8 +197,9 @@ python -m app.docling_main
 `pyproject.toml` tells uv to skip `unclecode-litellm`, a fork that crawl4ai pins and that writes into the same `litellm/` directory as the real `litellm`. Run the install with `uv` from `backend/python`; plain `pip install -e .` ignores that setting. If you used plain pip, or installed with uv before this exclusion and the fork is still there (`uv pip install` does not remove packages it no longer needs), remove the fork and reinstall the litellm version the resolver already chose. Removing the fork deletes files litellm owns too, so read the version first:
 
 ```bash
-v=$(python -c "import importlib.metadata as m; print(m.version('litellm'))")
-pip uninstall -y unclecode-litellm && pip install --force-reinstall --no-deps "litellm==$v"
+v=$(python -c "import importlib.metadata as m; print(m.version('litellm'))") && [ -n "$v" ] \
+  && pip uninstall -y unclecode-litellm \
+  && pip install --force-reinstall --no-deps "litellm==$v"
 ```
 
 On Windows PowerShell:
