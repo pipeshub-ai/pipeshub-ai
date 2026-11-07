@@ -8,6 +8,7 @@ matches nothing gets, with no email or id of P anywhere in it.
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -15,17 +16,26 @@ import pytest
 from app.agents.actions.knowledge_graph.ops import (
     entity_filters,
     entity_records,
+    merged_listings,
     people,
+    record_query,
 )
 from app.agents.actions.knowledge_graph.ops.entity_records import (
     execute_find_records_by_entity,
 )
 from app.agents.actions.knowledge_graph.ops.people import execute_find_records_by_person
+from app.agents.agent_loop.knowledge_graph_policy import (
+    KNOWLEDGE_GRAPH_POLICY_STATE_KEY,
+    KnowledgeGraphMode,
+    KnowledgeGraphPolicy,
+)
 from app.modules.retrieval import entity_permissions
 from app.modules.retrieval.entity_permissions import (
     PERSON_ENTITY_TYPE,
     EntityAccessContext,
 )
+from app.modules.retrieval.record_query import engine as record_query_engine
+from app.services.graph_db.common.record_query_rows import CandidateKey, RecordCandidates
 from app.services.graph_db.common.utils import EntityCandidateRows
 from tests.unit.modules.retrieval.entity_access_fakes import entity_graph
 
@@ -180,3 +190,95 @@ class TestProbe:
         refs = [entity_permissions._person_ref([uid], ["ASSIGNED_TO"]) for uid in ("u-a", "u-b", "u-c")]
         found = await entity_permissions.first_readable_offsets(state["graph_provider"], CONTEXT, refs)
         assert found == {(PERSON_ENTITY_TYPE, "u-a"): 850, (PERSON_ENTITY_TYPE, "u-b"): 3}
+
+
+# ------------------------------------------------- find_records and merged names
+
+def _query_state(users: list[dict], candidates: dict[str, list[dict]], *, readable: tuple[str, ...] = (),
+                 scanned: dict[str, int] | None = None, nodes: list[dict] = ()) -> dict:
+    """``_state`` with record query on. ``scanned[id]`` is how many unreadable
+    candidates a find_records scan meets for a condition naming ``id``; more
+    than the cap reads as a capped scan."""
+    state = _state(users, candidates, readable=readable)
+    graph = state["graph_provider"]
+    unreadable = {f"q-{key}-{i}" for key, n in (scanned or {}).items() for i in range(n)}
+    graph.fake._denied |= unreadable
+
+    async def scan(org: str, *, pushdown: dict, scan_cap: int, **_: object) -> RecordCandidates:
+        named = json.dumps(pushdown, default=str)
+        keys = [CandidateKey(f"q-{key}-{i}", 1_000 - i) for key, n in (scanned or {}).items()
+                if f'"{key}"' in named for i in range(n)]
+        return RecordCandidates(keys[:scan_cap], capped=len(keys) >= scan_cap)
+
+    graph.get_record_query_candidates = AsyncMock(side_effect=scan)
+    graph.get_record_query_rows = AsyncMock(return_value=[])
+    graph.get_person_nodes = AsyncMock(side_effect=lambda org, ids, **_: [n for n in nodes if n["id"] in ids])
+    state[KNOWLEDGE_GRAPH_POLICY_STATE_KEY] = KnowledgeGraphPolicy(
+        mode=KnowledgeGraphMode.FULL, named_entities=True, record_query=True,
+    )
+    return state
+
+
+@pytest.fixture
+def query_wiring(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(record_query, "cite_listed_records", AsyncMock(return_value={}))
+    monkeypatch.setattr(record_query, "start_search", lambda *a, **k: None)
+    monkeypatch.setattr(record_query, "finish_recall", AsyncMock(return_value=None))
+    monkeypatch.setattr(record_query_engine, "SCAN_CAP", 1000)
+
+
+def _same_but_id(text: str, other: str, ours: str, theirs: str) -> None:
+    assert text.replace(ours, "<id>") == other.replace(theirs, "<id>")
+
+
+@pytest.mark.usefixtures("query_wiring")
+class TestFindRecordsPersonByName:
+    """V3: the person-by-name path of find_records resolves names as
+    find_records_by_person does, so a name whose people the user shares no
+    readable record with reads as a name no one has, and nothing is run."""
+
+    async def _nobody(self, where: list[dict]) -> tuple[bool, str]:
+        return await record_query.execute_find_records(_query_state([], {}), where=where)
+
+    @pytest.mark.parametrize("asked", ["Priya Shah", "priya@x.io"])
+    async def test_a_person_with_only_unreadable_records_reads_as_no_one(self, asked: str) -> None:
+        where = [{"person": {"name": asked}}]
+        state = _query_state([PRIYA], {"u-p": _rows("p", 1500)})
+        reply = await record_query.execute_find_records(state, where=where)
+        assert reply == await self._nobody(where)
+        assert "Total:" not in reply[1] and "Conditions as applied" not in reply[1]
+        _no_leak(reply[1], asked)
+        state["graph_provider"].get_record_query_candidates.assert_not_awaited()
+
+    async def test_many_unreadable_namesakes_read_as_no_one(self) -> None:
+        many = [{"id": f"u-{i}", "fullName": "Alex Kim", "email": f"alex{i}@x.io"} for i in range(7)]
+        where = [{"person": {"name": "Alex Kim"}}]
+        state = _query_state(many, {f"u-{i}": _rows(f"a{i}-", 2) for i in range(7)})
+        reply = await record_query.execute_find_records(state, where=where)
+        assert reply == await self._nobody(where)
+        assert "Many people" not in reply[1] and "alex" not in reply[1]
+
+    async def test_only_the_readable_namesake_is_named_and_run(self) -> None:
+        sam = {"id": "u-s", "fullName": "Priya Shah", "email": "pshah@y.io"}
+        state = _query_state([PRIYA, sam], {"u-p": _rows("p", 3), "u-s": _rows("s", 2)}, readable=("s1",))
+        ok, text = await record_query.execute_find_records(state, where=[{"person": {"name": "Priya Shah"}}])
+        assert ok and 'Person "Priya Shah" is Priya Shah (pshah@y.io).' in text
+        _no_leak(text)
+        assert "Others match" not in text and "Several people" not in text
+
+    async def test_readable_namesakes_past_the_old_probe_limit_are_offered_and_only_they(self) -> None:
+        many = [{"id": f"u-{i}", "fullName": "Alex Kim", "email": f"alex{i}@x.io"} for i in range(7)]
+        state = _query_state(many, {f"u-{i}": _rows(f"a{i}-", 2) for i in range(7)}, readable=("a5-1", "a6-0"))
+        ok, text = await record_query.execute_find_records(state, where=[{"person": {"name": "Alex Kim"}}])
+        assert ok and text.splitlines()[0] == 'Several people match "Alex Kim":'
+        assert "alex5@x.io" in text and "alex6@x.io" in text
+        assert not any(f"alex{i}@x.io" in text for i in range(5)) and "Others match" not in text
+
+    async def test_the_merged_person_tool_reads_the_same_as_for_no_one(self) -> None:
+        state = _query_state([PRIYA], {"u-p": _rows("p", 1500)})
+        reply = await merged_listings.find_records_for_person(state, person="Priya Shah", roles=["assignee"])
+        nobody = await merged_listings.find_records_for_person(
+            _query_state([], {}), person="Priya Shah", roles=["assignee"],
+        )
+        assert reply == nobody
+        _no_leak(reply[1])
