@@ -22,6 +22,7 @@ from app.services.graph_db.common.utils import (
 )
 from app.services.graph_db.postgres.base import (
     _VALIDATOR,
+    NotImplementedInPostgres,
     PgBase,
     _arango,
     _doc,
@@ -127,6 +128,17 @@ class HierarchyMixin(PgBase):
         return await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.delete_edges_between_collections */ WITH d AS (DELETE FROM graph.edges e WHERE e.org_id = $1
             AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = $4 AND e.to_coll = $5 AND ($6::int = 0 OR ($6::int = 1 AND e.ekey = '') OR ($6::int = 2 AND (e.coll = 'recordLinks' OR e.ekey <> ''))) RETURNING 1) SELECT count(*) FROM d""",
                                                   org, colls, from_collection, from_id, to_collection, kind), transaction, write=True)
+
+    async def replace_record_entity_relations(self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
+                                              transaction: str | None = None) -> None:
+        """Clears a record that names no one. Writing these edges and scoping by origin wait for entity resolution here,
+        so anything else raises before it deletes, keeping the record's links."""
+        if edges or CollectionNames.ORGS.value in to_collections:
+            raise NotImplementedInPostgres("PostgresGraphProvider.replace_record_entity_relations is not ported yet")
+        for to_collection in to_collections:
+            await self.delete_edges_between_collections(
+                record_id, CollectionNames.RECORDS.value, CollectionNames.ENTITY_RELATIONS.value, to_collection, transaction,
+            )
 
     async def delete_edges_by_relationship_types(self, from_id: str, from_collection: str, collection: str, relationship_types: list[str],
                                                  transaction: str | None = None) -> int:

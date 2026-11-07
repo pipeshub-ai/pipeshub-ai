@@ -212,3 +212,23 @@ async def test_get_user_by_email_reads_only_the_ambient_org(org_id: str | None, 
         assert p._one.await_args.args[1:] == ("o1", "A@x.io")
     else:
         p._one.assert_not_awaited()
+
+
+class TestReplaceRecordEntityRelations:
+    """Until entity resolution is ported: a record naming no one still clears, anything else raises with its links kept."""
+
+    @pytest.mark.asyncio
+    async def test_a_record_naming_no_one_is_cleared(self) -> None:
+        provider = PostgresGraphProvider.__new__(PostgresGraphProvider)
+        provider.delete_edges_between_collections = AsyncMock(return_value=2)
+        await provider.replace_record_entity_relations("r1", ["users", "person"], "INFERRED", [])
+        assert [c.args[3] for c in provider.delete_edges_between_collections.await_args_list] == ["users", "person"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("collections", "edges"), [(["users"], [{"_from": "records/r1"}]), (["organizations"], [])])
+    async def test_anything_else_raises_before_any_delete(self, collections: list[str], edges: list[dict]) -> None:
+        provider = PostgresGraphProvider.__new__(PostgresGraphProvider)
+        provider.delete_edges_between_collections = AsyncMock()
+        with pytest.raises(NotImplementedInPostgres):
+            await provider.replace_record_entity_relations("r1", collections, "INFERRED", edges)
+        provider.delete_edges_between_collections.assert_not_awaited()
