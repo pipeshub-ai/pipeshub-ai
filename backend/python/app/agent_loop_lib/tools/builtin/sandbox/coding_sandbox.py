@@ -557,7 +557,7 @@ class InstallPackagesTool(Tool):
             ToolParameter(
                 name="packages", type=ParameterType.ARRAY, required=True,
                 items={"type": "string"},
-                description="npm or PyPI package names, optionally with a version (e.g. 'lodash@4.17.21', 'numpy==1.26.0').",
+                description="npm or PyPI package names, optionally with an exact version (e.g. 'lodash@4.17.21', 'numpy==1.26.0'); version ranges and tags are refused.",
             ),
             ToolParameter(
                 name="language", type=ParameterType.STRING, required=False, default="typescript",

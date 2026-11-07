@@ -32,13 +32,12 @@ _SANDBOX_ROOT = os.path.join(tempfile.gettempdir(), "pipeshub_sandbox")
 # Substrings that indicate ``pip install`` failed because the host can't reach
 # PyPI (DNS / proxy / firewall issues). Matched against pip's stderr so we can
 # surface an actionable error to the agent instead of ~5 lines of urllib3
-# retry noise.
+# retry noise. "No matching distribution found" alone is not a signal: with
+# --only-binary it also means the release has no wheel.
 _PIP_OFFLINE_SIGNALS: tuple[str, ...] = (
     "getaddrinfo failed",
     "Failed to establish a new connection",
     "Temporary failure in name resolution",
-    "Could not find a version that satisfies",
-    "No matching distribution found",
     "ProxyError",
     "SSLError",
 )
@@ -173,10 +172,11 @@ class LocalExecutor(BaseExecutor):
                 # via ``python -m pip`` to avoid requiring a ``pip`` shim on
                 # PATH (notably absent for some Windows service accounts).
                 os.makedirs(deps_dir, exist_ok=True)
+                # shortcut: no hash pinning (agent picks packages at runtime); upgrade by installing the allowlist from a hashed lock or baking it into the sandbox image
                 pip_result = await self._subprocess(
                     [
                         sys.executable, "-m", "pip", "install",
-                        "--quiet", "--no-cache-dir",
+                        "--quiet", "--no-cache-dir", "--only-binary=:all:",
                         "--disable-pip-version-check",
                         "--retries", "1", "--timeout", "10",
                         "--target", deps_dir,
@@ -246,7 +246,7 @@ class LocalExecutor(BaseExecutor):
             # project's node_modules / package.json is never touched.
             npm_result = await self._subprocess(
                 [
-                    "npm", "install", "--prefix", work_dir, "--no-save",
+                    "npm", "install", "--ignore-scripts", "--prefix", work_dir, "--no-save",
                     "--loglevel=error", *safe_packages,
                 ],
                 work_dir,
