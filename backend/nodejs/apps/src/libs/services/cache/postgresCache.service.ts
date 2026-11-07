@@ -6,6 +6,7 @@ import type { ICacheService } from './cacheService.interface';
 
 const DEFAULT_TTL_SECONDS = 3600; // as RedisService
 const PURGE_EVERY_MS = 60_000;
+const PURGE_RETRY_MS = 5_000;
 
 /**
  * The Node API's cache on PostgreSQL (`platform.cache_entries`), for a deployment with no Redis server (`REDIS_MODE=postgres`).
@@ -36,13 +37,28 @@ export class PostgresCacheService implements ICacheService {
     return ensurePgRuntime().withUow({ preOrg: true, write }, async (tx) => {
       const out = await fn(tx);
       if (write && Date.now() - this.lastPurge > PURGE_EVERY_MS) {
-        this.lastPurge = Date.now();
-        await tx.query(
-          '/* pipeshub:cache.purge */ DELETE FROM platform.cache_entries WHERE key IN (SELECT key FROM platform.cache_entries WHERE expires_at <= now() LIMIT 1000)',
-        );
+        await this.purge(tx);
       }
       return out;
     });
+  }
+
+  /**
+   * Housekeeping after a write: delete a batch of expired rows. In its own savepoint, so a purge that fails (a timeout, a lost
+   * lock) never fails the caller's write; rows another replica is purging are skipped, not waited for. A failed purge is tried
+   * again a few seconds later, not on every write.
+   */
+  private async purge(tx: Tx): Promise<void> {
+    try {
+      await tx.savepoint('cache_purge', () =>
+        tx.query(
+          '/* pipeshub:cache.purge */ DELETE FROM platform.cache_entries WHERE key IN (SELECT key FROM platform.cache_entries WHERE expires_at <= now() LIMIT 1000 FOR UPDATE SKIP LOCKED)',
+        ),
+      );
+      this.lastPurge = Date.now();
+    } catch {
+      this.lastPurge = Date.now() - PURGE_EVERY_MS + PURGE_RETRY_MS;
+    }
   }
 
   private static fail(
