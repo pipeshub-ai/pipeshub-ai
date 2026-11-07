@@ -426,3 +426,48 @@ async def test_a_sub_task_that_became_a_story_is_read_as_one_after_a_reindex(wor
     readers = {issue["key"]: who for issue, who in ISSUES.values()} | {"PROJ-21": PROJECT_READERS}
     assert not await _mismatches(world, readers, by_key)
     assert by_key["PROJ-21"] not in await _listed_under(world, "alice", by_key["PROJ-7"])
+
+
+async def test_a_reporter_outside_the_project_reads_only_their_own_issue_and_the_story_leaves_its_epic(
+    world: dict[str, Any],
+) -> None:
+    """Browse held by the reporter: a direct grant on the top-level issue (and its files), no more.
+
+    The story is then not filed under its epic, so the old parent edge must go; when the project
+    drops the holder it goes back, and the reporter loses it."""
+    await _sync_project(world)
+    context = world["connector"]._issue_security[PROJECT_ID]
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    label = "unleveled story under the unleveled epic"
+    assert by_key["PROJ-10"] in await _listed_under(world, "bob", by_key["PROJ-6"])
+
+    context.browse_holders = [{"type": "reporter"}]
+    story = _edited(label, "2024-06-16T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})
+    await _write(world, [story], again=True)
+    # dave reads PROJ-10 alone: not its sub-task PROJ-12, which follows it and needs the project.
+    assert not await _mismatches(world, {**readers, "PROJ-10": PROJECT_READERS | {"dave"}}, by_key)
+    for name in ("alice", "bob", "carol"):
+        assert by_key["PROJ-10"] not in await _listed_under(world, name, by_key["PROJ-6"])
+
+    context.browse_holders = []
+    await _write(world, [_edited(label, "2024-06-17T10:00:00.000+0000")], again=True)
+    assert not await _mismatches(world, readers, by_key)
+    assert by_key["PROJ-10"] in await _listed_under(world, "bob", by_key["PROJ-6"])
+
+
+async def test_an_unread_scheme_keeps_the_reporter_of_a_stored_issue_and_the_story_where_it_was_filed(
+    world: dict[str, Any],
+) -> None:
+    await _sync_project(world)
+    context = world["connector"]._issue_security[PROJECT_ID]
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    label = "unleveled story under the unleveled epic"
+    context.browse_holders = [{"type": "reporter"}]
+    await _write(world, [_edited(label, "2024-06-16T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})],
+                 again=True)
+
+    context.browse_holders = None  # the scheme could not be read
+    await _write(world, [_edited(label, "2024-06-17T10:00:00.000+0000", reporter={"accountId": PEOPLE["dave"]})])
+    assert not await _mismatches(world, {**readers, "PROJ-10": PROJECT_READERS | {"dave"}}, by_key)
