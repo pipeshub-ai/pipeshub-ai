@@ -144,21 +144,31 @@ class LateWriteSweeper:
             return None
         org_id, connector_id = str(intent["orgId"]), str(intent["connectorId"])
         try:
-            # Raised, not None: a failed read must never pass for a gone app.
-            app = await self.graph.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
-            if app is not None:
-                if app.get("status") == APP_STATUS_DELETING or requested > now - STALE_MS:
-                    return None
-                await self._clear(org_id, connector_id)
-                self.logger.info(
-                    "Late-write sweep dropped; the connector still exists | org=%s connector=%s", org_id, connector_id,
-                )
-                return "dropped"
+            # The loop runs with no ambient org, and a store that scopes every read by org
+            # (PostgreSQL) refuses one made outside it.
             with for_org(org_id, job="late_write_sweep"):
+                # Raised, not None: a failed read must never pass for a gone app.
+                app = await self.graph.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
+                if app is not None:
+                    if app.get("status") == APP_STATUS_DELETING or requested > now - STALE_MS:
+                        return None
+                    await self._clear(org_id, connector_id)
+                    self.logger.info(
+                        "Late-write sweep dropped; the connector still exists | org=%s connector=%s",
+                        org_id, connector_id,
+                    )
+                    return "dropped"
                 removed, left = await self.graph.sweep_deleted_connector_writes(
                     connector_id, [str(g) for g in intent.get("recordGroupIds") or []],
                 )
         except Exception:
+            if now - requested >= GIVE_UP_MS:
+                await self._clear(org_id, connector_id)
+                self.logger.error(
+                    "Late-write sweep given up: its passes for connector %s in org %s have failed for a week "
+                    "after its delete", connector_id, org_id, exc_info=True,
+                )
+                return "given_up"
             self.logger.warning(
                 "Late-write sweep failed; kept for retry | org=%s connector=%s", org_id, connector_id, exc_info=True,
             )

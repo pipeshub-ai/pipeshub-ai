@@ -36,7 +36,7 @@ from app.services.graph_db.taxonomy import TAXONOMY_EDGE_COLLECTIONS
 from app.services.graph_db.vector_membership_queries import can_use_membership_cleanup
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Mapping
+    from collections.abc import Collection, Mapping, Sequence
 
     from app.core.db import Tx
 
@@ -55,6 +55,7 @@ _DEFAULT_DELETE_ROLES = ("OWNER", "WRITER")
 
 _CHUNK = 5000      # records removed per statement, inside the one transaction
 _CONNECTOR_NODE_COLLS = ("syncPoints", "stageStates", "agentKnowledge", "blocks")      # nodes that name their connector and hang off no edge the cascade follows (blocks: the ones no record owns any more)
+_LATE_WRITE_COLLS = ("blocks", "stageStates")      # what indexing already in flight can still write for a connector after its delete
 
 
 async def _remove_nodes(tx: Tx, org: str, coll: str, keys: list[str]) -> int:
@@ -66,6 +67,13 @@ async def _remove_nodes(tx: Tx, org: str, coll: str, keys: list[str]) -> int:
     await _sweep_edges(tx, org, _EDGE_COLLS, [f"{coll}/{k}" for k in keys])
     return await tx.fetchval("/* pipeshub:graph.connector_delete_nodes */ WITH d AS (DELETE FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[]) RETURNING 1) SELECT count(*) FROM d",
                              org, coll, keys)
+
+
+async def _remove_named_batch(tx: Tx, org: str, coll: str, connector_id: str) -> tuple[int, int]:
+    """Up to ``_CHUNK`` nodes of one collection that name the connector, with their edges: (found, removed)."""
+    keys = [r["id"] for r in await tx.fetch("""/* pipeshub:graph.late_write_named */ SELECT id FROM graph.nodes
+        WHERE org_id = $1 AND coll = $2 AND doc->>'connectorId' = $3 ORDER BY id LIMIT $4""", org, coll, connector_id, _CHUNK)]
+    return len(keys), int(await _remove_nodes(tx, org, coll, keys) or 0)
 
 
 async def _lock_labels(tx: Tx, org: str, coll: str, keys: list[str]) -> None:
@@ -520,3 +528,18 @@ class DeleteMixin(PgBase):
             except Exception as e:
                 self.logger.warning("kh scope: could not drop the scopes of deleted connector %s: %s", connector_id, e)
         return result
+
+    async def sweep_deleted_connector_writes(self, connector_id: str, record_group_ids: Sequence[str] = ()) -> tuple[int, int]:
+        """See the interface. A code link is written only when both its ends exist (``codegraph``), so none outlives its block and ``record_group_ids``
+        has nothing to sweep here. Each batch commits on its own: the pass runs after the delete, outside any transaction."""
+        org = current_org_id()
+        removed = 0
+        for coll in _LATE_WRITE_COLLS:
+            while True:
+                found, n = await self._q(lambda tx, coll=coll: _remove_named_batch(tx, org, coll, connector_id), None, write=True)
+                removed += n
+                if found < _CHUNK:
+                    break
+        left = await self._q(lambda tx: tx.fetchval("""/* pipeshub:graph.late_write_left */ SELECT count(*) FROM graph.nodes
+            WHERE org_id = $1 AND coll = ANY($2::text[]) AND doc->>'connectorId' = $3""", org, list(_LATE_WRITE_COLLS), connector_id), None)
+        return removed, int(left or 0)

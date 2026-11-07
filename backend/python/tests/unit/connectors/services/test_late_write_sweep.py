@@ -63,8 +63,10 @@ class Graph:
         self.groups = groups
         self.swept_in: list[str | None] = []
         self.swept_groups: list[list[str]] = []
+        self.read_in: list[str | None] = []
 
     async def get_document(self, key, collection, **_kw) -> object:
+        self.read_in.append(current_org_id())
         if isinstance(self.app, Exception):
             raise self.app
         return self.app
@@ -235,6 +237,24 @@ async def test_a_failed_pass_is_not_a_quiet_one() -> None:
     assert await sweeper(Graph(passes=[(0, 0)]), config, now=due).tick() == {"swept": 1}
     kept = intent(config)
     assert kept is not None and kept["lastFoundAt"] == NOW
+
+
+@pytest.mark.asyncio
+async def test_the_app_is_read_in_the_intents_org() -> None:
+    """The loop runs with no ambient org; a store that scopes every read by org refuses one outside it."""
+    config, graph = await recorded(age_ms=GRACE_MS + 1), Graph(passes=[(0, 0)])
+    assert await sweeper(graph, config).tick() == {"swept": 1}
+    assert graph.read_in == [ORG]
+
+
+@pytest.mark.asyncio
+async def test_passes_that_fail_for_a_week_are_given_up_on() -> None:
+    """A pass that always raises restarts the quiet clock each time, so only the age of the delete can end it."""
+    config = await recorded(age_ms=GIVE_UP_MS, lastFoundAt=NOW - 1)
+    s = sweeper(Graph(passes=[RuntimeError("not implemented on this store")]), config)
+    assert await s.tick() == {"given_up": 1}
+    assert intent(config) is None
+    s.logger.error.assert_called_once()
 
 
 @pytest.mark.asyncio

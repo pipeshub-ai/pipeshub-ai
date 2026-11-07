@@ -87,6 +87,24 @@ async def test_a_deleted_instance_takes_all_of_it_and_nothing_of_another_connect
     assert await w.p.delete_connector_instance("c1", w.org) == {"success": False, "error": "Connector instance c1 not found"}
 
 
+async def test_the_late_write_pass_removes_what_indexing_wrote_after_the_delete_and_nothing_else(w: World) -> None:  # noqa: F811 - the fixture
+    """A stage job and a duplicate code file can still write for a connector after its delete committed."""
+    await connector(w, "c1")
+    await connector(w, "c2", vrid="x")
+    assert (await w.p.delete_connector_instance("c1", w.org))["success"] is True
+    await w.nodes("blocks", {"_key": "c1-late-b", "connectorId": "c1", "recordId": "c1-r1"})
+    await w.nodes("stageStates", {"_key": "v1:2:entities", "connectorId": "c1", "status": "IN_PROGRESS"})
+    await w.nodes("blocks", {"_key": "c2-b2", "connectorId": "c2", "recordId": "c2-r1"})
+    await w.edge("recordLinks", ("blocks", "c2-b2"), ("blocks", "c1-late-b"), relationshipType="CALLS")
+
+    assert await w.p.sweep_deleted_connector_writes("c1", ["c1-rg"]) == (2, 0)
+    nodes, edges = await snapshot(w)
+    assert ("blocks", "c1-late-b") not in nodes and ("stageStates", "v1:2:entities") not in nodes
+    assert ("blocks", "c2-b2") in nodes and ("stageStates", "x1:1:entities") in nodes
+    assert not [e for e in edges if "c1-late-b" in (e[2], e[4])]                 # the block goes with every edge around it
+    assert await w.p.sweep_deleted_connector_writes("c1") == (0, 0)
+
+
 async def test_the_scopes_of_a_deleted_connector_are_dropped_and_those_of_a_failed_delete_are_kept(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     await connector(w, "c1")
     forgotten: list[str] = []
