@@ -44,6 +44,9 @@ class LanguageConfig:
     struct_types: frozenset[str] = frozenset()
     trait_types: frozenset[str] = frozenset()
     module_types: frozenset[str] = frozenset()
+    # Module types that, written without a body (C# `namespace X;`, PHP
+    # `namespace A\B;`), name the namespace of every definition after them.
+    statement_namespace_types: frozenset[str] = frozenset()
     impl_types: frozenset[str] = frozenset()
     type_alias_types: frozenset[str] = frozenset()
     function_types: frozenset[str] = frozenset()
@@ -302,14 +305,19 @@ _CSHARP = LanguageConfig(
     enum_types=frozenset({"enum_declaration"}),
     struct_types=frozenset({"struct_declaration", "record_struct_declaration"}),
     module_types=frozenset({"namespace_declaration", "file_scoped_namespace_declaration"}),
-    function_types=frozenset({"local_function_statement"}),
+    statement_namespace_types=frozenset({"file_scoped_namespace_declaration"}),
+    # A local function is part of its method: its calls are the method's, and nothing outside calls it.
     method_types=frozenset({
         "method_declaration", "constructor_declaration", "destructor_declaration",
-        "property_declaration", "operator_declaration", "indexer_declaration",
+        "operator_declaration", "indexer_declaration",
     }),
-    field_types=frozenset({"field_declaration", "event_field_declaration"}),
+    # A property is read, not called: as a field it never takes the call `new Address()` makes to class Address.
+    field_types=frozenset({"field_declaration", "event_field_declaration", "property_declaration"}),
     attached_types=_ATTACHED_DEFAULT | frozenset({"attribute_list"}),
     import_types=frozenset({"using_directive", "extern_alias_directive"}),
+    import_handler_name="csharp",
+    heritage_handler_name="csharp",
+    type_table_handler_name="csharp",
     name_fallback_child_types=("identifier",),
     body_fallback_child_types=("declaration_list", "enum_member_declaration_list", "block"),
     docstring_style=_LINE_DOC,
@@ -463,7 +471,8 @@ _RUBY = LanguageConfig(
 
 _PHP = LanguageConfig(
     name="php",
-    call_types=frozenset({"function_call_expression", "member_call_expression", "scoped_call_expression"}),
+    call_types=frozenset({"function_call_expression", "member_call_expression", "scoped_call_expression",
+                          "object_creation_expression"}),
     call_name_field="name",
     call_receiver_fields=("object", "scope"),
     ts_module="tree_sitter_php",
@@ -474,11 +483,15 @@ _PHP = LanguageConfig(
     trait_types=frozenset({"trait_declaration"}),
     enum_types=frozenset({"enum_declaration"}),
     module_types=frozenset({"namespace_definition"}),
+    statement_namespace_types=frozenset({"namespace_definition"}),
     function_types=frozenset({"function_definition"}),
     method_types=frozenset({"method_declaration"}),
     field_types=frozenset({"property_declaration", "const_declaration"}),
     attached_types=_ATTACHED_DEFAULT | frozenset({"attribute_list"}),
     import_types=frozenset({"namespace_use_declaration"}),
+    import_handler_name="php",
+    heritage_handler_name="php",
+    type_table_handler_name="php",
     name_fallback_child_types=("name",),
     body_fallback_child_types=(
         "declaration_list", "enum_declaration_list", "compound_statement",

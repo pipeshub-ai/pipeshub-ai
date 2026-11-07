@@ -19,4 +19,10 @@ __all__ = ["RESOLVERS", "Resolver"]
 
 Resolver = Callable[[str, str, set[str], "SymbolIndex | None"], "str | None"]
 
-RESOLVERS: dict[str, Resolver] = {}
+def _registry() -> dict[str, Resolver]:
+    from app.modules.code_graph.resolvers import php
+
+    return {"php": php.resolve}
+
+
+RESOLVERS: dict[str, Resolver] = _registry()

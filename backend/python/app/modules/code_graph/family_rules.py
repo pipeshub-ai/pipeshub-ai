@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from app.modules.code_graph.resolvers import csharp, php
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
@@ -44,6 +46,17 @@ class FamilyRules:
     # Files whose definitions a bare name sees without an import (one C# or PHP
     # namespace across files).
     implicit_scope: Callable[[SymbolIndex, str], Iterable[str]] | None = None
+    # implicit_scope's files in the language's lookup order, nearest first (C#: innermost namespace's
+    # members, its usings, outward, then the compilation unit): among several candidates, the nearest win.
+    scope_levels: Callable[[SymbolIndex, str], list[set[str]]] | None = None
+    # (file, method name) -> methods callable on any receiver that file sees (C# extension methods),
+    # tried when the receiver's own type has no such method.
+    extension_methods: Callable[[SymbolIndex, str, str], list[str]] | None = None
+    # A type's other declarations, whose members and bases are its own (a C# `partial` class across files).
+    type_parts: Callable[[SymbolIndex, str], list[str]] | None = None
+    # A type reference's type-argument count picks among same-named types (C# `IHandler<T>` and `IHandler`
+    # are two types; the parser strips arity from both names).
+    disambiguate_repeats_by_arity: bool = False
 
 
 _DEFAULT = FamilyRules()
@@ -51,7 +64,16 @@ _RULES: dict[str, FamilyRules] = {
     "js": FamilyRules(lexical_module_scope=True),
     "go": FamilyRules(bare_call_reaches_method="never", bare_names_from_imported_modules=False),
     "jvm": FamilyRules(bare_call_reaches_method="same_class"),
-    "csharp": FamilyRules(bare_call_reaches_method="same_class"),
+    "csharp": FamilyRules(bare_call_reaches_method="same_class",
+                          super_receivers=frozenset({"super()", "super", "base"}),
+                          implicit_scope=csharp.namespace_scope, scope_levels=csharp.scope_levels,
+                          extension_methods=csharp.extension_methods,
+                          type_parts=csharp.partial_parts, disambiguate_repeats_by_arity=True),
+    # PHP: a bare `view()` is a function, never a method (Go's rule), and stays name-guessed as today.
+    "php": FamilyRules(bare_call_reaches_method="never",
+                       self_receivers=frozenset({"self", "this", "$this", "static"}),
+                       super_receivers=frozenset({"super()", "super", "parent"}),
+                       implicit_scope=php.namespace_scope),
 }
 
 
