@@ -1005,7 +1005,7 @@ describe('ConfigurationManager Controller', () => {
 
       const flags = res.json.firstCall.args[0].featureFlags
       expect(flags.KNOWLEDGE_GRAPH_TOOLS).to.equal(true)
-      expect(flags.KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES).to.equal(false)
+      expect(flags.KNOWLEDGE_GRAPH_PEOPLE_AND_COMPANIES).to.equal(true)
       expect(flags.KNOWLEDGE_GRAPH_RECORD_QUERY).to.equal(false)
     })
 

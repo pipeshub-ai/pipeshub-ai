@@ -2,10 +2,9 @@
 #
 # New people, organisations, groups and containers only. Everyone and everything in
 # acme-corp.yaml stays as it is; the loader merges these lists into it and rejects
-# a duplicate id. The story bible (kg-eval/BIBLE.md) says who does what in which story.
+# a duplicate id.
 #
-# Existing members have no `team` field (acme-corp.yaml is frozen); their teams are
-# in the bible. Group membership comes only from `people[].groups`, so existing people
+# Existing members have no `team` field (acme-corp.yaml is frozen). Group membership comes only from `people[].groups`, so existing people
 # are not members of the groups added here. That matters only for sign-in personas,
 # all of which are new people with their memberships set below.
 

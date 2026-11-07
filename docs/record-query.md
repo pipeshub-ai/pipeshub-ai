@@ -65,8 +65,7 @@ round. So every person path matches a role's edge type in either direction,
 with the far end required to be a person node (`users` or `person`), which
 keeps a record group's `MENTIONED_IN` out: record query, and the person
 listings (`person_query_ref`, one `edgeTypes` list for both directions of
-both providers' person branch), so the two never disagree on one edge. The eval harness (`kg_eval/facets.py`) files each connector slot under
-the role of the edge it writes, checked by a unit test.
+both providers' person branch), so the two never disagree on one edge.
 
 **A person is an email.** A human can be several graph nodes: one `users`
 node per account and, for someone outside the org, a `person` node that
@@ -441,8 +440,9 @@ regress other questions.
 1. Permission: a record the user cannot read never appears in rows, totals,
    groups, sums or links, on either backend (integration tests).
 2. Contract: both backends equal the reference on every query in the suite.
-3. Eval: the record-query arm is compared with the current arms on the hard
-   set and the 170-question set; no question regresses beyond run noise.
+3. Eval: the record-query arm is compared with the current arms on the
+   knowledge-graph question sets (kept outside this repository); no question
+   regresses beyond run noise.
 4. Cost: tokens, tool calls and latency per answer reported per arm, and
    the essential tool set's definition size, which must not grow.
 5. Safety: every query has a timeout and a scan cap; hitting either marks
