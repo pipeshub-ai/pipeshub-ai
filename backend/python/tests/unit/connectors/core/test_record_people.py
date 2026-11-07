@@ -11,6 +11,7 @@ import pytest
 from app.config.constants.arangodb import Connectors, EntityRelations, OriginTypes
 from app.connectors.core.base.data_processor import record_people
 from app.connectors.core.base.data_processor.record_people import (
+    _NEW_EDGE_TYPES,
     link_record_people,
     person_links,
 )
@@ -263,8 +264,22 @@ class TestReviewFixes:
             )
             await link_record_people(_mail(from_email="ann@acme.com", to_emails=["bob@acme.com"]), store, logging.getLogger("t"))
         assert "rec-1" in caplog.text
-        # The rejected types fall back to a replace of the rest, so the old edges still go.
-        assert store.replace_record_entity_relations.await_count == 3
+        # The mail names only new types, so nothing is left to fall back to and its old links stay:
+        # one write each, and no empty replace, which would clear them.
+        assert store.replace_record_entity_relations.await_count == 2
+        assert all(c.args[3] for c in store.replace_record_entity_relations.await_args_list)
+
+    async def test_a_rejected_new_edge_type_falls_back_to_the_established_ones(self) -> None:
+        store = _store()
+        store.replace_record_entity_relations = AsyncMock(side_effect=[RuntimeError("schema"), None])
+        written = await link_record_people(
+            TicketRecord(record_type=RecordType.TICKET, assignee_email="ann@acme.com",
+                         authored_by=SourcePerson(email="bob@acme.com"), **BASE),
+            store, logging.getLogger("t"),
+        )
+        retried = store.replace_record_entity_relations.await_args_list[1].args[3]
+        assert retried and all(e["edgeType"] not in _NEW_EDGE_TYPES for e in retried)
+        assert written == len(retried)
 
     async def test_long_standing_edge_types_still_raise(self) -> None:
         import pytest

@@ -400,6 +400,9 @@ async def link_record_people(
         logger.warning(
             "Record %s: %d person edges not written: %s", record.id, len(edges) - len(established), type(exc).__name__,
         )
+        # An empty replace would clear the links this failure is meant to keep.
+        if not established:
+            return 0
         await store.replace_record_entity_relations(record.id, collections, origin, established)
         return len(established)
     return len(edges)
