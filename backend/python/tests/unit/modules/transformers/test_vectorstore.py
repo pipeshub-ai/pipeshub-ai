@@ -807,7 +807,7 @@ class TestCreateEmbeddingsChunkTypes:
         vs = _make_vectorstore()
         vs.delete_embeddings = AsyncMock()
         vs._process_document_chunks = AsyncMock()
-        vs._process_image_embeddings = AsyncMock(return_value=[])
+        vs._process_image_embeddings = AsyncMock(return_value=([], []))
         vs._store_image_points = AsyncMock()
 
         doc = Document(page_content="text", metadata={})
@@ -1595,13 +1595,14 @@ class TestProcessImageEmbeddings:
             "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create",
             return_value=mock_provider,
         ):
-            result = await vs._process_image_embeddings(
+            points, described = await vs._process_image_embeddings(
                 [{"metadata": {}, "description": ""}], ["data:image/png;base64,abc"], "rec-1"
             )
 
         mock_provider.embed_images.assert_awaited_once_with(["data:image/png;base64,abc"])
-        assert len(result) == 1
-        assert result[0].dense_vector == [0.1, 0.2]
+        assert len(points) == 1
+        assert points[0].dense_vector == [0.1, 0.2]
+        assert described == []
 
     @pytest.mark.asyncio
     async def test_record_deleted_mid_flight_skips_embedding(self):
@@ -1617,8 +1618,187 @@ class TestProcessImageEmbeddings:
                 [{"metadata": {}}], ["data:image/png;base64,abc"], "rec-1"
             )
 
-        assert result == []
+        assert result == ([], [])
         mock_create.assert_not_called()
+
+    @staticmethod
+    def _provider_returning(*results) -> MagicMock:
+        provider = MagicMock()
+        provider.supports_multimodal.return_value = True
+        provider.embed_images = AsyncMock(return_value=list(results))
+        return provider
+
+    @staticmethod
+    async def _embed_two_images(vs, provider) -> tuple:
+        vs.embedding_provider = "jinaAI"
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
+        chunks = [
+            {"metadata": {"blockId": "b0"}, "description": "first image"},
+            {"metadata": {"blockId": "b1"}, "description": "second image"},
+        ]
+        with patch(
+            "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create",
+            return_value=provider,
+        ):
+            return await vs._process_image_embeddings(chunks, ["a", "b"], "rec-1")
+
+    @pytest.mark.asyncio
+    async def test_a_provider_failure_raises_a_retriable_error_for_the_whole_record(self) -> None:
+        """One image failing must not end the record COMPLETED without it, even beside a good one."""
+        from app.exceptions.indexing_exceptions import EmbeddingError
+        from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
+        from app.services.messaging.error_classifier import MessageErrorClassifier
+
+        provider = self._provider_returning(
+            ImageEmbeddingResult(index=0, embedding=[0.1, 0.2]),
+            ImageEmbeddingResult(index=1, error="429 Too Many Requests"),
+        )
+
+        with pytest.raises(EmbeddingError, match="1 of 2 images.*429 Too Many Requests") as raised:
+            await self._embed_two_images(_make_vectorstore(), provider)
+
+        assert MessageErrorClassifier.classify_by_exception(raised.value) == "transient"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", ["invalid image data", "image size must be at most 20MB"])
+    async def test_an_unusable_image_falls_back_to_its_description(self, error) -> None:
+        """A retry cannot fix the image itself, so its description is what the index gets."""
+        from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
+
+        provider = self._provider_returning(
+            ImageEmbeddingResult(index=0, embedding=[0.1, 0.2]),
+            ImageEmbeddingResult(index=1, error=error),
+        )
+
+        points, documents = await self._embed_two_images(_make_vectorstore(), provider)
+
+        assert [p.dense_vector for p in points] == [[0.1, 0.2]]
+        assert [d.page_content for d in documents] == ["second image"]
+        assert documents[0].metadata["blockId"] == "b1"
+
+    @pytest.mark.asyncio
+    async def test_an_unusable_image_without_a_description_is_skipped(self) -> None:
+        from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
+
+        vs = _make_vectorstore()
+        vs.embedding_provider = "jinaAI"
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
+        provider = self._provider_returning(ImageEmbeddingResult(index=0, error="invalid image data"))
+
+        with patch(
+            "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create",
+            return_value=provider,
+        ):
+            assert await vs._process_image_embeddings([{"metadata": {}, "description": ""}], ["a"], "rec-1") == ([], [])
+
+    @pytest.mark.asyncio
+    async def test_an_unsupported_provider_falls_back_to_the_description(self) -> None:
+        provider = MagicMock()
+        provider.supports_multimodal.return_value = False
+
+        points, documents = await self._embed_two_images(_make_vectorstore(), provider)
+
+        assert points == []
+        assert [d.page_content for d in documents] == ["first image", "second image"]
+
+    @pytest.mark.asyncio
+    async def test_descriptions_are_embedded_in_batches_not_under_one_timeout(self) -> None:
+        """A long document's images must not all go in one provider call."""
+        from app.modules.transformers.vectorstore import _DEFAULT_DOCUMENT_BATCH_SIZE
+
+        vs = _make_vectorstore()
+        vs.embedding_provider = "together"
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
+        vs.dense_embeddings = MagicMock()
+        vs.dense_embeddings.aembed_documents = AsyncMock(side_effect=lambda t: [[0.1, 0.2] for _ in t])
+        vs._compute_sparse_embeddings = AsyncMock(side_effect=lambda t: [None] * len(t))
+        vs.delete_embeddings = AsyncMock()
+        count = _DEFAULT_DOCUMENT_BATCH_SIZE * 2 + 1
+        chunks = [
+            {"metadata": {"blockId": f"b{i}"}, "description": f"image {i}", "image_uri": "a"}
+            for i in range(count)
+        ]
+
+        with patch(
+            "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create",
+            return_value=None,
+        ):
+            await vs._create_embeddings(chunks, "rec-1", "vr-1", "col", org_id="org-1")
+
+        sizes = [len(c.args[0]) for c in vs.dense_embeddings.aembed_documents.await_args_list]
+        assert sum(sizes) == count
+        assert max(sizes) <= _DEFAULT_DOCUMENT_BATCH_SIZE
+
+    @pytest.mark.asyncio
+    async def test_a_failed_image_embedding_deletes_nothing_on_a_full_replace(self) -> None:
+        from langchain_core.documents import Document
+
+        from app.exceptions.indexing_exceptions import EmbeddingError
+
+        vs = _make_vectorstore()
+        vs.delete_embeddings = AsyncMock()
+        vs._process_document_chunks = AsyncMock()
+        vs._process_image_embeddings = AsyncMock(side_effect=EmbeddingError("429"))
+
+        with pytest.raises(EmbeddingError):
+            await vs._create_embeddings(
+                [Document(page_content="text", metadata={}), {"metadata": {}, "image_uri": "a"}],
+                "rec-1", "vr-1", "col", org_id="org-1",
+            )
+
+        vs.delete_embeddings.assert_not_awaited()
+        vs._process_document_chunks.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_image_embedding_deletes_nothing_on_reconciliation(self) -> None:
+        from app.exceptions.indexing_exceptions import EmbeddingError
+        from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
+
+        vs = _make_vectorstore()
+        vs.get_embedding_model_instance = AsyncMock(return_value=True)
+        vs._ensure_collection = AsyncMock(return_value="col")
+        vs._bind_membership = AsyncMock(return_value=None)
+        vs.delete_blocks_by_ids = AsyncMock()
+        vs._process_document_chunks = AsyncMock()
+        vs._process_image_embeddings = AsyncMock(side_effect=EmbeddingError("429"))
+        container = BlocksContainer(
+            blocks=[Block(id="img", index=0, type=BlockType.IMAGE, format=DataFormat.BASE64, data={"uri": "a"})],
+            block_groups=[],
+        )
+
+        with (
+            patch("app.modules.transformers.vectorstore.reset_membership_context"),
+            pytest.raises(EmbeddingError),
+        ):
+            await vs.index_documents(
+                container, "org-1", "rec-1", "vr-1", block_ids_to_delete={"gone"}, is_reconciliation=True,
+            )
+
+        # Only the record's summary point is refreshed first; no block's vectors go.
+        deleted = {block for call in vs.delete_blocks_by_ids.await_args_list for block in call.args[0]}
+        assert not deleted & {"img", "gone"}
+        vs._process_document_chunks.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_descriptions_are_stored_after_the_delete(self) -> None:
+        """Stored before it, the full replace's delete would remove them."""
+        vs = _make_vectorstore()
+        vs.embedding_provider = "together"
+        vs.graph_provider.get_document = AsyncMock(return_value={"id": "rec-1"})
+        calls = MagicMock()
+        vs.delete_embeddings = AsyncMock(side_effect=lambda *_a, **_k: calls.delete())
+        vs._process_document_chunks = AsyncMock(side_effect=lambda *_a, **_k: calls.store())
+
+        with patch(
+            "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create",
+            return_value=None,
+        ):
+            await vs._create_embeddings(
+                [{"metadata": {}, "description": "a diagram", "image_uri": "a"}],
+                "rec-1", "vr-1", "col", org_id="org-1",
+            )
+
+        assert [c[0] for c in calls.mock_calls] == ["delete", "store"]
 
     @pytest.mark.asyncio
     async def test_unsupported_provider_returns_empty(self):
@@ -1631,7 +1811,7 @@ class TestProcessImageEmbeddings:
             [{"metadata": {}}], ["data:image/png;base64,abc"], "rec-1"
         )
 
-        assert result == []
+        assert result == ([], [])
 
     @pytest.mark.asyncio
     async def test_provider_that_does_not_support_multimodal_returns_empty(self):
@@ -1655,7 +1835,7 @@ class TestProcessImageEmbeddings:
             )
 
         mock_provider.embed_images.assert_not_awaited()
-        assert result == []
+        assert result == ([], [])
 
     @pytest.mark.asyncio
     async def test_empty_image_list_short_circuits_before_factory(self):
@@ -1669,7 +1849,7 @@ class TestProcessImageEmbeddings:
             result = await vs._process_image_embeddings([], [], "rec-1")
 
         mock_create.assert_not_called()
-        assert result == []
+        assert result == ([], [])
 
 
 # ===================================================================
@@ -1808,7 +1988,7 @@ class TestCreateEmbeddings:
         vs = _make_vectorstore()
         vs.delete_embeddings = AsyncMock()
         vs._process_document_chunks = AsyncMock()
-        vs._process_image_embeddings = AsyncMock(return_value=[])
+        vs._process_image_embeddings = AsyncMock(return_value=([], []))
         vs._store_image_points = AsyncMock()
 
         doc = Document(page_content="text", metadata={})
@@ -2189,10 +2369,10 @@ class TestBuildImagePoints:
 
         assert len(points) == 1
 
-    def test_dimension_mismatch_among_multiple_results_only_drops_bad_one(self):
-        """A result whose dimension doesn't match the collection's expected
-        embedding size must be dropped (and logged), not upserted with a
-        mismatched vector — while matching results are still kept."""
+    def test_dimension_mismatch_raises_instead_of_dropping_the_image(self) -> None:
+        """A mismatched vector must not be upserted, and dropping it would end
+        the record COMPLETED without the image."""
+        from app.exceptions.indexing_exceptions import EmbeddingError
         from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 
         vs = _make_vectorstore()
@@ -2206,11 +2386,8 @@ class TestBuildImagePoints:
             ImageEmbeddingResult(index=1, embedding=[0.1, 0.2]),
         ]
 
-        points = vs._build_image_points(image_chunks, results)
-
-        assert len(points) == 1
-        assert points[0].payload["metadata"] == {"i": 0}
-        vs.logger.error.assert_called()
+        with pytest.raises(EmbeddingError, match="got 2, expected 3"):
+            vs._build_image_points(image_chunks, results)
 
 
 # ===================================================================

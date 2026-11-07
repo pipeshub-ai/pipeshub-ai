@@ -380,7 +380,7 @@ class TestCreateEmbeddings:
         vs = _make_vectorstore()
         vs.delete_embeddings = AsyncMock()
         vs._process_document_chunks = AsyncMock()
-        vs._process_image_embeddings = AsyncMock(return_value=[])
+        vs._process_image_embeddings = AsyncMock(return_value=([], []))
         vs._store_image_points = AsyncMock()
 
         chunks = [
@@ -402,7 +402,7 @@ class TestCreateEmbeddings:
         vs = _make_vectorstore()
         vs.delete_embeddings = AsyncMock()
         vs._process_document_chunks = AsyncMock()
-        vs._process_image_embeddings = AsyncMock(return_value=[MagicMock()])
+        vs._process_image_embeddings = AsyncMock(return_value=([MagicMock()], []))
         vs._store_image_points = AsyncMock()
 
         # Image chunks are dicts, not Documents
@@ -621,7 +621,7 @@ class TestCreateEmbeddingsDeeper:
         vs = _make_vectorstore()
         vs.delete_embeddings = AsyncMock()
         vs._process_document_chunks = AsyncMock()
-        vs._process_image_embeddings = AsyncMock(return_value=[MagicMock()])
+        vs._process_image_embeddings = AsyncMock(return_value=([MagicMock()], []))
         vs._store_image_points = AsyncMock()
 
         chunks = [
@@ -644,7 +644,7 @@ class TestCreateEmbeddingsDeeper:
         vs = _make_vectorstore()
         vs.delete_embeddings = AsyncMock()
         vs._process_document_chunks = AsyncMock()
-        vs._process_image_embeddings = AsyncMock(return_value=[MagicMock()])
+        vs._process_image_embeddings = AsyncMock(return_value=([MagicMock()], []))
         vs._store_image_points = AsyncMock()
 
         chunks = [
@@ -662,7 +662,7 @@ class TestCreateEmbeddingsDeeper:
         vs = _make_vectorstore()
         vs.delete_embeddings = AsyncMock()
         vs._process_document_chunks = AsyncMock()
-        vs._process_image_embeddings = AsyncMock(return_value=[])
+        vs._process_image_embeddings = AsyncMock(return_value=([], []))
         vs._store_image_points = AsyncMock()
 
         chunks = [

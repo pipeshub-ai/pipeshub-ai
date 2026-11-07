@@ -33,6 +33,7 @@ from tests.integration.vector_db.helpers import DIM
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
+from app.exceptions.indexing_exceptions import EmbeddingError  # noqa: E402
 from app.models.blocks import BlockType  # noqa: E402
 from app.services.embeddings.multimodal.interface import (  # noqa: E402
     IMultimodalEmbeddingProvider,
@@ -131,7 +132,7 @@ async def _index_and_upsert_images(vs, vector_db_service, collection: str, chunk
         "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create",
         return_value=FakeMultimodalProvider(dim=DIM),
     ):
-        points = await vs._process_image_embeddings(chunks, uris, record_id="rec-1")
+        points, _described = await vs._process_image_embeddings(chunks, uris, record_id="rec-1")
     await vector_db_service.upsert_points(collection, points)
     return points
 
@@ -174,7 +175,7 @@ class TestQdrantMultimodalIndexing:
         finally:
             await qdrant_service.delete_collection(col)
 
-    async def test_dimension_mismatch_dropped_before_upsert(self, qdrant_service):  # noqa: F811  (fixture imported above)
+    async def test_dimension_mismatch_raises_before_upsert(self, qdrant_service):  # noqa: F811  (fixture imported above)
         """An image embedding whose dimension doesn't match the collection
         must never reach upsert_points — it would corrupt cosine similarity
         for the whole collection or be rejected outright by the DB."""
@@ -197,13 +198,8 @@ class TestQdrantMultimodalIndexing:
                 "app.modules.transformers.vectorstore.MultimodalEmbeddingFactory.create",
                 return_value=FakeMultimodalProvider(dim=DIM, bad_dim_indices=frozenset({1})),
             ):
-                points = await vs._process_image_embeddings(chunks, uris, record_id="rec-1")
-
-            assert len(points) == 1
-            assert points[0].payload["page_content"] == "Good embedding"
-            vs.logger.error.assert_called()
-
-            await qdrant_service.upsert_points(col, points)
+                with pytest.raises(EmbeddingError, match="dimension mismatch"):
+                    await vs._process_image_embeddings(chunks, uris, record_id="rec-1")
         finally:
             await qdrant_service.delete_collection(col)
 

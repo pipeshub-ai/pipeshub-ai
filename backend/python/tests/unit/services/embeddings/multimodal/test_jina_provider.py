@@ -204,6 +204,8 @@ class TestJinaModelCapability:
         from app.services.embeddings.multimodal.jina_provider import supports_image_input
 
         assert supports_image_input(model_name) is expected
+        # What sends a text-only model's images to their descriptions, with no doomed request.
+        assert JinaMultimodalProvider(api_key="k", model_name=model_name).supports_multimodal() is expected
 
     def test_text_only_model_warns_at_construction(self) -> None:
         logger = MagicMock()

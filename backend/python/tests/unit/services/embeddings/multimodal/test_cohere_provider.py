@@ -29,8 +29,13 @@ class TestCohereImageInputTypeHelper:
         [
             ("embed-v4.0", True),
             ("embed-4-preview", True),
+            ("embed-v5.0-pro", True),
+            ("embed-v5.0-fast", True),
+            ("embed-v6.0", True),
             ("embed-english-v3.0", False),
+            ("embed-english-light-v3.0", False),
             ("embed-multilingual-v3.0", False),
+            ("embed-english-v2.0", False),
             (None, False),
         ],
     )
@@ -136,6 +141,7 @@ class TestCohereMultimodalProvider:
         provider = CohereMultimodalProvider(api_key="k", model_name="embed-v3")
         assert provider.provider_name == "cohere"
 
-    def test_supports_multimodal_defaults_true(self) -> None:
-        provider = CohereMultimodalProvider(api_key="k", model_name="embed-v3")
-        assert provider.supports_multimodal() is True
+    def test_supports_multimodal_follows_the_model_generation(self) -> None:
+        """An older model's images go to their descriptions, with no doomed request."""
+        assert CohereMultimodalProvider(api_key="k", model_name="embed-v4.0").supports_multimodal() is True
+        assert CohereMultimodalProvider(api_key="k", model_name="embed-english-v3.0").supports_multimodal() is False
