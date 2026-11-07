@@ -555,16 +555,21 @@ class SharePoint:
                 data = response.data or {}
                 sites = data.get("sites") or data.get("value") or []
                 page_size = min(top or 10, 50)
+                more_available = data.get("more_results_available")
+                # Graph may return fewer rows than requested (dedupe/skipped hits), so
+                # trust its flag and advance by hits consumed, not rows kept.
+                has_more = bool(more_available) if more_available is not None else len(sites) == page_size
+                next_skip = (skip or 0) + int(data.get("raw_count") or len(sites))
                 return True, json.dumps({
                     "sites": sites,
                     "results": sites,
                     "value": sites,
                     "count": len(sites),
-                    "has_more": len(sites) == page_size,
-                    "next_skip": (skip or 0) + len(sites),
+                    "has_more": has_more,
+                    "next_skip": next_skip,
                     "pagination_hint": (
-                        f"To get the next page, use skip={((skip or 0) + len(sites))} with top={page_size}"
-                        if len(sites) == page_size else "All available results returned"
+                        f"To get the next page, use skip={next_skip} with top={page_size}"
+                        if has_more else "All available results returned"
                     ),
                     "usage_hint": (
                         "Each site includes 'id' field (site_id) which can be used with get_pages(site_id=...) "
@@ -755,17 +760,22 @@ class SharePoint:
                 data = response.data or {}
                 pages = data.get("pages") or []
                 page_size = min(top or 10, 50)
+                more_available = data.get("more_results_available")
+                # Graph may return fewer rows than requested (dedupe/skipped hits), so
+                # trust its flag and advance by hits consumed, not rows kept.
+                has_more = bool(more_available) if more_available is not None else len(pages) == page_size
+                next_skip = (skip or 0) + int(data.get("raw_count") or len(pages))
                 logger.info(f"✅ search_pages found {len(pages)} pages for query={query!r}")
                 return True, json.dumps({
                     "pages": pages,
                     "results": pages,
                     "value": pages,
                     "count": len(pages),
-                    "has_more": len(pages) == page_size,
-                    "next_skip": (skip or 0) + len(pages),
+                    "has_more": has_more,
+                    "next_skip": next_skip,
                     "pagination_hint": (
-                        f"To get the next page, use skip={((skip or 0) + len(pages))} with top={page_size}"
-                        if len(pages) == page_size else "All available results returned"
+                        f"To get the next page, use skip={next_skip} with top={page_size}"
+                        if has_more else "All available results returned"
                     ),
                     "usage_hint": (
                         "Each result includes page_id, site_id, title, web_url, and basic metadata. "
