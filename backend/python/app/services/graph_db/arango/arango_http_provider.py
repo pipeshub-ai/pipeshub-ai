@@ -379,6 +379,8 @@ _WRITE_CONFLICT_ATTEMPTS = 6
 # Candidates per permitted-records query; see _walk_permitted_windows.
 _PERMITTED_WALK_CHUNK = 100
 _RECORDS_ORG_KEY_INDEX = "records_org_key"
+# At 1000 groups a pass, far more duplicates than a race leaves.
+_DEDUPE_MAX_PASSES = 10_000
 _WRITE_CONFLICT_RE = re.compile(r'"errorNum":\s*1200|\[1200\]')
 _LOCK_TIMEOUT_RE = re.compile(r'"errorNum":\s*18\b|\[18\]')
 _T = TypeVar("_T")
@@ -4070,14 +4072,18 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             RETURN NEW
         """
         bind_vars = {"edges": edges, "@collection": CollectionNames.ENTITY_RELATIONS.value}
-        try:
+
+        async def write() -> list:
             return await self.http_client.execute_aql(query, bind_vars, txn_id=txn)
+
+        try:
+            return await self._retry_write_conflicts(write, txn)
         except ArangoQueryError as exc:
             # Inside a transaction a retry cannot see the other writer's edge, and
             # the server reports that clash as a 1200 write conflict the caller reruns.
             if exc.error_num != ARANGO_UNIQUE_CONSTRAINT_VIOLATED or txn is not None:
                 raise
-            return await self.http_client.execute_aql(query, bind_vars, txn_id=txn)
+            return await self._retry_write_conflicts(write, txn)
 
     async def _dedupe_entity_relations(self, batch: int = 1000) -> int:
         """Delete duplicate ``entityRelations`` edges so the unique index can be built.
@@ -4087,7 +4093,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         timestamps, which the UPSERT rewrote on every write anyway. Bounded to
         ``batch`` groups a pass, repeated until none is left; safe to re-run."""
         removed = 0
-        while True:
+        # Bounded, and ended by a pass that removes nothing, whatever the client answers.
+        for _ in range(_DEDUPE_MAX_PASSES):
             rows = await self.http_client.execute_aql(
                 """
                 FOR e IN @@collection
@@ -4102,8 +4109,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 """,
                 {"@collection": CollectionNames.ENTITY_RELATIONS.value, "batch": batch},
             )
-            removed += len(rows)
-            if not rows:
+            passed = len(rows or [])
+            removed += passed
+            if not passed:
                 break
         if removed:
             self.logger.warning("Removed %d duplicate entityRelations edges", removed)

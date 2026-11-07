@@ -79,3 +79,23 @@ async def test_unique_violation_inside_a_transaction_is_not_retried() -> None:
     with pytest.raises(ArangoQueryError):
         await p.batch_create_entity_relations([EDGE], transaction="txn1")
     assert p.http_client.execute_aql.await_count == 1
+
+
+async def test_cleanup_ends_when_a_pass_removes_nothing_whatever_the_client_answers() -> None:
+    p = _provider()
+    p.http_client.execute_aql = AsyncMock(return_value=MagicMock())  # truthy, with no rows: this once looped for ever
+    assert await p._dedupe_entity_relations() == 0
+    assert p.http_client.execute_aql.await_count == 1
+
+
+async def test_cleanup_stops_at_its_pass_limit() -> None:
+    p = _provider()
+    p.http_client.execute_aql = AsyncMock(return_value=[1])
+    assert await p._dedupe_entity_relations() == p.http_client.execute_aql.await_count
+
+
+async def test_a_write_conflict_outside_a_transaction_is_retried() -> None:
+    p = _provider()
+    conflict = Exception('write-write conflict "errorNum": 1200')
+    p.http_client.execute_aql = AsyncMock(side_effect=[conflict, [{"_key": "e"}]])
+    assert await p._upsert_entity_relations([], "UPDATE edge", None) == [{"_key": "e"}]
