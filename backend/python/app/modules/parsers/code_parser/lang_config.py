@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.modules.parsers.code_parser.models import CONSTRUCT, INITIALIZER
+
 __all__ = [
     "COMMENT_NODE_TYPES",
     "LANGUAGES",
@@ -60,6 +62,10 @@ class LanguageConfig:
     # body node -- Dart's `function_signature` + `function_body`. Without this
     # the block for a method would stop at its signature.
     trailing_body_types: frozenset[str] = frozenset()
+    # Hold a scope's members without being one: C/C++ preprocessor branches and
+    # `extern "C"`. Their members are collected as the enclosing scope's, so an
+    # include-guarded header is not one opaque statements span.
+    transparent_types: frozenset[str] = frozenset()
 
     # Span boundaries that are not definitions.
     import_types: frozenset[str] = frozenset()
@@ -78,6 +84,10 @@ class LanguageConfig:
     # (Java's `method_invocation` name/object, Ruby's `call` method/receiver).
     call_name_field: str = ""
     call_receiver_fields: tuple[str, ...] = ()
+    # Calls that construct the type they name, so the name means a type and never a function, by node type -> the
+    # context their facts carry: C++ `new Conn(..)` and `Conn c(..)` construct (CONSTRUCT); a constructor's
+    # `: Base(..)` initializes a base or a member (INITIALIZER).
+    construction_contexts: dict[str, str] = field(default_factory=dict)
     # JSX: a capitalised tag renders a component, which is a call (P-5).
     jsx_element_types: frozenset[str] = frozenset()
     # Statements whose blocks hold module-level definitions: Python's
@@ -95,6 +105,7 @@ class LanguageConfig:
     import_handler_name: str = ""
     heritage_handler_name: str = ""
     type_table_handler_name: str = ""
+    macro_table_handler_name: str = ""
 
     name_field: str = "name"
     body_field: str = "body"
@@ -131,6 +142,9 @@ _BLOCK_DOC = "block_comment"
 _LINE_DOC = "line_comment"
 
 _C_FAMILY_NAMES = ("identifier", "type_identifier", "field_identifier")
+_C_FAMILY_TRANSPARENT = frozenset({
+    "preproc_ifdef", "preproc_if", "preproc_elif", "preproc_elifdef", "preproc_else", "linkage_specification",
+})
 
 
 _PYTHON = LanguageConfig(
@@ -259,7 +273,10 @@ _C = LanguageConfig(
     type_alias_types=frozenset({"type_definition"}),
     function_types=frozenset({"function_definition"}),
     field_types=frozenset({"field_declaration"}),
+    transparent_types=_C_FAMILY_TRANSPARENT,
     import_types=frozenset({"preproc_include"}),
+    import_handler_name="c_family",
+    macro_table_handler_name="c_family",
     name_fallback_child_types=_C_FAMILY_NAMES,
     body_fallback_child_types=("field_declaration_list", "enumerator_list", "compound_statement"),
     unwrap_declarator=True,
@@ -268,7 +285,9 @@ _C = LanguageConfig(
 
 _CPP = LanguageConfig(
     name="cpp",
-    call_types=frozenset({"call_expression"}),
+    call_types=frozenset({"call_expression", "new_expression", "init_declarator", "field_initializer"}),
+    construction_contexts={"new_expression": CONSTRUCT, "init_declarator": CONSTRUCT,
+                           "field_initializer": INITIALIZER},
     ts_module="tree_sitter_cpp",
     ts_language_fn="language",
     # .h uses the C++ grammar rather than the C one: it is a superset, headers
@@ -282,7 +301,12 @@ _CPP = LanguageConfig(
     function_types=frozenset({"function_definition"}),
     field_types=frozenset({"field_declaration"}),
     decorator_wrapper_types=frozenset({"template_declaration"}),
+    transparent_types=_C_FAMILY_TRANSPARENT,
     import_types=frozenset({"preproc_include"}),
+    import_handler_name="c_family",
+    heritage_handler_name="cpp",
+    type_table_handler_name="cpp",
+    macro_table_handler_name="c_family",
     name_fallback_child_types=_C_FAMILY_NAMES,
     body_fallback_child_types=(
         "field_declaration_list", "declaration_list", "enumerator_list", "compound_statement",

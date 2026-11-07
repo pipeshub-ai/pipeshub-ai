@@ -25,6 +25,7 @@ from app.modules.code_graph.family_rules import rules_for
 from app.modules.code_graph.guards import lang_family
 from app.modules.code_graph.module_refs import module_ref
 from app.modules.code_graph.version import PARSER_VERSION
+from app.modules.parsers.code_parser.models import DECLARATION, RETURNS, STATIC
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Iterator
@@ -37,6 +38,7 @@ __all__ = [
     "FILE_SUMMARY_QUALIFIED_NAME",
     "RESIDENT_RELATIONS",
     "block_key_for",
+    "changed_macros",
     "drop_code_file_blocks",
     "serialize_block_for_graph",
     "write_code_file_blocks_to_graph",
@@ -164,15 +166,22 @@ def serialize_block_for_graph(
         # property, and the schema admits it for all of these.
         "subType": item.sub_type.value if item.sub_type is not None else None,
         "kind": ((meta.kind or "").lower() or None) if meta else None,
+        "modifiers": (meta.modifiers or None) if meta else None,
         "qualifiedName": meta.qualified_name if meta else None,
         "startLine": meta.start_line if meta else None,
         "endLine": meta.end_line if meta else None,
         "language": (meta.language or ctx.language) if meta else None,
-        "pendingEdges": (_resident_facts(meta.pending_edges, package_init=_is_package_init(ctx.file_path)) or None)
+        "pendingEdges": (_resident_facts(meta.pending_edges, package_init=_is_package_init(ctx.file_path),
+                                         imports=rules_for(lang_family(meta.language or ctx.language,
+                                                                       ctx.file_path)).resident_imports)
+                         or None)
         if meta else None,
         # Both moved to the blob. Still written, as None, so a node projected
         # before that change is cleared instead of keeping a stale copy.
         "typeTable": None,
+        # Unlike typeTable, read for every file on every build: a header's macros expand in files it is not
+        # re-resolving.
+        "macroTable": (meta.macro_table or None) if meta else None,
         # Moved to codeFiles node. Still written as None so nodes projected
         # before that change are cleared.
         "referencedNames": None,
@@ -185,10 +194,14 @@ def _is_package_init(file_path: str | None) -> bool:
     return bool(file_path) and (file_path.rsplit("/", 1)[-1] == "__init__.py" or file_path.endswith(".rs"))
 
 
-def _resident_facts(facts: list[dict] | None, *, package_init: bool = False) -> list[dict]:
+def _resident_facts(facts: list[dict] | None, *, package_init: bool = False, imports: bool = False) -> list[dict]:
     """A package `__init__.py`'s imports are its re-exports (`from .base import
-    Model` makes `models.Model`), which every build follows, so they stay too."""
-    keep = RESIDENT_RELATIONS | ({RecordRelations.IMPORTS.value} if package_init else frozenset())
+    Model` makes `models.Model`), which every build follows, so they stay too; so
+    do the IMPORTS_FROM of a family whose rules keep them (`resident_imports`: a
+    C/C++ file sees what its includes include, through headers an incremental
+    build is not re-resolving)."""
+    keep = RESIDENT_RELATIONS | ({RecordRelations.IMPORTS.value} if package_init else frozenset()) \
+        | ({RecordRelations.IMPORTS_FROM.value} if imports else frozenset())
     return [fact for fact in facts or () if fact.get("relation") in keep]
 
 
@@ -201,6 +214,10 @@ def _referenced_names(container: BlocksContainer, file_path: str | None = None) 
     (``module_refs``), resolved against *file_path* where relative.
     """
     names: set[str] = set()
+    # A C++ receiver is typed by declarations elsewhere: its class (`Conn* c; c->open()`, which a second Conn or a
+    # forward declaration given a body makes ambiguous) and, for a field (`m_list.notify()`), the field's own
+    # declaration (_changed_member_types). Either changing re-resolves this file.
+    receivers = rules_for(lang_family(None, file_path)).implicit_member_receivers
     for item in (*container.block_groups, *container.blocks):
         meta = item.code_metadata
         for fact in (meta.pending_edges if meta else None) or ():
@@ -210,6 +227,9 @@ def _referenced_names(container: BlocksContainer, file_path: str | None = None) 
                 # `=self.config().colors` is typed through `config` and `colors` wherever they are declared, so a
                 # file changing one re-resolves this one.
                 names.update(re.findall(r"\w+", receiver_type))
+            if receivers and fact.get("isMemberCall"):
+                names.update(n for n in (fact.get("receiver"), fact.get("receiverType"))
+                             if isinstance(n, str) and n.isidentifier())
             name = fact.get("toName")
             if not isinstance(name, str) or not name:
                 continue
@@ -237,14 +257,48 @@ def _referenced_names(container: BlocksContainer, file_path: str | None = None) 
 _CHANGED_NAMES_TTL_MS = 7 * 24 * 3600 * 1000
 
 
+def changed_macros(before: Iterable[dict[str, Any]], after: Iterable[dict[str, Any]]) -> set[str]:
+    """The macros the file added, removed or gave other callees: every file calling one expands it anew.
+    Only the callees count, so a line inserted above a macro re-selects no caller elsewhere."""
+    def callees(docs: Iterable[dict[str, Any]]) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for doc in docs:
+            table = doc.get("macroTable")
+            if isinstance(table, str):  # Neo4j stores a map as JSON
+                try:
+                    table = json.loads(table)
+                except ValueError:
+                    table = None
+            for name, entry in (table if isinstance(table, dict) else {}).items():
+                out[name] = entry[1] if isinstance(entry, list) and len(entry) > 1 else entry
+        return out
+
+    old, new = callees(before), callees(after)
+    return {name for name in old.keys() | new.keys() if old.get(name) != new.get(name)}
+
+
+def _changed_linkage(before: Iterable[dict[str, Any]], after: Iterable[dict[str, Any]]) -> set[str]:
+    """Blocks kept under one id that gained or lost STATIC or DECLARATION, or changed the class they return (C++
+    RETURNS): a call in another file may now reach one, or no longer may (a forward declaration `class Conn;` given
+    a body is a second Conn), or a chain through one (`pool.get()->open()`) now types another class."""
+    def marks(row: dict[str, Any]) -> tuple[bool, bool, tuple[str, ...]]:
+        words = row.get("modifiers") or ()
+        return STATIC in words, DECLARATION in words, tuple(w for w in words if w.startswith(RETURNS))
+    was = {row.get("_key") or row.get("id"): marks(row) for row in before}
+    return {doc["name"] for doc in after if doc.get("name") and doc["id"] in was and was[doc["id"]] != marks(doc)}
+
+
 def _changed_member_types(before: Iterable[dict[str, Any]], after: Iterable[dict[str, Any]]) -> set[str]:
-    """Fields kept under one id whose text changed, where a field's declared type types a receiver chain in another
-    file (`typed_receiver_chains`): Rust's `colors: Colors` becoming `colors: Paint` retypes `a.config.colors.matched()`
-    elsewhere."""
+    """Fields kept under one id whose text changed, where a field's declared type types a receiver in another file
+    (`typed_receiver_chains`, `implicit_member_receivers`): Rust's `colors: Colors` becoming `colors: Paint` retypes
+    `a.config.colors.matched()` elsewhere; C++'s `CoroutineWaitList m_list;` becoming `Other m_list;` in foo.hpp
+    retypes `m_list.notify()` in foo.cpp."""
+    def typed_by_fields(language: str | None) -> bool:
+        rules = rules_for(lang_family(language, None))
+        return rules.typed_receiver_chains or rules.implicit_member_receivers
     was = {row.get("_key") or row.get("id"): row.get("contentHash") for row in before if row.get("kind") == "field"}
     return {doc["name"] for doc in after if doc.get("name") and doc["id"] in was
-            and was[doc["id"]] != doc.get("contentHash")
-            and rules_for(lang_family(doc.get("language"), None)).typed_receiver_chains}
+            and was[doc["id"]] != doc.get("contentHash") and typed_by_fields(doc.get("language"))}
 
 
 def _merge_changed_names(code_file: dict[str, Any], changed: set[str]) -> dict[str, Any]:
@@ -389,7 +443,7 @@ async def write_code_file_blocks_to_graph(
             lambda: graph_provider.get_nodes_by_filters(
                 collection=CollectionNames.BLOCKS.value,
                 filters={"recordId": context.record_id},
-                return_fields=["_key", "name", "kind", "contentHash"],
+                return_fields=["_key", "name", "kind", "macroTable", "modifiers", "contentHash"],
             ),
             what="load existing blocks", log=log,
         ),
@@ -410,7 +464,7 @@ async def write_code_file_blocks_to_graph(
     changed = {
         name for key, name in (*before.items(), *after.items())
         if name and key[1] != "file_summary" and (key not in before or key not in after)
-    } | _changed_member_types(existing, docs)
+    } | changed_macros(existing, docs) | _changed_linkage(existing, docs) | _changed_member_types(existing, docs)
 
     # referencedNames is written to the codeFiles node, not a block. The edge
     # builder queries it alongside filePath, avoiding a block-scan join.
@@ -488,14 +542,14 @@ async def drop_code_file_blocks(
         lambda: graph_provider.get_nodes_by_filters(
             collection=CollectionNames.BLOCKS.value,
             filters={"recordId": record_id},
-            return_fields=["name", "kind"],
+            return_fields=["name", "kind", "macroTable"],
         ),
         what="load existing blocks", log=log,
     ) or []
     removed = {
         row.get("name") for row in existing
         if row.get("name") and row.get("kind") != "file_summary"
-    }
+    } | changed_macros(existing, ())
     if removed:
         code_file = await _with_retry(
             lambda: graph_provider.get_document(

@@ -9,12 +9,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 __all__ = [
+    "CONSTRUCT",
+    "DECLARATION",
     "FILLER_KINDS",
     "HEADER_KIND",
+    "INITIALIZER",
     "ParsedFile",
     "ParsedSymbol",
     "PendingEdgeFact",
+    "RETURNS",
     "Relation",
+    "STATIC",
 ]
 
 
@@ -43,6 +48,17 @@ class Relation:
 # file tile it exactly -- without them, imports, module-level code, comments and
 # whitespace are simply dropped.
 FILLER_KINDS = frozenset({"imports", "statements", "comment", "header"})
+# The modifier of a function or method declared without a body: what runs is elsewhere.
+DECLARATION = "declaration"
+# The modifier of a C/C++ free function with internal linkage (`static`): callable only from its translation unit.
+STATIC = "static"
+# The modifier prefix of a C++ function or method returning a class (`returns:Conn` for `Conn* Pool::get()`): what
+# `pool.get()->open()` and `auto c = pool.get()` are typed by.
+RETURNS = "returns:"
+# The context of a CALLS fact a C++ construction makes (`new Conn(..)`, `Conn c(..)`, `: Base(..)`): it names a type.
+CONSTRUCT = "construct"
+# The context of a CALLS fact from a C++ constructor's `: Name(..)` initializer: a base (constructed) or a member.
+INITIALIZER = "initializer"
 
 # A container's members are what its children tile around; `header` covers the
 # span from the container's start to its first member.
@@ -69,6 +85,9 @@ class ParsedSymbol:
     parent_chain: tuple[str, ...] = ()
     text: str = ""
     decorators: tuple[str, ...] = ()
+    # Words resolution reads, from the language's handler (languages.MODIFIER_HANDLERS; C/C++: STATIC,
+    # DECLARATION for a callable with no body).
+    modifiers: tuple[str, ...] = ()
     is_exported: bool = False
     # Index into ParsedFile.symbols of the immediately enclosing container, or
     # None at file level. Drives both block nesting and the tiling invariant.
@@ -99,6 +118,8 @@ class PendingEdgeFact:
     from_kind: str = "block"
     to_kind: str = "block"
     is_member_call: bool = False
+    # C++ `p->f()`: the call goes through `->`, which a class with an `operator->` (optional_ptr<T>) forwards to T.
+    arrow: bool = False
     receiver: str | None = None
     receiver_type: str | None = None
     qualified_prefix: str | None = None
@@ -110,6 +131,8 @@ class PendingEdgeFact:
     # imported one: `b` in `from m import a as b` and `import { a as b }`, `ns`
     # in `import * as ns`. Calls are written against this name.
     local_name: str | None = None
+    # CALLS: "construct" for a C++ construction (`new Conn(..)`, `Conn c(..)`), which names a type, never a
+    # function; "initializer" for a constructor's `: Name(..)`, which names a base or a member.
     context: str | None = None
     # EXPORTS names a symbol in *this* file; resolving it against the whole repo
     # would happily bind to a same-named symbol elsewhere.
@@ -129,6 +152,8 @@ class PendingEdgeFact:
         }
         if self.is_member_call:
             out["isMemberCall"] = True
+        if self.arrow:
+            out["arrow"] = True
         if self.receiver:
             out["receiver"] = self.receiver
         if self.receiver_type:
@@ -157,5 +182,8 @@ class ParsedFile:
     # Cannot be reconstructed later without re-parsing, so it is captured here
     # and carried to the resolver on the file-summary block.
     type_table: dict[str, str] = field(default_factory=dict)
+    # C/C++ function-like macro -> [line, names its body calls], so a wrapper's call reaches what it wraps.
+    macro_table: dict[str, list] = field(default_factory=dict)
+    macros_dropped: int = 0
     parse_error_line: int | None = None
     skipped_reason: str | None = None

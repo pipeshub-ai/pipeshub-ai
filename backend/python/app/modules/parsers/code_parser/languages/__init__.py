@@ -8,17 +8,17 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.modules.parsers.code_parser.languages import rust
+from app.modules.parsers.code_parser.languages import c_family, rust
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-__all__ = ["CALLEE_HANDLERS", "HERITAGE_HANDLERS", "IMPORT_HANDLERS", "MACRO_ARGUMENT_HANDLERS",
-           "RECEIVER_TYPE_HANDLERS", "TYPE_TABLE_HANDLERS"]
+__all__ = ["CALLEE_HANDLERS", "HERITAGE_HANDLERS", "IMPORT_HANDLERS", "MACRO_ARGUMENT_HANDLERS", "MACRO_TABLE_HANDLERS",
+           "MODIFIER_HANDLERS", "RECEIVER_TYPE_HANDLERS", "TYPE_TABLE_HANDLERS"]
 
-IMPORT_HANDLERS: dict[str, Callable] = {"rust": rust.imports}
-HERITAGE_HANDLERS: dict[str, Callable] = {"rust": rust.heritage}
-TYPE_TABLE_HANDLERS: dict[str, Callable] = {"rust": rust.type_table}
+IMPORT_HANDLERS: dict[str, Callable] = {"rust": rust.imports, "c_family": c_family.imports}
+HERITAGE_HANDLERS: dict[str, Callable] = {"rust": rust.heritage, "cpp": c_family.heritage}
+TYPE_TABLE_HANDLERS: dict[str, Callable] = {"rust": rust.type_table, "cpp": c_family.type_table}
 # Keyed by language name: (call node, source, config) -> (name, is_member, receiver, qualifier), in place of
 # the engine's generic callee reader.
 CALLEE_HANDLERS: dict[str, Callable] = {"rust": rust.callee}
@@ -28,3 +28,7 @@ MACRO_ARGUMENT_HANDLERS: dict[str, Callable] = {"rust": rust.macro_arguments}
 # Keyed by language name: (call node, source, per-function cache, config, the file-wide table's type for the
 # receiver) -> the receiver's type, or `=expr` for the builder to evaluate, in place of the engine's own lookup.
 RECEIVER_TYPE_HANDLERS: dict[str, Callable] = {"rust": rust.receiver_type}
+# (root, source, table, config) -> macros the table's caps dropped; the table is name -> [line, called names].
+MACRO_TABLE_HANDLERS: dict[str, Callable] = {"c_family": c_family.macro_table}
+# Keyed by language name: (definition node, source) -> the symbol's modifiers.
+MODIFIER_HANDLERS: dict[str, Callable] = {"c": c_family.modifiers, "cpp": c_family.cpp_modifiers}

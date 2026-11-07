@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames
+from app.modules.code_graph.block_projection import changed_macros
 from app.modules.code_graph.edge_build_trigger import is_code_record, record_scope
 from app.modules.code_graph.module_refs import module_refs_of_path
 
@@ -55,13 +56,13 @@ async def defined_names(graph_provider: IGraphDBProvider, org_id: str, record_id
     rows = await graph_provider.get_nodes_by_filters(
         collection=CollectionNames.BLOCKS.value,
         filters={"orgId": org_id, "recordId": record_id},
-        return_fields=["name", "kind"],
+        return_fields=["name", "kind", "macroTable"],
         raise_on_error=True,
     ) or []
     names = {
         row["name"] for row in rows
         if isinstance(row.get("name"), str) and row["name"] and row.get("kind") != "file_summary"
-    }
+    } | changed_macros(rows, ())
     info = await graph_provider.get_file_paths_for_records(
         org_id=org_id, record_ids=[record_id], raise_on_error=True,
     )
