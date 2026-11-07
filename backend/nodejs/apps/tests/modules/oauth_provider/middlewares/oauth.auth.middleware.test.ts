@@ -12,6 +12,7 @@ import {
   ExpiredTokenError,
 } from '../../../../src/libs/errors/oauth.errors'
 import { getCurrentOrgId } from '../../../../src/libs/context/orgContext'
+import { RequestContextStore, getRequestContext, runWithRequestContext } from '../../../../src/libs/context/request-context'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { ServiceAccountDelegation } from '../../../../src/modules/oauth_provider/schema/service-account-delegation.schema'
 
@@ -98,6 +99,18 @@ describe('OAuthAuthMiddleware', () => {
       await middleware.authenticate(req, mockRes, next)
 
       expect(boundInNext).to.equal('org-1')
+    })
+
+    it('puts the token org and user on the log context', async () => {
+      mockOAuthTokenService.verifyAccessToken.resolves({ client_id: 'cid', userId: 'user-1', orgId: 'org-1', scope: 'openid' })
+      let seen: RequestContextStore | undefined
+      const next = sinon.stub().callsFake(() => {
+        seen = getRequestContext()
+      })
+      await runWithRequestContext({ rootId: 'r1' }, () =>
+        middleware.authenticate({ headers: { authorization: 'Bearer valid-token' } } as any, mockRes, next),
+      )
+      expect(seen).to.deep.equal({ rootId: 'r1', orgId: 'org-1', userId: 'user-1' })
     })
 
     it('should return 401 when the token carries no scopes', async () => {
@@ -397,6 +410,18 @@ describe('scopeCheck', () => {
     await mw(req, mockRes, mockNext)
     expect(mockNext.calledOnce).to.be.true
     expect(req.oauth).to.exist
+  })
+
+  it('puts the token org and user on the log context', async () => {
+    mockOAuthTokenService.verifyAccessToken.resolves({ client_id: 'cid', userId: 'u1', orgId: 'o1', scope: 'org:read' })
+    mockScopeValidatorService.hasAllScopes.returns(true)
+    let seen: RequestContextStore | undefined
+    mockNext.callsFake(() => {
+      seen = getRequestContext()
+    })
+    const mw = scopeCheck(['org:read'], mockOAuthTokenService, mockScopeValidatorService)
+    await runWithRequestContext({ rootId: 'r1' }, () => mw({ headers: { authorization: 'Bearer valid-token' } } as any, mockRes, mockNext))
+    expect(seen).to.deep.equal({ rootId: 'r1', orgId: 'o1', userId: 'u1' })
   })
 
   it('should return 403 for insufficient scopes', async () => {
