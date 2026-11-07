@@ -4,7 +4,7 @@
  * position that keeps the order they were added in; a project that gains or loses a member takes a new `__v`, as the stored
  * array did. Writers lock the project row first, so two changes to one project's members queue instead of losing one.
  */
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import {
   Params,
   assertOrg,

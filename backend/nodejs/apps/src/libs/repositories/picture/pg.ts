@@ -1,5 +1,5 @@
 /** PostgreSQL implementation of the picture repository (`DOC_STORE=postgres`): one row per person, the photo kept as the base64 text callers pass. */
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import { assertOrg, inUnit, newObjectId, oidOf, oidsOf } from '../pg-util';
 import type { PictureDto, PictureRepository } from './types';
 import type { Tx } from '../uow';
