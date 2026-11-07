@@ -233,10 +233,12 @@ class TestLinearTime:
             ('token\n  File "a", line ', "1", "\n"),
             ('token\n  File "a", line ', "1", ""),
             ('token\n  File "a", line 1, in ', "f", "\n    x"),
+            ('  File "a", line 1, in f\n    ', "token=", ""),
+            ('  File "a", line 1, in f\n    ', "a=token=", ""),
         ],
     )
     def test_one_long_run_after_a_trigger(self, prefix: str, fill: str, suffix: str) -> None:
-        self._assert_linear(lambda n: prefix + fill * n + suffix)
+        self._assert_linear(lambda n: prefix + self._repeat(fill, n) + suffix)
 
 
 def _fail_with(message: str) -> None:
@@ -326,6 +328,14 @@ class TestTracebackSourceLines:
             f"{_TB_HEAD}    secret = b'SENTINEL-a'\nRuntimeError: x",
             "  File \"<generated>\", line 2, in g\n    password = 'SENTINEL-a'\nRuntimeError: x",
             '  File "x", line 1, in f\n    password="SENTINEL-a"',
+            '  File "x", line 1, in f\r\n    password="SENTINEL-a"',
+            # A pair inside a string or a comment on a source line is text, not code.
+            f'{_TB_HEAD}    conn = connect("dbname=app user=app password=SENTINEL-a")\nRuntimeError: x',
+            f'{_TB_HEAD}    q = "client_secret=SENTINEL-a&x=%s" % x\nRuntimeError: x',
+            f"{_TB_HEAD}    hdr = 'X-Api-Key: SENTINEL-a'\nRuntimeError: x",
+            f"{_TB_HEAD}    s = 'token=SENTINEL-a'\nRuntimeError: x",
+            f'{_TB_HEAD}    url = f"a?x=1&token=SENTINEL-a"\nRuntimeError: x',
+            f"{_TB_HEAD}    t = get()  # token=SENTINEL-a old\nRuntimeError: x",
             # Code-shaped text outside a traceback is indistinguishable from a pair.
             "    token = SENTINEL-a",
         ],
@@ -369,12 +379,24 @@ class TestTracebackSourceLines:
 
     def test_stack_info_keeps_the_calling_line(self) -> None:
         record = _record("checkpoint")
+        # The credential-named variable is what puts its own line through the pair pass.
         secret_stack = "".join(traceback.format_stack())
         record.stack_info = f"Stack (most recent call last):\n{secret_stack}"
 
         out = RedactingFormatter("%(message)s").format(record)
 
         assert '    secret_stack = "".join(traceback.format_stack())\n' in out
+
+    def test_a_hard_coded_pair_in_a_raise_message_is_still_redacted(self) -> None:
+        try:
+            raise RuntimeError("token=SENTINEL-raise")
+        except RuntimeError:
+            record = _record("refresh failed", exc_info=sys.exc_info())
+
+        out = RedactingFormatter("%(message)s").format(record)
+
+        assert '    raise RuntimeError("token=[REDACTED]")\n' in out
+        assert "SENTINEL-raise" not in out
 
     @pytest.mark.parametrize("chained", [False, True])
     def test_syntax_error_input_is_still_redacted(self, chained: bool) -> None:

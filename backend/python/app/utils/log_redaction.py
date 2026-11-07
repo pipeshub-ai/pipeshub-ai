@@ -114,7 +114,7 @@ _PYDANTIC_INPUT_VALUE = re.compile(r"(input_value=)(?!, input_type=)[^\n][^,\n]*
 
 # A traceback's source line: the line after `File "...", line N, in f`, two
 # spaces deeper under the same `|` gutter (exception groups). It is code read
-# from a source file, where `token = await f()` is no pair. `, in` ends the
+# from a source file, where `token = await f()` is code, not a pair. `, in` ends the
 # digit run, and leaves out a SyntaxError's frame, whose line is the parsed input.
 _TRACEBACK_SOURCE_LINE = re.compile(r'^([ |]*)File "[^"\n]*", line \d+, in [^\n]*\n\1  (\S[^\n]*)', re.MULTILINE)
 
@@ -171,12 +171,30 @@ def _redact_pairs(text: str) -> str:
 
 
 def _redact_pairs_in(text: str, *, literals_only: bool = False) -> str:
-    """``literals_only`` masks only a non-empty string literal: in code, any
-    other value is an expression, and a literal is a hard-coded secret."""
+    """``literals_only`` is for a traceback's source line, which is code: a
+    pair there is masked only when its value is a non-empty ``"..."``,
+    ``'...'`` or ``b'...'`` literal (a hard-coded secret), since any other
+    value is an expression. A pair inside a string or after a ``#`` is text and
+    keeps the normal rule. Other literals (``r``/``f`` prefixes, triple quotes)
+    leave their content unmasked, as on main."""
     out = []
     pos = 0
+    scanned = 0
+    double = single = 0
+    comment = False
     for head in _PAIR_HEAD.finditer(text):
         if head.start() < pos or not is_credential_name(head.group(1)):
+            continue
+        in_code = False
+        if literals_only:
+            # A pair inside a string or comment is text, not code: `"password=x"`.
+            double += text.count('"', scanned, head.end())
+            single += text.count("'", scanned, head.end())
+            comment = comment or "#" in text[scanned : head.end()]
+            scanned = head.end()
+            in_code = not (double % 2 or single % 2 or comment)
+        # Before the value match: a skipped bare value leaves `pos`, so matching it would rescan the run.
+        if in_code and not _QUOTED.match(text, head.end()):
             continue
         value = _PAIR_VALUE.match(text, head.end())
         if value is None:
@@ -185,7 +203,7 @@ def _redact_pairs_in(text: str, *, literals_only: bool = False) -> str:
         if raw.lower() in _AUTH_SCHEME_WORDS or _SHORT_NUMBER.fullmatch(raw):
             continue
         opening = _QUOTED.match(raw)
-        if literals_only and (not opening or len(raw) <= len(opening.group()) + 1):
+        if in_code and len(raw) <= len(opening.group()) + 1:
             continue
         out.append(text[pos : head.end()])
         if opening:
@@ -232,9 +250,11 @@ def redact_secrets_in_text(text: str) -> str:
     ``AIza``, GitHub tokens, JWTs), credential-named ``name: value`` pairs,
     ``Bearer``/``Basic`` credentials, and URL passwords and query secrets.
 
-    On a traceback's source lines a pair is masked only when its value is a
-    string literal, so ``token = await f()`` stays readable. Text laid out as a
-    fake frame line keeps a bare value on the line under it."""
+    On a traceback's source lines a pair in code is masked only when its value
+    is a string literal, so ``token = await f()`` stays readable. A bare value
+    is kept there: a long number (``password = 12345678``), a non-string local
+    that ``capture_locals`` prints under a frame with no source, a one-character
+    unterminated literal, and anything under text laid out as a fake frame."""
     if not text:
         return text
     lower = text.lower()
