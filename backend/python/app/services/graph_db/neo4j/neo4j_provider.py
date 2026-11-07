@@ -1452,6 +1452,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "FOR (n:User) ON (n.orgId)"
         )
 
+        # COMPOSITE: orgId + email (org-scoped member email lookups; non-unique: stub users and login users share email)
+        indexes.append(
+            "CREATE INDEX user_org_email IF NOT EXISTS "
+            "FOR (n:User) ON (n.orgId, n.email)"
+        )
+
         # ==================== RECORDGROUP INDEXES (High Priority) ====================
 
         # COMPOSITE: externalGroupId + connectorId (ALWAYS queried together)
@@ -6165,26 +6171,36 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str | None = None,
     ) -> dict[str, User]:
         """See :meth:`IGraphDBProvider.get_users_by_emails`."""
-        wanted = list(dict.fromkeys(e.lower() for e in emails if e))
+        wanted = list(dict.fromkeys(e.strip().lower() for e in emails if e and e.strip()))
         if not wanted:
             return {}
         try:
             scoped = org_id is not None
-            org_filter = "AND u.orgId = $org_id" if scoped else ""
-            # toLower(u.email) keeps matching case-insensitive, which the
-            # user_email index cannot serve.
+            where_clause = "WHERE u.orgId = $org_id AND u.email IN $emails" if scoped else "WHERE u.email IN $emails"
+            # Primary indexed query: seeks on (orgId, email) index without full-scan predicates.
             query = f"""
             MATCH (u:User)
-            WHERE toLower(u.email) IN $emails {org_filter}
+            {where_clause}
             RETURN u
             """
             results = await self.client.execute_query(
                 query, parameters={"emails": wanted, **({"org_id": org_id} if scoped else {})}, txn_id=transaction,
             )
-            found: dict[str, User] = {}
+            matched_users: list[tuple[dict, User]] = []
             for row in results or []:
                 user_dict = self._neo4j_to_arango_node(dict(row["u"]), CollectionNames.USERS.value)
-                found.setdefault(user_dict["email"].lower(), User.from_arango_user(user_dict))
+                u = User.from_arango_user(user_dict)
+                matched_users.append((user_dict, u))
+            matched_users.sort(
+                key=lambda item: str(item[1].user_id or item[1].id or item[0].get("id") or item[0].get("_key") or "")
+            )
+
+            found: dict[str, User] = {}
+            for user_dict, u in matched_users:
+                key = (user_dict.get("email") or "").strip().lower()
+                if key not in found or (u.is_active and not found[key].is_active):
+                    found[key] = u
+
             return found
         except Exception as e:
             self.logger.error(f"❌ Get users by emails failed: {str(e)}")
@@ -6201,14 +6217,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str | None = None,
     ) -> User | None:
         """Get user by email; with ``org_id``, only a user of that organisation."""
+        normalized_email = email.strip().lower() if email else ""
+        if not normalized_email:
+            return None
         try:
             scoped = org_id is not None
-            org_filter = "AND u.orgId = $org_id" if scoped else ""
-            parameters = {"email": email, **({"org_id": org_id} if scoped else {})}
+            where_clause = "WHERE u.orgId = $org_id AND u.email = $email" if scoped else "WHERE u.email = $email"
+            parameters = {"email": normalized_email, **({"org_id": org_id} if scoped else {})}
+            # Primary indexed query: seeks on (orgId, email) index without full-scan predicates.
             query = f"""
             MATCH (u:User)
-            WHERE toLower(u.email) = toLower($email) {org_filter}
+            {where_clause}
             RETURN u
+            ORDER BY coalesce(u.isActive, false) DESC, u.id ASC
             LIMIT 1
             """
 
@@ -6218,12 +6239,38 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
 
+            candidate: User | None = None
             if results:
                 user_dict = dict(results[0]["u"])
                 user_dict = self._neo4j_to_arango_node(user_dict, CollectionNames.USERS.value)
-                return User.from_arango_user(user_dict)
+                candidate = User.from_arango_user(user_dict)
+                if candidate.is_active:
+                    return candidate
 
-            return None
+            # Legacy fallback query during rollout: runs separately so the indexed lookup
+            # path remains strictly seekable. Once backfill is complete, this fallback is dropped.
+            legacy_where = "WHERE u.orgId = $org_id AND toLower(trim(u.email)) = $email" if scoped else "WHERE toLower(trim(u.email)) = $email"
+            legacy_query = f"""
+            MATCH (u:User)
+            {legacy_where}
+            RETURN u
+            ORDER BY coalesce(u.isActive, false) DESC, u.id ASC
+            LIMIT 1
+            """
+            legacy_results = await self.client.execute_query(
+                legacy_query,
+                parameters=parameters,
+                txn_id=transaction
+            )
+
+            if legacy_results:
+                legacy_user_dict = dict(legacy_results[0]["u"])
+                legacy_user_dict = self._neo4j_to_arango_node(legacy_user_dict, CollectionNames.USERS.value)
+                legacy_candidate = User.from_arango_user(legacy_user_dict)
+                if legacy_candidate.is_active or candidate is None:
+                    return legacy_candidate
+
+            return candidate
 
         except Exception as e:
             self.logger.error(f"❌ Get user by email failed: {str(e)}")
@@ -10282,11 +10329,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not users:
                 return
 
-            # Get org_id
-            orgs = await self.get_all_orgs(transaction=transaction)
-            if not orgs:
-                raise Exception("No organizations found in the database")
-            org_id = orgs[0].get("id") or orgs[0].get("_key")
             connector_id = users[0].connector_id
 
             # Get or create app
@@ -10310,9 +10352,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     transaction=transaction
                 )
 
+            org_id = (app.get("orgId") if app else None) or getattr(users[0], "org_id", None)
+            if not org_id:
+                orgs = await self.get_all_orgs(transaction=transaction)
+                if not orgs:
+                    raise Exception("No organizations found in the database")
+                org_id = orgs[0].get("id") or orgs[0].get("_key")
+
             for user in users:
-                # Check if user exists
-                user_record = await self.get_user_by_email(user.email, transaction)
+                # Check if user exists within connector's organization
+                user_record = await self.get_user_by_email(user.email, transaction, org_id=org_id)
 
                 if not user_record:
                     # Create new user
@@ -10327,7 +10376,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         transaction=transaction
                     )
 
-                    user_record = await self.get_user_by_email(user.email, transaction)
+                    user_record = await self.get_user_by_email(user.email, transaction, org_id=org_id)
 
                     # This address may already exist as a Person from an external share.
                     # Non-fatal: one CRM contact must not fail a whole sync.
@@ -10796,6 +10845,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return {}
 
             unique_emails = list(set(emails))
+            norm_to_orig: dict[str, list[str]] = {}
+            for e in unique_emails:
+                if e:
+                    norm_to_orig.setdefault(e.strip().lower(), []).append(e)
 
             query = """
             MATCH (n)
@@ -10830,7 +10883,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     permission_type = "USER"
 
                 if collection_name:
-                    result_map[email] = (entity_id, collection_name, permission_type)
+                    val = (entity_id, collection_name, permission_type)
+                    result_map[email] = val
+                    norm = (email or "").strip().lower()
+                    for orig in norm_to_orig.get(norm, []):
+                        result_map[orig] = val
 
             return result_map
 
@@ -18408,11 +18465,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             label = collection_to_label(CollectionNames.PEOPLE.value)
             query = f"""
             MATCH (p:{label})
-            WHERE p.email = $email AND p.orgId = $org_id
+            WHERE p.orgId = $org_id AND (p.email = $email OR trim(p.email) = $stripped OR toLower(trim(p.email)) = $stripped)
             RETURN p
             LIMIT 1
             """
-            parameters: dict[str, Any] = {"email": email.lower(), "org_id": org_id}
+            parameters: dict[str, Any] = {
+                "email": email.lower(),
+                "stripped": email.strip().lower(),
+                "org_id": org_id,
+            }
 
             results = await self.client.execute_query(
                 query, parameters=parameters, txn_id=transaction

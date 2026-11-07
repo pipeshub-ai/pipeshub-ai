@@ -3442,7 +3442,7 @@ class User(BaseModel):
 
     def to_arango_base_record(self) -> dict[str, Any]:
         return {
-            "email": self.email,
+            "email": self.email.strip().lower() if self.email else "",
             "fullName": self.full_name,
             "isActive": self.is_active,
         }
@@ -3578,7 +3578,7 @@ class AppUser(BaseModel):
         return {
             "_key": self.id,
             "orgId": self.org_id,
-            "email": self.email,
+            "email": self.email.strip().lower() if self.email else "",
             "fullName": self.full_name,
             "userId": self.source_user_id,
             "isActive": self.is_active,
