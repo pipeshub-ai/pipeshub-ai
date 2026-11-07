@@ -21,7 +21,6 @@ from app.utils.log_redaction import (
     redact_secrets_in_text,
 )
 from app.utils.logger import (
-    ColoredFormatter,
     RedactingFormatter,
     create_logger,
     install_log_redaction,
@@ -278,26 +277,22 @@ class TestFormatters:
         assert "Traceback" in out
         assert "SENTINEL-tb" not in out
 
-    def test_colored_formatter_redacts_and_still_colors(self) -> None:
-        out = ColoredFormatter("%(message)s").format(_record("token: SENTINEL-color"))
-        assert out.startswith(ColoredFormatter.RED)
-        assert "SENTINEL-color" not in out
-
 
 class TestInstallation:
     def test_create_logger_handlers_redact(self) -> None:
         logger = create_logger("test_log_redaction_service")
         try:
             assert logger.handlers
-            assert all(isinstance(h.formatter, RedactingFormatter) for h in logger.handlers)
+            # By attribute: tests that reload app.utils.logger leave new formatter classes behind.
+            assert all(getattr(h.formatter, "_pipeshub_redacting", False) for h in logger.handlers)
         finally:
             for handler in logger.handlers:
                 handler.close()
             logger.handlers.clear()
 
-    def test_root_handler_from_basicconfig_redacts(self) -> None:
+    def test_root_console_handler_redacts(self) -> None:
         # A fresh interpreter: under pytest the root logger already has
-        # handlers, so the module's basicConfig() would add none.
+        # handlers, so the module adds no console handler of its own.
         backend = Path(__file__).resolve().parents[3]
         code = (
             "import logging, app.utils.logger; "
@@ -308,8 +303,8 @@ class TestInstallation:
             [sys.executable, "-c", code], cwd=backend, env=env, capture_output=True, text=True, timeout=60,
         )
         assert result.returncode == 0, result.stderr
-        assert "password=" in result.stderr
-        assert "SENTINEL-basic" not in result.stderr
+        assert "password=" in result.stdout
+        assert "SENTINEL-basic" not in result.stdout + result.stderr
 
     def test_a_module_logger_reaches_the_root_handler_redacted(self) -> None:
         stream = io.StringIO()
