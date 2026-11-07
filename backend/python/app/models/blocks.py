@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, List, Literal, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator
@@ -404,9 +404,9 @@ class Block(BaseModel):
     link_metadata: Optional[LinkMetadata] = None
     image_metadata: Optional[ImageMetadata] = None
     semantic_metadata: Optional[SemanticMetadata] = None
-    children_records: Optional[List[ChildRecord]] = Field(default=None, description="List of child records associated with this block")
+    children_records: Optional[list[ChildRecord]] = Field(default=None, description="List of child records associated with this block")
     content_hash: Optional[str] = Field(default=None, description="Hash of the content")
-    
+
 
 class Blocks(BaseModel):
     blocks: list[Block] = Field(default_factory=list)
@@ -526,7 +526,7 @@ class BlockGroup(BaseModel):
     file_metadata: Optional[FileMetadata] = None
     link_metadata: Optional[LinkMetadata] = None
     semantic_metadata: Optional[SemanticMetadata] = None
-    children_records: Optional[List[ChildRecord]] = Field(default=None, description="List of child records associated with this block group")
+    children_records: Optional[list[ChildRecord]] = Field(default=None, description="List of child records associated with this block group")
     content_hash: Optional[str] = Field(default=None, description="Hash of the content for reconciliation")
     children: Optional[BlockGroupChildren] = None
     data: Optional[Any] = None
