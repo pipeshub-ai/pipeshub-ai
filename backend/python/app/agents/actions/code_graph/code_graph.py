@@ -95,6 +95,8 @@ _CONNECTOR_ID_DESC = (
 # chosen after dropping the linked ones from up to _SITES_SCANNED matches.
 _SITES_SHOWN = 15
 _SITES_SCANNED = 5000
+# How far up an override's chain of bases its callers are gathered from.
+_DISPATCH_BASES = 3
 # Extensions whose files can call a definition in a file of this one (a `.tsx` view
 # calls a `.ts` helper); any other extension is searched alone.
 _CALLER_EXTENSIONS = {
@@ -684,6 +686,8 @@ class CodeGraph:
             known = {(n.get("file_path"), n.get("line")) for n in result.get("neighbors") or []}
             result = await self._with_unlinked_sites(result, connector_id, repo, qualified_name, known,
                                                      include_tests=include_tests, target_path=path)
+            result = await self._with_dispatch(result, connector_id, path, repo, qualified_name, None,
+                                               include_tests=include_tests)
         return self._to_output(result)
 
     @tool(
@@ -1185,7 +1189,62 @@ class CodeGraph:
         if not edge_types or "CALLS" in edge_types:
             result = await self._with_unlinked_sites(result, connector_id, repo, qualified_name, set(),
                                                      include_tests=include_tests, target_path=path)
+            result = await self._with_dispatch(result, connector_id, path, repo, qualified_name, depth,
+                                               include_tests=include_tests, edge_types=edge_types)
         return self._to_output(result)
+
+    async def _with_dispatch(
+        self, result: dict[str, Any], connector_id: str, path: str | None, repo: str | None,
+        qualified_name: str | None, impact_depth: int | None, *, include_tests: bool,
+        edge_types: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Add what reaches the methods this one overrides: their callers (``impact_depth`` None)
+        or their impact. A call to ``Base.m`` -- ``self.m()`` inside Base, or on a value typed as
+        Base -- runs ``Sub.m`` when the object is a Sub, but the graph links it to the base alone,
+        so a caller list for the override leaves it out."""
+        if not isinstance(result, dict) or result.get("error") or not path or not qualified_name:
+            return result
+        common = {"graph_provider": self._graph_provider, "org_id": self._org_id,
+                  "user_id": self._user_id, "connector_id": connector_id, "repo": repo,
+                  "include_tests": include_tests}
+        try:
+            up = await get_neighbour_impl(**common, file_path=path, qualified_name=qualified_name,
+                                          direction="outbound", edge_types=["OVERRIDES"],
+                                          depth=_DISPATCH_BASES)
+            if up.get("error"):
+                self._log.warning("codegraph: overridden methods of %s unavailable: %s",
+                                  qualified_name, up["error"])
+                return result
+            bases = [(n["file_path"], n["qualified_name"]) for n in up.get("neighbors") or []
+                     if n.get("relation") == "OVERRIDES" and n.get("file_path") and n.get("qualified_name")]
+            through: dict[str, Any] = {}
+            for base_path, base_name in bases:
+                if impact_depth is None:
+                    walk = await get_neighbour_impl(**common, file_path=base_path, qualified_name=base_name,
+                                                    direction="inbound", edge_types=["CALLS"], depth=1)
+                    rows = [{"file_path": n.get("file_path"), "qualified_name": n.get("qualified_name"),
+                             "line": n.get("line")} for n in walk.get("neighbors") or []]
+                else:
+                    walk = await impact_impl(**common, file_path=base_path, qualified_name=base_name,
+                                             depth=impact_depth, edge_types=edge_types)
+                    rows = walk.get("impacted_files") or []
+                if walk.get("error"):
+                    self._log.warning("codegraph: walk from overridden method %s failed: %s",
+                                      base_name, walk["error"])
+                    continue
+                if rows:
+                    through[f"{base_path}::{base_name}"] = rows
+        except Exception:
+            self._log.warning("codegraph: callers through overridden methods unavailable", exc_info=True)
+            return result
+        if through:
+            result["through_overridden_methods"] = {
+                "note": ("This method overrides the ones below. Code that calls them -- `self.m()` "
+                         "inside the base class, or on a value typed as the base -- runs this "
+                         "method when the object is this subclass, so it is reached too."),
+                "by_base": through,
+            }
+        return result
 
     @tool(
         path="/tools/codegraph/entry_points",
