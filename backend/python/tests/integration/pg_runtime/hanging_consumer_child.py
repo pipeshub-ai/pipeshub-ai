@@ -2,10 +2,14 @@
 
 import asyncio
 import json
+import logging
 import sys
 
-from app.services.messaging.postgres.queue import PgQueue
-from app.services.pg_runtime import RuntimeDb
+# Before app is imported: its log lines then go to stderr, not to the stdout this script answers on (docs/logging.md).
+logging.basicConfig()
+
+from app.services.messaging.postgres.queue import PgQueue  # noqa: E402
+from app.services.pg_runtime import RuntimeDb  # noqa: E402
 
 
 async def main(topic: str, group: str, name: str, claim_s: float) -> None:
