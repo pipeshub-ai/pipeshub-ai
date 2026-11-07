@@ -61053,7 +61053,8 @@ paths:
         '500':
           description: |
             Unexpected failure in the gateway or in the connectors service, including an MCP server that
-            could not be reached or answered with an error other than a sign-in request (the connectors
+            could not be reached or answered with an error other than a sign-in request, or a sign-in that
+            couldn't be renewed because its provider is down, rate-limiting or busy (the connectors
             service answers `502`, which the gateway reports as `500`).
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
