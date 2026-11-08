@@ -119,3 +119,20 @@ async def test_empty_page_with_next_link_is_a_failed_listing() -> None:
     client = MSGraphClient("ONEDRIVE", "c1", g, logging.getLogger("t"), 1000)
     with pytest.raises(RuntimeError):
         await client.get_all_users()
+
+
+@pytest.mark.asyncio
+async def test_listing_short_of_the_directory_count_is_a_failed_listing() -> None:
+    g = MagicMock()
+    g.users.get = AsyncMock(return_value=MagicMock(value=[_graph_user("a")], odata_next_link=None, odata_count=3))
+    client = MSGraphClient("ONEDRIVE", "c1", g, logging.getLogger("t"), 1000)
+    with pytest.raises(RuntimeError, match="short"):
+        await client.get_all_users()
+
+
+@pytest.mark.asyncio
+async def test_listing_matching_the_directory_count_is_accepted() -> None:
+    g = MagicMock()
+    g.users.get = AsyncMock(return_value=MagicMock(value=[_graph_user("a")], odata_next_link=None, odata_count=1))
+    client = MSGraphClient("ONEDRIVE", "c1", g, logging.getLogger("t"), 1000)
+    assert [u.source_user_id for u in await client.get_all_users()] == ["a"]
