@@ -6451,6 +6451,29 @@ components:
                 starts; absent on records not indexed since pipeline stages
                 were introduced.
               example: "78f3f276290c9f81"
+            parseNowStatus:
+              type: string
+              nullable: true
+              description: |
+                Outcome of the latest "parse now" request for the record:
+                QUEUED, IN_PROGRESS, STORED, FAILED, EMPTY, PASSWORD_PROTECTED,
+                FILE_TYPE_NOT_SUPPORTED or NEEDS_MULTIMODAL. STORED means the
+                parsed content is readable for the revision in parseNowRev.
+                Absent on records never asked for with parse now.
+              example: STORED
+            parseNowRev:
+              type: string
+              nullable: true
+              description: The contentRev that parseNowStatus applies to.
+            parseNowReason:
+              type: string
+              nullable: true
+              description: Why, for a parseNowStatus other than STORED.
+            parseNowAt:
+              type: integer
+              format: int64
+              nullable: true
+              description: When parseNowStatus was written, in epoch milliseconds (UTC).
             summaryDocumentId:
               type: string
               nullable: true
