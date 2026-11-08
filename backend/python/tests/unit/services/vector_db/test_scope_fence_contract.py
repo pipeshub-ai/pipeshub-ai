@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from app.services.permissions.scope_fields import SCOPE_FENCE_FIELD, SCOPE_KEYS, checked_fence
+from app.services.permissions.scope_fields import (
+    SCOPE_FENCE_FIELD,
+    SCOPE_KEYS,
+    checked_fence,
+)
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import VectorPoint
 from tests.support.in_memory_vector_db import InMemoryVectorDBService

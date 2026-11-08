@@ -52,7 +52,11 @@ from app.services.permissions.metrics import (
     SCOPE_PREFILTER_CAPPED,
     SCOPE_PREFILTER_DROPPED,
 )
-from app.services.permissions.scope_fields import PATH_IDS_FIELD, SCOPE_FENCE_FIELD, checked_fence
+from app.services.permissions.scope_fields import (
+    PATH_IDS_FIELD,
+    SCOPE_FENCE_FIELD,
+    checked_fence,
+)
 from app.services.vector_db import scope_expr as sx
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
@@ -62,8 +66,8 @@ from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.filters import (
     ScopeFilterTooLarge,
     build_generic_conditions,
-    forbid_org_in_payload,
     forbid_fence_in_payload,
+    forbid_org_in_payload,
     is_missing,
     keep_org_in_overwrite,
     require_filter_org,
