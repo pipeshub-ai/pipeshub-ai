@@ -13,6 +13,7 @@ import io
 import logging
 import uuid
 from typing import TYPE_CHECKING, Any
+from unittest.mock import patch
 
 import pytest
 
@@ -656,6 +657,18 @@ async def test_a_replace_whose_write_fails_keeps_the_old_links(backend) -> None:
             async with store.transaction() as tx:
                 await tx.replace_record_entity_relations(case_id, users, "INFERRED", [{**edge, "edgeType": "NOT_A_TYPE"}])
     assert await _edges(provider, case_id) == before
+
+    if not isinstance(provider, Neo4jProvider):
+        # No caller's transaction: a delete that fails after the write leaves the old links only, not both sets.
+        real = provider.http_client.execute_aql
+
+        async def delete_fails(query: str, *a: object, **k: object) -> object:
+            if "REMOVE e IN" in query:
+                raise RuntimeError("store down")
+            return await real(query, *a, **k)
+        with patch.object(provider.http_client, "execute_aql", delete_fails), pytest.raises(RuntimeError):
+            await provider.replace_record_entity_relations(case_id, users, "INFERRED", [edge])
+        assert await _edges(provider, case_id) == before
 
     # The same call with a good edge replaces the set, and INFERRED links of other collections stay.
     await provider.replace_record_entity_relations(case_id, users, "INFERRED", [edge])

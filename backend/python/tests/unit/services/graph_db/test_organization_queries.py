@@ -142,6 +142,40 @@ class TestReplaceByOrigin:
         with pytest.raises(RuntimeError):
             await p.replace_record_entity_relations("r", ["users"], "INFERRED", [self.EDGE])
         p.http_client.execute_aql.assert_not_awaited()
+        p.http_client.abort_transaction.assert_awaited_once()
+        p.http_client.commit_transaction.assert_not_awaited()
+
+    async def test_arango_runs_the_write_and_the_delete_in_one_transaction_of_its_own(self) -> None:
+        p = _arango()
+        p.http_client.begin_transaction = AsyncMock(return_value="own")
+        p.batch_create_entity_relations = AsyncMock(return_value=True)
+        await p.replace_record_entity_relations("r", ["users"], "INFERRED", [self.EDGE])
+        p.batch_create_entity_relations.assert_awaited_once_with([self.EDGE], "own")
+        assert p.http_client.execute_aql.await_args.kwargs["txn_id"] == "own"
+        p.http_client.commit_transaction.assert_awaited_once_with("own")
+        p.http_client.abort_transaction.assert_not_awaited()
+
+    async def test_arango_rolls_its_own_transaction_back_when_the_delete_fails(self) -> None:
+        p = _arango()
+        p.http_client.begin_transaction = AsyncMock(return_value="own")
+        p.batch_create_entity_relations = AsyncMock(return_value=True)
+        p.http_client.execute_aql = AsyncMock(side_effect=RuntimeError("store down"))
+        with pytest.raises(RuntimeError):
+            await p.replace_record_entity_relations("r", ["users"], "INFERRED", [self.EDGE])
+        p.http_client.abort_transaction.assert_awaited_once_with("own")
+        p.http_client.commit_transaction.assert_not_awaited()
+
+    async def test_arango_leaves_a_callers_transaction_to_the_caller(self) -> None:
+        p = _arango()
+        p.batch_create_entity_relations = AsyncMock(return_value=True)
+        await p.replace_record_entity_relations("r", ["users"], "INFERRED", [self.EDGE], "theirs")
+        assert p.http_client.execute_aql.await_args.kwargs["txn_id"] == "theirs"
+        p.http_client.begin_transaction.assert_not_awaited()
+        p.http_client.commit_transaction.assert_not_awaited()
+        p.batch_create_entity_relations.side_effect = RuntimeError("rejected")
+        with pytest.raises(RuntimeError):
+            await p.replace_record_entity_relations("r", ["users"], "INFERRED", [self.EDGE], "theirs")
+        p.http_client.abort_transaction.assert_not_awaited()
 
     async def test_neo4j_refuses_an_edge_it_cannot_write_before_any_statement(self) -> None:
         p = _neo4j()
