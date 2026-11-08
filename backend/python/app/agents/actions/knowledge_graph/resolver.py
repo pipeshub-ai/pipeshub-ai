@@ -572,9 +572,14 @@ class RecordResolver:
                 logger.debug("_by_weburl(%r): %s", url, exc)
                 continue
             found = await gather_with_concurrency(
-                GRAPH_FANOUT_CONCURRENCY, *(self._weburl_match(row, weburl) for row in rows if row.get("id")),
+                GRAPH_FANOUT_CONCURRENCY,
+                *(self._weburl_match(row, weburl) for row in rows if row.get("id")),
+                return_exceptions=True,
             )
-            matches = [m for m in found if m and m.id]
+            # One copy that cannot be built must not hide the others: the whole URL would read as not found.
+            for failure in (f for f in found if isinstance(f, BaseException)):
+                logger.debug("_by_weburl(%r): a record could not be read: %s", url, failure)
+            matches = [m for m in found if isinstance(m, LookupMatch) and m.id]
             if matches:
                 return matches
         return []
