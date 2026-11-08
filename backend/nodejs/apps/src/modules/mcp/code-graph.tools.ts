@@ -429,7 +429,9 @@ export function registerCodeGraphToolDefinitions(
           .string()
           .min(1)
           .max(200)
-          .describe('A symbol name, text, a regex, or for external a library module.'),
+          .describe(
+            'A symbol name, text, a regex, or for external a library module.',
+          ),
         mode: z
           .enum(['identifier', 'text', 'regex', 'external'])
           .default('identifier'),
