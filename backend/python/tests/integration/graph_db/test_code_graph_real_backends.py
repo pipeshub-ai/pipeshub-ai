@@ -468,10 +468,12 @@ async def test_a_build_writing_into_a_file_deleted_under_it_skips_that_file(race
     try:
         await asyncio.wait_for(writing.wait(), timeout=60)
         for _ in range(200):   # until the write waits on the delete's lock
-            rows = await repo.graph.client.execute_query(
-                "SHOW TRANSACTIONS YIELD status, currentQuery "
-                "WHERE status STARTS WITH 'Blocked' AND currentQuery CONTAINS 'UNWIND $edges AS edge' "
-                "RETURN count(*) AS blocked")
+            rows = await repo.graph.client.execute_query(  # this build's write: an edge into this test's b.py
+                "SHOW TRANSACTIONS YIELD status, currentQuery, parameters "
+                "WHERE status STARTS WITH 'Blocked' AND currentQuery CONTAINS 'MERGE (from)' "
+                "AND any(e IN coalesce(parameters.edges, []) WHERE e.to_key IN $into_b) "
+                "RETURN count(*) AS blocked",
+                parameters={"into_b": [rid, repo.block("src/shop/b.py", "function:target")]})
             if rows and rows[0]["blocked"]:
                 break
             await asyncio.sleep(0.05)
