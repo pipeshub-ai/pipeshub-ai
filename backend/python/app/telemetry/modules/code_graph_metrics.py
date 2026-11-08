@@ -58,9 +58,10 @@ OWED_BUILDS = METRICS_BACKEND.gauge(
 
 TOOL_CALLS = METRICS_BACKEND.counter(
     "pipeshub_code_graph_tool_calls_total",
-    "Code-graph tool calls from in-product agents and from MCP (every pipeshub_code_* tool but "
-    "pipeshub_code_repos), by tool and outcome (ok, or error: refused arguments, a failed "
-    "lookup or an exception)",
+    "Calls that reach a code-graph tool, from in-product agents and from MCP (every "
+    "pipeshub_code_* tool but pipeshub_code_repos), by tool and outcome (ok, or error: refused "
+    "arguments, a failed lookup or an exception). A request refused before it reaches a tool "
+    "(an unknown or unreadable repo, invalid MCP input) is not counted here",
     ["tool", "outcome"],
 )
 

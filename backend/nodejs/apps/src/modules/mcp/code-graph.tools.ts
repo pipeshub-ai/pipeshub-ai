@@ -455,7 +455,7 @@ export function registerCodeGraphToolDefinitions(
         'Use when you know a name or exact text but not its file. `mode: "identifier"` ' +
         '(default) lists every definition with that name. `mode: "text"` or `"regex"` finds ' +
         'lines in file bodies (a string, a call site, a config key). With a repo-relative ' +
-        '`path` they read at most 1,000 files under it; without it, the keyword index ' +
+        '`path` they read at most 1000 files under it; without it, the keyword index ' +
         "proposes the files holding the pattern's rarest whole word (a regex needs one). " +
         '`complete: false` says a match may be missing, and the note says why; then give ' +
         '`path` to read in full. `mode: "external"` lists who calls into a library: ' +
