@@ -43,13 +43,15 @@ def _graph_user(uid: str, enabled: bool = True, user_type: str = "Member") -> Ma
     u.id, u.display_name, u.mail, u.user_principal_name = uid, uid, f"{uid}@x.com", None
     u.given_name = u.surname = None
     u.account_enabled, u.user_type = enabled, user_type
+    u.job_title, u.created_date_time = None, None
     return u
 
 
-def _page(values: list, next_link: str | None = None, success: bool = True) -> MagicMock:
+def _page(values: list, next_link: str | None = None, success: bool = True, count: int | None = None) -> MagicMock:
     data = MagicMock()
     data.value = values
     data.odata_next_link = next_link
+    data.odata_count = count
     return MagicMock(success=success, data=data, error="boom")
 
 
@@ -89,6 +91,7 @@ async def test_outlook_restored_account_gets_access_back() -> None:
     [_page([_graph_user("a")], "https://next"), _page([_graph_user("b")], success=False)],  # failed page
     [_page([_graph_user("a")], "https://next"), MagicMock(success=True, data=None), _page([_graph_user("b")])],  # page without data
     [_page([], "https://next"), _page([_graph_user("a"), _graph_user("b")])],  # first page empty with a token
+    [_page([_graph_user("a")], count=3)],  # the directory counts more users than the list holds (next link dropped)
 ])
 async def test_outlook_partial_listing_withdraws_nobody(pages) -> None:
     c, stored = _outlook(["a", "b", "c"], pages)
@@ -184,6 +187,23 @@ async def test_graph_listing_with_empty_page_and_next_link_fails() -> None:
     g.users.with_url = MagicMock(return_value=nxt)
     g_user = first.value[0]
     g_user.job_title, g_user.created_date_time = None, None
-    client = MSGraphClient("SHAREPOINT", "c1", g, logging.getLogger("t"), 1000)
+    client = MSGraphClient("SHAREPOINT ONLINE", "c1", g, logging.getLogger("t"), 1000)
     with pytest.raises(RuntimeError):
         await client.get_all_users()
+
+
+@pytest.mark.asyncio
+async def test_graph_listing_short_of_the_directory_count_fails() -> None:
+    g = MagicMock()
+    g.users.get = AsyncMock(return_value=MagicMock(value=[_graph_user("a")], odata_next_link=None, odata_count=3))
+    client = MSGraphClient("SHAREPOINT ONLINE", "c1", g, logging.getLogger("t"), 1000)
+    with pytest.raises(RuntimeError, match="short"):
+        await client.get_all_users()
+
+
+@pytest.mark.asyncio
+async def test_graph_listing_matching_the_directory_count_is_accepted() -> None:
+    g = MagicMock()
+    g.users.get = AsyncMock(return_value=MagicMock(value=[_graph_user("a")], odata_next_link=None, odata_count=1))
+    client = MSGraphClient("SHAREPOINT ONLINE", "c1", g, logging.getLogger("t"), 1000)
+    assert [u.source_user_id for u in await client.get_all_users()] == ["a"]

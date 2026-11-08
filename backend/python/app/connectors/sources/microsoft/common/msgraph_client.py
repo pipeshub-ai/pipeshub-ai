@@ -242,14 +242,19 @@ class MSGraphClient:
             async with self.rate_limiter:
                 query_params = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(
                     select=['id', 'displayName', 'userPrincipalName', 'accountEnabled',
-                            'mail', 'jobTitle', 'department', 'surname', 'userType']
+                            'mail', 'jobTitle', 'department', 'surname', 'userType'],
+                    count=True,
                 )
 
                 request_configuration = RequestConfiguration(
                     query_parameters=query_params
                 )
+                request_configuration.headers.add("ConsistencyLevel", "eventual")
 
                 result = await self.client.users.get(request_configuration)
+
+            # The directory's own total: a list that ends short of it was cut, not complete.
+            expected = result.odata_count if result else None
 
             while result:
                 if result.value:
@@ -257,8 +262,6 @@ class MSGraphClient:
                 elif getattr(result, 'odata_next_link', None):
                     # An empty page with a next link lost its users; a short list must not
                     # read as accounts that were deleted.
-                    # shortcut: a next link the server drops silently reads as the end of the list;
-                    # upgrade to a $count cross-check if Graph is seen doing that.
                     raise RuntimeError("User listing returned an empty page with a next link")
 
                 if hasattr(result, 'odata_next_link') and result.odata_next_link:
@@ -266,6 +269,9 @@ class MSGraphClient:
                         result = await self.client.users.with_url(result.odata_next_link).get()
                 else:
                     break
+
+            if isinstance(expected, int) and len(users) < expected:
+                raise RuntimeError(f"User listing is short: {len(users)} of {expected} users")
 
             self.logger.info(f"Retrieved {len(users)} users.")
 

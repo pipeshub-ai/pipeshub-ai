@@ -680,6 +680,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             all_users = []
             self._disabled_user_ids = set()
             self._listed_user_ids = set()
+            expected = None
             next_url = None
             page_num = 1
 
@@ -691,7 +692,10 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                 else:
                     response: UsersGroupsResponse = await self.external_users_client.users_user_list_user(
                         select=OutlookAPIFields.USER_SYNC_SELECT_FIELDS,
+                        count=True,
                     )
+                    # The directory's own total: a list that ends short of it was cut, not complete.
+                    expected = getattr(response.data, "odata_count", None) if response.success else None
 
                 if not response.success:
                     # Any failed page fails the list: a partial one would drop the missing
@@ -707,8 +711,6 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                 if not user_data and response.data.odata_next_link:
                     # An empty page with a next link lost its users; a short list must not
                     # read as accounts that were deleted.
-                    # shortcut: a next link the server drops silently reads as the end of the list;
-                    # upgrade to a $count cross-check if Graph is seen doing that.
                     raise Exception(f"Failed to fetch users (page {page_num}): empty page with a next link")
 
                 for user in user_data:
@@ -753,6 +755,9 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                     break
 
                 page_num += 1
+
+            if isinstance(expected, int) and len(self._listed_user_ids) < expected:
+                raise Exception(f"Failed to fetch users: short list, {len(self._listed_user_ids)} of {expected}")
 
             self.logger.info(f"Retrieved {len(all_users)} total users across {page_num} page(s)")
             return all_users
