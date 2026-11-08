@@ -146,7 +146,8 @@ class PendingEdgeFact:
     # in `import * as ns`. Calls are written against this name.
     local_name: str | None = None
     # CALLS: "construct" for a C++ construction (`new Conn(..)`, `Conn c(..)`), which names a type, never a
-    # function; "initializer" for a constructor's `: Name(..)`, which names a base or a member.
+    # function; "initializer" for a constructor's `: Name(..)`, which names a base or a member. IMPORTS:
+    # "default" for a JS default import, whose local name is the importer's choice, not the module's.
     context: str | None = None
     # A type reference's type-argument count (`IHandler<int>`: 1), where the language reads it (C# bases).
     type_args: int | None = None
