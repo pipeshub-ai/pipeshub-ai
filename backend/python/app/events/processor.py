@@ -44,6 +44,7 @@ from app.modules.code_graph.block_projection import (
     drop_code_file_blocks,
     write_code_file_blocks_to_graph,
 )
+from app.modules.indexing.embed_resume import chain_end_fields
 from app.modules.indexing.parse_now_marker import (
     run_settings,
     shape_status_write,
@@ -1597,6 +1598,7 @@ class Processor:
             "lastIndexTimestamp": timestamp,
             "extractionStatus": ProgressStatus.EMPTY.value,
             "lastExtractionTimestamp": timestamp,
+            **chain_end_fields(indexing_status.value),
         }
         if indexing_status == ProgressStatus.EMPTY:
             status_update["reason"] = ""
