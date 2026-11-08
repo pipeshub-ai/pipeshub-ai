@@ -981,16 +981,22 @@ class CodeGraph:
             "match the regex — a string literal, a call site, a config key. These read "
             "file contents, so they need `path` (a directory, file or glob) and stop after "
             "100 files.\n\n"
+            "`mode='external'`: who calls into a library — `pattern` is the module as "
+            "imported (`requests`; `django.db` covers `django.db.models`), `name` narrows to "
+            "one of its names; matches list their `external_refs`.\n\n"
             "Results are addresses: read_code reads one, get_neighbour walks from one."
         ),
         parameters=[
             ToolParameter(name="connector_id", type=ParameterType.STRING,
                           description=_CONNECTOR_ID_DESC),
             ToolParameter(name="pattern", type=ParameterType.STRING,
-                          description="A symbol name, a literal piece of text, or a regex."),
+                          description=("A symbol name, a literal piece of text, a regex, or for "
+                                       "'external' a library module.")),
             ToolParameter(name="mode", type=ParameterType.STRING, required=False,
                           default="identifier",
-                          description="'identifier' (default), 'text' or 'regex'."),
+                          description="'identifier' (default), 'text', 'regex' or 'external'."),
+            ToolParameter(name="name", type=ParameterType.STRING, required=False, default=None,
+                          description="'external' only: one name of the module, e.g. 'get'."),
             ToolParameter(name="path", type=ParameterType.STRING, required=False, default=None,
                           description=("Directory, file or glob to search in. Required for "
                                        "'text' and 'regex'; narrows 'identifier'.")),
@@ -1013,6 +1019,7 @@ class CodeGraph:
         *,
         include_tests: bool = False,
         repo: str | None = None,
+        name: str | None = None,
     ) -> tuple[bool, str]:
         result = await self._run(
             "search_code",
@@ -1021,7 +1028,7 @@ class CodeGraph:
                 graph_provider=self._graph_provider, blob_store=self._blob_store,
                 org_id=self._org_id, user_id=self._user_id, connector_id=connector_id,
                 pattern=pattern, mode=mode, path=path, limit=limit,
-                include_tests=include_tests, repo=repo,
+                include_tests=include_tests, repo=repo, name=name,
             ),
             "Failed to search the code",
         )

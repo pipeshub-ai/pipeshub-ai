@@ -68,7 +68,7 @@ _BLOCK_SCAN_FIELDS = [
     "_key", "recordId", "name", "kind", "qualifiedName", "language",
     "isBlockGroup", "parentBlockId", "pendingEdges", "typeTable", "referencedNames", "modifiers", "macroTable",
     "typeParamCount",
-    "startLine",
+    "startLine", "externalRefs",
 ]
 
 _CALL_RELATIONS = {RecordRelations.CALLS.value}
@@ -118,15 +118,37 @@ _MAX_MACRO_DEPTH = 8
 
 # The parser's context for a Go embedded field: method promotion, never a heritage edge.
 _EMBEDS = "embeds"
-# A local name an import binds to something outside the repo (`from requests
-# import get`). It shadows every repo definition of that name in the file.
-_EXTERNAL = ""
 # The parser's context for the module of a Python `from m import f`, which binds no name `m`.
 _FROM_IMPORT = "from"
 # The IMPORTS name of `from m import *`.
 _STAR = "*"
 # The type-table key prefix of a pytest fixture's type (the parser marks a parameter that may be one FIXTURE_MARK).
 _FIXTURE_KEY = "fixture:"
+
+
+@dataclass(frozen=True)
+class ExternalRef:
+    """A local name an import binds outside the repo: `from requests import get` is ("requests", "get"),
+    `import numpy as np` is ("numpy", ""). It shadows every repo definition of that name in the file. Falsy, so a
+    binding test (`if bound:`) reads it as "nothing in the repo". An empty specifier is an import the resolver
+    cannot place that still names repo code (`_unplaced`): it shadows the same way, but names no library."""
+
+    specifier: str
+    name: str = ""
+
+    def __bool__(self) -> bool:
+        return False
+
+    def member(self, name: str) -> ExternalRef:
+        """`np.array`, `func.count`: a name reached through this binding."""
+        return ExternalRef(self.specifier, f"{self.name}.{name}" if self.name else name)
+
+    def __str__(self) -> str:
+        return f"{self.specifier}:{self.name}"
+
+
+def _is_external(binding: object) -> bool:
+    return isinstance(binding, ExternalRef)
 
 
 def _split_arity(type_name: str, family: str | None) -> tuple[str, int]:
@@ -194,6 +216,8 @@ class EdgeBuildResult:
     facts_missing: int = 0
     # tsconfig/jsconfig files whose stored parse could not be read: their folders resolve as if they had none.
     ts_configs_unread: int = 0
+    # Blocks whose externalRefs this build rewrote: only those whose list changed.
+    external_refs_written: int = 0
     duration_s: float = 0.0
 
     def as_log_fields(self) -> dict[str, Any]:
@@ -214,6 +238,7 @@ class EdgeBuildResult:
             "facts_loaded": self.facts_loaded,
             "facts_missing": self.facts_missing,
             "ts_configs_unread": self.ts_configs_unread,
+            "external_refs_written": self.external_refs_written,
             "duration_s": round(self.duration_s, 2),
         }
 
@@ -463,9 +488,13 @@ class _Builder:
         self.module_imports: dict[str, set[str]] = _BindingMap(self.bindings_missing, lambda: self.resolving)
         # file -> local name -> what the file's imports bind it to: a block for
         # `from m import f`, a file for `import m` / `import * as m`, or
-        # `_EXTERNAL`. Calls resolve through these before any name matching.
-        self.symbol_bindings: dict[str, dict[str, str]] = _BindingMap(self.bindings_missing, lambda: self.resolving)
-        self.module_bindings: dict[str, dict[str, str]] = _BindingMap(self.bindings_missing, lambda: self.resolving)
+        # an ExternalRef. Calls resolve through these before any name matching.
+        self.symbol_bindings: dict[str, dict[str, str | ExternalRef]] = _BindingMap(
+            self.bindings_missing, lambda: self.resolving)
+        self.module_bindings: dict[str, dict[str, str | ExternalRef]] = _BindingMap(
+            self.bindings_missing, lambda: self.resolving)
+        # block -> the library names its calls reach (`requests:get`), written as Block.externalRefs.
+        self.external_refs_by_block: dict[str, set[str]] = {}
         # file -> local name -> every (block holding the import, its line) a binding was made at: one at module
         # level and others inside functions bind the name for different callers.
         self.module_binding_sites: dict[str, dict[str, list[tuple[str, int | None]]]] = {}
@@ -657,7 +686,7 @@ class _Builder:
                     specifier if family == "py" and fact.get("context") != _FROM_IMPORT else None)
                 if local:
                     self.module_bindings.setdefault(from_file or "", {})[local] = (
-                        target_file or _EXTERNAL
+                        target_file or self._unplaced(specifier, from_file or "", family)
                     )
                     self.module_binding_sites.setdefault(from_file or "", {}).setdefault(local, []).append(
                         (block_id, fact.get("line")))
@@ -705,7 +734,9 @@ class _Builder:
             # A package import (`requests`, `lodash`). Matching the name across
             # the repo instead is how `from requests import get` used to land
             # on a repo `get` and an import of `logging` on telemetry/logging.py.
-            bindings[local] = _EXTERNAL
+            # `import ax from "axios"`: the module's default export, whatever this file calls it.
+            bindings[local] = self._unplaced(specifier, from_file, family,
+                                             "default" if fact.get("context") == "default" else name)
             self.result.external_refs += 1
             return
         # A Rust `impl Foo` block shares its type's name but is never what `use m::Foo` imports.
@@ -766,14 +797,19 @@ class _Builder:
         elif self._star_withholds(target_file, name, family):
             # `from pkg import hidden` where pkg's `from .m import *` leaves `hidden` out (m's `__all__`, or a
             # leading `_`): an ImportError, never a call into m. Checked after the submodule: Python falls back
-            # to importing `pkg.hidden` when the attribute is missing.
-            bindings[local] = _EXTERNAL
+            # to importing `pkg.hidden` when the attribute is missing. It hides the name, naming no library.
+            bindings[local] = ExternalRef("", name)
         elif family == "py":
             # A module-level value (`apps = Apps()`), or a name the file re-exports:
             # calls on it are typed from that file's assignment.
             self.value_imports.setdefault(from_file, {})[local] = (target_file, name)
         # Otherwise the file re-exports the name from elsewhere (a Python
         # `__init__`); it stays unbound and resolves by the weaker rules.
+
+    def _unplaced(self, specifier: str, from_file: str, family: str | None, name: str = "") -> ExternalRef:
+        """What an import the resolver cannot place binds: the outside library it names, or, for a path that
+        starts in the repo (Rust `crate::m`), a ref naming no library, which hides the name all the same."""
+        return ExternalRef("" if self.imports.in_repo(specifier, from_file, family) else specifier, name)
 
     def _python_submodule(self, specifier: str, name: str, from_file: str,
                           family: str | None) -> str | None:
@@ -869,7 +905,7 @@ class _Builder:
 
             if fact.get("isMemberCall"):
                 target, confidence, resolution = self._resolve_member_call(block_id, fact, record_id)
-                if not target and resolution != _EXTERNAL and relation == RecordRelations.CALLS.value:
+                if not target and not _is_external(resolution) and relation == RecordRelations.CALLS.value:
                     target, confidence, resolution = self._extension_method(fact, record_id, family)
                 targets = target if isinstance(target, list) else [target] if target else []
                 if resolution == RESOLUTION_TYPE and not rules_for(family).typed_calls_reach_fields:
@@ -884,10 +920,11 @@ class _Builder:
                             RecordRelations.CALLS.value,
                             confidence=confidence, line=fact.get("line"), resolution=resolution,
                         )
-                elif resolution == _EXTERNAL or not self.index.candidates(name):
+                elif _is_external(resolution) or not self.index.candidates(name):
                     # `resp.json()` on a third-party object -- the method name
                     # exists nowhere in the repo.
                     self.result.external_refs += 1
+                    self._note_external(block_id, relation, resolution)
                 else:
                     self.result.unresolved += 1
                 continue
@@ -936,6 +973,7 @@ class _Builder:
                     type_args=fact.get("typeArgs"), caller=block_id, line=fact.get("line"),
                 )
             if not target:
+                self._note_external(block_id, relation, resolution)
                 continue
             self._add_edge(
                 source, self._block_key(target),
@@ -945,6 +983,11 @@ class _Builder:
         for source, target, line in wrapped:
             self._add_edge(source, target, RecordRelations.CALLS.value, confidence=CONFIDENCE_INFERRED, line=line,
                            resolution=RESOLUTION_WRAPPER)
+
+    def _note_external(self, block_id: str, relation: str, resolution: object) -> None:
+        """A call into a library this file imports by name."""
+        if relation in _CALL_RELATIONS and _is_external(resolution) and resolution.specifier:
+            self.external_refs_by_block.setdefault(block_id, set()).add(str(resolution))
 
     def _shadowing_trait(self, file_path: str, name: str) -> tuple[str | None, str, str | None]:
         """The repo trait a prelude name means in *file_path*: the one its import binds, else the one it
@@ -1140,7 +1183,7 @@ class _Builder:
     def _resolve_direct(self, name: str, call_file: str, family: str | None,
                         relation: str, qualified_prefix: str | None = None, *, type_args: int | None = None,
                         caller: str | None = None, line: int | None = None,
-                        ) -> tuple[str | None, str, str | None]:
+                        ) -> tuple[str | None, str, str | ExternalRef | None]:
         """Name -> definition, strongest evidence first.
 
         An import binding decides outright; then a dotted qualifier, a
@@ -1151,9 +1194,9 @@ class _Builder:
         if bound is not None and self._own_definition_wins(call_file, name, caller, family,
                                                            self.symbol_binding_sites, line):
             bound = None
-        if bound == _EXTERNAL:
+        if _is_external(bound):
             self.result.external_refs += 1
-            return None, CONFIDENCE_INFERRED, None
+            return None, CONFIDENCE_INFERRED, bound
         if (bound and (family is None or self._family_of(bound) == family)
                 and (relation not in _TYPE_RELATIONS or bound in self.index.type_blocks)):
             return bound, CONFIDENCE_EXTRACTED, RESOLUTION_IMPORT
@@ -1165,8 +1208,12 @@ class _Builder:
             # message`, `import time`: the name is that module, never a same-named definition elsewhere; where a
             # module can be a function or class (CommonJS), the module's own top-level definition of that name.
             module = modules_bound[name]
+            if _is_external(module) and module.specifier:
+                # `import requests; requests(url)`, `const debug = require("debug"); debug()`: the library itself.
+                self.result.external_refs += 1
+                return None, CONFIDENCE_INFERRED, module
             target = (self._top_level_in_file(module, name)
-                      if module != _EXTERNAL and rules.module_may_be_callable else None)
+                      if not _is_external(module) and rules.module_may_be_callable else None)
             if target:
                 return target, CONFIDENCE_EXTRACTED, RESOLUTION_MODULE
             self.result.unresolved += 1
@@ -1259,8 +1306,27 @@ class _Builder:
             return None, confidence, None
         return candidates[0], confidence, resolution
 
+    def _library_member(self, path: str, call_file: str, family: str | None) -> ExternalRef | None:
+        """The library item an unplaced path calls, named as a call through a module binding names it: through
+        the file's binding of its head (`use std::thread; thread::spawn()` is `std::thread:spawn`), else, for a
+        path whose head is no repo name, the path itself (`serde_json::to_string()` is `serde_json:serde_json.
+        to_string`). None for a repo path the resolver cannot place."""
+        separator = rules_for(family).qualified_path_separator or "."
+        head, _, rest = path.partition(separator)
+        if not rest:
+            return None
+        binding = self.module_bindings.get(call_file, {}).get(head)
+        if binding is None:  # not `or`: an ExternalRef is falsy
+            binding = self.symbol_bindings.get(call_file, {}).get(head)
+        if _is_external(binding):
+            return binding.member(rest.replace(separator, ".")) if binding.specifier else None
+        if binding is not None or self.imports.in_repo(path, call_file, family):
+            return None
+        module, _, item = path.rpartition(separator)
+        return ExternalRef(module, module.rpartition(separator)[2]).member(item)
+
     def _qualified_path_target(self, path: str, name: str, call_file: str, family: str | None,
-                               relation: str) -> tuple[str | None, str, str | None]:
+                               relation: str) -> tuple[str | None, str, str | ExternalRef | None]:
         """The definition *path* names in the file the family's resolver places it in: the one whose qualified
         name is the path's longest tail there (`a::testing::f` is `testing.f`, in an inline `mod testing`, before
         a top-level `f`). A path the resolver cannot place is outside the repo, never a same-named definition."""
@@ -1268,7 +1334,7 @@ class _Builder:
         defining = self.imports.resolve(path, call_file, family)
         if not defining:
             self.result.external_refs += 1
-            return None, CONFIDENCE_INFERRED, None
+            return None, CONFIDENCE_INFERRED, self._library_member(path.removeprefix(separator), call_file, family)
         segments = path.split(separator)
         tails = {".".join(segments[i:]): i for i in range(len(segments))}
         in_file = sorted((tails[tail], cid) for cid in self._eligible(self.index.candidates(name), family, relation)
@@ -1355,13 +1421,13 @@ class _Builder:
         return None
 
     def _resolve_member_call(self, block_id: str, fact: dict, record_id: str,
-                             ) -> tuple[str | list[str] | None, str, str | None]:
+                             ) -> tuple[str | list[str] | None, str, str | ExternalRef | None]:
         """`obj.method()` -- find the receiver's type, then its method.
 
         Returns ``(target, confidence, resolution)``, the target a list when the
         receiver's type is a union alias (one per member); a resolution of
-        ``_EXTERNAL`` with no target means the receiver is a third-party or
-        stdlib module (`logging.getLogger`).
+        an ExternalRef with no target means the receiver is a third-party or
+        stdlib module (`logging.getLogger`), and names what was called.
         """
         name = fact.get("toName") or ""
         receiver_type = fact.get("receiverType")
@@ -1490,7 +1556,7 @@ class _Builder:
             if target or family != "py":
                 return target, CONFIDENCE_INFERRED, RESOLUTION_MODULE if target else None
             if name in _PY_BUILTIN_METHODS:
-                return None, CONFIDENCE_INFERRED, _EXTERNAL
+                return None, CONFIDENCE_INFERRED, ExternalRef("")  # a container's method: no repo code, no library
             last = (fact.get("qualifiedPrefix") or receiver or "").rsplit(".", 1)[-1]
             call_file = self.index.file_by_record.get(record_id) or ""
             named = (self._py_named_like(last, name, call_file)
@@ -1647,7 +1713,7 @@ class _Builder:
 
     def _imported_from_outside(self, call_file: str, name: str) -> bool:
         """`from requests import Session`, or an import the resolver cannot place: no repo class so named."""
-        return self.symbol_bindings.get(call_file, {}).get(name) == _EXTERNAL
+        return _is_external(self.symbol_bindings.get(call_file, {}).get(name))
 
     def _type_candidates(self, type_name: str, record_id: str, family: str | None) -> list[str]:
         """The types *type_name* can mean in a file: the one it imports or defines, if any. A C# type-table
@@ -1951,7 +2017,7 @@ class _Builder:
                 roots.append(cid)
         return roots
 
-    def _py_unique_method(self, name: str, fact: dict, record_id: str) -> tuple[str | None, str, str | None]:
+    def _py_unique_method(self, name: str, fact: dict, record_id: str) -> tuple[str | None, str, str | ExternalRef | None]:
         """An untyped Python receiver: the method if exactly one class in the repo defines
         that name. A dunder, a name several classes share, or a chain starting at a
         builtin or a third-party import (`os.path.splitext`) stays unresolved."""
@@ -1959,9 +2025,9 @@ class _Builder:
             return None, CONFIDENCE_INFERRED, None
         head = re.split(r"[.(\[]", fact.get("qualifiedPrefix") or fact.get("receiver") or "", maxsplit=1)[0]
         call_file = self.index.file_by_record.get(record_id) or ""
-        if head in _PY_BUILTINS or _EXTERNAL in (self.symbol_bindings.get(call_file, {}).get(head),
-                                                 self.module_bindings.get(call_file, {}).get(head)):
-            return None, CONFIDENCE_INFERRED, _EXTERNAL
+        if head in _PY_BUILTINS or any(map(_is_external, (self.symbol_bindings.get(call_file, {}).get(head),
+                                                          self.module_bindings.get(call_file, {}).get(head)))):
+            return None, CONFIDENCE_INFERRED, ExternalRef("")
         owners = [cid for cid in self.index.candidates(name)
                   if self._family_of(cid) == "py" and self._parent_of(cid) in self.index.type_blocks]
         if len(owners) != 1 or not self._py_reachable(call_file, owners[0]):
@@ -2150,15 +2216,17 @@ class _Builder:
         return None
 
     def _resolve_go_method(self, receiver_type: str, name: str, record_id: str,
-                           ) -> tuple[str | None, str, str | None]:
+                           ) -> tuple[str | None, str, str | ExternalRef | None]:
         """`c.Get()` with `c *Client`: Go names a type by package, so `Client` is
         this package's and `rest.Client` the imported rest package's."""
         call_file = self.index.file_by_record.get(record_id) or ""
         qualifier, _, type_name = receiver_type.rpartition(".")
         if qualifier:
             package = self.module_bindings.get(call_file, {}).get(qualifier)
-            if not package or package == _EXTERNAL:
-                return None, CONFIDENCE_INFERRED, _EXTERNAL if package else None
+            if _is_external(package):
+                return None, CONFIDENCE_INFERRED, package.member(f"{type_name}.{name}")
+            if not package:
+                return None, CONFIDENCE_INFERRED, None
         else:
             package = call_file
         owner = self._defined_or_reexported(package, type_name)
@@ -2184,23 +2252,26 @@ class _Builder:
         return None
 
     def _resolve_bound_receiver(self, receiver: str, name: str, record_id: str, qualifier: str | None = None,
-                                ) -> tuple[str | None, str, str | None] | None:
+                                ) -> tuple[str | None, str, str | ExternalRef | None] | None:
         """`jobs.run()`, `ns.f()`, `Order.from_dict()`: a receiver an import or a
         same-file class names, or a type the family's scope shows the file
         (C++ `oatpp::base::Environment::tick()`). None when the receiver is none of those."""
         call_file = self.index.file_by_record.get(record_id) or ""
+        # `a.conn.f()`: a receiver after a dot is a member of what precedes it, never a written path.
+        attribute = bool(qualifier) and qualifier != receiver and qualifier.endswith(f".{receiver}")
+        if attribute and (ref := self._library_path_ref(qualifier, name, call_file)) is not None:
+            return None, CONFIDENCE_INFERRED, ref
         # Where receiver chains are typed, `self.config.colors.matched()`'s `colors` is a field, never an import.
-        head = not (rules_for(lang_family(None, call_file)).typed_receiver_chains and qualifier
-                    and qualifier != receiver and qualifier.endswith(f".{receiver}"))
+        head = not (attribute and rules_for(lang_family(None, call_file)).typed_receiver_chains)
         module = self.module_bindings.get(call_file, {}).get(receiver) if head else None
-        if module == _EXTERNAL:
-            return None, CONFIDENCE_INFERRED, _EXTERNAL
+        if _is_external(module):
+            return None, CONFIDENCE_INFERRED, module.member(name)
         if module:
             target = self._defined_or_reexported(module, name)
             return target, CONFIDENCE_EXTRACTED, RESOLUTION_IMPORT if target else None
         bound = self.symbol_bindings.get(call_file, {}).get(receiver) if head else None
-        if bound == _EXTERNAL:
-            return None, CONFIDENCE_INFERRED, _EXTERNAL
+        if _is_external(bound):
+            return None, CONFIDENCE_INFERRED, bound.member(name)
         member = self._namespace_member(bound or "", receiver, name, record_id)
         if member:
             return member, CONFIDENCE_EXTRACTED, RESOLUTION_IMPORT if bound else RESOLUTION_SAME_FILE
@@ -2221,8 +2292,6 @@ class _Builder:
                 target = target if target in self.index.callable_blocks else None
                 if target or not rules.qualified_callees:
                     return target, CONFIDENCE_EXTRACTED, RESOLUTION_MODULE if target else None
-        # `a.conn.f()`: a receiver after a dot is a member of what precedes it, never a written path.
-        attribute = bool(qualifier) and qualifier != receiver and qualifier.endswith(f".{receiver}")
         if not bound and rules.qualified_callees and not attribute:
             found = path_proximity_winner(
                 self._linkable(rules.qualified_callees(self.index, call_file, name, qualifier or receiver),
@@ -2234,6 +2303,21 @@ class _Builder:
             target = self._resolve_self_method(bound, name)
             return target, CONFIDENCE_EXTRACTED, RESOLUTION_IMPORT if target else None
         return None
+
+    def _library_path_ref(self, qualifier: str, name: str, call_file: str) -> ExternalRef | None:
+        """`datetime.datetime.now()`, `unittest.mock.patch()`, `BigInteger.ZERO.setBit()`: a dotted chain whose
+        first name the file imports from a library is a path into that library, not an attribute."""
+        first, _, rest = qualifier.partition(".")
+        if not re.fullmatch(r"\w+(\.\w+)*", rest):
+            return None  # `requests.get(url).json()`: a call's result, no static path
+        if "class" in rest.split("."):
+            return None  # `List.class.getMethod()` is java.lang.Class's method, nothing of java.util.List
+        # shortcut: a parameter or local named like the import (`def f(datetime): datetime.x.y()`) still reads as
+        # the import; upgrade when the parser marks a shadowed chain head as it does a shadowed receiver.
+        binding = self.module_bindings.get(call_file, {}).get(first)
+        if binding is None:  # not `or`: an ExternalRef is falsy
+            binding = self.symbol_bindings.get(call_file, {}).get(first)
+        return binding.member(f"{rest}.{name}") if _is_external(binding) else None
 
     def _top_level_in_file(self, file_path: str, name: str) -> str | None:
         key = (file_path, name)
@@ -2644,12 +2728,12 @@ class _Builder:
         if bound is not None and self._own_definition_wins(from_file, name, caller, family,
                                                            self.symbol_binding_sites, line):
             bound = None  # the file's own later definition, as INHERITS takes it in `_resolve_direct`
-        if bound == _EXTERNAL:
+        if _is_external(bound):
             return None
         if bound in self.index.type_blocks:
             return bound
         module = self.module_bindings.get(from_file, {}).get(qualified_prefix or "")
-        if module and module != _EXTERNAL:
+        if module:
             hit = self._defined_or_reexported(module, name)
             if hit in self.index.type_blocks:
                 return hit
@@ -2911,6 +2995,7 @@ async def build_code_graph_edges(
             await fence()
             await graph_provider.batch_upsert_node_relations(
                 [builder.edge_document(key, meta, now) for key, meta in chunk])
+        await _write_external_refs(graph_provider, builder, index, reresolve, fence)
         source_keys = _source_keys_for(index, reresolve)
         await fence()
         removed = await _delete_previous_edges(
@@ -2924,6 +3009,25 @@ async def build_code_graph_edges(
 
 async def _no_fence() -> None:
     return None
+
+
+async def _write_external_refs(graph_provider: IGraphDBProvider, builder: _Builder, index: SymbolIndex,
+                               record_ids: set[str], fence: Callable[[], Awaitable[None]]) -> None:
+    """Block.externalRefs of the re-resolved files' blocks, written only where the list changed: rewriting every
+    list would add a write per block to each build. Compared with the stored list the scan read, so a stale one
+    (Neo4j merges a re-projection) is cleared to [] and a missing one (Arango replaces the document) is written
+    again; missing and empty are the same "no refs"."""
+    nodes = []
+    for record_id in sorted(record_ids):
+        for block_id in index.blocks_by_record.get(record_id, ()):
+            refs = sorted(builder.external_refs_by_block.get(block_id, ()))
+            row = index.rows.get(block_id)
+            if refs != list(row.external_refs if row else ()):
+                nodes.append({"id": block_id, "externalRefs": refs})
+    builder.result.external_refs_written = len(nodes)
+    for chunk in _chunks(nodes):
+        await fence()
+        await graph_provider.batch_update_nodes(chunk, CollectionNames.BLOCKS.value)
 
 
 def _resolve(builder: _Builder, index: SymbolIndex, reresolve: set[str]) -> list[tuple]:

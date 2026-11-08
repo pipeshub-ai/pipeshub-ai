@@ -94,6 +94,7 @@ class TestMCPRegistry:
         assert "trello" in type_ids
         assert "cloudflare" in type_ids
         assert "paypal" in type_ids
+        assert "posthog" in type_ids
 
     def test_airtable_catalog_entry(self) -> None:
         registry = MCPRegistry()
