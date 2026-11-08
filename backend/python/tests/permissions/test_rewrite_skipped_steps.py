@@ -12,10 +12,9 @@ import pytest
 
 from app.services.vector_db import scope_rewrite
 from app.services.vector_db.scope_rewrite import RewriteIncomplete
-from tests.support.in_memory_vector_db import InMemoryVectorDBService
 
 from .model import Mutation as M
-from .rewrite_kit import Env, Log, Tap
+from .rewrite_kit import Env, FencedMemoryVectorDB, Log, Tap
 from .scenario import WorldStore
 from .stamp_world import ORG
 
@@ -28,7 +27,7 @@ def _writers_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ACL_SCOPE_FIELDS", "on")
 
 
-class LaggingSearchVectorDB(InMemoryVectorDBService):
+class LaggingSearchVectorDB(FencedMemoryVectorDB):
     """A store that searches an older view than it stores, as OpenSearch does between refreshes: `retrieve_points` (a realtime get) sees every
     write, `scroll` shows the payloads as of the last `make_searchable` (an index refresh)."""
 
@@ -51,7 +50,7 @@ class LaggingSearchVectorDB(InMemoryVectorDBService):
                 self.view[str(point.id)] = dict(point.payload)
 
 
-class LossyScrollVectorDB(InMemoryVectorDBService):
+class LossyScrollVectorDB(FencedMemoryVectorDB):
     """A scroll that silently lacks points, as a RediSearch query that ran out of time does; the store's own count still says how many there are."""
 
     drop = 0
@@ -139,7 +138,7 @@ async def test_a_scroll_that_lacks_points_keeps_the_root(monkeypatch: pytest.Mon
 
 async def test_a_store_that_cannot_count_keeps_the_root(monkeypatch: pytest.MonkeyPatch) -> None:
     ref, mutation, _ = HR
-    vdb = InMemoryVectorDBService()
+    vdb = FencedMemoryVectorDB()
     env = await Env.make(WorldStore().world(ref), vdb)
     real = vdb.count_points
 

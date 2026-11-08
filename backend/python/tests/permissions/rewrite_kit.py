@@ -32,7 +32,7 @@ from app.services.vector_db import scope_expr as sx
 from app.services.vector_db.filters import ScopeFilter
 from app.services.vector_db.scope_backfill import DONE, ScopeBackfill
 from app.services.vector_db.scope_rewrite import PENDING_KEY, UNSCOPED_KEY, RewriteResult, ScopeRewriteJob
-from tests.support.in_memory_vector_db import InMemoryVectorDBService
+from tests.support.in_memory_vector_db import InMemoryVectorDBService, _passes
 
 from . import mutations
 from .model import HIERARCHY_RELATIONS, Mutation
@@ -48,6 +48,16 @@ if TYPE_CHECKING:
     from app.services.vector_db.interface.vector_db import IVectorDBService
 
     from .model import World
+
+class FencedMemoryVectorDB(InMemoryVectorDBService):
+    """The in-memory store as the three conditional stores behave: a write carrying a `fence` leaves a point whose `scopeFence` is above it
+    (the fake models that in `update_payload_by_ids`), and the store can count what a filter matches."""
+
+    generation_fence = True
+
+    async def count_points(self, collection_name: str, count_filter: Any) -> int:
+        return sum(1 for p in self._points(collection_name).values() if _passes(p.payload, count_filter))
+
 
 COLL = "rewrite"
 NAME = "w"
@@ -127,7 +137,7 @@ class Env:
     @classmethod
     async def make(cls, world: World, vdb: IVectorDBService | None = None, *, share: bool | str = False, chunks: int = 1, settle_seconds: float = 0.2,
                    collection: str = COLL) -> Env:
-        vdb = vdb or InMemoryVectorDBService()
+        vdb = vdb or FencedMemoryVectorDB()
         loaded = await load(vdb, collection, {NAME: world}, share=share, chunks=chunks)
         backfill = ScopeBackfill(loaded.graph, vdb, loaded.locator, log)
         stale = 0
@@ -366,4 +376,4 @@ class Tap:
         return tapped
 
 
-__all__ = ["COLL", "NAME", "PREFIX", "Env", "Killed", "Log", "Tap", "descendants", "play", "random_change", "registration"]
+__all__ = ["COLL", "FencedMemoryVectorDB", "NAME", "PREFIX", "Env", "Killed", "Log", "Tap", "descendants", "play", "random_change", "registration"]

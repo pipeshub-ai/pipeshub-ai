@@ -813,6 +813,13 @@ class QdrantService(IVectorDBService):
             next_offset=str(next_offset) if next_offset is not None else None,
         )
 
+    async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
+        self._assert_connected()
+        result = await self.client.count(  # type: ignore
+            collection_name=collection_name, count_filter=QdrantUtils.filter_expression_to_qdrant(count_filter), exact=True,
+        )
+        return int(result.count)
+
     async def retrieve_points(
         self,
         collection_name: str,

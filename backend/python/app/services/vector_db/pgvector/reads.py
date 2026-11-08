@@ -133,6 +133,18 @@ async def scroll(tx: Tx, org: str, collection_id: int, space_id: int, c: Compile
     return [to_point(r, with_payload, org) for r in page], (encode_offset(org, page[-1]["point_sk"]) if len(rows) > limit else None)
 
 
+async def count_filtered(tx: Tx, org: str, collection_id: int, space_id: int, c: Compiled) -> int:
+    """Exact count of the org's live points of one collection and space that match ``c`` (compiled with ``first_param=4``)."""
+    return await tx.fetchval(
+        f"""/* pipeshub:pgvector.count_filtered */
+        SELECT count(*) FROM retrieval.points p
+        {'JOIN retrieval.point_text pt ON pt.org_id = $1 AND pt.point_sk = p.point_sk' if c.needs_text else ''}
+        LEFT JOIN retrieval.point_groups g ON g.org_id = $1 AND g.collection_id = p.collection_id AND g.group_key = p.group_key
+        WHERE p.org_id = $1 AND p.collection_id = $2 AND p.space_id = $3 AND {_ALIVE} AND ({c.where})""",
+        org, collection_id, space_id, *c.params,
+    )
+
+
 async def retrieve(tx: Tx, org: str, collection_id: int, space_id: int, ids: list[uuid.UUID]) -> list[VectorPoint]:
     rows = await tx.fetch(
         """/* pipeshub:pgvector.retrieve */

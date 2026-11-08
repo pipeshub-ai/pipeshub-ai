@@ -133,51 +133,65 @@ async def _none() -> None:
     return None
 
 
-@pytest.mark.parametrize("fenced", [True, False])
-async def test_a_held_up_writer_cannot_write_over_a_newer_rewrite(monkeypatch: pytest.MonkeyPatch, fenced: bool) -> None:
-    """Writer A reads the graph after change 1 and is held up. Change 2 commits and a second writer B rewrites and finishes. A then sends its
-    request. The generation check stops it (`fenced=False` lets it through to show the store's fence refuses it: the window between the check and
-    the store applying the request)."""
+@pytest.mark.parametrize("layer", ["generation_check", "store_fence"])
+async def test_a_held_up_writer_cannot_write_over_a_newer_rewrite(monkeypatch: pytest.MonkeyPatch, layer: str) -> None:
+    """Writer A reads the graph after change 1 and is held up. Change 2 commits and a second writer B (another process: its own loop) rewrites
+    and finishes. A then goes on. Each layer is shown alone. `generation_check`: A is held before its request, on a store with no conditional
+    write, and the check right before the request stops it. `store_fence`: A is held after the check, at the store's door, with the check
+    disabled, and the store refuses the older fence."""
     env = await hr()
+    env.vdb.generation_fence = layer == "store_fence"
     await env.change((MOVE,))
-    first_writes = {"n": 0}
     b = ScopeRewriteJob(env.graph, env.vdb, env.loaded.locator, settle_seconds=0.1)
-    if not fenced:
-        async def no_check(*a: Any, **k: Any) -> None:
-            return None
-
-        monkeypatch.setattr(ScopeRewriteJob, "_guard", no_check)
-    seen = Log()
+    seen, held = Log(), {"done": False}
+    if layer == "store_fence":
+        monkeypatch.setattr(ScopeRewriteJob, "_guard", _no_check)
 
     async def hold() -> None:
-        first_writes["n"] += 1
-        if first_writes["n"] == 1:
-            await env.change((M("moved", "page:Handbook", "space:HR", "space:HR"),))        # change 2
+        if held["done"]:
+            return
+        held["done"] = True
+        await env.change((M("moved", "page:Handbook", "space:HR", "space:HR"),))        # change 2
 
-            async def b_finishes() -> None:
-                for _ in range(4):
-                    if env.pending():
-                        await b.run_connector(ORG, "w:app")
+        async def b_finishes() -> None:
+            for _ in range(4):
+                if env.pending():
+                    await b.run_connector(ORG, "w:app")
 
-            await asyncio.to_thread(asyncio.run, b_finishes())       # (another process: its own loop, so its own virtual record locks)
-            assert not await env.problems()
+        await asyncio.to_thread(asyncio.run, b_finishes())       # (another process: its own loop, so its own virtual record locks)
+        assert not await env.problems()
 
-    env.before_write = hold
+    stale_writes: list[str] = []
+
+    async def at_the_door(name: str) -> str | None:
+        if name == "update_payloads_by_ids":
+            if held["done"] and not stale_writes:
+                stale_writes.append(name)      # A's first request after B finished
+            return None
+        if layer == "generation_check" and name == "retrieve_points":
+            await hold()
+        return None
 
     async def after(name: str) -> None:
-        if name == "update_payloads_by_ids" and first_writes["n"] == 1:
+        if name == "update_payloads_by_ids" and stale_writes:
             await env.audit(seen)
             assert not await env.problems(), "a held-up writer's older fields are in the store"
 
-    Tap(env, _nothing, after)
+    if layer == "store_fence":
+        env.before_write = hold
+    Tap(env, at_the_door, after)
     try:
         await env.job.run_connector(ORG, "w:app")
     except RewriteIncomplete:
         pass          # (a writer that is refused ends incomplete: fine)
     env.before_write = None
-    assert not seen.leaks and not seen.pending_admits
+    assert held["done"] and not seen.leaks and not seen.pending_admits
     await env.settle()
     assert not await env.problems()
+
+
+async def _no_check(*a: Any, **k: Any) -> None:
+    return None
 
 
 async def test_the_app_document_is_written_only_outside_the_virtual_record_locks() -> None:

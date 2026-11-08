@@ -58,7 +58,7 @@ from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     SCOPE_KEYWORD_INDEXES,
 )
-from app.services.vector_db.errors import OrgRequired
+from app.services.vector_db.errors import OrgRequired, PartialResult
 from app.services.vector_db.filters import (
     ScopeFilterTooLarge,
     build_generic_conditions,
@@ -1007,6 +1007,15 @@ class RedisVectorService(IVectorDBService):
                 f"failed HSET command(s) of {len(keys)}. "
                 f"First error: {results[failed[0]]}"
             )
+
+    async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
+        self._assert_connected()
+        counted = await self.client.execute_command(  # type: ignore
+            "FT.SEARCH", self._index_name(collection_name), filter_expression_to_redis_query(count_filter), "NOCONTENT", "LIMIT", "0", "0", *_NO_TIMEOUT,
+        )
+        if not isinstance(counted, (list, tuple)) or not counted:
+            raise PartialResult(f"{collection_name}: unexpected count reply {counted!r}")
+        return int(counted[0])
 
     async def scroll(
         self,
