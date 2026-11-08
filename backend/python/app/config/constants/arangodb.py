@@ -743,6 +743,9 @@ class RecordRelations(Enum):
     METHOD = "METHOD"          # class -> method
     # Cross-file, written by the edge-resolution pass once a repo is indexed.
     CALLS = "CALLS"
+    # A function named as a value (a callback, a table entry, a returned handler):
+    # it may run later, which is not a call, so it is never written as CALLS.
+    INDIRECT_CALL = "INDIRECT_CALL"
     IMPORTS = "IMPORTS"            # file -> imported symbol
     IMPORTS_FROM = "IMPORTS_FROM"  # file -> imported module file
     RE_EXPORTS = "RE_EXPORTS"

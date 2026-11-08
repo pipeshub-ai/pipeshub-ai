@@ -388,6 +388,7 @@ def _next_phase(phase: int, row: dict[str, Any], *, undirected: bool) -> int | N
 
 _HOP_VERBS = {
     RecordRelations.CALLS.value: "calls",
+    RecordRelations.INDIRECT_CALL.value: "may call (as a value)",
     RecordRelations.IMPORTS.value: "imports",
     RecordRelations.IMPORTS_FROM.value: "imports from",
     RecordRelations.RE_EXPORTS.value: "re-exports",
