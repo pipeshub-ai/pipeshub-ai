@@ -391,8 +391,11 @@ describe('AIServiceCommand', () => {
       } catch (err) {
         expect(err).to.equal(failure)
       }
-      expect(logged.callCount).to.equal(1)
-      const [, meta] = logged.firstCall.args
+      // The stub is on the shared prototype and the retry backoff waits ~1.8 s of real time, so a
+      // timer another file left running can log in between: count only this command's line.
+      const failed = logged.getCalls().filter((call) => call.args[0] === 'AI service streaming command failed')
+      expect(failed).to.have.length(1)
+      const [, meta] = failed[0]!.args
       expect(meta.error).to.equal(failure)
       expect(meta.error.cause.code).to.equal('ECONNREFUSED')
     })
