@@ -1,4 +1,4 @@
-# ruff: noqa: ANN401, ANN201
+# ruff: noqa: ANN401
 """A change that only a full pass covers (a change of the whole connector, more roots than the list holds) must also bring each point's group
 membership (`recordGroupIds`) to what the graph says: a `container` stamp is read through that membership. A record moved under a group-level
 group that few people read, with the pass alone, must not stay visible to the readers of the group it left.

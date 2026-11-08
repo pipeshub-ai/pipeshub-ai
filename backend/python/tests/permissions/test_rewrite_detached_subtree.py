@@ -1,4 +1,4 @@
-# ruff: noqa: ANN401, ANN201
+# ruff: noqa: ANN201
 """A move that DETACHES a subtree from the app (the new parent has no hierarchy route to it) changes the projection of descendants whose stamp
 does not depend on the root: a Union descendant that does not inherit carries a `pathIds` that stops below the root, so the pending hide cannot
 name it. The rewrite must not release the connector over such a point: it leaves the connector to the full pass (nothing is read from its

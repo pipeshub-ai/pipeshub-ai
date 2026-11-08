@@ -1,3 +1,4 @@
+# ruff: noqa: ANN401
 """A structural change through the rewrite job, held to the oracle.
 
 `Env` loads a world as points (any `IVectorDBService`), stamps it with the real back-fill, then `change` moves the graph to the world after a
@@ -15,7 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import random
+import random  # noqa: TC003
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 

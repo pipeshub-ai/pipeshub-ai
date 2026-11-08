@@ -1,4 +1,4 @@
-# ruff: noqa: ANN401, ANN201
+# ruff: noqa: ANN401
 """A page moved to another space: its point is container-stamped, so its `recordGroupIds` is all that says who reads it. If the graph read of its
 virtual record is incomplete during the rewrite (both providers' `get_document` return None on a transient error, which is what `complete` is
 for), the old space still reads the page: the run raises, the root stays pending and hidden, and the next run with a graph that answers

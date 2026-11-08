@@ -1,3 +1,4 @@
+# ruff: noqa: ANN401
 """What the rewrite promises beyond the oracle gate: a second organisation's points are never touched, one bad root does not hold the others, a
 root registered again stays, a held-up writer cannot write over a newer rewrite (the generation check and the store's fence), one lock order, a
 connector that cannot be released is left to the full pass, and the run is idempotent.

@@ -1,3 +1,4 @@
+# ruff: noqa: F811, ANN201
 """The rewrite on a real graph (Neo4j and ArangoDB): the page that moved under a restricted parent is rewritten from the real subtree query,
 the real membership read and the real projector; the roots come off by a real compare-and-set; and the result equals what a fresh back-fill
 of the same graph writes. Needs the stores of the graph-permissions harness (`KH_PERM_*`).
