@@ -257,6 +257,8 @@ class MSGraphClient:
                 elif getattr(result, 'odata_next_link', None):
                     # An empty page with a next link lost its users; a short list must not
                     # read as accounts that were deleted.
+                    # shortcut: a next link the server drops silently reads as the end of the list;
+                    # upgrade to a $count cross-check if Graph is seen doing that.
                     raise RuntimeError("User listing returned an empty page with a next link")
 
                 if hasattr(result, 'odata_next_link') and result.odata_next_link:

@@ -707,6 +707,8 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                 if not user_data and response.data.odata_next_link:
                     # An empty page with a next link lost its users; a short list must not
                     # read as accounts that were deleted.
+                    # shortcut: a next link the server drops silently reads as the end of the list;
+                    # upgrade to a $count cross-check if Graph is seen doing that.
                     raise Exception(f"Failed to fetch users (page {page_num}): empty page with a next link")
 
                 for user in user_data:
