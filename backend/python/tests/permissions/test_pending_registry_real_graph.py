@@ -329,10 +329,10 @@ async def test_a_sharer_read_that_fails_marks_the_connectors_and_does_not_fail_t
 
     conn, page, child, shared = await _shared(backend)
 
-    async def broken(*a, **k):  # noqa: ANN002, ANN003
+    async def broken(*a, **k):
         raise RuntimeError("graph down")
 
-    async def apps(*a, **k):  # noqa: ANN002, ANN003
+    async def apps(*a, **k):
         return [{"_key": conn}]       # the seeded graph has no organisation-to-app edges for the listing to follow
 
     monkeypatch.setattr(backend.provider, "get_nodes_by_field_in", broken)

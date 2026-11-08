@@ -16,7 +16,14 @@ import secrets
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
-from app.core.org_context import MissingOrgContext, SystemContextNotAllowed, current, current_or_system, for_org, system
+from app.core.org_context import (
+    MissingOrgContext,
+    SystemContextNotAllowed,
+    current,
+    current_or_system,
+    for_org,
+    system,
+)
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.pending import (
     PendingOverflow,
