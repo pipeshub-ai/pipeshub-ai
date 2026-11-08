@@ -489,3 +489,18 @@ async def test_a_level_cleared_while_the_scheme_is_unread_takes_the_issue_from_i
     await _write(world, [_edited("task leveled for someone outside the project", "2024-06-17T10:00:00.000+0000",
                                  security=None)])
     assert not await _mismatches(world, {**readers, "PROJ-9": PROJECT_READERS}, by_key)
+
+
+async def test_reassigning_an_issue_moves_the_assignee_grant_on_the_stored_record(world: dict[str, Any]) -> None:
+    """Browse held by the assignee: an incremental write replaces the old assignee's grant."""
+    await _sync_project(world)
+    world["connector"]._issue_security[PROJECT_ID].browse_holders = [{"type": "assignee"}]
+    by_key = await _ticket_ids(world)
+    readers = {issue["key"]: set(who) for issue, who in ISSUES.values()}
+    for stamp, assignee, who in (
+        ("2024-06-16", "dave", PROJECT_READERS | {"dave"}),   # dave gains it
+        ("2024-06-17", "alice", PROJECT_READERS),             # reassigned: dave loses it
+        ("2024-06-18", "dave", PROJECT_READERS | {"dave"}),   # and back
+    ):
+        await _write(world, [_edited("plain task", f"{stamp}T10:00:00.000+0000", assignee={"accountId": PEOPLE[assignee]})])
+        assert not await _mismatches(world, {**readers, "PROJ-1": who}, by_key)
