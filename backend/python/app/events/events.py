@@ -1288,9 +1288,14 @@ class EventProcessor:
                 # attach is complete; taking its identity away now would leave
                 # a finished record with no VRID and nothing to retry it.
                 return
-            if not await self.graph_provider.update_node(
-                record_key, CollectionNames.RECORDS.value, prior_identity
-            ):
+            left_vrid = (current or {}).get("virtualRecordId")
+            leaving = bool(left_vrid) and "virtualRecordId" in prior_identity and left_vrid != prior_identity["virtualRecordId"] and scope_fields_enabled()
+            # The record leaves the virtual record it attached to: fenced like any other move off a shared one (see leaving_vrid)
+            async with leaving_vrid(self.graph_provider, record_key, left_vrid, self.logger) if leaving else contextlib.nullcontext():
+                restored = await self.graph_provider.update_node(
+                    record_key, CollectionNames.RECORDS.value, prior_identity
+                )
+            if not restored:
                 raise IndexingError("record no longer exists")
         except Exception as e:
             self.logger.error(

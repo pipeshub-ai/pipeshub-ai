@@ -1856,18 +1856,19 @@ class Processor:
         if not virtual_record_id:
             return
         fenced = leaving_vrid(self.graph_provider, record_id, virtual_record_id, self.logger) if scope_fields_enabled() else contextlib.nullcontext()
+        # The cleanup runs inside the fence: the detach is durable once it is written, and a retry no longer has the id to clean up with.
         async with fenced:
             detached = await self.graph_provider.update_node(
                 record_id, CollectionNames.RECORDS.value, {"virtualRecordId": None}
             )
-        if not detached:
-            raise DocumentProcessingError(
-                "Failed to detach the virtual record of a skipped file", doc_id=record_id
+            if not detached:
+                raise DocumentProcessingError(
+                    "Failed to detach the virtual record of a skipped file", doc_id=record_id
+                )
+            await self.indexing_pipeline.rewrite_or_delete_vector_membership(virtual_record_id)
+            await self.sink_orchestrator.blob_storage.delete_storage_docs_for_vrid(
+                org_id, virtual_record_id
             )
-        await self.indexing_pipeline.rewrite_or_delete_vector_membership(virtual_record_id)
-        await self.sink_orchestrator.blob_storage.delete_storage_docs_for_vrid(
-            org_id, virtual_record_id
-        )
 
     async def _drop_code_blocks(self, record_id: str) -> None:
         """Remove a code file's previous blocks when it no longer has any.
