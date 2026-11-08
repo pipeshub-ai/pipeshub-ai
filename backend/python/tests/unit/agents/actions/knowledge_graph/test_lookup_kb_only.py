@@ -92,7 +92,7 @@ def _graph(readable: set[str]) -> MagicMock:
     graph.get_knowledge_hub_filter_options.return_value = {"apps": []}
     graph.get_gated_apps.return_value = [{"_key": KB_ID, "name": "Support", "type": "KB"}]
     graph.get_record_by_id.side_effect = lambda record_id, *_, **__: by_id.get(record_id)
-    graph.get_record_by_weburl.side_effect = lambda url, *_, **__: next((f for f in FILES if f.weburl == url), None)
+    graph.get_records_by_weburls.side_effect = lambda urls, *_, **__: [{"id": f.id, "webUrl": f.weburl} for f in FILES if f.weburl in urls]
     graph.get_record_by_external_id.return_value = None
     graph.get_record_by_issue_key.side_effect = issue_key
     graph.get_knowledge_hub_node_access.side_effect = node_access
