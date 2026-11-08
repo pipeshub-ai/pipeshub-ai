@@ -571,3 +571,33 @@ describe('the browser Back and Forward follow the trail instead of adding to it'
     expect(trailState()).toEqual({ trail: ['block:a', 'block:b'], at: 0, node: 'block:a' });
   });
 });
+
+
+describe('the toolbar arrows keep the trail honest', () => {
+  const at = () => ({ trail: useGraphStore.getState().trail, index: useGraphStore.getState().trailIndex, node: useGraphStore.getState().node });
+
+  it('Retry after a failed Back moves along the trail, not just the picture', async () => {
+    const { controller, state } = world();
+    for (const id of ['block:a', 'block:b']) await controller.open(id);
+    state.down = true;
+    expect(await controller.go(-1)).toBe(false);
+    expect(at()).toEqual({ trail: ['block:a', 'block:b'], index: 1, node: 'block:b' });
+    state.down = false;
+    await controller.retry();
+    expect(at()).toEqual({ trail: ['block:a', 'block:b'], index: 0, node: 'block:a' });
+  });
+
+  it('lands on the node when a revoke shifted the trail while the load was in flight', async () => {
+    const { controller, state } = world();
+    for (const id of ['block:a', 'block:b', 'block:c']) await controller.open(id);
+    let release!: () => void;
+    state.gate.set('block:b', new Promise<void>((resolve) => (release = resolve)));
+    const back = controller.go(-1);
+    useGraphStore.getState().forget(['block:a']); // the trail is now [b, c] and its index moved
+    release();
+    expect(await back).toBe(true);
+    const now = at();
+    expect(now.node).toBe('block:b');
+    expect(now.trail[now.index]).toBe('block:b');
+  });
+});

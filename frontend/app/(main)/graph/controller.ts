@@ -142,9 +142,19 @@ export class ExplorerController {
     const run = this.open(id, { track: false });
     this.last = () => this.follow(id, at);
     const ok = await run;
-    // A later move may have changed the trail while this one loaded: jump only to a place that still holds the node.
-    if (ok && useGraphStore.getState().trail[at] === id) useGraphStore.getState().jumpTo(at);
+    if (ok) this.landOn(id, at);
     return ok;
+  }
+
+  /**
+   * Make the trail say what the picture shows. A later move or a revoke may have shifted the trail while a load was
+   * in flight, so the place counts only if it still holds the node; otherwise the node's own place, or a new step.
+   */
+  private landOn(id: NodeId, index: number): void {
+    const store = useGraphStore.getState();
+    const at = store.trail[index] === id ? index : store.trail.indexOf(id);
+    if (at >= 0) store.jumpTo(at);
+    else store.focusOn(id);
   }
 
   /** One step along the trail. A node that is no longer available is dropped from it and the next one is tried. */
@@ -154,8 +164,10 @@ export class ExplorerController {
       const { trail } = useGraphStore.getState();
       if (index < 0 || index >= trail.length) return false;
       const target = trail[index];
-      if (await this.open(target, { track: false })) {
-        useGraphStore.getState().jumpTo(index);
+      const run = this.open(target, { track: false });
+      this.last = () => this.go(step); // open set it to itself: a Retry has to move along the trail too
+      if (await run) {
+        this.landOn(target, index);
         return true;
       }
       if (this.snapshot.failure !== 'not-available') return false;
