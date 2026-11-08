@@ -4967,6 +4967,57 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Get edge rollup by file prefix failed: {str(e)}")
             return []
 
+    async def find_uncalled_blocks(
+        self,
+        org_id: str,
+        connector_id: str,
+        record_ids: list[str],
+        kinds: list[str],
+        relations: list[str],
+        limit: int,
+        after_key: str | None = None,
+        uncounted_caller_records: list[str] | None = None,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        if not record_ids:
+            return [], None
+        # The inner loop reads the edge collection's _to index, one probe per block, and stops at the first edge
+        # that counts. A caller's record is looked up only when some records are not counted.
+        query = f"""
+        FOR b IN {CollectionNames.BLOCKS.value}
+            FILTER b.orgId == @orgId AND b.connectorId == @connectorId AND b.kind IN @kinds
+            FILTER b.recordId IN @records
+            FILTER @after == null OR b._key > @after
+            LET called = LENGTH(
+                FOR e IN {CollectionNames.RECORD_LINKS.value}
+                    FILTER e._to == b._id AND e.relationshipType IN @relations
+                    FILTER LENGTH(@uncounted) == 0
+                        OR NOT_NULL(DOCUMENT(e._from).recordId, PARSE_IDENTIFIER(e._from).key) NOT IN @uncounted
+                    LIMIT 1
+                    RETURN 1
+            )
+            FILTER called == 0
+            SORT b._key
+            LIMIT @limit
+            RETURN b
+        """
+        try:
+            page = await self.http_client.execute_aql(
+                query,
+                bind_vars={"orgId": org_id, "connectorId": connector_id, "kinds": kinds, "records": record_ids,
+                           "after": after_key, "relations": relations,
+                           "uncounted": uncounted_caller_records or [], "limit": limit},
+                txn_id=transaction,
+            ) or []
+            return page, (page[-1].get("_key") if len(page) == limit else None)
+        except Exception as e:
+            self.logger.error("Find uncalled blocks failed: %s", e)
+            if raise_on_error:
+                raise
+            return [], None
+
     async def get_file_paths_for_records(
         self,
         org_id: str,
