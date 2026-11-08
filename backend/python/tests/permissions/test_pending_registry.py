@@ -6,6 +6,7 @@ The same registry on Neo4j and ArangoDB is in `test_pending_registry_real_graph.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 from types import SimpleNamespace
 
@@ -46,7 +47,7 @@ from app.services.vector_db.scope_backfill import DONE
 from .scope_layer import OracleScopeLayer
 from .stamp_world import ORG
 from .test_scope_backfill import COLL, WORLD, setup  # noqa: F401
-from .test_scopes_reference_filter import WORLDS, path_of, reference_filter
+from .test_scopes_reference_filter import WORLDS, inherit_chain, path_of, reference_filter
 
 
 @pytest.fixture(autouse=True)
@@ -151,6 +152,55 @@ async def test_a_connector_that_does_not_exist_is_an_error_not_a_registration() 
         await bump_generation_in(AppGraph(None), "gone", ["a"])
     with pytest.raises(ScopeGenerationError):
         await register_pending_roots(AppGraph(None), "gone", ["a"])
+
+
+class LockedApp:
+    """One app document shared by transactions: `increment_node_field` takes its write lock and holds it to `commit`, and a read inside a
+    transaction that holds the lock sees the latest committed value, as on both graph stores."""
+
+    def __init__(self) -> None:
+        self.committed: dict = {GENERATION_KEY: 0}
+        self.lock = asyncio.Lock()
+
+    def tx(self) -> LockedTx:
+        return LockedTx(self)
+
+
+class LockedTx(AppGraph):
+    def __init__(self, shared: LockedApp) -> None:
+        super().__init__({})
+        self.shared, self.staged = shared, None
+
+    async def increment_node_field(self, key: str, collection: str, field: str, transaction: str | None = None) -> int:
+        await self.shared.lock.acquire()
+        self.staged = dict(self.shared.committed)
+        self.staged[field] = self.staged.get(field, 0) + 1
+        return self.staged[field]
+
+    async def get_document(self, key: str, collection: str, **kw: object) -> dict:
+        await asyncio.sleep(0)
+        return dict(self.staged if self.staged is not None else self.shared.committed)
+
+    async def update_node(self, key: str, collection: str, updates: dict, transaction: str | None = None) -> bool:
+        self.staged.update(updates)
+        return True
+
+    def commit(self) -> None:
+        self.shared.committed = self.staged
+        self.shared.lock.release()
+
+
+async def test_syncs_registering_at_once_lose_no_root_because_the_value_is_read_after_the_lock() -> None:
+    shared = LockedApp()
+
+    async def sync(root: str) -> None:
+        tx = shared.tx()
+        await bump_generation_in(tx, "c1", [root])
+        await asyncio.sleep(0)
+        tx.commit()
+
+    await asyncio.gather(*(sync(f"r{i}") for i in range(6)))
+    assert set(parse(shared.committed[PENDING_KEY])) == {f"r{i}" for i in range(6)} and shared.committed[GENERATION_KEY] == 6
 
 
 async def test_registering_outside_a_transaction_retries_a_lost_compare_and_set_and_loses_no_root() -> None:
@@ -301,8 +351,11 @@ async def test_a_pending_root_hides_what_is_below_it_and_nothing_else_and_cleari
             for r in records:
                 got = reference_filter(world, hidden, r)
                 assert not (got and not base[r]), f"{scenario_id}/{viewer}: {r} admitted with {root} pending, and not without"       # no extra access
-                if root not in path_of(world, r):
+                used = path_of(world, r) if world.node(r).stamp == "intersection" else inherit_chain(world, r)
+                if root not in used:
                     assert got == base[r], f"{scenario_id}/{viewer}: {r} lost with {root} pending, which is not on its path"      # no missing access
+                elif base[r] and r not in scopes.readable_scopes:      # (the reference admits a readable seed before it looks at pending)
+                    assert got is False, f"{scenario_id}/{viewer}: {r} still admitted with {root} pending on its path"          # the hide
                 seen += 1
             await clear_pending_covered(tx, "c", 1)
             cleared = dataclasses.replace(scopes, pending=frozenset(parse(tx.app.get(PENDING_KEY))))
