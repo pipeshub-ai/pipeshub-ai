@@ -49,6 +49,7 @@ class _Contract:
         return await Env.make(world, svc, collection=make_collection(self.store), settle_seconds=60.0, **kw)
 
     async def drop(self, svc, env: Env) -> None:
+        env.close()
         await svc.delete_collection(env.loaded.collection)
 
     @pytest.mark.parametrize("scenario", CHOSEN, ids=[s.id for s in CHOSEN])
@@ -96,9 +97,10 @@ class _Contract:
                     if seen["live"] and seen["n"] == 1:
                         raise Killed
 
-            Tap(env, _no, die)
+            tap = Tap(env, _no, die)
             with pytest.raises(Killed):
                 await env.settle()
+            tap.remove()
             hidden = Log()
             await env.audit(hidden)
             assert env.pending() and not hidden.leaks and not hidden.pending_admits

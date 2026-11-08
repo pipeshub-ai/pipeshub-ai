@@ -150,6 +150,7 @@ class Env:
     subtree: set[str] = field(default_factory=set[str])
     #: virtual records the first back-fill could not stamp (it left the stale marker): the world is not clean to start from
     unstamped: int = 0
+    real_put: Any = None
 
     @classmethod
     async def make(cls, world: World, vdb: IVectorDBService | None = None, *, share: bool | str = False, chunks: int = 1, settle_seconds: float = 0.2,
@@ -175,8 +176,13 @@ class Env:
                 await env.before_write()
             return await real(*args, **kwargs)
 
+        env.real_put = real
         vdb.update_payloads_by_ids = hooked  # type: ignore[method-assign]
         return env
+
+    def close(self) -> None:
+        """Take this env's hook off a store that other tests share."""
+        self.vdb.update_payloads_by_ids = self.real_put  # type: ignore[method-assign]
 
     @property
     def graph(self) -> Any:
@@ -403,9 +409,17 @@ class Tap:
     def __init__(self, env: Env, before: Callable[[str], Awaitable[str | None]], after: Callable[[str], Awaitable[None]] | None = None) -> None:
         self.calls: list[str] = []
         self.before, self.after = before, after
+        self._undo: list[tuple[Any, str, Any]] = []
         for obj, names in ((env.graph, self.GRAPH), (env.graph.stamps, self.STAMPS), (env.vdb, self.STORE)):
             for name in names:
+                self._undo.append((obj, name, getattr(obj, name)))
                 setattr(obj, name, self._wrap(name, getattr(obj, name)))
+
+    def remove(self) -> None:
+        """Put back what was wrapped, last first: a store object shared by several tests must not keep this test's hooks."""
+        for obj, name, real in reversed(self._undo):
+            setattr(obj, name, real)
+        self._undo.clear()
 
     def _wrap(self, name: str, real: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
         async def tapped(*args: Any, **kwargs: Any) -> Any:
@@ -469,12 +483,17 @@ async def held_up_writer(env: Env, layer: str, monkeypatch: Any) -> None:
 
     if layer == "store_fence":
         env.before_write = hold
-    Tap(env, at_the_door, after)
-    with contextlib.suppress(RewriteIncomplete):      # (a writer that is refused ends incomplete: fine)
-        await env.job.run_connector(ORG, PREFIX + "app")
-    env.before_write = None
+    tap = Tap(env, at_the_door, after)
+    try:
+        with contextlib.suppress(RewriteIncomplete):      # (a writer that is refused ends incomplete: fine)
+            await env.job.run_connector(ORG, PREFIX + "app")
+    finally:
+        tap.remove()
+        env.before_write = None
     assert not violations, ("a held-up writer's older fields are in the store", violations[:3])
-    assert held["done"] and (stale_writes or layer != "store_fence") and not seen.leaks and not seen.pending_admits      # (the held request did reach the store)
+    assert held["done"], "the second move never happened"
+    assert stale_writes or layer != "store_fence", "the held request never reached the store"
+    assert not seen.leaks and not seen.pending_admits, (layer, seen.leaks[:3], seen.pending_admits[:3])
     await env.settle()
     assert not await env.problems()
 

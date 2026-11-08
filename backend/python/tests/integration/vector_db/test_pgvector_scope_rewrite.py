@@ -44,6 +44,7 @@ class TestPgVectorRewrite(_Contract):
         return await Env.make(world, svc, collection=name, settle_seconds=60.0, create=False, **kw)
 
     async def drop(self, svc, env: Env) -> None:
+        env.close()
         await asyncio.create_task(svc.delete_collection(env.loaded.collection), context=contextvars.Context())
 
     @pytest.fixture(autouse=True)
