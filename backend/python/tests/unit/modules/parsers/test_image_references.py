@@ -20,7 +20,10 @@ from bs4 import BeautifulSoup
 
 from app.modules.parsers.html_parser.docling_html_parser import DoclingHtmlParser
 from app.modules.parsers.html_parser.selectolax_html_parser import SelectolaxHtmlParser
-from app.modules.parsers.markdown.image_references import extract_and_replace_images
+from app.modules.parsers.markdown.image_references import (
+    TooManyImages,
+    extract_and_replace_images,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -544,3 +547,36 @@ def test_the_scanner_never_raises() -> None:
         else:
             text = "".join(rng.choice(pieces + ascii_chars) for _ in range(rng.randint(0, 24)))
         extract_and_replace_images(text)
+
+
+# --- a limit on the number of images ----------------------------------------------
+
+
+_ONE_OF_EACH_KIND = '![a](u1) ![b][r] <img src="u3">\n\n[r]: u2\n'
+
+
+def test_max_images_allows_exactly_that_many() -> None:
+    assert extract_and_replace_images(_ONE_OF_EACH_KIND, max_images=3) == extract_and_replace_images(_ONE_OF_EACH_KIND)
+
+
+@pytest.mark.parametrize("limit", [0, 1, 2])
+def test_max_images_stops_at_the_first_image_over_the_limit(limit: int) -> None:
+    with pytest.raises(TooManyImages):
+        extract_and_replace_images(_ONE_OF_EACH_KIND, max_images=limit)
+
+
+def test_max_images_does_not_collect_the_images_it_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The scan raises on the 11th image; one that finished first would have walked all 100,000."""
+    import app.modules.parsers.markdown.image_references as module
+
+    seen: list[int] = []
+    original = module._add
+
+    def counting(images: list, limit: int | None, image: dict) -> None:
+        seen.append(len(images))
+        original(images, limit, image)
+
+    monkeypatch.setattr(module, "_add", counting)
+    with pytest.raises(TooManyImages):
+        extract_and_replace_images("![a](u)" * 100_000, max_images=10)
+    assert len(seen) == 11
