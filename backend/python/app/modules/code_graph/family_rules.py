@@ -34,6 +34,14 @@ class FamilyRules:
     # Whether a bare name may be a definition of a module the file imports. Go's
     # never is: an imported package's names take `pkg.`.
     bare_names_from_imported_modules: bool = True
+    # Whether a bare name an import binds to a module is that module, never a same-named definition.
+    module_binding_is_the_module: bool = False
+    # Whether that module may itself be what the name calls: a CommonJS module can be a function or class
+    # (`module.exports = f`, then `const f = require("./f")`), so the name is its own top-level definition.
+    module_may_be_callable: bool = False
+    # Whether a top-level `field` (a JS/TS module-level value, `export const vec3 = makeNode()`) is no call
+    # target by any rung (an import binding, `state.locator(x)`). A class field stays callable.
+    top_level_fields_uncallable: bool = False
     self_receivers: frozenset[str] = frozenset({"self", "this"})
     super_receivers: frozenset[str] = frozenset({"super()", "super"})
     # Where a method declared outside its type's body is looked for: the type's
@@ -110,7 +118,8 @@ class FamilyRules:
 
 _DEFAULT = FamilyRules()
 _RULES: dict[str, FamilyRules] = {
-    "js": FamilyRules(lexical_module_scope=True),
+    "js": FamilyRules(lexical_module_scope=True, module_binding_is_the_module=True, module_may_be_callable=True,
+                      top_level_fields_uncallable=True),
     "go": FamilyRules(bare_call_reaches_method="never", bare_names_from_imported_modules=False),
     "jvm": FamilyRules(bare_call_reaches_method="same_class"),
     "csharp": FamilyRules(bare_call_reaches_method="same_class",

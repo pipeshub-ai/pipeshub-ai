@@ -26,9 +26,11 @@ from app.modules.code_graph.guards import (
 from app.modules.code_graph.import_resolution import ImportResolution
 from app.modules.code_graph.module_refs import (
     INCLUDES_CHANGED_PREFIX,
+    MODULE_PREFIX,
     module_refs_of_path,
 )
 from app.modules.code_graph.symbol_index import BlockRow, SymbolIndex
+from app.modules.code_graph.ts_config import TsConfigs, is_ts_config
 from app.modules.parsers.code_parser.languages import c_family as c_family_parser
 from app.modules.parsers.code_parser.languages.rust import HELD, POINTED, PRELUDE
 from app.modules.parsers.code_parser.models import (
@@ -109,6 +111,8 @@ RESOLUTION_WRAPPER = "wrapper"
 # How deep a wrapper macro's nested macros are expanded, at resolution and when selecting re-resolved files.
 _MAX_MACRO_DEPTH = 8
 
+# The parser's context for a Go embedded field: method promotion, never a heritage edge.
+_EMBEDS = "embeds"
 # A local name an import binds to something outside the repo (`from requests
 # import get`). It shadows every repo definition of that name in the file.
 _EXTERNAL = ""
@@ -177,6 +181,8 @@ class EdgeBuildResult:
     # blob could not be read and were resolved from their node residue alone.
     facts_loaded: int = 0
     facts_missing: int = 0
+    # tsconfig/jsconfig files whose stored parse could not be read: their folders resolve as if they had none.
+    ts_configs_unread: int = 0
     duration_s: float = 0.0
 
     def as_log_fields(self) -> dict[str, Any]:
@@ -196,6 +202,7 @@ class EdgeBuildResult:
             "edges_removed": self.edges_removed,
             "facts_loaded": self.facts_loaded,
             "facts_missing": self.facts_missing,
+            "ts_configs_unread": self.ts_configs_unread,
             "duration_s": round(self.duration_s, 2),
         }
 
@@ -424,7 +431,8 @@ class _BindingMap(dict[str, Any]):
 
 class _Builder:
     def __init__(self, index: SymbolIndex, org_id: str, record_group_id: str,
-                 log: logging.Logger, repo_paths: set[str] | None = None) -> None:
+                 log: logging.Logger, repo_paths: set[str] | None = None,
+                 ts_configs: TsConfigs | None = None) -> None:
         self.index = index
         self.org_id = org_id
         self.record_group_id = record_group_id
@@ -457,7 +465,8 @@ class _Builder:
         self._py_classes: dict[str, list[str]] | None = None
         self._py_reach: dict[str, tuple[set[str], set[str]]] = {}
         self.re_exports: dict[str, set[str]] = {}
-        self.imports = ImportResolution(set(index.record_by_file) | (repo_paths or set()), index=index)
+        self.imports = ImportResolution(set(index.record_by_file) | (repo_paths or set()), index=index,
+                                        ts_configs=ts_configs)
         self._interface_memo: dict[str, bool] = {}
         # Files whose type tables are in the index; None when all are (a full build).
         # An incremental build loads only the re-resolved files' tables, so the
@@ -526,7 +535,11 @@ class _Builder:
     def _uncallable(self, block_id: str) -> bool:
         """A block its family says no call can run, whichever rung resolved the call to it."""
         row = self.index.rows.get(block_id)
-        return row is not None and row.kind in rules_for(self._family_of(block_id)).uncallable_kinds
+        if row is None:
+            return False
+        rules = rules_for(self._family_of(block_id))
+        return row.kind in rules.uncallable_kinds or (
+            rules.top_level_fields_uncallable and row.kind == "field" and not row.parent_block_id)
 
     def _nested_in(self, block_id: str, ancestor: str) -> bool:
         row = self.index.rows.get(block_id)
@@ -660,18 +673,29 @@ class _Builder:
             bindings[local] = _EXTERNAL
             self.result.external_refs += 1
             return
-        target_file = self.imports.walk_barrel_chain(target_file, self.re_exports)
         # A Rust `impl Foo` block shares its type's name but is never what `use m::Foo` imports.
         skip_impls = rules_for(family).impl_blocks_name_their_type
-        candidates = [cid for cid in self.index.candidates(name)
-                      if self.index.file_by_block.get(cid) == target_file
-                      and not (skip_impls and self.index.rows[cid].kind == "impl")]
+
+        def defined_in(file_path: str) -> list[str]:
+            return [cid for cid in self.index.candidates(name)
+                    if self.index.file_by_block.get(cid) == file_path
+                    and not (skip_impls and self.index.rows[cid].kind == "impl")]
+
+        # JS/TS: the named module's own top-level definition comes first: one `export { b } from "./x"` beside
+        # `export const a` does not make the module a barrel for `a`.
+        candidates = [cid for cid in defined_in(target_file) if not self._parent_of(cid)] if family == "js" else []
+        if not candidates:
+            target_file = self.imports.walk_barrel_chain(target_file, self.re_exports)
+            candidates = defined_in(target_file)
         top_level = [cid for cid in candidates if not self._parent_of(cid)]
         candidates = top_level or candidates
         if len(candidates) > 1 and family == "js":
             # TS declaration merging: `interface Event` and `namespace Event` are one name;
             # bind the declaration, and `Event.map()` finds the namespace beside it.
             declared = [cid for cid in candidates if self.index.rows[cid].kind != "module"]
+            if len(declared) > 1:
+                # A value merged with a type (`const Kind` beside `type Kind`): the type.
+                declared = [cid for cid in declared if self.index.rows[cid].kind != "field"]
             candidates = declared if len(declared) == 1 else candidates
         # A member, not a nested type: `import a.Outer.Inner` still names Inner.
         owner = (self._parent_of(candidates[0])
@@ -834,6 +858,8 @@ class _Builder:
                     self.result.unresolved += 1
                 continue
 
+            if fact.get("context") == _EMBEDS:
+                continue  # Go embedding feeds method lookup (_base_types_of), not the heritage graph
             if relation == RecordRelations.CALLS.value and not fact.get("qualifiedPrefix"):
                 # The preprocessor runs first: a call through a function-like macro calls what it expands to.
                 is_macro, target = self._through_wrapper(name, record_id, call_file, family, fact.get("line"))
@@ -924,7 +950,7 @@ class _Builder:
         verdict = bool(row) and (
             (row.kind or "").lower() in _INTERFACE_KINDS
             or any(
-                fact.get("relation") in _TYPE_RELATIONS
+                fact.get("relation") in _TYPE_RELATIONS and fact.get("context") != _EMBEDS
                 and (fact.get("toName") or "") in _ABSTRACT_BASE_NAMES
                 for fact in row.pending_edges
             )
@@ -1093,8 +1119,20 @@ class _Builder:
         if (bound and (family is None or self._family_of(bound) == family)
                 and (relation not in _TYPE_RELATIONS or bound in self.index.type_blocks)):
             return bound, CONFIDENCE_EXTRACTED, RESOLUTION_IMPORT
-
         rules = rules_for(family)
+        modules_bound = self.module_bindings.get(call_file, {}) if not bound and not qualified_prefix else {}
+        if name in modules_bound and rules.module_binding_is_the_module:
+            # `import * as message from "./message"`, `const f = require("./f")`: the name is that module, never
+            # a same-named definition elsewhere; where a module can be a function or class (CommonJS), the
+            # module's own top-level definition of that name.
+            module = modules_bound[name]
+            target = (self._top_level_in_file(module, name)
+                      if module != _EXTERNAL and rules.module_may_be_callable else None)
+            if target:
+                return target, CONFIDENCE_EXTRACTED, RESOLUTION_MODULE
+            self.result.unresolved += 1
+            return None, CONFIDENCE_INFERRED, None
+
         if qualified_prefix and rules.qualified_path_separator and relation in _CALL_RELATIONS:
             # `helpers::f()`, `crate::a::f()`: the path names the function, wherever the file's `use`s lead;
             # `convert::usize()` beside an inline `mod convert { .. }` is that module's.
@@ -2038,7 +2076,23 @@ class _Builder:
         if owner not in self.index.type_blocks:
             return None, CONFIDENCE_INFERRED, None
         # INFERRED as for every language: the type table is per file, not per scope.
-        return self._resolve_self_method(owner, name), CONFIDENCE_INFERRED, RESOLUTION_TYPE
+        return self._promoted_method(owner, name), CONFIDENCE_INFERRED, RESOLUTION_TYPE
+
+    def _promoted_method(self, owner: str, name: str) -> str | None:
+        """Go: `m` on a struct, else on what it embeds, depth by depth. The shallowest single
+        definition wins; two at one depth are ambiguous (the compiler rejects the call); a cycle ends.
+
+        shortcut: only methods count, so a shallower embedded *field* named `m` does not hide a deeper method
+        `m` as Go's selector rule says; walk fields too if that shows up as a wrong promoted call."""
+        level, seen = [owner], {owner}
+        while level:
+            hits = {hit for t in level
+                    if (hit := self.index.method_index.get((t, name)) or self._method_by_owner_name(t, name))}
+            if hits:
+                return hits.pop() if len(hits) == 1 else None
+            level = [base for t in level for base in self._base_types_of(t) if base not in seen]
+            seen.update(level)
+        return None
 
     def _resolve_bound_receiver(self, receiver: str, name: str, record_id: str, qualifier: str | None = None,
                                 ) -> tuple[str | None, str, str | None] | None:
@@ -2412,6 +2466,8 @@ class _Builder:
             hit = self._defined_or_reexported(module, name)
             if hit in self.index.type_blocks:
                 return hit
+        if qualified_prefix and family == "go":
+            return None  # `http.Server` is that package's type: never a repo type named like it elsewhere
         candidates = [
             cid for cid in self.index.candidates(name) if cid in self.index.type_blocks
         ]
@@ -2563,7 +2619,9 @@ async def build_code_graph_edges(
     # service's event loop, which a large repo held for minutes -- no HTTP, no
     # other syncs, no lease renewal, and Kafka sessions timing out.
     index = await _index_blocks(graph_provider, org_id, record_group_id, files)
-    builder = await asyncio.to_thread(_Builder, index, org_id, record_group_id, log, repo_paths)
+    ts_configs = await _load_ts_configs(facts_source, org_id, files.paths)
+    builder = await asyncio.to_thread(_Builder, index, org_id, record_group_id, log, repo_paths, ts_configs)
+    builder.result.ts_configs_unread = len(ts_configs.unread)
     builder.result.blocks = len(index.rows)
     builder.result.files_total = len(index.blocks_by_record)
 
@@ -2581,6 +2639,7 @@ async def build_code_graph_edges(
         dropped = await _type_imports_dropped(graph_provider, index, builder.imports, touched_record_ids)
         reresolve = await asyncio.to_thread(
             _with_impl_partners, index, reresolve, touched_record_ids, changed_names, dropped)
+        reresolve |= _under_changed_ts_configs(ts_configs, files.paths, touched_record_ids, deleted_names)
     builder.result.files_touched = len(touched_record_ids or ())
     builder.result.files_reresolved = len(reresolve)
 
@@ -2644,7 +2703,7 @@ async def build_code_graph_edges(
         result = replace(builder.result, pending_edges_seen=0, ambiguous_skipped=0,
                          edges_by_type={}, external_refs=0, unresolved=0,
                          files_reresolved=len(reresolve))
-        builder = await asyncio.to_thread(_Builder, index, org_id, record_group_id, log, repo_paths)
+        builder = await asyncio.to_thread(_Builder, index, org_id, record_group_id, log, repo_paths, ts_configs)
         builder.result = result
         builder.track_unloaded(reresolve, loaded)
         edges = await asyncio.to_thread(_resolve, builder, index, reresolve)
@@ -2728,6 +2787,35 @@ async def _load_facts(
         if facts.type_table:
             index.type_table_by_record[record_id] = facts.type_table
     return unknown
+
+
+async def _load_ts_configs(source: CodeFactsSource | None, org_id: str, paths: dict[str, str]) -> TsConfigs:
+    """The repo's tsconfig/jsconfig settings, read from their stored JSON parse."""
+    configs = {record_id: path for record_id, path in paths.items() if is_ts_config(path)}
+    if source is None or not configs:
+        return TsConfigs({})
+    loaded = await source.load(org_id, set(configs))
+    # No blob (the JSON did not parse) or no fields in it: unread.
+    return TsConfigs({path: (loaded[record_id].structured_fields or None) if record_id in loaded else None
+                      for record_id, path in configs.items()})
+
+
+def _under_changed_ts_configs(configs: TsConfigs, paths: dict[str, str], touched: set[str],
+                              deleted_names: set[str]) -> set[str]:
+    """Every file under a folder whose tsconfig settings an added, edited or deleted config may have changed.
+
+    A deleted config is known by the ``module:<path>`` its sync point keeps (``deleted_files``). That
+    list holds every suffix of the path too; a suffix naming a live file is not the deleted one.
+    """
+    # shortcut: with no root tsconfig.json, deleting a nested one leaves its suffix `tsconfig.json`
+    # unmatched, read as the root's, so the whole repo is re-resolved: correct but slow on a monorepo;
+    # keep the deleted path whole on the sync point if that shows up.
+    deleted = {name[len(MODULE_PREFIX):] for name in deleted_names if name.startswith(MODULE_PREFIX)}
+    changed = {paths[r] for r in touched if r in paths and is_ts_config(paths[r])} \
+        | {path for path in deleted - set(paths.values()) if is_ts_config(path)}
+    folders = configs.folders_reading(changed) if changed else set()
+    return {record_id for record_id, path in paths.items()
+            if any(not folder or path.startswith(f"{folder}/") for folder in folders)}
 
 
 async def _load_type_tables(source: CodeFactsSource, index: SymbolIndex, org_id: str,

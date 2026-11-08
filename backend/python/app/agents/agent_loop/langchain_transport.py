@@ -79,7 +79,6 @@ from app.agents.agent_loop.converters import (
     output_schema_to_pydantic_model,
     token_usage_from_ai_message,
 )
-from app.agents.agent_loop.error_classification import redact_error_for_log
 from app.agents.agent_loop.image_guard import cap_images
 from app.agents.agent_loop.prompt_cache import NoCacheStrategy, cache_target
 from app.utils.llm_api_mode_store import (
@@ -87,6 +86,7 @@ from app.utils.llm_api_mode_store import (
     LLMApiMode,
     get_llm_api_mode_store,
 )
+from app.utils.log_redaction import redact_error_for_log
 from app.utils.message_chunks import merge_message_chunks_off_loop
 
 if TYPE_CHECKING:

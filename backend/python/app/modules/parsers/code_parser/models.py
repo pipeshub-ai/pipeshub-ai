@@ -100,6 +100,9 @@ class ParsedSymbol:
     is_container: bool = False
     # Type parameters the declaration takes (`class Foo<T, U>`: 2).
     type_param_count: int = 0
+    # False for a JS/TS module-level value (`export const X = f()`): its initializer runs as module code, so
+    # the facts inside it are the file's, not the value's.
+    owns_facts: bool = True
 
     @property
     def is_filler(self) -> bool:

@@ -37,6 +37,8 @@ from app.modules.parsers.text_decoding import decode_text
 from app.utils.env_config import env_int
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from tree_sitter import Node, Parser
 
 __all__ = ["MAX_FILE_SIZE_BYTES", "decode_source", "parse_code"]
@@ -570,6 +572,39 @@ def _java_type_name(node: Node, src: bytes) -> str:
     return _text(node, src).split("<")[0].split("[")[0].strip().rsplit(".", 1)[-1]
 
 
+def _heritage_go(node: Node, src: bytes, out: list[PendingEdgeFact], idx: int) -> None:
+    """`type Engine struct { RouterGroup; *Logger; http.Server }` and an interface's embedded
+    `Reader`: their methods are promoted. Context "embeds": method lookup only, never an edge."""
+    body = _field(node, "type")
+    if body is None or body.type not in ("struct_type", "interface_type"):
+        return
+    holders = [f for c in body.named_children if c.type == "field_declaration_list" for f in c.named_children]
+    holders += [c for c in body.named_children if c.type == "type_elem"]
+    line = node.start_point[0] + 1
+    for holder in holders:
+        if holder.type == "field_declaration":
+            if _field(holder, "name") is not None:
+                continue  # a named field, not an embed
+            typ = _field(holder, "type")
+        elif len(holder.named_children) != 1:
+            continue  # `A | B`: a constraint's type set, not an embedded interface
+        else:
+            typ = holder.named_children[0]
+        while typ is not None and typ.type == "pointer_type":
+            typ = typ.named_children[0] if typ.named_children else None
+        if typ is not None and typ.type == "generic_type":  # `Box[int]` embeds Box
+            typ = _field(typ, "type")
+        if typ is None or typ.type not in ("type_identifier", "qualified_type"):
+            continue
+        package = _field(typ, "package")
+        name = _field(typ, "name") if typ.type == "qualified_type" else typ
+        if name is not None:
+            out.append(PendingEdgeFact(
+                relation=Relation.INHERITS, to_name=_text(name, src), line=line, from_symbol=idx,
+                qualified_prefix=_text(package, src) if package is not None else None, context="embeds",
+            ))
+
+
 def _heritage_java(node: Node, src: bytes, out: list[PendingEdgeFact], idx: int) -> None:
     """`extends Base` and `implements A, B` on a class; `extends A, B` on an interface."""
     line = node.start_point[0] + 1
@@ -1037,6 +1072,104 @@ def _py_local_values(func: Node, src: bytes, cfg: LanguageConfig) -> dict[str, s
             if len(values) == 1 and None not in values}
 
 
+# Nodes that bind names of their own.
+_VALUE_SCOPE_TYPES = frozenset(_TS_SCOPE_TYPES)
+# A binding site, and the field holding what it binds.
+_BINDING_FIELDS = {"variable_declarator": "name", "for_in_statement": "left", "catch_clause": "parameter"}
+_NO_BINDING_TYPES = frozenset({"member_expression", "subscript_expression"})
+# `const run = () => …` is a function block of its own: its name shadows nothing.
+_FUNCTION_VALUES = frozenset({"arrow_function", "function_expression", "function", "generator_function"})
+# Every node that binds a name: a superset of what any one scope binds, read in one query.
+_JS_BINDING_SITES = ("formal_parameters", "variable_declarator", "for_in_statement", "catch_clause", "arrow_function")
+# Grammars (`import_handler_name`) whose bare calls the shadow guard checks.
+_SHADOW_GUARDED = frozenset({"js"})
+
+
+def _bound_names(target: Node | None, src: bytes) -> Iterator[str]:
+    """The names a binding target introduces: `x`, `{ a, b: c }`, `[d, ...e]`, `c = 1`, `x?: T`."""
+    if target is None or target.type in _NO_BINDING_TYPES:
+        return
+    if target.type in ("identifier", "shorthand_property_identifier_pattern"):
+        yield _text(target, src)
+    elif target.type == "pair_pattern":
+        yield from _bound_names(_field(target, "value"), src)
+    elif target.type in ("assignment_pattern", "object_assignment_pattern"):
+        yield from _bound_names(_field(target, "left"), src)
+    elif target.type in ("required_parameter", "optional_parameter"):
+        yield from _bound_names(_field(target, "pattern"), src)
+    else:
+        for child in target.named_children:
+            if child.type != "type_annotation":
+                yield from _bound_names(child, src)
+
+
+def _scope_names(fn: Node, src: bytes, blocks: frozenset[str] = frozenset()) -> frozenset[str]:
+    """The names *fn* binds itself (the shadow guard): its parameters, locals, loop and `catch` variables and
+    destructured names. Not among them: a nested function declaration (naming it is naming a real function),
+    and what a nested block of *blocks* (`_BLOCK_SCOPES`) binds for itself."""
+    params = set(_bound_names(_field(fn, "parameters"), src)) | set(_bound_names(_field(fn, "parameter"), src))
+    return frozenset(params | _bound_in(fn.named_children, src, blocks))
+
+
+def _bound_in(nodes: list[Node], src: bytes, blocks: frozenset[str] = frozenset()) -> set[str]:
+    """The names *nodes* bind in the scope that holds them, nested scopes left out. In a nested block of
+    *blocks*, a `let`/`const`, a `for (const x of …)` variable and a `catch (e)` bind only there (`_block_names`,
+    asked on the way up); a `var` there still binds the whole function, and so does a function value it holds
+    (only at the function's own level is `const run = () => …` a function block of its own, shadowing
+    nothing)."""
+    names: set[str] = set()
+    top = {(node.start_byte, node.type) for node in nodes}  # a function's own body block is its scope, not nested
+    stack = [(node, False) for node in nodes]
+    while stack:
+        node, in_block = stack.pop()
+        if node.type in _VALUE_SCOPE_TYPES:
+            continue  # its names are its own, collected when a value inside it asks
+        if in_block and node.type == "lexical_declaration":
+            continue
+        own = node.type in blocks and _binds_for_itself(node, src)
+        if node.type in _BINDING_FIELDS and not own and not (
+                not in_block and node.type == "variable_declarator"
+                and getattr(_field(node, "value"), "type", None) in _FUNCTION_VALUES):
+            names.update(_bound_names(_field(node, _BINDING_FIELDS[node.type]), src))
+        nested = in_block or (node.type in blocks and (node.start_byte, node.type) not in top)
+        held = _field(node, _BINDING_FIELDS[node.type]) if own else None
+        stack.extend((child, nested) for child in node.named_children
+                     if held is None or (child.start_byte, child.type) != (held.start_byte, held.type))
+    return names
+
+
+# Per grammar (`import_handler_name`), the nodes a `let`/`const` inside binds only for: a nested `{ }`, a
+# `for`/`for…of` header with its body, a `catch` clause (its parameter too) and a `switch` body.
+_BLOCK_SCOPES = {"js": frozenset({"statement_block", "for_statement", "for_in_statement", "catch_clause",
+                                  "switch_body"})}
+
+
+def _binds_for_itself(node: Node, src: bytes) -> bool:
+    """`for (const x of xs)` / `for (let k in o)` and `catch (e)`: the loop variable or the caught error is the
+    block's alone (a `for (var x of xs)` is the function's)."""
+    if node.type == "catch_clause":
+        return True
+    kind = _field(node, "kind") if node.type == "for_in_statement" else None
+    return kind is not None and _text(kind, src) in ("let", "const")
+
+
+def _block_names(block: Node, src: bytes) -> frozenset[str]:
+    """The names a JS/TS block binds for itself: `let`/`const` declarations directly in a `{ }` (function values
+    too) or a `switch`'s cases, a `for (let i …)` initializer, a `for (const x of …)` variable, a `catch (e)`."""
+    if _binds_for_itself(block, src):
+        return frozenset(_bound_names(_field(block, _BINDING_FIELDS[block.type]), src))
+    if block.type == "for_statement":
+        held = [_field(block, "initializer")]
+    elif block.type == "switch_body":
+        held = [stmt for case in block.named_children for stmt in case.named_children]
+    else:
+        held = block.named_children
+    return frozenset(name for decl in held if decl is not None and decl.type == "lexical_declaration"
+                     for d in decl.named_children if d.type == "variable_declarator"
+                     for name in _bound_names(_field(d, "name"), src))
+
+
+
 def _collect_type_table_java(root: Node, src: bytes, table: dict[str, str], cfg: LanguageConfig) -> None:
     """`Owner owner`, as a field, a parameter or a local: calls on `owner` are on Owner."""
     for node in _nodes_of_types(root, cfg, ("field_declaration", "local_variable_declaration", "formal_parameter", "spread_parameter")):
@@ -1261,6 +1394,7 @@ class _Span:
     is_exported: bool = False
     # The statement namespace (`namespace X;`) above the span, prefixed to its chain.
     namespace: tuple[str, ...] = ()
+    owns_facts: bool = True  # ParsedSymbol.owns_facts
 
 
 # Filler kinds that absorb an adjacent run of the same kind.
@@ -1304,7 +1438,17 @@ class _Walker:
         self._scope_tables: dict[int, dict[str, str]] = {}
         # Macro invocation start byte -> its arguments parsed as code (languages.MACRO_ARGUMENT_HANDLERS).
         self._macro_arguments: dict[int, Node] = {}
-        self.heritage_handler = _HERITAGE_HANDLERS.get(cfg.heritage_handler_name)
+        # Go has no heritage, but its embeds promote methods: facts for lookup, never an edge, so its
+        # config keeps no heritage handler and coverage still says it has no heritage edges.
+        self.heritage_handler = _HERITAGE_HANDLERS.get(cfg.heritage_handler_name) or (
+            _heritage_go if cfg.name == "go" else None)
+        # Grammars whose bare calls are checked against the names their scopes bind (`_shadowed`).
+        self._shadow_guard = cfg.import_handler_name in _SHADOW_GUARDED
+        self._names_by_scope: dict[tuple[int, str], frozenset[str]] = {}
+        self._block_scopes = _BLOCK_SCOPES.get(cfg.import_handler_name, frozenset())
+        self._all_bound: frozenset[str] | None = None
+        self._exported_names: frozenset[str] | None = None
+        self._root: Node | None = None
 
     # -- symbols --------------------------------------------------------
 
@@ -1324,6 +1468,7 @@ class _Walker:
     # -- entry ----------------------------------------------------------
 
     def walk(self, root: Node) -> ParsedFile:
+        self._root = root
         # Built before the walk so a call can resolve its receiver's type as it
         # is emitted: a variable is often declared below its first use.
         handler = _TYPE_TABLE_HANDLERS.get(self.cfg.type_table_handler_name)
@@ -1545,7 +1690,7 @@ class _Walker:
                     is_exported=True,
                 )
             for candidate in child.named_children:
-                bound = self._as_bound_function(candidate)
+                bound = self._as_bound_function(candidate) or self._as_module_value(child, candidate)
                 if bound is not None:
                     bound.start, bound.end, bound.nodes = child.start_byte, child.end_byte, [child]
                     bound.is_exported = True
@@ -1571,6 +1716,10 @@ class _Walker:
         bound = self._as_bound_function(child)
         if bound is not None:
             return bound
+
+        value = self._as_module_value(child, child)
+        if value is not None and value.name in self._listed_exports():
+            return value
 
         if in_container:
             field_span = self._as_field(child)
@@ -1602,6 +1751,41 @@ class _Walker:
             child.start_byte, child.end_byte, "definition", nodes=[child],
             def_node=value, def_kind="function", name=name,
         )
+
+    def _as_module_value(self, statement: Node, declaration: Node) -> _Span | None:
+        """`export const REVISION = '187'`: a JS/TS module-level value another file imports by name, so a
+        definition (a field) like a function is. Only an exported one: an internal constant is reached by no
+        import, and each node is a vector. *statement* is the top-level statement holding *declaration*
+        (itself, or its `export`)."""
+        if declaration.type not in self.cfg.binding_types or statement.parent is None \
+                or statement.parent.type != "program":
+            return None
+        declarators = [c for c in declaration.named_children if c.type == "variable_declarator"]
+        # shortcut: `export const a = 1, b = 2` and destructuring (`export const { a } = o`) give no node;
+        # split the statement into one span per name if a repo exports that way.
+        if len(declarators) != 1:
+            return None
+        name_node = _field(declarators[0], "name")
+        if name_node is None or name_node.type != "identifier":
+            return None
+        return _Span(statement.start_byte, statement.end_byte, "definition", nodes=[statement],
+                     def_node=declarators[0], def_kind="field", name=_text(name_node, self.src), owns_facts=False)
+
+    def _listed_exports(self) -> frozenset[str]:
+        """The names `export { a, b as c }` and `export default a` export from this module's own bindings."""
+        if self._exported_names is None:
+            names: set[str] = set()
+            for statement in self._root.named_children if self._root is not None else ():
+                if statement.type not in self.cfg.export_types or _field(statement, "source") is not None:
+                    continue
+                for child in statement.named_children:
+                    if child.type == "export_clause":
+                        names.update(_text(name, self.src) for spec in child.named_children
+                                     if (name := _field(spec, "name")) is not None)
+                    elif child.type == "identifier":
+                        names.add(_text(child, self.src))
+            self._exported_names = frozenset(names)
+        return self._exported_names
 
     def _as_field(self, child: Node) -> _Span | None:
         """A class-body assignment is a field, and needs to stay addressable.
@@ -1729,6 +1913,7 @@ class _Walker:
             is_exported=span.is_exported,
             parent=parent_idx,
             type_param_count=_type_param_count(span.def_node) if span.kind == "definition" else 0,
+            owns_facts=span.owns_facts,
         ))
 
         if span.kind != "definition":
@@ -1902,6 +2087,9 @@ class _Walker:
         # Builtin globals only shadow bare calls; `this.fetch()` is a method.
         if not name or (not is_member and name in self.builtins):
             return
+        # `task(ref)` on a parameter or local calls that value, never a module function named `task`.
+        if not is_member and self._shadow_guard and self._shadowed(node, name):
+            return
         self.out.pending.append(PendingEdgeFact(
             relation=Relation.CALLS,
             to_name=name,
@@ -1988,6 +2176,49 @@ class _Walker:
         found = self.out.type_table.get(receiver)
         # `=expr` initializers are evaluated by the builder, which can see other files.
         return found if found and not found.startswith("=") and not found.endswith("[]") else None
+
+    def _names_bound_by(self, scope: Node) -> frozenset[str]:
+        """*scope*'s own names, cached: a function's (`_scope_names`) or a block's (`_block_names`)."""
+        key = (scope.start_byte, scope.type)
+        names = self._names_by_scope.get(key)
+        if names is None:
+            names = self._names_by_scope[key] = (_scope_names(scope, self.src, self._block_scopes)
+                                                 if scope.type in _VALUE_SCOPE_TYPES else _block_names(scope, self.src))
+        return names
+
+    def _bound_anywhere(self, node: Node) -> frozenset[str]:
+        """Every name some function of the file binds: a name outside it is shadowed nowhere, which
+        spares the ancestor walk (quadratic on `f(f(f(...)))` chains thousands deep)."""
+        if self._all_bound is None:
+            root = node
+            while root.parent is not None:
+                root = root.parent
+            names: set[str] = set()
+            for site in _nodes_of_types(root, self.cfg, _JS_BINDING_SITES):
+                if site.type in _BINDING_FIELDS:
+                    # A function value too: in a nested block it shadows there (a superset only costs the walk).
+                    names.update(_bound_names(_field(site, _BINDING_FIELDS[site.type]), self.src))
+                elif site.type == "arrow_function":
+                    names.update(_bound_names(_field(site, "parameter"), self.src))
+                else:
+                    names.update(_bound_names(site, self.src))
+            self._all_bound = frozenset(names)
+        return self._all_bound
+
+    def _shadowed(self, node: Node, name: str) -> bool:
+        """Whether a scope around *node* binds *name* itself, so it names no module function."""
+        if name not in self._bound_anywhere(node):
+            return False
+        scope = node.parent
+        while scope is not None:
+            # A function's own body block is the function's scope, not a nested block.
+            in_scope = scope.type in _VALUE_SCOPE_TYPES or (
+                scope.type in self._block_scopes and scope.parent is not None
+                and scope.parent.type not in _VALUE_SCOPE_TYPES)
+            if in_scope and name in self._names_bound_by(scope):
+                return True
+            scope = scope.parent
+        return False
 
     def _ts_scoped_type(self, node: Node, name: str) -> str | None:
         """*name*'s type in the innermost function that declares it: one file reuses
@@ -2167,7 +2398,8 @@ def _attribute_facts(parsed: ParsedFile) -> None:
         while pos is not None:
             sym = symbols[order[pos]]
             if sym.start_byte <= fact.byte_offset < sym.end_byte:
-                fact.from_symbol = order[pos]
+                # Only a top-level span owns no facts, so nothing encloses it: they are the file's.
+                fact.from_symbol = order[pos] if sym.owns_facts else None
                 fact.from_kind = "block"
                 break
             pos = enclosing[pos]

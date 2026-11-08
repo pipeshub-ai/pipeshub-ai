@@ -69,10 +69,7 @@ from app.agent_loop_lib.transport.opik_tracing import (
     maybe_start_named_span,
     record_named_span_output,
 )
-from app.agents.agent_loop.error_classification import (
-    classify_error,
-    redact_error_for_log,
-)
+from app.agents.agent_loop.error_classification import classify_error
 from app.agents.agent_loop import parked_turn
 from app.agents.agent_loop.hooks.ask_user_question import _ASK_USER_QUESTION_TOOL_NAMES
 from app.agents.agent_loop.mcp_sign_in import sign_in_part
@@ -83,6 +80,7 @@ from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.telemetry.modules.activity_metrics import record_service_activity
 from app.utils.citations import normalize_citations_and_chunks
+from app.utils.log_redaction import redact_error_for_log
 from app.utils.streaming import parse_confidence_from_answer
 
 if TYPE_CHECKING:
