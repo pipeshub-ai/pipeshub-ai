@@ -2693,12 +2693,13 @@ class OneDriveConnector(BaseConnector):
         Syncs OneDrive users.
         """
         try:
-            listed = await self.msgraph_client.get_all_users()
-            # A disabled account is left out like a deleted one: no drive sync and no
-            # access, and enabling it saves the user, and the access, again.
-            users = [u for u in listed if u.is_active is not False]
-            await self.data_entities_processor.on_new_app_users(users)
-            await self._withdraw_unlisted_app_users(users)
+            users = await self.msgraph_client.get_all_users()
+            # A disabled account is not saved, so it has no connector access (enabling it
+            # saves the user, and the access, again); its drive is still synced, because
+            # what it shared with others stays visible to them.
+            enabled = [u for u in users if u.is_active is not False]
+            await self.data_entities_processor.on_new_app_users(enabled)
+            await self._withdraw_unlisted_app_users(enabled)
             self.logger.info(f"✅ Successfully synced {len(users)} users")
             return users
         except ODataError as e:

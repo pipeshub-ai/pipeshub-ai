@@ -46,7 +46,9 @@ async def test_disabled_account_is_withdrawn() -> None:
     c, stored = _connector(["a", "b"], [_user("a"), _user("b", active=False)])
     users = await c._sync_users()
     assert set(stored) == {"a"}
-    assert [u.source_user_id for u in users] == ["a"]
+    saved = {u.source_user_id for u in c.data_entities_processor.on_new_app_users.await_args.args[0]}
+    assert saved == {"a"}  # the disabled account is not saved again...
+    assert {u.source_user_id for u in users} == {"a", "b"}  # ...but its drive is still synced
 
 
 @pytest.mark.asyncio
