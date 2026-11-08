@@ -1,4 +1,4 @@
-"""Code-graph edge builds: outcomes, duration, what they resolved, the backlog.
+"""Code-graph edge builds (outcomes, duration, what they resolved, the backlog) and tool calls.
 
 No per-org or per-repo labels, like ``scheduling_metrics``: the label set stays
 bounded however many repos an install indexes. Which repo is affected is in the
@@ -55,6 +55,18 @@ OWED_BUILDS = METRICS_BACKEND.gauge(
     "Repos owed a build at the last reconciler sweep, due now or backing off",
     ["state"],
 )
+
+TOOL_CALLS = METRICS_BACKEND.counter(
+    "pipeshub_code_graph_tool_calls_total",
+    "Code-graph tool calls from in-product agents and from MCP (every pipeshub_code_* tool but "
+    "pipeshub_code_repos), by tool and outcome (ok, or error: refused arguments, a failed "
+    "lookup or an exception)",
+    ["tool", "outcome"],
+)
+
+
+def record_tool_call(tool: str, *, ok: bool) -> None:
+    TOOL_CALLS.inc(tool, "ok" if ok else "error")
 
 
 def record_build(outcome: str, result: EdgeBuildResult | None = None,

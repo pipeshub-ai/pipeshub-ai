@@ -22,6 +22,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, RecordRelations
+from app.modules.parsers.code_parser.lang_config import SUPPORTED_CODE_EXTENSIONS
 from app.modules.parsers.code_parser.models import FILLER_KINDS
 
 from .ops import (
@@ -88,7 +89,8 @@ _SELECT_SCAN_LIMIT = 400
 _PATH_FANOUT_FILES = 60
 # Files a directory listing may scan before it reports itself truncated.
 _LIST_SCAN_LIMIT = 2000
-_CODE_EXTENSIONS = (".py", ".ts", ".tsx", ".js", ".jsx")
+# What the parser indexes: a top-level `main.go` has only its extension to say it is a file.
+_CODE_EXTENSIONS = tuple(f".{ext}" for ext in SUPPORTED_CODE_EXTENSIONS)
 
 
 def _looks_like_path(select: str) -> bool:

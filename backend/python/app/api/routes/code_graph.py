@@ -118,6 +118,7 @@ class ImpactBody(RepoRef):
     record_id: str | None = None
     qualified_name: str | None = None
     depth: int = Field(default=DEFAULT_IMPACT_DEPTH, ge=1, le=MAX_IMPACT_DEPTH)
+    edge_types: list[str] | None = None
 
 
 class EntryPointsBody(RepoRef):
@@ -362,7 +363,7 @@ async def code_impact(request: Request, body: ImpactBody) -> JSONResponse:
     return await _run(request, body, body.record_id, lambda t, repo: t.impact(
         connector_id=repo.connector_id, file_path=body.file_path, record_id=body.record_id,
         qualified_name=body.qualified_name, depth=body.depth,
-        include_tests=body.include_tests, repo=repo.group_id,
+        include_tests=body.include_tests, repo=repo.group_id, edge_types=body.edge_types,
     ))
 
 

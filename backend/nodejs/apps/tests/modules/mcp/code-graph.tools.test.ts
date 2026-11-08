@@ -3,6 +3,7 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { z } from 'zod'
 import {
+  CODE_GRAPH_INSTRUCTIONS,
   CODE_GRAPH_TOOL_NAMES,
   callerHasCodeRepos,
   registerCodeGraphToolDefinitions,
@@ -46,6 +47,36 @@ describe('MCP code-graph tools', () => {
       expect(config.annotations.readOnlyHint).to.equal(true)
       expect(config.annotations.destructiveHint).to.equal(false)
     }
+  })
+
+  it('says when to use each tool, what it returns and what comes next, in a short description', () => {
+    for (const [name, { config }] of register()) {
+      const d: string = config.description
+      expect(d.length, name).to.be.below(1100)
+      expect(d.startsWith('Use '), name).to.equal(true)
+      expect(d.indexOf('Next:'), name).to.be.greaterThan(0)
+    }
+    expect(register().get('pipeshub_code_impact')!.config.description.startsWith('Use first')).to.equal(true)
+  })
+
+  it('tells the agent to run impact before grep, in a short paragraph', () => {
+    const skill = CODE_GRAPH_INSTRUCTIONS.split('\n\n').find((p) => p.includes('before grep'))!
+    expect(skill.length).to.be.below(600)
+    expect(skill).to.include('call pipeshub_code_impact')
+    expect(skill).to.include('read only the files and')
+  })
+
+  it('takes edge_types for impact, refuses an unknown one, and forwards it', async () => {
+    const tool = register().get('pipeshub_code_impact')!
+    const schema = z.object(tool.config.inputSchema)
+    const target = { repo: 'x/y', file_path: 'a.py', qualified_name: 'function:a' }
+    expect(schema.safeParse({ ...target, edge_types: ['CALLS', 'OVERRIDES'] }).success).to.equal(true)
+    expect(schema.safeParse({ ...target, edge_types: ['CALLZ'] }).success).to.equal(false)
+    expect(schema.safeParse({ ...target, edge_types: 'CALLS' }).success).to.equal(false)
+    expect(schema.safeParse(target).success).to.equal(true)
+    fetchStub.resolves(jsonResponse(200, {}))
+    await tool.handler({ ...target, edge_types: ['CALLS'] })
+    expect(JSON.parse(fetchStub.firstCall.args[1].body).edge_types).to.deep.equal(['CALLS'])
   })
 
   it("forwards the caller's own token to the query service", async () => {
@@ -134,6 +165,29 @@ describe('MCP code-graph tools', () => {
     const out = JSON.parse(result.content[0].text)
     expect(out.note).to.equal('Call pipeshub_code_neighbours on each `chain` entry next before pipeshub_code_read.')
     expect(out.code).to.equal('def read_code(): pass')
+  })
+
+  it("names the MCP tools in a coverage gap's note", async () => {
+    fetchStub.resolves(jsonResponse(200, {
+      neighbors: [],
+      coverage: { languages: ['ruby'], note: 'Confirm with search and read_code.' },
+    }))
+    const result = await register().get('pipeshub_code_neighbours')!.handler({ repo: 'x/y', file_path: 'a.rb' })
+    const out = JSON.parse(result.content[0].text)
+    expect(out.coverage).to.deep.equal({
+      languages: ['ruby'], note: 'Confirm with search and pipeshub_code_read.',
+    })
+  })
+
+  it('renames the outline, impact and entry_points tools in guidance too', async () => {
+    fetchStub.resolves(jsonResponse(200, {
+      next: 'Run impact on that symbol alone, then outline or entry_points.',
+    }))
+    const result = await register().get('pipeshub_code_impact')!.handler({ repo: 'x/y', file_path: 'a.py' })
+    expect(JSON.parse(result.content[0].text).next).to.equal(
+      'Run pipeshub_code_impact on that symbol alone, then pipeshub_code_outline or ' +
+        'pipeshub_code_entry_points.',
+    )
   })
 
   it('forwards each new tool to its own route', async () => {
