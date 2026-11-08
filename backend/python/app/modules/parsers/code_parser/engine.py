@@ -572,6 +572,39 @@ def _java_type_name(node: Node, src: bytes) -> str:
     return _text(node, src).split("<")[0].split("[")[0].strip().rsplit(".", 1)[-1]
 
 
+def _heritage_go(node: Node, src: bytes, out: list[PendingEdgeFact], idx: int) -> None:
+    """`type Engine struct { RouterGroup; *Logger; http.Server }` and an interface's embedded
+    `Reader`: their methods are promoted. Context "embeds": method lookup only, never an edge."""
+    body = _field(node, "type")
+    if body is None or body.type not in ("struct_type", "interface_type"):
+        return
+    holders = [f for c in body.named_children if c.type == "field_declaration_list" for f in c.named_children]
+    holders += [c for c in body.named_children if c.type == "type_elem"]
+    line = node.start_point[0] + 1
+    for holder in holders:
+        if holder.type == "field_declaration":
+            if _field(holder, "name") is not None:
+                continue  # a named field, not an embed
+            typ = _field(holder, "type")
+        elif len(holder.named_children) != 1:
+            continue  # `A | B`: a constraint's type set, not an embedded interface
+        else:
+            typ = holder.named_children[0]
+        while typ is not None and typ.type == "pointer_type":
+            typ = typ.named_children[0] if typ.named_children else None
+        if typ is not None and typ.type == "generic_type":  # `Box[int]` embeds Box
+            typ = _field(typ, "type")
+        if typ is None or typ.type not in ("type_identifier", "qualified_type"):
+            continue
+        package = _field(typ, "package")
+        name = _field(typ, "name") if typ.type == "qualified_type" else typ
+        if name is not None:
+            out.append(PendingEdgeFact(
+                relation=Relation.INHERITS, to_name=_text(name, src), line=line, from_symbol=idx,
+                qualified_prefix=_text(package, src) if package is not None else None, context="embeds",
+            ))
+
+
 def _heritage_java(node: Node, src: bytes, out: list[PendingEdgeFact], idx: int) -> None:
     """`extends Base` and `implements A, B` on a class; `extends A, B` on an interface."""
     line = node.start_point[0] + 1
@@ -1405,7 +1438,10 @@ class _Walker:
         self._scope_tables: dict[int, dict[str, str]] = {}
         # Macro invocation start byte -> its arguments parsed as code (languages.MACRO_ARGUMENT_HANDLERS).
         self._macro_arguments: dict[int, Node] = {}
-        self.heritage_handler = _HERITAGE_HANDLERS.get(cfg.heritage_handler_name)
+        # Go has no heritage, but its embeds promote methods: facts for lookup, never an edge, so its
+        # config keeps no heritage handler and coverage still says it has no heritage edges.
+        self.heritage_handler = _HERITAGE_HANDLERS.get(cfg.heritage_handler_name) or (
+            _heritage_go if cfg.name == "go" else None)
         # Grammars whose bare calls are checked against the names their scopes bind (`_shadowed`).
         self._shadow_guard = cfg.import_handler_name in _SHADOW_GUARDED
         self._names_by_scope: dict[tuple[int, str], frozenset[str]] = {}

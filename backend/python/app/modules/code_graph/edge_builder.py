@@ -111,6 +111,8 @@ RESOLUTION_WRAPPER = "wrapper"
 # How deep a wrapper macro's nested macros are expanded, at resolution and when selecting re-resolved files.
 _MAX_MACRO_DEPTH = 8
 
+# The parser's context for a Go embedded field: method promotion, never a heritage edge.
+_EMBEDS = "embeds"
 # A local name an import binds to something outside the repo (`from requests
 # import get`). It shadows every repo definition of that name in the file.
 _EXTERNAL = ""
@@ -856,6 +858,8 @@ class _Builder:
                     self.result.unresolved += 1
                 continue
 
+            if fact.get("context") == _EMBEDS:
+                continue  # Go embedding feeds method lookup (_base_types_of), not the heritage graph
             if relation == RecordRelations.CALLS.value and not fact.get("qualifiedPrefix"):
                 # The preprocessor runs first: a call through a function-like macro calls what it expands to.
                 is_macro, target = self._through_wrapper(name, record_id, call_file, family, fact.get("line"))
@@ -946,7 +950,7 @@ class _Builder:
         verdict = bool(row) and (
             (row.kind or "").lower() in _INTERFACE_KINDS
             or any(
-                fact.get("relation") in _TYPE_RELATIONS
+                fact.get("relation") in _TYPE_RELATIONS and fact.get("context") != _EMBEDS
                 and (fact.get("toName") or "") in _ABSTRACT_BASE_NAMES
                 for fact in row.pending_edges
             )
@@ -2072,7 +2076,23 @@ class _Builder:
         if owner not in self.index.type_blocks:
             return None, CONFIDENCE_INFERRED, None
         # INFERRED as for every language: the type table is per file, not per scope.
-        return self._resolve_self_method(owner, name), CONFIDENCE_INFERRED, RESOLUTION_TYPE
+        return self._promoted_method(owner, name), CONFIDENCE_INFERRED, RESOLUTION_TYPE
+
+    def _promoted_method(self, owner: str, name: str) -> str | None:
+        """Go: `m` on a struct, else on what it embeds, depth by depth. The shallowest single
+        definition wins; two at one depth are ambiguous (the compiler rejects the call); a cycle ends.
+
+        shortcut: only methods count, so a shallower embedded *field* named `m` does not hide a deeper method
+        `m` as Go's selector rule says; walk fields too if that shows up as a wrong promoted call."""
+        level, seen = [owner], {owner}
+        while level:
+            hits = {hit for t in level
+                    if (hit := self.index.method_index.get((t, name)) or self._method_by_owner_name(t, name))}
+            if hits:
+                return hits.pop() if len(hits) == 1 else None
+            level = [base for t in level for base in self._base_types_of(t) if base not in seen]
+            seen.update(level)
+        return None
 
     def _resolve_bound_receiver(self, receiver: str, name: str, record_id: str, qualifier: str | None = None,
                                 ) -> tuple[str | None, str, str | None] | None:
@@ -2446,6 +2466,8 @@ class _Builder:
             hit = self._defined_or_reexported(module, name)
             if hit in self.index.type_blocks:
                 return hit
+        if qualified_prefix and family == "go":
+            return None  # `http.Server` is that package's type: never a repo type named like it elsewhere
         candidates = [
             cid for cid in self.index.candidates(name) if cid in self.index.type_blocks
         ]
