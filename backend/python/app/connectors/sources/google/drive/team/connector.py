@@ -1421,6 +1421,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         Both limit access that already exists, so they apply to stored shares as well as new ones.
         Members of the drive are not restricted by driveMembersOnly (and the drive's own grants are its members).
         """
+        # shortcut: a drive outside this domain's listing (shared in from another organization) is not read, since
+        # domain-admin access cannot ask for its restrictions; upgrade by reading them as the syncing user.
         if not drive_id or drive_id not in self._listed_shared_drive_ids:
             return lambda _p: True
         restrictions = await self._drive_restrictions_of(drive_id)
@@ -1433,6 +1435,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         if domain_only and not domains:
             raise ValueError("The domain of the shared drive is unknown: no users were synced")
 
+        # shortcut: a group is judged by its address, not by the domains of its members; upgrade by resolving members.
         def allowed(p: Permission) -> bool:
             is_group = p.entity_type == EntityType.GROUP
             who = ((p.external_id if is_group else p.email) or "").lower()
