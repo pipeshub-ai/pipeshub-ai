@@ -209,21 +209,27 @@ async def _unproven_note(
 
     Only readable callers count: "something calls it" from a hidden file would reveal that file.
     """
-    rows, _, spent = await _readable_neighbour_rows(
-        graph_provider, org_id, access, [target_key], [RecordRelations.CALLS.value], "inbound",
-        page=_CALLER_PROBE, budget=_CALLER_SCAN_LIMIT, want=1,
-        accept=lambda r: r.get("collection") == _BLOCKS and bool(r.get("key")),
-    )
-    # A spent scan cannot say nothing calls it.
-    linked = bool(rows) or spent
-    reason = (
-        "No chain of linked calls joins them, but calls the graph could not link (on values "
-        "of unknown type, through getattr or callbacks) can. "
-        if linked else
-        "Nothing in the graph calls the second symbol, so every call to it is one the graph "
-        "could not link (through getattr, a callback, or a value of unknown type), and this "
-        "search cannot tell whether the first reaches it. "
-    )
+    async def linked(relation: str) -> bool:
+        rows, _, spent = await _readable_neighbour_rows(
+            graph_provider, org_id, access, [target_key], [relation], "inbound",
+            page=_CALLER_PROBE, budget=_CALLER_SCAN_LIMIT, want=1,
+            accept=lambda r: r.get("collection") == _BLOCKS and bool(r.get("key")),
+        )
+        return bool(rows) or spent  # a spent scan cannot say nothing links it
+
+    if await linked(RecordRelations.CALLS.value):
+        reason = ("No chain of linked calls joins them, but calls the graph could not link (on values "
+                  "of unknown type, through getattr or callbacks) can. ")
+    elif await linked(RecordRelations.INDIRECT_CALL.value):
+        # A handover is a possible call, not a definite one: say which the graph holds.
+        reason = ("Nothing in the graph calls the second symbol directly, but it is handed over as a "
+                  "value (INDIRECT_CALL: a callback or table entry), so it may run wherever that value "
+                  "goes; calls the graph could not link (on values of unknown type, through getattr) "
+                  "can join them too. ")
+    else:
+        reason = ("Nothing in the graph calls the second symbol, so every call to it is one the graph "
+                  "could not link (through getattr, a callback, or a value of unknown type), and this "
+                  "search cannot tell whether the first reaches it. ")
     return (reason + "Before answering that it is not reached, read the calls the first symbol "
             "makes and follow them; a call counts even when it sits in a branch only some "
             "arguments take.")

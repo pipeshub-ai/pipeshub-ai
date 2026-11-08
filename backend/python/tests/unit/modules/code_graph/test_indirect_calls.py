@@ -226,6 +226,25 @@ async def test_a_get_accessor_read_is_not_an_indirect_call(graph, index_file) ->
     assert targets == {"method:History.onChange"}
 
 
+TS_GETTER_SETTER = b'''
+export class Box {
+  get size(): number { return 1; }
+  set size(v: number) {}
+  onChange(): void {}
+  emit(): void {
+    fire(this.size, this.onChange);
+  }
+}
+'''
+
+
+async def test_a_property_with_a_getter_and_a_setter_is_read_whichever_the_name_lands_on(graph, index_file) -> None:
+    await index_file("recS", "web/box.ts", TS_GETTER_SETTER, "typescript")
+    await _build(graph)
+    targets = {dst for src, dst in _pairs(graph, INDIRECT) if src == "method:Box.emit"}
+    assert targets == {"method:Box.onChange"}
+
+
 TS_HANDLERS = b'''
 export function onOpen(ref: string): string { return ref; }
 export function onShip(ref: string): string { return ref; }

@@ -1962,12 +1962,12 @@ def _values_of(holder: Node) -> list[Node]:
 
 
 def _is_accessor(def_node: Node | None, decorators: tuple[str, ...]) -> bool:
-    """A method read like an attribute, `@property`/`cached_property` or a `get` accessor:
-    `self.text` runs it there and then, nothing is handed over."""
+    """A method read like an attribute, `@property`/`cached_property` or a `get`/`set` accessor:
+    `self.text` runs it there and then, nothing is handed over (a setter shares its getter's name)."""
     if any(d.lstrip("@").strip().rsplit(".", 1)[-1] in _ACCESSOR_DECORATORS for d in decorators):
         return True
     return def_node is not None and def_node.type == "method_definition" \
-        and any(c.type == "get" for c in def_node.children)
+        and any(c.type in ("get", "set") for c in def_node.children)
 
 
 # --------------------------------------------------------------------------

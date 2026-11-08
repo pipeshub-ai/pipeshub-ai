@@ -170,12 +170,12 @@ class TestTypeScriptValuePositions:
                 ("onG", "return")} <= got
         assert not any(name == "spread" for name, _ in got)
 
-    def test_get_accessors_are_flagged_and_set_accessors_and_methods_are_not(self) -> None:
+    def test_get_and_set_accessors_are_flagged_and_methods_are_not(self) -> None:
         src = ("class History {\n  get isEmpty(): boolean { return true; }\n"
                "  static get count(): number { return 1; }\n  set size(v: number) {}\n  onChange(): void {}\n}\n")
         flagged = {(s.name, s.is_accessor) for s in parse_code(src.encode(), "typescript").symbols
                    if s.kind == "method"}
-        assert flagged == {("isEmpty", True), ("count", True), ("size", False), ("onChange", False)}
+        assert flagged == {("isEmpty", True), ("count", True), ("size", True), ("onChange", False)}
 
     def test_an_event_subscription(self) -> None:
         refs = _refs("export function sub(bus: Emitter): void {\n  bus.on('ship', onShip);\n}\n", "typescript")
