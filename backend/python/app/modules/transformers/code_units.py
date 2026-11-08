@@ -241,15 +241,23 @@ def _pieces(text: str, budget: int, token_len: Callable[[str], int],
     return [p for p in pieces if p.strip()]
 
 
-_WORD_END, _WORD_START = re.compile(r"\w+$"), re.compile(r"^\w+")
+_WORD_END, _WORD_START, _ALL_WORD = re.compile(r"\w+$"), re.compile(r"^\w+"), re.compile(r"\w+")
 
 
 def _straddling(parts: list[str]) -> list[str]:
-    """The words split across two consecutive parts of one cut line. A word that fills a whole part runs
-    past these two and is longer than a unit, so no unit could hold it whole: it is left out."""
+    """The words a cut line's parts split, each rebuilt whole: a word runs on through every part that is
+    entirely word characters, so one can span any number of parts."""
     out = []
-    for left, right in zip(parts, parts[1:]):
-        head, tail = _WORD_END.search(left), _WORD_START.match(right)
-        if head and tail and head.start() > 0 and tail.end() < len(right):
-            out.append(head.group() + tail.group())
+    i = 0
+    while i < len(parts) - 1:
+        head = _WORD_END.search(parts[i])
+        if not head or not _WORD_START.match(parts[i + 1]):
+            i += 1
+            continue
+        word, j = head.group(), i + 1
+        while j < len(parts) - 1 and _ALL_WORD.fullmatch(parts[j]) and _WORD_START.match(parts[j + 1]):
+            word += parts[j]
+            j += 1
+        out.append(word + _WORD_START.match(parts[j]).group())
+        i = j
     return out

@@ -122,8 +122,8 @@ def test_a_cut_blocks_words_are_carried_once_not_by_every_piece() -> None:
 
 
 def test_a_word_longer_than_a_unit_is_not_added_to_the_residue() -> None:
-    """A word that fills whole pieces (a base64 literal) can be whole in no unit; joining two of its parts
-    would only copy text into the residue."""
+    """A word longer than a unit (a base64 literal) is rebuilt whole from its pieces but fits no residue unit
+    either, so it is not copied into the residue."""
     blob = "A" * 2000
     container = _parse(f'def data():\n    return "{blob}" + other_name\n'.encode())
 
@@ -131,7 +131,10 @@ def test_a_word_longer_than_a_unit_is_not_added_to_the_residue() -> None:
         return [text[i:i + n] for i in range(0, len(text), n)]
     units = code_units(_code_blocks(container), lambda _b: "", exceeds=lambda t, n: len(t) > n, token_len=len,
                        split_long_line=hard_cut, budget=200)
-    assert all("A" * 100 not in w for u in units for w in u.cut_words)
+    cut = [w for u in units for w in u.cut_words]
+    assert blob in cut
+    residue = residue_pieces([], "ctx", token_len=len, split_long_line=hard_cut, budget=200, cut_words=cut)
+    assert all("A" * 100 not in piece for piece in residue)
 
 
 def test_a_cut_word_is_kept_while_it_fits_the_residue_room_not_the_piece_budget() -> None:
@@ -151,6 +154,34 @@ def test_a_cut_word_is_kept_while_it_fits_the_residue_room_not_the_piece_budget(
     [piece] = residue_pieces([], "ctx", token_len=len, split_long_line=hard_cut, budget=40,
                              cut_words=[between, over, "short"])
     assert piece.split("\n")[1].split() == ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "short"]
+
+
+def _cut_words(line: str, budget: int, signature: str = "") -> tuple[str, ...]:
+    """A one-line block's cut words, with ``len`` as the token count and a cut every ``budget`` characters."""
+    from types import SimpleNamespace
+
+    def hard_cut(text: str, n: int) -> list[str]:
+        return [text[i:i + n] for i in range(0, len(text), n)]
+    block = SimpleNamespace(index=0, data={"text": line}, parent_block_index=None,
+                            code_metadata=SimpleNamespace(kind="function", signature=signature, docstring=""))
+    units = code_units([block], lambda _b: "", exceeds=lambda t, n: len(t) > n, token_len=len,
+                       split_long_line=hard_cut, budget=budget)
+    return tuple(w for u in units for w in u.cut_words)
+
+
+def test_a_cut_word_spanning_three_pieces_is_rebuilt_whole_and_kept_while_it_fits_the_residue() -> None:
+    """Unit budget 40 with a 7-character signature leaves pieces of 32 and the residue (header `ctx`) a room of
+    36: a 34-character word cut across three pieces (1 + 32 + 1 characters) fits the residue whole."""
+    word = "a" * 34
+    assert _cut_words("." * 31 + word + "." * 20, 40, signature="def f()") == (word,)
+    [piece] = residue_pieces([], "ctx", token_len=len, split_long_line=lambda t, n: [t], budget=40,
+                             cut_words=[word])
+    assert piece.split("\n")[1] == word
+
+
+def test_cut_words_spanning_many_pieces_are_rebuilt_whole_each_once() -> None:
+    first, second = "a" * 100, "b" * 61
+    assert _cut_words("." * 5 + first + ".." + second + "." * 9, 29) == (first, second)
 
 
 @pytest.mark.asyncio
