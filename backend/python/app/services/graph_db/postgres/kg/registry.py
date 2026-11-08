@@ -74,6 +74,9 @@ WRITERS: dict[str, tuple[str, str]] = {
     # kb.py
     "update_kb_permission": (PROJECTED, ""), "remove_kb_permission": (PROJECTED, ""),
     "delete_kb_hub_app": (PROJECTED, ""),
+    # legacy_migrations.py: a knowledge base that was a record group becomes an app, the hierarchy edge moves onto its current collection
+    "migrate_legacy_kb_to_app": (PROJECTED, ""), "migrate_legacy_relation_edge": (PROJECTED, ""),
+    "migrate_agent_hub_knowledge": (NO_PROJECTION, "agent knowledge sources and their edges to the agents: kg holds no agent data"),
     # permissions.py
     "batch_update_team_member_roles": (PROJECTED, ""), "delete_all_team_permissions": (PROJECTED, ""),
     # core.py, lookups.py: an edge's document changes (a grant's role or type is what the projection reads of it), and the sync's edges and the stale external memberships go

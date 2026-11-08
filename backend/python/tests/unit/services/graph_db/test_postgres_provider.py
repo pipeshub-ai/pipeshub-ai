@@ -18,6 +18,7 @@ from app.services.graph_db.postgres.hierarchy import HierarchyMixin, HubMixin
 from app.services.graph_db.postgres.identity import IdentityMixin
 from app.services.graph_db.postgres.kb import KbMixin
 from app.services.graph_db.postgres.kb_listings import KbListingsMixin
+from app.services.graph_db.postgres.legacy_migrations import LegacyMigrationMixin
 from app.services.graph_db.postgres.lookups import LookupsMixin
 from app.services.graph_db.postgres.organizations import OrganizationsMixin
 from app.services.graph_db.postgres.people import PeopleMixin
@@ -113,7 +114,7 @@ def _mismatches(name: str) -> list[str]:
 
 
 IMPLEMENTED = sorted(n for n, _ in inspect.getmembers(IGraphDBProvider, inspect.isfunction)
-                     if not n.startswith("_") and n not in unimplemented() and n in {*vars(core.CoreMixin), *vars(PermissionsMixin), *vars(IdentityMixin), *vars(CodeGraphMixin), *vars(RecordsMixin), *vars(HierarchyMixin), *vars(HubMixin), *vars(TrashMixin), *vars(LookupsMixin), *vars(DeleteMixin), *vars(KbMixin), *vars(KbListingsMixin), *vars(SyncStateMixin), *vars(TaxonomyMixin),
+                     if not n.startswith("_") and n not in unimplemented() and n in {*vars(core.CoreMixin), *vars(PermissionsMixin), *vars(IdentityMixin), *vars(CodeGraphMixin), *vars(RecordsMixin), *vars(HierarchyMixin), *vars(HubMixin), *vars(TrashMixin), *vars(LookupsMixin), *vars(DeleteMixin), *vars(KbMixin), *vars(KbListingsMixin), *vars(SyncStateMixin), *vars(TaxonomyMixin), *vars(LegacyMigrationMixin),
                                                        *vars(PeopleMixin), *vars(OrganizationsMixin)})
 
 
@@ -131,7 +132,7 @@ def test_the_foundation_implements_the_generic_documents_and_edges() -> None:
 
 def test_no_name_is_defined_by_a_mixin_and_the_base_class() -> None:
     """A name defined twice is silently decided by the MRO."""
-    names = {m: {n for n in vars(m) if not (n.startswith("__") and n.endswith("__"))} for m in (core.CoreMixin, PermissionsMixin, IdentityMixin, CodeGraphMixin, RecordsMixin, HierarchyMixin, HubMixin, TrashMixin, LookupsMixin, DeleteMixin, KbMixin, KbListingsMixin, SyncStateMixin, TaxonomyMixin,
+    names = {m: {n for n in vars(m) if not (n.startswith("__") and n.endswith("__"))} for m in (core.CoreMixin, PermissionsMixin, IdentityMixin, CodeGraphMixin, RecordsMixin, HierarchyMixin, HubMixin, TrashMixin, LookupsMixin, DeleteMixin, KbMixin, KbListingsMixin, SyncStateMixin, TaxonomyMixin, LegacyMigrationMixin,
                                                                                                  PeopleMixin, OrganizationsMixin)}
     mixins = list(names)
     assert not [n for i, a in enumerate(mixins) for b in mixins[i + 1:] for n in names[a] & names[b]], "defined by two mixins"

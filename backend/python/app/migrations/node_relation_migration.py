@@ -1,6 +1,7 @@
 from typing import Any
 
 from app.config.configuration_service import ConfigurationService
+from app.core.org_context import system
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -78,10 +79,12 @@ class NodeRelationMigrationService:
 
         try:
             self.logger.info("Starting node relation edge migration")
-            result = await self.graph_provider.migrate_legacy_relation_edge(
-                legacy_collection=LEGACY_ARANGO_COLLECTION,
-                legacy_relationship_type=LEGACY_NEO4J_RELATIONSHIP_TYPE,
-            )
+            # Every org's edges: a cross-org scope, as the other start-up sweeps (start-up binds no org).
+            with system("node_relation_migration"):
+                result = await self.graph_provider.migrate_legacy_relation_edge(
+                    legacy_collection=LEGACY_ARANGO_COLLECTION,
+                    legacy_relationship_type=LEGACY_NEO4J_RELATIONSHIP_TYPE,
+                )
 
             migrated = (result or {}).get("migrated", 0)
             already_current = (result or {}).get("already_current", False)
