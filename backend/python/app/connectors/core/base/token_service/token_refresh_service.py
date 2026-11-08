@@ -1193,13 +1193,18 @@ class TokenRefreshService:
             await asyncio.sleep(delay)
             with fresh_root(), self._scope(connector_id, connector_type, trigger=Trigger.SCHEDULED):
                 self.logger.debug("Scheduled refresh time reached")
-                await self._refresh_connector_token(connector_id, connector_type)
+                try:
+                    await self._refresh_connector_token(connector_id, connector_type)
+                except Exception as e:
+                    # What _refresh_connector_token lets through (a failing strike handler, the processing-set calls),
+                    # caught here so the line keeps the timer's own root and scheduled_by.
+                    log_check_failed(self.logger, e, once_key=_once_key(connector_id))
         except asyncio.CancelledError:
             # This is expected when rescheduling - don't log as error
             self.logger.debug(f"Token refresh task cancelled for connector {connector_id} (likely rescheduled)")
             raise
         except Exception as e:
-            # What _refresh_connector_token lets through: a failing strike handler, the processing-set or scope calls.
+            # fresh_root or the scope failed to enter or exit.
             with self._scope(connector_id, connector_type, trigger=Trigger.SCHEDULED):
                 log_check_failed(self.logger, e, once_key=_once_key(connector_id))
         finally:

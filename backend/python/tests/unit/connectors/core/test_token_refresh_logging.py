@@ -26,6 +26,7 @@ from app.connectors.core.base.token_service.oauth_service import (
 from app.core import org_context as oc
 from app.utils import credential_refresh_log as CR
 from app.utils import logging_fields
+from app.utils import request_context as rc
 from app.utils.logger import TextFormatter, log_record_fields
 from app.utils.structured_logging import DefaultLoggingProvider
 
@@ -425,13 +426,31 @@ class TestFailedRefresh:
         endpoint.answers = [INVALID_GRANT]
         config.store[_key("c1")] = _expired()
         service._stored_refresh_token = AsyncMock(side_effect=RuntimeError("config store down"))
+        armed_by = rc.set_context("req-arming")
+        try:
+            await service._delayed_refresh("c1", TYPE, 0)
+        finally:
+            rc.reset_context(armed_by)
+
+        [line] = _events(caplog, CR.EVENT_CHECK_FAILED)
+        assert line.levelno == logging.ERROR
+        assert _fields(line).items() >= {
+            "connector_id": "c1", "trigger": "scheduled", "error_class": "internal", "scheduled_by": "req-arming",
+        }.items()
+        # Caught after fresh_root exits, the line carried the arming request's root and no scheduled_by.
+        assert line.request_id.startswith("sys-credential_refresh-")
+        _assert_no_secrets(caplog)
+
+    async def test_timer_whose_root_cannot_be_bound_logs_one_failure_and_does_not_raise(
+        self, service: trs.TokenRefreshService, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        monkeypatch.setattr(trs, "fresh_root", MagicMock(side_effect=RuntimeError("context broken")))
 
         await service._delayed_refresh("c1", TYPE, 0)
 
         [line] = _events(caplog, CR.EVENT_CHECK_FAILED)
         assert line.levelno == logging.ERROR
-        assert _fields(line).items() >= {"connector_id": "c1", "trigger": "scheduled", "error_class": "internal"}.items()
-        _assert_no_secrets(caplog)
+        assert _fields(line).items() >= {"connector_id": "c1", "trigger": "scheduled", "error_type": "RuntimeError"}.items()
 
     async def test_rejected_client_strikes_carry_their_cause_after_the_error_line(
         self, service: trs.TokenRefreshService, config: FakeConfigStore, endpoint: FakeTokenEndpoint,
