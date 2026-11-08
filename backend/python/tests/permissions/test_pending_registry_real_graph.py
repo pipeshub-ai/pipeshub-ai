@@ -1,3 +1,4 @@
+# ruff: noqa: F811, ANN201, ANN202
 """The pending registry through the real processor and transaction layer, on Neo4j and ArangoDB (`KH_PERM_*`).
 
 A change of one record's place, inheritance, group, rule or first/last grant registers that record as a pending root in the
