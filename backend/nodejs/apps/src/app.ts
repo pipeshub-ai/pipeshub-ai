@@ -690,10 +690,7 @@ export class Application {
     );
 
     // the graph explorer's reads: expand and revalidate (permission-aware, never cached)
-    this.app.use(
-      '/api/v1/graph',
-      createGraphViewRouter(this.esAgentContainer),
-    );
+    this.app.use('/api/v1/graph', createGraphViewRouter(this.esAgentContainer));
 
     // enterprise search connectors routes — pass the crawling container
     // whole so the route factory can resolve any crawling-side service it
