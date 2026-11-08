@@ -246,7 +246,7 @@ describe('an entry link keeps its address until it has resolved', () => {
     fireEvent.click(await screen.findByRole('button', { name: en.graph.ui.action.retry }));
     await act(async () => undefined);
     await act(async () => undefined);
-    expect(replaceSpy).toHaveBeenCalledWith('/graph?node=block%3Afive', { scroll: false });
+    expect(replaceSpy).toHaveBeenCalledWith('/graph?node=block%3Afive&at=0', { scroll: false });
   });
 
   it('drops the address for an answer a retry cannot change', async () => {

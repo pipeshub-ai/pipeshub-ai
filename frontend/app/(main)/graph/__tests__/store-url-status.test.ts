@@ -3,7 +3,7 @@ import { ErrorType, type ProcessedError } from '@/lib/api';
 import { classifyGraphFailure } from '../errors';
 import { emptyStateKey, noticesFor } from '../status';
 import { useGraphStore } from '../store';
-import { DEFAULT_URL_STATE, parseGraphEntry, parseGraphUrl, serializeGraphUrl } from '../url-params';
+import { DEFAULT_URL_STATE, parseGraphEntry, parseGraphUrl, parseTrailPosition, serializeGraphUrl } from '../url-params';
 
 const err = (statusCode?: number, type = ErrorType.UNKNOWN_ERROR): ProcessedError => ({ type, message: 'x', statusCode });
 
@@ -196,5 +196,18 @@ describe('crowding notices', () => {
 
   it('says the view is full, as a warning', () => {
     expect(noticesFor({ ...base, failure: 'full' })).toEqual([{ level: 'warning', key: 'graph.error.full' }]);
+  });
+});
+
+
+describe('the trail position on a history entry', () => {
+  it('is written only beside a node, and read back only when it is a small whole number', () => {
+    expect(serializeGraphUrl({ ...DEFAULT_URL_STATE, node: 'block:a' }, 2).toString()).toBe('node=block%3Aa&at=2');
+    expect(serializeGraphUrl(DEFAULT_URL_STATE, 2).toString()).toBe('');
+    expect(parseTrailPosition(new URLSearchParams('node=block%3Aa&at=2'))).toBe(2);
+    for (const bad of ['', '-1', '1.5', 'x', '1000', '1e2', ' 2']) {
+      expect(parseTrailPosition(new URLSearchParams({ node: 'block:a', at: bad })), bad).toBeUndefined();
+    }
+    expect(parseTrailPosition(new URLSearchParams('node=block%3Aa'))).toBeUndefined();
   });
 });

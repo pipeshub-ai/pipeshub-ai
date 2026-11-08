@@ -62,9 +62,21 @@ export function parseGraphUrl(params: URLSearchParams): GraphUrlState {
   };
 }
 
-export function serializeGraphUrl(state: GraphUrlState): URLSearchParams {
+/**
+ * Where this history entry sits on the trail. The browser's Back and Forward name a centre, and an id is not a
+ * position (A, B, A has A twice), so each entry carries its place; a link without one is a new step.
+ */
+export function parseTrailPosition(params: URLSearchParams): number | undefined {
+  const at = params.get('at');
+  return at !== null && /^\d{1,3}$/.test(at) ? Number(at) : undefined;
+}
+
+export function serializeGraphUrl(state: GraphUrlState, at?: number): URLSearchParams {
   const params = new URLSearchParams();
-  if (isNodeId(state.node)) params.set('node', state.node);
+  if (isNodeId(state.node)) {
+    params.set('node', state.node);
+    if (at !== undefined && Number.isInteger(at) && at >= 0) params.set('at', String(at));
+  }
   if (state.direction !== 'any') params.set('dir', state.direction);
   const types = state.edgeTypes.filter((t) => EDGE_TYPE.test(t));
   if (types.length) params.set('types', types.join(','));

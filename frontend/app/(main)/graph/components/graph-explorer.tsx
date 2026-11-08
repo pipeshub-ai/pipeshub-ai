@@ -13,7 +13,7 @@ import { chooseTier, FrameMeter, qualityFor, type Capabilities } from '../engine
 import type { GraphEngine } from '../engine/types';
 import { emptyStateKey, noticesFor, type NoticeAction } from '../status';
 import { useGraphStore } from '../store';
-import { parseGraphEntry, parseGraphUrl, parseRepoScope, serializeGraphUrl } from '../url-params';
+import { parseGraphEntry, parseGraphUrl, parseRepoScope, parseTrailPosition, serializeGraphUrl } from '../url-params';
 import type { Direction, NodeId } from '../types';
 import { DetailPanel } from './detail-panel';
 import { Legend } from './legend';
@@ -47,8 +47,8 @@ export function GraphExplorer() {
   const main = useRef<HTMLDivElement>(null);
   /** A link named where to start and it has not resolved yet: its parameters stay in the address bar until it does. */
   const entryPending = useRef(false);
-  /** The centre the address named after Back or Forward, until the view has opened it. */
-  const following = useRef<NodeId | null>(null);
+  /** The place on the trail the address named after Back or Forward, until the view has moved there. */
+  const following = useRef<string | null>(null);
   const repoScope = useMemo(() => parseRepoScope(params), []);
   const host = useRef<HTMLDivElement>(null);
   const canvasBox = useRef<HTMLDivElement>(null);
@@ -77,12 +77,10 @@ export function GraphExplorer() {
   }, []);
 
   useEffect(() => {
-    const next = serializeGraphUrl({
-      node: store.node,
-      direction: store.direction,
-      edgeTypes: store.edgeTypes,
-      includeTests: store.includeTests,
-    }).toString();
+    const next = serializeGraphUrl(
+      { node: store.node, direction: store.direction, edgeTypes: store.edgeTypes, includeTests: store.includeTests },
+      store.trailIndex,
+    ).toString();
     if (store.node) entryPending.current = false;
     // A link that has not resolved (or that failed for a reason a retry or reload can fix) keeps its address.
     if (entryPending.current) {
@@ -91,23 +89,29 @@ export function GraphExplorer() {
     }
     // The address leads while the view is catching up with Back or Forward: a filter finishing then must not write the old node back.
     if (!started.current || following.current || next === params.toString()) return;
-    // A new centre is a step the browser's Back can undo; a filter change is not.
     const url = next ? `${pathname}?${next}` : pathname;
     const shown = parseGraphUrl(params).node;
-    // Only moving from one centre to another is a step; the first centre, a rewritten entry link and filters replace.
-    if (shown && store.node && store.node !== shown) router.push(url, { scroll: false });
+    const shownAt = parseTrailPosition(params);
+    // Moving to another place on the trail is a step the browser's Back can undo; the first centre, a rewritten entry
+    // link and a filter change replace the entry instead.
+    const moved = store.node !== shown || (shownAt !== undefined && shownAt !== store.trailIndex);
+    if (shown && store.node && moved) router.push(url, { scroll: false });
     else router.replace(url, { scroll: false });
-  }, [store.node, store.direction, store.edgeTypes, store.includeTests, failure]);
+  }, [store.node, store.trailIndex, store.direction, store.edgeTypes, store.includeTests, failure]);
 
-  // The browser's Back and Forward change the address: follow it to the centre it names.
+  // The browser's Back and Forward change the address: follow it to the place on the trail it names.
   const urlNode = parseGraphUrl(params).node;
+  const urlAt = parseTrailPosition(params);
   useEffect(() => {
-    if (!started.current || entryPending.current || !urlNode || urlNode === useGraphStore.getState().node) return;
-    following.current = urlNode;
-    void controller.follow(urlNode).finally(() => {
-      if (following.current === urlNode) following.current = null;
+    const now = useGraphStore.getState();
+    if (!started.current || entryPending.current || !urlNode) return;
+    if (urlNode === now.node && (urlAt === undefined || urlAt === now.trailIndex)) return;
+    const move = `${urlNode}@${urlAt}`;
+    following.current = move;
+    void controller.follow(urlNode, urlAt).finally(() => {
+      if (following.current === move) following.current = null;
     });
-  }, [urlNode]);
+  }, [urlNode, urlAt]);
 
   // The canvas engine lives while the canvas is on screen. The canvas element is always there (the
   // empty prompt sits over it), so the engine is ready before the first node arrives.

@@ -132,15 +132,18 @@ export class ExplorerController {
   }
 
   /**
-   * The browser's Back or Forward names a centre. When it is the trail's previous or next entry the trail moves to
-   * it, as the toolbar's arrows do; any other node is a new step.
+   * The browser's Back or Forward names a centre and the trail position its history entry was made at. When that
+   * position still holds the node, the trail moves to it (however far along), as the toolbar's arrows do, and a
+   * Retry repeats the same move; anything else is a new, tracked step.
    */
-  async follow(id: NodeId): Promise<boolean> {
-    const { trail, trailIndex } = useGraphStore.getState();
-    const index = [trailIndex - 1, trailIndex + 1].find((i) => trail[i] === id);
-    if (index === undefined) return this.open(id);
-    const ok = await this.open(id, { track: false });
-    if (ok) useGraphStore.getState().jumpTo(index);
+  async follow(id: NodeId, at?: number): Promise<boolean> {
+    const { trail } = useGraphStore.getState();
+    if (at === undefined || trail[at] !== id) return this.open(id);
+    const run = this.open(id, { track: false });
+    this.last = () => this.follow(id, at);
+    const ok = await run;
+    // A later move may have changed the trail while this one loaded: jump only to a place that still holds the node.
+    if (ok && useGraphStore.getState().trail[at] === id) useGraphStore.getState().jumpTo(at);
     return ok;
   }
 

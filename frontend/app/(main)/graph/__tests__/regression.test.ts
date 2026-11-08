@@ -23,10 +23,11 @@ const fail = (statusCode: number): ProcessedError => ({ type: ErrorType.UNKNOWN_
 
 /** A world where some ids can be made to answer 404 or 503. */
 function world() {
-  const state = { missing: new Set<string>(), down: false, calls: [] as ExpandRequest[] };
+  const state = { missing: new Set<string>(), down: false, calls: [] as ExpandRequest[], gate: new Map<string, Promise<void>>() };
   const api = {
     expand: vi.fn(async (req: ExpandRequest) => {
       state.calls.push(req);
+      await state.gate.get(req.nodeIds[0]);
       if (state.down) throw fail(503);
       if (req.nodeIds.some((id) => state.missing.has(id))) throw fail(404);
       return answer(req.nodeIds[0], [`${req.nodeIds[0]}.a`, `${req.nodeIds[0]}.b`]);
@@ -523,17 +524,50 @@ describe('a request is only second-guessed about what was revoked after it began
 
 
 describe('the browser Back and Forward follow the trail instead of adding to it', () => {
-  it('moves along the trail for the previous and next entry, and adds a step for a node that is not next to the current one', async () => {
+  const trailState = () => ({ trail: useGraphStore.getState().trail, at: useGraphStore.getState().trailIndex, node: useGraphStore.getState().node });
+
+  it('moves to the place the history entry names, however far along, and adds a step only for an address with no place', async () => {
     const { controller } = world();
-    await controller.open('block:a');
-    await controller.open('block:b');
-    expect(await controller.follow('block:a')).toBe(true);
-    expect(useGraphStore.getState().trail).toEqual(['block:a', 'block:b']);
-    expect(useGraphStore.getState().trailIndex).toBe(0);
-    expect(useGraphStore.getState().node).toBe('block:a');
-    expect(await controller.follow('block:b')).toBe(true);
-    expect(useGraphStore.getState().trailIndex).toBe(1);
-    expect(await controller.follow('block:z')).toBe(true);
-    expect(useGraphStore.getState().trail).toEqual(['block:a', 'block:b', 'block:z']);
+    for (const id of ['block:a', 'block:b', 'block:c']) await controller.open(id);
+    expect(await controller.follow('block:a', 0)).toBe(true);
+    expect(trailState()).toEqual({ trail: ['block:a', 'block:b', 'block:c'], at: 0, node: 'block:a' });
+    expect(await controller.follow('block:c', 2)).toBe(true);
+    expect(trailState().at).toBe(2);
+    expect(await controller.follow('block:z')).toBe(true); // a link with no place
+    expect(trailState().trail).toEqual(['block:a', 'block:b', 'block:c', 'block:z']);
+    expect(await controller.follow('block:b', 0)).toBe(true); // a place that no longer holds that node is a new step
+    expect(trailState().trail.at(-1)).toBe('block:b');
+  });
+
+  it('keeps the two places apart when the same node is on the trail twice', async () => {
+    const { controller } = world();
+    for (const id of ['block:a', 'block:b', 'block:a']) await controller.open(id);
+    await controller.follow('block:b', 1);
+    expect(trailState().at).toBe(1);
+    await controller.follow('block:a', 2); // Forward from B reaches the later A, not the earlier one
+    expect(trailState()).toEqual({ trail: ['block:a', 'block:b', 'block:a'], at: 2, node: 'block:a' });
+  });
+
+  it('a second Back while the first is still loading does not add a copy of the trail', async () => {
+    const { controller, state } = world();
+    for (const id of ['block:a', 'block:b', 'block:c']) await controller.open(id);
+    let release!: () => void;
+    state.gate.set('block:b', new Promise<void>((resolve) => (release = resolve)));
+    const first = controller.follow('block:b', 1); // still loading
+    const second = controller.follow('block:a', 0);
+    release();
+    await Promise.all([first, second]);
+    expect(trailState()).toEqual({ trail: ['block:a', 'block:b', 'block:c'], at: 0, node: 'block:a' });
+  });
+
+  it('Retry after a failed Back repeats the same move on the trail', async () => {
+    const { controller, state } = world();
+    for (const id of ['block:a', 'block:b']) await controller.open(id);
+    state.down = true;
+    expect(await controller.follow('block:a', 0)).toBe(false);
+    expect(trailState()).toEqual({ trail: ['block:a', 'block:b'], at: 1, node: 'block:b' });
+    state.down = false;
+    await controller.retry();
+    expect(trailState()).toEqual({ trail: ['block:a', 'block:b'], at: 0, node: 'block:a' });
   });
 });

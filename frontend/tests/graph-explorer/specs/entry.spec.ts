@@ -7,7 +7,7 @@ test.describe('entry', () => {
     await waitForNodes(page, 2);
     await expect.poll(() => urlParams(page).get('node')).toMatch(/^block:b\d{4}$/);
     expect(urlParams(page).has('record')).toBe(false);
-    expect([...urlParams(page).keys()].every((k) => ['node', 'dir', 'types', 'tests'].includes(k))).toBe(true);
+    expect([...urlParams(page).keys()].every((k) => ['node', 'at', 'dir', 'types', 'tests'].includes(k))).toBe(true);
     expect(errors).toEqual([]);
   });
 
