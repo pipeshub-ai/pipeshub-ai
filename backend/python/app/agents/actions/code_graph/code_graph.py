@@ -62,7 +62,12 @@ from .query import (
 )
 from .read import DEFAULT_MAX_LINES, outline_impl, read_code_impl
 from .results import as_untrusted, attach_graph_status, without_marker
-from .search import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, search_code_impl
+from .search import (
+    _TEXT_SEARCH_FILES,
+    DEFAULT_SEARCH_LIMIT,
+    MAX_SEARCH_LIMIT,
+    search_code_impl,
+)
 from .semantic import DEFAULT_SEMANTIC_LIMIT, search_semantic_impl
 
 if TYPE_CHECKING:
@@ -978,9 +983,12 @@ class CodeGraph:
             "(case-insensitive), across the repo — `parse_config`, `Client.fetch` and "
             "`method:Client.fetch` all match the `fetch`/`parse_config` definitions.\n\n"
             "`mode='text'` or `mode='regex'`: lines in file bodies that contain the text or "
-            "match the regex — a string literal, a call site, a config key. These read "
-            "file contents, so they need `path` (a directory, file or glob) and stop after "
-            "100 files.\n\n"
+            "match the regex — a string literal, a call site, a config key. With `path` (a "
+            "directory, file or glob) they read the files it selects and stop after "
+            f"{_TEXT_SEARCH_FILES} files. Without it, the keyword index proposes the files "
+            "holding the pattern's rarest whole word; a regex needs a whole word to look up. "
+            "`complete: false` says a match may be missing, and the note says why; then give "
+            "`path` to read in full.\n\n"
             "`mode='external'`: who calls into a library — `pattern` is the module as "
             "imported (`requests`; `django.db` covers `django.db.models`), `name` narrows to "
             "one of its names; matches list their `external_refs`.\n\n"
@@ -998,8 +1006,9 @@ class CodeGraph:
             ToolParameter(name="name", type=ParameterType.STRING, required=False, default=None,
                           description="'external' only: one name of the module, e.g. 'get'."),
             ToolParameter(name="path", type=ParameterType.STRING, required=False, default=None,
-                          description=("Directory, file or glob to search in. Required for "
-                                       "'text' and 'regex'; narrows 'identifier'.")),
+                          description=("Directory, file or glob to search in. Optional: "
+                                       "without it, 'text' and 'regex' search the whole repo "
+                                       "through the keyword index; narrows 'identifier'.")),
             ToolParameter(name="limit", type=ParameterType.INTEGER, required=False,
                           default=DEFAULT_SEARCH_LIMIT, description="Maximum matches."),
             ToolParameter(name="include_tests", type=ParameterType.BOOLEAN, required=False,
@@ -1026,6 +1035,7 @@ class CodeGraph:
             connector_id,
             lambda: search_code_impl(
                 graph_provider=self._graph_provider, blob_store=self._blob_store,
+                retrieval_service=self._state.get("retrieval_service"),
                 org_id=self._org_id, user_id=self._user_id, connector_id=connector_id,
                 pattern=pattern, mode=mode, path=path, limit=limit,
                 include_tests=include_tests, repo=repo, name=name,
@@ -1040,10 +1050,12 @@ class CodeGraph:
         description=(
             "Find the code behind a feature, a behaviour or something on screen when you "
             "do not know its names: 'where a failed job is retried', "
-            "'what decides which config value wins'. Ranks symbols by meaning, "
-            "so near-synonyms match.\n\n"
+            "'what decides which config value wins'. Ranks symbols, classes and files by "
+            "meaning, so near-synonyms match.\n\n"
             "Results are addresses, best first: read_code reads one, get_neighbour and "
-            "impact walk from one. For a name you already know, search_code is exact."
+            "impact walk from one. A file match (kind 'file') has the start of the file's "
+            "summary instead of a qualified name; outline lists what it defines. For a name "
+            "you already know, search_code is exact."
         ),
         parameters=[
             ToolParameter(name="connector_id", type=ParameterType.STRING,

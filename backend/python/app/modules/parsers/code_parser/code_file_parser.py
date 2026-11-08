@@ -23,7 +23,7 @@ from app.models.blocks import (
     GroupSubType,
     GroupType,
 )
-from app.modules.code_graph.version import PARSER_VERSION
+from app.modules.code_graph.version import EMBED_UNITS_VERSION, PARSER_VERSION
 from app.modules.parsers import parse_pool
 from app.modules.parsers.code_parser.engine import parse_code
 from app.modules.parsers.code_parser.lang_config import (
@@ -365,8 +365,8 @@ class CodeFileParser:
     def _build_group(self, sym: ParsedSymbol, qualified_name: str, index: int,
                      language: str, parent_group: int | None = None) -> BlockGroup:
         # A container keeps its whole body. Its children are subsets of it, which
-        # costs nothing in vectors: vectorstore only embeds table/view groups, so
-        # a code group's text never reaches Qdrant.
+        # costs nothing in vectors: a code group embeds only its header unit
+        # (code_units.class_header_unit), never this text.
         return BlockGroup(
             index=index,
             name=sym.name,
@@ -380,7 +380,9 @@ class CodeFileParser:
                 "start_line": sym.start_line,
                 "end_line": sym.end_line,
             },
-            content_hash=_content_hash(sym.text),
+            # Folding in what a group embeds re-indexes classes on the next reconcile after a bump,
+            # while their members' hashes, and so their vectors, stay as they are.
+            content_hash=_content_hash(EMBED_UNITS_VERSION + sym.text),
             children=BlockGroupChildren(),
             code_metadata=self._code_metadata(sym, qualified_name, language),
         )

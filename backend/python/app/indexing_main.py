@@ -34,6 +34,7 @@ from app.edition_containers import IndexingAppContainer
 from app.edition_services import configure_app
 from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
 from app.modules.artifacts.store import NodeArtifactStore
+from app.modules.indexing.class_units_backfill import run_class_units_backfill
 from app.modules.indexing.duplicate_reconcile import (
     DuplicateReconciler,
     retry_pending_duplicate_reconciles,
@@ -2610,6 +2611,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_vector_membership_backfill_loop(app_container, graph_provider),
             worker_loop,
         )
+        app.state.class_units_future = asyncio.run_coroutine_threadsafe(
+            run_class_units_backfill(app_container, graph_provider),
+            worker_loop,
+        )
         app.state.entity_index_future = asyncio.run_coroutine_threadsafe(
             run_entity_index_rebuild_loop(app_container, graph_provider),
             worker_loop,
@@ -2628,6 +2633,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         app.state.backfill_task = spawn_detached(
             run_vector_membership_backfill_loop(app_container, graph_provider)
+        )
+        app.state.class_units_task = spawn_detached(
+            run_class_units_backfill(app_container, graph_provider)
         )
         app.state.entity_index_task = spawn_detached(
             run_entity_index_rebuild_loop(app_container, graph_provider)
@@ -2711,6 +2719,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
         except Exception as e:
             logger.error(f"❌ Error during vector membership backfill future shutdown: {str(e)}")
+
+    class_units_task = getattr(app.state, "class_units_task", None)
+    if class_units_task:
+        if not class_units_task.done():
+            class_units_task.cancel()
+        try:
+            await class_units_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Error during class units backfill shutdown: {str(e)}")
+
+    class_units_future = getattr(app.state, "class_units_future", None)
+    if class_units_future:
+        if not class_units_future.done():
+            class_units_future.cancel()
+        try:
+            await asyncio.wrap_future(class_units_future)
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        except Exception as e:
+            logger.error(f"Error during class units backfill future shutdown: {str(e)}")
 
     entity_index_task = getattr(app.state, "entity_index_task", None)
     if entity_index_task:

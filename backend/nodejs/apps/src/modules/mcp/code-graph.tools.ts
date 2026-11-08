@@ -419,10 +419,13 @@ export function registerCodeGraphToolDefinitions(
       description:
         'Find code without knowing its file. `mode: "identifier"` (default) lists every ' +
         'definition with that name. `mode: "text"` or `"regex"` finds lines in file bodies ' +
-        '(a string, a call site, a config key); these need a repo-relative `path` and read ' +
-        'at most 400 files. `mode: "external"` lists who calls into a library: `pattern` is ' +
-        'the module as code imports it (`requests`, `django.db`, `node:fs`), `name` narrows ' +
-        'to one of its names.',
+        '(a string, a call site, a config key). With a repo-relative `path` they read ' +
+        'at most 1,000 files under it; without it, the keyword index proposes the ' +
+        "files holding the pattern's rarest whole word (a regex needs one). " +
+        '`complete: false` says a match may be missing, and the note says why; then ' +
+        'give `path` to read in full. `mode: "external"` lists who calls into a ' +
+        'library: `pattern` is the module as code imports it (`requests`, ' +
+        '`django.db`, `node:fs`), `name` narrows to one of its names.',
       inputSchema: {
         repo: repoRequired,
         pattern: z
@@ -446,7 +449,7 @@ export function registerCodeGraphToolDefinitions(
           .min(1)
           .optional()
           .describe(
-            'Directory, file or glob to search. Required for text and regex.',
+            'Directory, file or glob to search. Optional for text and regex.',
           ),
         limit: z.number().int().min(1).max(200).optional(),
         include_tests: includeTests,
@@ -462,9 +465,11 @@ export function registerCodeGraphToolDefinitions(
       description:
         'Find the code behind a feature, a behaviour or something on screen when you do not ' +
         "know its names: 'where a failed job is retried', 'what decides which config value " +
-        "wins'. Ranks symbols by meaning, so near-synonyms " +
+        "wins'. Ranks symbols, classes and files by meaning, so near-synonyms " +
         'match. Results are addresses for pipeshub_code_read, pipeshub_code_neighbours and ' +
-        'pipeshub_code_impact. For a name you already know, pipeshub_code_search is exact.',
+        "pipeshub_code_impact. A file match (kind 'file') has the start of the file's summary " +
+        'instead of a qualified name; pipeshub_code_outline lists what it defines. For a name ' +
+        'you already know, pipeshub_code_search is exact.',
       inputSchema: {
         repo: repoRequired,
         query: z

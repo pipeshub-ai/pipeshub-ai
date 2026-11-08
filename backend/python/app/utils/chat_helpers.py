@@ -58,6 +58,7 @@ from app.modules.qna.prompt_templates import (
 )
 from app.modules.reconciliation.service import ReconciliationMetadata
 from app.modules.transformers.blob_storage import BlobStorage
+from app.modules.transformers.code_units import RESIDUE_UNIT_KIND
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.collection_registry import CollectionRegistry  # noqa: TC001
@@ -3276,6 +3277,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
         if (
             (located is None or not located[2])
             and not meta.get("isRecordSummary")
+            and meta.get("unitKind") != RESIDUE_UNIT_KIND
             and meta.get("blockId")
             and vrid
             and vrid not in virtual_record_id_to_recon_metadata
@@ -3300,6 +3302,10 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
         result["virtual_record_id"] = virtual_record_id
 
         meta = result.get("metadata")
+
+        if meta.get("unitKind") == RESIDUE_UNIT_KIND:
+            # A file's short top-level lines, for the keyword index; no block to cite.
+            continue
 
         if meta.get("isRecordSummary"):
             chunk_id = f"{virtual_record_id}-record_summary"
@@ -3508,7 +3514,13 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
         elif block_type == BlockType.CODE.value and block.get("parent_index") is None:
             # Without this a top-level code hit is dropped here and never reaches
             # build_message_content_array, however well it scored.
-            result["content"] = _safe_stringify_content(block.get("data", ""))
+            if is_block_group:
+                # A class hit is its header unit (code_units.class_header_unit), the bounded text its
+                # point embedded: the group's own text is the whole class, which can be the whole file.
+                meta_dict = block.get("code_metadata") if isinstance(block.get("code_metadata"), dict) else {}
+                result["content"] = result.get("content") or meta_dict.get("signature") or ""
+            else:
+                result["content"] = _safe_stringify_content(block.get("data", ""))
             result["qualified_name"] = block_qualified_name(block)
         elif block_type == BlockType.IMAGE.value:
             data = block.get("data")
