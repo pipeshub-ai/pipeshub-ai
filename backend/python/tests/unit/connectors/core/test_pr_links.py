@@ -1,4 +1,6 @@
 """PR -MODIFIES-> code file: written where the PR's file list is read, with its own cleanup."""
+import contextlib
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -114,3 +116,23 @@ async def test_modifies_is_not_a_link_type_the_processor_rewrites_on_every_pr_sa
         DataSourceEntitiesProcessor,
     )
     assert MODIFIES not in DataSourceEntitiesProcessor.LINK_RELATION_TYPES
+
+
+async def test_the_replacement_runs_in_one_real_transaction() -> None:
+    """With Neo4j auto-commit on, the delete and the writes must still commit together, or a failure between them
+    leaves the PR with no links: the processor asks for a real transaction."""
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+
+    asked: dict = {}
+    store = _store({"/1/blob/src/a.py": "rec-a"})
+
+    @contextlib.asynccontextmanager
+    async def transaction(**kwargs: bool) -> AsyncIterator[MagicMock]:
+        asked.update(kwargs)
+        yield store
+
+    processor = SimpleNamespace(data_store_provider=SimpleNamespace(transaction=transaction))
+    assert await DataSourceEntitiesProcessor.on_pr_file_changes(processor, PR, CHANGES[:1], _ext) == (1, 0)
+    assert asked == {"explicit": True}

@@ -7088,7 +7088,9 @@ class DataSourceEntitiesProcessor:
         self, pr: Record, changes: "list[FileChangeMetadata]", code_external_id: "Callable[[str], str]",
     ) -> "Linked":
         """Link *pr* to the code files it changed (MODIFIES), replacing its earlier links; see ``pr_links``."""
-        async with self.data_store_provider.transaction() as tx_store:
+        # explicit=True: with Neo4j auto-commit on, a delete that committed alone and a failed write after it left
+        # the PR with no links; one real transaction keeps the old links on any failure.
+        async with self.data_store_provider.transaction(explicit=True) as tx_store:
             return await write_modifies(tx_store, pr, changes, code_external_id)
 
     @retry_on_deadlock()
