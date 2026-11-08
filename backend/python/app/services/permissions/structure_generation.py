@@ -18,7 +18,13 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import MissingOrgContext, current_or_system, for_org, system
 from app.services.permissions.mode import scope_fields_enabled
-from app.services.permissions.pending import PendingOverflow, PendingUnreadable, parse, with_roots, without_done
+from app.services.permissions.pending import (
+    PendingOverflow,
+    PendingUnreadable,
+    parse,
+    with_roots,
+    without_done,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping

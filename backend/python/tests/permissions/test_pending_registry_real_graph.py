@@ -1,4 +1,3 @@
-# ruff: noqa: F811, ANN201, ANN202
 """The pending registry through the real processor and transaction layer, on Neo4j and ArangoDB (`KH_PERM_*`).
 
 A change of one record's place, inheritance, group, rule or first/last grant registers that record as a pending root in the
@@ -17,7 +16,6 @@ from app.config.constants.arangodb import CollectionNames, DeleteSource
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.models.entities import AccessRule
 from app.models.permission import EntityType, Permission, PermissionType
-from app.services.permissions.currency import app_is_current
 from app.services.permissions.errors import ViewerScopesUnavailable
 from app.services.permissions.pending import MAX_PENDING_ROOTS, parse
 from app.services.permissions.structure_generation import (
@@ -28,7 +26,11 @@ from app.services.permissions.structure_generation import (
 )
 from tests.integration.graph_permissions.processor_harness import build_processor
 from tests.integration.graph_permissions.test_write_path import _group, _record
-from tests.integration.graph_permissions.write_path_support import ORG, _seed_user, _suffix
+from tests.integration.graph_permissions.write_path_support import (
+    ORG,
+    _seed_user,
+    _suffix,
+)
 
 from .test_currency_real_graph import current, finish_pass
 from .test_generation_paths import _scope_fields_on, _writers_world, backend  # noqa: F401
@@ -279,14 +281,14 @@ async def test_a_failed_registration_rolls_the_sync_back(backend, monkeypatch) -
     before = await app_of(backend, conn)
     real = backend.provider.update_node
 
-    async def refuse(key, collection, updates, *a, **k):  # noqa: ANN001, ANN002, ANN003
+    async def refuse(key, collection, updates, *a, **k):
         if collection == CollectionNames.APPS.value and PENDING_KEY in updates:
             return False
         return await real(key, collection, updates, *a, **k)
 
     monkeypatch.setattr(backend.provider, "update_node", refuse)
     moved = _record(child.external_record_id, connector_id=conn, group_external=space2)
-    with pytest.raises(Exception):  # noqa: B017, PT011
+    with pytest.raises(Exception):
         await processor.on_records_moved([(child.external_record_id, moved, [])])
     assert await app_of(backend, conn) == before
     stored = await backend.provider.get_document(child.id, CollectionNames.RECORDS.value)

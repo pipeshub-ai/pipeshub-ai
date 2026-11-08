@@ -11,7 +11,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.base.data_store.graph_data_store import StructuralMarks
 from app.services.permissions import wiring
 from app.services.permissions.currency import app_is_current
@@ -28,7 +27,10 @@ from app.services.permissions.pending import (
     with_roots,
     without_done,
 )
-from app.services.permissions.scope_fields import SCOPE_FIELDS_VERSION, current_scope_generation
+from app.services.permissions.scope_fields import (
+    SCOPE_FIELDS_VERSION,
+    current_scope_generation,
+)
 from app.services.permissions.structure_generation import (
     GENERATION_KEY,
     PENDING_KEY,
@@ -41,10 +43,10 @@ from app.services.vector_db import filters
 from app.services.vector_db.scope_backfill import BACKFILL_KEYS as K
 from app.services.vector_db.scope_backfill import DONE
 
-from .stamp_world import ORG, WorldGraph
-from .test_scope_backfill import COLL, WORLD, setup  # noqa: F401
-from .test_scopes_reference_filter import SCENARIOS, WORLDS, path_of, reference_filter
 from .scope_layer import OracleScopeLayer
+from .stamp_world import ORG
+from .test_scope_backfill import COLL, WORLD, setup  # noqa: F401
+from .test_scopes_reference_filter import WORLDS, path_of, reference_filter
 
 
 @pytest.fixture(autouse=True)
@@ -156,7 +158,7 @@ async def test_registering_outside_a_transaction_retries_a_lost_compare_and_set_
     real = g.update_node_fields_if_match
     raced = {"n": 0}
 
-    async def other_writer_first(key, collection, updates, expected, transaction=None):  # noqa: ANN001, ANN202
+    async def other_writer_first(key, collection, updates, expected, transaction=None):
         if not raced["n"]:
             raced["n"] = 1
             g.app[PENDING_KEY] = dump({"theirs": 2})
@@ -310,8 +312,8 @@ async def test_a_pending_root_hides_what_is_below_it_and_nothing_else_and_cleari
 
 # ---- a refused subtree read never lifts the hide ----
 async def test_a_chain_deeper_than_the_subtree_bound_keeps_its_root_pending() -> None:
-    from app.services.permissions.ports import SUBTREE_DEPTH, StampNode
     from app.services.permissions.fakes import InMemoryStampGraph
+    from app.services.permissions.ports import SUBTREE_DEPTH, StampNode
 
     nodes = {f"n{i}": StampNode(f"n{i}", "record", "c1", parents=(f"n{i - 1}",) if i else (), vrid=f"v{i}") for i in range(SUBTREE_DEPTH + 5)}
     graph = InMemoryStampGraph(ORG, node_map=nodes)
