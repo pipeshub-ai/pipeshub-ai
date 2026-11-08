@@ -115,7 +115,7 @@ async def test_a_call_with_no_answer_is_one_warning(
 ) -> None:
     record, fields = await _run(_http(_raise(exc)), caplog)
 
-    assert record.levelno == logging.WARNING and record.exc_info is None
+    assert record.levelno == logging.WARNING and record.exc_text is None
     assert (fields["error_class"], fields["error_type"]) == (error_class, "ApiCallError")
     assert [r for r in caplog.records if r.levelno >= logging.WARNING] == [record]
 
@@ -151,7 +151,7 @@ async def test_each_failure_is_logged_once_by_class(
     record, fields = await _run(_Raises(exc), caplog)
 
     assert record.levelno == level
-    assert (record.exc_info is not None) == (level >= logging.ERROR)
+    assert (record.exc_text is not None) == (level >= logging.ERROR)
     assert (fields["error_class"], fields["reason"]) == (error_class, reason)
     assert "error_message" not in fields
     assert [r for r in caplog.records if r.levelno >= logging.WARNING] == [record]

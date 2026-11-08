@@ -1066,8 +1066,8 @@ class TestTheParkedCallIsLoggedOnce:
         ((level, _),) = _c1_ends(caplog)
         assert level == logging.ERROR
         (run_failed,) = [r for r in caplog.records if r.getMessage() == "tool_approval.run_failed"]
-        assert run_failed.levelno == logging.DEBUG and run_failed.exc_info is None
-        assert len([r for r in caplog.records if r.exc_info and r.levelno > logging.DEBUG]) == 1
+        assert run_failed.levelno == logging.DEBUG and run_failed.exc_text is None
+        assert len([r for r in caplog.records if r.exc_text and r.levelno > logging.DEBUG]) == 1
         assert "sentinel-a" not in caplog.text
 
 

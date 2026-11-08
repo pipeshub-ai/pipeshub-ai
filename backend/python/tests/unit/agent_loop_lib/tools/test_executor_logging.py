@@ -112,7 +112,7 @@ class TestOutcomes:
         result = await _executor(_Tool(_raises(KeyError(_SENTINEL)))).call_tool(_call())
 
         record, fields = _one_end(caplog)
-        assert record.levelno == logging.ERROR and record.exc_info is not None
+        assert record.levelno == logging.ERROR and record.exc_text is not None
         assert fields["error_class"] == "internal" and fields["error_type"] == "KeyError"
         assert fields["outcome"] == "failure" and fields["reason"] == "exception"
         assert "error_message" not in fields
@@ -124,7 +124,7 @@ class TestOutcomes:
         await _executor(_Tool(_raises(httpx.ReadTimeout("slow")))).call_tool(_call())
 
         record, fields = _one_end(caplog)
-        assert record.levelno == logging.WARNING and record.exc_info is None
+        assert record.levelno == logging.WARNING and record.exc_text is None
         assert fields["error_class"] == "timeout"
 
     async def test_bad_arguments_are_a_warning_and_the_usage_hint_still_reaches_the_model(
@@ -246,7 +246,7 @@ class TestRaisedFromTheCall:
         error_class.log_failure(_PROBE, "agent_turn.failed", raised.value)
 
         record, fields = _one_end(caplog)
-        assert record.levelno == logging.ERROR and record.exc_info is not None
+        assert record.levelno == logging.ERROR and record.exc_text is not None
         assert fields["reason"] == "exception" and "error_message" not in fields
         (outer,) = [r for r in caplog.records if r.getMessage() == "agent_turn.failed"]
         assert outer.levelno == logging.DEBUG
@@ -290,9 +290,9 @@ class TestRaisedFromTheCall:
         await _executor(_Tool(_logs_then_returns)).call_tool(_call())
 
         record, fields = _one_end(caplog)
-        assert record.levelno == logging.ERROR and record.exc_info is None
+        assert record.levelno == logging.ERROR and record.exc_text is None
         assert (fields["error_class"], fields["error_type"], fields["outcome"]) == ("internal", "KeyError", "failure")
-        assert len([r for r in caplog.records if r.exc_info and r.levelno > logging.DEBUG]) == 1
+        assert len([r for r in caplog.records if r.exc_text and r.levelno > logging.DEBUG]) == 1
 
     async def test_an_exception_logged_at_warn_and_returned_as_an_error_class_is_error_with_its_stack(
         self, caplog: pytest.LogCaptureFixture,
@@ -308,8 +308,8 @@ class TestRaisedFromTheCall:
 
         (probe,) = [r for r in caplog.records if r.getMessage() == "probe.failed"]
         record, fields = _one_end(caplog)
-        assert probe.levelno == logging.WARNING and probe.exc_info is None
-        assert record.levelno == logging.ERROR and record.exc_info is not None
+        assert probe.levelno == logging.WARNING and probe.exc_text is None
+        assert record.levelno == logging.ERROR and record.exc_text is not None
         assert fields["error_class"] == "internal"
 
     @pytest.mark.parametrize(("shared", "level"), [
@@ -333,7 +333,7 @@ class TestRaisedFromTheCall:
         ends = _ends(caplog)
         assert sorted((log_record_fields(r)["tool_call_id"], r.levelno) for r in ends) == [("a", level), ("b", level)]
         assert {log_record_fields(r)["error_type"] for r in ends} == {type(shared).__name__}
-        assert len([r for r in ends if r.exc_info]) == (1 if level >= logging.ERROR else 0)
+        assert len([r for r in ends if r.exc_text]) == (1 if level >= logging.ERROR else 0)
 
     async def test_two_calls_raising_one_exception_each_get_their_line(self, caplog: pytest.LogCaptureFixture) -> None:
         caplog.set_level(logging.DEBUG)
@@ -348,7 +348,7 @@ class TestRaisedFromTheCall:
                 await executor.call_tool(_call(call_id=call_id), override_execute=_override)
 
         assert [r.levelno for r in _ends(caplog)] == [logging.ERROR, logging.ERROR]
-        assert len([r for r in caplog.records if r.exc_info and r.levelno > logging.DEBUG]) == 1
+        assert len([r for r in caplog.records if r.exc_text and r.levelno > logging.DEBUG]) == 1
 
 
 class TestBinding:

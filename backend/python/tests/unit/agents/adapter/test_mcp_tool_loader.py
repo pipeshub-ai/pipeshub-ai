@@ -641,7 +641,7 @@ class TestTheLoadIsLoggedOncePerServerAndTurn:
 
         (failed,) = _lines(caplog, "mcp.discover.end")
         fields = log_record_fields(failed)
-        assert failed.levelno == logging.WARNING and failed.exc_info is None
+        assert failed.levelno == logging.WARNING and failed.exc_text is None
         assert isinstance(fields.pop("duration_ms"), int)
         assert fields == {
             "mcp_server_id": "inst-2", "outcome": "failure", "error_class": "unavailable", "error_type": "MCPConnectionError",
@@ -661,7 +661,7 @@ class TestTheLoadIsLoggedOncePerServerAndTurn:
             await MCPToolProvider().load_into(ToolRegistry(), _two_server_context())
 
         (failed,) = _lines(caplog, "mcp.discover.end")
-        assert failed.levelno == logging.ERROR and failed.exc_info is not None
+        assert failed.levelno == logging.ERROR and failed.exc_text is not None
         assert log_record_fields(failed)["error_class"] == "internal"
         assert "error_message" not in log_record_fields(failed)
         assert "sentinel-k" not in caplog.text

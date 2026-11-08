@@ -691,7 +691,7 @@ class TestAFailedCallIsLoggedSafely:
 
         record = await self._end_record(error, caplog)
 
-        assert record.levelno == logging.WARNING and not record.exc_info
+        assert record.levelno == logging.WARNING and not record.exc_text
         assert "secret" not in caplog.text
         fields = log_record_fields(record)
         assert isinstance(fields.pop("duration_ms"), int)
@@ -705,19 +705,19 @@ class TestAFailedCallIsLoggedSafely:
         record = await self._end_record(MCPHttpStatusError(401, "The MCP server answered HTTP 401"), caplog)
 
         fields = log_record_fields(record)
-        assert record.levelno == logging.WARNING and not record.exc_info
+        assert record.levelno == logging.WARNING and not record.exc_text
         assert (fields["error_class"], fields["mcp_reason"], fields["status"]) == ("auth_expired", "unauthorized", 401)
 
     async def test_a_timeout_logs_no_stack(self, caplog: pytest.LogCaptureFixture) -> None:
         record = await self._end_record(asyncio.TimeoutError(), caplog)
 
-        assert record.levelno == logging.WARNING and not record.exc_info
+        assert record.levelno == logging.WARNING and not record.exc_text
         assert log_record_fields(record)["error_class"] == "timeout"
 
     async def test_an_expired_sign_in_logs_no_stack(self, caplog: pytest.LogCaptureFixture) -> None:
         record = await self._end_record(MCPTokenRefreshError("no refresh token"), caplog)
 
-        assert record.levelno == logging.WARNING and not record.exc_info
+        assert record.levelno == logging.WARNING and not record.exc_text
         assert log_record_fields(record)["error_class"] == "auth_expired"
 
     async def test_a_rejected_oauth_client_is_our_misconfiguration(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -729,7 +729,7 @@ class TestAFailedCallIsLoggedSafely:
     async def test_a_servers_refusal_is_a_warning_without_its_text(self, caplog: pytest.LogCaptureFixture) -> None:
         record = await self._end_record(MCPError(INVALID_PARAMS, "bad sentinel-q", data={"echo": "sentinel-q"}), caplog)
 
-        assert record.levelno == logging.WARNING and not record.exc_info
+        assert record.levelno == logging.WARNING and not record.exc_text
         assert log_record_fields(record)["error_class"] == "bad_request"
         assert "sentinel-q" not in caplog.text
 
@@ -740,15 +740,16 @@ class TestAFailedCallIsLoggedSafely:
         assert log_record_fields(record)["error_class"] == "not_found"
 
     async def test_a_refresh_the_provider_couldnt_answer_is_tagged_unreachable(self, caplog: pytest.LogCaptureFixture) -> None:
-        record = await self._failure_record(await token_endpoint_error(503, {"error": "temporarily_unavailable"}), caplog)
+        record = await self._end_record(await token_endpoint_error(503, {"error": "temporarily_unavailable"}), caplog)
 
-        assert not record.exc_info
-        assert "(unreachable)" in record.getMessage()
+        assert record.levelno == logging.WARNING and not record.exc_text
+        fields = log_record_fields(record)
+        assert (fields["error_class"], fields["mcp_reason"]) == ("unavailable", "unreachable")
 
     async def test_an_unexpected_error_keeps_its_stack(self, caplog: pytest.LogCaptureFixture) -> None:
         record = await self._end_record(KeyError("structuredContent"), caplog)
 
-        assert record.levelno == logging.ERROR and record.exc_info
+        assert record.levelno == logging.ERROR and record.exc_text
         assert log_record_fields(record)["error_class"] == "internal"
         assert "error_message" not in log_record_fields(record)
 

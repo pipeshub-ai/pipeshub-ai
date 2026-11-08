@@ -50,7 +50,11 @@ from app.agents.mcp.errors import (
     first_leaf,
     is_http_unauthorized,
 )
-from app.agents.mcp.failure import classify_mcp_failure, mcp_error_class
+from app.agents.mcp.failure import (
+    MCPFailureReason,
+    classify_mcp_failure,
+    mcp_error_class,
+)
 from app.agents.mcp.oauth_client import MCPOAuthError
 from app.agents.mcp.token_refresh import MCPTokenRefreshError
 from app.utils.url_redaction import redact_urls_in_text
