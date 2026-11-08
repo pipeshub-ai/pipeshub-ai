@@ -240,17 +240,17 @@ async def _reset_org_stale_sync_state(graph_provider: IGraphDBProvider, logger: 
             ["id", "status", "orgId"],
         ), org_id)
 
-        stuck_keys = {doc["id"] for doc in (stuck or []) if doc.get("id")}
+        stuck_keys = {doc["id"] for doc in stuck if doc.get("id")}
         full_sync_keys = {
             doc["id"]
-            for doc in (stuck or [])
+            for doc in stuck
             if doc.get("id") and doc.get("status") == AppStatus.FULL_SYNCING.value
         }
         # A locked doc mid-deletion keeps its DELETING status; only the stuck
         # lock is released for it.
         locked_only = {
             doc["id"]: doc.get("status")
-            for doc in (locked or [])
+            for doc in locked
             if doc.get("id") and doc["id"] not in stuck_keys
         }
         if not stuck_keys and not locked_only:
