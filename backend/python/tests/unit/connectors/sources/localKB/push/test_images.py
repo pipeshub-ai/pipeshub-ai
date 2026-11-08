@@ -271,6 +271,15 @@ class TestGroupImageSourceSpacing:
         assert "space" in raised.value.message
 
 
+    @pytest.mark.parametrize("data", [
+        "![a](< http://example.com/a.png>)",
+        "![a](<//example.com/a.png >)",
+        "![a](< storage://000000000000000000000001>)",
+    ])
+    def test_a_padded_source_that_is_not_inline_keeps_its_refusal(self, data: str) -> None:
+        assert group_refusal(group(data)).reason == "IMAGE_REF_REFUSED"
+
+
 class TestGroupImages:
     @pytest.mark.parametrize(
         "data",

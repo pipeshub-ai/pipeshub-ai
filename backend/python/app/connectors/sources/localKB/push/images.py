@@ -188,15 +188,15 @@ def _check_group_images(group: object, i: int, refs: ImageRefs) -> None:
         raise _limit(location, f"A record may hold at most {MAX_IMAGES_PER_RECORD} images.") from None
     for source in sources:
         refs.images += 1
-        if source != source.strip():
-            # The parser keeps these spaces (an angle-bracket destination), and indexing reads an
-            # inline image only when its URI starts with data:, so the image would be dropped.
-            raise _fail("IMAGE_REF_INVALID", location, "Remove the spaces around the image's data: URI.")
-        if source[:5].lower() != "data:":
+        if source.strip()[:5].lower() != "data:":
             raise _fail(
                 "IMAGE_REF_REFUSED", location,
                 "An image in a markdown or HTML group must be a data:image/(png|jpeg|gif|webp);base64 URI.",
             )
+        if source != source.strip():
+            # The parser keeps these spaces (an angle-bracket destination), and indexing reads an
+            # inline image only when its URI starts with data:, so the image would be dropped.
+            raise _fail("IMAGE_REF_INVALID", location, "Remove the spaces around the image's data: URI.")
         check_data_uri(source, location)
 
 
