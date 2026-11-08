@@ -68,8 +68,8 @@ export const McpAccessPolicyStore = {
 
   /**
    * The org's policy. Until the store has connected (boot) the defaults apply, as for every
-   * other settings read. A failed read keeps the last policy this process saw for the org;
-   * with none, it throws, so an org an admin turned off is not opened by a store outage.
+   * other settings read. A failed read keeps a policy this process last saw turned off;
+   * otherwise it throws, so a store outage never opens an org an admin turned off.
    */
   async read(orgId: string): Promise<McpAccessPolicy> {
     const hit = cached.get(orgId);
@@ -91,7 +91,8 @@ export const McpAccessPolicyStore = {
         orgId,
         error: error instanceof Error ? error.message : String(error),
       });
-      if (hit) return hit.policy;
+      // Only an org turned off stays off on a stale read: a stale "on" may hide an admin's switch-off.
+      if (hit && !hit.policy.enabled) return hit.policy;
       throw new ServiceUnavailableError(
         'MCP access settings could not be read. Try again shortly.',
       );

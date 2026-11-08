@@ -148,11 +148,13 @@ function PersonalConnectorsPageContent() {
         setRegistryConnectors(
           filterConnectorsForScope(registryRes.value.connectors, 'personal')
         );
-        // Only a catalog that loaded can show a connector type is not in it.
-        setListsLoaded(true);
       }
       if (activeRes.status === 'fulfilled') {
         setActiveConnectors(filterConnectorsForScope(activeRes.value.connectors, 'personal'));
+      }
+      // Only lists that both loaded can show a connector type is in neither.
+      if (registryRes.status === 'fulfilled' && activeRes.status === 'fulfilled') {
+        setListsLoaded(true);
       }
 
       if (registryRes.status === 'rejected' && activeRes.status === 'rejected') {
@@ -177,9 +179,17 @@ function PersonalConnectorsPageContent() {
   // Confluence): it is not in this catalog, and its details page would render empty.
   useEffect(() => {
     const requested = searchParams.get('connectorType')?.trim();
-    if (!requested || connectorType || !listsLoaded || !isProfileInitialized) return;
+    if (
+      !requested ||
+      connectorType ||
+      !listsLoaded ||
+      !isProfileInitialized ||
+      typeof isAdmin !== 'boolean'
+    ) {
+      return;
+    }
     router.replace(
-      isAdmin === true
+      isAdmin
         ? `/workspace/connectors/team/?connectorType=${encodeURIComponent(requested)}`
         : '/workspace/connectors/personal/'
     );

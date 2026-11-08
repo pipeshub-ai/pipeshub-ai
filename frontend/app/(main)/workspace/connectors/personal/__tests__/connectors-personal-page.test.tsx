@@ -44,6 +44,7 @@ vi.mock('@/lib/hooks/use-user-directory-entry', () => ({ useUserDirectoryEntry: 
 
 import PersonalConnectorsPage from '../connectorsPersonalPage';
 import { useConnectorsStore } from '../../store';
+import { useUserStore } from '@/lib/store/user-store';
 import {
   installDomShims,
   renderInTheme,
@@ -198,6 +199,26 @@ describe('Personal connectors page', () => {
       nav.params = new URLSearchParams('connectorType=Gmail');
       renderInTheme(<PersonalConnectorsPage />);
       await waitFor(() => expect(api.getActiveConnectors).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(nav.replace).not.toHaveBeenCalledWith('/workspace/connectors/personal/');
+    });
+
+    it('waits for a known role before choosing where to send the link', async () => {
+      useUserStore.setState({ isInitialized: true, profile: null });
+      nav.params = new URLSearchParams('connectorType=Confluence');
+      renderInTheme(<PersonalConnectorsPage />);
+      await waitFor(() => expect(api.getActiveConnectors).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(nav.replace).not.toHaveBeenCalled();
+    });
+
+    it('does not redirect when the list of connected sources did not load', async () => {
+      api.getActiveConnectors.mockRejectedValue({ type: 'SERVER_ERROR', message: 'down' });
+      nav.params = new URLSearchParams('connectorType=Confluence');
+      renderInTheme(<PersonalConnectorsPage />);
+      await waitFor(() => expect(api.getRegistryConnectors).toHaveBeenCalled());
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       expect(nav.replace).not.toHaveBeenCalledWith('/workspace/connectors/personal/');

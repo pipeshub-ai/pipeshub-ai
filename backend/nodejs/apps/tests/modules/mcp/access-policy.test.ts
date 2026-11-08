@@ -77,6 +77,18 @@ describe('MCP access policy', () => {
       expect((await McpAccessPolicyStore.read('org-a')).enabled).to.equal(false)
     })
 
+    it('refuses rather than serving a stale "on" when a later read fails', async () => {
+      const clock = sinon.useFakeTimers({ now: 1_000_000, toFake: ['Date'] })
+      await McpAccessPolicyStore.read('org-a')
+      clock.tick(MCP_ACCESS_POLICY_TTL_MS)
+      store.get.rejects(new Error('store down'))
+      let refused: unknown
+      await McpAccessPolicyStore.read('org-a').catch((error: unknown) => {
+        refused = error
+      })
+      expect(refused).to.be.instanceOf(Error)
+    })
+
     it('refuses rather than opening up when the first read fails', async () => {
       store.get.rejects(new Error('store down'))
       const error = await McpAccessPolicyStore.read('org-a').then(() => undefined, (e: Error) => e)
