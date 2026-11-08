@@ -187,6 +187,26 @@ except Exception as e:
 - `app.agents.agent_loop.error_classification` also has a `classify_error` (user-facing text). Where both are in scope, import this
   module qualified, as above.
 
+## Connector sync runs
+
+`run_sync_task` (`app/connectors/core/sync/sync_runner.py`) is the one body every sync runs in. It binds `run_id` and
+`connector_id` for the run; the entry points (`EventService.process_event`, `ConnectorFactory.create_and_start_sync`) bind
+`connector_id` and `connector_type` (the instance's stored type once it is read, not the event's name). `org_id` comes from the
+consumer's or the boot job's OrgContext. So every line of a run, the connector's own included, carries them.
+
+| Event | Level | Fields |
+| --- | --- | --- |
+| `sync_run.start` | INFO | `sync_type` (`full`, `incremental`) |
+| `sync_run.end` | INFO; WARNING for `partial` or a lost lease; a failure at its class's level | `sync_type`, `duration_ms`, `outcome`, `reason`, `full_sync_cut_short=true` when the next sync runs in full; on failure the `log_failure` fields |
+| `sync_run.refused` | INFO | `reason` (the admission) |
+| `sync_run.start_failed` | the failure's level | the `log_failure` fields |
+| `sync_step.failed` | ERROR, WARNING for an optional step | `step` (`status_write`, `idle_write`, `drain`, `unlink`, …), the `log_failure` fields |
+
+`outcome` on `sync_run.end`: `success`; `partial` (a full sync that finished but did not unlink what it did not see: the connector skipped part of the source, or the group-member write or the unlink failed);
+`skipped` with `reason=<code>` (the connector declined, e.g. `DESKTOP_OFFLINE`); `failure` with `error_class=cancelled` and
+`reason` = `requested`, `shutdown`, `cancelled` or `lease_lost` for a stop; `failure` with the exception's class otherwise. A
+failed run's exception is logged once there; `SyncTaskManager` then logs it at DEBUG (`task.failed`).
+
 ## Agent loop events (Python)
 
 One chat turn is reconstructable from these lines; each carries the bound `org_id`, `user_id`, `conversation_id`,
