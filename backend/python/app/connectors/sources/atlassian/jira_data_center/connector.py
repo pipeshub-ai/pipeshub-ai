@@ -518,6 +518,8 @@ class JiraDataCenterConnector(BaseConnector):
         self._parent_link_field_id: str | None = None
         # Issue key -> numeric id; cleared at start of each project sync
         self._issue_key_to_id_cache: dict[str, str] = {}
+        # The same cache the other way round, so a parent's key is found without scanning it.
+        self._issue_id_to_key_cache: dict[str, str] = {}
         # Issues that failed to process in the project being synced: attempts so far
         # (from the checkpoint) and the ones this run holds, id -> (attempts, updated ms).
         self._failed_issue_attempts_before: dict[str, int] = {}
@@ -3365,6 +3367,7 @@ class JiraDataCenterConnector(BaseConnector):
 
         # Per-project sync: reset Epic Link key→id cache
         self._issue_key_to_id_cache.clear()
+        self._issue_id_to_key_cache.clear()
         self._failed_issue_attempts_before = _stored_map((project_sync_data or {}).get("failed_issue_attempts"))
         self._held_issues = {}
         self._given_up_issues = _stored_map((project_sync_data or {}).get("given_up_issues"))
@@ -4100,6 +4103,7 @@ class JiraDataCenterConnector(BaseConnector):
         if issue_id:
             if issue_key:
                 self._issue_key_to_id_cache[issue_key] = issue_id
+                self._issue_id_to_key_cache[issue_id] = issue_key
             return issue_id
         if not issue_key:
             return None
@@ -4128,6 +4132,7 @@ class JiraDataCenterConnector(BaseConnector):
             return None
         resolved_id = str(resolved_id)
         self._issue_key_to_id_cache[issue_key] = resolved_id
+        self._issue_id_to_key_cache[resolved_id] = issue_key
         return resolved_id
 
     async def _resolve_hierarchy_parent_id(
@@ -4667,7 +4672,7 @@ class JiraDataCenterConnector(BaseConnector):
         if security is None or not security.enforce:
             return True
         if security.knowledge == SchemeKnowledge.NONE:
-            parent_key = next((k for k, i in self._issue_key_to_id_cache.items() if i == str(parent_id)), "")
+            parent_key = self._issue_id_to_key_cache.get(str(parent_id), "")
             if parent_key and parent_key.rsplit("-", 1)[0] == str((fields.get("project") or {}).get("key") or ""):
                 return True
         parent = await self._parent_level(parent_id)

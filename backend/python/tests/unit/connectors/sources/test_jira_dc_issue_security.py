@@ -143,7 +143,7 @@ class TestParentGate:
     async def test_a_project_without_a_scheme_files_under_a_parent_of_its_own_as_before_and_reads_nothing(self) -> None:
         connector = _connector()
         connector._get_issue_with_retry = AsyncMock()
-        connector._issue_key_to_id_cache = {"P-5": "5"}
+        connector._issue_id_to_key_cache = {"5": "P-5"}
         none = IssueSecurityContext(knowledge=SchemeKnowledge.NONE)
         assert await connector._files_under_parent({"project": {"id": "10", "key": "P"}}, "5", none) is True
         connector._get_issue_with_retry.assert_not_awaited()
@@ -154,7 +154,7 @@ class TestParentGate:
     ) -> None:
         """Its level decides: a story under another project's leveled epic would be hidden from its own readers."""
         connector = _connector()
-        connector._issue_key_to_id_cache = {"Q-5": "5"}
+        connector._issue_id_to_key_cache = {"5": "Q-5"}
         parent = {"id": "5", "fields": {"project": {"id": "99", "key": "Q"},
                                         "security": {"id": parent_level} if parent_level else None}}
         connector._get_issue_with_retry = AsyncMock(return_value=MagicMock(status=200, json=MagicMock(return_value=parent)))
@@ -221,3 +221,25 @@ class TestSkippedHoldersAreReportedOncePerLevel:
         with caplog.at_level(logging.WARNING, logger="t"):
             await connector._build_issue_records([_issue(str(n), f"P-{n}", level="1") for n in range(1, 6)], "10", [])
         assert len([r for r in caplog.records if "were not granted" in r.getMessage()]) == 1
+
+
+class TestParentKeyLookup:
+    async def test_the_key_of_a_parent_comes_from_the_reverse_cache_not_a_scan(self) -> None:
+        class NoScan(dict):
+            def items(self):  # noqa: ANN202
+                raise AssertionError("the key-to-id cache must not be scanned")
+
+        connector = _connector()
+        connector._issue_key_to_id_cache = NoScan({"P-5": "5"})
+        connector._issue_id_to_key_cache = {"5": "P-5"}
+        none = IssueSecurityContext(knowledge=SchemeKnowledge.NONE)
+        assert await connector._files_under_parent({"project": {"id": "10", "key": "P"}}, "5", none) is True
+
+    async def test_both_caches_are_filled_together(self) -> None:
+        connector = _connector()
+        assert await connector._resolve_issue_id_from_key_or_id(issue_id="7", issue_key="P-7", context="x") == "7"
+        assert connector._issue_id_to_key_cache == {"7": "P-7"}
+        connector._get_fresh_datasource = AsyncMock(return_value=MagicMock(get_issue_v2=AsyncMock(
+            return_value=MagicMock(status=200, json=MagicMock(return_value={"id": "8"})))))
+        assert await connector._resolve_issue_id_from_key_or_id(issue_id=None, issue_key="P-8", context="x") == "8"
+        assert connector._issue_id_to_key_cache["8"] == "P-8"

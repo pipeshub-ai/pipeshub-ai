@@ -591,3 +591,26 @@ async def test_a_reindex_closes_a_stored_open_issue_that_now_has_a_level_it_cann
 
     expected = dict.fromkeys(by_key, PROJECT_READERS) | {"PROJ-1": set()}
     assert not await _mismatches(world, expected, by_key)
+
+
+async def test_a_project_without_a_scheme_is_read_by_the_same_people_open_or_strict(world: dict[str, Any]) -> None:
+    """Issues of a project with no scheme are written STRICT with a rewrite now; before, OPEN. The project's
+    readers, and nobody else, read every issue of the hierarchy either way."""
+    plain = [{**issue, "fields": {**issue["fields"], "security": None}} for issue, _ in ISSUES.values()]
+    await _open_project(world, None)  # OPEN, as before
+    for issue in plain:
+        await _write(world, [issue])
+    by_key = await _ticket_ids(world)
+
+    async def readers() -> dict[str, set[str]]:
+        return {name: set(await world["graph"].filter_accessible_record_ids(
+            list(by_key.values()), world["user_ids"][name], world["org_id"])) for name in PEOPLE}
+
+    before = await readers()
+    world["connector"]._issue_security[PROJECT_ID] = IssueSecurityContext(knowledge=SchemeKnowledge.NONE)
+    for issue in plain:
+        await _write(world, [{**issue, "fields": {**issue["fields"], "updated": "2024-08-01T10:00:00.000+0000"}}], again=True)
+    after = await readers()
+
+    assert after == before
+    assert all(after[name] == set(by_key.values()) for name in PROJECT_READERS) and after["dave"] == set()

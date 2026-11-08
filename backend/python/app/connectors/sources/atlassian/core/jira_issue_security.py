@@ -199,8 +199,14 @@ async def collect_paged_values(
         if not isinstance(page, list):
             return status, None
         values.extend(item for item in page if isinstance(item, dict))
-        if body.get("isLast", True) or not page:
+        if not page or body.get("isLast") is True:
             return 200, values
+        if "isLast" not in body:
+            # A server that pages with ``total`` only: complete when the total is reached, else keep reading
+            # (an empty page ends it), never taken as complete after the first page.
+            total = body.get("total")
+            if isinstance(total, int) and not isinstance(total, bool) and len(values) >= total:
+                return 200, values
         step = body.get("maxResults") or len(page) or 50
         try:
             start += int(step)

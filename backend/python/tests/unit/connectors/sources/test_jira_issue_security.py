@@ -21,6 +21,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     apply_issue_access_settled,
     classify_project_mapping,
     classify_scheme_response,
+    collect_paged_values,
     hold_levels_naming_unread_roles,
     level_reads_alike,
     levels_after_walk,
@@ -745,3 +746,42 @@ class TestAmbiguousNotFound:
         assert UNREADABLE_UNCLEAR_404 in UNREADABLE_KEEPS_STORED_ACCESS
         # A 404 that was not deferred keeps its reason.
         assert unreadable_reason(IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, read_status=404)) == UNREADABLE_OTHER
+
+
+class TestPagingWithTotalOnly:
+    @staticmethod
+    def _server(rows: int, *, total: bool, page_size: int = 100):
+        calls: list[int] = []
+
+        async def fetch(start: int) -> tuple[int, dict]:
+            calls.append(start)
+            page = [{"n": n} for n in range(start, min(start + page_size, rows))]
+            body: dict = {"values": page, "maxResults": page_size, "startAt": start}
+            if total:
+                body["total"] = rows
+            return 200, body
+
+        return fetch, calls
+
+    async def test_a_server_that_pages_with_total_and_no_islast_is_read_past_the_first_page(self) -> None:
+        fetch, calls = self._server(250, total=True)
+        status, values = await collect_paged_values(fetch)
+        assert status == 200 and len(values) == 250 and calls == [0, 100, 200]
+
+    async def test_with_neither_islast_nor_total_it_reads_until_an_empty_page(self) -> None:
+        fetch, calls = self._server(250, total=False)
+        _, values = await collect_paged_values(fetch)
+        assert len(values) == 250 and calls == [0, 100, 200, 300]
+
+    async def test_a_page_marked_last_ends_it_and_a_total_reached_ends_it(self) -> None:
+        async def last(start: int) -> tuple[int, dict]:
+            return 200, {"values": [{"n": 1}], "isLast": True}
+        assert (await collect_paged_values(last))[1] == [{"n": 1}]
+        fetch, calls = self._server(100, total=True)
+        assert len((await collect_paged_values(fetch))[1]) == 100 and calls == [0]
+
+    async def test_it_stays_bounded(self) -> None:
+        async def endless(start: int) -> tuple[int, dict]:
+            return 200, {"values": [{"n": start}], "maxResults": 1000}
+        status, values = await collect_paged_values(endless)
+        assert values is None
