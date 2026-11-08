@@ -447,6 +447,15 @@ record_schema = {
             "parseNowRev": {"type": ["string", "null"]},
             "parseNowReason": {"type": ["string", "null"]},
             "parseNowAt": {"type": ["number", "null"]},
+            # The in-flight embedding marker (see app/modules/indexing/embed_resume.py): flat scalars, so
+            # a partial write leaves the others alone on every graph provider. Null once the record is indexed.
+            "embedVrid": {"type": ["string", "null"]},
+            "embedRev": {"type": ["string", "null"]},
+            "embedKey": {"type": ["string", "null"]},
+            "embedDigest": {"type": ["string", "null"]},
+            "embedTotal": {"type": ["number", "null"]},
+            "embedDeliveryId": {"type": ["string", "null"]},
+            "embedStartedMs": {"type": ["number", "null"]},
         },
         "required": [
             "recordName",

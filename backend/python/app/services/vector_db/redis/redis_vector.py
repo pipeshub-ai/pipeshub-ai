@@ -1150,6 +1150,22 @@ class RedisVectorService(IVectorDBService):
                 points.append(VectorPoint(id=point_id, payload=hash_doc_to_payload(doc)))
         return points
 
+    async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
+        self._assert_connected()
+        if not ids:
+            return set()
+        pipeline = self.client.pipeline(transaction=False)  # type: ignore
+        for point_id in ids:
+            pipeline.execute_command("EXISTS", self._key(collection_name, point_id))
+        replies = await pipeline.execute()
+        found: set[str] = set()
+        for point_id, reply in zip(ids, replies):
+            if isinstance(reply, Exception):
+                raise reply
+            if reply:
+                found.add(point_id)
+        return found
+
     async def query_nearest_points(
         self,
         collection_name: str,

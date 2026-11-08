@@ -32,6 +32,7 @@ from app.models.blocks import (
     DataFormat,
     GroupType,
     Point,
+    SemanticMetadata,
 )
 from app.models.entities import Record
 from app.models.record_convert import convert_record_dict_to_record  # re-exported for existing importers
@@ -155,6 +156,66 @@ class Processor:
             prev_virtual_record_id=prev_virtual_record_id,
             **extra,
         )
+
+    async def load_checkpoint(
+        self, virtual_record_id: str, org_id: str
+    ) -> tuple[BlocksContainer, Any] | None:
+        """The blocks and semantic metadata the interrupted run stored for ``virtual_record_id``.
+
+        ``None`` when nothing usable is stored, which sends the caller down the full path. A storage
+        error that a retry could clear is raised instead: it must not read as "nothing stored", or
+        one timeout would throw away an attempt's progress.
+        """
+        from app.services.messaging.error_classifier import (
+            MessageErrorClassifier,
+            MessageErrorType,
+        )
+
+        blob_storage = self.sink_orchestrator.blob_storage
+        try:
+            blob = await blob_storage.get_record_from_storage(virtual_record_id, org_id)
+        except Exception as exc:
+            if MessageErrorClassifier.classify_by_exception(exc) == MessageErrorType.TRANSIENT:
+                raise
+            self.logger.warning("Stored blocks of %s unreadable; parsing again: %s", virtual_record_id, exc)
+            return None
+        containers = blob.get("block_containers") if isinstance(blob, dict) else None
+        if not isinstance(containers, dict) or not (containers.get("blocks") or containers.get("block_groups")):
+            return None
+        try:
+            container = BlocksContainer.model_validate(containers)
+            raw_semantic = blob.get("semantic_metadata")
+            semantic = SemanticMetadata.model_validate(raw_semantic) if raw_semantic else None
+        except Exception as exc:
+            self.logger.warning("Stored blocks of %s are not valid; parsing again: %s", virtual_record_id, exc)
+            return None
+        return container, semantic
+
+    async def resume_from_checkpoint(
+        self,
+        record_id: str,
+        checkpoint: tuple[BlocksContainer, Any],
+        virtual_record_id: str,
+        event_type: Optional[str] = None,
+        prev_virtual_record_id: Optional[str] = None,
+    ) -> AsyncGenerator[PipelineEvent, None]:
+        """Index a record from the blocks an interrupted run stored, without parsing or enriching it again."""
+        container, semantic = checkpoint
+        record_doc = await self.graph_provider.get_document(
+            record_id, CollectionNames.RECORDS.value, raise_on_error=True
+        )
+        if record_doc is None:
+            raise RecordDeletedError(record_id)
+        yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+
+        record = self._convert_record(record_doc)
+        record.block_containers = container
+        record.virtual_record_id = virtual_record_id
+        if semantic is not None:
+            record.semantic_metadata = semantic
+        ctx = self._create_transform_context(record, event_type, prev_virtual_record_id)
+        await self._pipeline().apply(ctx)
+        yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
 
     async def process_image(self, record_id, content, virtual_record_id, event_type: Optional[str] = None, prev_virtual_record_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """Process image content, yielding phase completion events."""

@@ -37,7 +37,18 @@ from app.exceptions.indexing_exceptions import (
     RecordDeletedError,
 )
 from app.models.entities import Record
+from app.modules.indexing.embed_resume import (
+    DELIVERY_ID_KEY,
+    EMBED_VRID,
+    EmbedAttempt,
+    begin_attempt,
+    cleared_fields,
+    end_attempt,
+    marker_of,
+    may_resume,
+)
 from app.modules.indexing.parse_now_marker import (
+    current_run,
     run_settings,
     shape_status_write,
     store_only_active,
@@ -207,6 +218,23 @@ class EventProcessor:
             self.logger.error(
                 "Failed to rewrite/delete vectors for %s: %s", virtual_record_id, e
             )
+
+    async def _discard_embed_marker(self, doc: dict[str, Any], marker: dict[str, Any], org_id: str) -> None:
+        """End an interrupted run's marker when the record turns out to need no indexing.
+
+        The record now sits on another vrid (it was attached to a finished twin), so the points the
+        interrupted run wrote under the marker's vrid belong to nobody; the cleanup removes them
+        once it has confirmed that no record uses that vrid.
+        """
+        self._require_persisted(
+            await self.update_record_fields(doc, cleared_fields()),
+            "Failed to clear the embedding marker of record",
+            doc,
+        )
+        orphaned = marker.get(EMBED_VRID)
+        if orphaned and orphaned != doc.get("virtualRecordId"):
+            self._spawn_abandoned_vrid_cleanup(org_id, orphaned)
+            await self._rewrite_or_delete_vrid_vectors(orphaned)
 
     def _spawn_abandoned_vrid_cleanup(self, org_id: str, virtual_record_id: str) -> asyncio.Task:
         task = asyncio.create_task(
@@ -1422,6 +1450,9 @@ class EventProcessor:
             virtual_record_id = record.get("virtualRecordId") or virtual_record_id
 
             doc: dict[str, Any] = dict(record)
+            # Read here, from the node as it was before this event wrote anything: `doc` is rewritten
+            # (status, revision) before the vrid is chosen, so a marker read from it would match any event.
+            embed_marker = marker_of(record)
 
             # A successful attempt never clears `reason` (the status writer only
             # sets it when non-empty), so drop the previous failure text here or
@@ -1529,6 +1560,8 @@ class EventProcessor:
                 )
                 if dedup_decision.skip_indexing:
                     self.logger.info("Duplicate record detected, skipping processing")
+                    if embed_marker:
+                        await self._discard_embed_marker(doc, embed_marker, org_id)
                     await notify_record_indexed(
                         connector_name=doc.get("connectorName"),
                         connector_id=doc.get("connectorId"),
@@ -1631,6 +1664,32 @@ class EventProcessor:
 
             prev_virtual_record_id = None
             abandoned_virtual_record_id = None
+            from app.config.constants.arangodb import (
+                RECONCILIATION_ENABLED_EXTENSIONS,
+                RECONCILIATION_ENABLED_MIME_TYPES,
+            )
+            delivery_id = event_data.get(DELIVERY_ID_KEY)
+            # Kinds whose stored blocks are not the whole content (code is read from the bytes, SQL
+            # tables keep a few rows), and runs that do not index, never resume or leave a marker.
+            resumable_kind = (
+                not store_only
+                and not is_code
+                and not reads_as_code_file
+                and mime_type not in (MimeTypes.SQL_TABLE.value, MimeTypes.SQL_VIEW.value)
+                and current_run() is None
+                and bool(delivery_id)
+                and not rebuild_shared_vrid
+                and not dedup_decision.virtual_record_id
+            )
+            checkpoint = None
+            if resumable_kind and may_resume(
+                embed_marker,
+                delivery_id=delivery_id,
+                rev=content_rev,
+                node_vrid=doc.get("virtualRecordId"),
+                force_reindex=bool(event_data.get("forceReindex")),
+            ):
+                checkpoint = await self.processor.load_checkpoint(embed_marker[EMBED_VRID], org_id)
             if store_only:
                 # Nothing is reconciled and nothing is cleaned up: a record with automatic indexing off holds no
                 # vectors, so its content is stored under its own id, or a new one when others share it.
@@ -1638,6 +1697,14 @@ class EventProcessor:
                     await self.graph_provider.get_records_by_virtual_record_id(virtual_record_id)
                 ) > 1:
                     virtual_record_id = str(uuid4())
+            elif checkpoint is not None:
+                # The same event again: keep the vrid its points are under instead of minting one.
+                virtual_record_id = embed_marker[EMBED_VRID]
+                if event_type in (EventTypes.UPDATE_RECORD.value, EventTypes.REINDEX_RECORD.value) and (
+                    mime_type in RECONCILIATION_ENABLED_MIME_TYPES
+                    or extension in RECONCILIATION_ENABLED_EXTENSIONS
+                ):
+                    prev_virtual_record_id = virtual_record_id
             elif rebuild_shared_vrid:
                 # Identical content under a VRID that lost its stored content:
                 # isolating would fix only this record and leave the others
@@ -1649,10 +1716,6 @@ class EventProcessor:
                 prev_virtual_record_id = virtual_record_id
             elif event_type == EventTypes.UPDATE_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value:
                 # For reconciliation-enabled types, decide whether to keep or generate new vrid
-                from app.config.constants.arangodb import (
-                    RECONCILIATION_ENABLED_EXTENSIONS,
-                    RECONCILIATION_ENABLED_MIME_TYPES,
-                )
                 is_reconciliation_type = (
                     mime_type in RECONCILIATION_ENABLED_MIME_TYPES
                     or extension in RECONCILIATION_ENABLED_EXTENSIONS
@@ -1710,6 +1773,29 @@ class EventProcessor:
                 # still uses the vrid, and backs off on errors, before deleting.
                 self._spawn_abandoned_vrid_cleanup(org_id, abandoned_virtual_record_id)
                 await self._rewrite_or_delete_vrid_vectors(abandoned_virtual_record_id)
+
+            if resumable_kind:
+                begin_attempt(EmbedAttempt(
+                    delivery_id=str(delivery_id),
+                    rev=content_rev,
+                    vrid=virtual_record_id,
+                    prior=embed_marker,
+                    resume=checkpoint is not None,
+                ))
+            else:
+                end_attempt()
+            if checkpoint is not None:
+                # No parse permit is taken: the START_DOWNLOAD reservation already covers this record's
+                # size until INDEXING_COMPLETE, and the loaded blocks are the parse output it was sized for.
+                self.logger.info(
+                    "Record %s: resuming from the stored blocks of an interrupted attempt", record_id
+                )
+                file_content = None
+                async for event in self.processor.resume_from_checkpoint(
+                    record_id, checkpoint, virtual_record_id, event_type, prev_virtual_record_id,
+                ):
+                    yield event
+                return
 
             # Ask the consumer for a nested parsing slot only after the record
             # is already IN_PROGRESS under the outer indexing gate. Tier/size

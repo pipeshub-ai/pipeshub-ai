@@ -317,6 +317,14 @@ class IVectorDBService(ABC):
         above it is left alone, and a point changed takes it."""
         return None
 
+    async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
+        """Which of ``ids`` have a point, reading no payload and no vector.
+
+        Like ``retrieve_points`` this sees writes that are not yet searchable. A provider that can
+        answer without transferring payloads overrides it; this default asks for the points.
+        """
+        return {p.id for p in await self.retrieve_points(collection_name, ids)}
+
     @abstractmethod
     async def update_payload_by_ids(
         self,
