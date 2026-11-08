@@ -199,10 +199,50 @@ def test_docling_kinds_keep_the_docling_working_set(monkeypatch: pytest.MonkeyPa
     assert parent_working_set_gb(ParseKind.DOCLING_DOCX) == 2.5
 
 
-def test_light_kinds_hold_nothing_in_the_parent_beyond_the_file() -> None:
-    for kind in (ParseKind.TEXT, ParseKind.CSV, ParseKind.CODE):
-        assert parent_working_set_gb(kind) == 0.0
-        assert permit_excess_bytes(kind, 0.25, "measured") == 0
+TEXT_KINDS = (ParseKind.TEXT, ParseKind.CSV, ParseKind.CODE)
+PERMIT_BASE_GB = 0.25
+LIGHT_BASE_GB = 0.02
+
+
+def _worst_parent_growth(cell: dict) -> int:
+    return max(max(r["parent_traced_peak_bytes"], r["parent_rss_growth_bytes"]) for r in cell["runs"])
+
+
+def test_text_kinds_hold_a_size_dependent_working_set_in_the_parent() -> None:
+    for kind in TEXT_KINDS:
+        small = parent_working_set_gb(kind, 1000)
+        large = parent_working_set_gb(kind, 20 * MIB)
+        assert 0 < small < 0.05, "a small record holds a small base, covered by the permit"
+        assert large > small + 0.03
+        assert parent_working_set_gb(kind) == parent_working_set_gb(kind, None) == parent_working_set_gb(kind, 0)
+        assert parent_working_set_gb(kind, -5) == parent_working_set_gb(kind, 0)
+        assert permit_excess_bytes(kind, PERMIT_BASE_GB, "measured") == 0
+
+
+def test_text_parent_growth_is_covered_in_every_calibration_cell() -> None:
+    """The reservation plus the permit's base covers the worst run's parent growth, for the heavy
+    path (permit base) and the light path (the pool's assumed base)."""
+    seen = 0
+    for name, cell in _cells().items():
+        kind = ParseKind(cell["kind"])
+        if kind not in TEXT_KINDS:
+            continue
+        seen += 1
+        worst = _worst_parent_growth(cell)
+        for base in (PERMIT_BASE_GB, LIGHT_BASE_GB):
+            covered = permit_excess_bytes(kind, base, "measured", cell["size_bytes"]) + int(base * GIB)
+            assert covered >= worst, f"{name}: parent grew {worst / MIB:.0f} MiB, covered {covered / MIB:.0f} MiB"
+    assert seen == 6
+
+
+def test_a_zero_text_working_set_is_caught(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mutant: the text kinds hold nothing in the parent, as before. The calibration check must fail."""
+    from app.services.resource_governor import kinds
+
+    monkeypatch.setattr(kinds, "TEXT_PARENT_SLOPES", dict.fromkeys(TEXT_KINDS, 0.0))
+    monkeypatch.setattr(kinds, "TEXT_PARENT_BASE_GB", 0.0)
+    with pytest.raises(AssertionError):
+        test_text_parent_growth_is_covered_in_every_calibration_cell()
 
 
 def test_unknown_kind_parent_working_set_is_the_old_figure() -> None:

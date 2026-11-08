@@ -98,10 +98,32 @@ def test_excess_is_max_not_sum_with_the_size_estimate() -> None:
     assert kind_reservation_cost(ParseTier.HEAVY, 600 * MIB, docx, MEASURED) == 2400 * MIB
 
 
-def test_a_kind_at_or_below_the_base_reserves_only_the_file_bytes() -> None:
+def test_a_small_text_record_reserves_only_the_file_bytes() -> None:
     for kind in (ParseKind.TEXT, ParseKind.CSV, ParseKind.CODE):
         assert kind_reservation_cost(ParseTier.LIGHT, 1000, kind, MEASURED) == 0
-        assert kind_reservation_cost(ParseTier.HEAVY, 100 * MIB, kind, MEASURED) == 400 * MIB
+        assert kind_reservation_cost(ParseTier.HEAVY, 1000, kind, MEASURED) == 0
+    assert kind_reservation_cost(ParseTier.HEAVY, 10 * MIB, ParseKind.PDF, MEASURED) == int(0.25 * GIB)
+
+
+def test_a_light_text_record_reserves_its_parent_growth() -> None:
+    size = 20 * MIB  # markdown of this size grew the parent by about 990 MiB
+    cost = kind_reservation_cost(ParseTier.LIGHT, size, ParseKind.TEXT, MEASURED)
+    assert cost > record_memory_cost(ParseTier.LIGHT, size) == 80 * MIB
+    assert cost + int(policy.INDEX_LIGHT_WORKING_SET_GB * GIB) >= 991 * MIB
+    heavy = kind_reservation_cost(ParseTier.HEAVY, size, ParseKind.TEXT, MEASURED)
+    assert heavy + int(0.25 * GIB) >= 991 * MIB
+    assert cost >= heavy, "no permit holds the base for a light record"
+
+
+def test_a_light_text_record_is_unchanged_without_the_measured_base() -> None:
+    for source in ("explicit", "fallback", "docling"):
+        ws = policy.HeavyWorkingSet(1.5, source)
+        for tier in ParseTier:
+            assert kind_reservation_cost(tier, 20 * MIB, ParseKind.TEXT, ws) == record_memory_cost(tier, 20 * MIB)
+
+
+def test_a_huge_text_record_still_reserves_at_least_its_estimate() -> None:
+    assert kind_reservation_cost(ParseTier.HEAVY, 100 * MIB, ParseKind.CODE, MEASURED) >= 400 * MIB
     assert kind_reservation_cost(ParseTier.HEAVY, 10 * MIB, ParseKind.PDF, MEASURED) == int(0.25 * GIB)
 
 

@@ -64,6 +64,7 @@ from app.services.resource_governor.memory_domain import (
 )
 from app.services.resource_governor.models import ParseTier
 from app.services.resource_governor.org_share import OrgShare, max_org_share
+from app.services.resource_governor.policy import INDEX_LIGHT_WORKING_SET_GB
 from app.utils.request_context import current_display_id
 from app.utils.semaphore_logger import SemaphoreLogger
 from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR
@@ -246,27 +247,30 @@ async def parse_file(
     excess_held = 0
     covers = set_permit_covers() if tier is ParseTier.HEAVY else None
     try:
-        if tier is ParseTier.HEAVY:
-            # The permit's base covers the parent's fixed part for the PdfPlumber parse only; a kind
-            # above it reserves the rest here, and never waits for it for long while it holds the permit.
-            working_set = governor.heavy_working_set
-            excess = permit_excess_bytes(classify_kind(extension, mime_type), working_set.gb, working_set.source)
-            if excess:
-                if not await governor.memory_budget.reserve(excess, EXCESS_WAIT_SECONDS):
-                    logger.warning("Parse deferred: record='%s' waited too long for memory", record_name)
-                    return JSONResponse(
-                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                        headers={"Retry-After": str(PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS)},
-                        content={
-                            "success": False,
-                            "error": {
-                                "code": ParseErrorCode.PARSE_BACKPRESSURE.value,
-                                "message": "Parsing service is at capacity; retry later.",
-                                "details": {"tier": tier.value, "reason": "memory"},
-                            },
+        # The permit's base covers the parent's fixed part for the PdfPlumber parse only; a kind
+        # above it reserves the rest here, and never waits for it for long while it holds the permit.
+        # A light parse holds no heavy permit, but text still grows the parent with its size.
+        working_set = governor.heavy_working_set
+        base_gb = working_set.gb if tier is ParseTier.HEAVY else INDEX_LIGHT_WORKING_SET_GB
+        excess = permit_excess_bytes(
+            classify_kind(extension, mime_type), base_gb, working_set.source, len(content)
+        )
+        if excess:
+            if not await governor.memory_budget.reserve(excess, EXCESS_WAIT_SECONDS):
+                logger.warning("Parse deferred: record='%s' waited too long for memory", record_name)
+                return JSONResponse(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    headers={"Retry-After": str(PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS)},
+                    content={
+                        "success": False,
+                        "error": {
+                            "code": ParseErrorCode.PARSE_BACKPRESSURE.value,
+                            "message": "Parsing service is at capacity; retry later.",
+                            "details": {"tier": tier.value, "reason": "memory"},
                         },
-                    )
-                excess_held = excess
+                    },
+                )
+            excess_held = excess
         try:
             parser = registry.resolve(mime_type, extension, provider_enum)
             async with scope_from_claims(

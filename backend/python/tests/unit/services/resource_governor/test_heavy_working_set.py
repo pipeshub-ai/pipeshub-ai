@@ -184,13 +184,13 @@ def test_retune_reverts_when_budget_degraded_or_local(on: None, monkeypatch: pyt
     def broken(*a: object, **k: object) -> None:
         raise OSError("read-only")
 
-    monkeypatch.setattr(lanes_module.LaneBudget, "open", classmethod(lambda cls, *a, **k: broken()))
-    local = make()
-    assert local.lanes is not None and local.lanes.stats()["slots"] == "local"
-    sample(local)
-    assert local.heavy_working_set == (1.5, "fallback")
-    local.close()
-    monkeypatch.undo()
+    with monkeypatch.context() as scoped:
+        scoped.setattr(lanes_module.LaneBudget, "open", classmethod(lambda cls, *a, **k: broken()))
+        local = make()
+        assert local.lanes is not None and local.lanes.stats()["slots"] == "local"
+        sample(local)
+        assert local.heavy_working_set == (1.5, "fallback")
+        local.close()
 
     # A shared budget whose ledger has gone bad.
     governor = make()

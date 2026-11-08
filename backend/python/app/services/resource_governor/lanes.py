@@ -1169,7 +1169,7 @@ class LaneBudget:
     def _grow_shared(self, txn: LedgerTxn | _LocalTxn, now: float, delta: int, mem_limit: int | None, raw: int | None) -> bool:
         stored = txn.read()
         record = self._drain_returns(self._apply_overlay(stored, now))
-        if self._resident.held_count(0.0) <= 1:
+        if self._lone_resident():
             txn.write(with_plan(add_window_bytes(record, delta, now, self._warmup), self._plan.lanes))
             return True
         if mem_limit is not None and mem_limit > 0:
@@ -1180,10 +1180,18 @@ class LaneBudget:
         txn.write(with_plan(add_window_bytes(record, delta, now, self._warmup), self._plan.lanes))
         return True
 
+    def _lone_resident(self) -> bool:
+        """True when this is the only resident worker. A busy count (another process holds the
+        mutex) is not known to be lone, so the headroom test decides and the caller polls again."""
+        try:
+            return self._resident.held_count(0.0) <= 1
+        except TimeoutError:
+            return False
+
     def _grow_local(self, now: float, delta: int, mem_limit: int | None, raw: int | None) -> bool:
         start, spawns, nbytes, until = self._local_window
         carried = nbytes if now < until else 0
-        lone = self._resident.held_count(0.0) <= 1
+        lone = self._lone_resident()
         if not lone and mem_limit is not None and mem_limit > 0 and (
             raw is None or (raw + carried + delta) / mem_limit >= MEM_SOFT
         ):

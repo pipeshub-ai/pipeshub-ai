@@ -1422,7 +1422,7 @@ async def acquire_parsing_slot(
         missing = 0
         if kind is not None:
             ws = governor.heavy_working_set
-            missing = max(0, permit_excess_bytes(kind, ws.gb, ws.source) - reserved_bytes)
+            missing = max(0, permit_excess_bytes(kind, ws.gb, ws.source, size_bytes) - reserved_bytes)
         extra = 0
         if missing:
             budget = governor.memory_budget

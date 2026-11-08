@@ -54,9 +54,11 @@ def kind_reservation_cost(
     base is the measured one, so with the old constant the cost is ``record_memory_cost`` exactly.
     """
     cost = record_memory_cost(tier, size_bytes)
-    if kind is None or working_set is None or tier is not ParseTier.HEAVY:
+    if kind is None or working_set is None:
         return cost
-    return max(cost, permit_excess_bytes(kind, working_set.gb, working_set.source))
+    # A light record holds no permit; what the pool already assumes it holds is its base.
+    base_gb = working_set.gb if tier is ParseTier.HEAVY else INDEX_LIGHT_WORKING_SET_GB
+    return max(cost, permit_excess_bytes(kind, base_gb, working_set.source, size_bytes))
 
 
 class MemoryBudget:

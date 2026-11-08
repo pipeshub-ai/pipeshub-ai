@@ -19,10 +19,10 @@ if TYPE_CHECKING:
 GIB = 2**30
 
 
-def _post(client: TestClient, name: str, extension: str) -> object:
+def _post(client: TestClient, name: str, extension: str, size: int = 1000) -> object:
     return client.post(
         "/api/v1/parse",
-        files={"file": (name, b"x" * 1000, "application/octet-stream")},
+        files={"file": (name, b"x" * size, "application/octet-stream")},
         data={"mime_type": "application/octet-stream", "extension": extension, "provider": "default"},
     )
 
@@ -69,6 +69,22 @@ def test_a_light_parse_reserves_nothing() -> None:
     with TestClient(app) as client:
         assert _post(client, "a.md", "md").status_code == 200  # type: ignore[attr-defined]
     assert seen["reserved"] == 0 and seen["covers"] is False
+
+
+def test_a_large_light_text_parse_reserves_its_parent_growth() -> None:
+    """Text parses on the light tier, holds no heavy permit, and still grows the parent with its size."""
+    from app.services.resource_governor.kinds import ParseKind, permit_excess_bytes
+    from app.services.resource_governor.policy import INDEX_LIGHT_WORKING_SET_GB
+
+    size = 5 * 2**20
+    seen: dict = {}
+    app, _ = _app(True, seen)
+    with TestClient(app) as client:
+        assert _post(client, "a.md", "md", size).status_code == 200  # type: ignore[attr-defined]
+    expected = permit_excess_bytes(ParseKind.TEXT, INDEX_LIGHT_WORKING_SET_GB, "measured", size)
+    assert expected > 200 * 2**20
+    assert seen["reserved"] == expected
+    assert app.state.governor.memory_budget.stats()["reserved_bytes"] == 0, "released after the parse"
 
 
 def test_off_makes_no_budget_call_on_the_route() -> None:

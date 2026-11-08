@@ -444,3 +444,32 @@ def test_charge_for_uses_the_scale_the_guard_raised(make_budget: Callable[..., L
         assert budget.charge_for(ParseKind.TEXT, 5 * MIB)[0] > before
     finally:
         SCALES.reset()
+
+
+def _busy(*_a: object, **_k: object) -> int:
+    raise TimeoutError("resident mutex busy")
+
+
+def test_growth_with_a_busy_resident_mutex_goes_through_the_headroom_test(
+    make_budget: Callable[..., LaneBudget], mem: Mem, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another process holds the mutex: the count is unknown, so the worker is not treated as alone."""
+    mem.limit, mem.raw = 10 * GIB, int(9.5 * GIB)
+    budget = make_budget(8)
+    assert budget.admit_spawn(0) is not None
+    monkeypatch.setattr(budget._resident, "held_count", _busy)
+    assert budget.admit_growth(GIB) is False, "no headroom: denied, not raised"
+    mem.raw = GIB
+    clock.advance(1.1)
+    assert budget.admit_growth(GIB) is True, "headroom: admitted"
+
+
+def test_local_growth_with_a_busy_resident_mutex_goes_through_the_headroom_test(
+    make_budget: Callable[..., LaneBudget], mem: Mem, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mem.limit, mem.raw = 10 * GIB, int(9.5 * GIB)
+    budget = make_budget(8)
+    assert budget.admit_spawn(0) is not None
+    monkeypatch.setattr(budget._resident, "held_count", _busy)
+    assert budget._grow_local(clock(), GIB, mem.limit, mem.raw) is False
+    assert budget._grow_local(clock(), GIB, mem.limit, GIB) is True

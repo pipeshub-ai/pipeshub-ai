@@ -78,6 +78,16 @@ TEXT_SLOPES: dict[ParseKind, float] = {
     ParseKind.CODE: 64.0,
 }
 
+# What the parent itself holds while a text, CSV or code record parses (the text and its blocks), in
+# bytes per byte of file plus a base: the worst run of each calibration cell, rounded up. Markdown
+# grew 59, 260 and 991 MB at 1, 5 and 20 MB; CSV 31 and 122 MB at 5 and 20 MB; code 8 MB at 5 MB.
+TEXT_PARENT_SLOPES: dict[ParseKind, float] = {
+    ParseKind.TEXT: 52.0,
+    ParseKind.CSV: 6.5,
+    ParseKind.CODE: 2.0,
+}
+TEXT_PARENT_BASE_GB = 16 * MIB / GIB
+
 _PDF_EXTENSIONS = frozenset({"pdf"})
 _EXCEL_EXTENSIONS = frozenset({"xlsx", "xls", "xlsm"})
 _DOCLING_EXTENSIONS = frozenset({"docx", "doc", "pptx", "ppt"})
@@ -194,15 +204,17 @@ def window_charge_bytes(
     return lane_charge_bytes(kind, size, permit_covered, scale=scale, flat_bytes=flat_bytes)
 
 
-def parent_working_set_gb(kind: ParseKind | None) -> float:
+def parent_working_set_gb(kind: ParseKind | None, size_bytes: int | None = None) -> float:
     """GiB the parent holds while a record of *kind* parses: what its heavy permit has to cover.
 
-    Light kinds hold none beyond the file bytes (the record reservation). An unknown kind is the
-    old safe figure.
+    A text, CSV or code record holds a base plus a multiple of its size (the parent builds the whole
+    text and its blocks); without a size only the base is known. An unknown kind is the old safe
+    figure.
     """
     kind = kind or ParseKind.UNKNOWN
-    if kind in TEXT_SLOPES:
-        return 0.0
+    if kind in TEXT_PARENT_SLOPES:
+        size = max(0, int(size_bytes or 0))
+        return TEXT_PARENT_BASE_GB + TEXT_PARENT_SLOPES[kind] * size / GIB
     if kind in (ParseKind.PDF, ParseKind.PDF_LAYOUT, ParseKind.RENDER, ParseKind.INSPECT):
         return PDF_PERMIT_GB
     if kind is ParseKind.EXCEL_LOAD:
@@ -212,7 +224,9 @@ def parent_working_set_gb(kind: ParseKind | None) -> float:
     return FALLBACK_PARENT_GB
 
 
-def permit_excess_bytes(kind: ParseKind | None, base_gb: float, source: str) -> int:
+def permit_excess_bytes(
+    kind: ParseKind | None, base_gb: float, source: str, size_bytes: int | None = None
+) -> int:
     """Bytes a record of *kind* reserves beyond the file bytes so that its permit covers its parent.
 
     ``max(0, parent working set - the permit's base)``. Only the measured base leaves anything to
@@ -221,7 +235,7 @@ def permit_excess_bytes(kind: ParseKind | None, base_gb: float, source: str) -> 
     """
     if source != "measured":
         return 0
-    return max(0, int((parent_working_set_gb(kind) - base_gb) * GIB))
+    return max(0, int((parent_working_set_gb(kind, size_bytes) - base_gb) * GIB))
 
 
 class ChargeScales:
@@ -288,6 +302,7 @@ __all__ = [
     "classify_kind",
     "explicit_lane_working_set_bytes",
     "lane_charge_bytes",
+    "TEXT_PARENT_SLOPES",
     "parent_working_set_gb",
     "permit_excess_bytes",
     "window_charge_bytes",
