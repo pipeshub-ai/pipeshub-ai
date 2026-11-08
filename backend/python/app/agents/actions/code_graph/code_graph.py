@@ -577,8 +577,8 @@ class CodeGraph:
             "'inbound' has no substitute — callers leave no trace in the code you are "
             "reading.\n\n"
             "Returns rows with `relation`, `direction`, file and `line`. If `truncated`, "
-            "do what `next` says; do not raise `limit`. Next: get_neighbour a row, or "
-            "read_code(lines=...) for a body."
+            "do what `next` (or `note`) says; do not raise `limit`. Next: get_neighbour a "
+            "row, or read_code(lines=...) for a body."
         ),
         parameters=[
             ToolParameter(
@@ -657,9 +657,8 @@ class CodeGraph:
             ToolParameter(
                 name="offset", type=ParameterType.INTEGER, required=False, default=0,
                 description=(
-                    "Skip this many neighbours first. When a result says "
-                    "`truncated: true`, its `next` line gives the offset to pass "
-                    "with the same arguments to get the following page."
+                    "Skip this many neighbours first. When a result's `next` gives "
+                    "an offset, pass it with the same arguments for the following page."
                 ),
             ),
             ToolParameter(
