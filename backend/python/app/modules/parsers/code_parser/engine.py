@@ -28,6 +28,8 @@ from app.modules.parsers.code_parser.lang_config import (
 )
 from app.modules.parsers.code_parser.models import (
     DECLARATION,
+    FIXTURE_MARK,
+    STAR_EXPORTS_MARK,
     ParsedFile,
     ParsedSymbol,
     PendingEdgeFact,
@@ -37,7 +39,7 @@ from app.modules.parsers.text_decoding import decode_text
 from app.utils.env_config import env_int
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from tree_sitter import Node, Parser
 
@@ -367,9 +369,10 @@ def _imports_python(node: Node, src: bytes, out: list[PendingEdgeFact]) -> None:
         module = _field(node, "module_name")
         module_name = _text(module, src) if module is not None else ""
         if module_name:
+            # Context "from": the statement binds the names it imports, never the module's own name.
             out.append(PendingEdgeFact(
                 relation=Relation.IMPORTS_FROM, to_name=module_name,
-                line=line, to_kind="record",
+                line=line, to_kind="record", context="from",
             ))
         for child in node.named_children:
             # py-tree-sitter hands out a fresh wrapper per access, so identity
@@ -390,6 +393,12 @@ def _imports_python(node: Node, src: bytes, out: list[PendingEdgeFact]) -> None:
                 out.append(PendingEdgeFact(
                     relation=Relation.IMPORTS, to_name=_text(child, src), line=line,
                     to_kind="block", qualified_prefix=module_name,
+                ))
+            elif child.type == "wildcard_import":
+                # `from .fields import *`: every name the module exports (edge_builder `_star_exports`).
+                out.append(PendingEdgeFact(
+                    relation=Relation.IMPORTS, to_name="*", line=line, to_kind="block",
+                    qualified_prefix=module_name,
                 ))
 
 
@@ -991,6 +1000,54 @@ def _collect_type_table_python(root: Node, src: bytes, table: dict[str, str], cf
         func = stmt.named_children[-1] if stmt.type == "decorated_definition" and stmt.named_children else stmt
         if func.type == "function_definition":
             _py_function_types(func, src, table, cfg, None)
+    if b"fixture" in src:
+        # A pytest fixture's type, `fixture:<name>`, read by the builder for a test parameter of that name.
+        fixtures = _python_fixture_names(root, src)
+        scopes = _python_scoped_bindings(root, src, cfg) if fixtures else {}
+        for name, node in fixtures:
+            typ = _python_return_type(node, scopes, src)
+            if typ:
+                table.setdefault(f"{_FIXTURE_KEY}{name}", typ)
+    exported = _python_literal_all(root, src)
+    if exported is not None:
+        table["__all__"] = STAR_EXPORTS_MARK + ",".join(exported)
+
+
+def _python_literal_all(root: Node, src: bytes) -> list[str] | None:
+    """The names a module-level `__all__ = [...]` / `(...)` lists, when every item is a string literal; else None
+    (no `__all__`, or one computed: `__all__ += …`, a comprehension, a name).
+
+    shortcut: a computed `__all__` is not read, so `from m import *` falls back to the no-underscore rule;
+    evaluate the common forms (`+=` of literals, `[*a.__all__, ...]`) if star imports through one go wrong."""
+    if root.type != "module" or any(_extends_all(stmt, src) for stmt in root.named_children):
+        return None
+    for stmt in root.named_children:
+        node = stmt.named_children[0] if stmt.type == "expression_statement" and stmt.named_children else None
+        if node is None or node.type != "assignment" or _text(_field(node, "left"), src) != "__all__":
+            continue
+        value = _field(node, "right")
+        items = ([c for c in value.named_children if c.type != "comment"]  # `# models` grouping the names
+                 if value is not None and value.type in ("list", "tuple") else None)
+        contents = [next((c for c in item.named_children if c.type == "string_content"), None)
+                    for item in items] if items is not None else None
+        if contents is None or any(item.type != "string" for item in items) or None in contents:
+            return None
+        return [_text(c, src) for c in contents]
+    return None
+
+
+def _extends_all(stmt: Node, src: bytes) -> bool:
+    """A module-level `__all__ += …`, `__all__.extend(…)` or `__all__.append(…)`: the literal is not the whole list."""
+    node = stmt.named_children[0] if stmt.type == "expression_statement" and stmt.named_children else None
+    if node is None:
+        return False
+    if node.type == "augmented_assignment":
+        left = _field(node, "left")
+        return left is not None and _text(left, src) == "__all__"
+    if node.type == "call":
+        fn = _field(node, "function")
+        return fn is not None and _text(fn, src) in ("__all__.extend", "__all__.append")
+    return False
 
 
 _PY_SIMPLE_EXPR = re.compile(r"[A-Za-z_][\w.]*(\(.*\))?(\.[A-Za-z_]\w*(\(.*\))?)*", re.S)
@@ -1072,62 +1129,551 @@ def _py_local_values(func: Node, src: bytes, cfg: LanguageConfig) -> dict[str, s
             if len(values) == 1 and None not in values}
 
 
-# Nodes that bind names of their own.
-_VALUE_SCOPE_TYPES = frozenset(_TS_SCOPE_TYPES)
+_PY_BINDING_TYPES = ("typed_parameter", "typed_default_parameter", "assignment")
+# Type-table key prefix of a pytest fixture's type (the receiver-type marker of a parameter that may be one is
+# models.FIXTURE_MARK).
+_FIXTURE_KEY = "fixture:"
+_PY_SCOPE_TYPES = frozenset({"function_definition", "lambda"})
+# Every node that binds a name, per grammar: a superset of what any one scope binds, read in one query.
+_PY_BINDING_SITES = ("parameters", "lambda_parameters", "assignment", "augmented_assignment", "for_statement",
+                     "for_in_clause", "named_expression", "as_pattern_target")
+
+
+def _python_binding(node: Node, src: bytes) -> tuple[str, str] | None:
+    """(name, type) a binding gives: a parameter's `x: Foo`, `x: Foo = …`, `x = Foo()`, and
+    `self.x = Foo()` as `self.x` (its own key, so a local `x` elsewhere cannot type it)."""
+    if node.type in ("typed_parameter", "typed_default_parameter"):
+        # A parameter's annotation types every call on it in the body.
+        name = next((c for c in node.named_children if c.type == "identifier"), None)
+        ann = _field(node, "type")
+        return (_text(name, src), _annotated_type(_text(ann, src))) if name is not None and ann is not None \
+            else None
+    left, right, ann = _field(node, "left"), _field(node, "right"), _field(node, "type")
+    if left is None or left.type not in ("identifier", "attribute"):
+        return None
+    key = _text(left, src)
+    if left.type == "attribute" and key.split(".", 1)[0] not in ("self", "cls"):
+        return None  # `obj.x = Foo()` says nothing about another `x`
+    if ann is not None:
+        return key, _annotated_type(_text(ann, src))
+    if right is not None and right.type == "call":
+        fn = _field(right, "function")
+        if fn is not None and fn.type in ("identifier", "attribute"):
+            called = _text(fn, src).rsplit(".", 1)[-1]
+            if called[:1].isupper():
+                return key, called
+    return None
+
+
+def _python_scoped_bindings(root: Node, src: bytes, cfg: LanguageConfig,
+                            assigned: dict[tuple[int | None, str], Node | None] | None = None,
+                            ) -> dict[int | None, dict[str, str]]:
+    """Each function's own bindings, by its start byte; each class's (`self.x = Foo()` in its methods, and its
+    class-level `x: Foo`) by the class's start byte; None holds the module's, which every function sees.
+    One query for the file: a query per function cost ~13% of a parse. *assigned*, when given, gets each scope's
+    untyped `x = <value>` (None for a name given two different values), for the walker to type as a chain."""
+    scopes: dict[int | None, dict[str, str]] = {}
+    aliases: list[tuple[int | None, int | None, str, str]] = []
+    helpers: list[tuple[int | None, str, str]] = []
+    params: dict[str, set[str]] = {}
+    loops: list[tuple[int | None, Node]] = []
+    unpacks: list[tuple[int | None, list[str], str]] = []
+    for node in _nodes_of_types(root, cfg, _PY_BINDING_TYPES + _PY_LOOP_TYPES):
+        scope = node.parent
+        while scope is not None and scope.type not in _PY_SCOPE_TYPES and scope.type != "class_definition":
+            scope = scope.parent
+        key = scope.start_byte if scope is not None else None
+        if node.type in _PY_LOOP_TYPES:
+            loops.append((key, node))
+            continue
+        binding = _python_binding(node, src)
+        if binding is None and assigned is not None:
+            _note_assigned(assigned, key, node, src)
+        if binding is not None:
+            owner = _python_owner_class(node) if binding[0].startswith(("self.", "cls.")) else None
+            table = scopes.setdefault(owner.start_byte if owner is not None else key, {})
+            table.setdefault(*binding)
+            for suffix, typ in _python_element_types(node, src).items():
+                table.setdefault(binding[0] + suffix, typ)
+            if node.type != "assignment":
+                params.setdefault(binding[0], set()).add(binding[1])
+        elif (alias := _python_self_alias(node, src)) is not None:
+            owner = _python_owner_class(node)
+            aliases.append((key, owner.start_byte if owner is not None else None, *alias))
+        elif (helper := _python_helper_call(node, src)) is not None:
+            helpers.append((key, *helper))
+        elif (unpacked := _python_unpacked_call(node, src)) is not None:
+            unpacks.append((key, *unpacked))
+        else:
+            for name, value in _python_unpacked(node, src):
+                typed = _python_constructed(value, src)
+                if typed:
+                    scopes.setdefault(key, {}).setdefault(name, typed)
+                elif (called := _python_called_name(value, src)) is not None:
+                    helpers.append((key, name, called))
+    # `conn = _make_connector()`: the variable takes what that same-file function returns.
+    functions = _python_module_functions(root, src)
+    returns = {name: _python_return_type(fn, scopes, src) for name, fn in functions.items()}
+    for key, name, called in helpers:
+        if returns.get(called):
+            scopes.setdefault(key, {}).setdefault(name, returns[called])
+    # `manager, ctx = _build(r)` over `def _build(r) -> tuple[SkillManager, dict]`: each name its item's type.
+    for key, names, called in unpacks:
+        items = _python_tuple_return(functions[called], src) if called in functions else []
+        for name, typ in zip(names, items) if len(items) == len(names) else ():
+            if typ:
+                scopes.setdefault(key, {}).setdefault(name, typ)
+    # `for e in self._emitters` over `self._emitters: list[Emitter]`, `for k, v in d.items()`: the element types.
+    for key, node in loops:
+        for name, typ in _python_loop_types(node, src, key, scopes):
+            scopes.setdefault(key, {}).setdefault(name, typ)
+    # `def __init__(self, port: Port): self.port = port`: the attribute takes the parameter's type.
+    for key, owner_key, attr, name in aliases:
+        typ = scopes.get(key, {}).get(name)
+        if typ:
+            scopes.setdefault(owner_key, {}).setdefault(attr, typ)
+    # An attribute set in a base class elsewhere (`self.processor`, assigned in BaseConnector) takes the
+    # type of a typed parameter of its name in this file, the idiom that hands it over; only when every
+    # such parameter agrees. A local `x = Foo()` never types `self.x`: another function's local is not this one's.
+    module = scopes.setdefault(None, {})
+    for name, types in params.items():
+        if len(types) == 1:
+            module.setdefault(f"self.{name}", next(iter(types)))
+    return scopes
+
+
+_PY_LOOP_TYPES = ("for_statement", "for_in_clause")
+_PY_SEQUENCES = frozenset({"list", "List", "Sequence", "MutableSequence", "Iterable", "Iterator", "Collection", "set",
+                           "Set", "frozenset", "FrozenSet", "AbstractSet", "MutableSet", "tuple", "Tuple", "deque",
+                           "AsyncIterable", "AsyncIterator", "Generator", "AsyncGenerator"})
+_PY_MAPPINGS = frozenset({"dict", "Dict", "Mapping", "MutableMapping", "defaultdict", "DefaultDict", "OrderedDict"})
+# Type-table key suffixes of a container's element (what iterating it gives) and of a mapping's value.
+_ELEMENT, _VALUE = "[]", "{}"
+
+
+def _python_element_types(node: Node, src: bytes) -> dict[str, str]:
+    """`xs: list[Foo]` -> {"[]": "Foo"}, `d: dict[str, Foo]` -> {"[]": "str", "{}": "Foo"}: what iterating an
+    annotated container gives, and a mapping's values."""
+    ann = _field(node, "type")
+    text = _text(ann, src).strip().strip("'\"") if ann is not None else ""
+    text = next((part.strip() for part in text.split("|") if part.strip() != "None"), text)
+    if text.startswith("Optional[") and text.endswith("]"):
+        text = text[len("Optional["):-1]
+    head, _, args = text.partition("[")
+    head = head.rsplit(".", 1)[-1]
+    parts = _split_type_args(args[:-1]) if args.endswith("]") else []
+    if head in _PY_SEQUENCES and parts and (head not in ("tuple", "Tuple") or parts[-1:] == ["..."]):
+        return {_ELEMENT: _annotated_type(parts[0])}
+    if head in _PY_MAPPINGS and len(parts) == 2:
+        return {_ELEMENT: _annotated_type(parts[0]), _VALUE: _annotated_type(parts[1])}
+    return {}
+
+
+def _split_type_args(text: str) -> list[str]:
+    """`str, list[Foo]` -> ["str", "list[Foo]"]: top-level comma-separated type arguments."""
+    parts, depth, start = [], 0, 0
+    for i, ch in enumerate(text):
+        if ch in "[(":
+            depth += 1
+        elif ch in "])":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(text[start:i].strip())
+            start = i + 1
+    parts.append(text[start:].strip())
+    return [p for p in parts if p]
+
+
+def _python_unpacked(node: Node, src: bytes) -> list[tuple[str, Node]]:
+    """`a, b = Foo(), make()`: each name with the value it takes, when both sides list as many items."""
+    left, right = _field(node, "left"), _field(node, "right")
+    if node.type != "assignment" or left is None or right is None \
+            or left.type not in ("pattern_list", "tuple_pattern") or right.type not in ("expression_list", "tuple"):
+        return []
+    names, values = left.named_children, right.named_children
+    if len(names) != len(values) or any(n.type != "identifier" for n in names):
+        return []
+    return [(_text(n, src), v) for n, v in zip(names, values)]
+
+
+def _note_assigned(assigned: dict[tuple[int | None, str], Node | None], key: int | None, node: Node,
+                   src: bytes) -> None:
+    """Record the values an untyped assignment gives its names (`x = v`, `a, b = v1, v2`, and `self.x = v` under
+    its class, as `self.x`); `None` is no value."""
+    left, right = _field(node, "left"), _field(node, "right")
+    if node.type != "assignment" or left is None or right is None:
+        return
+    target = _text(left, src)
+    head, _, attr = target.partition(".")
+    if left.type == "attribute" and head in ("self", "cls") and attr.isidentifier():
+        owner = _python_owner_class(node)
+        key, pairs = (owner.start_byte if owner is not None else None), [(f"self.{attr}", right)]
+    else:
+        pairs = [(target, right)] if left.type == "identifier" else _python_unpacked(node, src)
+    for name, value in pairs:
+        if value.type == "none":
+            continue
+        slot = (key, name)
+        seen = assigned.get(slot, value)
+        assigned[slot] = value if seen is not None and _text(seen, src) == _text(value, src) else None
+
+
+# Links of a receiver chain the parser spells for the builder: one more each recurses, so a generated `a.b.c...` of
+# hundreds of links would exhaust the stack and lose the whole file. A fluent builder runs to ~40 links.
+_PY_MAX_CHAIN_LINKS = 128
+# A name read through its assignment (`a2 = a1.nxt`) spends this many links of the same budget: a hop recurses ~3x
+# as deep as a link, and a generated run of hundreds of hops would otherwise restart the count at each one.
+_PY_ASSIGNMENT_HOP_LINKS = 3
+
+
+def _python_chain(value: Node, src: bytes, name_type: Callable[[Node, str, int], str | None],
+                  depth: int = 0) -> str | None:
+    """*value* as a receiver chain the edge builder evaluates (`typed_receiver_chains`): a typed name, a class
+    constructed (`Foo(..)` is a Foo) or a function called (`make()`, typed by what it returns, in its own file);
+    None for anything else, or past `_PY_MAX_CHAIN_LINKS`. *name_type* types a name where it is read, at *depth*."""
+    if depth > _PY_MAX_CHAIN_LINKS:
+        return None
+    while value.type in ("await", "parenthesized_expression") and value.named_children:
+        value = value.named_children[0]
+    if value.type in ("identifier", "attribute"):
+        name = _text(value, src)
+        if name in ("self", "cls"):
+            return "self"
+        typ = name_type(value, name, depth)
+        if typ:
+            return typ.removeprefix("=") if not typ.startswith(FIXTURE_MARK) else None
+    if value.type == "attribute":   # `self.a.b`, `User.objects`: each attribute's type on what precedes it
+        head = _python_member_head(_field(value, "object"), src, name_type, depth + 1)
+        return f"{head}.{_text(_field(value, 'attribute'), src)}" if head else None
+    fn = _field(value, "function") if value.type == "call" else None
+    if fn is not None and fn.type == "identifier":
+        name = _text(fn, src)
+        if name in _BUILTIN_GLOBALS["python"]:
+            return None   # `super().f()`, `dict()`: no repo function's return
+        return "self" if name == "cls" else name if name[:1].isupper() else f"{name}()"
+    if fn is not None and fn.type == "attribute":   # `obj.make()`, `Foo.create()`: the method's return type
+        head = _python_member_head(_field(fn, "object"), src, name_type, depth + 1)
+        return f"{head}.{_text(_field(fn, 'attribute'), src)}()" if head else None
+    return None
+
+
+def _python_member_head(obj: Node, src: bytes, name_type: Callable[[Node, str, int], str | None],
+                        depth: int = 0) -> str | None:
+    """The chain `obj.<member>` continues: *obj*'s own, else a class the file names (`Foo.create()`, `User.objects`)."""
+    head = _python_chain(obj, src, name_type, depth)
+    if head is None and obj.type == "identifier" and _text(obj, src)[:1].isupper():
+        return _text(obj, src)
+    return head
+
+
+def _as_type(chain: str | None) -> str | None:
+    """A chain as a type-table value: a bare class name as itself, anything longer marked `=`."""
+    return chain if not chain or (chain.isidentifier() and chain != "self") else f"={chain}"
+
+
+def _python_unpacked_call(node: Node, src: bytes) -> tuple[list[str], str] | None:
+    """`a, b = make(...)` (or awaited): the names, and the bare function whose returned tuple they unpack."""
+    left, right = _field(node, "left"), _field(node, "right")
+    if node.type != "assignment" or left is None or right is None or left.type not in ("pattern_list", "tuple_pattern"):
+        return None
+    called = _python_called_name(right, src)
+    names = left.named_children
+    if called is None or any(n.type != "identifier" for n in names):
+        return None
+    return [_text(n, src) for n in names], called
+
+
+def _python_tuple_return(node: Node, src: bytes) -> list[str]:
+    """`def f() -> tuple[Foo, dict]`: the class each item names (`dict` too: no repo type matches it)."""
+    fn = _field(node, "definition") if node.type == "decorated_definition" else node
+    ann = _field(fn, "return_type")
+    head, _, args = _text(ann, src).strip().strip("'\"").partition("[") if ann is not None else ("", "", "")
+    if head.rsplit(".", 1)[-1] not in ("tuple", "Tuple") or not args.endswith("]"):
+        return []
+    items = _split_type_args(args[:-1])
+    return [] if "..." in items else [_annotated_type(item) for item in items]
+
+
+def _python_constructed(value: Node, src: bytes) -> str | None:
+    """`Foo(...)`, `mod.Foo(...)`: the class a value constructs (a capitalised callee), else None."""
+    fn = _field(value, "function") if value.type == "call" else None
+    called = _text(fn, src).rsplit(".", 1)[-1] if fn is not None and fn.type in ("identifier", "attribute") else ""
+    return called if called[:1].isupper() else None
+
+
+def _python_called_name(value: Node, src: bytes) -> str | None:
+    """`make(...)`, `await make(...)`: the bare function a value calls, else None."""
+    if value.type == "await" and value.named_children:
+        value = value.named_children[0]
+    fn = _field(value, "function") if value.type == "call" else None
+    return _text(fn, src) if fn is not None and fn.type == "identifier" else None
+
+
+def _python_loop_types(node: Node, src: bytes, key: int | None,
+                       scopes: dict[int | None, dict[str, str]]) -> list[tuple[str, str]]:
+    """The names a `for` (or a comprehension's `for`) binds, each with its type when the iterable is a typed
+    container: `for x in xs`, `for k, v in d.items()`, `.values()`, `.keys()`, `for i, x in enumerate(xs)`."""
+    left, right = _field(node, "left"), _field(node, "right")
+    if left is None or right is None:
+        return []
+    iterable, view = right, ""
+    fn = _field(right, "function") if right.type == "call" else None
+    args = _field(right, "arguments") if fn is not None else None
+    if fn is not None and fn.type == "identifier" and _text(fn, src) == "enumerate" and args is not None \
+            and args.named_children:
+        iterable, view = args.named_children[0], "enumerate"
+    elif fn is not None and fn.type == "attribute" and args is not None and not args.named_children:
+        view = _text(_field(fn, "attribute"), src)
+        iterable = _field(fn, "object")
+    if iterable.type not in ("identifier", "attribute"):
+        return []
+    name = _text(iterable, src)
+    if iterable.type == "attribute" and name.split(".", 1)[0] not in ("self", "cls"):
+        return []
+    lookup = (_python_owner_class(node),) if iterable.type == "attribute" else ()
+    tables = [scopes.get(c.start_byte if c is not None else None, {}) for c in lookup] or \
+        [scopes.get(k, {}) for k in _python_enclosing_keys(node, key)]
+    # A class-level `xs: list[Foo]` is keyed `xs`, a method's `self.xs: list[Foo]` `self.xs`.
+    names = (name, name.partition(".")[2]) if iterable.type == "attribute" else (name,)
+    element = next((t[n + _ELEMENT] for t in tables for n in names if n + _ELEMENT in t), None)
+    value = next((t[n + _VALUE] for t in tables for n in names if n + _VALUE in t), None)
+    if view == "items" and left.type in ("pattern_list", "tuple_pattern") and len(left.named_children) == 2:
+        pairs = zip(left.named_children, (element, value))
+    elif view in ("", "keys", "values") and left.type == "identifier":
+        pairs = [(left, value if view == "values" else element)]
+    elif view == "enumerate" and left.type in ("pattern_list", "tuple_pattern") and len(left.named_children) == 2:
+        pairs = [(left.named_children[1], element)]
+    else:
+        return []
+    return [(_text(n, src), t) for n, t in pairs if t and n.type == "identifier"]
+
+
+def _python_enclosing_keys(node: Node, key: int | None) -> list[int | None]:
+    """*key*, then each enclosing function's scope key outwards, then the module's (None)."""
+    keys: list[int | None] = [key]
+    scope = node.parent
+    while scope is not None:
+        if scope.type in _PY_SCOPE_TYPES and scope.start_byte != key:
+            keys.append(scope.start_byte)
+        scope = scope.parent
+    return [*keys, None] if key is not None else keys
+
+
+def _python_outer_names(fn: Node, src: bytes) -> frozenset[str]:
+    """The names *fn* declares `global` / `nonlocal`: the outer scope's even where fn rebinds them, never a shadow
+    of the module's binding."""
+    names: set[str] = set()
+    stack = list(fn.named_children)
+    while stack:
+        node = stack.pop()
+        if node.type in _VALUE_SCOPE_TYPES or node.type == "class_definition":
+            continue
+        if node.type in ("global_statement", "nonlocal_statement"):
+            names.update(_text(c, src) for c in node.named_children if c.type == "identifier")
+            continue
+        stack.extend(node.named_children)
+    return frozenset(names)
+
+
+def _python_owner_class(node: Node) -> Node | None:
+    """The class whose `self` a method's `self.x` is: the nearest enclosing class definition."""
+    scope = node.parent
+    while scope is not None and scope.type != "class_definition":
+        scope = scope.parent
+    return scope
+
+
+def _python_helper_call(node: Node, src: bytes) -> tuple[str, str] | None:
+    """`x = make()` (no annotation, a bare function name called): ("x", "make"), typed later by what the
+    file's own `make` returns."""
+    left, right = _field(node, "left"), _field(node, "right")
+    if node.type != "assignment" or _field(node, "type") is not None or left is None or right is None:
+        return None
+    if right.type == "await":
+        right = right.named_children[0] if right.named_children else None
+    fn = _field(right, "function") if right is not None and right.type == "call" else None
+    if left.type != "identifier" or fn is None or fn.type != "identifier":
+        return None
+    return _text(left, src), _text(fn, src)
+
+
+def _python_module_functions(root: Node, src: bytes) -> dict[str, Node]:
+    """The file's top-level functions by name; a name defined twice is left out (which one runs is unclear)."""
+    found: dict[str, list[Node]] = {}
+    for child in root.named_children:
+        fn = _field(child, "definition") if child.type == "decorated_definition" else child
+        if fn is not None and fn.type == "function_definition" and (name := _field(fn, "name")) is not None:
+            found.setdefault(_text(name, src), []).append(child)
+    return {name: nodes[0] for name, nodes in found.items() if len(nodes) == 1}
+
+
+_GENERATOR_TYPES = frozenset({"Generator", "Iterator", "AsyncGenerator", "AsyncIterator", "Iterable"})
+
+
+def _python_return_type(node: Node, scopes: dict[int | None, dict[str, str]], src: bytes) -> str | None:
+    """What a top-level function returns: its annotation, else the one type every `return x` (a name its
+    own bindings type, or `Foo(...)`) gives; a pytest fixture's `yield x` counts as a return. Two types, a
+    bare `return`, or anything else returned: no type.
+
+    shortcut: one level only, a returned name bound by another helper call (`c = g(); return c`) is not
+    followed; follow it if helper chains turn out common in test suites."""
+    fn = _field(node, "definition") if node.type == "decorated_definition" else node
+    ann = _field(fn, "return_type")
+    if ann is not None:
+        text = _text(ann, src).strip()
+        head = text.split("[", 1)[0].rsplit(".", 1)[-1]
+        if head in _GENERATOR_TYPES and "[" in text:
+            text = text.split("[", 1)[1].split(",", 1)[0].rstrip("]")
+        return _annotated_type(text) or None
+    own = scopes.get(fn.start_byte, {})
+    types: set[str | None] = set()
+    stack = list(fn.named_children)
+    while stack:
+        cur = stack.pop()
+        if cur.type in _PY_SCOPE_TYPES or cur.type == "class_definition":
+            continue  # a nested function's or class's returns are its own
+        if cur.type in ("return_statement", "yield"):
+            value = cur.named_children[0] if cur.named_children else None
+            if value is not None and value.type == "identifier":
+                types.add(own.get(_text(value, src)))
+            elif value is not None and value.type == "call" and (callee := _field(value, "function")) is not None \
+                    and callee.type in ("identifier", "attribute") and _text(callee, src).rsplit(".", 1)[-1][:1].isupper():
+                types.add(_text(callee, src).rsplit(".", 1)[-1])
+            else:
+                types.add(None)
+            continue
+        stack.extend(cur.named_children)
+    return next(iter(types)) if len(types) == 1 else None
+
+
+_FIXTURE_DECORATORS = frozenset({"pytest.fixture", "fixture", "pytest_asyncio.fixture"})
+_PY_PROPERTY_DECORATORS = frozenset({"property", "cached_property", "functools.cached_property"})
+
+
+def _decorators(definition: Node, src: bytes) -> list[str]:
+    """`@pytest.fixture(scope="module")` -> "pytest.fixture": the names a decorated definition carries."""
+    wrapper = definition.parent if definition.parent is not None and definition.parent.type == "decorated_definition" \
+        else definition
+    return [_text(d, src).lstrip("@").split("(", 1)[0].strip() for d in wrapper.named_children if d.type == "decorator"]
+
+
+def _pytest_injected(fn: Node, src: bytes) -> bool:
+    """Whether pytest calls *fn* with fixtures: a `test*` function or method, or a fixture itself."""
+    name = _field(fn, "name")
+    return (name is not None and _text(name, src).startswith("test")) or bool(
+        _FIXTURE_DECORATORS & set(_decorators(fn, src)))
+
+
+def _python_fixture_names(root: Node, src: bytes) -> list[tuple[str, Node]]:
+    """The file's top-level `@pytest.fixture` / `@fixture` functions, by the name a test parameter uses (a test
+    class's own fixtures: _python_class_fixture).
+
+    shortcut: the function's name is the fixture's name, so `@pytest.fixture(name="svc")` is missed, and a
+    `@pytest.mark.parametrize("svc", ...)` that overrides the fixture is not seen; read the decorator's
+    arguments if either shows up as a wrong typed edge."""
+    return [(name, child) for child in root.named_children if (name := _fixture_name(child, src))]
+
+
+def _fixture_name(definition: Node, src: bytes) -> str | None:
+    """A `@pytest.fixture`-decorated function's name, for a decorated definition node; else None."""
+    fn = _field(definition, "definition") if definition.type == "decorated_definition" else None
+    if fn is None or fn.type != "function_definition" or not _FIXTURE_DECORATORS & set(_decorators(fn, src)):
+        return None
+    return _text(_field(fn, "name"), src)
+
+
+def _python_class_fixture(cls: Node | None, name: str, src: bytes) -> Node | None:
+    """The fixture *name* a test class defines itself, which overrides a module or conftest.py one of that name
+    for the class's tests (`class TestX: @pytest.fixture def svc(self): return ServiceB()`)."""
+    body = _field(cls, "body") if cls is not None else None
+    return next((child for child in (body.named_children if body is not None else ())
+                 if _fixture_name(child, src) == name), None)
+
+
+def _python_self_alias(node: Node, src: bytes) -> tuple[str, str] | None:
+    """`self.x = y` (no annotation): ("self.x", "y"), typed later by what `y` is in that function."""
+    left, right = _field(node, "left"), _field(node, "right")
+    if node.type != "assignment" or _field(node, "type") is not None or left is None or right is None:
+        return None
+    if left.type != "attribute" or right.type != "identifier":
+        return None
+    key = _text(left, src)
+    head, _, attr = key.partition(".")
+    return (key, _text(right, src)) if head in ("self", "cls") and attr and "." not in attr else None
+
+
+# Nodes that bind names of their own (Python comprehensions too: their targets do not leak).
+_VALUE_SCOPE_TYPES = frozenset({
+    "function_definition", "lambda", "list_comprehension", "dictionary_comprehension",
+    "set_comprehension", "generator_expression", *_TS_SCOPE_TYPES,
+})
 # A binding site, and the field holding what it binds.
-_BINDING_FIELDS = {"variable_declarator": "name", "for_in_statement": "left", "catch_clause": "parameter"}
-_NO_BINDING_TYPES = frozenset({"member_expression", "subscript_expression"})
+_BINDING_FIELDS = {
+    "assignment": "left", "augmented_assignment": "left", "for_statement": "left", "for_in_clause": "left",
+    "named_expression": "name", "variable_declarator": "name", "for_in_statement": "left",
+    "catch_clause": "parameter",
+}
+_NO_BINDING_TYPES = frozenset({"attribute", "subscript", "member_expression", "subscript_expression"})
 # `const run = () => …` is a function block of its own: its name shadows nothing.
 _FUNCTION_VALUES = frozenset({"arrow_function", "function_expression", "function", "generator_function"})
 # Every node that binds a name: a superset of what any one scope binds, read in one query.
 _JS_BINDING_SITES = ("formal_parameters", "variable_declarator", "for_in_statement", "catch_clause", "arrow_function")
 # Grammars (`import_handler_name`) whose bare calls the shadow guard checks.
-_SHADOW_GUARDED = frozenset({"js"})
+_SHADOW_GUARDED = frozenset({"js", "python"})
 
 
 def _bound_names(target: Node | None, src: bytes) -> Iterator[str]:
-    """The names a binding target introduces: `x`, `{ a, b: c }`, `[d, ...e]`, `c = 1`, `x?: T`."""
+    """The names a binding target introduces: `x`, `x, (y, z)`, `{ a, b: c }`, `[d, ...e]`, `*args`, `c=1`."""
     if target is None or target.type in _NO_BINDING_TYPES:
         return
     if target.type in ("identifier", "shorthand_property_identifier_pattern"):
         yield _text(target, src)
     elif target.type == "pair_pattern":
         yield from _bound_names(_field(target, "value"), src)
+    elif target.type in ("default_parameter", "typed_default_parameter"):
+        yield from _bound_names(_field(target, "name"), src)
     elif target.type in ("assignment_pattern", "object_assignment_pattern"):
         yield from _bound_names(_field(target, "left"), src)
     elif target.type in ("required_parameter", "optional_parameter"):
         yield from _bound_names(_field(target, "pattern"), src)
+    elif target.type == "typed_parameter":
+        yield from _bound_names(target.named_children[0] if target.named_children else None, src)
     else:
         for child in target.named_children:
-            if child.type != "type_annotation":
+            if child.type not in ("type", "type_annotation"):
                 yield from _bound_names(child, src)
 
 
 def _scope_names(fn: Node, src: bytes, blocks: frozenset[str] = frozenset()) -> frozenset[str]:
-    """The names *fn* binds itself (the shadow guard): its parameters, locals, loop and `catch` variables and
-    destructured names. Not among them: a nested function declaration (naming it is naming a real function),
-    and what a nested block of *blocks* (`_BLOCK_SCOPES`) binds for itself."""
+    """The names *fn* binds itself (the shadow guard): its parameters, locals, loop, `with`,
+    `except`/`catch` and comprehension targets, and destructured names. Not among them: a nested
+    `def` (naming it is naming a real function), a name declared `global`/`nonlocal` (it is the
+    outer scope's; rebinding it still binds it here), a nested class's body names (class
+    scope, unseen by the class's own methods), and what a nested block of *blocks* (the grammar's
+    `_BLOCK_SCOPES`) binds for itself."""
     params = set(_bound_names(_field(fn, "parameters"), src)) | set(_bound_names(_field(fn, "parameter"), src))
     return frozenset(params | _bound_in(fn.named_children, src, blocks))
 
 
 def _bound_in(nodes: list[Node], src: bytes, blocks: frozenset[str] = frozenset()) -> set[str]:
-    """The names *nodes* bind in the scope that holds them, nested scopes left out. In a nested block of
-    *blocks*, a `let`/`const`, a `for (const x of …)` variable and a `catch (e)` bind only there (`_block_names`,
-    asked on the way up); a `var` there still binds the whole function, and so does a function value it holds
-    (only at the function's own level is `const run = () => …` a function block of its own, shadowing
-    nothing)."""
+    """The names *nodes* bind in the scope that holds them, nested scopes and class bodies left out. In a
+    nested block of *blocks* (JS/TS), a `let`/`const`, a `for (const x of …)` variable and a `catch (e)` bind
+    only there (`_block_names`, asked on the way up); a `var` there still binds the whole function, and so
+    does a function value it holds (only at the function's own level is `const run = () => …` a function
+    block of its own, shadowing nothing)."""
     names: set[str] = set()
     top = {(node.start_byte, node.type) for node in nodes}  # a function's own body block is its scope, not nested
     stack = [(node, False) for node in nodes]
     while stack:
         node, in_block = stack.pop()
-        if node.type in _VALUE_SCOPE_TYPES:
+        if node.type in _VALUE_SCOPE_TYPES or node.type == "class_definition":
             continue  # its names are its own, collected when a value inside it asks
         if in_block and node.type == "lexical_declaration":
             continue
         own = node.type in blocks and _binds_for_itself(node, src)
-        if node.type in _BINDING_FIELDS and not own and not (
+        if node.type == "as_pattern_target":
+            names.update(_bound_names(node, src))
+        elif node.type in _BINDING_FIELDS and not own and not (
                 not in_block and node.type == "variable_declarator"
                 and getattr(_field(node, "value"), "type", None) in _FUNCTION_VALUES):
             names.update(_bound_names(_field(node, _BINDING_FIELDS[node.type]), src))
@@ -1136,7 +1682,6 @@ def _bound_in(nodes: list[Node], src: bytes, blocks: frozenset[str] = frozenset(
         stack.extend((child, nested) for child in node.named_children
                      if held is None or (child.start_byte, child.type) != (held.start_byte, held.type))
     return names
-
 
 # Per grammar (`import_handler_name`), the nodes a `let`/`const` inside binds only for: a nested `{ }`, a
 # `for`/`for…of` header with its body, a `catch` clause (its parameter too) and a `switch` body.
@@ -1168,6 +1713,17 @@ def _block_names(block: Node, src: bytes) -> frozenset[str]:
                      for d in decl.named_children if d.type == "variable_declarator"
                      for name in _bound_names(_field(d, "name"), src))
 
+
+def _class_bindings(cls: Node, src: bytes) -> dict[str, int]:
+    """Name -> where the first class-body statement binding it ends. A class body runs top to bottom, so
+    a use reads the class's name only after that statement: `x = x` and `b = property(b)` read the
+    outer `x` and the `def b` above."""
+    body = _field(cls, "body")
+    first: dict[str, int] = {}
+    for stmt in body.named_children if body is not None else ():
+        for name in _bound_in([stmt], src):
+            first.setdefault(name, stmt.end_byte)
+    return first
 
 
 def _collect_type_table_java(root: Node, src: bytes, table: dict[str, str], cfg: LanguageConfig) -> None:
@@ -1449,6 +2005,14 @@ class _Walker:
         self._all_bound: frozenset[str] | None = None
         self._exported_names: frozenset[str] | None = None
         self._root: Node | None = None
+        self._class_names: dict[int, dict[str, int]] = {}
+        # Python: each scope's own typed bindings, its untyped `x = <value>` (None: two values), and the chains
+        # already read off them.
+        self._py_scopes: dict[int | None, dict[str, str]] | None = None
+        self._py_assigned: dict[tuple[int | None, str], Node | None] = {}
+        self._py_chains: dict[tuple[int | None, str], str | None] = {}
+        self._py_function_names: frozenset[str] = frozenset()
+        self._py_classes: dict[str, Node] | None = None
 
     # -- symbols --------------------------------------------------------
 
@@ -1480,6 +2044,8 @@ class _Walker:
         macros = languages.MACRO_TABLE_HANDLERS.get(self.cfg.macro_table_handler_name)
         if macros:
             self.out.macros_dropped = macros(root, self.src, self.out.macro_table, self.cfg)
+        if self.cfg.type_table_handler_name == "python":
+            self._python_return_table(root)
         self._scope(root, 0, len(self.src), (), None, container_kind=None)
         return self.out
 
@@ -2162,6 +2728,8 @@ class _Walker:
             chained = receiver.endswith(")") and qualifier != receiver
             return own(node, self.src, self._scope_tables, self.cfg,
                        None if chained else self.out.type_table.get(receiver))
+        if self.cfg.type_table_handler_name == "python":  # its own chains too (`a.f().g()`)
+            return self._python_receiver_type(node, receiver, qualifier)
         if receiver.endswith(")") and qualifier != receiver:
             # `a.f().g()` keeps only `f()`, the key of a bare `function f()`'s return type;
             # the builder evaluates the whole chain.
@@ -2177,6 +2745,135 @@ class _Walker:
         # `=expr` initializers are evaluated by the builder, which can see other files.
         return found if found and not found.startswith("=") and not found.endswith("[]") else None
 
+    def _python_receiver_type(self, node: Node, receiver: str, qualifier: str | None, depth: int = 0) -> str | None:
+        """`self.x` from its own class's `self.x = Foo()` or class-level `x: Foo` (then a same-file base's); a
+        bare `x` from its own functions' bindings, then the module's, unless a function on the way binds `x`
+        untyped (a parameter or local shadows the module's `x`). A longer chain is not typed: its last name
+        says nothing about it."""
+        scopes = self._python_scopes(node)
+        if receiver.endswith(")"):  # `make().run()`, `Foo(x).run()`: what the call gives
+            return self._python_receiver_chain(node, depth)
+        if qualifier and qualifier != receiver:
+            head, _, attr = qualifier.partition(".")
+            if head not in ("self", "cls") or "." in attr:
+                return self._python_receiver_chain(node, depth)   # `self.a.b.run()`, `x.a.run()`, `User.objects.get()`
+            for cls in self._python_class_chain(_python_owner_class(node)):
+                own = scopes.get(cls.start_byte, {})
+                if own.get(qualifier) or own.get(attr):
+                    return own.get(qualifier) or own.get(attr)
+            # A base elsewhere: by a typed parameter of its name, else the builder walks the bases (`=self.x`).
+            return scopes.get(None, {}).get(qualifier) or self._python_receiver_chain(node, depth)
+        module = scopes.get(None, {}).get(receiver) or self._python_assigned_type(None, receiver, depth)
+        shadowed = False
+        if receiver in self._py_function_names or module:  # else nothing binds it: skip the ancestor walk
+            scope = node.parent
+            while scope is not None and not shadowed:
+                if scope.type in _PY_SCOPE_TYPES:
+                    if receiver in scopes.get(scope.start_byte, {}):
+                        return scopes[scope.start_byte][receiver]
+                    assigned = self._python_assigned_type(scope.start_byte, receiver, depth)
+                    if assigned:   # `conn = make_conn()`: what make_conn returns, wherever it is defined
+                        return assigned
+                    # `def f(client): client.get()` beside a module-level `client = Client()`: the argument's.
+                    shadowed = (bool(module) and receiver in self._names_bound_by(scope)
+                                and receiver not in _python_outer_names(scope, self.src))  # `global x`
+                scope = scope.parent
+        if module and not shadowed:
+            return module
+        # An untyped parameter of a test or a fixture: pytest hands it the fixture of its name, which may
+        # live in a conftest.py, so only the builder can type it.
+        fn = node.parent
+        while fn is not None and fn.type != "function_definition":
+            fn = fn.parent
+        if fn is None or not _pytest_injected(fn, self.src):
+            return None
+        params = _field(fn, "parameters")
+        named = {_text(c, self.src) for c in params.named_children if c.type == "identifier"} if params else set()
+        if receiver not in named:
+            return None
+        # A fixture of that name in the test's own class overrides the module's and every conftest.py's.
+        own = _python_class_fixture(_python_owner_class(fn), receiver, self.src)
+        if own is not None:
+            return _python_return_type(own, scopes, self.src)
+        return f"{FIXTURE_MARK}{receiver}"
+
+    def _python_name_type(self, node: Node, name: str, depth: int = 0) -> str | None:
+        """*name*'s type (`x`, `self.x`) where *node* reads it, as a receiver so written would be typed."""
+        return self._python_receiver_type(node, name.rpartition(".")[2], name, depth)
+
+    def _python_receiver_chain(self, node: Node, depth: int = 0) -> str | None:
+        """The type (or `=chain`) of a call's receiver expression, when *node* is a call `<receiver>.f()`."""
+        fn = _field(node, "function") if node.type == "call" else None
+        obj = _field(fn, "object") if fn is not None and fn.type == "attribute" else None
+        return _as_type(_python_chain(obj, self.src, self._python_name_type, depth + 1)) if obj is not None else None
+
+    def _python_assigned_type(self, key: int | None, name: str, depth: int = 0) -> str | None:
+        """The type (or `=chain`) of *name*'s one untyped value in scope *key*; None for none or a cycle."""
+        slot = (key, name)
+        if slot not in self._py_chains:
+            value = self._py_assigned.get(slot)
+            self._py_chains[slot] = None   # `x = x.next()` reads itself: no type
+            if value is not None:
+                self._py_chains[slot] = _as_type(
+                    _python_chain(value, self.src, self._python_name_type, depth + _PY_ASSIGNMENT_HOP_LINKS))
+        return self._py_chains[slot]
+
+    def _python_return_table(self, root: Node) -> None:
+        """`f()` and `Cls.m()` keys: what each top-level function and each method returns, for a chain `=f()` or
+        `=Cls.m()` the builder evaluates in a file calling it (two levels and more: a returned `g()` is itself
+        such a chain)."""
+        for name, fn in _python_module_functions(root, self.src).items():
+            typ = self._python_returned(_field(fn, "definition") if fn.type == "decorated_definition" else fn)
+            if typ:
+                self.out.type_table.setdefault(f"{name}()", typ)
+        scopes = self._python_scopes(root)
+        for cls in _nodes_of_types(root, self.cfg, ("class_definition",)):
+            owner, body = _field(cls, "name"), _field(cls, "body")
+            if owner is None or body is None:
+                continue
+            owner_name = _text(owner, self.src)
+            for child in body.named_children:
+                fn = _field(child, "definition") if child.type == "decorated_definition" else child
+                name = _field(fn, "name") if fn is not None and fn.type == "function_definition" else None
+                typ = self._python_returned(fn) if name is not None else None
+                if typ:
+                    self.out.type_table.setdefault(f"{owner_name}.{_text(name, self.src)}()", typ)
+                    if _PY_PROPERTY_DECORATORS & set(_decorators(fn, self.src)):   # `obj.prop` reads what it returns
+                        self.out.type_table.setdefault(f"{owner_name}.{_text(name, self.src)}", typ)
+            # `Cls.attr` keys: `self.attr = Foo()` / `attr: Foo` in its body, else the chain one value spells.
+            assigned = (name for key, name in self._py_assigned if key == cls.start_byte)
+            for name in (*scopes.get(cls.start_byte, {}), *assigned):
+                attr = name.removeprefix("self.")
+                typ = scopes.get(cls.start_byte, {}).get(name) or self._python_assigned_type(cls.start_byte, name)
+                if attr.isidentifier() and typ:
+                    self.out.type_table.setdefault(f"{owner_name}.{attr}", typ)
+
+    def _python_returned(self, fn: Node) -> str | None:
+        """What calling *fn* gives: its annotation's class, else the one type every `return v` agrees on (a `None`
+        returned is no disagreement); none for a generator or a value the walker cannot type."""
+        ann = _field(fn, "return_type")
+        if ann is not None:
+            text = _text(ann, self.src).strip()
+            if text.split("[", 1)[0].rsplit(".", 1)[-1] in _GENERATOR_TYPES:
+                return None
+            typ = _annotated_type(text)
+            return "=self" if typ == "Self" else typ or None
+        found: set[str | None] = set()
+        stack = list(fn.named_children)
+        while stack:
+            cur = stack.pop()
+            if cur.type in _PY_SCOPE_TYPES or cur.type == "class_definition":
+                continue
+            if cur.type == "yield":
+                return None
+            if cur.type == "return_statement":
+                value = cur.named_children[0] if cur.named_children else None
+                if value is not None and value.type != "none":
+                    found.add(_as_type(_python_chain(value, self.src, self._python_name_type)))
+                continue
+            stack.extend(cur.named_children)
+        return found.pop() if len(found) == 1 else None
+
     def _names_bound_by(self, scope: Node) -> frozenset[str]:
         """*scope*'s own names, cached: a function's (`_scope_names`) or a block's (`_block_names`)."""
         key = (scope.start_byte, scope.type)
@@ -2186,6 +2883,39 @@ class _Walker:
                                                  if scope.type in _VALUE_SCOPE_TYPES else _block_names(scope, self.src))
         return names
 
+    def _python_class_chain(self, cls: Node | None) -> list[Node]:
+        """*cls*, then the same-file classes it names as bases, nearest first (each once)."""
+        if cls is None:
+            return []
+        if self._py_classes is None:
+            root = cls
+            while root.parent is not None:
+                root = root.parent
+            self._py_classes = {_text(_field(c, "name"), self.src): c
+                                for c in _nodes_of_types(root, self.cfg, ("class_definition",))
+                                if _field(c, "name") is not None}
+        chain, queue = [], [cls]
+        while queue:
+            current = queue.pop(0)
+            if any(current.start_byte == seen.start_byte for seen in chain):
+                continue
+            chain.append(current)
+            bases = _field(current, "superclasses")
+            queue += [self._py_classes[name] for b in (bases.named_children if bases is not None else ())
+                      if (name := _text(b, self.src)) in self._py_classes]
+        return chain
+
+    def _python_scopes(self, node: Node) -> dict[int | None, dict[str, str]]:
+        if self._py_scopes is None:
+            root = node
+            while root.parent is not None:
+                root = root.parent
+            self._py_scopes = _python_scoped_bindings(root, self.src, self.cfg, self._py_assigned)
+            self._py_function_names = frozenset().union(
+                *(table for key, table in self._py_scopes.items() if key is not None),
+                (name for key, name in self._py_assigned if key is not None))
+        return self._py_scopes
+
     def _bound_anywhere(self, node: Node) -> frozenset[str]:
         """Every name some function of the file binds: a name outside it is shadowed nowhere, which
         spares the ancestor walk (quadratic on `f(f(f(...)))` chains thousands deep)."""
@@ -2193,8 +2923,9 @@ class _Walker:
             root = node
             while root.parent is not None:
                 root = root.parent
+            types = _PY_BINDING_SITES if self.cfg.import_handler_name == "python" else _JS_BINDING_SITES
             names: set[str] = set()
-            for site in _nodes_of_types(root, self.cfg, _JS_BINDING_SITES):
+            for site in _nodes_of_types(root, self.cfg, types):
                 if site.type in _BINDING_FIELDS:
                     # A function value too: in a nested block it shadows there (a superset only costs the walk).
                     names.update(_bound_names(_field(site, _BINDING_FIELDS[site.type]), self.src))
@@ -2209,14 +2940,22 @@ class _Walker:
         """Whether a scope around *node* binds *name* itself, so it names no module function."""
         if name not in self._bound_anywhere(node):
             return False
-        scope = node.parent
+        scope, in_function = node.parent, False
         while scope is not None:
-            # A function's own body block is the function's scope, not a nested block.
-            in_scope = scope.type in _VALUE_SCOPE_TYPES or (
-                scope.type in self._block_scopes and scope.parent is not None
-                and scope.parent.type not in _VALUE_SCOPE_TYPES)
-            if in_scope and name in self._names_bound_by(scope):
-                return True
+            if scope.type == "class_definition":
+                # A class body's names are seen from the body itself, never from a function inside it.
+                if not in_function:
+                    bindings = self._class_names.get(scope.start_byte)
+                    if bindings is None:
+                        bindings = self._class_names[scope.start_byte] = _class_bindings(scope, self.src)
+                    if bindings.get(name, node.start_byte + 1) <= node.start_byte:
+                        return True
+            elif scope.type in _VALUE_SCOPE_TYPES or (
+                    scope.type in self._block_scopes and scope.parent is not None
+                    and scope.parent.type not in _VALUE_SCOPE_TYPES):  # a function's own body is the function's
+                in_function = in_function or scope.type in _VALUE_SCOPE_TYPES
+                if name in self._names_bound_by(scope):
+                    return True
             scope = scope.parent
         return False
 

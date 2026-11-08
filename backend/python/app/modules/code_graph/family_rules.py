@@ -42,6 +42,20 @@ class FamilyRules:
     # Whether a top-level `field` (a JS/TS module-level value, `export const vec3 = makeNode()`) is no call
     # target by any rung (an import binding, `state.locator(x)`). A class field stays callable.
     top_level_fields_uncallable: bool = False
+    # Whether the file's own top-level definition can take a name back from an import binding: Python binds
+    # names in order and per function scope (a later `def time()`, an import local to another function). JS
+    # hoists declarations and a `require` assignment rebinds them, so there the import binding stands.
+    definition_rebinds_import: bool = False
+    # Whether an import written inside a definition is still the file's edge: a Python function-local
+    # `from m import f` binds `f` only in that function, but the file depends on m wherever the statement
+    # sits, as with a module-level import.
+    local_imports_are_the_files: bool = False
+    # Whether `from m import *` brings only m's literal `__all__`, else its names without a leading `_`
+    # (Python); elsewhere a star import's names are not filtered.
+    star_import_obeys_all: bool = False
+    # Whether a typed receiver's call may land on a field: TS/JS call function-valued fields; a Python
+    # field (a dependency-injector provider) is no callee.
+    typed_calls_reach_fields: bool = True
     self_receivers: frozenset[str] = frozenset({"self", "this"})
     super_receivers: frozenset[str] = frozenset({"super()", "super"})
     # Where a method declared outside its type's body is looked for: the type's
@@ -69,7 +83,9 @@ class FamilyRules:
     # receiver) is evaluated: the head's type, then each field's declared type and each method's return type.
     typed_receiver_chains: bool = False
     # Whether a receiver its parser left untyped takes a type from the file's table by bare name. Rust's
-    # parser already chose between a local binding and the file-wide table's guess.
+    # parser already chose between a local binding and the file-wide table's guess; Python's types a receiver
+    # from the bindings that reach it (the file-wide table typed `user.save()` with another function's
+    # `user = AnonymousUser()`).
     file_wide_receiver_types: bool = True
     # Files a bare name likely reaches when neither the file, its imports nor its
     # implicit scope define it, as INFERRED evidence: a C header's same-stem source.
@@ -118,6 +134,9 @@ class FamilyRules:
 
 _DEFAULT = FamilyRules()
 _RULES: dict[str, FamilyRules] = {
+    "py": FamilyRules(module_binding_is_the_module=True, definition_rebinds_import=True,
+                      local_imports_are_the_files=True, star_import_obeys_all=True, typed_calls_reach_fields=False,
+                      file_wide_receiver_types=False),
     "js": FamilyRules(lexical_module_scope=True, module_binding_is_the_module=True, module_may_be_callable=True,
                       top_level_fields_uncallable=True),
     "go": FamilyRules(bare_call_reaches_method="never", bare_names_from_imported_modules=False),

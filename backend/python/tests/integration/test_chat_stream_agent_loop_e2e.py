@@ -65,6 +65,9 @@ def _successful_stream_result(output: str) -> SimpleNamespace:
         cancelled=False,
         confidence=None,
         output=output,
+        needs_input=None,
+        end_event="agent_complete",
+        error_class=None,
     )
 
 
