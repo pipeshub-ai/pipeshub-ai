@@ -51,6 +51,7 @@ _REACH: dict[str, tuple[str, tuple[str, ...], str, bool]] = {
     PERSON_ENTITY_TYPE: (_C.ENTITY_RELATIONS.value, (_C.USERS.value,), "org", True),     # record_people writes record -> user, Slack user -> record
 }
 _EDGE_MOVE_BATCH = 5000
+_ORG = "orgId"          # a stored node's own field, as in entities.py
 
 
 def _refs_by_type(refs: list[dict[str, Any]], types: set[str] | frozenset[str]) -> dict[str, list[str]]:
@@ -87,7 +88,7 @@ class TaxonomyMixin(PgBase):
             v = _doc(r["v"])
             aliases = v["aliases"] if isinstance(v["aliases"], list) else []
             out.append({"entityId": r["id"], "name": _first(v["name"], v["departmentName"]) or r["id"], "entityType": TAXONOMY_ENTITY_TYPE_BY_COLLECTION[r["coll"]],
-                        "level": subcategory_level(r["coll"]), "aliases": [str(a) for a in aliases if a], "orgId": v["orgId"]})
+                        "level": subcategory_level(r["coll"]), "aliases": [str(a) for a in aliases if a], _ORG: v[_ORG]})
         return out
 
     async def get_record_taxonomy_links(self, record_keys: list[str], transaction: str | None = None, *, include_departments: bool = False) -> list[dict[str, Any]]:
@@ -196,7 +197,7 @@ class TaxonomyMixin(PgBase):
             raise ValueError("taxonomy node needs an id")
         org = current_org_id()
         doc = {k: v for k, v in _node(node, collection).items() if v is not None and k != "aliases"}
-        if doc.get("orgId") != org:       # a node of another org would sit in this org, unseen by its own
+        if doc.get(_ORG) != org:       # a node of another org would sit in this org, unseen by its own
             raise OrgMismatch("a taxonomy node names an org other than the ambient org")
         await self._q(lambda tx: tx.execute("""/* pipeshub:graph.create_taxonomy_node_if_absent */ INSERT INTO graph.nodes (org_id, coll, id, doc)
             VALUES ($1, $2, $3, $4::jsonb) ON CONFLICT (org_id, coll, id) DO NOTHING""", org, collection, doc["id"], _j(doc)), transaction, write=True)
