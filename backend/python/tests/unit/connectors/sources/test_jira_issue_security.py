@@ -1,5 +1,7 @@
 """Issue security decisions for Jira Cloud and Data Center team connectors."""
 
+from collections.abc import Awaitable, Callable
+
 import pytest
 
 from app.config.constants.arangodb import AccessRule, Connectors, OriginTypes
@@ -750,7 +752,7 @@ class TestAmbiguousNotFound:
 
 class TestPagingWithTotalOnly:
     @staticmethod
-    def _server(rows: int, *, total: bool, page_size: int = 100):
+    def _server(rows: int, *, total: bool, page_size: int = 100) -> tuple[Callable[[int], Awaitable[tuple[int, dict]]], list[int]]:
         calls: list[int] = []
 
         async def fetch(start: int) -> tuple[int, dict]:
