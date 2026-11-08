@@ -1,4 +1,3 @@
-# ruff: noqa: ANN401
 """The fence of a write never keeps a rewrite from finishing, and it is a value that every connector can compare.
 
 A virtual record shared by two connectors carries one `scopeFence`. It is a time taken before the graph was read, not a connector's generation
