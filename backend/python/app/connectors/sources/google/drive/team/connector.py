@@ -409,7 +409,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._drive_member_emails: dict[str, list[str]] = {}
         # Per shared drive, this run: its restrictions, and the people and groups that are members.
         self._drive_restrictions: dict[str, dict[str, bool]] = {}
-        self._drive_principals: dict[str, tuple[set[str], set[str], bool]] = {}
+        self._drive_principals: dict[str, tuple[set[str], set[str]]] = {}
+        self._group_people: dict[str, set[str] | None] = {}
+        self._warned_groups: set[tuple[str, str]] = set()
         self._account_domains: set[str] | None = None
         self._refreshed_folders: set[str] = set()
         self._group_members_cache: dict[str, set[str] | None] = {}
@@ -647,6 +649,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._drive_member_emails = {}
             self._drive_restrictions = {}
             self._drive_principals = {}
+            self._group_people = {}
+            self._warned_groups = set()
             self._account_domains = None
             self._refreshed_folders = set()
             self._group_members_cache = {}
@@ -1419,12 +1423,12 @@ class GoogleDriveTeamConnector(BaseConnector):
         """How a shared drive's restrictions narrow the grants written for it or an item in it, as
         (restrict a list of grants, whether a user's email may stay).
 
-        driveMembersOnly: only members of the drive read its items, whoever an item is shared with. A group that
-        is not a member is replaced by its members who are.
+        driveMembersOnly: only members of the drive read its items, whoever an item is shared with.
         domainUsersOnly: only people of the drive's domains read the drive or its items.
         Both limit access that already exists, so they apply to stored shares as well as new ones.
         The drive's own grants are its members, so driveMembersOnly leaves them alone.
-        A member group the directory cannot list leaves membership unknown, and unknown keeps the grant.
+        A group is kept whole only if every person in it passes; otherwise it is replaced by grants for the
+        people who do. When unsure (a group the directory cannot list), access is hidden, and a warning names it.
         """
         async def keep_all(perms: list[Permission]) -> list[Permission]:
             return perms
@@ -1438,14 +1442,15 @@ class GoogleDriveTeamConnector(BaseConnector):
         domain_only = restrictions["domainUsersOnly"]
         if not (members_only or domain_only):
             return keep_all, lambda _e: True
-        users, groups, membership_known = await self._drive_member_principals(drive_id) if members_only else (set(), set(), True)
+        users, groups = await self._drive_member_principals(drive_id) if members_only else (set(), set())
         domains = await self._workspace_domains() if domain_only else set()
+
+        def domain_ok(email: str) -> bool:
+            return not domain_only or email.rpartition("@")[2] in domains
 
         def email_ok(email: str) -> bool:
             email = email.lower()
-            if members_only and membership_known and email not in users:
-                return False
-            return not domain_only or email.rpartition("@")[2] in domains
+            return (not members_only or email in users) and domain_ok(email)
 
         async def restrict(perms: list[Permission]) -> list[Permission]:
             out: list[Permission] = []
@@ -1456,22 +1461,28 @@ class GoogleDriveTeamConnector(BaseConnector):
                         out.append(p)
                     continue
                 group = (p.external_id or "").lower()
-                # shortcut: a group is judged by its address, not by the domains of its members; upgrade by
-                # resolving the members of every group.
-                if domain_only and group.rpartition("@")[2] not in domains:
+                if not domain_ok(group):
                     continue
-                if not members_only or not membership_known or group in groups:
+                if not domain_only and group in groups:
+                    out.append(p)  # a member group: its people are members of the drive by definition
+                    continue
+                people = await self._group_member_emails(group)
+                if people is None:
+                    if (drive_id, group) not in self._warned_groups:
+                        self._warned_groups.add((drive_id, group))
+                        self.logger.warning(
+                            f"Shared drive {drive_id} is restricted and the members of {group} cannot be listed; "
+                            f"access through {group} is hidden until they can be"
+                        )
+                        await self._mark_drive_unsettled(drive_id)
+                    continue
+                # A member group's people are drive members whoever the directory lists them as.
+                passing = sorted(e for e in people if domain_ok(e) and (group in groups or not members_only or e in users))
+                if len(passing) == len(people):
                     out.append(p)
                     continue
-                members = await self._synced_group_members(group)
-                if members is None:
-                    self.logger.debug(f"Keeping the grant to {group}: its members cannot be listed")
-                    out.append(p)
-                    continue
-                # shortcut: these grants are as of this read, so a later change to the group reaches them only when the item is
-                # synced again; upgrade by granting through the group and intersecting at read time.
-                for email in sorted(members):
-                    if email_ok(email) and (email, p.type.value) not in seen:
+                for email in passing:
+                    if (email, p.type.value) not in seen:
                         seen.add((email, p.type.value))
                         out.append(Permission(email=email, type=p.type, entity_type=EntityType.USER))
             return out
@@ -1498,9 +1509,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._account_domains = found
         return self._account_domains
 
-    async def _drive_member_principals(self, drive_id: str) -> tuple[set[str], set[str], bool]:
-        """Emails of the people who are members of a shared drive, directly or through a member group, the
-        member groups, and whether every member group could be listed (if not, the people are not all known)."""
+    async def _drive_member_principals(self, drive_id: str) -> tuple[set[str], set[str]]:
+        """Emails of the people who are members of a shared drive, directly or through a member group, and of
+        the member groups. A member group the directory cannot list adds nobody, with a warning."""
         if drive_id not in self._drive_principals:
             users: set[str] = set()
             groups: set[str] = set()
@@ -1509,15 +1520,17 @@ class GoogleDriveTeamConnector(BaseConnector):
                     users.add(permission.email.lower())
                 elif permission.entity_type == EntityType.GROUP and permission.external_id:
                     groups.add(permission.external_id.lower())
-            known = True
             for group in sorted(groups):
                 members = await self._synced_group_members(group)
                 if members is None:
-                    known = False
-                    self.logger.info(f"Members of shared drive {drive_id} are not all known: {group} cannot be listed")
+                    self.logger.warning(
+                        f"Shared drive {drive_id} is restricted to its members and the members of {group} cannot be "
+                        f"listed; people who are members only through {group} lose their direct shares until they can be"
+                    )
+                    await self._mark_drive_unsettled(drive_id)
                     continue
                 users |= members
-            self._drive_principals[drive_id] = (users, groups, known)
+            self._drive_principals[drive_id] = (users, groups)
         return self._drive_principals[drive_id]
 
     async def _reconcile_drive_restrictions(self, drive: dict) -> None:
@@ -1531,14 +1544,21 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._drive_restrictions[drive_id] = self._restriction_flags(drive["restrictions"])
         now = await self._drive_restrictions_of(drive_id)
         key = f"{DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX}{drive_id}"
-        applied = self._restriction_flags(await self.drive_delta_sync_point.read_sync_point(key))
-        if now == applied:
+        stored = await self.drive_delta_sync_point.read_sync_point(key)
+        if now == self._restriction_flags(stored) and not (stored or {}).get("unsettled"):
             return
         for user in self.synced_users:
             await self.drive_delta_sync_point.delete_sync_point(
                 generate_record_sync_point_key(RecordType.DRIVE.value, "drives", f"{user.source_user_id}_{drive_id}")
             )
-        await self.drive_delta_sync_point.update_sync_point(key, now)
+        await self.drive_delta_sync_point.update_sync_point(key, {**now, "unsettled": False})
+
+    async def _mark_drive_unsettled(self, drive_id: str) -> None:
+        """Grants were written with a group the directory could not list hidden, and the change feed will not
+        report those items again once it can, so the next run lists the drive in full."""
+        await self.drive_delta_sync_point.update_sync_point(
+            f"{DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX}{drive_id}", {"unsettled": True}
+        )
 
     async def _create_and_sync_shared_drive_record_group(self, drive: Dict) -> None:
         """
@@ -2356,11 +2376,22 @@ class GoogleDriveTeamConnector(BaseConnector):
                 raise
             self.logger.info(f"The directory could not list the members of {group_email}: {e}")
             found = None
+            self._group_people[group_email] = None
         else:
             synced = await self._synced_user_emails()
             found = {email for m in members if (email := (m.get("email") or "").lower()) in synced}
+            self._group_people[group_email] = {
+                email for m in members
+                if str(m.get("type", "USER")).upper() != "GROUP" and (email := (m.get("email") or "").lower())
+            }
         self._group_members_cache[group_email] = found
         return found
+
+    async def _group_member_emails(self, group_email: str) -> set[str] | None:
+        """Everyone the directory lists in a group, nested groups included and synced or not (an outsider is
+        a member too); None when the directory cannot list it."""
+        await self._synced_group_members(group_email)
+        return self._group_people[group_email]
 
     async def _synced_user_emails(self) -> set[str]:
         """Emails of the active users this deployment syncs, the only ones whose syncs walk drives."""
