@@ -295,13 +295,14 @@ def _one_process(*, budget: int | None = 8, claim: bool = True) -> MagicMock:
     return c
 
 
-async def _drain(graph, recorder: _Recorder, *, bound: str | None = None, coordinator: MagicMock | None = None):
+async def _drain(graph, recorder: _Recorder, *, bound: str | None = None,
+                 coordinator: MagicMock | None = None) -> tuple[list[str], OrgContext | None]:
     """Run the drain detached as the startup does, or with ``bound`` bound as a finalizer does; its result and what is bound after."""
     context = contextvars.Context()
     if bound:
         context.run(org_context._ctx.set, OrgContext(bound, None, "service", "envelope", "t"))
 
-    async def caller():
+    async def caller() -> tuple[list[str], OrgContext | None]:
         return await drain_queued_syncs(graph, _DRAIN_LOG), org_context.peek()
 
     with patch("app.connectors.core.sync.sync_dispatcher.get_dispatcher", return_value=recorder), \
