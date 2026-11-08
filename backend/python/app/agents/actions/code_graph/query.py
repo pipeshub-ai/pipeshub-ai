@@ -19,7 +19,6 @@ from __future__ import annotations
 import fnmatch
 import logging
 import re
-from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, RecordRelations
@@ -39,7 +38,7 @@ from .ops import (
     attach_file_paths,
     coverage_for,
     get_record_roles,
-    record_repo_names,
+    name_repos_of_shared_paths,
     repo_names,
 )
 from .results import saw_commit
@@ -312,11 +311,7 @@ async def _list_children(
     # Only the listed files: a cut or hidden file sharing a listed path must not blank its commit.
     for row, record_id, commit in shown:
         saw_commit(row["path"], record_id, commit)
-    # A path two of the connector's repos both hold is listed twice; the repo tells the rows (and their commits) apart.
-    counts = Counter(row["path"] for row, _, _ in shown)
-    shared = {record_id: row for row, record_id, _ in shown if counts[row["path"]] > 1}
-    for record_id, repo in (await record_repo_names(graph_provider, org_id, shared)).items():
-        shared[record_id]["repo"] = repo
+    await name_repos_of_shared_paths(graph_provider, org_id, ((rid, row) for row, rid, _ in shown), "path")
     scanned = len(rows)
     return {
         "directories": [

@@ -381,6 +381,30 @@ async def record_repo_names(
     return {key: names.get(g) or g for key, g in groups.items()}
 
 
+async def name_repos_of_shared_paths(
+    graph_provider: IGraphDBProvider, org_id: str, rows: "Iterable[tuple[str, dict[str, Any]]]", path_field: str,
+) -> None:
+    """Set ``repo`` on the ``(record id, row)`` rows whose path a row of another record also shows: two of a
+    connector's repos can hold one path, and only the repo tells those rows (and their commits) apart.
+
+    Best effort: the rows are the answer, so a failed lookup leaves them unnamed (their commit then reads
+    unknown) rather than failing the call.
+    """
+    rows = list(rows)
+    records_at = Counter(path for path, _ in {(row[path_field], rid) for rid, row in rows})
+    shared = [(rid, row) for rid, row in rows if records_at[row[path_field]] > 1]
+    if not shared:
+        return
+    try:
+        names = await record_repo_names(graph_provider, org_id, {rid for rid, _ in shared})
+    except Exception:
+        logger.warning("Repo names for %d rows sharing a path unavailable", len(shared), exc_info=True)
+        return
+    for rid, row in shared:
+        if rid in names:
+            row["repo"] = names[rid]
+
+
 async def synced_commits(
     graph_provider: IGraphDBProvider, org_id: str, group_ids: "Iterable[str]",
 ) -> dict[str, str]:

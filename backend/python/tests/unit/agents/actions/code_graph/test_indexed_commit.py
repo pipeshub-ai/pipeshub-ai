@@ -312,3 +312,49 @@ async def test_a_listing_tells_two_repos_copies_of_a_path_apart() -> None:
     rows = [(f["path"], f.get("repo"), f["indexed_commit"]) for f in out["files"]]
     assert rows == [("src/a.py", None, COMMIT), ("src/b.py", "acme/shop", COMMIT), ("src/b.py", "acme/admin", OTHER)]
     assert "indexed_commit" not in out
+
+
+
+def _two_repos_hold_b(graph: QueryGraphProvider) -> None:
+    """src/b.py in acme/shop (rec-b, COMMIT) and in acme/admin (rec-x, OTHER), one connector."""
+    _second_copy_of_b(graph, recordGroupId="repo-2")
+    graph.records["rec-b"]["recordGroupId"] = "repo-1"
+    graph.record_groups["repo-2"] = {"_key": "repo-2", "orgId": ORG, "connectorId": CONN, "groupName": "acme/admin"}
+
+
+def _same_text_in_both(graph: QueryGraphProvider) -> cg.CodeGraph:
+    blobs = _blob()
+    blobs.records["v-x"] = blobs.records["v-b"]
+    return cg.CodeGraph({"org_id": ORG, "user_id": USER, "graph_provider": graph, "blob_store": blobs})
+
+
+async def test_text_matches_in_two_repos_copies_of_a_path_each_say_their_commit() -> None:
+    graph = QueryGraphProvider()
+    _two_repos_hold_b(graph)
+    out = await _call(_same_text_in_both(graph), "search_code", pattern="return", mode="text", path="src/b.py")
+    rows = sorted((m["repo"], m["indexed_commit"]) for m in out["matches"])
+    assert rows == [("acme/admin", OTHER), ("acme/shop", COMMIT)]
+    assert "indexed_commit" not in out
+
+
+class NoRepoNames(QueryGraphProvider):
+    """The record -> repo lookup that tells shared paths apart fails; every other read works."""
+
+    async def get_nodes_by_field_in(self, collection, *args, **kwargs) -> list[dict]:
+        if collection == "records" and set(kwargs.get("return_fields") or ()) == {"_key", "recordGroupId", "orgId"}:
+            raise RuntimeError("graph down")
+        return await super().get_nodes_by_field_in(collection, *args, **kwargs)
+
+
+@pytest.mark.parametrize("tool", ["query_code_graph", "search_code"])
+async def test_a_failed_repo_lookup_keeps_the_answer_and_says_no_commit_for_the_shared_path(tool) -> None:
+    graph = NoRepoNames()
+    _two_repos_hold_b(graph)
+    if tool == "query_code_graph":
+        out = await _call(_tool(graph), tool, select="src/")
+        rows = [f for f in out["files"] if f["path"] == "src/b.py"]
+    else:
+        out = await _call(_same_text_in_both(graph), tool, pattern="return", mode="text", path="src/b.py")
+        rows = out["matches"]
+    assert "error" not in out and len(rows) == 2
+    assert all("repo" not in r and r.get("indexed_commit") is None for r in rows)  # unknown, never guessed

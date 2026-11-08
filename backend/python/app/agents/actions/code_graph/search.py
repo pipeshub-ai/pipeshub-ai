@@ -37,6 +37,7 @@ from .ops import (
     _unwrap,
     attach_file_paths,
     get_record_roles,
+    name_repos_of_shared_paths,
     repo_names,
 )
 from .query import files_by_pattern, path_matches
@@ -287,7 +288,8 @@ async def _by_text(
         return {"error": await _missing_path_message(graph_provider, org_id, connector_id, asked, repo, access),
                 **({"truncated": True} if scan_capped else {})}
     grep = await _grep(graph_provider, blob_store, org_id, matcher, paths, records, include_tests=include_tests)
-    out = grep.result(mode, connector_id, limit, commits, capped=scan_capped)
+    await grep.note_shown(graph_provider, org_id, limit, commits)
+    out = grep.result(mode, connector_id, limit, capped=scan_capped)
     if grep.files_capped or scan_capped:
         out["note"] = (f"Only the first {_TEXT_SEARCH_FILES} files under {path!r} were read, so "
                        "a match may be missing; narrow `path` to search the rest.")
@@ -320,7 +322,8 @@ async def _by_index(
         return {"error": _NEEDS_PATH}
     paths, records, commits = await _records_holding(graph_provider, org_id, connector_id, vrids, groups, access)
     grep = await _grep(graph_provider, blob_store, org_id, matcher, paths, records, include_tests=include_tests)
-    out = grep.result(mode, connector_id, limit, commits)
+    await grep.note_shown(graph_provider, org_id, limit, commits)
+    out = grep.result(mode, connector_id, limit)
     # Residue units put every line holding a word in the index, but files indexed before them gain theirs
     # only from the backfill: until it is done, a missing line in such a file proves nothing.
     reasons = [] if await _residue_backfilled(retrieval_service) else [_UNINDEXED_FILLER]
@@ -448,12 +451,17 @@ class _Grep:
     hidden: int
     unreadable: int
 
-    def result(
-        self, mode: str, connector_id: str, limit: int, commits: dict[str, str | None], *, capped: bool = False,
-    ) -> dict[str, Any]:
-        # Only the files whose matches are shown: another readable copy of a path must not blank their commit.
-        for key, match in zip(self.record_ids[:limit], self.matches[:limit]):
+    async def note_shown(
+        self, graph_provider: IGraphDBProvider, org_id: str, limit: int, commits: dict[str, str | None],
+    ) -> None:
+        """Note the commits of the files whose matches are shown, naming the repo on a path two repos share."""
+        # Only the shown files: another readable copy of a path must not blank their commit.
+        shown = list(zip(self.record_ids[:limit], self.matches[:limit]))
+        for key, match in shown:
             saw_commit(match["file_path"], key, commits.get(key))
+        await name_repos_of_shared_paths(graph_provider, org_id, shown, "file_path")
+
+    def result(self, mode: str, connector_id: str, limit: int, *, capped: bool = False) -> dict[str, Any]:
         out: dict[str, Any] = {
             "mode": mode,
             "connector_id": connector_id,
