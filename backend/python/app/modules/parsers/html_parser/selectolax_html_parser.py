@@ -16,6 +16,7 @@ import logging
 from typing import Any, Dict, List, Tuple
 
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.modules.parsers.html_parser.image_sources import img_source
 from app.modules.parsers.markdown.image_references import is_inline_raster_image
 from app.services.parsing.interface import ParseResult
 from bs4 import BeautifulSoup
@@ -180,13 +181,7 @@ class SelectolaxHtmlParser:
         image_counter = 1
 
         for img_tag in soup.find_all("img"):
-            src = img_tag.get("src", "").strip()
-            if not src:
-                srcset = img_tag.get("srcset", "")
-                if srcset:
-                    first_part = srcset.split(",")[0].split()
-                    if first_part:
-                        src = first_part[0].strip()
+            src = img_source(img_tag)
             if not src:
                 continue
             # A raster data: image already is the image; the converter stores it

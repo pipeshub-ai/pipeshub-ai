@@ -24,9 +24,9 @@ InRepo = Callable[[str, str, set[str], "SymbolIndex | None"], bool]
 
 
 def _registry() -> tuple[dict[str, Resolver], dict[str, InRepo]]:
-    from app.modules.code_graph.resolvers import c_family, php, rust
+    from app.modules.code_graph.resolvers import c_family, php, python, rust
 
-    return {"php": php.resolve, "rust": rust.resolve, "c": c_family.resolve}, {"rust": rust.in_repo}
+    return {"php": php.resolve, "rust": rust.resolve, "c": c_family.resolve}, {"rust": rust.in_repo, "py": python.in_repo}
 
 
 RESOLVERS, IN_REPO = _registry()

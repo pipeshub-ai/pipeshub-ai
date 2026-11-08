@@ -151,6 +151,7 @@ from app.sources.external.microsoft.outlook.outlook import (
     OutlookCalendarContactsResponse,
     OutlookMailFoldersResponse,
 )
+from app.utils.credential_refresh_log import EVENT_CHECK_FAILED, log_refresh_failure
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import (
     datetime_to_epoch_ms,
@@ -547,7 +548,7 @@ class OutlookIndividualConnector(OutlookFolderInventoryMixin, BaseConnector):
             await refresh_service.refresh_now(self.connector_id, self.connector_name.value, refresh_token)
             await self._get_fresh_graph_client()
         except Exception as e:
-            self.logger.error(f"Refreshing the access token after a 401 failed: {e}")
+            log_refresh_failure(self.logger, EVENT_CHECK_FAILED, e)
             self._token_renewal_failed = True
             return False
         if self._current_access_token == rejected:

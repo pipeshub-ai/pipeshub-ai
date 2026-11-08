@@ -5716,5 +5716,107 @@
       "onTitle": "已為所有人重新開啟示範資料",
       "errorTitle": "無法為所有人變更示範資料"
     }
+  },
+  "graph": {
+    "status": {
+      "stale": "圖譜正在更新，最近的變更可能尚未顯示。",
+      "building": "圖譜正在建置，目前顯示的內容可能不完整。",
+      "retrying": "圖譜建置發生問題，正在重試。",
+      "failed": "上一次圖譜建置失敗，此檢視可能已過時。",
+      "unknown": "無法讀取此圖譜的狀態。"
+    },
+    "empty": {
+      "neverBuilt": "此儲存庫尚無程式碼圖譜。",
+      "tooLarge": "此儲存庫過大，無法產生圖譜。"
+    },
+    "incomplete": "部分連結可能遺失。請依邊類型或方向縮小範圍。",
+    "simplified": "為維持流暢移動，已簡化檢視。",
+    "verify": {
+      "degraded": "目前無法驗證存取權限，正在顯示上次確認的內容。",
+      "blank": "已有數分鐘無法驗證存取權限，因此已清除圖譜。正在重新連線…"
+    },
+    "error": {
+      "unavailable": "目前無法載入，請再試一次。",
+      "notAvailable": "此項目無法使用。",
+      "unexpected": "發生了一些問題。",
+      "ambiguous": "有多個儲存庫同名。請在搜尋框中選擇儲存庫。",
+      "full": "此檢視已滿。開啟一個節點以開始新的檢視。",
+      "revoked": "你正在檢視的項目已無法使用。"
+    },
+    "title": "程式碼圖譜",
+    "ui": {
+      "back": "上一步",
+      "forward": "下一步",
+      "fit": "符合檢視大小",
+      "showTable": "以表格顯示",
+      "showGraph": "以圖譜顯示",
+      "direction": {
+        "any": "兩者",
+        "inbound": "呼叫端",
+        "outbound": "被呼叫端"
+      },
+      "includeTests": "包含測試",
+      "showMore": "顯示更多",
+      "expand": "展開",
+      "open": "開啟",
+      "nothingSelected": "選取節點以檢視詳細資料。",
+      "details": "詳細資料",
+      "links": "連結：{{n}}",
+      "table": {
+        "caption": "此檢視中的節點",
+        "name": "名稱",
+        "kind": "類型",
+        "file": "檔案",
+        "actions": "動作",
+        "moreRows": "顯示更多列",
+        "callersShown": "已顯示的呼叫端",
+        "calleesShown": "已顯示的被呼叫端",
+        "focus": "中心"
+      },
+      "emptyPrompt": "在上方搜尋函式、方法或類別，查看誰呼叫它以及它呼叫了誰。",
+      "disclosure": "僅顯示你有權存取的內容。",
+      "legendInferred": "虛線表示依名稱推斷的連結。",
+      "disabled": "程式碼圖譜未啟用。",
+      "search": {
+        "repo": "儲存庫",
+        "repoPlaceholder": "選擇儲存庫",
+        "placeholder": "依名稱尋找函式、方法或類別",
+        "label": "搜尋程式碼",
+        "results": "搜尋結果",
+        "noRepos": "沒有你可以讀取的程式碼儲存庫。",
+        "noMatches": "沒有相符項目。",
+        "chooseFirst": "請先選擇儲存庫",
+        "minChars": "請至少輸入 2 個字元。",
+        "more": "僅顯示前幾個相符項目。請輸入更多內容以縮小搜尋範圍。"
+      },
+      "action": {
+        "retry": "重試",
+        "restore": "使用完整畫質"
+      },
+      "loading": "正在載入…",
+      "legend": {
+        "functions": "函式和方法",
+        "classes": "類別和介面",
+        "focus": "此檢視的中心"
+      },
+      "openHint": "開啟：將其設為新檢視的中心。",
+      "expandHint": "展開：在此顯示其相鄰項，並保留目前內容。",
+      "announce": {
+        "opened": "正在顯示 {{n}} 項。",
+        "added": "已新增 {{n}} 項。"
+      },
+      "canvasHint": "圖譜圖像無法供螢幕閱讀器使用。請使用「以表格顯示」按鈕來閱讀和操作每個節點。",
+      "selectionGone": "你選取的項目已無法使用。",
+      "viewGraph": "檢視圖譜",
+      "viewGraphOf": "檢視圖譜：{{repo}}",
+      "fillerNode": "{{file}} 中的 {{kind}}"
+    },
+    "capped": "圖中只顯示此檢視的一部分，表格列出全部內容。",
+    "crowded": "此檢視越來越擁擠。請用篩選器縮小範圍。",
+    "hint": {
+      "testsOff": "測試檔案已隱藏。如果該項目在測試程式碼中，請開啟「包含測試」。"
+    },
+    "nothingNew": "此節點沒有更多內容可顯示。",
+    "tableOnly": "為保持流暢，僅顯示表格。"
   }
 }
