@@ -663,6 +663,79 @@ async def test_modifies_survives_a_pr_save_and_a_rewrite_keeps_one_edge(repo: _R
             await repo.graph.delete_nodes_and_edges([pr.id], RECORDS)
 
 
+async def _a_failed_rewrite_keeps_the_old_links(repo: _Repo, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A PR linked to a.py is re-indexed with b.py as its only change, and the write fails after the delete: the
+    processor's rewrite raises and the PR keeps exactly its link to a.py, none to b.py."""
+    from types import SimpleNamespace
+
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+    from app.connectors.core.base.data_processor.pr_links import write_modifies
+    from app.connectors.core.base.data_store.graph_data_store import (
+        GraphDataStore,
+        GraphTransactionStore,
+    )
+    from app.models.blocks import FileChangeMetadata
+    from app.models.entities import PullRequestRecord
+
+    pr = PullRequestRecord(
+        id=str(uuid.uuid4()), org_id=repo.org_id, record_name="Rewrite that fails",
+        record_type=RecordType.PULL_REQUEST, external_record_id=f"pr-{uuid.uuid4().hex[:8]}", version=1,
+        origin=OriginTypes.CONNECTOR, connector_name=Connectors.GITHUB, connector_id=repo.connector_id,
+        mime_type="text/markdown",
+    )
+    await repo.graph.batch_upsert_records([pr])
+    store = GraphDataStore(logger, repo.graph)
+
+    def ext(path: str) -> str:
+        return f"ext-{repo.record_ids.get(path)}"
+
+    a, b = repo.record_ids["src/shop/a.py"], repo.record_ids["src/shop/b.py"]
+
+    async def linked() -> set[str]:
+        rows = await repo.graph.get_neighbors_for_nodes_by_relationship_types(
+            node_keys=[pr.id], node_collection=RECORDS, relationship_types=[RecordRelations.MODIFIES.value],
+            direction="outbound", raise_on_error=True)
+        return {r["key"] for r in rows}
+
+    try:
+        async with store.transaction() as tx:
+            assert await write_modifies(tx, pr, [FileChangeMetadata(path="src/shop/a.py")], ext) == (1, 0)
+        assert await linked() == {a}
+
+        async def write_fails(self, edges, collection) -> None:
+            raise RuntimeError("injected edge-write failure")
+
+        monkeypatch.setattr(GraphTransactionStore, "batch_create_edges", write_fails)
+        processor = SimpleNamespace(data_store_provider=store)
+        with pytest.raises(RuntimeError, match="injected"):
+            await DataSourceEntitiesProcessor.on_pr_file_changes(
+                processor, pr, [FileChangeMetadata(path="src/shop/b.py")], ext)
+        assert await linked() == {a}, "the delete must roll back with the failed write"
+        assert b not in await linked()
+    finally:
+        with contextlib.suppress(Exception):
+            await repo.graph.delete_nodes_and_edges([pr.id], RECORDS)
+
+
+async def test_a_failed_modifies_rewrite_rolls_back_and_keeps_the_old_links(
+    repo: _Repo, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _a_failed_rewrite_keeps_the_old_links(repo, monkeypatch)
+
+
+# Neo4j only: auto-commit is a Neo4j setting (ArangoDB transactions are always real).
+@pytest.mark.parametrize("repo", ["neo4j"], indirect=True)
+async def test_a_failed_modifies_rewrite_rolls_back_with_neo4j_auto_commit_on(
+    repo: _Repo, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With NEO4J_EXPLICIT_TRANSACTIONS false each statement commits on its own, so only the rewrite's real
+    transaction (explicit=True) keeps the delete from landing without the write."""
+    monkeypatch.setattr(repo.graph.client, "_explicit_transactions", False)
+    await _a_failed_rewrite_keeps_the_old_links(repo, monkeypatch)
+
+
 # Neo4j only: collected for one backend, so the Arango job never selects (and skips) it.
 @pytest.mark.parametrize("repo", ["neo4j"], indirect=True)
 async def test_full_text_search_is_scoped_to_the_org_inside_the_index(repo: _Repo) -> None:
