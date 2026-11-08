@@ -10,7 +10,9 @@ from __future__ import annotations
 import re
 from unittest.mock import AsyncMock, MagicMock
 
-from app.models.blocks import BlockType, GroupType
+import pytest
+
+from app.models.blocks import BlockType, GroupType, group_caption
 from app.utils.chat_helpers import record_to_text
 from app.utils.record_reader import MAX_READ_CHARS, read_record, read_thread
 
@@ -443,3 +445,17 @@ class TestCommentAuthor:
 
         assert "[text_section #0]" in text
         assert "Notes" not in text
+
+    @pytest.mark.parametrize(
+        ("name", "description", "caption"),
+        [
+            ("Edited by Bob - Tammy Moreno", "Comment by Tammy Moreno", "Comment by Tammy Moreno"),
+            ("Comment by Tammy Moreno", "Article comment", "Comment by Tammy Moreno"),
+            ("Review comment by octocat on pull request #7", None, "Review comment by octocat on pull request #7"),
+            ("Comment on issue 5", None, "Comment on issue 5"),
+        ],
+        ids=["a-subject-saying-by-loses-to-the-author-label", "a-generic-description-loses-to-the-name",
+             "a-review-label-counts", "no-author-keeps-the-name"],
+    )
+    def test_the_author_label_is_chosen_over_other_text(self, name: str, description: str | None, caption: str) -> None:
+        assert group_caption("comment", name, description) == caption
