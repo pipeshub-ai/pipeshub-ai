@@ -86,11 +86,17 @@ async def test_a_cross_connector_virtual_record_is_rewritten_by_each_connector(o
             if (m := await _changes_the_shared_stamp(world, b)) is None:
                 continue
             ca, cb = (PREFIX + env.world.node(x).connector for x in (a, b))
-            for rule in ("RESTRICTED", "", "RESTRICTED"):
-                await env.change((Mutation("rule_set", a, value=rule),))
+            ca_name = env.world.node(a).connector
+            others = [n.id for n in env.world.nodes if n.kind == "record" and n.connector == ca_name and n.id not in shared and not n.deleted and not n.placeholder]
+            if len(others) < 2:
+                continue
+            # three different roots, so that each bump is listed and the rewrite of A is a rewrite (the same root changed three times is not releasable)
+            for node in (a, *others[:2]):
+                await env.change((Mutation("rule_set", node, value="RESTRICTED"),))
             seen = Log()
             if order == "a_rewritten_then_b_changes":
-                await env.job.run_connector(ORG, ca)      # A is rewritten and has left its fence on the shared point
+                first = await env.job.run_connector(ORG, ca)      # A is rewritten and has left its fence on the shared point
+                assert first.state == "done" and first.points_touched + first.points_written > 0, first
                 await env.change((m,))
             else:
                 await env.change((m,))

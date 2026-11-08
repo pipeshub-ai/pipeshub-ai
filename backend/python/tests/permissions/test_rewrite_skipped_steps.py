@@ -176,3 +176,33 @@ async def test_a_stored_fence_that_is_not_a_number_fails_the_root_and_keeps_it()
     await run_broken(env, mutation)
     del env.vdb._points("rewrite")[pid].payload["scopeFence"]       # repaired
     await recovers(env)
+
+
+async def test_a_virtual_record_that_cannot_be_placed_is_not_forgotten_when_another_needs_a_second_round(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both are in one page. The first round cannot place Onboarding and loses the write for Handbook, so a second round runs for Handbook alone;
+    Onboarding must still keep the root."""
+    env = await Env.make(WorldStore().world("golden/confluence_hr"))
+    await env.change((M("moved", "page:Handbook", "space:ALL", "space:ALL"),))
+    bad = env.vrids()["page:Onboarding"]
+    real = scope_rewrite.resolve_virtual_record_state
+
+    async def flaky(graph: Any, vrid: str, *a: Any, **k: Any) -> Any:
+        out = await real(graph, vrid, *a, **k)
+        return replace(out, complete=False) if vrid == bad else out
+
+    monkeypatch.setattr(scope_rewrite, "resolve_virtual_record_state", flaky)
+    lost = {"n": 0}
+
+    async def lose_the_first_write(name: str) -> str | None:
+        if name == "update_payloads_by_ids" and lost["n"] == 0:
+            lost["n"] += 1
+            return "drop"
+        return None
+
+    Tap(env, lose_the_first_write)
+    with pytest.raises(RewriteIncomplete, match="1 virtual record"):
+        await env.job.run_connector(ORG, "w:app")
+    assert lost["n"] == 1 and env.pending(), "the root came off over a virtual record that was never placed"
+    seen = Log()
+    await env.audit(seen)
+    assert not seen.leaks and not seen.pending_admits

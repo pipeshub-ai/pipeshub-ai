@@ -292,12 +292,13 @@ class ScopeRewriteJob:
 
         shortcut: PAGE virtual records are read, written and proved under their locks in one block that must end inside
         `MEMBERSHIP_LOCK_TIMEOUT_SECONDS` (120 s). The page size is unmeasured at scale; measure it before this is reachable."""
-        todo, failed, unplaced, floor, rounds, moves, moved = vrids, dict[str, str](), dict[str, str](), 0, 0, 0, False
+        todo, failed, unplaced, floor, rounds, moves, moved = vrids, dict[str, str](), dict[str, str](), 0, 0, 0, False      # (`unplaced` is every round's)
         async with vrid_write_locks(vrids):
             while todo:
                 epoch, at = await self._epoch(connector_id), _clock()      # the generation and the time, both before the graph is read
                 fence = max(_micros(at), floor)
-                plans, unplaced = await self._plans(org_id, todo, keys)
+                plans, cannot = await self._plans(org_id, todo, keys)
+                unplaced |= cannot
                 try:
                     written = await self._write(org_id, connector_id, plans, epoch, fence, at, result)
                     todo, top = await self._differs(org_id, plans, written, keys)
