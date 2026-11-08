@@ -2,6 +2,7 @@ from typing import Any, Dict
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_context import for_org, system
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -216,7 +217,8 @@ class KBAppsMigrationService:
             if not org_id:
                 continue
             try:
-                result = await self.graph_provider.migrate_agent_hub_knowledge(org_id)
+                with for_org(org_id, job="agent_hub_knowledge_migration"):
+                    result = await self.graph_provider.migrate_agent_hub_knowledge(org_id)
                 # The provider reports a failed write as {"error": ...} instead of raising.
                 if result.get("error"):
                     raise RuntimeError(result["error"])
@@ -249,7 +251,8 @@ class KBAppsMigrationService:
         kb_migration_already_done = await self._is_migration_already_done()
 
         if kb_migration_already_done:
-            orgs_for_agent_pass = await self.graph_provider.get_all_orgs(active=True)
+            with system("kb_apps_migration"):
+                orgs_for_agent_pass = await self.graph_provider.get_all_orgs(active=True)
             agents_migrated_only = await self._migrate_agent_hub_knowledge_all_orgs(orgs_for_agent_pass or [])
             self.logger.info("✅ KB apps migration already completed - skipping")
             return {
@@ -266,7 +269,8 @@ class KBAppsMigrationService:
             self.logger.info("Starting KB Apps Migration")
             self.logger.info("=" * 70)
 
-            orgs = await self.graph_provider.get_all_orgs(active=True)
+            with system("kb_apps_migration"):
+                orgs = await self.graph_provider.get_all_orgs(active=True)
 
             if not orgs:
                 self.logger.info("✅ No organizations found - marking migration as complete")
@@ -289,7 +293,8 @@ class KBAppsMigrationService:
 
                 try:
                     self.logger.info(f"🔄 Processing org {org_id}...")
-                    org_result = await self._migrate_org(org_id)
+                    with for_org(org_id, job="kb_apps_migration"):
+                        org_result = await self._migrate_org(org_id)
 
                     orgs_processed += 1
                     kbs_migrated += org_result["kbs_migrated"]
