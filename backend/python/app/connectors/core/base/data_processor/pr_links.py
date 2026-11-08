@@ -55,8 +55,10 @@ async def write_modifies(
         _RECORDS, "externalRecordId", sorted(by_external), ["_key", "externalRecordId", "connectorId"],
         raise_on_error=True,
     ) or []) if by_external else []
+    # Raises on failure: 0 also means "nothing to delete", and new links written beside the old ones would be wrong.
     await tx_store.delete_edges_by_relationship_types(
         from_id=pr.id, from_collection=_RECORDS, collection=_LINKS, relationship_types=[_MODIFIES],
+        raise_on_error=True,
     )
     if not by_external:
         return Linked(0, 0)

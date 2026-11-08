@@ -66,7 +66,8 @@ async def test_a_rewrite_replaces_only_this_prs_modifies_edges() -> None:
     await write_modifies(store, PR, CHANGES[:1], _ext)
     for call in store.delete_edges_by_relationship_types.await_args_list:
         assert call.kwargs == {"from_id": "pr-1", "from_collection": RECORDS,
-                               "collection": CollectionNames.NODE_RELATIONS.value, "relationship_types": [MODIFIES]}
+                               "collection": CollectionNames.NODE_RELATIONS.value, "relationship_types": [MODIFIES],
+                               "raise_on_error": True}
     assert store.delete_edges_by_relationship_types.await_count == 2
 
 
@@ -136,3 +137,39 @@ async def test_the_replacement_runs_in_one_real_transaction() -> None:
     processor = SimpleNamespace(data_store_provider=SimpleNamespace(transaction=transaction))
     assert await DataSourceEntitiesProcessor.on_pr_file_changes(processor, PR, CHANGES[:1], _ext) == (1, 0)
     assert asked == {"explicit": True}
+
+
+@pytest.mark.parametrize("changes", [CHANGES[:1], [], CHANGES[2:]], ids=["matching", "no-changes", "no-match"])
+async def test_a_failed_delete_raises_and_writes_nothing(changes) -> None:
+    """A swallowed delete error reads as "nothing to delete": new links would sit beside the old ones, or an empty
+    change list would report success. The delete raises, nothing is written, and the failure reaches the caller."""
+    store = _store({"/1/blob/src/a.py": "rec-a"})
+
+    async def failing_delete(**kwargs: object) -> int:
+        if not kwargs.get("raise_on_error"):
+            return 0  # the provider's answer when it is not asked to raise
+        raise ConnectionError("neo4j unavailable")
+
+    store.delete_edges_by_relationship_types = AsyncMock(side_effect=failing_delete)
+    with pytest.raises(ConnectionError):
+        await write_modifies(store, PR, changes, _ext)
+    store.batch_create_edges.assert_not_awaited()
+
+
+async def test_a_failed_write_after_the_delete_propagates_and_is_reported(caplog) -> None:
+    """The delete went through, the write failed: the error reaches the transaction (which rolls the delete back)
+    and the connector logs it instead of counting the PR as linked."""
+    from app.connectors.core.base.data_processor.pr_links import link_changed_files
+
+    store = _store({"/1/blob/src/a.py": "rec-a"})
+    store.batch_create_edges = AsyncMock(side_effect=RuntimeError("write failed"))
+    with pytest.raises(RuntimeError):
+        await write_modifies(store, PR, CHANGES[:1], _ext)
+
+    async def on_pr_file_changes(pr, changes, code_external_id) -> object:
+        return await write_modifies(store, pr, changes, code_external_id)
+
+    processor = SimpleNamespace(on_pr_file_changes=on_pr_file_changes)
+    groups = [SimpleNamespace(file_change_metadata=CHANGES[0])]
+    assert await link_changed_files(processor, PR, groups, _ext) is None
+    assert "Could not link pull request pr-1" in caplog.text

@@ -748,11 +748,14 @@ class GraphTransactionStore(TransactionStore):
         from_id: str,
         from_collection: str,
         collection: str,
-        relationship_types: list[str]
+        relationship_types: list[str],
+        *,
+        raise_on_error: bool = False,
     ) -> int:
         """Delete edges by relationship types from a record."""
         return await self.graph_provider.delete_edges_by_relationship_types(
-            from_id, from_collection, collection, relationship_types, transaction=self.txn
+            from_id, from_collection, collection, relationship_types, transaction=self.txn,
+            raise_on_error=raise_on_error,
         )
 
     async def delete_nodes_and_edges(self, keys: list[str], collection: str) -> None:
