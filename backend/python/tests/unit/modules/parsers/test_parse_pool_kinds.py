@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import functools
 import os
 import threading
 import time
@@ -441,7 +442,9 @@ def _pool_calls_in(tree: ast.AST) -> list[ast.Call]:
     return calls
 
 
+@functools.cache
 def _pool_calls() -> list[tuple[str, int, ast.Call]]:
+    """Every pool call site under ``app``, parsed once for the tests below (about 2,000 files)."""
     found = []
     for path in APP.rglob("*.py"):
         if path.name in ("parse_pool.py", "parse_pool_lanes.py"):
@@ -473,6 +476,7 @@ def test_the_call_site_scan_ignores_other_submits() -> None:
     assert _pool_calls_in(ast.parse("executor.submit(f)\nfrom concurrent import futures\nfutures.submit(f)")) == []
 
 
+@pytest.mark.timeout(240)
 def test_every_pool_call_site_declares_a_kind() -> None:
     calls = _pool_calls()
     assert len(calls) >= 10, "the scan found the call sites"
@@ -480,6 +484,7 @@ def test_every_pool_call_site_declares_a_kind() -> None:
     assert not missing, f"pool call sites without a kind: {missing}"
 
 
+@pytest.mark.timeout(240)
 def test_call_sites_use_a_member_of_parse_kind() -> None:
     names = {k.name for k in ParseKind}
     for path, line, call in _pool_calls():
