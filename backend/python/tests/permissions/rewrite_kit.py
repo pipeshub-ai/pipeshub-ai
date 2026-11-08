@@ -15,6 +15,7 @@ mutation and registers the roots the sync transaction would (the generation move
 from __future__ import annotations
 
 import logging
+import random
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
@@ -221,9 +222,10 @@ class Env:
                     out.append(f"{v}: recordGroupIds {p.payload.get('recordGroupIds')} != {groups}")
         return out
 
-    async def audit(self, into: Log) -> None:
+    async def audit(self, into: Log, *, exact: bool = True) -> None:
         """Ask the filter, for every viewer and stored point, what the oracle of the graph as it is now says. A point whose stored fields are not
-        the graph's projection (its subtree is being rewritten) must not be admitted at all."""
+        the graph's projection (its subtree is being rewritten) must not be admitted at all. `exact=False` leaves out the missing-access check:
+        a world half way through a sequence may be one the projector gets wrong from scratch."""
         world, layer, oracle = self.world, OracleScopeLayer(), OracleLayer()
         current, roots = await self.current(), self.pending()
         blocked = frozenset(a for a in self.apps if parse(self.graph.app_docs.get(a, {}).get(PENDING_KEY)))
@@ -255,7 +257,7 @@ class Env:
                     into.leaks.append(tag)
                 if admitted and stale:
                     into.pending_admits.append(tag)
-                if not stale and _covered(payload, flt) and admitted != allowed:
+                if exact and not stale and _covered(payload, flt) and admitted != allowed:
                     into.inexact.append((*tag, "admitted" if admitted else "refused"))
 
 
@@ -284,7 +286,7 @@ async def play(env: Env, muts: list[Mutation], mode: str, into: Log) -> None:
 
     async def commit() -> None:
         await env.change((queue.pop(0),))
-        await env.audit(into)
+        await env.audit(into, exact=False)
 
     await commit()
     if mode == "batched":
@@ -306,4 +308,28 @@ async def play(env: Env, muts: list[Mutation], mode: str, into: Log) -> None:
         env.before_write = None
 
 
-__all__ = ["COLL", "NAME", "PREFIX", "Env", "Log", "descendants", "play", "registration"]
+def random_change(world: World, rng: random.Random) -> Mutation | None:
+    """One structural change a sync could report on a record of this world: a move (to another record or group of the same app, never into
+    its own subtree), an inheritance break or restore, or a new access rule. None when the world has nothing to change."""
+    records = [n for n in world.nodes if n.kind == "record" and n.connector and not n.deleted and not n.placeholder]
+    if not records:
+        return None
+    node = rng.choice(records)
+    kind = rng.choice(["moved", "inherit_set", "rule_set"])
+    if kind == "rule_set":
+        return Mutation("rule_set", node.id, value=rng.choice(["RESTRICTED", "STRICT", ""]))
+    if kind == "inherit_set":
+        if not node.parents:
+            return None
+        parent = rng.choice(node.parents).id
+        return Mutation("inherit_set", node.id, ref=parent, value="false" if parent in node.inherits else "true")
+    own = descendants(world, [node.id])
+    targets = [n for n in world.nodes if n.kind in ("record", "group") and n.connector == node.connector and n.id not in own
+              and n.id not in {p.id for p in node.parents} and not n.deleted]
+    if not targets:
+        return None
+    to = rng.choice(targets)
+    return Mutation("moved", node.id, ref=to.id, value=to.id if to.kind == "group" else "")
+
+
+__all__ = ["COLL", "NAME", "PREFIX", "Env", "Log", "descendants", "play", "random_change", "registration"]
