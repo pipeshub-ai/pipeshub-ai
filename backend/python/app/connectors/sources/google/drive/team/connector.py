@@ -200,6 +200,8 @@ FOLDER_FILTER_SYNC_POINT_KEY = "folder_filter"
 FILTER_CLEANUP_SYNC_POINT_KEY = "filter_cleanup"
 # Shared drives this connector has synced, kept so a drive deleted from Workspace can be removed.
 SYNCED_SHARED_DRIVES_SYNC_POINT_KEY = "synced_shared_drives"
+DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX = "shared_drive_restrictions_"
+DRIVE_RESTRICTION_FLAGS = ("driveMembersOnly", "domainUsersOnly")
 FILTER_CLEANUP_PAGE_SIZE = 500
 
 
@@ -405,6 +407,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._synced_drive_ids: set = set()
         self._drive_has_member_cache: dict[str, bool] = {}
         self._drive_member_emails: dict[str, list[str]] = {}
+        # Per shared drive, this run: its restrictions, and the people and groups that are members.
+        self._drive_restrictions: dict[str, dict[str, bool]] = {}
+        self._drive_principals: dict[str, tuple[set[str], set[str]]] = {}
         self._refreshed_folders: set[str] = set()
         self._group_members_cache: dict[str, set[str] | None] = {}
         self._deployment_emails: set[str] | None = None
@@ -639,6 +644,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._synced_drive_ids = set()
             self._drive_has_member_cache = {}
             self._drive_member_emails = {}
+            self._drive_restrictions = {}
+            self._drive_principals = {}
             self._refreshed_folders = set()
             self._group_members_cache = {}
             self._deployment_emails = None
@@ -1187,6 +1194,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         *,
         inherited_permissions_disabled: bool = False,
         inherits_from_drive: bool = True,
+        item_drive_id: str | None = None,
     ) -> Tuple[List[Permission], bool, List[str]]:
         """
         Fetch all permissions for a Google Drive resource (file or shared drive) with pagination.
@@ -1212,6 +1220,11 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         # Use provided drive_data_source or fall back to service account's data source
         data_source = drive_data_source if drive_data_source else self.drive_data_source
+        # Read before any grant is, so an unreadable restriction fails the item and keeps what is stored.
+        allowed = await self._restriction_filter(resource_id if is_drive else item_drive_id, is_drive)
+
+        def allowed_email(email: str) -> bool:
+            return allowed(Permission(email=email, type=PermissionType.READ, entity_type=EntityType.USER))
 
         while True:
             try:
@@ -1324,7 +1337,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                             f"Added single user permission for file {resource_id}: {user_email}"
                         )
                         return (
-                            [Permission(email=user_email, type=PermissionType.READ, entity_type=EntityType.USER)],
+                            [p for p in [Permission(email=user_email, type=PermissionType.READ, entity_type=EntityType.USER)]
+                             if allowed(p)],
                             True,
                             [],
                         )
@@ -1347,13 +1361,13 @@ class GoogleDriveTeamConnector(BaseConnector):
                 f"falling back to read access for {user_email}"
             )
             return (
-                [Permission(
+                [p for p in [Permission(
                     email=user_email,
                     type=anyone_with_link_permission_type or PermissionType.READ,
                     entity_type=EntityType.USER,
-                )],
+                )] if allowed(p)],
                 True,
-                list(individually_shared_emails),
+                [e for e in individually_shared_emails if allowed_email(e)],
             )
 
         stored = grants_to_store(
@@ -1377,11 +1391,92 @@ class GoogleDriveTeamConnector(BaseConnector):
             )]
         return (
             DrivePermissionBatch(
-                stored, saw_permission_details=bool(saw_permission_details and not is_drive and inherits_from_drive)
+                [p for p in stored if allowed(p)],
+                saw_permission_details=bool(saw_permission_details and not is_drive and inherits_from_drive),
             ),
             False,
-            list(individually_shared_emails),
+            [e for e in individually_shared_emails if allowed_email(e)],
         )
+
+    async def _drive_restrictions_of(self, drive_id: str) -> dict[str, bool]:
+        """The restrictions of one of this domain's shared drives. A drive whose listing carried none is asked
+        for directly; a failed read raises rather than reading as unrestricted."""
+        if drive_id not in self._drive_restrictions:
+            got = await self.drive_data_source.drives_get(
+                driveId=drive_id, useDomainAdminAccess=True, fields="id,restrictions"
+            )
+            self._drive_restrictions[drive_id] = self._restriction_flags(got.get("restrictions"))
+        return self._drive_restrictions[drive_id]
+
+    @staticmethod
+    def _restriction_flags(restrictions: object) -> dict[str, bool]:
+        source = restrictions if isinstance(restrictions, dict) else {}
+        return {flag: bool(source.get(flag)) for flag in DRIVE_RESTRICTION_FLAGS}
+
+    async def _restriction_filter(self, drive_id: str | None, is_drive: bool) -> Callable[[Permission], bool]:
+        """Whether a grant on this shared drive (or an item in it) survives the drive's restrictions.
+
+        driveMembersOnly: only members of the drive read its items, whoever an item is shared with.
+        domainUsersOnly: only people of the drive's domain read the drive or its items.
+        Both limit access that already exists, so they apply to stored shares as well as new ones.
+        Members of the drive are not restricted by driveMembersOnly (and the drive's own grants are its members).
+        """
+        if not drive_id or drive_id not in self._listed_shared_drive_ids:
+            return lambda _p: True
+        restrictions = await self._drive_restrictions_of(drive_id)
+        members_only = restrictions["driveMembersOnly"] and not is_drive
+        domain_only = restrictions["domainUsersOnly"]
+        if not (members_only or domain_only):
+            return lambda _p: True
+        users, groups = await self._drive_member_principals(drive_id) if members_only else (set(), set())
+        domains = {e.rpartition("@")[2] for e in self.synced_user_emails}
+        if domain_only and not domains:
+            raise ValueError("The domain of the shared drive is unknown: no users were synced")
+
+        def allowed(p: Permission) -> bool:
+            is_group = p.entity_type == EntityType.GROUP
+            who = ((p.external_id if is_group else p.email) or "").lower()
+            if members_only and who not in (groups if is_group else users):
+                return False
+            return not domain_only or who.rpartition("@")[2] in domains
+
+        return allowed
+
+    async def _drive_member_principals(self, drive_id: str) -> tuple[set[str], set[str]]:
+        """Emails of the people who are members of a shared drive, directly or through a member group,
+        and of the member groups."""
+        if drive_id not in self._drive_principals:
+            users: set[str] = set()
+            groups: set[str] = set()
+            for permission in (await self._fetch_permissions(drive_id, is_drive=True))[0]:
+                if permission.entity_type == EntityType.USER and permission.email:
+                    users.add(permission.email.lower())
+                elif permission.entity_type == EntityType.GROUP and permission.external_id:
+                    groups.add(permission.external_id.lower())
+            for group in sorted(groups):
+                users |= await self._synced_group_members(group) or set()
+            self._drive_principals[drive_id] = (users, groups)
+        return self._drive_principals[drive_id]
+
+    async def _reconcile_drive_restrictions(self, drive: Dict) -> None:
+        """A drive whose restrictions differ from the ones its items were last synced under is listed again in
+        full for every user: a change feed reports no change on an item whose share a restriction now cuts
+        or restores. The new restrictions are remembered only once that is done, so a failure repeats it."""
+        drive_id = drive.get("id")
+        if not drive_id:
+            return
+        if isinstance(drive.get("restrictions"), dict):
+            self._drive_restrictions[drive_id] = self._restriction_flags(drive["restrictions"])
+        now = await self._drive_restrictions_of(drive_id)
+        key = f"{DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX}{drive_id}"
+        applied = self._restriction_flags(await self.drive_delta_sync_point.read_sync_point(key))
+        if now == applied:
+            return
+        for user in self.synced_users:
+            await self.drive_delta_sync_point.delete_sync_point(
+                generate_record_sync_point_key(RecordType.DRIVE.value, "drives", f"{user.source_user_id}_{drive_id}")
+            )
+        await self.drive_delta_sync_point.update_sync_point(key, now)
 
     async def _create_and_sync_shared_drive_record_group(self, drive: Dict) -> None:
         """
@@ -1460,7 +1555,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                     result = await self.drive_data_source.drives_list(
                         pageSize=100,  # Maximum allowed by Google Drive API
                         pageToken=page_token,
-                        useDomainAdminAccess=True
+                        useDomainAdminAccess=True,
+                        # Without a field mask the restrictions that narrow every grant in the drive are left out.
+                        fields="nextPageToken,drives(id,name,createdTime,description,restrictions)",
                     )
 
                     drives_data = result.get("drives", [])
@@ -1487,6 +1584,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             # Process each shared drive
             for drive in all_drives:
                 try:
+                    await self._reconcile_drive_restrictions(drive)
                     await self._create_and_sync_shared_drive_record_group(drive)
                 except Exception as e:
                     self._sync_ledger.note_incomplete()
@@ -2799,6 +2897,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     drive_data_source=drive_data_source,
                     inherited_permissions_disabled=limited_access,
                     inherits_from_drive=not item_drive_id or file_record.external_record_group_id == item_drive_id,
+                    item_drive_id=item_drive_id,
                 )
 
                 if is_fallback_permissions:

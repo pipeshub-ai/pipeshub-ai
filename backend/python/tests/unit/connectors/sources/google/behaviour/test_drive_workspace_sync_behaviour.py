@@ -1828,3 +1828,122 @@ async def test_reindex_of_an_unchanged_indexed_file_asks_for_a_reindex(ws: Works
     await connector.reindex_records([ws.records.records["a1"]])
 
     assert [r.external_record_id for r in ws.records.reindexed] == ["a1"]
+
+
+# --- shared drive restrictions ------------------------------------------------
+
+CAROL = "carol@example.com"
+MEMBERS_ONLY = {"driveMembersOnly": True}
+DOMAIN_ONLY = {"domainUsersOnly": True}
+
+
+def restricted_drive(ws: Workspace, restrictions: Optional[dict[str, bool]] = None) -> None:
+    """A drive whose members are Alice and the eng group (Bob); one item is shared with Bob (a member through the
+    group), a person of the domain outside the drive, an outsider, the member group and a group that is not."""
+    ws.world.add_user(CAROL)
+    ws.world.add_group("eng@example.com", [BOB])
+    ws.world.add_group("other@example.com", [CAROL])
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", "eng@example.com": "reader"}, restrictions)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        {"type": "user", "role": "writer", "emailAddress": BOB}, reader(CAROL), reader(PARTNER),
+        {"type": "group", "role": "reader", "emailAddress": "eng@example.com"},
+        {"type": "group", "role": "reader", "emailAddress": "other@example.com"},
+    ])
+
+
+def f1_people(ws: Workspace) -> set[str]:
+    return {who for who, _, _ in ws.grants("f1")}
+
+
+EVERYONE = {BOB, CAROL, PARTNER, "eng@example.com", "other@example.com"}
+MEMBERS = {BOB, "eng@example.com"}
+
+
+async def test_a_drive_without_restrictions_keeps_every_share(ws: Workspace) -> None:
+    restricted_drive(ws)
+    await ws.sync()
+    assert f1_people(ws) == EVERYONE
+
+
+async def test_members_only_keeps_the_members_and_drops_every_other_share(ws: Workspace) -> None:
+    restricted_drive(ws, MEMBERS_ONLY)
+    await ws.sync()
+    assert f1_people(ws) == MEMBERS
+    assert ws.incomplete is False
+
+
+async def test_members_only_drops_a_non_member_who_is_shared_with_on_a_shared_with_me_link(ws: Workspace) -> None:
+    restricted_drive(ws, MEMBERS_ONLY)
+    await ws.sync()
+    assert "0S:carol@example.com" not in ws.records.records["f1"].shared_with_me_record_group_ids
+    assert "0S:bob@example.com" in ws.records.records["f1"].shared_with_me_record_group_ids
+
+
+async def test_domain_only_keeps_people_of_the_domain_and_drops_the_outsider(ws: Workspace) -> None:
+    restricted_drive(ws, DOMAIN_ONLY)
+    await ws.sync()
+    assert f1_people(ws) == EVERYONE - {PARTNER}
+
+
+async def test_domain_only_drops_an_outside_member_of_the_drive_itself(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", PARTNER: "reader"}, DOMAIN_ONLY)
+    await ws.sync()
+    assert {p.email for p in ws.records.record_group_permissions["sd-1"]} == {ALICE}
+
+
+async def test_both_restrictions_together_leave_the_members_of_the_domain(ws: Workspace) -> None:
+    restricted_drive(ws, {**MEMBERS_ONLY, **DOMAIN_ONLY})
+    await ws.sync()
+    assert f1_people(ws) == MEMBERS
+
+
+async def test_a_restriction_turned_on_between_syncs_cuts_shares_nobody_changed_and_turning_it_off_restores_them(
+    ws: Workspace,
+) -> None:
+    restricted_drive(ws)
+    await ws.sync()
+    assert f1_people(ws) == EVERYONE
+
+    ws.world.drives["sd-1"]["restrictions"] = {**MEMBERS_ONLY, **DOMAIN_ONLY}
+    await ws.sync()
+    assert f1_people(ws) == MEMBERS
+
+    ws.world.drives["sd-1"]["restrictions"] = {}
+    await ws.sync()
+    assert f1_people(ws) == EVERYONE
+
+
+async def test_a_restriction_that_does_not_change_does_not_relist_the_drive(ws: Workspace) -> None:
+    restricted_drive(ws, MEMBERS_ONLY)
+    await ws.sync()
+    await ws.sync()
+    assert f1_people(ws) == MEMBERS
+    assert len([k for k, _ in ws.sync_points.writes if "shared_drive_restrictions_sd-1" in k]) == 1
+
+
+async def test_restrictions_left_out_of_the_listing_are_asked_for_directly(ws: Workspace) -> None:
+    restricted_drive(ws, MEMBERS_ONLY)
+    ws.world.restrictions_unlisted = True
+    await ws.sync()
+    assert f1_people(ws) == MEMBERS
+
+
+async def test_restrictions_that_cannot_be_read_fail_closed_and_keep_the_stored_grants(ws: Workspace) -> None:
+    restricted_drive(ws)
+    await ws.sync()
+    assert f1_people(ws) == EVERYONE
+
+    ws.world.drives["sd-1"]["restrictions"] = MEMBERS_ONLY
+    ws.world.restrictions_unlisted = True
+    ws.world.restrictions_unreadable = True
+    ws.world.share("f1", reader("late@example.com"))
+    await ws.sync()
+
+    assert ws.incomplete is True
+    assert f1_people(ws) == EVERYONE  # not widened (no late share), not cut: the item is read again next run
+
+    ws.world.restrictions_unlisted = False
+    ws.world.restrictions_unreadable = False
+    await ws.sync()
+    assert ws.incomplete is False
+    assert f1_people(ws) == MEMBERS

@@ -171,6 +171,9 @@ class DriveWorld:
         self.aliases: dict[str, str] = {}
         self.groups: dict[str, dict[str, Any]] = {}
         self.drives: dict[str, dict[str, Any]] = {}
+        # Drive answers without the restrictions of a drive, and cannot be asked for them directly.
+        self.restrictions_unlisted = False
+        self.restrictions_unreadable = False
         self.hide_unreadable_parents = False
         self.files: dict[str, FileState] = {}
         self.log: list[_Change] = []
@@ -191,8 +194,11 @@ class DriveWorld:
     def add_group(self, email: str, members: list[str], name: Optional[str] = None) -> None:
         self.groups[email] = {"id": f"gid-{next(self._ids)}", "email": email, "name": name or email.split("@")[0], "members": list(members)}
 
-    def add_drive(self, drive_id: str, name: str, members: dict[str, str]) -> None:
-        self.drives[drive_id] = {"id": drive_id, "name": name, "members": dict(members), "createdTime": "2024-01-01T00:00:00.000Z"}
+    def add_drive(self, drive_id: str, name: str, members: dict[str, str], restrictions: Optional[dict[str, bool]] = None) -> None:
+        self.drives[drive_id] = {
+            "id": drive_id, "name": name, "members": dict(members), "createdTime": "2024-01-01T00:00:00.000Z",
+            "restrictions": dict(restrictions or {}),
+        }
         self.files[drive_id] = FileState({"id": drive_id, "name": name, "mimeType": FOLDER, "driveId": drive_id, "parents": [], "trashed": False})
 
     def add_item(
@@ -665,6 +671,7 @@ class DriveWorld:
                 "id": drive["id"],
                 "name": drive["name"],
                 "createdTime": drive["createdTime"],
+                **({} if self.restrictions_unlisted else {"restrictions": dict(drive["restrictions"])}),
                 "capabilities": {
                     "canEdit": role in ("organizer", "fileOrganizer", "writer"),
                     "canManageMembers": role == "organizer",
@@ -680,7 +687,9 @@ class DriveWorld:
         drive = self.drives.get(req.path.split("/drives/")[1])
         if drive is None:
             return google_error(404, "notFound")
-        return {"id": drive["id"], "name": drive["name"], "createdTime": drive["createdTime"]}
+        if self.restrictions_unreadable:
+            return google_error(500, "backendError")
+        return {"id": drive["id"], "name": drive["name"], "createdTime": drive["createdTime"], "restrictions": dict(drive["restrictions"])}
 
     def _admin_guard(self, req: ApiRequest) -> Optional[object]:
         if self._caller(req) != self.admin_email:
