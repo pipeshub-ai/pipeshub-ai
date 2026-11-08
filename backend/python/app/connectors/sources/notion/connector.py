@@ -116,6 +116,7 @@ from app.sources.client.notion.notion import (
 )
 from app.sources.external.notion.notion import NotionDataSource
 from app.utils.concurrency import gather_with_concurrency
+from app.utils.credential_refresh_log import EVENT_CHECK_FAILED, log_refresh_failure
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.public_http import (
     PublicFetchError,
@@ -729,7 +730,7 @@ class NotionConnector(BaseConnector):
                 self.connector_id, name.value if isinstance(name, Connectors) else str(name), refresh_token
             )
         except Exception as e:
-            self.logger.error("Notion token refresh after a 401 failed: %s", e)
+            log_refresh_failure(self.logger, EVENT_CHECK_FAILED, e)
             return False
         return bool(token and getattr(token, "access_token", None))
 

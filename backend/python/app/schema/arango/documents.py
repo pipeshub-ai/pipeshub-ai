@@ -873,6 +873,8 @@ block_schema = {
             # C/C++ function-like macro -> [line, names its body calls], on the file-summary block.
             "macroTable": {"type": ["object", "null"]},
             "referencedNames": {"type": ["array", "null"], "items": {"type": "string"}},
+            # `specifier:name` of the library calls the block makes, rewritten by each edge build.
+            "externalRefs": {"type": ["array", "null"], "items": {"type": "string"}},
             "createdAtTimestamp": {"type": ["number", "null"]},
             "updatedAtTimestamp": {"type": ["number", "null"]},
         },
