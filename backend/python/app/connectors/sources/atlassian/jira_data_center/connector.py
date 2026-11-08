@@ -3521,6 +3521,18 @@ class JiraDataCenterConnector(BaseConnector):
             "leveled_reread": reread is not None,
         }
 
+    async def _mark_levels_to_retry(self, project_key: str) -> None:
+        """Save the retry marker in the project's level map, if it is not there."""
+        if not project_key:
+            return
+        try:
+            stored = json.loads((await self._get_project_sync_checkpoint(project_key) or {}).get("security_levels"))
+        except (TypeError, ValueError):
+            stored = None
+        marker = pre_walk_marker(stored if isinstance(stored, dict) else None)
+        if marker != stored:
+            await self._update_project_sync_checkpoint(project_key, security_levels=json.dumps(marker, sort_keys=True))
+
     async def _record_security_levels(
         self, project_key: str, levels: dict[str, str], *, force: bool = False,
     ) -> None:
@@ -6499,6 +6511,9 @@ class JiraDataCenterConnector(BaseConnector):
                 # by the project. (A stored leveled issue keeps its grants below; its level is not stored.)
                 issue_record.access_rule = AccessRule.RESTRICTED
                 issue_record.rewrite_permissions = True
+                # The write stores the issue's new timestamp, so the sync would skip it: leave the retry marker
+                # a failed sync leaves, and the next sync that reads the levels reads this issue again.
+                await self._mark_levels_to_retry(str(project.get("key") or ""))
                 return (issue_record, [])
             if not settled or skipped_holders:
                 # The level could not be read in full (a null level always can), or a holder did not

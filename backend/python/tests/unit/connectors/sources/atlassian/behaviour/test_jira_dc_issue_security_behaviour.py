@@ -812,6 +812,34 @@ class TestReindex:
         assert hidden_from_project(written) and readers(db, "2") == set()
         assert db.reindexed == []
 
+    async def test_an_issue_closed_by_a_reindex_is_opened_to_its_holders_by_the_next_clean_sync(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [ALICE]})
+        plain = sec_issue("2", "ENG-2", updated=ts(1))
+        jql_search.put(plain)
+        connector, _ = await make_connector(db, store)
+        await sync(connector, jql_search, recent=[plain])
+        digests = json.loads(store.values_for("project_ENG")["security_levels"])
+        assert not hidden_from_project(db.records["2"])
+
+        # Jira gives the issue a level; the reindex sees it while the holders cannot be read.
+        leveled = sec_issue("2", "ENG-2", level=SECRET, updated=ts(2))
+        jql_search.put(leveled)
+        jira.on("GET", f"{API}/issue/2", leveled)
+        serve_scheme(jira, {SECRET: [ALICE]}, members=json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.reindex_records([db.records["2"]])
+        assert hidden_from_project(db.records["2"]) and readers(db, "2") == set()
+        marked = json.loads(store.values_for("project_ENG")["security_levels"])
+        assert marked == {**digests, "*": "retry"}
+
+        # The levels read again with the digests unchanged: only the marker brings the issue back.
+        serve_scheme(jira, {SECRET: [ALICE]})
+        await sync(connector, jql_search, recent=[])
+        assert readers(db, "2") == {("USER", "alice@example.com")}
+        assert "*" not in json.loads(store.values_for("project_ENG")["security_levels"])
+
     async def test_a_stored_leveled_issue_keeps_its_grants_when_the_level_cannot_be_read(
         self, jira, db, store, jql_search,
     ) -> None:
@@ -825,6 +853,7 @@ class TestReindex:
 
         assert db.record_batches == []  # nothing is written over the stored issue's grants
         assert [r.id for r in db.reindexed] == ["t-2"]
+        assert store.values_for("project_ENG") is None  # and no retry is asked for
 
     async def test_a_reindex_does_not_narrow_the_audience_for_a_holder_it_could_not_resolve(
         self, jira, db, store, jql_search,
