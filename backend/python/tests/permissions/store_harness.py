@@ -66,13 +66,14 @@ def vrids_for(world: World, share: bool | str) -> dict[str, str]:
 
 
 async def load(vdb: IVectorDBService, collection: str, worlds: dict[str, World], *, share: bool | str = False,
-               chunks: int = 1, sparse: bool = False) -> Loaded:
+               chunks: int = 1, sparse: bool = False, create: bool = True) -> Loaded:
     """Points for every live record of every world, ids namespaced `<name>:`, no scope fields yet. With `sparse` every point also
     carries the lexical term 1 (for the stores that search it)."""
     graph = WorldGraph()
     from tests.integration.vector_db.helpers import make_collection_config, make_dense
 
-    await vdb.create_collection(collection, make_collection_config())
+    if create:
+        await vdb.create_collection(collection, make_collection_config())
     loaded = Loaded(graph, collection, StaticCollectionLocator([collection]))
     points: list[VectorPoint] = []
     for name, world in worlds.items():

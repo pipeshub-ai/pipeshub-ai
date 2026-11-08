@@ -34,8 +34,6 @@ GRANTS = [s for s in load_all() if s.mutations and all(m.kind in VIEWER_ONLY for
 @pytest.mark.parametrize("scenario", STRUCT, ids=[s.id for s in STRUCT])
 async def test_a_rewritten_subtree_is_hidden_meanwhile_and_exact_after(scenario) -> None:
     env, seen, after = await Env.make(scenario.world), Log(), Log()
-    if env.unstamped:
-        pytest.skip("the back-fill cannot stamp this world to start from")
     await env.change(scenario.mutations)
     await env.audit(seen)                                   # the change committed, nothing rewritten: the old stamps are all still there
     results = await env.settle()

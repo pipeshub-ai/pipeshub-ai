@@ -262,6 +262,9 @@ class InMemoryVectorDBService(IVectorDBService):
                     payload = {**payload, SCOPE_FENCE_FIELD: fence}
                 points[point_id].payload.update(copy.deepcopy(payload))
 
+    async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
+        return sum(_passes(p.payload, count_filter) for p in self._points(collection_name).values())
+
     async def query_nearest_points(
         self, collection_name: str, requests: list[HybridSearchRequest],
     ) -> list[list[SearchResult]]:

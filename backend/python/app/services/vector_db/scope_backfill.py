@@ -15,14 +15,18 @@ the live writers use, so a back-filled point carries what a newly indexed one wo
   fails the virtual record is logged at error and counted (`pipeshub_scope_fields_failed_total{where="marker"}`), and the run reports
   it as stale (exit code 1). Only then can a point keep what it held, which may be exact fields this run wrote before a later step
   failed: run the back-fill again.
-- **Safe beside live indexing.** The back-fill writes a point's scope keys only, never its membership arrays, under the same
-  per-virtual-record lock the live writers take (so in this process the two do not interleave; the command is another process, so
-  only the read-back below covers it). Across processes there is no lock,
-  so every write is followed by a second read of the graph: if the fields differ from what was written, the graph changed
+- **Safe beside live indexing.** The back-fill writes a point's scope keys under the same per-virtual-record lock the live writers take
+  (so in this process the two do not interleave; the command is another process, so only the read-back below covers it). Across processes
+  there is no lock, so every write is followed by a second read of the graph: if the fields differ from what was written, the graph changed
   between the first read and the write, and the point is written again from the new graph (up to `MAX_ROUNDS`, then it is marked
   stale). A live write that lands after ours has read the graph after the change and is right; one that landed before ours is
-  corrected by the second read. A live writer that read the graph long before it wrote (a held-up process) is not stopped here:
-  that needs a fence, which is a separate change.
+  corrected by the second read.
+- **Membership.** A `container` stamp is read through the point's `recordGroupIds`, and a change that only a full pass covers (a change of the
+  whole connector, more roots than the list holds) can leave them old, so the pass also brings `connectorIds`, `recordGroupIds` and
+  `rootRecordGroupIds` to what the graph says, page by page (`ScopeRewriteJob.refresh_membership`). Those writes are by id, checked against the
+  connector's structure generation right before each request, fenced by the generation (or pgvector's `computed_at`) so a held-up writer cannot
+  write older membership over a newer one, and read back from the graph, the store and a search. A membership the graph cannot resolve, or a
+  write the store did not apply, ends the pass `failed` with the old membership alone: the connector is not current and its roots stay.
 """
 
 from __future__ import annotations
@@ -164,6 +168,9 @@ class ScopeBackfill:
         self._graph, self._vdb, self._locator, self._log = graph_provider, vector_db, locator, logger
         self._page_size = page_size
         self._checkpoints = AppDocCheckpoints(graph_provider)
+        from app.services.vector_db.scope_rewrite import ScopeRewriteJob  # (it imports this module)
+
+        self._membership = ScopeRewriteJob(graph_provider, vector_db, locator, logger=logger)
 
     async def run_connector(self, org_id: str, app_id: str, *, restart: bool = False, max_pages: int = MAX_PAGES,
                             close_open_mark: bool = False) -> Progress:
@@ -229,8 +236,10 @@ class ScopeBackfill:
                         break
                     nodes = await stamps.nodes(org_id, frozenset(ids))
                     page_stale = 0
-                    for vrid in sorted({n.vrid for n in nodes.values() if n.vrid and not n.deleted}):
+                    vrids = sorted({n.vrid for n in nodes.values() if n.vrid and not n.deleted})
+                    for vrid in vrids:
                         page_stale += await self._stamp(org_id, vrid) == "stale"
+                    await self._membership.refresh_membership(org_id, app_id, vrids)      # raises when any could not be brought right: the page is not done
                     # counted with the page, so a page written again after a failure is not counted twice
                     moved = replace(p, after=ids[-1], records=p.records + len(ids), stale=p.stale + page_stale)
                     await self._checkpoints.save(app_id, moved)  # only after the page is written

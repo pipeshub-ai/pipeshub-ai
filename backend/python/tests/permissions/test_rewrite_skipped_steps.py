@@ -165,3 +165,13 @@ async def test_the_root_leaves_only_when_a_search_shows_what_was_written() -> No
     assert vdb.refreshes
     stale = [p for p in vdb._points("rewrite").values() if vdb.view.get(str(p.id)) != p.payload]
     assert not stale, "the search view still shows older fields than the store holds"
+
+
+async def test_a_stored_fence_that_is_not_a_number_fails_the_root_and_keeps_it() -> None:
+    ref, mutation, _ = HR
+    env = await Env.make(WorldStore().world(ref))
+    pid = env.loaded.points["w:v-page:Handbook"][0]
+    env.vdb._points("rewrite")[pid].payload["scopeFence"] = "not-a-number"
+    await run_broken(env, mutation)
+    del env.vdb._points("rewrite")[pid].payload["scopeFence"]       # repaired
+    await recovers(env)

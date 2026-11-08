@@ -61,8 +61,6 @@ async def test_random_structural_changes_are_hidden_meanwhile_and_exact_after(co
             continue
         tag = (connector_type, kind, SEED, i, change)
         env, seen, after = await Env.make(world), Log(), Log()
-        if env.unstamped:
-            continue
         await env.change((change,))
         await env.audit(seen)
         await env.settle()
@@ -74,4 +72,4 @@ async def test_random_structural_changes_are_hidden_meanwhile_and_exact_after(co
         assert set(seen.inexact) <= set(base_log.inexact), (tag, seen.inexact[:3])  # (a world the projector gets wrong from scratch stays as it was)
         assert after.inexact == base_log.inexact, (tag, after.inexact[:3], base_log.inexact[:3])
         ran += 1
-    assert ran or WORLDS < 4, "no world of this seed took a structural change"
+    assert ran, "no world of this seed took a structural change"

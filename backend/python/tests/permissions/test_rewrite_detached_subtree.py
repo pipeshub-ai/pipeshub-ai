@@ -33,8 +33,6 @@ def drive_with_an_orphan(app_type: str):
 @pytest.mark.parametrize("app_type", ["DRIVE WORKSPACE", "SHAREPOINT", "CONFLUENCE"])
 async def test_a_move_that_detaches_a_subtree_is_hidden_while_pending(app_type: str, moved: str) -> None:
     env, seen = await Env.make(drive_with_an_orphan(app_type), chunks=2), Log()
-    if env.unstamped:
-        pytest.skip("not a clean world")
     await env.change((M("moved", moved, "orphan"),))
     await env.audit(seen)
     first = await env.job.run_connector(ORG, "w:app")

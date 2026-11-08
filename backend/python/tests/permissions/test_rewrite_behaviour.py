@@ -255,4 +255,4 @@ async def test_more_roots_than_the_list_holds_leave_nothing_to_rewrite_and_nothi
     assert (await env.job.run_connector(ORG, "w:app")).state == "full_pass"
     await env.settle()
     assert not env.pending() and await env.current() == set(env.apps)
-    assert not [x for x in await env.problems() if "recordGroupIds" not in x]       # (a full pass writes scope fields; the sync owns a moved record's membership)
+    assert not await env.problems()

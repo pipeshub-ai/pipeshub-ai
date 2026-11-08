@@ -42,7 +42,7 @@ from app.services.vector_db.scope_rewrite import (
     ScopeRewriteJob,
 )
 from tests.integration.vector_db.helpers import make_dense
-from tests.support.in_memory_vector_db import InMemoryVectorDBService, _passes
+from tests.support.in_memory_vector_db import InMemoryVectorDBService
 
 from . import mutations
 from .model import HIERARCHY_RELATIONS, Mutation
@@ -61,12 +61,9 @@ if TYPE_CHECKING:
 
 class FencedMemoryVectorDB(InMemoryVectorDBService):
     """The in-memory store as the three conditional stores behave: a write carrying a `fence` leaves a point whose `scopeFence` is above it
-    (the fake models that in `update_payload_by_ids`), and the store can count what a filter matches."""
+    (the fake models that in `update_payload_by_ids`)."""
 
     generation_fence = True
-
-    async def count_points(self, collection_name: str, count_filter: Any) -> int:
-        return sum(1 for p in self._points(collection_name).values() if _passes(p.payload, count_filter))
 
 
 COLL = "rewrite"
@@ -147,21 +144,21 @@ class Env:
 
     @classmethod
     async def make(cls, world: World, vdb: IVectorDBService | None = None, *, share: bool | str = False, chunks: int = 1, settle_seconds: float = 0.2,
-                   collection: str = COLL) -> Env:
+                   collection: str = COLL, create: bool = True) -> Env:
         vdb = vdb or FencedMemoryVectorDB()
-        loaded = await load(vdb, collection, {NAME: world}, share=share, chunks=chunks)
+        loaded = await load(vdb, collection, {NAME: world}, share=share, chunks=chunks, create=create)
         for field_name, schema in (*PAYLOAD_KEYWORD_INDEXES, *SCOPE_KEYWORD_INDEXES, *SCOPE_INTEGER_INDEXES):      # (the search filter reads them)
             await vdb.create_index(collection, field_name, schema)
         await vdb.make_searchable(collection)      # (a set_payload finds only the points a search sees)
         backfill = ScopeBackfill(loaded.graph, vdb, loaded.locator, log)
-        stale = 0
         for app in loaded.apps:
             done = await backfill.run_connector(ORG, app)
             assert done.state == DONE, done.line()
-            stale += done.stale
         await vdb.make_searchable(collection)
         env = cls(vdb, loaded, world, world, share, chunks, backfill, ScopeRewriteJob(loaded.graph, vdb, loaded.locator, settle_seconds=settle_seconds))
-        env.unstamped = stale
+        # points the first back-fill left on the stale marker (a stale count alone also counts a placeholder, which has a virtual record and no point)
+        env.unstamped = sum(1 for f in (await read_stamps(vdb, loaded)).values() if f is not None and f.version == 0)
+        assert not env.unstamped, f"the first back-fill left {env.unstamped} point(s) on the stale marker: the world is not one to start from"
         real = vdb.update_payloads_by_ids
 
         async def hooked(*args: Any, **kwargs: Any) -> None:
@@ -191,22 +188,26 @@ class Env:
         """local record id -> prefixed virtual record id (fixed at load)."""
         return {r: PREFIX + v for r, v in vrids_for(self.w0, self.share).items()}
 
-    async def change(self, muts: tuple[Mutation, ...]) -> tuple[dict[str, set[str]], set[str]]:
-        """The graph now says the world after `muts` (the sync transaction committed); the stored points are untouched."""
+    async def change(self, muts: tuple[Mutation, ...], *, whole: bool = False) -> tuple[dict[str, set[str]], set[str]]:
+        """The graph now says the world after `muts` (the sync transaction committed); the stored points are untouched. With `whole` the change is
+        registered as one of the whole connector (nothing listed): only a full pass covers it."""
         before, after = self.world, mutations.apply_all(self.world, muts)
         old = await expected(self.loaded)
         self.graph.add(after, PREFIX, vrids_for(self.w0, self.share))
         self.world = after
         new = await expected(self.loaded)
-        roots, whole = registration(before, after, muts, stamps_changed=old != new)
+        roots, whole_set = registration(before, after, muts, stamps_changed=old != new)
+        if whole:
+            whole_set |= {after.node(m.node).connector for m in muts if after.node(m.node).connector}
+            roots = {}
         flat = {r for rs in roots.values() for r in rs}
         self.changed |= {v for v in old if old[v] != new.get(v)}
         self.subtree |= descendants(before, flat) | descendants(after, flat)
         for c, rs in roots.items():
             await register_pending_roots(self.graph, PREFIX + c, [PREFIX + r for r in rs])      # the generation and the roots, as the sync writes them
-        for c in whole:
+        for c in whole_set:
             await self.graph.increment_node_field(PREFIX + c, "apps", GENERATION_KEY)           # a change nobody lists: only a full pass covers it
-        return roots, whole
+        return roots, whole_set
 
     async def run_job(self, connector: str) -> RewriteResult:
         return await self.job.run_connector(ORG, PREFIX + connector)
@@ -215,14 +216,15 @@ class Env:
         """Rewrite every connector that has roots until none has, with the full pass where the job leaves one to it."""
         results: list[RewriteResult] = []
         for run in range(max_runs + 1):
-            busy = [a for a in self.apps if self.graph.app_docs.get(a, {}).get(PENDING_KEY)]
+            current = await self.current()
+            busy = [a for a in self.apps if self.graph.app_docs.get(a, {}).get(PENDING_KEY) or a not in current]
             if not busy:
                 return results
             if run == max_runs:
                 break
             for app in busy:
                 results.append(await self.job.run_connector(ORG, app))
-                if results[-1].state == "full_pass":
+                if results[-1].state in ("full_pass", "idle") and app not in current:      # nothing to rewrite, or not a rewrite's to do: the full pass
                     assert (await self.backfill.run_connector(ORG, app, restart=True)).state == DONE
         raise AssertionError(f"not settled after {max_runs} runs: {self.pending()}")
 
@@ -454,7 +456,8 @@ async def held_up_writer(env: Env, layer: str, monkeypatch: Any) -> None:
     async def after(name: str) -> None:
         if name == "update_payloads_by_ids" and stale_writes:
             await env.audit(seen)
-            assert not await env.problems(), "a held-up writer's older fields are in the store"
+            stored_wrong = [x for x in await env.problems() if not x.startswith("not settled")]      # (roots are still pending: that is not the point here)
+            assert not stored_wrong, ("a held-up writer's older fields are in the store", stored_wrong[:3])
 
     if layer == "store_fence":
         env.before_write = hold

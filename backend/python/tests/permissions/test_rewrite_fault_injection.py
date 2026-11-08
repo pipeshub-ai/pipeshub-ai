@@ -58,8 +58,6 @@ async def test_a_run_killed_at_any_step_hides_what_is_stale_and_the_next_run_end
     killed_with_roots = killed_without = 0
     for k in range(1, steps + 1):
         env = await prepared(scenario, share=share, chunks=chunks)
-        if env.unstamped:
-            pytest.skip("not a clean world")
         seen = {"n": 0, "live": True}
 
         async def die(_: str, k=k, seen=seen) -> None:
@@ -95,8 +93,6 @@ async def test_transient_failures_never_let_a_root_go_over_an_inexact_store(scen
     for _ in range(30):
         p = rng.choice([0.004, 0.01, FAULT_P])
         env = await prepared(scenario, share=rng.random() < 0.5, chunks=rng.choice([1, 2]))
-        if env.unstamped:
-            pytest.skip("not a clean world")
         armed = {"on": True}
 
         async def flaky(name: str, armed=armed, p=p) -> str | None:

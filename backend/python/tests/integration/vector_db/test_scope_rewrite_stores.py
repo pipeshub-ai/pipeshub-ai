@@ -13,6 +13,8 @@ Requires: docker compose -f tests/integration/compose/vector-db.yml up -d (pgvec
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import copy
 from typing import TYPE_CHECKING
 
@@ -24,7 +26,7 @@ from app.services.vector_db.pgvector.config import PgVectorConfig
 from app.services.vector_db.pgvector.pgvector import PgVectorService
 from tests.integration.db.conftest import cluster, env  # noqa: F401  (fixtures, pgvector)
 from tests.integration.vector_db.conftest import make_collection
-from tests.integration.vector_db.helpers import make_dense
+from tests.integration.vector_db.helpers import make_collection_config, make_dense
 from tests.permissions.model import Mutation as M
 from tests.permissions.rewrite_kit import Env, Killed, Log, Tap, held_up_writer
 from tests.permissions.scenario import WorldStore
@@ -53,12 +55,13 @@ class _Contract:
     async def make(self, svc, world, **kw) -> Env:
         return await Env.make(world, svc, collection=make_collection(self.store), settle_seconds=60.0, **kw)
 
+    async def drop(self, svc, env: Env) -> None:
+        await svc.delete_collection(env.loaded.collection)
+
     @pytest.mark.parametrize("scenario", CHOSEN, ids=[s.id for s in CHOSEN])
     async def test_a_rewritten_subtree_is_hidden_meanwhile_exact_after_and_searchable(self, vector_service, scenario) -> None:
         env = await self.make(vector_service, scenario.world, chunks=2)
         try:
-            if env.unstamped:
-                pytest.skip("not a clean world")
             before, after = Log(), Log()
             await env.change(scenario.mutations)
             await env.audit(before)
@@ -69,7 +72,7 @@ class _Contract:
             assert not after.search_mismatch, after.search_mismatch[:3]
             assert not await env.problems()
         finally:
-            await vector_service.delete_collection(env.loaded.collection)
+            await self.drop(vector_service, env)
 
     async def test_a_second_organisations_point_is_not_touched(self, vector_service) -> None:
         env = await self.make(vector_service, HR)
@@ -79,15 +82,14 @@ class _Contract:
             theirs["metadata"]["orgId"] = OTHER_ORG
             theirs.update({"scopeStamp": "union", "pathIds": ["theirs"], "aclScope": ["theirs"], "connectorIds": ["theirs"], "recordGroupIds": ["g-theirs"]})
             pid = "00000000-0000-4000-8000-0000000000aa"
-            await vector_service.upsert_points(env.loaded.collection, [VectorPoint(id=pid, dense_vector=make_dense([1.0, 9.0]), payload=theirs)])
+            await in_org(OTHER_ORG, vector_service.upsert_points(env.loaded.collection, [VectorPoint(id=pid, dense_vector=make_dense([1.0, 9.0]), payload=theirs)]))
             await env.change((M("moved", "page:Handbook", "space:ALL", "space:ALL"),))
             await env.settle()
             assert not await env.problems()
-            with for_org(OTHER_ORG, job="test"):
-                got = (await vector_service.retrieve_points(env.loaded.collection, [pid]))
+            got = await in_org(OTHER_ORG, vector_service.retrieve_points(env.loaded.collection, [pid]))
             assert got and got[0].payload["pathIds"] == ["theirs"] and got[0].payload["recordGroupIds"] == ["g-theirs"]
         finally:
-            await vector_service.delete_collection(env.loaded.collection)
+            await self.drop(vector_service, env)
 
     async def test_a_run_killed_half_way_and_run_again_ends_exact(self, vector_service) -> None:
         env = await self.make(vector_service, HR, chunks=2)
@@ -111,7 +113,7 @@ class _Contract:
             await env.settle()
             assert not await env.problems()
         finally:
-            await vector_service.delete_collection(env.loaded.collection)
+            await self.drop(vector_service, env)
 
     async def test_a_held_up_writer_cannot_write_over_a_newer_rewrite(self, vector_service, monkeypatch) -> None:
         for layer in ("generation_check", "store_fence") if vector_service.generation_fence else ("generation_check",):
@@ -119,9 +121,19 @@ class _Contract:
             try:
                 await held_up_writer(env, layer, monkeypatch)
             finally:
-                await vector_service.delete_collection(env.loaded.collection)
+                await self.drop(vector_service, env)
                 monkeypatch.undo()
                 monkeypatch.setenv("ACL_SCOPE_FIELDS", "on")
+
+
+async def in_org(org: str, call):
+    """Run a store call for another organisation than the test's: in a context of its own, as a request of that organisation would."""
+
+    async def run():
+        with for_org(org, job="test"):
+            return await call
+
+    return await asyncio.create_task(run(), context=contextvars.Context())
 
 
 async def _no(_: str) -> None:
@@ -152,10 +164,20 @@ class TestRedisRewrite(_Contract):
         return redis_service
 
 
+@pytest.mark.asyncio(loop_scope="function")      # (its service is made per test, from the cluster fixture)
 class TestPgVectorRewrite(_Contract):
     """pgvector fences by the time the graph was read (`computed_at`), not by a generation; every call names the organisation it runs for."""
 
     store = "pgvector"
+
+    async def make(self, svc, world, **kw) -> Env:
+        """A collection is created outside any organisation (the catalog binds the system); everything else runs inside the world's."""
+        name = make_collection(self.store)
+        await asyncio.create_task(svc.create_collection(name, make_collection_config()), context=contextvars.Context())
+        return await Env.make(world, svc, collection=name, settle_seconds=60.0, create=False, **kw)
+
+    async def drop(self, svc, env: Env) -> None:
+        await asyncio.create_task(svc.delete_collection(env.loaded.collection), context=contextvars.Context())
 
     @pytest.fixture(autouse=True)
     def _org(self) -> object:

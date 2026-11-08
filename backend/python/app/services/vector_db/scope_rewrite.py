@@ -266,18 +266,27 @@ class ScopeRewriteJob:
 
     # ---- one page -----------------------------------------------------------------------------------------
 
-    async def _page(self, org_id: str, connector_id: str, vrids: list[str], result: RewriteResult) -> None:
+    async def refresh_membership(self, org_id: str, connector_id: str, vrids: Sequence[str]) -> None:
+        """Bring `connectorIds`, `recordGroupIds` and `rootRecordGroupIds` of these virtual records' points to what the graph says, nothing else
+        (a `container` stamp is read through them). For the full back-fill, which writes scope fields only. Runs inside the organisation, with the
+        guard, the fence and the read-backs of every other write; raises `RewriteIncomplete` when any virtual record could not be placed or
+        shown, leaving its points as they were (the pass is then not done)."""
+        ordered = sorted(set(vrids))
+        for i in range(0, len(ordered), PAGE):
+            await self._page(org_id, connector_id, ordered[i:i + PAGE], RewriteResult(org_id, connector_id), keys=MEMBERSHIP_KEYS)
+
+    async def _page(self, org_id: str, connector_id: str, vrids: list[str], result: RewriteResult, *, keys: Sequence[str] | None = None) -> None:
         todo, failed = vrids, dict[str, str]()
         async with vrid_write_locks(vrids):
             for _ in range(MAX_ROUNDS):
                 epoch, at = await self._epoch(connector_id), datetime.now(UTC)
-                plans, unplaced = await self._plans(org_id, todo)
+                plans, unplaced = await self._plans(org_id, todo, keys)
                 failed.update(unplaced)
                 try:
                     written = await self._write(org_id, connector_id, plans, epoch, at, result)
                 except GenerationMoved:
                     continue  # the graph changed after it was read; nothing from it was sent: read it again
-                if not (todo := await self._differs(org_id, plans, written)):
+                if not (todo := await self._differs(org_id, plans, written, keys)):
                     break
             else:
                 await self._mark_stale(org_id, connector_id, todo, epoch, at)
@@ -299,28 +308,36 @@ class ScopeRewriteJob:
         if now.generation != epoch.generation or not same_mark(now.unsafe, epoch.unsafe):
             raise GenerationMoved(f"{connector_id} changed after its graph was read")
 
-    async def _plan_one(self, org_id: str, vrid: str) -> _Plan:
+    async def _plan_one(self, org_id: str, vrid: str, keys: Sequence[str] | None = None) -> _Plan:
         # one read of the graph gives the membership and the fields, so a point never holds the one of one read and the other of another
         state = await resolve_virtual_record_state(self._graph, vrid, org_id=org_id)
         if not state.complete:
             raise Unplaceable("the graph read was incomplete")
         if not state.records:  # its records are gone: the points await the delete path and stay on the legacy filter; membership is left as it is
-            return _Plan(ScopeFields.legacy().to_payload(), list(await self._locator.all_collections(fresh=True, strict=True)))
+            return _Plan({} if keys else ScopeFields.legacy().to_payload(), list(await self._locator.all_collections(fresh=True, strict=True)))
         if not (state.connector_ids and state.roots_resolved):
             raise Unplaceable("membership unreadable (no connector, or the group roots could not be resolved)")
-        fields = await scope_fields_for_state(self._graph, state, org_id, self._log)
-        if fields == STALE_SCOPE:
-            raise Unplaceable("no projection")
         member = {CONNECTOR_IDS_FIELD: state.connector_ids, RECORD_GROUP_IDS_FIELD: state.record_group_ids,
                   ROOT_RECORD_GROUP_IDS_FIELD: state.root_record_group_ids}
-        return _Plan(fields.to_payload() | member, list(self._locator.collections_for_records(state.records)))
+        collections = list(self._locator.collections_for_records(state.records))
+        if keys:      # the membership alone: a virtual record whose scope fields cannot be told still gets the membership the graph gives it
+            return _Plan(member, collections)
+        fields = await scope_fields_for_state(self._graph, state, org_id, self._log)
+        if fields == STALE_SCOPE:
+            # The projector gives the stale marker for a virtual record whose records it skips (a placeholder). With a point behind it that is a
+            # failure (the point keeps what it held); with none there is nothing to write.
+            if any([await self._scan(org_id, name, [vrid]) for name in collections]):
+                raise Unplaceable("no projection")
+            return _Plan({}, [])
+        return _Plan(fields.to_payload() | member, collections)
 
-    async def _plans(self, org_id: str, vrids: Sequence[str]) -> tuple[dict[str, _Plan], dict[str, str]]:
+    async def _plans(self, org_id: str, vrids: Sequence[str], keys: Sequence[str] | None = None) -> tuple[dict[str, _Plan], dict[str, str]]:
+        """The plan of each virtual record; with `keys` only those payload keys of it."""
         plans: dict[str, _Plan] = {}
         unplaced: dict[str, str] = {}
         for v in vrids:
             try:
-                plans[v] = await self._plan_one(org_id, v)
+                plans[v] = await self._plan_one(org_id, v, keys)
             except Exception as exc:  # a virtual record that cannot be told keeps its points as they are; the run fails and its root stays
                 SCOPE_STAMP_FAILED.inc("rewrite")
                 unplaced[v] = f"{type(exc).__name__}: {exc}"
@@ -368,9 +385,9 @@ class ScopeRewriteJob:
             await self._guard(connector_id, epoch)
             await self._vdb.update_payloads_by_ids(name, {p: updates[p] for p in ids[i:i + WRITE_BATCH]}, org_id=org_id, **extra)
 
-    async def _differs(self, org_id: str, plans: Mapping[str, _Plan], written: Mapping[tuple[str, str], str]) -> list[str]:
+    async def _differs(self, org_id: str, plans: Mapping[str, _Plan], written: Mapping[tuple[str, str], str], keys: Sequence[str] | None = None) -> list[str]:
         """The virtual records whose graph, stored points or search view do not show what was written: a second read of each."""
-        again, _ = await self._plans(org_id, list(plans))
+        again, _ = await self._plans(org_id, list(plans), keys)
         bad = {v for v, p in plans.items() if v not in again or not _same(again[v].payload, p.payload)}
         by_collection: dict[str, list[str]] = {}
         for name, pid in written:

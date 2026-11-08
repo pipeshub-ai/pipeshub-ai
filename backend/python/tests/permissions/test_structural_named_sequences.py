@@ -64,8 +64,6 @@ async def test_adversarial(case, share, chunks, mode) -> None:
     if app_type:
         world = retyped(world, app_type)
     env, seen = await Env.make(world, share=share, chunks=chunks), Log()
-    if env.unstamped:
-        pytest.skip("the back-fill cannot stamp this world to start from")
     await play(env, muts, mode, seen)
     await env.audit(seen)
     assert not seen.leaks and not seen.pending_admits, (sid, mode, seen.leaks[:3], seen.pending_admits[:3])

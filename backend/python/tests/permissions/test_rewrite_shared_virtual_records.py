@@ -44,8 +44,6 @@ async def test_a_shared_virtual_record_keeps_every_sharer(app_type: str, share, 
         if not muts or not registration(world, mutations.apply_all(world, tuple(muts)), tuple(muts))[0]:
             continue
         env, seen = await Env.make(world, share=share, chunks=2), Log()
-        if env.unstamped:
-            continue
         tag = (app_type, share, mode, i, [(m.kind, m.node, m.ref, m.value) for m in muts])
         await play(env, muts, mode, seen)
         await env.audit(seen)
@@ -79,7 +77,7 @@ async def test_a_cross_connector_virtual_record_is_rewritten_by_each_connector()
             world = retyped(base, app_type)
             env = await Env.make(world, share="cross", chunks=2)
             shared = sorted(r for r, v in env.vrids().items() if v.endswith("v-cross"))
-            if len(shared) < 2 or env.unstamped:
+            if len(shared) < 2:
                 continue
             a, b = shared[0], shared[1]
             if (m := await _changes_the_shared_stamp(world, b)) is None:
@@ -95,4 +93,4 @@ async def test_a_cross_connector_virtual_record_is_rewritten_by_each_connector()
             assert not seen.leaks and not seen.pending_admits, (seen.leaks[:3], seen.pending_admits[:3])
             assert not await env.problems()
             return
-    pytest.skip("no generated world has a record shared by two connectors whose change moves the shared stamp")
+    pytest.fail("no generated world has a record shared by two connectors whose change moves the shared stamp")
