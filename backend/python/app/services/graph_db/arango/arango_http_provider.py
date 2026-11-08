@@ -4947,6 +4947,48 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 raise
             return {}
 
+    async def find_blocks_by_external_ref_prefix(
+        self,
+        org_id: str,
+        connector_id: str,
+        prefixes: list[str],
+        limit: int,
+        record_group_ids: list[str] | None = None,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict[str, Any]]:
+        if not prefixes:
+            return []
+        # A prefix test cannot use an array index; the (orgId, connectorId, ...) index scopes the scan.
+        query = f"""
+        FOR b IN {CollectionNames.BLOCKS.value}
+            FILTER b.orgId == @orgId AND b.connectorId == @connectorId
+            FILTER @groups == null OR b.recordGroupId IN @groups
+            FILTER LENGTH(
+                FOR r IN (b.externalRefs || [])
+                    FOR p IN @prefixes
+                        FILTER STARTS_WITH(r, p)
+                        LIMIT 1
+                        RETURN 1
+            ) > 0
+            SORT b._key
+            LIMIT @limit
+            RETURN b
+        """
+        try:
+            return await self.http_client.execute_aql(
+                query,
+                bind_vars={"orgId": org_id, "connectorId": connector_id, "prefixes": prefixes, "limit": limit,
+                           "groups": record_group_ids},
+                txn_id=transaction,
+            ) or []
+        except Exception as e:
+            self.logger.error(f"Find blocks by external ref failed: {e}")
+            if raise_on_error:
+                raise
+            return []
+
     async def get_edges_by_target_keys(
         self,
         target_keys: list[str],

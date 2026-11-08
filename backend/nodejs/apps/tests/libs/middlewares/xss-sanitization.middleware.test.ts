@@ -1049,6 +1049,25 @@ describe('XSS Sanitization Middleware', () => {
       expect(bad.status).to.equal(400)
     })
 
+    it('accepts source text in the code search, read and resolve fields, unchanged, but not in their other fields', async () => {
+      const cases: Array<[string, Record<string, string>]> = [
+        ['/api/v1/code-graph/search', { pattern: 'vector<int>::push_back', path: 'src/a<b>.cpp' }],
+        ['/api/v1/code-graph/semantic-search', { query: 'where is List<String> built' }],
+        ['/api/v1/code-graph/read', { qualified_name: 'operator<<', file_path: 'src/x.cpp' }],
+        ['/api/v1/code-graph/outline', { file_path: 'src/a<b>.cpp' }],
+        ['/api/v1/graph/resolve', { qualifiedName: 'Map<K, V>::get', filePath: 'src/a<b>.java' }],
+      ]
+      for (const [route, fields] of cases) {
+        const ok = await post(route, fields)
+        expect(ok.status, route).to.equal(200)
+        for (const [key, value] of Object.entries(fields)) {
+          expect(ok.body.received[key], `${route} ${key}`).to.equal(value)
+        }
+        const bad = await post(route, { ...fields, repo: '<script>alert(1)</script>' })
+        expect(bad.status, `${route} other field`).to.equal(400)
+      }
+    })
+
     it('accepts <id> in the query of POST /api/v1/search/entities, unchanged, but not in its other fields', async () => {
       const ok = await post('/api/v1/search/entities', { query: question })
       expect(ok.status).to.equal(200)

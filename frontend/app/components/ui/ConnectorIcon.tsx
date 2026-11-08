@@ -200,7 +200,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'huggingface': { svg: svg('huggingface'), fallback: 'smart_toy' },
   'atlassian': { svg: svg('atlassian'), fallback: 'account_tree' },
   'discord': { svg: null, fallback: 'forum' },
-  'posthog': { svg: null, fallback: 'insights' },
+  'posthog': { svg: svg('posthog'), fallback: 'insights' },
   'brave': { svg: svg('brave'), fallback: 'travel_explore' },
   'stripe': { svg: svg('stripe'), fallback: 'payments' },
   'paypal': { svg: svg('paypal'), fallback: 'payments' },

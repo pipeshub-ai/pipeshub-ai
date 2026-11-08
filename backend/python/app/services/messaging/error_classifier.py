@@ -38,6 +38,16 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
 
 
+# The content could not be processed: a retry fails the same way.
+CONTENT_ERRORS = (
+    DocumentProcessingError,
+    ChunkingError,
+    ExtractionError,
+    ProcessingError,
+    BlockContainerValidationError,
+)
+
+
 class MessageErrorType:
     """Error type constants for classification."""
 
@@ -68,7 +78,7 @@ _RETRYABLE_HTTP_STATUSES = frozenset({
 })
 
 
-def _extract_status_code(exc: Exception) -> Optional[int]:
+def extract_status_code(exc: Exception) -> Optional[int]:
     """Extract HTTP status code from various exception types.
 
     Supports:
@@ -391,11 +401,7 @@ class MessageErrorClassifier:
             if isinstance(
                 chain_exc,
                 (
-                    DocumentProcessingError,
-                    ChunkingError,
-                    ExtractionError,
-                    ProcessingError,
-                    BlockContainerValidationError,
+                    *CONTENT_ERRORS,
                     NonRetryableError,
                     ImportError,
                     ModuleNotFoundError,
@@ -432,7 +438,7 @@ class MessageErrorClassifier:
             cause = cause.__cause__
 
         # 1. Check for HTTP status code in exception
-        status_code = _extract_status_code(root_exc)
+        status_code = extract_status_code(root_exc)
         if status_code is not None:
             return MessageErrorClassifier.classify_by_http_status(status_code)
 
@@ -463,16 +469,7 @@ class MessageErrorClassifier:
 
         # 6-10. Processing/content-based errors = terminal (will always fail on retry)
         # These are checked BEFORE the generic IndexingError check
-        if isinstance(
-            root_exc,
-            (
-                DocumentProcessingError,
-                ChunkingError,
-                ExtractionError,
-                ProcessingError,
-                BlockContainerValidationError,
-            ),
-        ):
+        if isinstance(root_exc, CONTENT_ERRORS):
             return MessageErrorType.TERMINAL
 
         # 11. Timeout/network = transient (infrastructure)

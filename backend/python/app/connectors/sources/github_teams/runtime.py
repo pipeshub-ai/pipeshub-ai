@@ -28,6 +28,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import extract_source_status
 from app.connectors.core.sync.sync_progress import report_throttled
 from app.sources.client.github.github import GitHubResponse
+from app.utils.credential_refresh_log import EVENT_CHECK_FAILED, log_refresh_failure
 
 from .constants import (
     GITHUB_SEARCH_CONCURRENCY,
@@ -215,7 +216,7 @@ class RuntimeHelper:
             await self.refresh_token_if_needed()
             return True
         except Exception as e:
-            self.logger.error("GitHub OAuth token refresh failed: %s", e, exc_info=True)
+            log_refresh_failure(self.logger, EVENT_CHECK_FAILED, e)
             return False
 
     # ------------------------------------------------------------------

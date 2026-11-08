@@ -47,6 +47,8 @@ from app.connectors.core.sync.sync_progress import (
 from app.core.org_context import spawn_in_request
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.permissions.structure_generation import note_structure_change
+from app.utils import error_class
+from app.utils.logging_fields import bind_log_fields, log_event, reset_log_fields
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -121,8 +123,10 @@ async def write_app_status(
     try:
         await graph_provider.batch_upsert_nodes([payload], CollectionNames.APPS.value)
     except Exception as e:
-        logger.error(
-            f"❌ Failed to write status={status} for connector {connector_id}: {e}"
+        # connector_id passed too: the repair route calls this outside a run.
+        error_class.log_failure(
+            logger, "sync_step.failed", e, level=logging.ERROR,
+            step="status_write", app_status=status, connector_id=connector_id,
         )
         return False
     return True
@@ -198,7 +202,7 @@ async def _deleting_or_gone(
             document_key=connector_id, collection=CollectionNames.APPS.value
         )
     except Exception as e:
-        logger.warning(f"Could not read {connector_id} before its IDLE write: {e}")
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.WARNING, step="deleting_check")
         return False
     return not doc or doc.get("status") == "DELETING"
 
@@ -279,17 +283,12 @@ async def _finalize(
         ended[ConnectorStateKeys.ACTION_ITEMS] = (
             json.dumps([item.model_dump(by_alias=True) for item in action_items]) if action_items else None
         )
-    if full_sync_cut_short:
-        logger.warning(
-            f"Full sync for connector {connector_id} did not finish or skipped part of the source; the next sync "
-            "will run in full"
-        )
     if lease is None or not lease.lost.is_set():
         # Not over a delete: the status is an upsert, so writing it after the
         # delete removed the doc resurrected a ghost App node, and writing it
         # during one let a second DELETE through the "already deleting" guard.
         if await _deleting_or_gone(graph_provider, logger, connector_id):
-            logger.info(f"Not writing IDLE for {connector_id}: it is being deleted")
+            logger.info("Not writing IDLE: the connector is being deleted")
         else:
             # An update, not the upsert write_app_status does: it cannot create
             # the node if the read above failed or a delete landed since.
@@ -302,7 +301,7 @@ async def _finalize(
                      **owed, **still_requested, **ended},
                 )
             except Exception as e:
-                logger.error(f"❌ Failed to write status=IDLE for connector {connector_id}: {e}")
+                error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="idle_write")
     elif owed:
         # The new owner's status is not ours to write, but the debt is: whatever
         # it runs next must be a full sync. Only ever set, so it cannot undo
@@ -310,7 +309,7 @@ async def _finalize(
         try:
             await graph_provider.update_node(connector_id, CollectionNames.APPS.value, owed)
         except Exception as e:
-            logger.error(f"❌ Could not record the owed full sync for {connector_id}: {e}")
+            error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="owed_full_sync")
     if lease is not None and coordinator is not None:
         await coordinator.end(lease)
     if connector is not None:
@@ -318,7 +317,7 @@ async def _finalize(
         try:
             await dispose_connector(connector)
         except Exception as e:
-            logger.warning(f"Connector cleanup failed for {connector_id}: {e}")
+            error_class.log_failure(logger, "sync_step.failed", e, level=logging.WARNING, step="dispose")
 
     # The sync may have added or removed records; drop the query service's
     # cached view of this connector so the next search sees them. Every entry
@@ -329,7 +328,7 @@ async def _finalize(
     try:
         await notify_connector_sync_completed(connector_id, org_id)
     except Exception as e:
-        logger.warning(f"Cache invalidation failed for {connector_id}: {e}")
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.WARNING, step="cache_invalidation")
 
     # A slot just freed, so anything parked at the limit can go. Failures here
     # must not escape: this runs in a detached finalizer whose real job is the
@@ -337,7 +336,7 @@ async def _finalize(
     try:
         await drain_queued_syncs(graph_provider, logger)
     except Exception as e:
-        logger.error(f"Could not release queued syncs: {e}")
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="drain")
 
     # Re-issue any resync that was declined while this one held the lease.
     # After the release, so it can take the lease; after the drain, so it
@@ -359,7 +358,7 @@ async def _kh_scope_begin(
     try:
         return await graph_provider.kh_scope_mark_stale(connector_id)
     except Exception as e:
-        logger.error(f"❌ Could not mark knowledge hub scopes stale for {connector_id}: {e}")
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="kh_scope_begin")
         return None
 
 
@@ -375,7 +374,7 @@ async def _kh_scope_end(
         if stamp and await graph_provider.kh_scope_enabled():
             await graph_provider.kh_scope_stamp(connector_id)
     except Exception as e:
-        logger.error(f"❌ Knowledge hub scope stamp failed for {connector_id}: {e}")
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="kh_scope_end")
 
 
 # How long a queued connector may sit with its request already submitted before
@@ -456,7 +455,7 @@ async def _drain_once(
             ],
         )
     except Exception as e:
-        logger.error(f"Could not read the queued syncs: {e}")
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="drain")
         return []
 
     # A connector disabled or signed out while it waited is owed nothing: the
@@ -476,9 +475,11 @@ async def _drain_once(
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                     },
                 )
-                logger.info(f"Dropped queued sync of inactive connector {doc['id']}")
+                logger.info("Dropped the queued sync of an inactive connector", extra={"target_connector_id": doc["id"]})
             except Exception as e:
-                logger.error(f"Could not clear queued inactive connector {doc.get('id')}: {e}")
+                error_class.log_failure(
+                    logger, "sync_step.failed", e, level=logging.ERROR, step="drain", target_connector_id=doc.get("id")
+                )
             continue
         runnable.append(doc)
     queued = runnable
@@ -532,9 +533,8 @@ async def _drain_once(
             break
         if len(started) >= _DRAIN_MAX_PER_PASS:
             logger.warning(
-                "Drain hit its %d-per-pass cap with %d still queued; the next "
-                "completion or sweep takes the rest",
-                _DRAIN_MAX_PER_PASS, len(ids) - len(started),
+                "Drain hit its per-pass cap; the next completion or sweep takes the rest",
+                extra={"cap": _DRAIN_MAX_PER_PASS, "still_queued": len(ids) - len(started)},
             )
             break
         if await dispatcher.submit(spec) is not SubmitResult.ACCEPTED:
@@ -553,7 +553,9 @@ async def _drain_once(
         started.append(spec.connector_id)
 
     if started:
-        logger.info("Released %d queued sync(s): %s", len(started), started)
+        logger.info(
+            "Released queued syncs", extra={"released": len(started), "target_connector_ids": ",".join(started)}
+        )
     return started
 
 
@@ -596,8 +598,8 @@ async def resolve_resync_specs(
             )
     if wanted:
         logger.warning(
-            "Pending resync flagged on %d connector(s) that belong to no active "
-            "org; leaving them alone: %s", len(wanted), sorted(wanted),
+            "Pending resync flagged on connectors that belong to no active org; leaving them alone",
+            extra={"unowned": len(wanted), "target_connector_ids": ",".join(sorted(wanted))},
         )
     return specs
 
@@ -630,27 +632,21 @@ async def _reissue_pending_resync(
             return
         dispatcher = get_dispatcher()
         if dispatcher is None:
-            logger.warning(
-                "Pending resync for %s not re-issued here (no dispatcher); left "
-                "flagged for the sweep", connector_id,
-            )
+            logger.warning("Pending resync not re-issued here (no dispatcher); left flagged for the sweep")
             return
         result = await dispatcher.submit(resync_spec)
         if result is not SubmitResult.ACCEPTED:
             # Still pending by definition — leave the flag for the sweep.
-            logger.warning(
-                "Re-issued resync for %s was not accepted (%s); left flagged",
-                connector_id, result,
-            )
+            logger.warning("Re-issued resync was not accepted; left flagged", extra={"submit_result": result.value})
             return
         await graph_provider.update_node(
             connector_id,
             CollectionNames.APPS.value,
             {ConnectorStateKeys.PENDING_RESYNC: False},
         )
-        logger.info("Re-issued declined resync for %s", connector_id)
+        logger.info("Re-issued the declined resync")
     except Exception as e:
-        logger.error(f"Could not re-issue pending resync for {connector_id}: {e}")
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="reissue")
 
 
 def _begin_full_sync_run(
@@ -684,7 +680,7 @@ async def _finish_full_sync_memberships(
     try:
         await finish(connector_id, seen)
     except Exception as e:
-        logger.error(f"Could not give the groups the members the full sync of {connector_id} read: {e}")
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="finish_memberships")
         await note_structure_change(graph_provider, connector_id, logger)  # part of it may have run
         return False
     return True
@@ -709,15 +705,14 @@ async def _unlink_what_full_sync_missed(
     if not isinstance(coverage, FullSyncCoverage):
         coverage = FullSyncCoverage()
     if not coverage.lists_everything:
-        logger.debug(f"Full sync of {connector_id}: the source lists only part of itself; nothing is unlinked")
+        logger.debug("Full sync: the source lists only part of itself; nothing is unlinked")
         if not coverage.complete:
             return True
         # The groups' members were still read in full, so a member removed at the source goes.
         return await _finish_full_sync_memberships(connector, connector_id, graph_provider, logger, seen)
     if not coverage.complete:
         logger.warning(
-            f"Full sync of {connector_id} skipped part of the source after an error; "
-            "nothing it did not see is unlinked this time"
+            "Full sync skipped part of the source after an error; nothing it did not see is unlinked this time"
         )
         # Owe one retry, not one per retry: a source that always fails part of the
         # way (a quota, one unreadable item) would otherwise run in full forever.
@@ -729,7 +724,7 @@ async def _unlink_what_full_sync_missed(
     _INCOMPLETE_FULL_SYNC_RETRYING.discard(connector_id)
     if seen.count() == 0:
         # A sync that wrote nothing at all most likely failed without saying so.
-        logger.warning(f"Full sync of {connector_id} wrote nothing; leaving every link in place")
+        logger.warning("Full sync wrote nothing; leaving every link in place")
         return True
     if not await _finish_full_sync_memberships(connector, connector_id, graph_provider, logger, seen):
         return False
@@ -741,14 +736,14 @@ async def _unlink_what_full_sync_missed(
             windowed_group_types=coverage.windowed_group_types,
         )
     except Exception as e:
-        logger.error(f"Could not unlink what the full sync of {connector_id} missed: {e}")
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="unlink")
         await note_structure_change(graph_provider, connector_id, logger)  # part of it may have run
         return False
     if deleted or not ok:
         # a structural write made outside the transaction store (it removes hierarchy, group, inherit and grant edges)
         await note_structure_change(graph_provider, connector_id, logger)
     if ok:
-        logger.info(f"Full sync of {connector_id}: removed {deleted} edge(s) of nodes it did not see")
+        logger.info("Full sync removed the edges of nodes it did not see", extra={"removed_edges": deleted})
     return bool(ok)
 
 
@@ -961,15 +956,27 @@ async def _mark_first_sync(
         logger.debug(f"Could not mark the first sync of {connector_id}: {e}")
 
 
-def _run_outcome(*, stopped: bool, failed: bool, skipped: bool, finished: bool) -> SyncRunOutcome:
-    if stopped:
+def _run_outcome(*, stopped: bool, failed: bool, skipped: bool, finished: bool, lost: bool) -> SyncRunOutcome:
+    # A lost lease ends _run_until_aborted without raising, so `finished` is set: the run was still cut short.
+    if stopped or lost:
         return SyncRunOutcome.STOPPED
     if failed:
         return SyncRunOutcome.FAILED
     if skipped:
         return SyncRunOutcome.SKIPPED
-    # Not finished without an error: the lease was lost and the run cut short.
+    # Only a BaseException other than CancelledError (SystemExit) leaves every flag unset.
     return SyncRunOutcome.SUCCEEDED if finished else SyncRunOutcome.STOPPED
+
+
+def _stop_cause(lease: SyncLease | None, coordinator: SyncCoordinator | None, *, lost: bool) -> str:
+    """Why a stopped run stopped, for its sync_run.end line."""
+    if lost:
+        return "lease_lost"
+    if lease is not None and lease.stop_requested.is_set():
+        return "requested"
+    if getattr(coordinator, "shutting_down", False) is True:
+        return "shutdown"
+    return "cancelled"
 
 
 async def run_sync_task(
@@ -992,7 +999,7 @@ async def run_sync_task(
     finished = False
     unlink_failed = False
     skipped_code: str | None = None
-    error: dict[str, object] | None = None
+    error_detail: dict[str, object] | None = None
     full_sync = start_status == AppStatus.FULL_SYNCING.value
     processor, seen = None, None
     scope_generation: int | None = None
@@ -1010,7 +1017,11 @@ async def run_sync_task(
         trigger=SyncTrigger.parse(trigger),
     )
     progress_token = set_current_sync_progress(progress)
-    logger.info(f"▶️ Starting sync run {run_sync_id} for connector {connector_id}")
+    # On every line of the run: the connector's, the processor's and the finalizer task's (it copies the context).
+    fields_token = bind_log_fields(run_id=run_sync_id, connector_id=connector_id)
+    sync_type = "full" if full_sync else "incremental"
+    log_event(logger, "sync_run.start", sync_type=sync_type)
+    error: Exception | None = None
     try:
         # Inside the try: if it raised before it, the finalizer below would never
         # write IDLE or release the lease.
@@ -1050,7 +1061,7 @@ async def run_sync_task(
                 )
             await _mark_first_sync(graph_provider, logger, connector_id, doc)
         except Exception as e:
-            logger.warning(f"Could not clear pendingResync for {connector_id}: {e}")
+            error_class.log_failure(logger, "sync_step.failed", e, level=logging.WARNING, step="clear_pending_resync")
         progress_writer = spawn_in_request(
             _write_progress_while_running(graph_provider, logger, connector_id, progress, lease, run_mark),
             name=f"sync_progress_{connector_id}",
@@ -1086,7 +1097,8 @@ async def run_sync_task(
         skipped_code = exc.code
     except Exception as exc:
         failed = True
-        error = classify_sync_error(exc)
+        error = exc
+        error_detail = classify_sync_error(exc)
         raise
     finally:
         if progress_writer is not None:
@@ -1102,29 +1114,46 @@ async def run_sync_task(
                 processor.end_full_sync_run(connector_id, seen)
             except Exception as e:
                 # Logged, not raised: the finalizer below must still run.
-                logger.error(f"Could not end full-sync tracking for {connector_id}: {e}")
+                error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="full_sync_tracking")
         reset_run_sync_id(run_sync_token)
         reset_current_sync_progress(progress_token)
         # A stop that arrives through the lease ends _run_until_aborted without
         # raising, so it has to be read here or it would log as a clean finish.
         if lease is not None and lease.stop_requested.is_set():
             stopped = True
-        outcome = _run_outcome(stopped=stopped, failed=failed, skipped=skipped_code is not None, finished=finished)
-        record_for = functools.partial(
-            _run_record, progress, outcome, error=error, skip_code=skipped_code, started_by=started_by
+        lease_lost = lease is not None and lease.lost.is_set()
+        outcome = _run_outcome(
+            stopped=stopped, failed=failed, skipped=skipped_code is not None, finished=finished, lost=lease_lost
         )
-        elapsed = time.monotonic() - start
-        mins, secs = divmod(elapsed, 60)
-        elapsed_str = f"{int(mins)}m {secs:.1f}s" if mins else f"{secs:.1f}s"
-        if stopped:
-            logger.warning(f"⚠️ Sync cancelled for connector {connector_id} after {elapsed_str}")
-        elif failed:
-            logger.error(f"❌ Sync failed for connector {connector_id} after {elapsed_str}")
-        elif skipped_code:
-            logger.info(f"Sync skipped for connector {connector_id} ({skipped_code}, {elapsed_str})")
+        record_for = functools.partial(
+            _run_record, progress, outcome, error=error_detail, skip_code=skipped_code, started_by=started_by
+        )
+        # A stop or a lost lease returns from _run_until_aborted without
+        # raising, so `finished` alone would call that run complete.
+        # A failed unlink owes one too: what the sync did not see is
+        # still linked, revoked access included.
+        full_sync_cut_short = full_sync and (not finished or stopped or unlink_failed or lease_lost)
+        stop_cause = _stop_cause(lease, coordinator, lost=lease_lost) if outcome is SyncRunOutcome.STOPPED else None
+        end_fields: dict[str, Any] = {
+            "sync_type": sync_type,
+            "duration_ms": int((time.monotonic() - start) * 1000),
+            # The next sync of this connector runs in full.
+            "full_sync_cut_short": full_sync_cut_short or None,
+        }
+        # The run's one failure line; the task manager then logs the same exception at DEBUG.
+        if error is not None:
+            error_class.log_failure(logger, "sync_run.end", error, reason=stop_cause, **end_fields)
+        elif outcome is SyncRunOutcome.STOPPED:
+            log_event(
+                logger, "sync_run.end", level=logging.WARNING if lease_lost else logging.INFO,
+                outcome="failure", error_class="cancelled", reason=stop_cause, **end_fields,
+            )
+        elif outcome is SyncRunOutcome.SKIPPED:
+            log_event(logger, "sync_run.end", outcome="skipped", reason=skipped_code, **end_fields)
         else:
-            logger.info(
-                f"✅ Sync finished for connector {connector_id} — total time: {elapsed_str}"
+            log_event(
+                logger, "sync_run.end", level=logging.WARNING if full_sync_cut_short else logging.INFO,
+                outcome="partial" if full_sync_cut_short else "success", **end_fields,
             )
         # Run the finalizer as its own task: a second cancel (another stop
         # request, appDisabled, shutdown) aimed at this task must not be able to
@@ -1162,15 +1191,7 @@ async def run_sync_task(
                     # raising, so `finished` alone would call that run complete.
                     # A failed unlink owes one too: what the sync did not see is
                     # still linked, revoked access included.
-                    full_sync_cut_short=(
-                        full_sync
-                        and (
-                            not finished
-                            or stopped
-                            or unlink_failed
-                            or (lease is not None and lease.lost.is_set())
-                        )
-                    ),
+                    full_sync_cut_short=full_sync_cut_short,
                     # Cut short by the shutdown itself. A stop someone asked for
                     # (stop_requested, which also covers one still winding down when
                     # the shutdown arrived) and a run that raised are not: neither
@@ -1195,4 +1216,8 @@ async def run_sync_task(
         # (Task._fut_waiter), so a bare `await cleanup` would let a second
         # cancel kill the cleanup itself. Shielded, the cancel interrupts
         # only this await and the cleanup runs to completion on the loop.
-        await asyncio.shield(cleanup)
+        try:
+            await asyncio.shield(cleanup)
+        finally:
+            # After the cleanup task copied the context, so its lines keep the run's fields.
+            reset_log_fields(fields_token)

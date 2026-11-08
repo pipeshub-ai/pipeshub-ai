@@ -613,10 +613,15 @@ def resume_parked_call(context: "AgentContext") -> Any:  # noqa: ANN401
     return _middleware
 
 
+def awaiting_approval(context: "AgentContext") -> bool:
+    """The run stopped on an approval card and waits for the person's answer."""
+    return bool(context.tool_state.get(_PENDING_IN_RUN))
+
+
 async def keep_stopped_turn(context: "AgentContext", agent: "Agent") -> None:
     """After a run that stopped on a card: the turn as the model had it, for the answer (`parked_turn`)."""
     call_id = context.tool_state.get(_STOPPED_CALL)
-    if context.tool_state.get(_PENDING_IN_RUN) and call_id:
+    if awaiting_approval(context) and call_id:
         await parked_turn.keep(context, agent, call_id=call_id, ttl_seconds=TURN_TTL_SECONDS)
 
 

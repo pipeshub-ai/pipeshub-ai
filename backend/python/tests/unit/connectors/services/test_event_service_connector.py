@@ -28,6 +28,7 @@ from app.connectors.services.event_service import EventService, evict_cached_con
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import ConnectorStateKeys
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from app.utils.logger import log_record_fields
 from tests.unit.connectors.services.local_run_stub import end_local_run, local_run
 from tests.unit.connectors.services.coordinator_stub import (
     at_capacity,
@@ -1198,7 +1199,7 @@ class TestRunSyncTask:
         assert AppStatus.IDLE.value in written
 
     @pytest.mark.asyncio
-    async def test_skipped_sync_clears_status_without_persisting_error(self):
+    async def test_skipped_sync_clears_status_without_persisting_error(self, caplog):
         from app.config.constants.arangodb import AppStatus
         from app.connectors.core.base.connector.connector_service import (
             ConnectorSyncSkippedError,
@@ -1206,7 +1207,8 @@ class TestRunSyncTask:
         from app.connectors.core.constants import ConnectorErrorCodes
         from app.connectors.core.sync.sync_runner import run_sync_task
 
-        gp, logger = AsyncMock(), MagicMock()
+        gp, logger = AsyncMock(), logging.getLogger("test.skipped_sync")
+        caplog.set_level(logging.DEBUG, logger="test.skipped_sync")
         conn = AsyncMock()
         conn.run_sync = AsyncMock(
             side_effect=ConnectorSyncSkippedError(
@@ -1222,10 +1224,11 @@ class TestRunSyncTask:
             AppStatus.SYNCING.value,
             AppStatus.IDLE.value,
         ]
-        infos = " ".join(str(c.args[0]) for c in logger.info.call_args_list)
-        assert "Sync skipped" in infos and ConnectorErrorCodes.DESKTOP_OFFLINE in infos
-        errors = " ".join(str(c.args[0]) for c in logger.error.call_args_list)
-        assert "Sync failed" not in errors
+        ends = [r for r in caplog.records if r.getMessage() == "sync_run.end"]
+        assert len(ends) == 1 and ends[0].levelno == logging.INFO
+        fields = log_record_fields(ends[0])
+        assert fields["outcome"] == "skipped" and fields["reason"] == ConnectorErrorCodes.DESKTOP_OFFLINE
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 # ===========================================================================
