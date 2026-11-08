@@ -254,6 +254,10 @@ class MSGraphClient:
             while result:
                 if result.value:
                     users.extend(result.value)
+                elif getattr(result, 'odata_next_link', None):
+                    # An empty page with a next link lost its users; a short list must not
+                    # read as accounts that were deleted.
+                    raise RuntimeError("User listing returned an empty page with a next link")
 
                 if hasattr(result, 'odata_next_link') and result.odata_next_link:
                     async with self.rate_limiter:

@@ -2674,13 +2674,31 @@ class OneDriveConnector(BaseConnector):
             self.logger.error("❌ Error checking if user has OneDrive: %s", e)
             raise
     
+    async def _withdraw_unlisted_app_users(self, enabled: List[AppUser]) -> None:
+        """Take the connector away from stored users the complete user read does not list as
+        enabled: disabled and deleted accounts. A failed read raises before this runs, and an
+        empty list withdraws nobody (a tenant always has users)."""
+        if not enabled:
+            return
+        kept = {u.source_user_id for u in enabled}
+        gone = [
+            u for u in await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
+            if u.source_user_id and u.source_user_id not in kept
+        ]
+        if gone:
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+
     async def _sync_users(self) -> List[AppUser]:
         """
         Syncs OneDrive users.
         """
         try:
-            users = await self.msgraph_client.get_all_users()
+            listed = await self.msgraph_client.get_all_users()
+            # A disabled account is left out like a deleted one: no drive sync and no
+            # access, and enabling it saves the user, and the access, again.
+            users = [u for u in listed if u.is_active is not False]
             await self.data_entities_processor.on_new_app_users(users)
+            await self._withdraw_unlisted_app_users(users)
             self.logger.info(f"✅ Successfully synced {len(users)} users")
             return users
         except ODataError as e:
