@@ -96,6 +96,11 @@ WRITERS: dict[str, tuple[str, str]] = {
     "schedule_named_entity_reextract": (NO_PROJECTION, _ENTITY),
     "schedule_named_entity_reproject": (NO_PROJECTION, _ENTITY),
     "clear_named_entity_persist_retry": (NO_PROJECTION, _ENTITY),
+    # taxonomy.py: taxonomy nodes, their belongsToCategory / belongsToTopic / belongsToLanguage edges and interCategoryRelations
+    "create_taxonomy_node_if_absent": (NO_PROJECTION, _ENTITY),
+    "add_taxonomy_aliases": (NO_PROJECTION, _ENTITY),
+    "ensure_taxonomy_hierarchy_edge": (NO_PROJECTION, _ENTITY),
+    "move_taxonomy_edges": (NO_PROJECTION, _ENTITY),
 }
 
 
