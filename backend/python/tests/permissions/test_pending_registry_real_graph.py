@@ -20,11 +20,13 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.services.permissions.errors import ViewerScopesUnavailable
 from app.services.permissions.pending import MAX_PENDING_ROOTS, parse
 from app.services.permissions.structure_generation import (
+    CLOSED_KEY,
     GENERATION_KEY,
+    OPENED_KEY,
     PENDING_KEY,
     ScopeGenerationError,
     clear_pending_covered,
-    register_vrid_left,
+    leaving_vrid,
 )
 from tests.integration.graph_permissions.processor_harness import build_processor
 from tests.integration.graph_permissions.test_write_path import _group, _record
@@ -47,6 +49,10 @@ async def _no_roots_left_by_other_tests(backend) -> None:
         await backend._aql("FOR a IN apps FILTER a.orgId == @org UPDATE a WITH {scopeProjectionPendingRoots: null} IN apps OPTIONS {keepNull: false}", {"org": ORG})
     else:
         await backend.provider.client.execute_query("MATCH (a:App {orgId: $org}) REMOVE a.scopeProjectionPendingRoots", parameters={"org": ORG})
+
+
+async def flat(view, org: str) -> frozenset[str]:
+    return frozenset().union(*(await view.pending_scopes(org)).values())
 
 
 async def app_of(backend, conn: str) -> dict:
@@ -207,7 +213,7 @@ async def test_a_value_that_does_not_parse_makes_the_connector_not_current_and_t
     await finish_pass(backend.provider, conn)
     await clear_pending_covered(backend.provider, conn, g)
     assert await current(backend.provider, conn)
-    assert await backend.provider.permission_hierarchy_view().pending_scopes(ORG) == frozenset()
+    assert await flat(backend.provider.permission_hierarchy_view(), ORG) == frozenset()
 
 
 async def marks_raw(backend, conn: str) -> tuple[int, object]:
@@ -223,11 +229,11 @@ async def test_the_registry_is_what_the_hierarchy_view_returns_for_the_organisat
           "isActive": True, "createdAtTimestamp": 1700000000000, PENDING_KEY: f'{{"{foreign}":1}}'}],
         collection=CollectionNames.APPS.value)
     view = backend.provider.permission_hierarchy_view()
-    assert await view.pending_scopes(ORG) == frozenset()
+    assert await flat(view, ORG) == frozenset()
     moved = _record(child.external_record_id, connector_id=conn, group_external=space2)
     await processor.on_records_moved([(child.external_record_id, moved, [])])
-    assert await view.pending_scopes(ORG) == {child.id}
-    assert foreign in await view.pending_scopes("another-org") and foreign not in await view.pending_scopes(ORG)
+    assert await flat(view, ORG) == {child.id} and set(await view.pending_scopes(ORG)) == {conn}      # by connector
+    assert foreign in await flat(view, "another-org") and foreign not in await flat(view, ORG)
 
 
 async def test_a_pending_record_is_visible_again_when_the_pass_completes(backend) -> None:
@@ -238,15 +244,15 @@ async def test_a_pending_record_is_visible_again_when_the_pass_completes(backend
     moved = _record(child.external_record_id, connector_id=conn, group_external=space2)
     await processor.on_records_moved([(child.external_record_id, moved, [])])
     g, pending = await marks(backend, conn)
-    assert await view.pending_scopes(ORG) == {child.id}
+    assert await flat(view, ORG) == {child.id}
     moved2 = _record(lone.external_record_id, connector_id=conn, group_external=(await _writers_world_space(backend, conn, lone)))
     await processor.on_records_moved([(lone.external_record_id, moved2, [])])
     g2, pending2 = await marks(backend, conn)
     assert set(pending2) == {child.id, lone.id} and g2 > g
     await clear_pending_covered(backend.provider, conn, g)                  # a pass that read generation g
-    assert await view.pending_scopes(ORG) == {lone.id}                       # the root registered after it stays
+    assert await flat(view, ORG) == {lone.id}                       # the root registered after it stays
     await clear_pending_covered(backend.provider, conn, g2)
-    assert await view.pending_scopes(ORG) == frozenset() and not (await marks(backend, conn))[1]
+    assert await flat(view, ORG) == frozenset() and not (await marks(backend, conn))[1]
 
 
 async def _writers_world_space(backend, conn: str, lone) -> str:
@@ -257,16 +263,85 @@ async def _writers_world_space(backend, conn: str, lone) -> str:
     return (await backend.provider.get_document(other, CollectionNames.RECORD_GROUPS.value))["externalGroupId"]
 
 
-async def test_a_record_that_leaves_a_shared_virtual_record_registers_the_records_that_stay(backend) -> None:
+async def _shared(backend):
     processor, conn, space, _, page, child, lone = await _writers_world(backend)
     shared = f"vr-{_suffix()}"
     for rec in (page, child):
         assert await backend.provider.update_node(rec.id, CollectionNames.RECORDS.value, {"virtualRecordId": shared})
+    return conn, page, child, shared
+
+
+def _events(backend):
+    from app.events.events import EventProcessor
+
+    ep = object.__new__(EventProcessor)
+    ep.graph_provider, ep.logger = backend.provider, MagicMock()
+    return ep
+
+
+async def test_a_record_that_leaves_a_shared_virtual_record_registers_the_records_that_stay(backend) -> None:
+    conn, page, child, shared = await _shared(backend)
     g0, _ = await marks(backend, conn)
-    assert await register_vrid_left(backend.provider, page.id, shared)
+    doc = {"_key": page.id, "virtualRecordId": shared}
+    assert await _events(backend).update_record_fields(doc, {"virtualRecordId": f"new-{_suffix()}"})
     g1, pending = await marks(backend, conn)
     assert g1 != g0 and set(pending) == {child.id}
-    assert not await register_vrid_left(backend.provider, child.id, f"nobody-{_suffix()}")   # no sharer: nothing registered
+    app = await app_of(backend, conn)
+    assert app.get(OPENED_KEY) == app.get(CLOSED_KEY) == 1                      # opened around the write and closed once registered
+
+
+async def test_a_write_that_does_not_change_the_virtual_record_registers_nothing(backend) -> None:
+    conn, page, child, shared = await _shared(backend)
+    before = await marks(backend, conn)
+    ep = _events(backend)
+    assert await ep.update_record_fields({"_key": page.id, "virtualRecordId": shared}, {"virtualRecordId": shared, "indexingStatus": "COMPLETED"})
+    assert await ep.update_record_fields({"_key": page.id}, {"indexingStatus": "COMPLETED"})        # a partial doc: nothing known to leave
+    assert await marks(backend, conn) == before
+
+
+async def test_a_crash_after_the_write_leaves_the_connector_not_current_and_the_registration_finishes_the_job(backend) -> None:
+    conn, page, child, shared = await _shared(backend)
+    await finish_pass(backend.provider, conn)
+    assert await current(backend.provider, conn)
+    leaving = leaving_vrid(backend.provider, page.id, shared)
+    await leaving.__aenter__()
+    assert await backend.provider.update_node(page.id, CollectionNames.RECORDS.value, {"virtualRecordId": f"new-{_suffix()}"})
+    # the process dies here: the registration after the write never runs
+    await finish_pass(backend.provider, conn)                                   # even a pass that read everything after the opening
+    assert not await current(backend.provider, conn)
+    await leaving.__aexit__(None, None, None)                                    # recovery: the registration is done by whoever finishes it
+    assert set((await marks(backend, conn))[1]) == {child.id} and not await current(backend.provider, conn)
+    await finish_pass(backend.provider, conn)
+    await clear_pending_covered(backend.provider, conn, (await marks(backend, conn))[0])
+    assert await current(backend.provider, conn) and not (await marks(backend, conn))[1]
+
+
+async def test_a_record_with_no_other_sharer_registers_nothing_and_opens_nothing(backend) -> None:
+    conn, page, child, shared = await _shared(backend)
+    before = await app_of(backend, conn)
+    async with leaving_vrid(backend.provider, page.id, f"nobody-{_suffix()}"):
+        pass
+    assert await app_of(backend, conn) == before
+
+
+async def test_a_sharer_read_that_fails_marks_the_connectors_and_does_not_fail_the_write(backend, monkeypatch) -> None:
+    from app.core.org_context import for_org
+
+    conn, page, child, shared = await _shared(backend)
+
+    async def broken(*a, **k):  # noqa: ANN002, ANN003
+        raise RuntimeError("graph down")
+
+    async def apps(*a, **k):  # noqa: ANN002, ANN003
+        return [{"_key": conn}]       # the seeded graph has no organisation-to-app edges for the listing to follow
+
+    monkeypatch.setattr(backend.provider, "get_nodes_by_field_in", broken)
+    monkeypatch.setattr(backend.provider, "get_org_apps", apps)
+    g0, _ = await marks(backend, conn)
+    with for_org(ORG, job="test"):
+        async with leaving_vrid(backend.provider, page.id, shared):
+            pass
+    assert (await marks(backend, conn))[0] > g0                                  # fail closed: the connector is not current
 
 
 async def test_with_the_setting_off_the_app_document_is_not_touched(backend, monkeypatch) -> None:

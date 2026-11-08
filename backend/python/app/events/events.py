@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -78,7 +79,7 @@ from app.services.messaging.error_classifier import is_expected_outcome
 from app.services.parsing.client import ParsingClient
 from app.services.parsing.interface import ParserProvider
 from app.services.permissions.mode import scope_fields_enabled
-from app.services.permissions.structure_generation import register_vrid_left
+from app.services.permissions.structure_generation import leaving_vrid
 from app.services.resource_governor import classify
 from app.services.vector_db.strategies.single import SingleCollectionStrategy
 from app.services.vector_db.strategy import (
@@ -621,25 +622,21 @@ class EventProcessor:
         fields = shape_status_write(fields)
         left_vrid = doc.get("virtualRecordId") if "virtualRecordId" in fields else None
         leaving = bool(left_vrid) and left_vrid != fields["virtualRecordId"] and scope_fields_enabled()
-        if leaving:
-            # Records that keep sharing the id being left are registered BEFORE the write (see register_vrid_left), and again after it:
-            # a rewrite between the two steps may have read the old sharing (idempotent).
-            await register_vrid_left(self.graph_provider, record_id, left_vrid)
         doc.update(fields)
         if not fields:
             return True
-        success = await self.graph_provider.update_node(
-            record_id,
-            CollectionNames.RECORDS.value,
-            fields,
-        )
+        # Records that keep sharing the id being left are fenced around the write (see leaving_vrid)
+        async with leaving_vrid(self.graph_provider, record_id, left_vrid, self.logger) if leaving else contextlib.nullcontext():
+            success = await self.graph_provider.update_node(
+                record_id,
+                CollectionNames.RECORDS.value,
+                fields,
+            )
         if not success:
             self.logger.warning(
                 f"❌ Failed to update record {record_id} fields {tuple(fields)}"
             )
             return False
-        if leaving:
-            await register_vrid_left(self.graph_provider, record_id, left_vrid)
         return True
 
     def _require_persisted(self, success: bool, what: str, doc: dict[str, Any]) -> None:
