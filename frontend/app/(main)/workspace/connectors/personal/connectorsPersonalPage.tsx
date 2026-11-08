@@ -136,6 +136,7 @@ function PersonalConnectorsPageContent() {
 
   // ── Fetch connector list data ───────────────────────────────
   const fetchData = useCallback(async () => {
+    setListsLoaded(false);
     setIsLoading(true);
     setError(null);
     try {
