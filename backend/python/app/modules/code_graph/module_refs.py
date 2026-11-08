@@ -23,7 +23,7 @@ MODULE_PREFIX = "module:"
 INCLUDES_CHANGED_PREFIX = "includes-changed:"
 
 _C_FAMILY_EXTENSIONS = frozenset({"c", "h", "cc", "hh", "cpp", "hpp", "cxx", "hxx"})
-_CODE_EXTENSIONS = frozenset({"py", "pyi", "js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts"}) | _C_FAMILY_EXTENSIONS
+_CODE_EXTENSIONS = frozenset({"py", "pyi", "js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts", "cs", "php"}) | _C_FAMILY_EXTENSIONS
 # A file named like this is imported by its directory (`./utils` is
 # utils/index.ts, `pkg` is pkg/__init__.py).
 _DIRECTORY_MODULE_STEMS = frozenset({"index", "__init__", "mod"})

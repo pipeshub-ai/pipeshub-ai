@@ -417,6 +417,7 @@ class CodeFileParser:
             docstring=_extract_docstring(sym.text, language),
             decorators=list(sym.decorators) or None,
             modifiers=list(sym.modifiers) or None,
+            type_param_count=sym.type_param_count or None,
             qualified_name=qualified_name,
             start_line=sym.start_line,
             end_line=sym.end_line,
