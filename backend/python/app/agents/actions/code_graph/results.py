@@ -123,16 +123,11 @@ async def attach_indexed_commit(
 
 
 
-def _says_commit(result: object) -> bool:
-    if isinstance(result, dict):
-        return "indexed_commit" in result or any(_says_commit(v) for v in result.values())
-    return isinstance(result, list) and any(_says_commit(v) for v in result)
-
-
 def with_repo_commit(result: dict[str, Any], commit: str | None) -> dict[str, Any]:
-    """Give a result scoped to one repo that repo's synced *commit* when it says none of its own: it names no
-    file and reached no stamped repo (a path not found, an empty search). Per-row commits are left alone."""
-    if commit and "error" not in result and not _says_commit(result):
+    """Give a result scoped to one repo that repo's synced *commit* when it names no file and says no commit of
+    its own (a path not found, an empty search). A result naming files keeps only its files' commits, even when
+    their lookup failed: a file can be older than its repo's last sync."""
+    if commit and "error" not in result and "indexed_commit" not in result and not any(_file_rows(result)):
         result["indexed_commit"] = commit
     return result
 

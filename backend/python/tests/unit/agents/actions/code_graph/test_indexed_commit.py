@@ -122,12 +122,18 @@ async def test_a_repo_never_stamped_gives_no_commit() -> None:
 
 async def test_a_failed_commit_lookup_leaves_the_answer_standing() -> None:
     class Down(QueryGraphProvider):
+        failed = 0
+
         async def get_nodes_by_field_in(self, collection, *args, **kwargs) -> list[dict]:
             if collection == "recordGroups" and "lastSyncedCommit" in (kwargs.get("return_fields") or ()):
+                Down.failed += 1
                 raise RuntimeError("graph down")
             return await super().get_nodes_by_field_in(collection, *args, **kwargs)
 
-    out = await _call(_tool(Down()), "find_symbol_path", **NO_PATH)
+    graph = Down()
+    graph.record_groups["repo-1"]["lastSyncedCommit"] = "9" * 40  # so only the failure can leave it out
+    out = await _call(_tool(graph), "find_symbol_path", **NO_PATH)
+    assert Down.failed == 1
     assert out["found"] is False and "error" not in out and "indexed_commit" not in out
 
 
@@ -244,6 +250,8 @@ def test_the_named_repos_commit_never_overrides_what_the_result_says() -> None:
     assert with_repo_commit({"error": "x"}, COMMIT) == {"error": "x"}
     assert with_repo_commit({"found": False}, None) == {"found": False}      # repo not stamped yet
     assert with_repo_commit({"found": False}, COMMIT) == {"found": False, "indexed_commit": COMMIT}
+    # files whose commit lookup failed: a file can be older than its repo's last sync, so nothing is said
+    assert with_repo_commit({"nodes": [{"file_path": "src/a.py"}]}, COMMIT) == {"nodes": [{"file_path": "src/a.py"}]}
 
 
 @pytest.mark.parametrize("hidden_by", ["another connector", "no access"])
@@ -291,3 +299,16 @@ async def test_a_listing_says_only_the_listed_files_commits(hidden_by, args) -> 
     out = await _call(_tool(graph), "query_code_graph", select="src/", **args)
     assert [f["path"] for f in out["files"]] == ["src/a.py", "src/b.py"]
     assert out["indexed_commit"] == COMMIT
+
+
+
+async def test_a_listing_tells_two_repos_copies_of_a_path_apart() -> None:
+    """Two of the connector's repos hold src/b.py at different commits: each row names its repo and its commit."""
+    graph = QueryGraphProvider()
+    _second_copy_of_b(graph, recordGroupId="repo-2")
+    graph.records["rec-b"]["recordGroupId"] = "repo-1"
+    graph.record_groups["repo-2"] = {"_key": "repo-2", "orgId": ORG, "connectorId": CONN, "groupName": "acme/admin"}
+    out = await _call(_tool(graph), "query_code_graph", select="src/")
+    rows = [(f["path"], f.get("repo"), f["indexed_commit"]) for f in out["files"]]
+    assert rows == [("src/a.py", None, COMMIT), ("src/b.py", "acme/shop", COMMIT), ("src/b.py", "acme/admin", OTHER)]
+    assert "indexed_commit" not in out
