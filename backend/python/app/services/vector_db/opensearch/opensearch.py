@@ -60,7 +60,11 @@ from opensearchpy.exceptions import NotFoundError
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.services.permissions.mode import scope_fields_enabled
-from app.services.permissions.scope_fields import SCOPE_FENCE_FIELD, SCOPE_KEYS, checked_fence
+from app.services.permissions.scope_fields import (
+    SCOPE_FENCE_FIELD,
+    SCOPE_KEYS,
+    checked_fence,
+)
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
@@ -69,8 +73,8 @@ from app.services.vector_db.const.const import (
 )
 from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.filters import (
-    forbid_org_in_payload,
     forbid_fence_in_payload,
+    forbid_org_in_payload,
     is_missing,
     keep_org_in_overwrite,
     require_filter_org,
