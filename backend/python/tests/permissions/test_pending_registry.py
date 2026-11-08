@@ -47,7 +47,12 @@ from app.services.vector_db.scope_backfill import DONE
 from .scope_layer import OracleScopeLayer
 from .stamp_world import ORG
 from .test_scope_backfill import COLL, WORLD, setup  # noqa: F401
-from .test_scopes_reference_filter import WORLDS, inherit_chain, path_of, reference_filter
+from .test_scopes_reference_filter import (
+    WORLDS,
+    inherit_chain,
+    path_of,
+    reference_filter,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -208,7 +213,7 @@ async def test_registering_outside_a_transaction_retries_a_lost_compare_and_set_
     real = g.update_node_fields_if_match
     raced = {"n": 0}
 
-    async def other_writer_first(key, collection, updates, expected, transaction=None):
+    async def other_writer_first(key, collection, updates, expected, transaction=None) -> bool:
         if not raced["n"]:
             raced["n"] = 1
             g.app[PENDING_KEY] = dump({"theirs": 2})

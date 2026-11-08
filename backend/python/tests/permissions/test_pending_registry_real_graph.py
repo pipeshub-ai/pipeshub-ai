@@ -22,6 +22,7 @@ from app.services.permissions.pending import MAX_PENDING_ROOTS, parse
 from app.services.permissions.structure_generation import (
     GENERATION_KEY,
     PENDING_KEY,
+    ScopeGenerationError,
     clear_pending_covered,
     register_vrid_left,
 )
@@ -289,7 +290,7 @@ async def test_a_failed_registration_rolls_the_sync_back(backend, monkeypatch) -
 
     monkeypatch.setattr(backend.provider, "update_node", refuse)
     moved = _record(child.external_record_id, connector_id=conn, group_external=space2)
-    with pytest.raises(Exception):
+    with pytest.raises(ScopeGenerationError):
         await processor.on_records_moved([(child.external_record_id, moved, [])])
     assert await app_of(backend, conn) == before
     stored = await backend.provider.get_document(child.id, CollectionNames.RECORDS.value)
