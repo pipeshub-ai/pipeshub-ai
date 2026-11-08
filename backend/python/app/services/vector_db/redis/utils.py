@@ -19,7 +19,13 @@ Redis treats as special inside ``{}``.
 import struct
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
-from app.services.permissions.scope_fields import SCOPE_GENERATION_FIELD, SCOPE_KEYS, SCOPE_LIST_KEYS, SCOPE_VERSION_FIELD
+from app.services.permissions.scope_fields import (
+    SCOPE_FENCE_FIELD,
+    SCOPE_GENERATION_FIELD,
+    SCOPE_KEYS,
+    SCOPE_LIST_KEYS,
+    SCOPE_VERSION_FIELD,
+)
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
@@ -367,12 +373,12 @@ def _coerce_hash_value(v: Any) -> Union[str, int, float, bytes]:
 
 def _scope_payload(doc: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    for key in SCOPE_KEYS:
+    for key in (*SCOPE_KEYS, SCOPE_FENCE_FIELD):
         if key not in doc:
             continue
         if key in SCOPE_LIST_KEYS:
             out[key] = split_tag_values(doc[key])
-        elif key in (SCOPE_VERSION_FIELD, SCOPE_GENERATION_FIELD):
+        elif key in (SCOPE_VERSION_FIELD, SCOPE_GENERATION_FIELD, SCOPE_FENCE_FIELD):
             out[key] = int(doc[key]) if str(doc[key]).lstrip("-").isdigit() else doc[key]
         else:
             out[key] = doc[key]
