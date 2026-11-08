@@ -3939,6 +3939,46 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH coalesce({coalesced}) AS {alias}
             WHERE {alias} IS NOT NULL"""
 
+    async def find_blocks_by_external_ref_prefix(
+        self,
+        org_id: str,
+        connector_id: str,
+        prefixes: list[str],
+        limit: int,
+        record_group_ids: list[str] | None = None,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict[str, Any]]:
+        if not prefixes:
+            return []
+        label = collection_to_label(CollectionNames.BLOCKS.value)
+        # A range index cannot serve list membership: the org + connector predicate is the indexed part, and
+        # each of the connector's blocks is then tested in place.
+        query = f"""
+        MATCH (b:{label})
+        WHERE b.orgId = $orgId AND b.connectorId = $connectorId
+          AND ($groups IS NULL OR b.recordGroupId IN $groups)
+          AND any(r IN coalesce(b.externalRefs, []) WHERE any(p IN $prefixes WHERE r STARTS WITH p))
+        RETURN b
+        ORDER BY b.id
+        LIMIT $limit
+        """
+        try:
+            rows = await self.client.execute_query(
+                query,
+                parameters={"orgId": org_id, "connectorId": connector_id, "prefixes": prefixes,
+                            "limit": limit, "groups": record_group_ids},
+                txn_id=transaction,
+            )
+            return [self._neo4j_to_arango_node(dict(row["b"]), CollectionNames.BLOCKS.value)
+                    for row in rows or []]
+        except Exception as e:
+            self.logger.error(f"Find blocks by external ref failed: {e}")
+            if raise_on_error:
+                raise
+            return []
+
     async def get_edges_by_target_keys(
         self,
         target_keys: list[str],

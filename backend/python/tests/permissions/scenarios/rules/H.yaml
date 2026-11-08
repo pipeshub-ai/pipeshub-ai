@@ -279,7 +279,7 @@
     verdicts:
       u: {p: admit}
   tags: [rules, notion]
-  comment: 'Notion team: workspace group inherits from the app with [] grants (notion/connector.py:2288-2301).'
+  comment: 'Notion team: workspace group inherits from the app with [] grants (notion/connector.py:2289-2302).'
 - id: RULE-H15
   title: Inherit edge to a node other than the hierarchy parent does not count
   source: rule cases R1-R13 (spec)

@@ -440,6 +440,12 @@ record_schema = {
             "propsGen": {"type": ["number", "null"]},
             "propsSrc": {"type": ["number", "null"]},
             "propsVer": {"type": ["number", "null"]},
+            # The parse-now marker (app.modules.indexing.parse_now_marker). A pattern, not an
+            # enum, for the same reason as entityExtractionStatus.
+            "parseNowStatus": {"type": ["string", "null"], "pattern": "^[A-Z_]{1,32}$"},
+            "parseNowRev": {"type": ["string", "null"]},
+            "parseNowReason": {"type": ["string", "null"]},
+            "parseNowAt": {"type": ["number", "null"]},
         },
         "required": [
             "recordName",
@@ -873,6 +879,8 @@ block_schema = {
             # C/C++ function-like macro -> [line, names its body calls], on the file-summary block.
             "macroTable": {"type": ["object", "null"]},
             "referencedNames": {"type": ["array", "null"], "items": {"type": "string"}},
+            # `specifier:name` of the library calls the block makes, rewritten by each edge build.
+            "externalRefs": {"type": ["array", "null"], "items": {"type": "string"}},
             "createdAtTimestamp": {"type": ["number", "null"]},
             "updatedAtTimestamp": {"type": ["number", "null"]},
         },

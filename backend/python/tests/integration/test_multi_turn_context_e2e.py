@@ -29,6 +29,7 @@ from app.agents.chat_modes.attachments import ResolvedAttachments
 from app.api.routes.chatbot import askAIStream
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.utils.html_to_blocks import TextBlock
+from app.utils.logger import log_record_fields
 from app.web.chain import ChainOutcome
 from app.web.models import WebPage
 from tests.integration.test_agent_turn_limit_e2e import (
@@ -226,6 +227,12 @@ def errors(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture:
     return caplog
 
 
+@pytest.fixture
+def turn_lines(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture:
+    caplog.set_level(logging.INFO)
+    return caplog
+
+
 def _logged(caplog: pytest.LogCaptureFixture, text: str) -> list[str]:
     return [r.getMessage() for r in caplog.records if text in r.getMessage()]
 
@@ -237,9 +244,11 @@ def _assert_failed_on_context(events: dict[str, list[dict]], caplog: pytest.LogC
     assert result["answerMatchType"] == "Error", result
     assert result["errorCode"] == "request_too_large", result
     assert result["answer"].startswith("This conversation is too long for the selected model"), result
-    failures = _logged(caplog, "Context could not be shaped")
-    assert failures, f"the run did not fail on the context: {[r.getMessage() for r in caplog.records]}"
-    assert "exceeds budget" in failures[0]
+    # The turn's own end line says why it stopped: the context could not be shaped to the window.
+    ends = [log_record_fields(r) for r in caplog.records if r.getMessage() == "agent_turn.end"]
+    assert [(e.get("stop_reason"), e.get("end_event"), e.get("code")) for e in ends] == [
+        ("error", "context_budget_exceeded", "request_too_large"),
+    ], f"the run did not fail on the context: {[r.getMessage() for r in caplog.records]}"
 
 
 class TestFollowUpQuestionUnderCompaction:
@@ -325,7 +334,7 @@ class TestContextThatCannotFit:
     instead of being sent to the provider over budget."""
 
     async def test_a_window_the_prompt_alone_fills_is_never_sent(
-        self, model: _RecordingChatModel, errors: pytest.LogCaptureFixture,
+        self, model: _RecordingChatModel, turn_lines: pytest.LogCaptureFixture,
     ) -> None:
         model.responses = _fetch_script()
 
@@ -333,10 +342,10 @@ class TestContextThatCannotFit:
             events = await _stream(_body())
 
         assert model.calls == [], f"the model was called {len(model.calls)} time(s) with an over-budget request"
-        _assert_failed_on_context(events, errors)
+        _assert_failed_on_context(events, turn_lines)
 
     async def test_a_current_question_larger_than_the_window_is_never_sent(
-        self, model: _RecordingChatModel, errors: pytest.LogCaptureFixture,
+        self, model: _RecordingChatModel, turn_lines: pytest.LogCaptureFixture,
     ) -> None:
         # The current question is protected from every shaper, so a pasted log
         # larger than the window cannot be shrunk to fit.
@@ -347,4 +356,4 @@ class TestContextThatCannotFit:
             events = await _stream(_body(pasted))
 
         assert model.calls == [], f"the model was called {len(model.calls)} time(s) with an over-budget request"
-        _assert_failed_on_context(events, errors)
+        _assert_failed_on_context(events, turn_lines)

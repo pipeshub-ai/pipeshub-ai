@@ -63,6 +63,11 @@ INITIALIZER = "initializer"
 # The modifier prefix of an explicit interface implementation (`explicit:IHandler` on C#'s
 # `Task IHandler.Handle(..)`): it implements IHandler.Handle and is no member of its own type by that name.
 EXPLICIT = "explicit:"
+# The receiver type the parser gives an untyped parameter of a pytest test or fixture: `=fixture:<name>`, for the
+# builder to type from the fixture of that name.
+FIXTURE_MARK = "=fixture:"
+# A Python module's literal `__all__`, as its type table keeps it under "__all__": `=all:a,b`.
+STAR_EXPORTS_MARK = "=all:"
 
 # A container's members are what its children tile around; `header` covers the
 # span from the container's start to its first member.
@@ -100,6 +105,9 @@ class ParsedSymbol:
     is_container: bool = False
     # Type parameters the declaration takes (`class Foo<T, U>`: 2).
     type_param_count: int = 0
+    # False for a JS/TS module-level value (`export const X = f()`): its initializer runs as module code, so
+    # the facts inside it are the file's, not the value's.
+    owns_facts: bool = True
 
     @property
     def is_filler(self) -> bool:
@@ -138,7 +146,8 @@ class PendingEdgeFact:
     # in `import * as ns`. Calls are written against this name.
     local_name: str | None = None
     # CALLS: "construct" for a C++ construction (`new Conn(..)`, `Conn c(..)`), which names a type, never a
-    # function; "initializer" for a constructor's `: Name(..)`, which names a base or a member.
+    # function; "initializer" for a constructor's `: Name(..)`, which names a base or a member. IMPORTS:
+    # "default" for a JS default import, whose local name is the importer's choice, not the module's.
     context: str | None = None
     # A type reference's type-argument count (`IHandler<int>`: 1), where the language reads it (C# bases).
     type_args: int | None = None
