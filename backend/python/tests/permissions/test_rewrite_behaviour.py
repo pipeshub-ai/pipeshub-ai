@@ -238,3 +238,15 @@ async def test_a_pending_list_that_does_not_parse_or_a_generation_that_does_not_
     with pytest.raises(RewriteIncomplete):
         await env.job.run_connector(ORG, "w:app")
     assert parse(good) and env.pending() == parse(good)
+
+
+async def test_the_generation_is_read_before_the_graph() -> None:
+    """After the last subtree read and before the first read of a virtual record, the page reads the app document (its generation)."""
+    env = await hr()
+    await env.change((MOVE,))
+    tap = Tap(env, _nothing)
+    await env.settle()
+    calls = tap.calls
+    first_read = calls.index("get_records_by_virtual_record_id")
+    last_subtree = max(i for i in range(first_read) if calls[i] == "subtree_vrids")
+    assert "get_document" in calls[last_subtree:first_read], calls[last_subtree:first_read + 1]
