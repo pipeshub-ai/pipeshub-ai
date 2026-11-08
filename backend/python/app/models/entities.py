@@ -28,6 +28,7 @@ from app.models._model_rebuild import rebuild_all_models
 from app.models.blocks import (
     BlocksContainer,
     SemanticMetadata,
+    group_caption,
 )
 from app.connectors.sources.localKB.push.contract import PUSH_ORIGIN_FIELD
 from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD, RecordDates
@@ -793,6 +794,7 @@ class FileRecord(Record):
                     rendered_form = template.render(
                         block_group_index=parent_index,
                         label=block_group_type,
+                        caption=group_caption(block_group.sub_type, block_group.name, block_group.description),
                         blocks=group_blocks,
                         file_path=getattr(self, "file_path", "") or "",
                     )

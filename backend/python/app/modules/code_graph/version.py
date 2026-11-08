@@ -33,7 +33,8 @@ __all__ = ["EDGE_RULES_VERSION", "PARSER_VERSION"]
 # is no CALLS fact.
 # 2026.11.20: Go embedded fields are heritage facts with context "embeds" (method promotion only).
 # 2026.11.21: Python star imports, a literal `__all__`, scoped receiver types and chains, pytest fixtures.
-PARSER_VERSION = "2026.11.21"
+# 2026.11.24: JS default imports are marked; a built-in-named JS call on an imported module is kept.
+PARSER_VERSION = "2026.11.24"
 
 # 2026.10.20: EXTENDS merged into INHERITS (an interface extending one stays
 # INHERITS); the full rebuild this forces replaces stored EXTENDS edges.
@@ -43,4 +44,5 @@ PARSER_VERSION = "2026.11.21"
 # 2026.11.15: tsconfig/jsconfig `paths` place JS/TS imports; module bindings and module-level values in calls.
 # 2026.11.16: Go embedding promotes the embedded type's methods, depth by depth.
 # 2026.11.21: Python import scoping, star re-exports, function-local imports as the file's, scoped receivers.
-EDGE_RULES_VERSION = "2026.11.21"
+# 2026.11.24: blocks carry externalRefs, the library calls they make (`requests:get`).
+EDGE_RULES_VERSION = "2026.11.24"

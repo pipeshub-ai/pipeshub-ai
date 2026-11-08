@@ -96,9 +96,11 @@ class PathBody(RepoRef):
 
 class SearchBody(RepoRef):
     pattern: str = Field(min_length=1, max_length=200)
-    mode: Literal["identifier", "text", "regex"] = "identifier"
+    mode: Literal["identifier", "text", "regex", "external"] = "identifier"
     path: str | None = None
     limit: int = Field(default=50, ge=1, le=200)
+    # mode "external": one name of the library module `pattern` names.
+    name: str | None = Field(default=None, max_length=200)
 
 
 class SemanticSearchBody(RepoRef):
@@ -334,7 +336,7 @@ async def code_path(request: Request, body: PathBody) -> JSONResponse:
 async def code_search(request: Request, body: SearchBody) -> JSONResponse:
     return await _run(request, body, None, lambda t, repo: t.search_code(
         connector_id=repo.connector_id, pattern=body.pattern, mode=body.mode, path=body.path,
-        limit=body.limit, include_tests=body.include_tests, repo=repo.group_id,
+        limit=body.limit, include_tests=body.include_tests, repo=repo.group_id, name=body.name,
     ))
 
 
