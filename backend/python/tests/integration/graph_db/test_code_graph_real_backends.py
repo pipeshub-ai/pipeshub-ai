@@ -618,6 +618,51 @@ async def test_an_agent_tool_answers_from_the_built_graph(repo: _Repo) -> None:
             await repo.graph.delete_nodes_and_edges([repo.connector_id], CollectionNames.APPS.value)
 
 
+async def test_modifies_survives_a_pr_save_and_a_rewrite_keeps_one_edge(repo: _Repo) -> None:
+    """A PR's MODIFIES edges are its own -- the processor's link rewrite on every PR save leaves them --
+    and re-indexing the PR replaces them instead of adding a second set."""
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+    from app.connectors.core.base.data_processor.pr_links import write_modifies
+    from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+    from app.models.blocks import FileChangeMetadata
+    from app.models.entities import PullRequestRecord
+
+    pr = PullRequestRecord(
+        id=str(uuid.uuid4()), org_id=repo.org_id, record_name="Speed up target",
+        record_type=RecordType.PULL_REQUEST, external_record_id=f"pr-{uuid.uuid4().hex[:8]}", version=1,
+        origin=OriginTypes.CONNECTOR, connector_name=Connectors.GITHUB, connector_id=repo.connector_id,
+        mime_type="text/markdown", merged_at=1_700,
+    )
+    await repo.graph.batch_upsert_records([pr])
+    store = GraphDataStore(logger, repo.graph)
+    target = repo.record_ids["src/shop/b.py"]
+    changes = [FileChangeMetadata(path="src/shop/b.py", status="modified", additions=2, deletions=1),
+               FileChangeMetadata(path="docs/none.md", status="added")]
+
+    async def prs_of_target() -> list[str]:
+        rows = await repo.graph.get_neighbors_for_nodes_by_relationship_types(
+            node_keys=[target], node_collection=RECORDS, relationship_types=[RecordRelations.MODIFIES.value],
+            direction="inbound", raise_on_error=True)
+        return [r["key"] for r in rows]
+
+    try:
+        for _ in range(2):  # indexed, then re-indexed
+            async with store.transaction() as tx:
+                assert await write_modifies(tx, pr, changes,
+                                            lambda path: f"ext-{repo.record_ids.get(path)}") == (1, 1)
+        assert await prs_of_target() == [pr.id]
+        async with store.transaction() as tx:  # what every save of the PR does to its link edges
+            await tx.delete_edges_by_relationship_types(
+                pr.id, RECORDS, CollectionNames.NODE_RELATIONS.value,
+                list(DataSourceEntitiesProcessor.LINK_RELATION_TYPES))
+        assert await prs_of_target() == [pr.id]
+    finally:
+        with contextlib.suppress(Exception):
+            await repo.graph.delete_nodes_and_edges([pr.id], RECORDS)
+
+
 # Neo4j only: collected for one backend, so the Arango job never selects (and skips) it.
 @pytest.mark.parametrize("repo", ["neo4j"], indirect=True)
 async def test_full_text_search_is_scoped_to_the_org_inside_the_index(repo: _Repo) -> None:

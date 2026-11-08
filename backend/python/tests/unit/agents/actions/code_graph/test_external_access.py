@@ -233,6 +233,27 @@ async def test_impact_route_takes_edge_types_and_names_a_bad_one(blobs, monkeypa
     assert "unknown edge_types ['CALLZ']" in bad.json()["error"]
 
 
+async def test_impact_of_diff_route_answers_for_one_repo_and_refuses_an_empty_patch() -> None:
+    client = _client(Repos())
+    patch = f"--- a/{MAIN}\n+++ b/{MAIN}\n@@ -2 +2 @@\n-a\n+b\n"
+    res = client.post("/api/v1/code-graph/impact-of-diff", json={"repo": "acme/admin", "patch": patch})
+    assert res.status_code == 200, res.text
+    assert {c["file_path"] for c in res.json()["changed"]} == {MAIN}
+    assert client.post("/api/v1/code-graph/impact-of-diff",
+                       json={"repo": "acme/admin", "patch": ""}).status_code == 422
+    assert client.post("/api/v1/code-graph/impact-of-diff",
+                       json={"repo": "acme/admin", "patch": "x" * (routes.MAX_PATCH_CHARS + 1)}).status_code == 422
+
+
+async def test_history_route_answers_for_one_repo_and_bounds_its_limit() -> None:
+    client = _client(Repos())
+    res = client.post("/api/v1/code-graph/history", json={"repo": "acme/admin", "file_path": MAIN})
+    assert res.status_code == 200, res.text
+    assert res.json()["pull_requests"] == [] and res.json()["file_path"] == MAIN
+    assert client.post("/api/v1/code-graph/history",
+                       json={"repo": "acme/admin", "file_path": MAIN, "limit": 101}).status_code == 422
+
+
 async def test_read_by_search_hit_needs_no_repo(blobs) -> None:
     res = _client(Repos()).post("/api/v1/code-graph/read", json={"record_id": "rec-shop"})
     assert res.status_code == 200, res.text

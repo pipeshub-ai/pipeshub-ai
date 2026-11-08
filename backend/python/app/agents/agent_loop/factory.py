@@ -265,6 +265,8 @@ _DOMAIN_SHARED_CODE_TOOL_NAMES: frozenset[str] = frozenset({
     "codegraph__search_code",
     "codegraph__outline",
     "codegraph__impact",
+    "codegraph__impact_of_diff",
+    "codegraph__history",
     "codegraph__entry_points",
 })
 # The named-entity and typed-value tools, SHARED with the exploration child

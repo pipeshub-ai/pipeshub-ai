@@ -12,12 +12,14 @@ import asyncio
 import base64
 from typing import TYPE_CHECKING, Any
 
+from app.connectors.core.base.data_processor.pr_links import link_changed_files
 from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
 from app.models.entities import Record
 from app.models.blocks import (
     BlockComment,
     BlockGroup,
     DataFormat,
+    FileChangeMetadata,
     GroupSubType,
     GroupType,
 )
@@ -29,6 +31,7 @@ from app.utils.time_conversion import string_to_datetime
 from .common.utils import parse_item_id_from_url
 from .constants import MR_FILE_INLINE_CONTENT_MAX_BYTES
 from .models import GitlabLiterals, RecordUpdate
+from .repos import _code_blob_web_path
 
 if TYPE_CHECKING:
     from app.connectors.sources.gitlab.connector import GitLabConnector
@@ -349,10 +352,28 @@ class CommentsHelper:
                 data=data,
                 comments=comments_list,
                 requires_processing=True,
+                # GitLab gives no line counts: they stay unknown.
+                file_change_metadata=FileChangeMetadata(
+                    path=file_path,
+                    previous_path=old_path if is_renamed_file and old_path and old_path != file_path else None,
+                    status=("added" if is_new_file else "removed" if is_deleted_file
+                            else "renamed" if is_renamed_file else "modified"),
+                ),
             )
             block_groups.append(bg_n)
             block_group_number += 1
 
+        # The path the code walk built the code-file ids on, never one read off the MR's URL: a self-hosted
+        # instance under a path prefix, or an http/https mismatch, would name another project.
+        try:
+            project_path = await c.repos.synced_project_path(int(project_id))
+        except Exception:
+            self.logger.warning("No code checkpoint readable for project %s; MR %s not linked to its files",
+                                project_id, mr_url, exc_info=True)
+            project_path = None
+        if project_path:
+            await link_changed_files(c.data_entities_processor, record, block_groups,
+                                     lambda path: _code_blob_web_path(project_path, path))
         return block_groups, list_remaining_attachments
 
     async def _inline_file_content(self, file_obj: object, file_path: str) -> tuple[str | None, int | None]:
