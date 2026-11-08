@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from app.agent_loop_lib.tools.executor import MAX_LOGGED_TOOL_NAME
 from app.agents.agent_loop.hooks.tool_blocking import ToolErrorTracker
 from app.utils.logger import log_record_fields
 
@@ -50,3 +51,16 @@ def test_parallel_failures_in_one_turn_are_one_strike(caplog: pytest.LogCaptureF
 
     assert _blocked(caplog) == []
     assert not tracker.is_blocked(_PATH)
+
+
+def test_a_model_made_tool_path_is_capped(caplog: pytest.LogCaptureFixture) -> None:
+    """An unknown tool's path carries the model's own name: the event logs at most MAX_LOGGED_TOOL_NAME characters of it."""
+    caplog.set_level(logging.DEBUG)
+    path = "/unresolved/" + "x" * 1000
+    tracker = ToolErrorTracker()
+    for turn in range(3):
+        tracker.record(path, is_error=True, turn_index=turn)
+
+    (record,) = _blocked(caplog)
+    assert log_record_fields(record)["tool_path"] == path[:MAX_LOGGED_TOOL_NAME]
+    assert tracker.is_blocked(path)          # the cap is the log's only: blocking still keys on the full path

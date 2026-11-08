@@ -68,7 +68,7 @@ OnAsk = Callable[[ToolCall, str], Awaitable[bool]]
 OnPending = Callable[[ToolCall, PendingApproval], Awaitable[None]]
 
 _USAGE_HINT_DESCRIPTION_LIMIT = 100
-_MAX_LOGGED_TOOL_NAME = 128
+MAX_LOGGED_TOOL_NAME = 128
 # The `ToolOutput.end_fields` keys `tool_call.end` carries besides `reason`.
 _END_FIELD_KEYS = ("error_class", "status", "mcp_reason")
 _UNKNOWN_TOOL = MappingProxyType({"reason": "unknown_tool", "error_class": "not_found"})
@@ -86,7 +86,7 @@ def log_tool_call_end(
     for approval isn't over yet: DEBUG, and the settled card logs the line. Pass ``tool`` and
     ``tool_call_id`` where `call_tool` hasn't bound them."""
     if tool is not None:
-        fields["tool"] = tool[:_MAX_LOGGED_TOOL_NAME]
+        fields["tool"] = tool[:MAX_LOGGED_TOOL_NAME]
     if cause is not None:
         cls = error_class or classify_error(cause)
         prior = logged_level(cause)
@@ -251,7 +251,7 @@ class ToolExecutor:
         ids = tool.log_ids if tool is not None else {}
         ended = _Ended()
         with log_fields(
-            tool=resolved_name[:_MAX_LOGGED_TOOL_NAME], tool_call_id=call.id,
+            tool=resolved_name[:MAX_LOGGED_TOOL_NAME], tool_call_id=call.id,
             mcp_server_id=ids.get("mcp_server_id"), toolset_id=ids.get("toolset_id"),
         ):
             try:
