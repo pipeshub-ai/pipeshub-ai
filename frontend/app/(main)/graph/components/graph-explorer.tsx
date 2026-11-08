@@ -49,6 +49,9 @@ export function GraphExplorer() {
   const entryPending = useRef(false);
   /** The place on the trail the address named after Back or Forward, until the view has moved there. */
   const following = useRef<string | null>(null);
+  /** The addresses this page wrote that the router has not shown back yet. The router applies a write a moment later,
+   * and that late arrival must never read as a Back or Forward. */
+  const written = useRef<string[]>([]);
   const repoScope = useMemo(() => parseRepoScope(params), []);
   const host = useRef<HTMLDivElement>(null);
   const canvasBox = useRef<HTMLDivElement>(null);
@@ -90,6 +93,7 @@ export function GraphExplorer() {
     // The address leads while the view is catching up with Back or Forward: a filter finishing then must not write the old node back.
     if (!started.current || following.current || next === params.toString()) return;
     const url = next ? `${pathname}?${next}` : pathname;
+    written.current.push(next);
     const shown = parseGraphUrl(params).node;
     const shownAt = parseTrailPosition(params);
     // Moving to another place on the trail is a step the browser's Back can undo; the first centre, a rewritten entry
@@ -100,10 +104,17 @@ export function GraphExplorer() {
   }, [store.node, store.trailIndex, store.direction, store.edgeTypes, store.includeTests, failure]);
 
   // The browser's Back and Forward change the address: follow it to the place on the trail it names.
+  const search = params.toString();
   const urlNode = parseGraphUrl(params).node;
   const urlAt = parseTrailPosition(params);
   useEffect(() => {
     const now = useGraphStore.getState();
+    // Our own write arriving is not a navigation (and neither is any write before it).
+    const arrived = written.current.lastIndexOf(search);
+    if (arrived >= 0) {
+      written.current.splice(0, arrived + 1);
+      return;
+    }
     if (!started.current || entryPending.current || !urlNode) return;
     if (urlNode === now.node && (urlAt === undefined || urlAt === now.trailIndex)) return;
     const move = `${urlNode}@${urlAt}`;
@@ -111,7 +122,7 @@ export function GraphExplorer() {
     void controller.follow(urlNode, urlAt).finally(() => {
       if (following.current === move) following.current = null;
     });
-  }, [urlNode, urlAt]);
+  }, [search]);
 
   // The canvas engine lives while the canvas is on screen. The canvas element is always there (the
   // empty prompt sits over it), so the engine is ready before the first node arrives.
