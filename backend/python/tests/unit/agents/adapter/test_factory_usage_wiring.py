@@ -1,7 +1,6 @@
 """`PipesHubAgentFactory.create()` wraps the request's transports to report
-into the request's `UsageLedger` only when the request opted into telemetry:
-every agent's model calls then reach the `run_usage` frame, and a normal
-request records nothing."""
+into the request's `UsageLedger` for every request: the turn's end line sums
+it, and only a request that opted in also gets the `run_usage` frame."""
 
 from __future__ import annotations
 
@@ -39,12 +38,12 @@ class TestUsageLedgerWiring:
         assert [s for s, _ in context.usage_ledger.entries] == ["single_shot:intent.parse_intent_and_route"]
         assert context.tool_state["usage_ledger"] is context.usage_ledger
 
-    async def test_nothing_is_wired_for_a_normal_request(self) -> None:
+    async def test_a_normal_request_is_accounted_too(self) -> None:
         from app.agents.agent_loop.usage_transport import UsageReportingTransport
 
         context, runtime = await _runtime(include_retrieval_context=False)
 
         for provider in runtime.transport_registry.providers():
-            assert not isinstance(runtime.transport_registry.resolve(provider), UsageReportingTransport)
-        assert context.usage_ledger.entries == []
-        assert context.tool_state.get("usage_ledger") is None
+            assert isinstance(runtime.transport_registry.resolve(provider), UsageReportingTransport)
+        assert [s for s, _ in context.usage_ledger.entries] == ["single_shot:intent.parse_intent_and_route"]
+        assert context.tool_state["usage_ledger"] is context.usage_ledger

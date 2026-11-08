@@ -210,3 +210,8 @@ class AgentResult(BaseModel):
     confidence: Confidence | None = None
     record_ids: list[str] = Field(default_factory=list)
     needs_input: str | None = None
+    # The timeline event the run ended with (`agent_complete`, `llm_call_failed`,
+    # `guardrail_blocked`, ...): which exit was taken, for the turn's log line.
+    end_event: str = ""
+    # `app.utils.error_class` class of the failure that ended the run, if one did.
+    error_class: str | None = None

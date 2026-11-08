@@ -87,6 +87,7 @@ CODE_RELATIONS = [*STRUCTURAL_RELATIONS, *CROSS_FILE_RELATIONS]
 _DEGREE_CANDIDATES = 400
 _DEGREE_ROW_LIMIT = 50000
 _DEGREE_PAGE = 5000
+_MAX_NEIGHBOUR_PAGE = 5000
 
 _BLOCKS = CollectionNames.BLOCKS.value
 _RECORDS = CollectionNames.RECORDS.value
@@ -489,15 +490,15 @@ async def _readable_blocks(
     return out
 
 
-async def _readable_block_records(
+async def _readable_block_rows(
     graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess, keys: "Iterable[str]",
-    connector_id: str | None = None,
-) -> dict[str, str]:
-    """Block key -> record id, for the blocks among ``keys`` in this org (and ``connector_id``) the caller may read.
+    connector_id: str | None = None, *, extra_fields: "Iterable[str]" = (),
+) -> dict[str, dict[str, Any]]:
+    """Block key -> its light row, for the blocks among ``keys`` in this org (and ``connector_id``) the caller may read.
 
     The one check a traversal applies at every hop (S-7): what is reached
     through a file the caller cannot read, and what is counted, must not
-    depend on that file. Loads only key, record, org and connector.
+    depend on that file. Loads only key, record, org and connector, plus ``extra_fields``.
     """
     wanted = sorted({k for k in keys if k})
     if not wanted:
@@ -505,14 +506,23 @@ async def _readable_block_records(
     rows = [
         _unwrap(row) for row in await graph_provider.get_nodes_by_field_in(
             collection=_BLOCKS, field_name="_key", field_values=wanted,
-            return_fields=["_key", "recordId", "orgId", "connectorId"], raise_on_error=True,
+            return_fields=["_key", "recordId", "orgId", "connectorId", *extra_fields], raise_on_error=True,
         ) or []
     ]
     rows = [r for r in rows if r.get("orgId") == org_id
             and (connector_id is None or r.get("connectorId") == connector_id)]
     readable = await access.readable(r.get("recordId") for r in rows)
-    return {key: r["recordId"] for r in rows
+    return {key: r for r in rows
             if r.get("recordId") in readable and (key := r.get("_key") or r.get("id"))}
+
+
+async def _readable_block_records(
+    graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess, keys: "Iterable[str]",
+    connector_id: str | None = None,
+) -> dict[str, str]:
+    """Block key -> record id, for the blocks among ``keys`` the caller may read (see ``_readable_block_rows``)."""
+    rows = await _readable_block_rows(graph_provider, org_id, access, keys, connector_id)
+    return {key: r["recordId"] for key, r in rows.items()}
 
 
 async def _readable_keys(
@@ -575,6 +585,7 @@ async def _readable_neighbour_rows(
     tests: list[tuple[int, dict[str, Any]]] = []
     counted_at: list[int] = []     # stream position of each counted row, in the store's own order
     scanned, after = 0, ""
+    page = min(page, budget)
     while True:
         try:
             raw = list(await graph_provider.get_neighbors_for_nodes_by_relationship_types(
@@ -621,6 +632,10 @@ async def _readable_neighbour_rows(
             logger.error("Neighbour query did not advance its cursor")
             raise _WalkFailed("Failed to walk the code graph")
         after = nxt
+        # Rows the caller cannot read don't fill the page, so each further read is larger: a hub of hidden
+        # rows costs a few reads, not one per page. Where the pages break changes nothing returned, and no
+        # read passes the budget, so `incomplete` means the same raw count at any page size.
+        page = min(max(page, min(2 * page, _MAX_NEIGHBOUR_PAGE)), budget - scanned)
 
 
 async def _degrees(

@@ -26,7 +26,12 @@ from app.modules.code_graph.guards import lang_family
 from app.modules.code_graph.module_refs import includes_changed_ref, module_ref
 from app.modules.code_graph.version import PARSER_VERSION
 from app.modules.parsers.code_parser.languages.csharp import GLOBAL_USING
-from app.modules.parsers.code_parser.models import DECLARATION, RETURNS, STATIC
+from app.modules.parsers.code_parser.models import (
+    DECLARATION,
+    FIXTURE_MARK,
+    RETURNS,
+    STATIC,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable, Iterator
@@ -260,6 +265,12 @@ def _referenced_names(container: BlocksContainer, file_path: str | None = None) 
             if receivers and fact.get("isMemberCall"):
                 names.update(n for n in (fact.get("receiver"), fact.get("receiverType"))
                              if isinstance(n, str) and n.isidentifier())
+            if isinstance(receiver_type, str) and receiver_type.startswith(FIXTURE_MARK):
+                # `def test_x(svc): svc.run()` is typed by the fixture `svc` (here or a conftest.py above), so a
+                # fixture added, removed or renamed there re-resolves this file.
+                # shortcut: an edit that changes only the fixture's return type keeps its name, so it does not;
+                # add the fixture's file to the referencer set if stale fixture types show up.
+                names.add(receiver_type[len(FIXTURE_MARK):])
             name = fact.get("toName")
             if not isinstance(name, str) or not name:
                 continue
