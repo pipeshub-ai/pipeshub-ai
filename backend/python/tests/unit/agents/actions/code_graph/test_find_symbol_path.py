@@ -154,6 +154,18 @@ class TestUnprovenMiss:
         note = (await _path(graph, b=PANEL))["note"]
         assert note.startswith("Nothing in the graph calls the second symbol, so")
 
+    async def test_unreadable_handovers_filling_the_scan_limit_leave_it_open(self, monkeypatch) -> None:
+        """A scan spent on handovers the caller cannot read proves neither a handover nor its absence."""
+        monkeypatch.setattr(path_mod, "_CALLER_PROBE", 2)
+        monkeypatch.setattr(path_mod, "_CALLER_SCAN_LIMIT", 2)
+        graph = FakeGraphProvider(deny_records=["rec-d"])
+        for i in range(3):  # k_client's file, rec-d, is unreadable
+            graph.blocks[f"k_hidden{i}"] = {**graph.blocks["k_client"], "_key": f"k_hidden{i}"}
+            graph.edges.append({"_from": f"{BLOCKS}/k_hidden{i}", "_to": f"{BLOCKS}/k_panel",
+                                "relationshipType": "INDIRECT_CALL"})
+        note = (await _path(graph, b=PANEL))["note"]
+        assert note.startswith("Nothing in the graph calls the second symbol directly, and the scan limit")
+
     async def test_a_caller_in_a_file_the_caller_cannot_read_is_not_counted(self) -> None:
         """"Something calls it" from a hidden file would reveal that the file calls it."""
         graph = FakeGraphProvider(deny_records=["rec-d"])

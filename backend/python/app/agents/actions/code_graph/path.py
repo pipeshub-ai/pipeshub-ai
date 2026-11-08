@@ -209,23 +209,28 @@ async def _unproven_note(
 
     Only readable callers count: "something calls it" from a hidden file would reveal that file.
     """
-    async def linked(relation: str) -> bool:
+    async def probe(relation: str) -> str:
+        """"linked" (a readable edge), "unknown" (the scan limit hit before one was read) or "none"."""
         rows, _, spent = await _readable_neighbour_rows(
             graph_provider, org_id, access, [target_key], [relation], "inbound",
             page=_CALLER_PROBE, budget=_CALLER_SCAN_LIMIT, want=1,
             accept=lambda r: r.get("collection") == _BLOCKS and bool(r.get("key")),
         )
-        return bool(rows) or spent  # a spent scan cannot say nothing links it
+        return "linked" if rows else "unknown" if spent else "none"
 
-    if await linked(RecordRelations.CALLS.value):
+    if await probe(RecordRelations.CALLS.value) != "none":  # a spent scan cannot say nothing calls it
         reason = ("No chain of linked calls joins them, but calls the graph could not link (on values "
                   "of unknown type, through getattr or callbacks) can. ")
-    elif await linked(RecordRelations.INDIRECT_CALL.value):
+    elif (handover := await probe(RecordRelations.INDIRECT_CALL.value)) == "linked":
         # A handover is a possible call, not a definite one: say which the graph holds.
         reason = ("Nothing in the graph calls the second symbol directly, but it is handed over as a "
                   "value (INDIRECT_CALL: a callback or table entry), so it may run wherever that value "
                   "goes; calls the graph could not link (on values of unknown type, through getattr) "
                   "can join them too. ")
+    elif handover == "unknown":
+        reason = ("Nothing in the graph calls the second symbol directly, and the scan limit was reached "
+                  "before it could tell whether anything hands it over as a value; calls the graph could "
+                  "not link (on values of unknown type, through getattr or callbacks) can join them. ")
     else:
         reason = ("Nothing in the graph calls the second symbol, so every call to it is one the graph "
                   "could not link (through getattr, a callback, or a value of unknown type), and this "
