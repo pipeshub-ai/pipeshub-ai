@@ -2,7 +2,7 @@
 its vector points are made of (a hierarchy, group or inherit edge, a record's or group's access rule, model or place, a delete).
 
 It is written inside the transaction that writes the structural change (`bump_generation_in`), so both commit or neither does. A stamp
-computed at generation g is current only while the generation still reads g; nothing reads it yet. Without explicit transactions the
+computed at generation g is current only while the generation still reads g (`permissions.currency`). Without explicit transactions the
 statements of a block commit one by one, so a block that cannot bump marks the connector unsafe instead (`UNSAFE_KEY`): its stamps are
 never current until a pass over the whole connector clears the mark.
 """
@@ -18,12 +18,14 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import MissingOrgContext, current_or_system, for_org, system
 from app.services.permissions.mode import scope_fields_enabled
+from app.services.permissions.pending import PendingOverflow, PendingUnreadable, parse, with_roots, without_done
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Collection, Mapping
 
 GENERATION_KEY = "scopeProjectionGeneration"
 UNSAFE_KEY = "scopeProjectionUnsafe"
+PENDING_KEY = "scopeProjectionPendingRoots"
 
 
 def whole_number(value: object) -> int | None:
@@ -98,13 +100,26 @@ class ScopeGenerationConflict(ScopeGenerationError):
     transient, so the whole block is run again, which rereads the generation."""
 
 
-async def bump_generation_in(tx_store: Any, connector_id: str) -> int:  # noqa: ANN401
+async def bump_generation_in(tx_store: Any, connector_id: str, roots: Collection[str] | None = None) -> int:  # noqa: ANN401
     """Add one to the connector's generation inside the transaction that writes the structural change, in one statement under the
     app document's write lock (`increment_node_field`), so two transactions that both bump get two different, growing values. Raises when
-    the write fails, which rolls the transaction back; a write-write conflict is `ScopeGenerationConflict`, which the caller retries."""
+    the write fails, which rolls the transaction back; a write-write conflict is `ScopeGenerationConflict`, which the caller retries.
+
+    `roots`: the change reaches only the subtrees of these records; they are registered as pending in the same transaction, after the
+    lock is taken, so a registration read-modifies-writes the latest value and two syncs lose none. None, or more than
+    `MAX_PENDING_ROOTS` roots, or a stored value that is unreadable: nothing is listed, and the bump alone leaves the connector not
+    current until a full pass."""
     graph = tx_store.graph_provider
     try:
         new = await graph.increment_node_field(connector_id, CollectionNames.APPS.value, GENERATION_KEY, tx_store.txn)
+        if new is not None and roots:
+            app = await graph.get_document(connector_id, CollectionNames.APPS.value, transaction=tx_store.txn, raise_on_error=True) or {}
+            try:
+                value = with_roots(app.get(PENDING_KEY), roots, new)
+            except (PendingOverflow, PendingUnreadable):
+                return new
+            if not await graph.update_node(connector_id, CollectionNames.APPS.value, {PENDING_KEY: value}, tx_store.txn):
+                raise ScopeGenerationError(f"could not register the pending roots of {connector_id}")
     except Exception as exc:
         if graph.is_write_conflict(exc):
             raise ScopeGenerationConflict(f"another writer moved the structure generation of {connector_id} first") from exc
@@ -112,6 +127,48 @@ async def bump_generation_in(tx_store: Any, connector_id: str) -> int:  # noqa: 
     if new is None:
         raise ScopeGenerationError(f"could not bump the structure generation of {connector_id}: no such connector")
     return new
+
+
+async def register_pending_roots(graph_provider: Any, connector_id: str, roots: Collection[str], *, attempts: int = 5) -> int:  # noqa: ANN401
+    """`bump_generation_in` for a change made outside a transaction: bump, then add the roots by compare-and-set on the stored string
+    (retried). A crash between the two leaves a bump with no root, which only costs a full pass. Raises when the bump or the
+    registration cannot be written: a change nobody recorded leaves stamps that read as current."""
+    new = await graph_provider.increment_node_field(connector_id, CollectionNames.APPS.value, GENERATION_KEY)
+    if new is None:
+        raise ScopeGenerationError(f"could not bump the structure generation of {connector_id}")
+    for _ in range(attempts):
+        app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) or {}
+        raw = app.get(PENDING_KEY) or None
+        try:
+            value = with_roots(raw, roots, new)
+        except (PendingOverflow, PendingUnreadable):
+            return new
+        if await graph_provider.update_node_fields_if_match(connector_id, CollectionNames.APPS.value, {PENDING_KEY: value}, {PENDING_KEY: raw}):
+            return new
+    raise ScopeGenerationError(f"could not register the pending roots of {connector_id}")
+
+
+async def clear_pending_covered(graph_provider: Any, connector_id: str, done_at: int, *, attempts: int = 5) -> None:  # noqa: ANN401
+    """Take off the list the roots a full pass covered: the pass read the graph from structure generation ``done_at``, so every root
+    registered at or before it is in the stamps it wrote. Compare-and-set on the stored string: a root registered again meanwhile
+    (a newer generation) stays. An unreadable value is dropped only while the generation is still ``done_at``, when nothing can
+    have been registered after the pass began. Raises when it cannot be written, so the pass is not reported as finished."""
+    for _ in range(attempts):
+        app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) or {}
+        raw = app.get(PENDING_KEY) or None
+        if raw is None:
+            return
+        try:
+            left = without_done(raw, dict.fromkeys(parse(raw), done_at))
+        except PendingUnreadable:
+            if structure_generation_of(app) != done_at:
+                return
+            left = None
+        if left == raw:
+            return
+        if await graph_provider.update_node_fields_if_match(connector_id, CollectionNames.APPS.value, {PENDING_KEY: left}, {PENDING_KEY: raw}):
+            return
+    raise ScopeGenerationError(f"could not take the covered roots off the pending list of {connector_id}")
 
 
 async def mark_scope_dirty(graph_provider: Any, connector_id: str | None, *, attempts: int = 3) -> None:  # noqa: ANN401

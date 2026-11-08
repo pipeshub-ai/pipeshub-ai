@@ -72,7 +72,7 @@ class HierarchyView(Protocol):
         ...
 
     async def pending_scopes(self, org_id: str) -> frozenset[str]:
-        """Scopes whose subtree is being rewritten (empty until the pending registry exists)."""
+        """Scopes whose subtree awaits a rewrite: the roots registered on the organisation's connectors (`pending.py`). Raises `ViewerScopesUnavailable` for a stored list that cannot be read."""
         ...
 
 
