@@ -274,9 +274,9 @@ async def _reached_only_by_person(
     keyed = [r for r in records if r.get("_key")]
     try:
         linked = await asyncio.gather(*(graph.get_record_people(r["_key"], context.org_id) for r in keyed))
-    except Exception:  # not knowing is never read as the member's own
+    except Exception:  # unknown: say nothing, since naming the Person here could name one with no readable record
         logger.warning("find_records_by_person could not attribute records", exc_info=True)
-        return {r["_key"] for r in keyed}
+        return set()
     return {r["_key"] for r, people in zip(keyed, linked) if not members & {p["id"] for p in people}}
 
 

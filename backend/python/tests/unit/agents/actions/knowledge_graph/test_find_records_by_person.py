@@ -252,6 +252,16 @@ class TestPeopleWhoAreNotMembers:
         assert listing.await_args.kwargs["nodes"] == [("person", "p-m")]
         state["graph_provider"].get_record_people.assert_not_awaited()
 
+    async def test_a_failed_attribution_lookup_never_names_the_person(self, listing) -> None:
+        member = {"id": "u-m", "fullName": "Mia Member", "email": "mia@acme.test"}
+        person = {"id": "p-m", "fullName": "Mia Outside", "email": "mia@acme.test"}
+        listing.pages["u-m"] = EntityRecordPage(records=[_row("r-own")], next_cursor=None)
+        state = self._with([person], [member])
+        state["graph_provider"].get_record_people = AsyncMock(side_effect=RuntimeError("down"))
+        ok, text = await execute_find_records_by_person(state, "Mia Member")
+        assert ok and "Ticket r-own" in text
+        assert "Mia Outside" not in text and "not a member" not in text
+
     async def test_a_member_with_nothing_readable_and_a_person_with_nothing_readable_read_as_no_match(self, listing) -> None:
         member = {"id": "u-m", "fullName": "Mia Member", "email": "mia@acme.test"}
         person = {"id": "p-m", "fullName": "Mia Member", "email": "mia@acme.test"}
