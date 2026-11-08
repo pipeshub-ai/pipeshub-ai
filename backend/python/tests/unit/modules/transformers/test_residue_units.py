@@ -134,6 +134,22 @@ def test_a_word_longer_than_a_unit_is_not_added_to_the_residue() -> None:
     assert all("A" * 100 not in w for u in units for w in u.cut_words)
 
 
+def test_a_cut_word_over_the_piece_budget_is_not_added_to_the_residue() -> None:
+    """With a 28-character piece budget, `aaaa...` (30 characters) straddles a cut but fits no residue unit
+    either; only a word that fits is carried."""
+    from types import SimpleNamespace
+    line = "." * 18 + "a" * 30 + "." * 8 + " " + "." * 22 + "bbbbbb" + "cccc" + "." * 18
+
+    def hard_cut(text: str, n: int) -> list[str]:
+        return [text[i:i + n] for i in range(0, len(text), n)]
+    block = SimpleNamespace(index=0, data={"text": line}, parent_block_index=None,
+                            code_metadata=SimpleNamespace(kind="function", signature="", docstring=""))
+    [first, *_rest] = code_units([block], lambda _b: "", exceeds=lambda t, n: len(t) > n, token_len=len,
+                                 split_long_line=hard_cut, budget=29)
+    assert "a" * 30 not in first.cut_words and not any(set(w) == {"a"} for w in first.cut_words)
+    assert "bbbbbbcccc" in first.cut_words
+
+
 @pytest.mark.asyncio
 async def test_a_reconcile_replaces_the_residue_even_when_only_a_short_line_changed() -> None:
     old, new = _parse(), _parse(SRC.replace(b"0.07", b"0.08"))

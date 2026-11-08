@@ -227,7 +227,9 @@ def _pieces(text: str, budget: int, token_len: Callable[[str], int],
                 current, used = [], 0
             parts = split_long_line(line, budget)
             if on_cut is not None:
-                on_cut(_straddling(parts))
+                # A word over the piece budget fits no residue unit either (its room is at least that), so it
+                # would only be cut again there.
+                on_cut([w for w in _straddling(parts) if token_len(w) < budget])
             pieces.extend(parts)
             continue
         if used + cost > budget and current:

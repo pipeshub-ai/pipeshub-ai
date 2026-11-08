@@ -349,6 +349,24 @@ async def test_a_lease_lost_during_a_page_stops_before_the_next_record_and_write
     assert counts.embedded == 1 and FLAG not in config.values
 
 
+async def test_the_units_and_the_re_read_residue_are_built_off_the_loop(monkeypatch) -> None:
+    """Building units tokenizes the whole file; the backfill runs on the consumers' loop, so every build
+    runs in a thread, the residue of the re-read blob too."""
+    import asyncio
+
+    from app.modules.transformers import vectorstore as vectorstore_module
+    threaded: list[str] = []
+    real = asyncio.to_thread
+
+    async def to_thread(func, *args, **kwargs) -> object:
+        threaded.append(func.__name__)
+        return await real(func, *args, **kwargs)
+    monkeypatch.setattr(vectorstore_module.asyncio, "to_thread", to_thread)
+    graph = Graph({"a": (WITH_CLASSES, "COMPLETED")})
+    await _run(graph, _store(have_units=set()), Blobs({"vr-a": WITH_CLASSES}), Config())
+    assert threaded == ["code_documents_for_record", "code_residue_documents"]
+
+
 async def test_a_record_whose_embed_fails_is_counted_failed_and_the_run_goes_on() -> None:
     graph = Graph({"a": (WITH_CLASSES, "COMPLETED"), "b": (WITH_CLASSES, "COMPLETED")})
     vs = _store(have_units=set())

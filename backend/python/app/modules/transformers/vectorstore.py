@@ -1440,7 +1440,8 @@ class VectorStore(Transformer):
         stale = {g.id for g in groups} - {
             g.id for g in (now.block_groups if now else []) if g.sub_type == GroupSubType.CODE_CLASS}
         residue = [d for d in documents if d.metadata.get("unitKind") == RESIDUE_UNIT_KIND]
-        residue_now = code_residue_documents(now.blocks, virtual_record_id, org_id, context) if now else []
+        residue_now = await asyncio.to_thread(
+            code_residue_documents, now.blocks, virtual_record_id, org_id, context) if now else []
         if [d.page_content for d in residue_now] != [d.page_content for d in residue]:
             stale.add(code_residue_block_id(virtual_record_id))
         if stale:
