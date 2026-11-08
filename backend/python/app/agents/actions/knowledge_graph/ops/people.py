@@ -154,9 +154,13 @@ async def execute_find_records_by_person(
     outside = await _reached_only_by_person(graph, context, group, page.records)
     # The roles asked for, as the header says them: a record's own role is not known here.
     roles = wanted_roles or list(ROLE_EDGES)
-    linked = f"linked to {who} as {'one of ' if len(roles) > 1 else ''}{' / '.join(roles)}"
+    role_text = f"as {'one of ' if len(roles) > 1 else ''}{' / '.join(roles)}"
+    linked = f"{'possibly ' if outside is None else ''}linked to {who} {role_text}"
+    not_member = f"linked to {_person_name(group)} (not a member) {role_text}"
+    outside = outside or set()
     cite_refs = await cite_listed_records(
-        state, graph, context.org_id, {r["_key"]: listing_facts(r, linked) for r in page.records if r.get("_key")},
+        state, graph, context.org_id,
+        {r["_key"]: listing_facts(r, not_member if r["_key"] in outside else linked) for r in page.records if r.get("_key")},
     )
     lines = [f"Records {linked}, newest first:", *cite_note(page.records, cite_refs)]
     lines.extend(
@@ -264,9 +268,9 @@ def _person_name(group: list[dict[str, Any]]) -> str:
 async def _reached_only_by_person(
     graph: Any, context: EntityAccessContext, group: list[dict[str, Any]],  # noqa: ANN401
     records: list[dict[str, Any]],
-) -> set[str]:
-    """Ids of the listed records that link to none of the group's members.
-    Only a group of a member and a Person needs the question."""
+) -> set[str] | None:
+    """Ids of the listed records that link to none of the group's members, or None
+    when the links could not be read. Only a group of a member and a Person needs the question."""
     members = {u["id"] for u in _members(group)}
     if not members or len(members) == len(group):
         return set()
@@ -274,9 +278,9 @@ async def _reached_only_by_person(
     keyed = [r for r in records if r.get("_key")]
     try:
         linked = await asyncio.gather(*(graph.get_record_people(r["_key"], context.org_id) for r in keyed))
-    except Exception:  # unknown: say nothing, since naming the Person here could name one with no readable record
+    except Exception:  # unknown: naming the Person here could name one with no readable record
         logger.warning("find_records_by_person could not attribute records", exc_info=True)
-        return set()
+        return None
     return {r["_key"] for r, people in zip(keyed, linked) if not members & {p["id"] for p in people}}
 
 

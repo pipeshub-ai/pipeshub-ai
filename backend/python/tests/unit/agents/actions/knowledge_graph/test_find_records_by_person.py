@@ -261,6 +261,26 @@ class TestPeopleWhoAreNotMembers:
         ok, text = await execute_find_records_by_person(state, "Mia Member")
         assert ok and "Ticket r-own" in text
         assert "Mia Outside" not in text and "not a member" not in text
+        assert text.startswith("Records possibly linked to Mia Member")
+
+    @pytest.mark.parametrize(("links", "own_said", "ext_said"), [
+        (lambda rid, org: [{"id": "u-m"}] if rid == "r-own" else [],
+         "linked to Mia Member (mia@acme.test) as author", "linked to Mia Outside (not a member) as author"),
+        (AssertionError, "possibly linked to Mia Member (mia@acme.test) as author",
+         "possibly linked to Mia Member (mia@acme.test) as author"),
+    ], ids=["links-read", "links-unread"])
+    async def test_a_citation_never_gives_the_member_a_persons_record(
+        self, listing, monkeypatch, links, own_said, ext_said,
+    ) -> None:
+        cite = AsyncMock(return_value={})
+        monkeypatch.setattr(people, "cite_listed_records", cite)
+        member = {"id": "u-m", "fullName": "Mia Member", "email": "mia@acme.test"}
+        person = {"id": "p-m", "fullName": "Mia Outside", "email": "mia@acme.test"}
+        listing.pages["u-m"] = EntityRecordPage(records=[_row("r-own"), _row("r-ext")], next_cursor=None)
+        state = self._with([person], [member])
+        state["graph_provider"].get_record_people = AsyncMock(side_effect=links)
+        await execute_find_records_by_person(state, "Mia Member", roles=["author"])
+        assert cite.await_args.args[3] == {"r-own": own_said, "r-ext": ext_said}
 
     async def test_a_member_with_nothing_readable_and_a_person_with_nothing_readable_read_as_no_match(self, listing) -> None:
         member = {"id": "u-m", "fullName": "Mia Member", "email": "mia@acme.test"}
