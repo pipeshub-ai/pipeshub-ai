@@ -43,15 +43,6 @@ def _relation_ends(e: dict) -> tuple[str, str, str, str] | None:
     return (fc, fi, tc, ti) if fc and fi and tc and ti else None
 
 
-_UPSERT_ENTITY_RELATIONS = """WITH ins AS (INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
-    SELECT $1, 'entityRelations', x.fc, x.fi, x.tc, x.ti, x.k, jsonb_strip_nulls(x.doc)
-    FROM jsonb_to_recordset($2::jsonb) AS x(fc text, fi text, tc text, ti text, k text, doc jsonb)
-    WHERE EXISTS (SELECT 1 FROM graph.nodes f WHERE f.org_id = $1 AND f.coll = x.fc AND f.id = x.fi)
-      AND EXISTS (SELECT 1 FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = x.tc AND t.id = x.ti)
-    ORDER BY x.fc, x.fi, x.tc, x.ti, x.k
-    ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = EXCLUDED.doc
-    RETURNING from_coll, from_id, to_coll, to_id, ekey)"""
-
 
 class PeopleMixin(IdentityMixin):
     # ---- persons a source names by its own user id --------------------------------------------------------------------------------
@@ -170,7 +161,13 @@ class PeopleMixin(IdentityMixin):
         rows = self._entity_relation_rows(edges)
         if not rows:
             return True
-        await self._q(lambda tx: tx.execute(f"""/* pipeshub:graph.batch_create_entity_relations */ {_UPSERT_ENTITY_RELATIONS} SELECT count(*) FROM ins""", current_org_id(), _j(rows)),
+        await self._q(lambda tx: tx.execute("""/* pipeshub:graph.batch_create_entity_relations */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
+            SELECT $1, 'entityRelations', x.fc, x.fi, x.tc, x.ti, x.k, jsonb_strip_nulls(x.doc)
+            FROM jsonb_to_recordset($2::jsonb) AS x(fc text, fi text, tc text, ti text, k text, doc jsonb)
+            WHERE EXISTS (SELECT 1 FROM graph.nodes f WHERE f.org_id = $1 AND f.coll = x.fc AND f.id = x.fi)
+              AND EXISTS (SELECT 1 FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = x.tc AND t.id = x.ti)
+            ORDER BY x.fc, x.fi, x.tc, x.ti, x.k
+            ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = EXCLUDED.doc""", current_org_id(), _j(rows)),
                       transaction, write=True)
         return True
 
@@ -198,7 +195,15 @@ class PeopleMixin(IdentityMixin):
         if not record_id or not to_collections or not origin:
             raise ValueError("replacing a record's entity relations needs a record, collections and an origin")
         rows = self._entity_relation_rows(edges) if edges else []
-        await self._q(lambda tx: tx.execute(f"""/* pipeshub:graph.replace_record_entity_relations */ {_UPSERT_ENTITY_RELATIONS},
+        await self._q(lambda tx: tx.execute("""/* pipeshub:graph.replace_record_entity_relations */ WITH ins AS (INSERT INTO graph.edges
+                (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
+            SELECT $1, 'entityRelations', x.fc, x.fi, x.tc, x.ti, x.k, jsonb_strip_nulls(x.doc)
+            FROM jsonb_to_recordset($2::jsonb) AS x(fc text, fi text, tc text, ti text, k text, doc jsonb)
+            WHERE EXISTS (SELECT 1 FROM graph.nodes f WHERE f.org_id = $1 AND f.coll = x.fc AND f.id = x.fi)
+              AND EXISTS (SELECT 1 FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = x.tc AND t.id = x.ti)
+            ORDER BY x.fc, x.fi, x.tc, x.ti, x.k
+            ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = EXCLUDED.doc
+            RETURNING from_coll, from_id, to_coll, to_id, ekey),
             gone AS (DELETE FROM graph.edges d WHERE d.org_id = $1 AND d.coll = 'entityRelations' AND d.from_coll = 'records' AND d.from_id = $3
                 AND d.to_coll = ANY($4::text[]) AND coalesce(d.doc->>'origin', $5) = $6
                 AND NOT EXISTS (SELECT 1 FROM ins i WHERE (i.from_coll, i.from_id, i.to_coll, i.to_id, i.ekey) = (d.from_coll, d.from_id, d.to_coll, d.to_id, d.ekey)))
