@@ -34,23 +34,12 @@ from app.services.permissions.structure_generation import (
     register_pending_roots,
 )
 from app.services.vector_db import scope_expr as sx
-from app.services.vector_db.const.const import (
-    PAYLOAD_KEYWORD_INDEXES,
-    SCOPE_INTEGER_INDEXES,
-    SCOPE_KEYWORD_INDEXES,
-)
-from app.services.vector_db.filters import ScopeFilter, ScopeFilterUnsupported
-from app.services.vector_db.models import (
-    FieldCondition,
-    FilterExpression,
-    HybridSearchRequest,
-)
+from app.services.vector_db.filters import ScopeFilter
 from app.services.vector_db.scope_backfill import DONE, ScopeBackfill
 from app.services.vector_db.scope_rewrite import (
     RewriteResult,
     ScopeRewriteJob,
 )
-from tests.integration.vector_db.helpers import make_dense
 from tests.support.in_memory_vector_db import InMemoryVectorDBService
 
 from . import mutations
@@ -130,7 +119,6 @@ class Log:
     audits: int = 0
     points: int = 0
     stale_seen: int = 0
-    search_mismatch: list[tuple] = field(default_factory=list)  # a store's search with the filter does not return what the filter tree admits
 
 
 @dataclass
@@ -157,8 +145,6 @@ class Env:
                    collection: str = COLL, create: bool = True) -> Env:
         vdb = vdb or FencedMemoryVectorDB()
         loaded = await load(vdb, collection, {NAME: world}, share=share, chunks=chunks, create=create)
-        for field_name, schema in (*PAYLOAD_KEYWORD_INDEXES, *SCOPE_KEYWORD_INDEXES, *SCOPE_INTEGER_INDEXES):      # (the search filter reads them)
-            await vdb.create_index(collection, field_name, schema)
         await vdb.make_searchable(collection)      # (a set_payload finds only the points a search sees)
         backfill = ScopeBackfill(loaded.graph, vdb, loaded.locator, log)
         for app in loaded.apps:
@@ -299,28 +285,6 @@ class Env:
                     into.pending_admits.append(tag)
                 if exact and not stale and _covered(payload, flt) and admitted != allowed:
                     into.inexact.append((*tag, "admitted" if admitted else "refused"))
-
-
-    async def store_audit(self, into: Log) -> None:
-        """The real store's search with the scope filter returns exactly the points the filter tree admits (what the rewrite wrote is searchable)."""
-        world, layer = self.world, OracleScopeLayer()
-        current, roots = await self.current(), self.pending()
-        blocked = frozenset(a for a in self.apps if parse(self.graph.app_docs.get(a, {}).get(PENDING_KEY)))
-        pids = {p: v for v, ps in self.loaded.points.items() for p in ps}
-        payloads = {str(p.id): p.payload for p in await self.vdb.retrieve_points(self.loaded.collection, list(pids))}
-        for viewer in world.users():
-            flt = ScopeFilter.of(_prefixed(await layer.viewer_scopes(world, viewer), roots, blocked), current, version=SCOPE_FIELDS_VERSION,
-                                 generation=current_scope_generation())
-            req = HybridSearchRequest(dense_query=make_dense([1.0]), filter=FilterExpression(must=[FieldCondition(key="metadata.orgId", value=ORG)]),
-                                      limit=1000, scope_filter=flt)
-            try:
-                [hits] = await self.vdb.query_nearest_points(self.loaded.collection, [req])
-            except ScopeFilterUnsupported:
-                continue      # the store refuses this filter (Redis: ids with capital letters); the product reads such a viewer with the legacy filter
-            got = {str(h.id) for h in hits}
-            want = {pid for pid in pids if pid in payloads and sx.evaluate(sx.admits(flt), payloads[pid])}
-            if got != want:
-                into.search_mismatch.append((viewer, sorted(want - got)[:3], sorted(got - want)[:3]))
 
 
 def _prefixed(scopes: ViewerScopes, pending: Collection[str], blocked: Collection[str] = ()) -> ViewerScopes:

@@ -430,6 +430,12 @@ class PgVectorService(IVectorDBService):
             )
         return ScrollResult(points=points, next_offset=nxt)
 
+    async def fence_time(self) -> datetime:
+        """The database's clock: what the compare-and-set fence of the group rows is measured in for a writer that asks, so that the clocks of
+        the hosts that write do not have to agree."""
+        db, _ = self._assert_connected()
+        return await db.run(lambda tx: tx.fetchval("/* pipeshub:pgvector.fence_time */ SELECT clock_timestamp()"), idempotent=True, custom_plan=True)
+
     async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
         db, catalog = self._assert_connected()
         org = _filter_org(count_filter)

@@ -206,3 +206,44 @@ async def test_a_virtual_record_that_cannot_be_placed_is_not_forgotten_when_anot
     seen = Log()
     await env.audit(seen)
     assert not seen.leaks and not seen.pending_admits
+
+
+def _fence_all(env: Env, value: int) -> None:
+    for point in env.vdb._points(env.loaded.collection).values():
+        point.payload["scopeFence"] = value       # a writer whose clock is ahead was here
+
+
+async def test_the_stale_marker_lands_whatever_fence_the_points_carry(caplog: pytest.LogCaptureFixture) -> None:
+    """A page that cannot be finished is left on the stale marker so that no stamp of it admits. Every store treats a write below the stored fence
+    as a silent no-op, so the marker is written unfenced and read back. Here the points are fenced an hour ahead (further than the window), the
+    rewrite does not follow, and the marker still lands."""
+    env = await Env.make(WorldStore().world("golden/confluence_hr"))
+    await env.change((M("moved", "page:Handbook", "space:ALL", "space:ALL"),))
+    _fence_all(env, scope_rewrite._micros(scope_rewrite._clock()) + 3600 * 10**6)
+    with pytest.raises(RewriteIncomplete, match="no plausible time"):
+        await env.job.run_connector(ORG, "w:app")
+    payloads = [p.payload for pts in env.loaded.points.values() for p in await env.vdb.retrieve_points(env.loaded.collection, pts)]
+    moved = [p for p in payloads if p["metadata"]["virtualRecordId"] in (env.vrids()["page:Handbook"], env.vrids()["page:Onboarding"])]
+    assert moved and all(p["scopeFieldsVersion"] == 0 for p in moved), "the marker was refused: the old stamp is still trusted"
+    seen = Log()
+    await env.audit(seen)
+    assert not seen.leaks and not seen.pending_admits
+
+
+async def test_a_marker_the_store_does_not_apply_fails_the_run_instead_of_passing_for_written() -> None:
+    env = await Env.make(WorldStore().world("golden/confluence_hr"))
+    await env.change((M("moved", "page:Handbook", "space:ALL", "space:ALL"),))
+    _fence_all(env, scope_rewrite._micros(scope_rewrite._clock()) + 3600 * 10**6)
+    real_put = env.vdb.update_payloads_by_ids
+
+    async def drop_markers(collection: str, updates: Any, **k: Any) -> None:
+        keep = {pid: p for pid, p in updates.items() if p.get("scopeFieldsVersion") != 0}
+        if keep:
+            await real_put(collection, keep, **k)
+
+    env.vdb.update_payloads_by_ids = drop_markers      # type: ignore[method-assign]
+    try:
+        with pytest.raises(RewriteIncomplete, match="stale marker did not land"):
+            await env.job.run_connector(ORG, "w:app")
+    finally:
+        env.vdb.update_payloads_by_ids = real_put      # type: ignore[method-assign]

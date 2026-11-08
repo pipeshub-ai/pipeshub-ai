@@ -286,7 +286,7 @@ class IVectorDBService(ABC):
 
     #: The store makes ``update_payloads_by_ids(..., fence=n)`` conditional, atomically per point: a point whose ``scopeFence`` is above ``n``
     #: is left as it is (no error), any other takes the payload and ``scopeFence = n``. A store without it is written to unconditionally; the
-    #: caller then relies on checking its lease and the connector's generation just before each request (pgvector has its own fence,
+    #: caller then relies on checking the connector's generation just before each request (pgvector has its own fence,
     #: ``computed_at``).
     generation_fence: bool = False
 
