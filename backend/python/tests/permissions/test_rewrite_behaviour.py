@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from app.services.permissions.pending import parse
-from app.services.permissions.structure_generation import GENERATION_KEY, UNSAFE_KEY
+from app.services.permissions.structure_generation import GENERATION_KEY, OPENED_KEY, UNSAFE_KEY
 from app.services.vector_db import membership, scope_rewrite
 from app.services.vector_db.models import VectorPoint
 from app.services.vector_db.scope_backfill import (
@@ -165,7 +165,7 @@ async def test_the_app_document_is_written_only_outside_the_virtual_record_locks
     assert held and not any(held), held
 
 
-@pytest.mark.parametrize("breaks", ["not_backfilled", "unlisted_bump", "unsafe_mark", "older_pass"])
+@pytest.mark.parametrize("breaks", ["not_backfilled", "unlisted_bump", "unsafe_mark", "older_pass", "unclosed_write"])
 async def test_a_connector_that_cannot_be_released_is_left_to_the_full_pass(breaks: str) -> None:
     env = await hr()
     await env.change((MOVE,))
@@ -174,6 +174,8 @@ async def test_a_connector_that_cannot_be_released_is_left_to_the_full_pass(brea
         doc[BACKFILL_KEYS["state"]] = "running"
     elif breaks == "unlisted_bump":
         doc[GENERATION_KEY] += 1            # a change that listed no root (the whole connector, or more roots than the list holds), after the pass
+    elif breaks == "unclosed_write":
+        doc[OPENED_KEY] = 1            # a write that could not be undone started on this connector and wrote no closing mark
     elif breaks == "unsafe_mark":
         doc[UNSAFE_KEY] = 12345
     else:

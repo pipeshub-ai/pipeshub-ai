@@ -266,8 +266,8 @@ class Env:
         payloads = {str(p.id): p.payload for p in await self.vdb.retrieve_points(self.loaded.collection, list(pids))}
         into.audits += 1
         for viewer in world.users():
-            scopes = _prefixed(await layer.viewer_scopes(world, viewer), roots)
-            flt = ScopeFilter.of(scopes, current, version=SCOPE_FIELDS_VERSION, generation=current_scope_generation(), blocked=blocked)
+            scopes = _prefixed(await layer.viewer_scopes(world, viewer), roots, blocked)      # as `ViewerScopeResolver` carries them: the roots, and the connectors that have one
+            flt = ScopeFilter.of(scopes, current, version=SCOPE_FIELDS_VERSION, generation=current_scope_generation())
             truth = oracle.explain(world, viewer, ids)
             for pid, v in pids.items():
                 payload = payloads.get(pid)
@@ -295,8 +295,8 @@ class Env:
         pids = {p: v for v, ps in self.loaded.points.items() for p in ps}
         payloads = {str(p.id): p.payload for p in await self.vdb.retrieve_points(self.loaded.collection, list(pids))}
         for viewer in world.users():
-            flt = ScopeFilter.of(_prefixed(await layer.viewer_scopes(world, viewer), roots), current, version=SCOPE_FIELDS_VERSION,
-                                 generation=current_scope_generation(), blocked=blocked)
+            flt = ScopeFilter.of(_prefixed(await layer.viewer_scopes(world, viewer), roots, blocked), current, version=SCOPE_FIELDS_VERSION,
+                                 generation=current_scope_generation())
             req = HybridSearchRequest(dense_query=make_dense([1.0]), filter=FilterExpression(must=[FieldCondition(key="metadata.orgId", value=ORG)]),
                                       limit=1000, scope_filter=flt)
             try:
@@ -309,13 +309,13 @@ class Env:
                 into.search_mismatch.append((viewer, sorted(want - got)[:3], sorted(got - want)[:3]))
 
 
-def _prefixed(scopes: ViewerScopes, pending: Collection[str]) -> ViewerScopes:
+def _prefixed(scopes: ViewerScopes, pending: Collection[str], blocked: Collection[str] = ()) -> ViewerScopes:
     def add(xs: frozenset[str]) -> frozenset[str]:
         return frozenset(PREFIX + x for x in xs)
 
     return replace(scopes, gated_apps=add(scopes.gated_apps), open_apps=add(scopes.open_apps), readable_groups=add(scopes.readable_groups),
                    readable_scopes=add(scopes.readable_scopes), unreadable_restricted=add(scopes.unreadable_restricted),
-                   legacy_apps=add(scopes.legacy_apps), pending=frozenset(pending))
+                   legacy_apps=add(scopes.legacy_apps), pending=frozenset(pending), blocked=frozenset(blocked))
 
 
 def _covered(payload: dict[str, Any], flt: ScopeFilter) -> bool:
