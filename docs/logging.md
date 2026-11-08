@@ -59,7 +59,7 @@ JSON (`LOG_FORMAT=json`): one object per line.
 | `filename`, `line` | the call site |
 | `message` | the message with `%` arguments applied |
 | `request_id` | the bound request id, or `null` |
-| fields | each `extra=` field with its JSON type (NaN and infinities as strings); a field named like a standard key does not replace it, and `stack` is reserved (left out in text and JSON) |
+| fields | each `extra=` field with its JSON type (NaN and infinities as strings; a number the credential rule in Redaction masks as `"[REDACTED]"`); a field named like a standard key does not replace it, and `stack` is reserved (left out in text and JSON) |
 | `stack` | traceback and `stack_info`, when present |
 
 A logging provider (`app/utils/structured_logging`) may supply its own console formatter, decide whether per-service files are
@@ -311,9 +311,11 @@ field list, and any JSON string value that holds such pairs), a pair value that 
 `updated_password=…`); and an `http(s)` URL with no query, fragment or userinfo under `token_url`, `token_uri`, `token_endpoint`,
 `authorization_url` or `authorization_endpoint`. A field whose **name** is a credential (`token`, `apiKey`, …) is redacted in both
 formats when its value is a string or an object, so a URL or an ISO time passed as a string field stays masked; the rules above
-apply to `name=value` pairs inside text, not to a field's own value. Numbers and booleans are kept: in JSON always, and in text
-booleans always and integers of up to 6 digits or under a time name (`token_count=12`, `token_expires_at=1730000000`); a longer
-number or a fraction under another credential name (`token_count=12345678`, `token_ratio=0.5`) is masked in text.
+apply to `name=value` pairs inside text, not to a field's own string value. Booleans are always kept, and `None` is `null` in
+JSON and left out in text. A number under a credential name follows the pair rule in both formats: it is kept when it is an
+integer of up to 6 digits (`token_count=12`) or a non-negative number under a time name (`token_expires_at=1730000000`,
+`token_expires_in=3600.5`); any other number under a credential name (`password=73915528`, `token_count=12345678`,
+`token_ratio=0.5`, `token_ttl=-1`) is `"[REDACTED]"` in text and JSON alike.
 Redaction is a safety net; it cannot recognise content, so the rules below still apply.
 
 ## Conventions
