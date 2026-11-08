@@ -18090,7 +18090,7 @@ components:
     # Web Search Schemas
     WebSearchProviderType:
       type: string
-      enum: [duckduckgo, serper, tavily, exa, brave, searxng, firecrawl, crawl4ai, keenable]
+      enum: [duckduckgo, serper, tavily, exa, brave, searxng, firecrawl, crawl4ai, keenable, specstream]
       description: >-
         Supported web search provider. crawl4ai only reads pages (it backs up the built-in page reader)
         and cannot be the default; firecrawl both searches and reads pages. searxng, firecrawl and

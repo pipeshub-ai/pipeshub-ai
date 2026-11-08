@@ -11,7 +11,8 @@ export type WebSearchProviderType =
   | 'searxng'
   | 'firecrawl'
   | 'crawl4ai'
-  | 'keenable';
+  | 'keenable'
+  | 'specstream';
 
 export const DUCKDUCKGO_PROVIDER_ID: WebSearchProviderType = 'duckduckgo';
 
@@ -194,6 +195,17 @@ export const WEB_SEARCH_PROVIDER_META: WebSearchProviderMeta[] = [
     docUrl: 'https://keenable.ai',
     searches: true,
     fields: [apiKeyField('Keenable', 'https://keenable.ai', false)],
+  },
+  {
+    type: 'specstream',
+    label: 'SpecStream',
+    description: 'Web search API with a source URL on every result',
+    icon: 'travel_explore',
+    iconType: 'material',
+    configurable: true,
+    docUrl: 'https://specstream.ai/search-api',
+    searches: true,
+    fields: [apiKeyField('SpecStream', 'https://specstream.ai/workspace')],
   },
   {
     type: 'crawl4ai',
