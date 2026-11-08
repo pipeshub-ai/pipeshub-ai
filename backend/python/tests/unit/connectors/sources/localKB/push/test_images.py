@@ -232,6 +232,30 @@ HTML_REMOTE = [
 ]
 
 
+class TestDataUriCase:
+    """Indexing reads an inline image only when its URI starts with a lower-case ``data:``, so an
+    upper-case one that passed the push would vanish from the record without a word."""
+
+    @pytest.mark.parametrize(
+        "uri",
+        [f"DATA:image/png;base64,{PNG}", f"Data:image/png;base64,{PNG}", f"data:IMAGE/PNG;BASE64,{PNG}"],
+    )
+    def test_a_data_uri_not_in_lower_case_is_refused_with_a_clear_reason(self, uri: str) -> None:
+        with pytest.raises(PushRefusal) as raised:
+            I.check_data_uri(uri, "blocks.blocks[0].data.uri")
+        assert raised.value.reason == "IMAGE_REF_INVALID"
+        assert "lower case" in raised.value.message
+
+    @pytest.mark.parametrize("fmt, data", [
+        ("markdown", f"![a](DATA:IMAGE/PNG;BASE64,{PNG})"),
+        ("html", f'<img src="DATA:image/png;base64,{PNG}">'),
+    ])
+    def test_a_group_image_not_in_lower_case_is_refused(self, fmt: str, data: str) -> None:
+        with pytest.raises(PushRefusal) as raised:
+            check_groups(group(data, fmt))
+        assert raised.value.reason == "IMAGE_REF_INVALID"
+
+
 class TestGroupImages:
     @pytest.mark.parametrize(
         "data",
@@ -240,7 +264,6 @@ class TestGroupImages:
             f"![a]({DATA_PNG} \"title\")",
             f"![a][r]\n\n  [r]: {DATA_PNG}",
             f'<img src="{DATA_PNG}" alt="a">',
-            f"![a](DATA:IMAGE/PNG;BASE64,{PNG})",
             f"![a](data:image/gif;base64,{GIF})",
             "no image here",
         ],
@@ -255,7 +278,6 @@ class TestGroupImages:
             f'<p>x</p><img src="{DATA_PNG}">',
             f'<IMG SRC="{DATA_PNG}">',
             f'<img\nsrc="{DATA_PNG}"/>',
-            f'<img src="DATA:image/png;base64,{PNG}">',
             "<p>no image</p>",
         ],
     )

@@ -61,6 +61,10 @@ def check_data_uri(uri: str, location: str) -> None:
     match = _DATA_URI.match(uri)
     if not match:
         raise _fail("IMAGE_REF_INVALID", location, "An image reference must be a data:image/(png|jpeg|gif|webp);base64 URI.")
+    if uri[: match.end()] != uri[: match.end()].lower():
+        # Indexing reads an inline image only under the lower-case prefix; anything else would
+        # be accepted here and then silently missing from the record.
+        raise _fail("IMAGE_REF_INVALID", location, "Write the data:image/...;base64, prefix in lower case.")
     subtype = match.group(1).lower()
     payload = uri[match.end():]
     if len(payload) > (MAX_IMAGE_BYTES * 4) // 3 + 8:
