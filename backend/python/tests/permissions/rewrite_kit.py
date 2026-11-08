@@ -20,14 +20,14 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from app.services.permissions.currency import app_is_current
-from app.services.permissions.pending import parse, with_roots
+from app.services.permissions.pending import parse
 from app.services.permissions.scope_fields import (
     SCOPE_FIELDS_VERSION,
     ScopeFields,
     Stamp,
     current_scope_generation,
 )
-from app.services.permissions.structure_generation import GENERATION_KEY
+from app.services.permissions.structure_generation import GENERATION_KEY, PENDING_KEY, register_pending_roots
 from app.services.vector_db import scope_expr as sx
 from app.services.vector_db.const.const import PAYLOAD_KEYWORD_INDEXES, SCOPE_INTEGER_INDEXES, SCOPE_KEYWORD_INDEXES
 from app.services.vector_db.filters import ScopeFilter, ScopeFilterUnsupported
@@ -38,8 +38,6 @@ from app.services.vector_db.models import (
 )
 from app.services.vector_db.scope_backfill import DONE, ScopeBackfill
 from app.services.vector_db.scope_rewrite import (
-    PENDING_KEY,
-    UNSCOPED_KEY,
     RewriteResult,
     ScopeRewriteJob,
 )
@@ -205,12 +203,9 @@ class Env:
         self.changed |= {v for v in old if old[v] != new.get(v)}
         self.subtree |= descendants(before, flat) | descendants(after, flat)
         for c, rs in roots.items():
-            doc = self.app_doc(c)
-            gen = int(doc.get(GENERATION_KEY) or 0) + 1  # `bump_generation_in`: the generation and the roots in one write
-            doc[GENERATION_KEY], doc[PENDING_KEY] = gen, with_roots(doc.get(PENDING_KEY), [PREFIX + r for r in rs], gen)
+            await register_pending_roots(self.graph, PREFIX + c, [PREFIX + r for r in rs])      # the generation and the roots, as the sync writes them
         for c in whole:
-            doc = self.app_doc(c)
-            doc[GENERATION_KEY] = doc[UNSCOPED_KEY] = int(doc.get(GENERATION_KEY) or 0) + 1
+            await self.graph.increment_node_field(PREFIX + c, "apps", GENERATION_KEY)           # a change nobody lists: only a full pass covers it
         return roots, whole
 
     async def run_job(self, connector: str) -> RewriteResult:

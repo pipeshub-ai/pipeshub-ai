@@ -1,11 +1,10 @@
-"""`PendingScopes`: the records whose subtrees are being rewritten, kept on the connector's app document.
+"""`PendingScopes`: the records whose subtrees await a rewrite, kept on the connector's app document.
 
-A structural change that reaches only the subtree of one record (a move, a broken or restored inheritance, a record
-filed under another group) registers that record as a *root*, in the transaction that writes the change, together with the
-connector's new scope generation. From then on every filter hides the points whose ``pathIds`` hold a pending root, and the
-container-stamped points of the connector are read with the legacy filter (a point with no path cannot be hidden by one), until
-the rewrite job has restamped the subtree and removes the root. The value is one JSON string ``{root: generation}``: a
-compare-and-set on the whole string loses no registration, and a root registered again after the job read it stays.
+A structural change that reaches only the subtree of one record (a move, a broken or restored inheritance, a record's own rule or
+first/last grant) registers that record as a *root*, in the transaction that bumps the connector's structure generation. From then on
+every filter hides the points whose ``pathIds`` hold a pending root, and the container-stamped points of the connector are read with
+the legacy filter. The value is one JSON string ``{root: generation}``: a compare-and-set on the whole string loses no registration,
+and a root registered again after a pass read it stays.
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
 
-#: Past this many roots a connector is read as changed as a whole (a full pass), not as a list of subtrees.
+#: Past this many roots a change is read as one of the whole connector (a full pass), not as a list of subtrees.
 MAX_PENDING_ROOTS = 200
 
 
@@ -24,15 +23,21 @@ class PendingOverflow(ValueError):
     """More roots than `MAX_PENDING_ROOTS`: the caller treats the change as one of the whole connector."""
 
 
+class PendingUnreadable(ValueError):
+    """The stored value is not a ``{root: generation}`` map. It is never read as "no roots": the connector is not current."""
+
+
 def parse(raw: object) -> dict[str, int]:
-    """Roots and the generation each was registered at. A value that does not parse reads as no roots: the generation, which is
-    bumped in the same write, already keeps the connector's stamps out of use."""
-    if not isinstance(raw, str) or not raw:
+    """Roots and the generation each was registered at. Absent (None or "") is no roots; anything else that does not parse raises
+    `PendingUnreadable`."""
+    if raw is None or raw == "":
         return {}
     try:
+        if not isinstance(raw, str):
+            raise TypeError
         return {str(k): int(v) for k, v in json.loads(raw).items()}
     except (ValueError, TypeError, AttributeError):
-        return {}
+        raise PendingUnreadable(f"not a pending-roots value: {raw!r:.80}") from None
 
 
 def dump(roots: Mapping[str, int]) -> str | None:
@@ -49,7 +54,19 @@ def with_roots(raw: object, roots: Collection[str], generation: int) -> str:
 
 
 def without_done(raw: object, done: Mapping[str, int]) -> str | None:
-    """`raw` without the roots rewritten from the state `done` read (root -> the generation it had then): a root registered again
-    since keeps its newer generation and stays."""
+    """`raw` without the roots covered by a pass (root -> the generation the pass read the graph at): a root registered again since
+    keeps its newer generation and stays."""
     held = parse(raw)
     return dump({r: g for r, g in held.items() if not (r in done and g <= done[r])})
+
+
+def require_filter_terms() -> None:
+    """Start-up check: roots may be registered only where the scope filter can hide them (`pending`) and stop reading the container
+    stamps of their connector (`blocked`). Without those fields a registered root would hide nothing."""
+    import dataclasses
+
+    from app.services.vector_db.filters import ScopeFilter
+
+    missing = {"pending", "blocked"} - {f.name for f in dataclasses.fields(ScopeFilter)}
+    if missing:
+        raise RuntimeError(f"ScopeFilter lacks the {sorted(missing)} field(s): the pending registry must not run without them")

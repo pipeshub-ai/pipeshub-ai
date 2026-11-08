@@ -91,3 +91,8 @@ class WorldGraph:
 
     def is_write_conflict(self, exc: Exception) -> bool:
         return False
+
+    async def increment_node_field(self, key: str, collection: str, field: str, *args: object) -> int:
+        doc = self.app_docs.setdefault(key, {"_key": key})
+        doc[field] = int(doc.get(field) or 0) + 1
+        return doc[field]

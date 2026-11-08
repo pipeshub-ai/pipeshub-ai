@@ -37,7 +37,7 @@ from app.services.permissions.currency import app_is_current
 from app.services.permissions.errors import ViewerScopesUnavailable
 from app.services.permissions.metrics import SCOPE_STAMP_FAILED
 from app.services.permissions.mode import scope_fields_enabled
-from app.services.permissions.pending import parse, without_done
+from app.services.permissions.pending import PendingUnreadable, parse, without_done
 from app.services.permissions.rules import Rule, rule_for
 from app.services.permissions.scope_fields import (
     SCOPE_FENCE_FIELD,
@@ -47,6 +47,7 @@ from app.services.permissions.scope_fields import (
 )
 from app.services.permissions.structure_generation import (
     GENERATION_KEY,
+    PENDING_KEY,
     UNSAFE_KEY,
     same_mark,
     structure_generation_of,
@@ -77,9 +78,6 @@ if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
     from app.services.vector_db.interface.vector_db import IVectorDBService
     from app.services.vector_db.membership import CollectionLocator
-
-PENDING_KEY = "scopeProjectionPendingRoots"  # {root: generation it was registered at}, one JSON string (permissions.pending)
-UNSCOPED_KEY = "scopeProjectionUnscopedGeneration"  # the generation of the last change that reached more than subtrees: only a full pass covers it
 
 ROOTS_PER_BATCH = 20  # roots whose subtrees are read and rewritten together
 PAGE = 200  # virtual records per write round (they are locked together)
@@ -135,10 +133,18 @@ class _Plan:
 
 def releasable(app: Mapping[str, object], generation: int) -> bool:
     """The stamps outside the pending subtrees are right: a finished pass (current field version, ACL generation and unsafe mark, no write in
-    flight) read the structure no earlier than the last change that reached more than subtrees, and not after `generation`."""
+    flight) read the structure at `recorded`, and every bump since (`recorded < g <= generation`) registered a root at exactly that generation.
+    A bump that listed nothing (a change of the whole connector, more roots than the list holds, a record the registry could not list) leaves a
+    generation no root carries, and only a full pass covers it. A root registered again at a newer generation hides the number it had: that
+    costs a full pass, never a release."""
     recorded = whole_number(app.get(BACKFILL_KEYS["structure_generation"]))
-    unscoped = 0 if app.get(UNSCOPED_KEY) is None else whole_number(app.get(UNSCOPED_KEY))
-    if recorded is None or unscoped is None or not unscoped <= recorded <= generation:
+    if recorded is None or not recorded <= generation:
+        return False
+    try:
+        listed = set(parse(app.get(PENDING_KEY)).values())
+    except PendingUnreadable:
+        return False
+    if not all(g in listed for g in range(recorded + 1, generation + 1)):
         return False
     return app_is_current({**app, BACKFILL_KEYS["structure_generation"]: generation})
 
@@ -160,7 +166,10 @@ async def remove_pending(graph: IGraphDBProvider, connector_id: str, done: Mappi
     stays. Compare-and-set on the stored string, retried: no registration is lost."""
     for _ in range(attempts):
         raw = ((await graph.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)) or {}).get(PENDING_KEY)
-        left = without_done(raw, done)
+        try:
+            left = without_done(raw, done)
+        except PendingUnreadable as exc:
+            raise RewriteIncomplete(f"the pending roots of {connector_id} do not parse") from exc
         if left == (raw or None) or await compare_and_set_app(graph, connector_id, {PENDING_KEY: left}, {PENDING_KEY: raw}):
             return
     raise RewriteIncomplete(f"could not take the rewritten roots off the pending list of {connector_id}")
@@ -190,9 +199,10 @@ class ScopeRewriteJob:
         connector_type = (await stamps.app(org_id, connector_id)).connector_type
         if not connector_type:
             raise UnknownConnector(f"{connector_id} is not a connector of this organisation")
-        snapshot = parse(app.get(PENDING_KEY))
-        if app.get(PENDING_KEY) and not snapshot:
-            raise RewriteIncomplete(f"the pending roots of {connector_id} do not parse")
+        try:
+            snapshot = parse(app.get(PENDING_KEY))
+        except PendingUnreadable as exc:      # never "no roots": the connector is not current and stays hidden
+            raise RewriteIncomplete(f"the pending roots of {connector_id} do not parse") from exc
         if not snapshot:
             return result
         generation = structure_generation_of(app)
@@ -202,11 +212,15 @@ class ScopeRewriteJob:
         batches = [roots[i:i + ROOTS_PER_BATCH] for i in range(0, len(roots), ROOTS_PER_BATCH)]
         recorded = whole_number(app.get(BACKFILL_KEYS["structure_generation"]))
         if recorded != generation:
-            # Before the hide lifts: a Union point below a root need not name it in `pathIds`, so the hide cannot cover it. If one of those
-            # would change, only a full pass is safe, and nothing is read from the connector's stamps until it ran.
+            # Before the hide lifts. A subtree deeper than the walk means the whole connector is reached. And a Union point below a root need not
+            # name it in `pathIds`, so the hide cannot cover it: if one of those would change, only a full pass is safe. Either way nothing is read
+            # from the connector's stamps until it ran.
             try:
-                unnamed = rule_for(connector_type) is Rule.UNION and any([await self._unnamed_change(org_id, batch, set(roots)) for batch in batches])
-            except ViewerScopesUnavailable:  # a subtree deeper than the walk: the whole connector is reached
+                unnamed = False
+                for batch in batches:
+                    vrids = sorted(await stamps.subtree_vrids(org_id, batch))
+                    unnamed = unnamed or (rule_for(connector_type) is Rule.UNION and await self._unnamed_change(org_id, vrids, set(roots)))
+            except ViewerScopesUnavailable:
                 unnamed = True
             if unnamed or not releasable(app, generation):
                 result.state = "full_pass"
@@ -441,10 +455,9 @@ class ScopeRewriteJob:
             await asyncio.sleep(SCAN_RETRY_SECONDS * (attempt + 1))
         raise PartialResult(f"{collection}: no scan attempted")  # SCAN_ATTEMPTS is at least 1
 
-    async def _unnamed_change(self, org_id: str, roots: list[str], all_roots: set[str]) -> bool:
-        """Whether some point below these roots would change and does not name any pending root in its stored `pathIds` (see `_run`).
+    async def _unnamed_change(self, org_id: str, vrids: list[str], all_roots: set[str]) -> bool:
+        """Whether some point of these virtual records would change and does not name any pending root in its stored `pathIds` (see `_run`).
         shortcut: projects every virtual record below the roots, not only the unnamed ones; upgrade when a Union connector's rewrite is slow."""
-        vrids = sorted(await self._graph.permission_stamp_graph().subtree_vrids(org_id, roots))
         for i in range(0, len(vrids), PAGE):
             plans, unplaced = await self._plans(org_id, vrids[i:i + PAGE])
             if unplaced:  # cannot tell: only a full pass is safe
@@ -481,4 +494,4 @@ def _fenced_by_time(vdb: IVectorDBService) -> bool:
     return "computed_at" in inspect.signature(vdb.update_payload_by_ids).parameters
 
 
-__all__ = ["RewriteIncomplete", "RewriteResult", "ScopeRewriteJob", "releasable", "remove_pending"]
+__all__ = ["PENDING_KEY", "RewriteIncomplete", "RewriteResult", "ScopeRewriteJob", "releasable", "remove_pending"]
