@@ -66,7 +66,7 @@ RETURN a IS NOT NULL AND (coalesce(a.permissionModel, '') = 'APP_LEVEL' OR a.typ
 
 
 # The roots registered on the org's connectors (`permissions.pending`), as stored.
-PENDING = "MATCH (a:App) WHERE a.orgId = $org AND a.scopeProjectionPendingRoots IS NOT NULL RETURN a.scopeProjectionPendingRoots AS raw"
+PENDING = "MATCH (a:App) WHERE a.orgId = $org AND a.scopeProjectionPendingRoots IS NOT NULL RETURN a.id AS app, a.scopeProjectionPendingRoots AS raw"
 
 
 class Neo4jHierarchyView:
@@ -97,9 +97,10 @@ class Neo4jHierarchyView:
         row = (await self._rows(APP, org_id, app_id))[0]
         return AppFacts(bool(row["opens"]), str(row["type"]), bool(row["rgl"]))
 
-    async def pending_scopes(self, org_id: str) -> frozenset[str]:
+    async def pending_scopes(self, org_id: str) -> dict[str, frozenset[str]]:
         try:
-            return frozenset().union(*(parse(r["raw"]) for r in await self._rows(PENDING, org_id, "")))
+            held = {str(r["app"]): frozenset(parse(r["raw"])) for r in await self._rows(PENDING, org_id, "")}
+            return {app: roots for app, roots in held.items() if roots}
         except PendingUnreadable as exc:  # roots that cannot be read cannot be hidden: the viewer falls back to the legacy filter
             raise ViewerScopesUnavailable("pending_unreadable") from exc
 

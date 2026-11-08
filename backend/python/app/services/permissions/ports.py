@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
 
 @dataclass(frozen=True)
@@ -71,8 +71,8 @@ class HierarchyView(Protocol):
         """Whether the app opens everything, and its connector type. An unknown app opens nothing."""
         ...
 
-    async def pending_scopes(self, org_id: str) -> frozenset[str]:
-        """Scopes whose subtree awaits a rewrite: the roots registered on the organisation's connectors (`pending.py`). Raises `ViewerScopesUnavailable` for a stored list that cannot be read."""
+    async def pending_scopes(self, org_id: str) -> Mapping[str, frozenset[str]]:
+        """Scopes whose subtree awaits a rewrite, by connector: the roots registered on the organisation's connectors (`pending.py`); a connector with none is absent. Raises `ViewerScopesUnavailable` for a stored list that cannot be read."""
         ...
 
 

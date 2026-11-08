@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import io
 import json
 from pathlib import Path
@@ -34,6 +35,8 @@ from app.models.blocks import (
 )
 from app.models.entities import Record
 from app.models.record_convert import convert_record_dict_to_record  # re-exported for existing importers
+from app.services.permissions.mode import scope_fields_enabled
+from app.services.permissions.structure_generation import leaving_vrid
 from app.modules.code_graph import enabled as code_graph_switch
 from app.modules.code_graph.block_projection import (
     BlockProjectionContext,
@@ -1852,9 +1855,12 @@ class Processor:
         """
         if not virtual_record_id:
             return
-        if not await self.graph_provider.update_node(
-            record_id, CollectionNames.RECORDS.value, {"virtualRecordId": None}
-        ):
+        fenced = leaving_vrid(self.graph_provider, record_id, virtual_record_id, self.logger) if scope_fields_enabled() else contextlib.nullcontext()
+        async with fenced:
+            detached = await self.graph_provider.update_node(
+                record_id, CollectionNames.RECORDS.value, {"virtualRecordId": None}
+            )
+        if not detached:
             raise DocumentProcessingError(
                 "Failed to detach the virtual record of a skipped file", doc_id=record_id
             )

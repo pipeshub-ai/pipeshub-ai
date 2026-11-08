@@ -271,13 +271,14 @@ async def test_the_registered_roots_are_the_pending_scopes_of_the_viewer() -> No
     await bump_generation_in(tx, "c1", ["a", "b"])
 
     class RegistryView(InMemoryHierarchyView):
-        async def pending_scopes(self, org_id: str) -> frozenset[str]:
-            return frozenset(parse(tx.app.get(PENDING_KEY)))
+        async def pending_scopes(self, org_id: str) -> dict[str, frozenset[str]]:
+            return {"c1": frozenset(parse(tx.app.get(PENDING_KEY)))}
 
     view = RegistryView(ORG, groups_by_app={"c1": frozenset({"g"})}, facts_by_app={"c1": AppFacts(False, "CONFLUENCE")})
     who = {(ORG, "u"): Principal(frozenset(), frozenset({"c1"}))}
     resolver = ViewerScopeResolver(view, InMemoryPrincipalView(who, {(ORG, "u"): frozenset({"g"})}))
-    assert (await resolver.resolve(ORG, "u")).pending == {"a", "b"}
+    mine = await resolver.resolve(ORG, "u")
+    assert mine.pending == {"a", "b"} and mine.blocked == {"c1"}
     tx.app[PENDING_KEY] = "garbage"
     with pytest.raises(ViewerScopesUnavailable):
         # the real views refuse an unreadable list; the fake mirrors them by raising from parse
@@ -285,6 +286,37 @@ async def test_the_registered_roots_are_the_pending_scopes_of_the_viewer() -> No
             await resolver.resolve(ORG, "u")
         except PendingUnreadable as exc:
             raise ViewerScopesUnavailable("pending_unreadable") from exc
+
+
+async def test_a_connector_with_a_pending_root_does_not_admit_its_container_points_and_another_connectors_are_untouched() -> None:
+    from app.services.permissions.fakes import InMemoryPrincipalView
+    from app.services.permissions.ports import AppFacts, Principal
+    from app.services.permissions.viewer import ViewerScopeResolver
+    from app.services.vector_db import scope_expr as sx
+
+    apps = {"c1": AppGraph({GENERATION_KEY: 0}), "c2": AppGraph({GENERATION_KEY: 0})}
+    await bump_generation_in(apps["c1"], "c1", ["root"])
+
+    class RegistryView(InMemoryHierarchyView):
+        async def pending_scopes(self, org_id: str) -> dict[str, frozenset[str]]:
+            held = {c: frozenset(parse(a.app.get(PENDING_KEY))) for c, a in apps.items()}
+            return {c: roots for c, roots in held.items() if roots}
+
+    view = RegistryView(ORG, groups_by_app={"c1": frozenset({"g1"}), "c2": frozenset({"g2"})},
+                        facts_by_app={c: AppFacts(False, "CONFLUENCE") for c in apps})
+    who = {(ORG, "u"): Principal(frozenset(), frozenset(apps))}
+    resolver = ViewerScopeResolver(view, InMemoryPrincipalView(who, {(ORG, "u"): frozenset({"g1", "g2"})}))
+
+    async def admitted() -> set[str]:
+        flt = filters.ScopeFilter.of(await resolver.resolve(ORG, "u"), apps, version=5, generation=3)
+        node = sx.admits(flt)
+        points = {c: {"connectorIds": [c], "recordGroupIds": [f"g{c[-1]}"], "scopeStamp": "container", "scopeFieldsVersion": 5, "scopeGeneration": 3}
+                  for c in apps}
+        return {c for c, p in points.items() if sx.evaluate(node, p)}
+
+    assert await admitted() == {"c2"}                                   # no extra access under c1's pending root, none missing for c2
+    await clear_pending_covered(apps["c1"], "c1", 1)
+    assert await admitted() == {"c1", "c2"}                             # recovery
 
 
 # ---- what a finished full pass takes off the list (recovery) ----
@@ -381,3 +413,116 @@ async def test_a_chain_deeper_than_the_subtree_bound_keeps_its_root_pending() ->
     await bump_generation_in(tx, "c1", ["n0"])
     await clear_pending_covered(tx, "c1", 0)               # a pass from before the registration covers nothing registered after it
     assert parse(tx.app[PENDING_KEY]) == {"n0": 1}
+
+
+# ---- leaving_vrid: failure paths ----
+class Apps:
+    """Several connectors' app documents, with the writes that may be made to fail."""
+
+    def __init__(self, *names: str, fail: dict[tuple[str, str], str] | None = None, apps_error: bool = False) -> None:
+        from app.services.permissions.structure_generation import CLOSED_KEY, OPENED_KEY  # noqa: F401
+
+        self.docs = {n: {GENERATION_KEY: 0} for n in names}
+        self.fail = fail or {}                       # (connector, field) -> "raise" | "none"
+        self.apps_error = apps_error
+        self.sharers = [{"_key": f"r-{n}", "connectorId": n} for n in names]
+        self.read_error = False
+
+    async def get_nodes_by_field_in(self, collection, field, values, **kw) -> list[dict]:
+        if self.read_error:
+            raise RuntimeError("graph down")
+        return self.sharers
+
+    async def increment_node_field(self, key, collection, field, transaction=None) -> int | None:
+        how = self.fail.get((key, field))
+        if how == "raise":
+            raise RuntimeError("write failed")
+        if how == "none":
+            return None
+        self.docs[key][field] = int(self.docs[key].get(field) or 0) + 1
+        return self.docs[key][field]
+
+    async def get_document(self, key, collection, **kw) -> dict:
+        return dict(self.docs[key])
+
+    async def update_node_fields_if_match(self, key, collection, updates, expected, transaction=None) -> bool:
+        if any((self.docs[key].get(f) or None) != v for f, v in expected.items()):
+            return False
+        self.docs[key].update(updates)
+        return True
+
+    async def get_org_apps(self, org, **kw) -> list[dict]:
+        if self.apps_error:
+            raise RuntimeError("cannot list")
+        return [{"_key": n} for n in self.docs]
+
+
+def counts(g: Apps, n: str) -> tuple[int, int]:
+    from app.services.permissions.structure_generation import CLOSED_KEY, OPENED_KEY
+
+    return int(g.docs[n].get(OPENED_KEY) or 0), int(g.docs[n].get(CLOSED_KEY) or 0)
+
+
+@pytest.mark.parametrize("how", ["none", "raise"])
+async def test_a_failed_opening_closes_the_connectors_already_opened_and_the_write_does_not_happen(how: str) -> None:
+    from app.services.permissions.structure_generation import OPENED_KEY, leaving_vrid
+
+    g, ran = Apps("A", "B", fail={("B", OPENED_KEY): how}), []
+    with pytest.raises((ScopeGenerationError, RuntimeError)):
+        async with leaving_vrid(g, "me", "v"):
+            ran.append(1)
+    assert not ran and counts(g, "A") == (1, 1) and counts(g, "B") == (0, 0)
+    assert PENDING_KEY not in g.docs["A"]
+
+
+async def test_a_failed_registration_of_one_connector_does_not_stop_the_others_and_is_not_closed(caplog: pytest.LogCaptureFixture) -> None:
+    from app.services.permissions.structure_generation import leaving_vrid
+
+    g = Apps("A", "B", fail={("A", GENERATION_KEY): "raise"})
+    with pytest.raises(RuntimeError, match="write failed"):
+        async with leaving_vrid(g, "me", "v"):
+            pass
+    assert counts(g, "A") == (1, 0)                                      # still opened: not current
+    assert counts(g, "B") == (1, 1) and set(parse(g.docs["B"][PENDING_KEY])) == {"r-B"}
+    assert "connector A" in caplog.text
+
+
+async def test_a_close_that_fails_after_a_good_registration_is_logged_with_the_connector(caplog: pytest.LogCaptureFixture) -> None:
+    from app.services.permissions.structure_generation import CLOSED_KEY, leaving_vrid
+
+    g = Apps("A", "B", fail={("A", CLOSED_KEY): "none"})
+    async with leaving_vrid(g, "me", "v"):
+        pass
+    assert set(parse(g.docs["A"][PENDING_KEY])) == {"r-A"} and counts(g, "A") == (1, 0) and counts(g, "B") == (1, 1)
+    assert any(r.levelname == "ERROR" and "connector A" in r.getMessage() for r in caplog.records)
+
+
+async def test_when_the_sharers_cannot_be_read_a_mark_that_cannot_land_before_the_write_stops_the_write() -> None:
+    from app.core.org_context import for_org
+    from app.services.permissions.structure_generation import leaving_vrid
+
+    ran = []
+    g = Apps("A")
+    g.read_error = True
+    with pytest.raises(ScopeGenerationError):                            # no organisation bound
+        async with leaving_vrid(g, "me", "v"):
+            ran.append(1)
+    g.apps_error = True
+    with for_org(ORG, job="test"), pytest.raises(ScopeGenerationError):  # the organisation's connectors cannot be listed, so not marked
+        async with leaving_vrid(g, "me", "v"):
+            ran.append(2)
+    assert not ran and g.docs["A"][GENERATION_KEY] == 0
+
+
+async def test_a_mark_after_the_write_that_cannot_land_is_logged_with_the_organisation_and_does_not_fail_it(caplog: pytest.LogCaptureFixture) -> None:
+    from app.core.org_context import for_org
+    from app.services.permissions.structure_generation import leaving_vrid
+
+    g, ran = Apps("A"), []
+    g.read_error = True
+    with for_org(ORG, job="test"):
+        async with leaving_vrid(g, "me", "v"):
+            ran.append(1)
+            g.apps_error = True                                          # the listing breaks after the write
+    assert ran and g.docs["A"][GENERATION_KEY] == 1                       # marked before; the second mark failed
+    assert any(r.levelname == "ERROR" and ORG in r.getMessage() for r in caplog.records)
