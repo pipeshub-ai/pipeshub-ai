@@ -377,6 +377,52 @@ class TestFetchPermissions:
         assert perms[0].email == "user@example.com"
         assert perms[0].type == PermissionType.READ
 
+    async def test_empty_list_on_shared_drive_item_still_grants_the_viewer(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
+
+        perms, is_fallback, _ = await connector._fetch_permissions(
+            "file-1", is_drive=False, user_email="viewer@example.com"
+        )
+        assert is_fallback is True
+        assert [p.email for p in perms] == ["viewer@example.com"]
+
+    async def test_empty_list_on_limited_folder_fails_the_read(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
+
+        with pytest.raises(RuntimeError):
+            await connector._fetch_permissions(
+                "folder-1", is_drive=False, user_email="viewer@example.com",
+                inherited_permissions_disabled=True,
+            )
+
+    async def test_403_on_limited_folder_fails_the_read(self, connector) -> None:
+        from googleapiclient.errors import HttpError
+
+        mock_resp = MagicMock()
+        mock_resp.status = HttpStatusCode.FORBIDDEN.value
+        http_error = HttpError(mock_resp, b"forbidden")
+        http_error.error_details = [{"reason": "insufficientFilePermissions"}]
+        connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
+
+        with pytest.raises(HttpError):
+            await connector._fetch_permissions(
+                "folder-1", is_drive=False, user_email="viewer@example.com",
+                inherited_permissions_disabled=True,
+            )
+
+    async def test_limited_folder_is_read_again_once_the_list_works(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(side_effect=[
+            {"permissions": []},
+            {"permissions": [{"id": "p1", "role": "reader", "type": "user", "emailAddress": "member@example.com"}]},
+        ])
+        kwargs = {"is_drive": False, "user_email": "viewer@example.com", "inherited_permissions_disabled": True}
+
+        with pytest.raises(RuntimeError):
+            await connector._fetch_permissions("folder-1", **kwargs)
+        perms, is_fallback, _ = await connector._fetch_permissions("folder-1", **kwargs)
+        assert is_fallback is False
+        assert [p.email for p in perms] == ["member@example.com"]
+
 
 # ---------------------------------------------------------------------------
 # _sync_record_groups
