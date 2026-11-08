@@ -104,11 +104,12 @@ def residue_pieces(blocks: list, header: str, *, token_len: Callable[[str], int]
         text = _without_nested(data, nested.get(block.index, ()))
         if _IDENTIFIER_CHARS.search(text) and _small_filler(getattr(block, "code_metadata", None), text):
             spans.append(text.strip("\n"))
-    if cut := sorted(set(cut_words)):  # ``CodeUnit.cut_words`` of the file's block units
+    room = budget - (token_len(header) + 1 if header else 0)
+    # ``CodeUnit.cut_words`` of the file's block units; a word over the room would be cut again here, whole in none.
+    if cut := sorted(w for w in set(cut_words) if token_len(w) <= room):
         spans.append(" ".join(cut))
     if not spans:
         return []
-    room = budget - (token_len(header) + 1 if header else 0)
 
     def at_spaces(line: str, limit: int) -> list[str]:
         # A word cut across two pieces is in neither as a whole word, which a keyword lookup needs.
@@ -227,9 +228,7 @@ def _pieces(text: str, budget: int, token_len: Callable[[str], int],
                 current, used = [], 0
             parts = split_long_line(line, budget)
             if on_cut is not None:
-                # A word over the piece budget fits no residue unit either (its room is at least that), so it
-                # would only be cut again there.
-                on_cut([w for w in _straddling(parts) if token_len(w) < budget])
+                on_cut(_straddling(parts))
             pieces.extend(parts)
             continue
         if used + cost > budget and current:

@@ -134,20 +134,23 @@ def test_a_word_longer_than_a_unit_is_not_added_to_the_residue() -> None:
     assert all("A" * 100 not in w for u in units for w in u.cut_words)
 
 
-def test_a_cut_word_over_the_piece_budget_is_not_added_to_the_residue() -> None:
-    """With a 28-character piece budget, `aaaa...` (30 characters) straddles a cut but fits no residue unit
-    either; only a word that fits is carried."""
+def test_a_cut_word_is_kept_while_it_fits_the_residue_room_not_the_piece_budget() -> None:
+    """The residue's room (the unit less its context line) is wider than a split block's piece budget (less
+    its header and signature too): a word between the two is whole in the residue; one over the room is not."""
     from types import SimpleNamespace
-    line = "." * 18 + "a" * 30 + "." * 8 + " " + "." * 22 + "bbbbbb" + "cccc" + "." * 18
+    line = "." * 18 + "a" * 30 + "." * 8
 
     def hard_cut(text: str, n: int) -> list[str]:
         return [text[i:i + n] for i in range(0, len(text), n)]
     block = SimpleNamespace(index=0, data={"text": line}, parent_block_index=None,
                             code_metadata=SimpleNamespace(kind="function", signature="", docstring=""))
     [first, *_rest] = code_units([block], lambda _b: "", exceeds=lambda t, n: len(t) > n, token_len=len,
-                                 split_long_line=hard_cut, budget=29)
-    assert "a" * 30 not in first.cut_words and not any(set(w) == {"a"} for w in first.cut_words)
-    assert "bbbbbbcccc" in first.cut_words
+                                 split_long_line=hard_cut, budget=29)  # piece budget 28
+    assert first.cut_words == ("a" * 30,)
+    between, over = "a" * 30, "z" * 40  # header "ctx" leaves the residue a room of 36
+    [piece] = residue_pieces([], "ctx", token_len=len, split_long_line=hard_cut, budget=40,
+                             cut_words=[between, over, "short"])
+    assert piece.split("\n")[1].split() == ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "short"]
 
 
 @pytest.mark.asyncio
