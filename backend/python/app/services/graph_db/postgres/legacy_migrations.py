@@ -72,7 +72,7 @@ class LegacyMigrationMixin(PgBase):
                 WHERE n.org_id = $1 AND n.coll = 'recordGroups' AND n.doc->>'orgId' = $2 AND n.doc->>'groupType' = $3 AND n.doc->>'connectorName' = $3
                 ORDER BY n.id""", org, org_id, _KB), None)
         except Exception as e:
-            self.logger.error(f"❌ Get legacy KB record groups failed: {e}")
+            self.logger.error(f"Get legacy KB record groups failed: {e}")
             return []
         return [_arango(_doc(r["doc"]), _RG) for r in rows]
 
@@ -85,7 +85,7 @@ class LegacyMigrationMixin(PgBase):
                 WHERE n.org_id = $1 AND n.coll = 'recordGroups' AND n.doc->>'orgId' = $2 AND n.doc->>'groupType' = $3 AND n.doc->>'connectorName' = $3""",
                                                             org, org_id, _KB), None))
         except Exception as e:
-            self.logger.error(f"❌ Count legacy KB record groups failed: {e}")
+            self.logger.error(f"Count legacy KB record groups failed: {e}")
             return -1
 
     async def migrate_legacy_kb_to_app(self, kb_record_group: dict, org_id: str, resolved_creator_key: str | None) -> dict:
@@ -146,12 +146,12 @@ class LegacyMigrationMixin(PgBase):
                 ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = EXCLUDED.doc""", org, kb_key, _j(edges))
             if not await tx.fetchval("""/* pipeshub:graph.migrate_legacy_kb_to_app_owner */ SELECT EXISTS (SELECT 1 FROM graph.edges e WHERE e.org_id = $1
                     AND e.coll = 'permission' AND e.from_coll = 'users' AND e.to_coll = 'apps' AND e.to_id = $2 AND e.doc->>'role' = 'OWNER')""", org, kb_key):
-                self.logger.warning(f"⚠️ Migrated KB {kb_key} has no OWNER permission edge (degenerate legacy data)")
+                self.logger.warning(f"Migrated KB {kb_key} has no OWNER permission edge (degenerate legacy data)")
 
         try:
             await self._q(go, None, write=True)
         except Exception as e:
-            self.logger.error(f"❌ Failed to migrate legacy KB {kb_key} to app: {e}")
+            self.logger.error(f"Failed to migrate legacy KB {kb_key} to app: {e}")
             return {"success": False, "reason": str(e)}
         return {"success": True}
 
@@ -218,7 +218,7 @@ class LegacyMigrationMixin(PgBase):
         except SchemaValidationError:
             raise
         except Exception as e:
-            self.logger.error(f"❌ Failed to migrate agent hub knowledge for org {org_id}: {e}")
+            self.logger.error(f"Failed to migrate agent hub knowledge for org {org_id}: {e}")
             return {"agents_migrated": 0, "knowledge_nodes_created": 0, "error": str(e)}
         return {"agents_migrated": agents, "knowledge_nodes_created": created}
 
