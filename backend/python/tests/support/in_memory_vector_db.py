@@ -245,22 +245,22 @@ class InMemoryVectorDBService(IVectorDBService):
             VectorPoint(id=i, payload=copy.deepcopy(points[i].payload)) for i in ids if i in points
         ]
 
-    #: Applies ``fence`` as the real stores do: a point whose ``scopeFence`` is above it is left as it is, any other takes the payload and the fence.
-    generation_fence = True
+    #: Off here (a subclass turns it on): older spies replace `update_payload_by_ids` with a narrower signature that takes no fence.
+    generation_fence = False
 
-    async def update_payload_by_ids(self, collection_name: str, point_ids: list[str], payload: dict, *, org_id: str, fence: int | None = None) -> None:
+    async def update_payload_by_ids(self, collection_name: str, point_ids: list[str], payload: dict, *, org_id: str,
+                                    fence: int | None = None) -> None:
         if is_missing(org_id):
             raise OrgRequired("update_payload_by_ids needs the org of the points")
         forbid_org_in_payload(payload)
         points = self._points(collection_name)
         for point_id in point_ids:
             if point_id in points and points[point_id].payload.get("metadata", {}).get("orgId") == org_id:
-                if fence is not None and int(points[point_id].payload.get(SCOPE_FENCE_FIELD) or 0) > fence:
-                    continue
-                points[point_id].payload.update(copy.deepcopy(payload) | ({} if fence is None else {SCOPE_FENCE_FIELD: fence}))
-
-    async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
-        return sum(_passes(p.payload, count_filter) for p in self._points(collection_name).values())
+                if fence is not None:
+                    if int(points[point_id].payload.get(SCOPE_FENCE_FIELD) or 0) > fence:
+                        continue  # a later reader's point: refused, as the real stores refuse it
+                    payload = {**payload, SCOPE_FENCE_FIELD: fence}
+                points[point_id].payload.update(copy.deepcopy(payload))
 
     async def query_nearest_points(
         self, collection_name: str, requests: list[HybridSearchRequest],

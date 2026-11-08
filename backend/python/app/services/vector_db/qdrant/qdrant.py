@@ -8,6 +8,7 @@ import asyncio
 import os
 import threading
 import time
+from collections.abc import Mapping
 from urllib.parse import quote
 from typing import Dict, List, NamedTuple, Optional, Union
 
@@ -30,9 +31,12 @@ from qdrant_client.http.models import (  # type: ignore
     ProductQuantization,
     ProductQuantizationConfig,
     CompressionRatio,
+    Range,
     ScalarQuantization,
     ScalarQuantizationConfig,
     ScalarType,
+    SetPayload,
+    SetPayloadOperation,
     SparseIndexParams,
     SparseVectorParams,
     VectorParams,
@@ -41,6 +45,7 @@ from qdrant_client.http.models import (  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.services.permissions.scope_fields import SCOPE_FENCE_FIELD
 from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.filters import (
     forbid_org_in_payload,
@@ -983,6 +988,35 @@ class QdrantService(IVectorDBService):
                 HasIdCondition(has_id=list(point_ids)),
                 QdrantFieldCondition(key="metadata.orgId", match=MatchValue(value=org_id)),
             ])),
+            wait=True,
+        )
+
+    generation_fence = True
+
+    async def update_payloads_by_ids(self, collection_name: str, updates: Mapping[str, dict], *, org_id: str, **extra: object) -> None:
+        """With ``fence=n``: one batch of set-payload operations, each selecting its point by id and org and only while the point's
+        ``scopeFence`` is not above ``n`` (a point without one passes), and setting it to ``n``; the check and the write are one
+        operation in the store. Without a fence it is ``update_payload_by_ids`` for each distinct payload."""
+        fence = extra.pop("fence", None)
+        if fence is None:
+            await super().update_payloads_by_ids(collection_name, updates, org_id=org_id, **extra)
+            return
+        self._assert_connected()
+        if is_missing(org_id):
+            raise OrgRequired("update_payload_by_ids needs the org of the points")
+        for payload in updates.values():
+            forbid_org_in_payload(payload)
+        if not updates:
+            return
+        # shortcut: Range takes a float, exact below 2**53 (a generation in microseconds is about 2**51); upgrade if fences grow past it
+        newer = QdrantFieldCondition(key=SCOPE_FENCE_FIELD, range=Range(gt=int(fence)))
+        await self.client.batch_update_points(  # type: ignore
+            collection_name=collection_name,
+            update_operations=[SetPayloadOperation(set_payload=SetPayload(
+                payload={**payload, SCOPE_FENCE_FIELD: int(fence)},
+                filter=Filter(must=[HasIdCondition(has_id=[point_id]),
+                                    QdrantFieldCondition(key="metadata.orgId", match=MatchValue(value=org_id))],
+                              must_not=[newer]))) for point_id, payload in updates.items()],
             wait=True,
         )
 

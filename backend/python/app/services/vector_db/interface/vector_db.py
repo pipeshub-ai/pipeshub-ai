@@ -271,12 +271,6 @@ class IVectorDBService(ABC):
         """
         raise NotImplementedError
 
-    async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
-        """The exact number of points the filter matches, from the store's own count (not from paging through them), or a
-        ``PartialResult`` error when the store says the count is incomplete. Used to prove that a scroll saw every point.
-        ``NotImplementedError`` for a store that cannot count: the callers then fail closed."""
-        raise NotImplementedError(f"{type(self).__name__} cannot count points")
-
     #: The store takes ``wait=False`` on ``update_payloads_by_ids`` (the write returns once queued, not once applied). A caller that uses it
     #: calls ``flush_writes`` and then reads the points back before it relies on the write.
     deferred_writes: bool = False
