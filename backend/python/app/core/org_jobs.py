@@ -13,14 +13,14 @@ if TYPE_CHECKING:
 
 
 async def for_each_org(
-    graph_provider: IGraphDBProvider, job: str, work: Callable[[str], Awaitable[None]], logger: logging.Logger
+    graph_provider: IGraphDBProvider, job: str, work: Callable[[str], Awaitable[None]], logger: logging.Logger, *, active: bool = False
 ) -> None:
-    """``await work(org_id)`` for every internal org, active or not, each under ``for_org(org_id, job=job)``.
+    """``await work(org_id)`` for every internal org (only the active ones when ``active``), each under ``for_org(org_id, job=job)``.
 
     A failed org list propagates: the caller decides what that means. One org's failure is one WARNING, and the later orgs still run.
     """
     with system(job):
-        orgs = await graph_provider.get_all_orgs(active=False)
+        orgs = await graph_provider.get_all_orgs(active=active)
     for org in orgs or []:
         org_id = org.get("_key") or org.get("id")
         if not org_id:
