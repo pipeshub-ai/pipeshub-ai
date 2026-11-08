@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Revalidator, type VerifyState } from '../engine/revalidate';
 
-function harness(options: { ids?: string[]; call?: (ids: string[]) => Promise<string[]> } = {}) {
+function harness(options: { ids?: string[]; call?: (ids: string[], signal?: AbortSignal) => Promise<string[]> } = {}) {
   let now = 1_000;
   const timers: { fn: () => void; at: number; id: number }[] = [];
   let nextId = 1;
   const states: VerifyState[] = [];
   const results: [string[], string[]][] = [];
-  const call = vi.fn(options.call ?? (async (ids: string[]) => ids));
+  const call = vi.fn(options.call ?? (async (ids: string[], _signal?: AbortSignal) => ids));
   const r = new Revalidator({
     getIds: () => options.ids ?? ['block:a', 'block:b'],
     call,
@@ -115,5 +115,27 @@ describe('Revalidator', () => {
     await h.advance(120_000);
     expect(h.call).not.toHaveBeenCalled();
     expect(h.timers).toHaveLength(0);
+  });
+
+  describe('a check still in flight when stop() runs', () => {
+    it('reports nothing once it answers, and its request is aborted', async () => {
+      let answer!: (ids: string[]) => void;
+      let signal: AbortSignal | undefined;
+      const h = harness({
+        call: (ids, s) => {
+          signal = s;
+          return new Promise<string[]>((resolve) => (answer = resolve));
+        },
+      });
+      h.r.start();
+      await h.advance(30_000); // the check starts and waits
+      expect(signal?.aborted).toBe(false);
+      h.r.stop();
+      expect(signal?.aborted).toBe(true);
+      answer(['block:a']);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(h.results).toEqual([]);
+      expect(h.states).toEqual([]);
+    });
   });
 });

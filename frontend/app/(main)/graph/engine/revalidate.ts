@@ -62,6 +62,10 @@ export class Revalidator {
     this.lastOk = this.o.now();
   }
 
+  /** Counts stop()s: a check that finds the count changed was started in an earlier run. */
+  private run = 0;
+  private stopped = new AbortController();
+
   start(): void {
     if (this.running) return;
     this.running = true;
@@ -71,6 +75,9 @@ export class Revalidator {
 
   stop(): void {
     this.running = false;
+    this.run += 1; // a check still in flight belongs to a run that is over: it reports nothing
+    this.stopped.abort();
+    this.stopped = new AbortController();
     if (this.timer !== null) this.o.clearTimer(this.timer);
     this.timer = null;
   }
@@ -118,16 +125,19 @@ export class Revalidator {
       return;
     }
     this.inFlight = true;
+    const run = this.run;
     try {
       const seen = new Set<NodeId>();
       for (let i = 0; i < asked.length; i += MAX_REVALIDATE_IDS) {
         for (const id of await this.callWithTimeout(asked.slice(i, i + MAX_REVALIDATE_IDS))) seen.add(id);
       }
+      if (run !== this.run) return;
       this.failures = 0;
       this.lastOk = this.o.now();
       this.setState('ok');
       this.o.onResult(asked, asked.filter((id) => seen.has(id)));
     } catch {
+      if (run !== this.run) return;
       this.failures += 1;
       if (this.o.now() - this.lastOk >= this.o.blankAfterMs) this.setState('blank');
       else if (this.failures >= this.o.failuresBeforeDegraded) this.setState('degraded');
@@ -139,6 +149,9 @@ export class Revalidator {
   /** One request that is given up on (and aborted) after `timeoutMs`, so a hung check cannot hold the loop for ever. */
   private async callWithTimeout(ids: NodeId[]): Promise<NodeId[]> {
     const abort = new AbortController();
+    const stop = this.stopped.signal;
+    const onStop = () => abort.abort();
+    stop.addEventListener('abort', onStop);
     let timer: unknown;
     try {
       return await Promise.race([
@@ -151,6 +164,7 @@ export class Revalidator {
         }),
       ]);
     } finally {
+      stop.removeEventListener('abort', onStop);
       this.o.clearTimer(timer);
     }
   }
