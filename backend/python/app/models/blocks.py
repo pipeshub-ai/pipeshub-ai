@@ -316,6 +316,21 @@ class GroupSubType(str, Enum):
     SQL_VIEW = "sql_view"
     CODE_CLASS = "code_class"  # class / interface / enum group in a source file
 
+
+def group_caption(sub_type: object, name: object, description: object) -> str:
+    """The author line a comment group shows in its rendered header.
+
+    The group's children hold only the comment text, so without this a reader
+    sees what was said but not who said it. Connectors name a comment either
+    "Comment by <author>" or just "<author>" (with the "Comment by" form in the
+    description), so the field that says "by" wins.
+    """
+    if str(getattr(sub_type, "value", sub_type) or "") != GroupSubType.COMMENT.value:
+        return ""
+    fields = [f.strip() for f in (name, description) if isinstance(f, str) and f.strip()]
+    return next((f for f in fields if " by " in f.lower()), fields[0] if fields else "")
+
+
 class SemanticMetadata(BaseModel):
     entities: Optional[list[dict[str, Any]]] = None
     named_entities: Optional[dict[str, Any]] = None
