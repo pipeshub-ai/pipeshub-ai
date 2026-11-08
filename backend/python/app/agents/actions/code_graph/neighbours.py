@@ -107,6 +107,7 @@ async def _resolve_anchors(
             if row.get("orgId") == org_id and row.get("connectorId") == connector_id]
     mine.sort(key=lambda row: (
         (row.get("kind") or "").lower() in FILLER_KINDS, row.get("startLine") or 0,
+        str(row.get("_key") or row.get("id") or ""),  # a tie keeps its key order, so the cut below never depends on the store's
     ))
     # One past the cap, so the caller can tell "exactly 200" from "more".
     return mine[:_NEIGHBOUR_FANOUT + 1], matched_path

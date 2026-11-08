@@ -83,4 +83,70 @@ describe('Code-graph dashboard route', () => {
     reposScopeCheck()({ user: { userId: 'u1', orgId: 'o1' } }, {}, next)
     expect(next.firstCall.args).to.deep.equal([])
   })
+
+  describe('code tools', () => {
+    const toolStack = (path: string): any[] => {
+      const container = new Container()
+      container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue({
+        authenticate: (_req: any, _res: any, next: any) => next(),
+      } as any)
+      container.bind<AppConfig>('AppConfig').toConstantValue({ aiBackend: 'http://query:8000' } as any)
+      const layer = createCodeGraphRouter(container).stack.find(
+        (l: any) => l.route?.path === path && l.route.methods.post,
+      ) as any
+      // authenticate, requireScopes, validate, handler
+      return layer.route.stack.map((l: any) => l.handle)
+    }
+
+    for (const [path, body] of [
+      ['/search', { repo: 'acme/shop', pattern: 'parse_token' }],
+      ['/semantic-search', { repo: 'acme/shop', query: 'where are tokens parsed' }],
+      ['/read', { repo: 'acme/shop', file_path: 'src/auth.py', lines: '1-20' }],
+      ['/outline', { repo: 'acme/shop', file_path: 'src/auth.py' }],
+    ] as const) {
+      it(`relays POST ${path} with the callers own token`, async () => {
+        const answer = { results: [] }
+        fetchStub.resolves(jsonResponse(200, answer))
+        const res = { status: sinon.stub().returnsThis(), json: sinon.stub() }
+        const next = sinon.spy()
+
+        await toolStack(path)[3]({ headers: { authorization: 'Bearer user-token' }, body }, res, next)
+
+        const [url, init] = fetchStub.firstCall.args
+        expect(url).to.equal(`http://query:8000/api/v1/code-graph${path}`)
+        expect(init.method).to.equal('POST')
+        expect(init.headers.authorization).to.equal('Bearer user-token')
+        expect(JSON.parse(init.body)).to.deep.equal(body)
+        expect(res.json.firstCall.args[0]).to.deep.equal(answer)
+        expect(next.called).to.equal(false)
+      })
+
+      it(`needs code:read on POST ${path}`, () => {
+        const refused = sinon.spy()
+        toolStack(path)[1]({ user: { isOAuth: true, oauthScopes: ['semantic:read'] } }, {}, refused)
+        expect(refused.firstCall.args[0]?.message).to.include('code:read')
+      })
+    }
+
+    it('passes a query-service refusal on instead of an empty result', async () => {
+      fetchStub.resolves(jsonResponse(404, { error: 'No indexed repository you can read matches' }))
+      const res = { status: sinon.stub().returnsThis(), json: sinon.stub() }
+      const next = sinon.spy()
+
+      await toolStack('/read')[3]({ headers: { authorization: 'Bearer t' }, body: { repo: 'x' } }, res, next)
+
+      expect(next.firstCall.args[0].statusCode).to.equal(404)
+      expect(res.json.called).to.equal(false)
+    })
+
+    it('rejects a search with no pattern, or an oversized limit', async () => {
+      const run = (body: unknown) =>
+        new Promise<unknown>((resolve) =>
+          toolStack('/search')[2]({ body, query: {}, params: {}, headers: {} }, {}, (e?: unknown) => resolve(e)),
+        )
+      expect(await run({ repo: 'a/b' })).to.be.instanceOf(Error)
+      expect(await run({ pattern: 'x', limit: 201 })).to.be.instanceOf(Error)
+      expect(await run({ pattern: 'x', limit: 200 })).to.equal(undefined)
+    })
+  })
 })
