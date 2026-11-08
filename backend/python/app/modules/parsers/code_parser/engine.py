@@ -1320,12 +1320,16 @@ def _note_assigned(assigned: dict[tuple[int | None, str], Node | None], key: int
 # Links of a receiver chain the parser spells for the builder: one more each recurses, so a generated `a.b.c...` of
 # hundreds of links would exhaust the stack and lose the whole file. A fluent builder runs to ~40 links.
 _PY_MAX_CHAIN_LINKS = 128
+# A name read through its assignment (`a2 = a1.nxt`) spends this many links of the same budget: a hop recurses ~3x
+# as deep as a link, and a generated run of hundreds of hops would otherwise restart the count at each one.
+_PY_ASSIGNMENT_HOP_LINKS = 3
 
 
-def _python_chain(value: Node, src: bytes, name_type: Callable[[Node, str], str | None], depth: int = 0) -> str | None:
+def _python_chain(value: Node, src: bytes, name_type: Callable[[Node, str, int], str | None],
+                  depth: int = 0) -> str | None:
     """*value* as a receiver chain the edge builder evaluates (`typed_receiver_chains`): a typed name, a class
     constructed (`Foo(..)` is a Foo) or a function called (`make()`, typed by what it returns, in its own file);
-    None for anything else, or past `_PY_MAX_CHAIN_LINKS`. *name_type* types a name where it is read."""
+    None for anything else, or past `_PY_MAX_CHAIN_LINKS`. *name_type* types a name where it is read, at *depth*."""
     if depth > _PY_MAX_CHAIN_LINKS:
         return None
     while value.type in ("await", "parenthesized_expression") and value.named_children:
@@ -1334,7 +1338,7 @@ def _python_chain(value: Node, src: bytes, name_type: Callable[[Node, str], str 
         name = _text(value, src)
         if name in ("self", "cls"):
             return "self"
-        typ = name_type(value, name)
+        typ = name_type(value, name, depth)
         if typ:
             return typ.removeprefix("=") if not typ.startswith(FIXTURE_MARK) else None
     if value.type == "attribute":   # `self.a.b`, `User.objects`: each attribute's type on what precedes it
@@ -1352,7 +1356,7 @@ def _python_chain(value: Node, src: bytes, name_type: Callable[[Node, str], str 
     return None
 
 
-def _python_member_head(obj: Node, src: bytes, name_type: Callable[[Node, str], str | None],
+def _python_member_head(obj: Node, src: bytes, name_type: Callable[[Node, str, int], str | None],
                         depth: int = 0) -> str | None:
     """The chain `obj.<member>` continues: *obj*'s own, else a class the file names (`Foo.create()`, `User.objects`)."""
     head = _python_chain(obj, src, name_type, depth)
@@ -2740,25 +2744,25 @@ class _Walker:
         # `=expr` initializers are evaluated by the builder, which can see other files.
         return found if found and not found.startswith("=") and not found.endswith("[]") else None
 
-    def _python_receiver_type(self, node: Node, receiver: str, qualifier: str | None) -> str | None:
+    def _python_receiver_type(self, node: Node, receiver: str, qualifier: str | None, depth: int = 0) -> str | None:
         """`self.x` from its own class's `self.x = Foo()` or class-level `x: Foo` (then a same-file base's); a
         bare `x` from its own functions' bindings, then the module's, unless a function on the way binds `x`
         untyped (a parameter or local shadows the module's `x`). A longer chain is not typed: its last name
         says nothing about it."""
         scopes = self._python_scopes(node)
         if receiver.endswith(")"):  # `make().run()`, `Foo(x).run()`: what the call gives
-            return self._python_receiver_chain(node)
+            return self._python_receiver_chain(node, depth)
         if qualifier and qualifier != receiver:
             head, _, attr = qualifier.partition(".")
             if head not in ("self", "cls") or "." in attr:
-                return self._python_receiver_chain(node)   # `self.a.b.run()`, `x.a.run()`, `User.objects.get()`
+                return self._python_receiver_chain(node, depth)   # `self.a.b.run()`, `x.a.run()`, `User.objects.get()`
             for cls in self._python_class_chain(_python_owner_class(node)):
                 own = scopes.get(cls.start_byte, {})
                 if own.get(qualifier) or own.get(attr):
                     return own.get(qualifier) or own.get(attr)
             # A base elsewhere: by a typed parameter of its name, else the builder walks the bases (`=self.x`).
-            return scopes.get(None, {}).get(qualifier) or self._python_receiver_chain(node)
-        module = scopes.get(None, {}).get(receiver) or self._python_assigned_type(None, receiver)
+            return scopes.get(None, {}).get(qualifier) or self._python_receiver_chain(node, depth)
+        module = scopes.get(None, {}).get(receiver) or self._python_assigned_type(None, receiver, depth)
         shadowed = False
         if receiver in self._py_function_names or module:  # else nothing binds it: skip the ancestor walk
             scope = node.parent
@@ -2766,7 +2770,7 @@ class _Walker:
                 if scope.type in _PY_SCOPE_TYPES:
                     if receiver in scopes.get(scope.start_byte, {}):
                         return scopes[scope.start_byte][receiver]
-                    assigned = self._python_assigned_type(scope.start_byte, receiver)
+                    assigned = self._python_assigned_type(scope.start_byte, receiver, depth)
                     if assigned:   # `conn = make_conn()`: what make_conn returns, wherever it is defined
                         return assigned
                     # `def f(client): client.get()` beside a module-level `client = Client()`: the argument's.
@@ -2792,24 +2796,25 @@ class _Walker:
             return _python_return_type(own, scopes, self.src)
         return f"{FIXTURE_MARK}{receiver}"
 
-    def _python_name_type(self, node: Node, name: str) -> str | None:
+    def _python_name_type(self, node: Node, name: str, depth: int = 0) -> str | None:
         """*name*'s type (`x`, `self.x`) where *node* reads it, as a receiver so written would be typed."""
-        return self._python_receiver_type(node, name.rpartition(".")[2], name)
+        return self._python_receiver_type(node, name.rpartition(".")[2], name, depth)
 
-    def _python_receiver_chain(self, node: Node) -> str | None:
+    def _python_receiver_chain(self, node: Node, depth: int = 0) -> str | None:
         """The type (or `=chain`) of a call's receiver expression, when *node* is a call `<receiver>.f()`."""
         fn = _field(node, "function") if node.type == "call" else None
         obj = _field(fn, "object") if fn is not None and fn.type == "attribute" else None
-        return _as_type(_python_chain(obj, self.src, self._python_name_type)) if obj is not None else None
+        return _as_type(_python_chain(obj, self.src, self._python_name_type, depth + 1)) if obj is not None else None
 
-    def _python_assigned_type(self, key: int | None, name: str) -> str | None:
+    def _python_assigned_type(self, key: int | None, name: str, depth: int = 0) -> str | None:
         """The type (or `=chain`) of *name*'s one untyped value in scope *key*; None for none or a cycle."""
         slot = (key, name)
         if slot not in self._py_chains:
             value = self._py_assigned.get(slot)
             self._py_chains[slot] = None   # `x = x.next()` reads itself: no type
             if value is not None:
-                self._py_chains[slot] = _as_type(_python_chain(value, self.src, self._python_name_type))
+                self._py_chains[slot] = _as_type(
+                    _python_chain(value, self.src, self._python_name_type, depth + _PY_ASSIGNMENT_HOP_LINKS))
         return self._py_chains[slot]
 
     def _python_return_table(self, root: Node) -> None:

@@ -247,3 +247,27 @@ async def test_a_generated_chain_hundreds_of_links_long_leaves_the_file_parsed(g
         dst = graph.blocks.get(edge["_to"].partition("/")[2]) or {}
         calls.setdefault(src.get("qualifiedName"), set()).add(dst.get("qualifiedName"))
     assert "method:Client.send" in calls["function:short"]
+
+
+def _hops(name: str, count: int) -> str:
+    return (f"def {name}(h: Http):\n    a0 = h.client()\n"
+            + "".join(f"    a{i} = a{i - 1}.nxt\n" for i in range(1, count + 1)) + f"    return a{count}.send()\n\n\n")
+
+
+ASSIGNMENT_HOPS = ("class Client:\n    nxt: 'Client'\n\n    def send(self):\n        return 1\n\n\n"
+                   "class Http:\n    def client(self) -> Client:\n        return Client()\n\n\n"
+                   + _hops("few", 5) + _hops("generated", 300)).encode()
+
+
+async def test_a_generated_run_of_assignments_hundreds_long_leaves_the_file_parsed(graph, index_file) -> None:
+    """`a1 = a0.nxt` ... `a300 = a299.nxt`: each name read through its assignment recursed again with a fresh link
+    count, so the run exhausted the stack and lost the file. The hops now share the chain's budget; a short run is
+    still typed."""
+    await index_file("recH", "app/hops.py", ASSIGNMENT_HOPS, "python")
+    await _build(graph)
+    calls = {}
+    for edge in graph.code_edges(CALLS):
+        src = graph.blocks.get(edge["_from"].partition("/")[2]) or {}
+        dst = graph.blocks.get(edge["_to"].partition("/")[2]) or {}
+        calls.setdefault(src.get("qualifiedName"), set()).add(dst.get("qualifiedName"))
+    assert "method:Client.send" in calls["function:few"]
