@@ -72,6 +72,15 @@ def is_write_conflict(error: BaseException) -> bool:
     return isinstance(error, TransientError) and error.code in WRITE_CONFLICT_CODES
 
 
+def lost_to_a_delete(error: BaseException) -> bool:
+    """A node or relationship the statement matched was deleted by a transaction that
+    committed while this one waited for its lock: a MATCH then MERGE of an edge whose
+    endpoint is being deleted. Run again, the MATCH no longer finds it."""
+    return (isinstance(error, ClientError) and error.code == "Neo.ClientError.Statement.EntityNotFound"
+            # Not "... has been deleted in this transaction": that one is the statement's own doing.
+            and (error.message or "").startswith("Unable to load "))
+
+
 async def _until_no_conflict(run: Callable[[], Awaitable[_T]]) -> _T:
     """Run a statement that commits on its own, sending it again while it loses
     a conflict: nothing of it landed. In an explicit transaction the conflict
@@ -79,8 +88,8 @@ async def _until_no_conflict(run: Callable[[], Awaitable[_T]]) -> _T:
     for attempt in range(1, WRITE_CONFLICT_ATTEMPTS):
         try:
             return await run()
-        except TransientError as e:
-            if not is_write_conflict(e):
+        except (TransientError, ClientError) as e:
+            if not (is_write_conflict(e) or lost_to_a_delete(e)):
                 raise
             await asyncio.sleep(random.uniform(0.02, 0.1) * attempt)
     return await run()

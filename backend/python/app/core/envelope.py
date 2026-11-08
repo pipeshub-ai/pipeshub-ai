@@ -34,6 +34,7 @@ from typing import Any, Protocol
 from app.core.org_context import OrgContext, enforcing, spawn_detached, validate_mode
 from app.exceptions.non_retryable import NonRetryableError
 from app.telemetry.backend import METRICS_BACKEND
+from app.utils.logging_fields import log_once
 from app.utils.request_context import sanitize_root_id
 
 DEFAULT_MAX_AGE_SECONDS = 900  # beyond normal consumer lag plus a retry backoff (<= 300 s); see docs/org-context.md
@@ -67,14 +68,11 @@ UNSIGNED = METRICS_BACKEND.counter(
     ["topic", "reason"],
 )
 _logger = logging.getLogger(__name__)
-_last_logged: dict[str, float] = {}
 
 
 def _log_loud(key: str, msg: str, *args: object) -> None:
     """Error log at most once per 30 s per key (the counters carry the exact count)."""
-    t = time.monotonic()
-    if t - _last_logged.get(key, -1e9) >= 30:
-        _last_logged[key] = t
+    if log_once(f"envelope:{key}", 30):
         _logger.error(msg, *args)
 
 

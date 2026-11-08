@@ -41,7 +41,8 @@
     "electron:build:linux": "node scripts/electron/build.mjs linux",
     "electron:build:all": "node scripts/electron/build.mjs all",
     "_comment:test:electron": "Two things here are load-bearing. --test-concurrency=1: the local-sync tests drive real fs watchers against real temp directories, and node --test runs files in parallel by default, which makes them interfere and hang. Unquoted, single-star patterns: the shell has to expand them, because older Node test runners (before 21) do not glob and would treat a quoted pattern or a ** as a literal path.",
-    "test:electron": "npm run build:electron:typescript && node --test --test-concurrency=1 electron/compile/__tests__/*.test.js electron/compile/local-sync/__tests__/*.test.js"
+    "test:electron": "npm run build:electron:typescript && node --test --test-concurrency=1 electron/compile/__tests__/*.test.js electron/compile/local-sync/__tests__/*.test.js",
+    "test:graph-e2e": "playwright test -c playwright.graph.config.ts"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.15.30",
@@ -62,6 +63,7 @@
     "@xyflow/react": "^12.12.0",
     "axios": "^1.20.0",
     "chokidar": "^3.6.0",
+    "cytoscape": "3.34.4",
     "dayjs": "^1.11.23",
     "docx-preview": "^0.4.1",
     "dompurify": "^3.4.17",

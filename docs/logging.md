@@ -63,8 +63,10 @@ JSON (`LOG_FORMAT=json`): one object per line.
 | `stack` | traceback and `stack_info`, when present |
 
 A logging provider (`app/utils/structured_logging`) may supply its own console formatter, decide whether per-service files are
-kept, and decide how an org is shown (`hash_org_id`; a value it returns is set on the record as `organization_id_hash` and so
-appears as a field). A provider formatter still gets redaction.
+kept, and decide how the org and user are shown: `log_identity` turns `{org_id, user_id}` into the `org_id`/`user_id` fields
+(the OSS provider returns them raw; the default of the interface shows neither), and `hash_org_id` sets
+`record.organization_id_hash`, an attribute for the provider's own formatter that the OSS text and JSON do not print. A provider
+formatter still gets redaction; to print the context fields it calls `app.utils.logger.log_record_fields(record)`.
 
 ### Field values in text
 
@@ -106,6 +108,158 @@ are left out. Use ints for numbers. These vectors are the shared test table for 
 [null, null]
 ```
 
+## Context and fields (Python)
+
+Who and which work a line belongs to are added to **every** line from what is bound, with no change at the call site:
+
+| Field | From |
+| --- | --- |
+| `org_id`, `user_id` | one source: `app.core.org_context` when bound (a system context has neither), else the model call's principal (`services/model_identity/call_context`; `user_id` only for a user), else the request context's org. Through the provider's `log_identity`. |
+| `ctx_kind`, `ctx_source` | the OrgContext, when it is not a user's: `ctx_kind=job ctx_source=job:kh_restamp`, `ctx_kind=service ctx_source=scoped_jwt`. Python only. |
+| `conversation_id`, `agent_id`, `record_id`, `connector_id`, `workload` | the model call context |
+| bound ids | `bind_log_fields` / `log_fields` |
+| `extra=` fields | the call site; an `extra=` value replaces a bound one, never `org_id`, `user_id`, `ctx_kind` or `ctx_source` |
+
+Identity comes first, then the call context's ids, then bound ids, then `extra=` fields. Tests read them with
+`log_record_fields(record)`.
+
+```python
+from app.utils.logging_fields import bind_log_fields, log_event, log_fields, log_once
+
+with log_fields(connector_id=cid, run_id=run_id):          # every line inside gets them
+    ...
+bind_log_fields(run_id=run_id)                              # at the top of a task: lasts as long as the task
+log_event(logger, "sync_run.end", status="ok", duration_ms=812)
+if log_once(f"envelope:stripped:{topic}", 30): ...          # bounded keys only, prefixed with the module
+```
+
+- Bindable ids (`LOG_FIELD_NAMES`): `conversation_id`, `agent_id`, `run_id`, `parent_run_id`, `attempt`, `connector_id`,
+  `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`, `mcp_server_id`, `toolset_id`, `job`, and for credential
+  refresh `refresh_kind`, `trigger`, `provider`, `scheduled_by`. A module that needs another adds it there and here. A name with
+  a credential word in it (`token`, `secret`, `credential`, …) is masked like a secret, so ids never use one. Another key, or `org_id`/`user_id`, raises `ValueError`. `None` values are skipped. Pass literal keyword
+  arguments, not a `**dict`. Do not hold `log_fields` across `yield` in an async generator.
+- `log_event(logger, event, /, *, level=logging.INFO, **fields)`: message = the event name; `None` values, identity names and record
+  attribute names are dropped; `[file:line]` is the caller's.
+- Work entering with no request: `org_context.for_org` / `system` / `bind` also scope the request context (same root, or a new
+  `sys-` root; the org of the scope), so job lines show `[req:sys-…]` and messages published there carry `requestId` and `orgId`.
+  `org_context.spawn_detached(coro, name=…)` gives the task a fresh `sys-<name>-<hex>` root; a sync started under it mints its own.
+  That root is shared by everything the task does and travels in what it publishes, so a loop that publishes per-unit work
+  uses `run_periodic` or binds a root per unit.
+  `await run_periodic(name, interval_s, fn)` (`app.core.periodic`; start it with `spawn_detached`) runs each tick in a fresh context
+  with its own root and `job=<name>`, and ends it with `job.tick.end` (DEBUG on success, the failure's level otherwise).
+- **Threads.** The context is copied by `asyncio.create_task`, `spawn_in_request`, `asyncio.to_thread` and
+  `run_coroutine_threadsafe`. It is **not** copied by `loop.run_in_executor`, `ThreadPoolExecutor.submit`, `threading.Thread`, queue
+  workers or child processes. There, run the work in a copy:
+  `loop.run_in_executor(ex, contextvars.copy_context().run, fn, *args)`,
+  `ex.submit(contextvars.copy_context().run, functools.partial(fn, **kwargs))`, or capture `copy_context()` when enqueuing and have
+  the worker call `ctx.run(job)`. This also carries the OrgContext into the thread (`org_context.current()` then succeeds there), so
+  test it.
+
+## Failures
+
+```python
+from app.utils import error_class
+
+try:
+    ...
+except Exception as e:
+    error_class.log_failure(logger, "sync_run.end", e, connector_id=cid)   # where the error is handled, once
+    raise
+```
+
+- `classify_error(exc_or_status)` is one of `auth_expired`, `forbidden`, `not_found`, `rate_limited`, `timeout`, `upstream_5xx`,
+  `bad_request`, `conflict`, `unavailable`, `cancelled`, `misconfigured`, `internal`. `misconfigured` is **our** configuration: the
+  LLM provider rejected our key, no LLM is configured, an OAuth client registration was rejected, or a service token was refused.
+  `auth_expired` is a user's or a connector's grant that expired or was revoked. The first decisive exception in the chain wins,
+  outermost first (`__cause__`, else `__context__` unless `from None`). OAuth error codes are read before the HTTP status, our
+  own `HTTPException` 5xx counts as `internal`, and our programming errors (`KeyError`, `TypeError`, …) stop the walk. It never raises.
+  Domain codes (`ParseErrorCode`, `MCPFailureReason`) go in their own field (`code=`, `reason=`).
+- **Levels** (`level_for(error_class)`): `internal` and `misconfigured` → ERROR, `cancelled` → INFO, every other class → WARNING.
+- `log_failure(logger, event, exc, /, *, level=None, error_class=None, include_error_text=True, **fields)` adds `error_class` (an
+  explicit one wins: an LLM transport passes `"misconfigured"` for a provider 401/403), `error_type`, `error_message` (message and
+  cause chain, URLs, account ids and secrets masked, at most 300 characters), `event_name` and `outcome="failure"`. The stack is
+  written once, on the first line for that exception at ERROR or above. A later `log_failure` of the same exception, or of one
+  raised `from` it, is DEBUG unless it asks for a higher level. `include_error_text=False` leaves `error_message` out and prints
+  each exception in the stack as `Type: <message omitted>`, for errors whose text can echo what was sent (an MCP or OpenAPI server's
+  answer quoting tool arguments). That record carries the stack as `exc_text` only, with no `exc_info`, so a handler that formats
+  `exc_info` itself cannot print the message either.
+- A lifecycle `*.end` line that must stay at INFO when the work failed uses `log_event(..., level=level_for(cls), error_class=cls,
+  outcome="failure")`. `outcome` is `success`, `failure`, `partial` or `skipped` (cancellation is `failure` with `error_class=cancelled`).
+- `app.agents.agent_loop.error_classification` also has a `classify_error` (user-facing text). Where both are in scope, import this
+  module qualified, as above.
+
+## Connector sync runs
+
+`run_sync_task` (`app/connectors/core/sync/sync_runner.py`) is the one body every sync runs in. It binds `run_id` and
+`connector_id` for the run; the entry points (`EventService.process_event`, `ConnectorFactory.create_and_start_sync`) bind
+`connector_id` and `connector_type` (the instance's stored type once it is read, not the event's name). `org_id` comes from the
+consumer's or the boot job's OrgContext. So every line of a run, the connector's own included, carries them.
+
+| Event | Level | Fields |
+| --- | --- | --- |
+| `sync_run.start` | INFO | `sync_type` (`full`, `incremental`) |
+| `sync_run.end` | INFO; WARNING for `partial` or a lost lease; a failure at its class's level | `sync_type`, `duration_ms`, `outcome`, `reason`, `full_sync_cut_short=true` when the next sync runs in full; on failure the `log_failure` fields |
+| `sync_run.refused` | INFO | `reason` (the admission) |
+| `sync_run.start_failed` | the failure's level | the `log_failure` fields |
+| `sync_step.failed` | ERROR, WARNING for an optional step | `step` (`status_write`, `idle_write`, `drain`, `unlink`, …), the `log_failure` fields |
+
+`outcome` on `sync_run.end`: `success`; `partial` (a full sync that finished but did not unlink what it did not see: the connector skipped part of the source, or the group-member write or the unlink failed);
+`skipped` with `reason=<code>` (the connector declined, e.g. `DESKTOP_OFFLINE`); `failure` with `error_class=cancelled` and
+`reason` = `requested`, `shutdown`, `cancelled` or `lease_lost` for a stop; `failure` with the exception's class otherwise. A
+failed run's exception is logged once there; `SyncTaskManager` then logs it at DEBUG (`task.failed`).
+
+## Agent loop events (Python)
+
+One chat turn is reconstructable from these lines; each carries the bound `org_id`, `user_id`, `conversation_id`,
+`agent_id` and (inside the run) `run_id`.
+
+| Event | Level | Fields |
+| --- | --- | --- |
+| `agent_turn.end` | INFO; WARNING for `max_turns` and for an error no other line reported; `level_for(error_class)` for a pre-loop rejection | `stop_reason`, `end_event`, `turns`, `tool_calls`, `tool_errors`, `llm_calls`, `tokens_in`, `tokens_out`, `cache_read_tokens`, `duration_ms`, `model`, `mode`, `spans` (when `PIPESHUB_CHAT_TIMING` is on, the default), `error_class`, `code` |
+| `agent_turn.failed` | `log_failure` policy | a turn that crashed (before `agent_turn.end`, which is then INFO) |
+| `llm_call.end` | INFO; DEBUG for a failed attempt (`llm_call.retry` or `llm_call.failed` reports it) | `source`, `provider`, `model`, `duration_ms`, `tokens_in`, `tokens_out`, `cache_read_tokens`, `finish_reason`, `tools_offered`, `tool_calls`, `attempt`, `outcome`; on failure `error_class`, `error_type`, `status` |
+| `llm_call.retry` | WARNING | `attempt`, `max_attempts`, `status`, `error_class`, `delay_ms` |
+| `llm_call.failed` | `log_failure` policy | `turn`, `error_class`, `error_type`, `error_message` |
+
+- `stop_reason`: `done`, `awaiting_input` (a clarifying question or an approval card), `max_turns`, `guardrail`, `cancelled`
+  (the user pressed Stop), `client_disconnect` (the Node to Python connection dropped; Node keeps a run going when the browser
+  leaves, so a closed tab ends `done`), `error`. `end_event` is the agent library's exit (`agent_complete`,
+  `agent_complete_partial`, `agent_complete_after_max_turns`, `agent_failed`, `llm_call_failed`, `guardrail_blocked`,
+  `turn_blocked`, `agent_blocked`, `agent_cancelled`, `context_budget_exceeded`, `task_complete`). `code` is the error code the
+  client received.
+- `llm_calls` and the token totals sum the request's usage ledger: every model call through the request's transports plus tool-made
+  calls that report usage (grep generation, entity linking). Failed calls report no usage, so `llm_calls` need not equal the number
+  of `llm_call.end` lines.
+- A provider 401/403 on a model call is `misconfigured` (the deployment's key was refused), not `auth_expired`.
+- `duration_ms` on a bridge's `agent_turn.end` counts from the bridge start; on a route exit (agent route) it counts from the request.
+
+## Credential refresh
+
+The connector (and later toolset and MCP) token refresh services log through `app/utils/credential_refresh_log.py`, so one
+refresh of one credential reads the same everywhere:
+
+| Event | Level | Fields |
+| --- | --- | --- |
+| `credential_refresh.scheduled` | INFO when the refresh time is new, DEBUG when a scan re-arms the same one | `next_refresh_at` (UTC), `delay_s` |
+| `credential_refresh.start` | DEBUG | |
+| `credential_refresh.end` | INFO on success; a failure at its class's level | `outcome`, `reason` (`adopted`, `invalid_grant`, `config_missing`, `save_failed`, `recursion`), `duration_ms`, and on failure `error_class`, `error_type`, `error_message`, `http_status`, `oauth_error` |
+| `credential_refresh.check_failed` | the failure's level; DEBUG when the attempt's `end` already logged it | as a failed `end` |
+| `credential_refresh.strike` | INFO | `strike` (`2/3`), `counted` (false: the rejected token was already rotated), the cause's `error_class` and `oauth_error` |
+| `credential_refresh.deauthenticated` | WARNING | `reason`, `strikes`, `app_disabled_event` (`sent`, `direct_write`) |
+| `credential_refresh.not_scheduled`, `.deauthenticate_failed`, `.app_disabled_event_failed` | WARNING, ERROR, by class | `reason` / failure fields |
+
+Every line in a refresh carries `refresh_kind` (`connector`, `toolset`, `mcp`), `trigger` (`scan`, `scheduled`, `on_demand`), the
+kind's ids (`connector_id`, `connector_type`), `provider`, and the org as a job context when nothing else bound one. A timer
+firing gets its own `sys-credential_refresh-` root, with `scheduled_by` naming the root that armed it. Exactly one `end` is
+written per attempt, by the code that calls the token endpoint. A misconfigured credential (no OAuth client, the provider
+rejected our client) is ERROR with a stack once per credential per hour and DEBUG in between. `trigger` is set by the refresh
+scope and never inherited from a sync's own `trigger`.
+
+Nothing a token endpoint answered is logged as text: its body, and the token URL and redirect URI in the exception message, can
+quote the refresh token in prose no redactor recognises. When the exception chain holds such an answer, every failure line of
+a refresh service (`log_refresh_failure`) leaves the text out of `error_message` and the stack (each exception shows as
+`Type: <message omitted>`) and logs `http_status` and `oauth_error` instead.
+
 ## Redaction
 
 Both formats redact: the whole text line (message, fields, traceback), and in JSON every string value. Credentials (bearer and
@@ -121,11 +275,12 @@ safety net; it cannot recognise content, so the rules below still apply.
   `logger.info("sync_run.end", extra={"connector_id": cid, "duration_ms": ms})`.
 - **Event names** are dotted lowercase: `sync_run.end`, `tool_call.end`, `http.request.end`.
 - **Field names** are snake_case and the same in Python and Node: `org_id`, `user_id`, `request_id`, `conversation_id`, `agent_id`,
-  `run_id`, `connector_id`, `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`, `mcp_server_id`, `toolset_id`,
-  `duration_ms`, `status`, `error_class`, `outcome`.
+  `run_id`, `parent_run_id`, `attempt`, `connector_id`, `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`,
+  `mcp_server_id`, `toolset_id`, `job`, `workload`, `duration_ms`, `status`, `error_class`, `error_type`, `outcome`. Python also has
+  `ctx_kind`, `ctx_source` and `error_message`; Node's `error` is an object (`error.message`).
 - **Fields are scalars**: ids, sizes, counts, enums. Never pass a config, a request, a response or a document as a field.
-- **Log an error once**, at the layer that handles it, with the stack (`logger.exception` or `exc_info=True`) and an
-  `error_class`. Lower layers raise (`raise … from e`), they do not log and re-raise.
+- **Log an error once**, at the layer that handles it, with `error_class.log_failure` (see "Failures"). Lower layers raise
+  (`raise … from e`), they do not log and re-raise.
 - **Levels**: ERROR = our fault, needs a human. WARNING = degraded, retried, or an upstream 4xx. INFO = lifecycle, about one line
   per unit of work. DEBUG = per item.
 - **Never log** secrets, tokens, request or response bodies, prompts, document content, emails or names. Log ids, sizes, counts and

@@ -3,7 +3,8 @@
 Every node is a row of ``graph.nodes (org_id, coll, id, doc jsonb)`` and every edge a row of ``graph.edges``; ``coll`` is the collection
 name the callers use. All reads and writes run in the ambient org (row-level security), through ``app.core.db``.
 
-The provider is composed of one mixin per group of methods, each in its own module: ``identity`` (users, orgs, groups, roles), ``permissions`` (the access check), ``codegraph`` (code links and pipeline stage states) and ``core`` (generic documents and edges). A method no
+The provider is composed of one mixin per group of methods, each in its own module: ``identity`` (users, orgs, groups, roles), ``people`` and
+``organizations`` (the people and external organisations records name), ``permissions`` (the access check), ``codegraph`` (code links and pipeline stage states) and ``core`` (generic documents and edges). A method no
 mixin defines raises ``NotImplementedInPostgres``; ``unimplemented()`` lists them (the coverage list).
 """
 from __future__ import annotations
@@ -26,10 +27,14 @@ from app.services.graph_db.postgres.identity import IdentityMixin
 from app.services.graph_db.postgres.kb import KbMixin
 from app.services.graph_db.postgres.kb_listings import KbListingsMixin
 from app.services.graph_db.postgres.kg.guard import instrument_writers
+from app.services.graph_db.postgres.legacy_migrations import LegacyMigrationMixin
 from app.services.graph_db.postgres.lookups import LookupsMixin
+from app.services.graph_db.postgres.organizations import OrganizationsMixin
+from app.services.graph_db.postgres.people import PeopleMixin
 from app.services.graph_db.postgres.permissions import PermissionsMixin
 from app.services.graph_db.postgres.records import RecordsMixin
 from app.services.graph_db.postgres.sync_state import SyncStateMixin
+from app.services.graph_db.postgres.taxonomy import TaxonomyMixin
 from app.services.graph_db.postgres.trash import TrashMixin
 
 if TYPE_CHECKING:
@@ -37,7 +42,7 @@ if TYPE_CHECKING:
 
 __all__ = ["NotImplementedInPostgres", "PostgresGraphProvider", "unimplemented"]
 
-_MIXINS = (CodeGraphMixin, RecordsMixin, HierarchyMixin, HubMixin, TrashMixin, LookupsMixin, DeleteMixin, IdentityMixin, PermissionsMixin, KbMixin, KbListingsMixin, SyncStateMixin, EntityMixin, EntityReadsMixin, EntityAccessMixin, CoreMixin)
+_MIXINS = (CodeGraphMixin, RecordsMixin, HierarchyMixin, HubMixin, TrashMixin, LookupsMixin, DeleteMixin, PeopleMixin, OrganizationsMixin, IdentityMixin, PermissionsMixin, KbMixin, KbListingsMixin, SyncStateMixin, EntityMixin, EntityReadsMixin, EntityAccessMixin, TaxonomyMixin, LegacyMigrationMixin, CoreMixin)
 for _m in _MIXINS:
     instrument_org_methods(_m)  # the interface does it for methods a subclass defines itself, not for inherited ones
     instrument_writers(_m)  # the kg registry's guard names the provider method that writes the graph

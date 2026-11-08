@@ -123,7 +123,8 @@ function xssRejectionMessage(value: string, field: string): string {
  */
 interface QuestionField {
   holder: Record<string, unknown>;
-  key: string;
+  /** A route can carry several such fields (a code search has a pattern and a path). */
+  keys: readonly string[];
 }
 
 /** MCP tools with a free-text argument typed for chat or search, and its name.
@@ -136,12 +137,18 @@ const MCP_QUESTION_TOOLS = new Map([
 ]);
 
 /** The routes behind those tools, and the field each reads. */
-const SEARCH_QUESTION_ROUTES = new Map([
-  ['/api/v1/search', 'query'],
+const SEARCH_QUESTION_ROUTES = new Map<string, readonly string[]>([
+  ['/api/v1/search', ['query']],
   // /retrieve takes the same plain-text query and renders nothing.
-  ['/api/v1/retrieve', 'query'],
-  ['/api/v1/search/entities', 'query'],
-  ['/api/v1/search/grep', 'pattern'],
+  ['/api/v1/retrieve', ['query']],
+  ['/api/v1/search/entities', ['query']],
+  ['/api/v1/search/grep', ['pattern']],
+  // Source text: a symbol such as `vector<int>::push_back` or `operator<<`, a pattern, a path.
+  ['/api/v1/code-graph/search', ['pattern', 'path']],
+  ['/api/v1/code-graph/semantic-search', ['query']],
+  ['/api/v1/code-graph/read', ['qualified_name', 'file_path']],
+  ['/api/v1/code-graph/outline', ['file_path']],
+  ['/api/v1/graph/resolve', ['qualifiedName', 'filePath']],
 ]);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -180,11 +187,9 @@ function findQuestionField(req: Request): QuestionField | undefined {
   const body = req.body;
 
   // The search route MCP's pipeshub_search calls, and the web search box.
-  const routeField = SEARCH_QUESTION_ROUTES.get(req.path.replace(/\/$/, ''));
-  if (routeField !== undefined) {
-    return typeof body[routeField] === 'string'
-      ? { holder: body, key: routeField }
-      : undefined;
+  const routeFields = SEARCH_QUESTION_ROUTES.get(req.path.replace(/\/$/, ''));
+  if (routeFields !== undefined) {
+    return { holder: body, keys: routeFields };
   }
 
   // A JSON-RPC tool call to the MCP endpoint.
@@ -201,7 +206,7 @@ function findQuestionField(req: Request): QuestionField | undefined {
     const args = params.arguments;
     const field = MCP_QUESTION_TOOLS.get(params.name) as string;
     return isPlainObject(args) && typeof args[field] === 'string'
-      ? { holder: args, key: field }
+      ? { holder: args, keys: [field] }
       : undefined;
   }
 
@@ -222,7 +227,7 @@ function isQuestionField(
   if (
     question === undefined ||
     holder !== question.holder ||
-    key !== question.key
+    !question.keys.includes(key)
   ) {
     return false;
   }

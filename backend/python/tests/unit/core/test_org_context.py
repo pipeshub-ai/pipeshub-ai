@@ -129,7 +129,9 @@ def test_shadow_mode_logs_counts_and_lets_missing_and_mismatched_access_through(
     from app.core import org_context as oc
 
     monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
-    oc._logged.clear()
+    from app.utils import logging_fields
+
+    monkeypatch.setattr(logging_fields, "_log_once_last", {})
     before = oc.VIOLATIONS._metric.labels("missing", "site-a")._value.get()
     with caplog.at_level("WARNING"):
         assert oc.ambient_org("org_x", site="site-a") == "org_x"

@@ -5,6 +5,7 @@ response types from a fake LangChain `BaseChatModel`, with no network."""
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -385,6 +386,37 @@ class TestCompleteStructured:
                 [UserMessage(content="classify this")],
                 output_schema={"type": "object", "properties": {"route": {"type": "string"}}},
             )
+
+    async def test_a_failed_parse_logs_and_raises_sizes_never_the_completion(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Parser errors echo the model's output, so only class names and the raw size are kept."""
+        completion = "completion-sentinel, not json"
+
+        class _Parsed:
+            async def ainvoke(self, messages: list, config: object = None) -> dict:
+                return {"parsed": None, "raw": AIMessage(content=completion),
+                        "parsing_error": ValueError(f"could not parse {completion}")}
+
+        class _UnparseableModel(_FakeModel):
+            def with_structured_output(self, schema: object, include_raw: bool = False) -> _Parsed:
+                if isinstance(schema, dict):
+                    raise ValueError(f"bad output: {completion}")
+                return _Parsed()
+
+        transport = LangChainTransport(_UnparseableModel())
+        with caplog.at_level(logging.DEBUG), pytest.raises(TransportError) as exc_info:
+            await transport.complete_structured(
+                [UserMessage(content="classify this")],
+                output_schema={"type": "object", "properties": {"route": {"type": "string"}}},
+            )
+
+        assert "sentinel" not in str(exc_info.value)
+        assert "raw_chars=" in str(exc_info.value)
+        assert "first attempt error: ValueError" in str(exc_info.value)
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert warnings and not [w for w in warnings if "sentinel" in w]
+        assert any("raw_chars=" in w for w in warnings)
 
     async def test_usage_extracted_from_raw_ai_message(self) -> None:
         from langchain_core.messages.ai import UsageMetadata

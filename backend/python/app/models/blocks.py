@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, Optional
@@ -315,6 +316,31 @@ class GroupSubType(str, Enum):
     SQL_TABLE = "sql_table"
     SQL_VIEW = "sql_view"
     CODE_CLASS = "code_class"  # class / interface / enum group in a source file
+
+
+# The labels connectors put before an author: "Comment by", "Post by",
+# "Review by", "Review comment by", "System Comment by".
+_AUTHOR_LABEL = re.compile(r"(?:system |review )?(?:comment|post|review) by \S", re.IGNORECASE)
+
+
+def group_caption(sub_type: object, name: object, description: object) -> str:
+    """The author line a comment group shows in its rendered header.
+
+    The group's children hold only the comment text, so without this a reader
+    sees what was said but not who said it. Most connectors name a comment
+    "Comment by <author>". Confluence and Notion put only the author in the
+    name, and Zammad puts the article subject there, so a field that starts
+    with an author label wins, the description first: it never holds free text
+    such as a subject ("Edited by Bob - Tammy").
+    """
+    if str(getattr(sub_type, "value", sub_type) or "") != GroupSubType.COMMENT.value:
+        return ""
+    fields = [f.strip() for f in (description, name) if isinstance(f, str) and f.strip()]
+    labelled = next((f for f in fields if _AUTHOR_LABEL.match(f)), None)
+    if labelled:
+        return labelled
+    return name.strip() if isinstance(name, str) and name.strip() else (fields[0] if fields else "")
+
 
 class SemanticMetadata(BaseModel):
     entities: Optional[list[dict[str, Any]]] = None
