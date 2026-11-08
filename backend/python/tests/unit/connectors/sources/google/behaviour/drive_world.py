@@ -173,6 +173,11 @@ class DriveWorld:
         self.drives: dict[str, dict[str, Any]] = {}
         # Drive answers without the restrictions of a drive, and cannot be asked for them directly.
         self.restrictions_unlisted = False
+        # Groups whose members the directory refuses to list, by status (404 or 403 forbidden), and the
+        # account's other domains: {"example.org": ["alias.example.org"]}.
+        self.unlistable_groups: dict[str, int] = {}
+        self.other_domains: dict[str, list[str]] = {}
+        self.domains_unreadable = False
         self.restrictions_unreadable = False
         self.hide_unreadable_parents = False
         self.files: dict[str, FileState] = {}
@@ -449,6 +454,7 @@ class DriveWorld:
         r("GET", f"{ADMIN_API}/users/([^/]+)", self._admin_user)
         r("GET", f"{ADMIN_API}/groups", self._admin_groups)
         r("GET", f"{ADMIN_API}/groups/([^/]+)/members", self._admin_members)
+        r("GET", f"{ADMIN_API}/customer/([^/]+)/domains", self._admin_domains)
 
     def _caller(self, req: ApiRequest) -> str:
         email = self.email_of(req.identity)
@@ -727,13 +733,28 @@ class DriveWorld:
         ]
         return paginate(groups, req.query, default_size=self.admin_page_size, key="groups")
 
+    def _admin_domains(self, req: ApiRequest) -> object:
+        if denied := self._admin_guard(req):
+            return denied
+        if self.domains_unreadable:
+            return google_error(500, "backendError")
+        domains = [{"domainName": self.domain, "isPrimary": True, "verified": True}]
+        for name, aliases in self.other_domains.items():
+            domains.append({
+                "domainName": name, "isPrimary": False, "verified": True,
+                "domainAliases": [{"domainAliasName": a, "verified": True} for a in aliases],
+            })
+        return {"domains": domains}
+
     def _admin_members(self, req: ApiRequest) -> object:
         if denied := self._admin_guard(req):
             return denied
         group_key = req.path.split("/groups/")[1].split("/")[0]
         group = self.groups.get(group_key)
-        if group is None:
+        if group is None or self.unlistable_groups.get(group_key) == 404:
             return google_error(404, "notFound")
+        if self.unlistable_groups.get(group_key) == 403:
+            return google_error(403, "forbidden")
         emails = list(group["members"])
         if req.query.get("includeDerivedMembership") == "true":
             # Like the directory, members of nested groups are listed alongside the direct ones.

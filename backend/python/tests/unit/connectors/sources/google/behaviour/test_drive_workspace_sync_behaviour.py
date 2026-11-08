@@ -1955,3 +1955,86 @@ async def test_the_organization_drive_listing_asks_for_the_restrictions(ws: Work
     admin_listings = [r for r in ws.http.calls("GET", "/drive/v3/drives") if r.query.get("useDomainAdminAccess") == "true"]
     assert admin_listings
     assert all("restrictions" in r.query["fields"] for r in admin_listings)
+
+
+@pytest.mark.parametrize("status", [404, 403])
+async def test_members_only_keeps_the_grants_when_a_member_group_cannot_be_listed(ws: Workspace, status: int) -> None:
+    restricted_drive(ws, MEMBERS_ONLY)
+    ws.world.unlistable_groups["eng@example.com"] = status
+
+    await ws.sync()
+
+    # Who is a member is unknown, so nobody is cut on a guess: today's behaviour for this narrow case.
+    assert {BOB, CAROL, "eng@example.com", "other@example.com"} <= f1_people(ws)
+
+
+async def test_members_only_replaces_a_group_that_is_not_a_member_with_its_members_who_are(ws: Workspace) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_group("partial@example.com", [BOB, CAROL])
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", BOB: "writer"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        {"type": "group", "role": "writer", "emailAddress": "partial@example.com"},
+    ])
+
+    await ws.sync()
+
+    assert ws.grants("f1") == {(BOB, "USER", "WRITE")}
+
+
+async def test_members_only_keeps_a_group_nested_in_a_member_group_through_its_users(ws: Workspace) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_group("inner@example.com", [BOB])
+    ws.world.add_group("outer@example.com", ["inner@example.com"])
+    ws.world.add_group("stranger@example.com", [CAROL])
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", "outer@example.com": "writer"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        {"type": "group", "role": "writer", "emailAddress": "inner@example.com"},
+        {"type": "group", "role": "writer", "emailAddress": "stranger@example.com"},
+    ])
+
+    await ws.sync()
+
+    assert ws.grants("f1") == {(BOB, "USER", "WRITE")}
+
+
+async def test_a_group_that_is_not_a_member_and_cannot_be_listed_keeps_its_grant(ws: Workspace) -> None:
+    ws.world.add_group("partial@example.com", [BOB])
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", BOB: "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        {"type": "group", "role": "writer", "emailAddress": "partial@example.com"},
+    ])
+    ws.world.unlistable_groups["partial@example.com"] = 404
+
+    await ws.sync()
+
+    assert ws.grants("f1") == {("partial@example.com", "GROUP", "WRITE")}
+
+
+async def test_domain_only_keeps_the_secondary_and_alias_domains_of_the_account(ws: Workspace) -> None:
+    ws.world.other_domains = {"example.org": ["alias.example.net"]}
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer"}, DOMAIN_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        reader("zed@example.org"), reader("yan@alias.example.net"), reader(PARTNER),
+    ])
+
+    await ws.sync()
+
+    assert f1_people(ws) == {"zed@example.org", "yan@alias.example.net"}
+
+
+async def test_domains_that_cannot_be_read_fail_closed_and_keep_the_stored_grants(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer"})
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[reader("zed@example.org"), reader(PARTNER)])
+    await ws.sync()
+    assert f1_people(ws) == {"zed@example.org", PARTNER}
+
+    ws.world.drives["sd-1"]["restrictions"] = DOMAIN_ONLY
+    ws.world.domains_unreadable = True
+    await ws.sync()
+    assert ws.incomplete is True
+    assert f1_people(ws) == {"zed@example.org", PARTNER}
+
+    ws.world.domains_unreadable = False
+    ws.world.other_domains = {"example.org": []}
+    await ws.sync()
+    assert f1_people(ws) == {"zed@example.org"}
