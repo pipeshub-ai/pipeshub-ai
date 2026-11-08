@@ -60,7 +60,7 @@ from opensearchpy.exceptions import NotFoundError
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.services.permissions.mode import scope_fields_enabled
-from app.services.permissions.scope_fields import SCOPE_FENCE_FIELD, SCOPE_KEYS
+from app.services.permissions.scope_fields import SCOPE_FENCE_FIELD, SCOPE_KEYS, checked_fence
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
@@ -70,6 +70,7 @@ from app.services.vector_db.const.const import (
 from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.filters import (
     forbid_org_in_payload,
+    forbid_fence_in_payload,
     is_missing,
     keep_org_in_overwrite,
     require_filter_org,
@@ -1353,15 +1354,20 @@ class OpenSearchService(IVectorDBService):
         if fence is None:
             await super().update_payloads_by_ids(collection_name, updates, org_id=org_id, **extra)
             return
+        fence = checked_fence(fence)
         await self._assert_connected()
         if is_missing(org_id):
             raise OrgRequired("update_payload_by_ids needs the org of the points")
         for payload in updates.values():
             forbid_org_in_payload(payload)
+            forbid_fence_in_payload(payload)
         if not updates:
             return
         if not await self._guard_scope_mapping(collection_name, {k for p in updates.values() for k in p}):
-            updates = {i: self._without_scope(p) for i, p in updates.items()}
+            # a point whose scope fields cannot be written must not take the fence: a later correct write at an equal or lower one would be refused
+            updates = {i: p for i, p in updates.items() if self._without_scope(p) == p}
+            if not updates:
+                return
         actions = [
             {
                 "_op_type": "update", "_index": collection_name, "_id": point_id,
@@ -1383,6 +1389,8 @@ class OpenSearchService(IVectorDBService):
         if points.is_empty():
             raise ValueError("swap_array_value called with an empty filter")
         require_filter_org(points)
+        if fence is not None:
+            fence = checked_fence(fence)
         await self._assert_connected()
         if not await self._guard_scope_mapping(collection_name, {field: [new]}):
             return None
