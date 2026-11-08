@@ -1074,8 +1074,22 @@ async def phase_b2(ctx: Ctx, phase_b1: dict[str, Any]) -> dict[str, Any]:
 
     await wait_until_outlook_condition(_gone, description="throwaway group gone from the group list", timeout=600)
     state["sync_count"] = await ctx.incremental_sync("B2 incremental sync")
-    # The re-syncs below are for S's membership only; the other removals must land in this sync.
+    # The re-syncs below are for the deleted group and S's membership only; the other removals
+    # must land in this sync.
     state["after_first_sync"] = await _b2_removals(ctx, phase_b1, state)
+
+    async def _group_still_synced() -> bool:
+        # The connector's own /groups read can still list the group after ours stopped (11-06).
+        return await ctx.graph.get_user_group_by_external_id(ctx.cid, phase_b1["new_group_id"]) is not None
+
+    state["group_resyncs"] = await resync_while(
+        _group_still_synced,
+        lambda n: ctx.incremental_sync(f"B2 re-sync {n} for the deleted group"),
+        attempts=_MEMBERSHIP_RESYNCS,
+        wait_sec=_MEMBERSHIP_RESYNC_WAIT_SEC,
+        description="the deleted M365 group",
+    )
+    state["after_group_resyncs"] = await _b2_removals(ctx, phase_b1, state)
     state["membership_resyncs"] = await resync_while(
         lambda: _seed_group_member_edge(ctx),
         lambda n: ctx.incremental_sync(f"B2 re-sync {n} for S leaving the seed group"),
@@ -1142,9 +1156,11 @@ class TestB2Removals:
     @pytest.mark.order(61)
     async def test_tc_ol_incr_021_m365_group_deleted(self, ctx: Ctx, phase_b1: dict[str, Any], phase_b2: dict[str, Any]) -> None:
         """A deleted M365 group no longer grants anything."""
-        first = phase_b2["after_first_sync"]
-        assert first["deleted_group"] is None, "deleted group still synced"
-        assert first["deleted_group_grants"] == 0, "deleted group's mailbox still carries a grant"
+        after = phase_b2["after_group_resyncs"]
+        assert after["deleted_group"] is None, (
+            f"deleted group still synced after {phase_b2['group_resyncs']} re-sync(s)"
+        )
+        assert after["deleted_group_grants"] == 0, "deleted group's mailbox still carries a grant"
 
     @pytest.mark.order(62)
     @pytest.mark.xfail(
