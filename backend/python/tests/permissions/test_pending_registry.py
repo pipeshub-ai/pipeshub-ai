@@ -638,3 +638,26 @@ async def test_a_fence_that_fails_after_the_restore_still_resyncs_only_if_the_re
     assert ep.sync_vector_membership.await_count == int(resynced)
     said = ep.logger.error.call_args.args[0]
     assert said.startswith("Restored") == restore_lands and said.startswith("Could not restore") != restore_lands
+
+
+@pytest.mark.parametrize(("write_lands", "raises"), [(True, False), (False, True)])
+async def test_a_fence_that_fails_after_the_write_landed_does_not_cost_the_old_ids_clean_up(monkeypatch, write_lands, raises) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.events.events import EventProcessor
+    from app.services.permissions import structure_generation
+    from app.services.permissions.structure_generation import CLOSED_KEY, OPENED_KEY
+
+    monkeypatch.setattr(structure_generation, "register_pending_roots", AsyncMock(side_effect=RuntimeError("down")))
+    g = Apps("A")
+    g.update_ok = write_lands
+    ep = object.__new__(EventProcessor)
+    ep.graph_provider, ep.logger = g, MagicMock()
+    doc = {"_key": "me", "virtualRecordId": "attached"}
+    if raises:
+        with pytest.raises(RuntimeError):
+            await ep.update_record_fields(doc, {"virtualRecordId": "new"})
+    else:
+        assert await ep.update_record_fields(doc, {"virtualRecordId": "new"}) is True
+        assert ep.logger.error.call_args.args[0].startswith("Could not register the records still sharing")
+    assert g.docs["A"][OPENED_KEY] == 1 and CLOSED_KEY not in g.docs["A"]      # never closed: the connector stays not current
