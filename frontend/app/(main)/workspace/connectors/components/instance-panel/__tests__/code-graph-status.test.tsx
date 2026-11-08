@@ -3,6 +3,11 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { screen, cleanup } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 
+// The flag is read when the module loads, so it is set before the import.
+vi.hoisted(() => {
+  process.env.NEXT_PUBLIC_GRAPH_EXPLORER_ACTIVE = 'true';
+});
+
 const getCodeGraphRepos = vi.fn();
 vi.mock('../../../api', () => ({
   ConnectorsApi: { getCodeGraphRepos: () => getCodeGraphRepos() },
@@ -31,6 +36,21 @@ describe('CodeGraphStatus', () => {
     expect(screen.getByText('Ready')).toBeTruthy();
     expect(screen.getByText('Failed').getAttribute('title')).toBe('RuntimeError: boom');
     expect(screen.queryByText('other/repo')).toBeNull();
+  });
+
+  it('names each graph link after its repository, and offers none without a graph', async () => {
+    getCodeGraphRepos.mockResolvedValue([
+      { repo: 'acme/shop', source: 'GitHub', connector_id: 'conn-1', graph_status: 'ready' },
+      { repo: 'acme/api', source: 'GitHub', connector_id: 'conn-1', graph_status: 'stale' },
+      { repo: 'acme/new', source: 'GitHub', connector_id: 'conn-1', graph_status: 'never_built' },
+    ]);
+    renderInTheme(<CodeGraphStatus connectorId="conn-1" />);
+
+    const shop = await screen.findByRole('link', { name: 'View graph of acme/shop' });
+    expect(shop.getAttribute('href')).toBe('/graph/?repo=acme%2Fshop');
+    expect(shop.textContent).toBe('View graph');
+    expect(screen.getByRole('link', { name: 'View graph of acme/api' })).toBeTruthy();
+    expect(screen.getAllByRole('link')).toHaveLength(2);
   });
 
   it('renders nothing when the code graph cannot be reached', async () => {

@@ -5842,6 +5842,7 @@
       "canvasHint": "Die Grafik ist für Screenreader nicht verfügbar. Nutzen Sie die Schaltfläche „Als Tabelle anzeigen“, um alle Knoten zu lesen und zu bedienen.",
       "selectionGone": "Das ausgewählte Element ist nicht mehr verfügbar.",
       "viewGraph": "Graph ansehen",
+      "viewGraphOf": "Graph von {{repo}} ansehen",
       "fillerNode": "{{kind}} in {{file}}"
     },
     "capped": "Die Grafik zeigt nur einen Teil dieser Ansicht. Die Tabelle listet alles auf.",

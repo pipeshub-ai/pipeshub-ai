@@ -5808,6 +5808,7 @@
       "canvasHint": "圖譜圖像無法供螢幕閱讀器使用。請使用「以表格顯示」按鈕來閱讀和操作每個節點。",
       "selectionGone": "你選取的項目已無法使用。",
       "viewGraph": "檢視圖譜",
+      "viewGraphOf": "檢視 {{repo}} 的圖譜",
       "fillerNode": "{{file}} 中的 {{kind}}"
     },
     "capped": "圖中只顯示此檢視的一部分，表格列出全部內容。",

@@ -5842,6 +5842,7 @@
       "canvasHint": "The graph picture is not available to screen readers. Use the Show as table button to read and use every node.",
       "selectionGone": "The item you selected is no longer available.",
       "viewGraph": "View graph",
+      "viewGraphOf": "View graph of {{repo}}",
       "fillerNode": "{{kind}} in {{file}}"
     },
     "capped": "The picture shows only part of this view. The table lists everything.",

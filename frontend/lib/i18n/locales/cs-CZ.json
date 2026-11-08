@@ -5988,6 +5988,7 @@
       "canvasHint": "Obrázek grafu není čtečkám obrazovky k dispozici. Tlačítkem „Zobrazit jako tabulku“ si můžete přečíst a používat každý uzel.",
       "selectionGone": "Vybraná položka již není dostupná.",
       "viewGraph": "Zobrazit graf",
+      "viewGraphOf": "Zobrazit graf {{repo}}",
       "fillerNode": "{{kind}} v {{file}}"
     },
     "capped": "Obrázek ukazuje jen část tohoto zobrazení. Tabulka uvádí vše.",
