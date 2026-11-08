@@ -79,6 +79,7 @@ CALLS = [
     ("get_neighbors_for_nodes_by_relationship_types", (["b1"], "blocks", ["CALLS"], "outbound")), ("get_edges_by_target_keys", (["blocks/b2"], "nodeRelations")),
     ("delete_edges_by_source_keys", (["blocks/b1"], "nodeRelations")), ("delete_edges_touching_nodes", (["b1"], "blocks", "nodeRelations")),
     ("get_edge_rollup_by_file_prefix", ("o", "src/", ["CALLS"], "outbound", "c")), ("get_file_paths_for_records", ("o", ["r1"])),
+    ("find_blocks_by_external_ref_prefix", ("o", "c", ["time:"], 10)),
     ("delete_blocks_for_records", (["r1"],)), ("backfill_block_name_folded", ()), ("compare_and_set_record_fields", (["r1"], "1", {"a": 1})),
     ("stage_state_get", ("s",)), ("stage_states_for_revision", ("v", "1")), ("stage_state_create", ({"id": "s"},)),
     ("stage_state_compare_and_set", ("s", "A", "B", {})), ("get_stage_states_with_records", ("o", "c", "entities", "PENDING")),
