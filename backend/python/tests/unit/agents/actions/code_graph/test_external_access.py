@@ -250,6 +250,7 @@ async def test_history_route_answers_for_one_repo_and_bounds_its_limit() -> None
     res = client.post("/api/v1/code-graph/history", json={"repo": "acme/admin", "file_path": MAIN})
     assert res.status_code == 200, res.text
     assert res.json()["pull_requests"] == [] and res.json()["file_path"] == MAIN
+    assert res.json()["untrusted"], "PR and ticket titles are written by whoever opens them"
     assert client.post("/api/v1/code-graph/history",
                        json={"repo": "acme/admin", "file_path": MAIN, "limit": 101}).status_code == 422
 

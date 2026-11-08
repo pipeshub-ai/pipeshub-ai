@@ -15,7 +15,7 @@ __all__ = ["FileDiff", "Hunk", "parse_unified_diff"]
 Status = Literal["added", "deleted", "modified", "renamed"]
 
 _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
-_BINARY = re.compile(r"^Binary files (.+) and (.+) differ$")
+_BINARY_HEAD, _BINARY_TAIL, _BINARY_AND = "Binary files ", " differ", " and "
 _NULL = "/dev/null"
 
 
@@ -85,11 +85,35 @@ class _File:
 
 def _git_header_paths(rest: str) -> tuple[str, str] | None:
     """``a/x b/y`` from a ``diff --git`` line; only used when nothing later names the paths (a pure mode change)."""
-    quoted = re.fullmatch(r'(".*?"|\S+) (".*?"|\S+)', rest)
-    if quoted:
-        return quoted.group(1), quoted.group(2)
+    if rest.startswith('"'):
+        end = rest.find('" ', 1)
+        first, second = (rest[:end + 1], rest[end + 2:]) if end > 0 else ("", "")
+    else:
+        first, _, second = rest.partition(" ")
+    if first and second and (_quoted(second) or " " not in second):
+        return first, second
     half = (len(rest) - 1) // 2  # unquoted paths with spaces: the two halves name the same file
     return (rest[:half], rest[half + 1:]) if rest[half:half + 1] == " " else None
+
+
+def _quoted(path: str) -> bool:
+    return len(path) > 1 and path[0] == path[-1] == '"'
+
+
+def _binary_paths(line: str) -> tuple[str, str] | None:
+    """``Binary files a/x and b/y differ``: the two paths, split at the last `` and `` (linear time, unlike a
+    backtracking pattern on a long line)."""
+    if not (line.startswith(_BINARY_HEAD) and line.endswith(_BINARY_TAIL)):
+        return None
+    old, sep, new = line[len(_BINARY_HEAD):-len(_BINARY_TAIL)].rpartition(_BINARY_AND)
+    return (old, new) if sep and old and new else None
+
+
+def _lines(text: str) -> list[str]:
+    """Lines split on newlines only: ``str.splitlines`` also splits on form feeds and Unicode separators, which
+    are content inside a diff line."""
+    lines = [line.removesuffix("\r") for line in text.split("\n")]
+    return lines[:-1] if lines and not lines[-1] else lines
 
 
 def parse_unified_diff(text: str) -> list[FileDiff]:
@@ -106,7 +130,7 @@ def parse_unified_diff(text: str) -> list[FileDiff]:
         if cur is not None and (done := cur.done()) is not None:
             files.append(done)
 
-    for line in text.splitlines():
+    for line in _lines(text):
         if old_left > 0 or new_left > 0:
             tag, body = (line[:1], line[1:]) if line else (" ", "")
             if tag == "\\":
@@ -150,10 +174,10 @@ def parse_unified_diff(text: str) -> list[FileDiff]:
             cur.renamed, cur.old = True, line[len("rename from "):]
         elif line.startswith("rename to "):
             cur.renamed, cur.new = True, line[len("rename to "):]
-        elif binary := _BINARY.match(line):
+        elif binary := _binary_paths(line):
             cur.binary = True
-            cur.old = cur.path(binary.group(1), "a/") if cur.old is None else cur.old
-            cur.new = cur.path(binary.group(2), "b/") if cur.new is None else cur.new
+            cur.old = cur.path(binary[0], "a/") if cur.old is None else cur.old
+            cur.new = cur.path(binary[1], "b/") if cur.new is None else cur.new
         elif hunk := _HUNK.match(line):
             old_start, new_start = int(hunk.group(1)), int(hunk.group(3))
             old_left = int(hunk.group(2)) if hunk.group(2) is not None else 1

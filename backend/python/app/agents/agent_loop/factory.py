@@ -306,6 +306,7 @@ _CODE_TRAVERSAL_TOOLS = frozenset({
     "codegraph__find_symbol_path",
     # A walk too, grouped by file; and an outline is a few hundred bytes.
     "codegraph__impact",
+    "codegraph__impact_of_diff",
     "codegraph__outline",
 })
 

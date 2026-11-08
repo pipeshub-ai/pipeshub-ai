@@ -6,6 +6,7 @@ covers only what is listed: a hidden PR or ticket changes nothing in the answer.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import TYPE_CHECKING, Any
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_HISTORY_LIMIT = 20
 _PRS = CollectionNames.PULLREQUESTS.value
 _ROW_LIMIT = 5000
+_READS_AT_ONCE = 8
 _NO_PRS = ("No indexed pull request changed this file. A pull request is linked to the files it changes when it "
            "is indexed, so one that never was is not listed.")
 _FILE_LEVEL = ("Pull requests are found per file: `touches_symbol` is not known here, so a PR listed here changed "
@@ -72,18 +74,20 @@ async def history_impl(
     if not pr_ids:
         return {**out, "pull_requests": [], "total": 0, "note": _NO_PRS}
 
-    tickets_of = await _tickets(graph_provider, org_id, access, pr_ids)
     records = {r["_key"]: r for r in await nodes_in_org(
         graph_provider, org_id, _RECORDS, pr_ids,
         ["_key", "recordName", "webUrl", "connectorName", "virtualRecordId"])}
     details = {r["_key"]: r for r in await nodes_in_org(
         graph_provider, org_id, _PRS, pr_ids,
         ["_key", "status", "creatorName", "reviewName", "mergedBy", "mergedAtTimestamp"])}
-    rows = [_row(records[p], details.get(p, {}), tickets_of.get(p, []), symbol=qualified_name)
-            for p in pr_ids if p in records]
+    rows = [_row(records[p], details.get(p, {}), symbol=qualified_name) for p in pr_ids if p in records]
     # Merged newest first, then the never-merged; the title breaks ties so the order is the same every call.
     rows.sort(key=lambda r: (r["merged_at"] is None, -(r["merged_at"] or 0), r["title"]))
     out.update(pull_requests=rows[:limit], total=len(rows))
+    # Tickets and diffs are read for the returned page only, not for every PR that reaches the file.
+    tickets_of = await _tickets(graph_provider, org_id, access, [r["_key"] for r in out["pull_requests"]])
+    for row in out["pull_requests"]:
+        row["tickets"] = tickets_of.get(row["_key"], [])
     if len(rows) > limit:
         out["truncated"] = True
     notes = []
@@ -97,9 +101,14 @@ async def history_impl(
             notes.append(_FILE_LEVEL)
         else:
             reader = record_artifact_reader(blob_store)
-            for row in out["pull_requests"]:
-                row["touches_symbol"] = await _touches(reader, records[row.pop("_key")], path, qualified_name,
-                                                       org_id)
+            gate = asyncio.Semaphore(_READS_AT_ONCE)
+
+            async def touch(row: dict[str, Any]) -> None:
+                async with gate:
+                    row["touches_symbol"] = await _touches(reader, records[row["_key"]], path, qualified_name,
+                                                           org_id)
+
+            await asyncio.gather(*(touch(row) for row in out["pull_requests"]))
             notes.append(_HEURISTIC)
     if notes:
         out["note"] = " ".join(notes)
@@ -123,7 +132,8 @@ async def _touches(reader: RecordArtifactReader, record: dict[str, Any], path: s
              and (g.get("file_change_metadata") or {}).get("path") == path for text in _group_text(container, g)]
     if not diffs:
         return None
-    name = re.compile(rf"\b{re.escape(_bare(qualified_name))}\b")
+    # Lookarounds, not \b: a name that starts or ends with a non-word character (`$emit`, `empty?`) has no \b.
+    name = re.compile(rf"(?<!\w){re.escape(_bare(qualified_name))}(?!\w)")
     changed = (line for text in diffs for line in text.splitlines()
                if line.startswith("@@") or (line[:1] in ("+", "-") and not line.startswith(("+++", "---"))))
     return any(name.search(line) for line in changed)
@@ -170,6 +180,8 @@ async def _tickets(
     graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess, pr_ids: list[str],
 ) -> dict[str, list[dict[str, Any]]]:
     """The readable records each PR names (LINKED_TO), as ``{title, url, type}``."""
+    if not pr_ids:
+        return {}
     rows = await graph_provider.get_neighbors_for_nodes_by_relationship_types(
         node_keys=pr_ids, node_collection=_RECORDS, relationship_types=[RecordRelations.LINKED_TO.value],
         direction="outbound", limit=_ROW_LIMIT, raise_on_error=True,
@@ -187,10 +199,9 @@ async def _tickets(
     return out
 
 
-def _row(record: dict[str, Any], pr: dict[str, Any], tickets: list[dict[str, Any]], *,
-         symbol: str | None) -> dict[str, Any]:
+def _row(record: dict[str, Any], pr: dict[str, Any], *, symbol: str | None) -> dict[str, Any]:
     return {
-        "_key": record["_key"],  # for the symbol check; dropped before the result leaves
+        "_key": record["_key"],  # for the tickets and the symbol check; dropped before the result leaves
         "title": record.get("recordName"),
         "url": record.get("webUrl"),
         "status": pr.get("status"),
@@ -200,6 +211,6 @@ def _row(record: dict[str, Any], pr: dict[str, Any], tickets: list[dict[str, Any
         # assigned ones, and who approved (`approved_by`) is not fetched.
         "requested_reviewers": list(pr.get("reviewName") or []),
         "merged_by": pr.get("mergedBy"),
-        "tickets": tickets,
+        "tickets": [],  # filled for the returned page
         **({"touches_symbol": None} if symbol else {}),
     }

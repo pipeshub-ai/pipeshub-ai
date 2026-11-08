@@ -84,6 +84,7 @@ async def impact_of_diff_impl(
                                      qualified_name=row.get("qualified_name"), repo=repo, **kwargs)
 
     walks = await asyncio.gather(*(walk(r, depth=depth, include_tests=include_tests) for r in walked))
+    untested, unchecked = await _untested_callers(walked, walk)
     out: dict[str, Any] = {
         "changed": walked,
         "added_files": [d.path for d in files if d.old_path is None],
@@ -91,9 +92,16 @@ async def impact_of_diff_impl(
         **({"mode_only": mode_only} if mode_only else {}),
         "impacted_files": _merge(w.get("impacted_files") for w in walks),
         "impacted_tests": _merge(w.get("impacted_tests") for w in walks),
-        "untested_callers": await _untested_callers(walked, walk),
+        "untested_callers": untested,
         "note": _NOTE,
     }
+    # A walk can fail (the symbol was re-indexed away since its blocks were read): name it, never drop it.
+    failed = [{"file_path": r["file_path"], "qualified_name": r.get("qualified_name"), "error": w["error"]}
+              for r, w in zip(walked, walks) if w.get("error")]
+    if failed:
+        out.update(failed_walks=failed, truncated=True)
+    if unchecked:
+        out.update(untested_unchecked=unchecked, truncated=True)
     if omitted > 0:
         out.update(changed_omitted=omitted, truncated=True)
     if any(w.get("truncated") for w in walks):
@@ -115,6 +123,7 @@ async def _file_blocks(
         return None
     rows = await graph_provider.get_nodes_by_field_in(
         collection=_BLOCKS, field_name="recordId", field_values=record_ids, raise_on_error=True,
+        return_fields=["qualifiedName", "kind", "startLine", "endLine", "recordGroupId"],
     ) or []
     # The records are already this org's, this connector's and readable (`_choose_records`), so are their blocks:
     # valid while record ids are globally unique.
@@ -161,13 +170,16 @@ def _merge(groups: Iterable[list[dict[str, Any]] | None]) -> list[dict[str, Any]
     return sorted(by_file.values(), key=lambda f: (f["nearest_hop"], f["file_path"]))
 
 
-async def _untested_callers(changed: list[dict[str, Any]], walk: Walk) -> list[dict[str, str]]:
-    """Direct callers of a changed symbol that no test reaches within two hops: the change's unguarded edges."""
+async def _untested_callers(changed: list[dict[str, Any]], walk: Walk) -> tuple[list[dict[str, str]], int]:
+    """Direct callers of a changed symbol that no test reaches within two hops (the change's unguarded edges),
+    and how many callers were not checked: past the cap, or because their check failed."""
     direct = await asyncio.gather(*(walk(r, depth=1, include_tests=False, edge_types=["CALLS"])
                                     for r in changed if r.get("qualified_name")))
     callers = list(dict.fromkeys((f["file_path"], s) for w in direct for f in w.get("impacted_files") or ()
-                                 for s in f.get("symbols", ())))[:_MAX_UNTESTED_CHECKS]
+                                 for s in f.get("symbols", ())))
+    checked = callers[:_MAX_UNTESTED_CHECKS]
     reached = await asyncio.gather(*(walk({"file_path": p, "qualified_name": q}, depth=2, include_tests=False)
-                                     for p, q in callers))
-    return [{"file_path": p, "qualified_name": q} for (p, q), w in zip(callers, reached)
-            if not w.get("impacted_tests")]
+                                     for p, q in checked))
+    untested = [{"file_path": p, "qualified_name": q} for (p, q), w in zip(checked, reached)
+                if not w.get("error") and not w.get("impacted_tests")]
+    return untested, len(callers) - len(checked) + sum(1 for w in reached if w.get("error"))

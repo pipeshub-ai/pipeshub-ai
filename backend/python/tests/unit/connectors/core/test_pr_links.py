@@ -20,7 +20,7 @@ def _store(code_files: dict[str, str]) -> MagicMock:
     rows.append({"_key": "rec-foreign", "externalRecordId": "/1/blob/src/a.py", "connectorId": "conn-other"})
     store = MagicMock()
     store.get_nodes_by_field_in = AsyncMock(
-        side_effect=lambda collection, field, values, return_fields=None: [r for r in rows if r[field] in values])
+        side_effect=lambda collection, field, values, return_fields=None, **_: [r for r in rows if r[field] in values])
     store.delete_edges_by_relationship_types = AsyncMock(return_value=0)
     store.batch_create_edges = AsyncMock()
     return store
@@ -66,6 +66,24 @@ async def test_a_rewrite_replaces_only_this_prs_modifies_edges() -> None:
         assert call.kwargs == {"from_id": "pr-1", "from_collection": RECORDS,
                                "collection": CollectionNames.NODE_RELATIONS.value, "relationship_types": [MODIFIES]}
     assert store.delete_edges_by_relationship_types.await_count == 2
+
+
+async def test_the_records_are_read_before_the_old_edges_go_and_a_failed_read_keeps_them() -> None:
+    """Without explicit transactions the delete commits on its own: a lookup that failed after it would leave the
+    PR with no edges, so the lookup runs first and raises."""
+    store = _store({"/1/blob/src/a.py": "rec-a"})
+    calls = MagicMock()
+    calls.attach_mock(store.get_nodes_by_field_in, "lookup")
+    calls.attach_mock(store.delete_edges_by_relationship_types, "delete")
+    await write_modifies(store, PR, CHANGES[:1], _ext)
+    assert [c[0] for c in calls.mock_calls] == ["lookup", "delete"]
+    assert store.get_nodes_by_field_in.await_args.kwargs == {"raise_on_error": True}
+
+    store.get_nodes_by_field_in.side_effect = RuntimeError("graph unavailable")
+    store.delete_edges_by_relationship_types.reset_mock()
+    with pytest.raises(RuntimeError):
+        await write_modifies(store, PR, CHANGES[:1], _ext)
+    store.delete_edges_by_relationship_types.assert_not_awaited()
 
 
 async def test_a_pr_whose_files_are_gone_drops_its_old_edges() -> None:

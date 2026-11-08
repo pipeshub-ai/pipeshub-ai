@@ -48,15 +48,18 @@ async def write_modifies(
     *code_external_id* maps a repo-relative path to that connector's code-file external id. Returns how many
     files were linked and how many matched no record (not indexed as code, or ids built another way).
     """
+    by_external = {code_external_id(c.path): c for c in changes if c.path}
+    # Looked up before the delete, and a failed lookup raises: without explicit transactions the delete commits on
+    # its own, so a lookup that failed after it would leave the PR with no edges.
+    rows = (await tx_store.get_nodes_by_field_in(
+        _RECORDS, "externalRecordId", sorted(by_external), ["_key", "externalRecordId", "connectorId"],
+        raise_on_error=True,
+    ) or []) if by_external else []
     await tx_store.delete_edges_by_relationship_types(
         from_id=pr.id, from_collection=_RECORDS, collection=_LINKS, relationship_types=[_MODIFIES],
     )
-    by_external = {code_external_id(c.path): c for c in changes if c.path}
     if not by_external:
         return Linked(0, 0)
-    rows = await tx_store.get_nodes_by_field_in(
-        _RECORDS, "externalRecordId", sorted(by_external), ["_key", "externalRecordId", "connectorId"],
-    ) or []
     now = get_epoch_timestamp_in_ms()
     edges = [
         {

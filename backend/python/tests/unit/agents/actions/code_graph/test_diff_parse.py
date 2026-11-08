@@ -201,3 +201,27 @@ def test_file_diff_is_immutable() -> None:
     assert isinstance(f, FileDiff)
     with pytest.raises(AttributeError):
         f.path = "x"  # type: ignore[misc]
+
+
+def test_a_form_feed_or_unicode_separator_inside_a_line_does_not_split_it() -> None:
+    """Only newlines end a diff line: a form feed (GNU sources) or U+2028 is content, and the hunk keeps counting."""
+    diff = ("--- a/x.c\n+++ b/x.c\n@@ -1,4 +1,4 @@\n a\x0c\n-b c\n+b\n d\n-e\n+f\n")
+    (f,) = parse_unified_diff(diff)
+    assert f.removed == (2, 4) and f.added == (2, 4)
+
+
+def test_crlf_line_ends_read_like_lf() -> None:
+    (f,) = parse_unified_diff("--- a/x.py\r\n+++ b/x.py\r\n@@ -1 +1 @@\r\n-a\r\n+b\r\n")
+    assert (f.path, f.removed, f.added) == ("x.py", (1,), (1,))
+
+
+def test_a_binary_line_with_and_in_a_path_splits_at_the_last_and() -> None:
+    (f,) = parse_unified_diff("diff --git a/x and y.png b/x and y.png\nBinary files a/x and y.png and b/x and y.png differ\n")
+    assert (f.path, f.binary) == ("x and y.png", True)
+
+
+def test_a_huge_malformed_header_line_parses_in_linear_time() -> None:
+    """A pathological header (a backtracking pattern takes minutes on it; the suite's timeout fails that)."""
+    line = "Binary files " + "a and " * 200_000 + "x"
+    assert parse_unified_diff(f"diff --git a/p b/p\n{line}\n") == parse_unified_diff("diff --git a/p b/p\n")
+    assert isinstance(parse_unified_diff("diff --git " + '" ' * 300_000 + "\n"), list)

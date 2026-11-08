@@ -150,3 +150,27 @@ async def test_a_mode_only_change_walks_nothing() -> None:
 async def test_the_result_warns_that_lines_are_read_against_the_indexed_commit() -> None:
     out = await _impact(_patch("src/b.py", "@@ -2 +2 @@", "-a\n+b\n"))
     assert "indexed commit" in out["note"]
+
+
+async def test_callers_past_the_check_cap_are_counted_not_called_tested(monkeypatch) -> None:
+    monkeypatch.setattr(diff_impact, "_MAX_UNTESTED_CHECKS", 0)
+    out = await _impact(_patch("src/b.py", "@@ -2 +2 @@", "-a\n+b\n"))
+    assert out["untested_callers"] == []
+    assert out["untested_unchecked"] == 1 and out["truncated"] is True
+
+
+async def test_a_failed_walk_is_named_and_its_caller_is_not_called_untested(monkeypatch) -> None:
+    """A symbol re-indexed away between the block read and its walk: the failure is reported, not dropped, and a
+    caller whose check failed is unchecked, not untested."""
+    real = diff_impact.impact_impl
+
+    async def flaky(**kwargs) -> dict:
+        if kwargs["qualified_name"] == "function:caller" or kwargs.get("depth") != 1:
+            return {"error": "No symbol 'x' in this file."}
+        return await real(**kwargs)
+
+    monkeypatch.setattr(diff_impact, "impact_impl", flaky)
+    out = await _impact(_patch("src/b.py", "@@ -2 +2 @@", "-a\n+b\n"))
+    assert out["failed_walks"] == [{"file_path": "src/b.py", "qualified_name": "function:target",
+                                    "error": "No symbol 'x' in this file."}]
+    assert out["untested_callers"] == [] and out["untested_unchecked"] == 1 and out["truncated"] is True

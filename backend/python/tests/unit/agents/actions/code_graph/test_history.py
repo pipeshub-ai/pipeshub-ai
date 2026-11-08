@@ -186,3 +186,31 @@ async def test_a_symbol_named_only_in_unchanged_context_is_not_touched() -> None
     out = await _history(_graph(), qualified_name="function:target", blob_store=blobs)
     old = next(p for p in out["pull_requests"] if p["title"] == "Fix target")
     assert old["touches_symbol"] is False
+
+
+@pytest.mark.parametrize(("qualified_name", "line"), [
+    ("method:Panel.$emit", "-    this.$emit('close')"),
+    ("method:Stack.empty?", "+  def empty?"),
+])
+async def test_touches_symbol_matches_names_that_start_or_end_with_a_non_word_character(qualified_name, line) -> None:
+    blobs = FakeBlobStore({"v-pr-new": _pr_blob("src/b.py", f"@@ -1 +1 @@\n{line}")})
+    out = await _history(_graph(), qualified_name=qualified_name, blob_store=blobs)
+    new = next(p for p in out["pull_requests"] if p["title"] == "PA-7: speed up target")
+    assert new["touches_symbol"] is True
+
+
+async def test_tickets_are_read_for_the_returned_page_only() -> None:
+    graph = _graph()
+    asked: list[list[str]] = []
+    real = graph.get_neighbors_for_nodes_by_relationship_types
+
+    async def spy(**kwargs) -> list[dict]:
+        if kwargs["relationship_types"] == ["LINKED_TO"]:
+            asked.append(sorted(kwargs["node_keys"]))
+        return await real(**kwargs)
+
+    graph.get_neighbors_for_nodes_by_relationship_types = spy
+    out = await _history(graph, limit=1)
+    assert [p["title"] for p in out["pull_requests"]] == ["PA-7: speed up target"]
+    assert out["pull_requests"][0]["tickets"][0]["title"] == "Target is slow"
+    assert asked == [["pr-new"]]

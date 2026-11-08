@@ -1424,7 +1424,8 @@ class CodeGraph:
             ),
             "Failed to list the file's pull requests",
         )
-        return self._to_output(result)
+        # PR and ticket titles are written by whoever opens them: data to read, never instructions.
+        return self._to_output(as_untrusted(result))
 
     @tool(
         path="/tools/codegraph/entry_points",
