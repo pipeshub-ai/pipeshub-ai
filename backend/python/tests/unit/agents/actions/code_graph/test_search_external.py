@@ -144,3 +144,20 @@ async def test_blocks_without_refs_are_never_matched_and_one_query_is_made() -> 
     out = await _external(g, "react")
     assert set(_hits(out)) == {"function:renderPanel"}
     assert len(g.external_groups) == 1
+
+
+async def test_an_empty_answer_says_why_a_name_tests_or_the_cap_left_nothing(monkeypatch) -> None:
+    from app.agents.actions.code_graph import search
+
+    g = graph(file_roles={"rec-a": "test"})
+    plain = (await _external(graph(), "nowhere"))["hint"]
+    assert plain.startswith("No block you can read calls that module") and "include_tests" not in plain
+    named = (await _external(graph(), "react", name="useEffect"))["hint"]
+    assert named.startswith("No block you can read calls `useEffect` of that module")
+    assert "include_tests" in (await _external(g, "requests"))["hint"]
+    monkeypatch.setattr(search, "_EXTERNAL_ROWS", 1)
+    g = graph()
+    g.blocks["k_client"]["externalRefs"] = ["react:useEffect"]  # sorts first and holds no useState call
+    capped = await _external(g, "react", name="useState")
+    assert capped["matches"] == [] and capped["truncated"] is True
+    assert "among the first 1 blocks" in capped["hint"]

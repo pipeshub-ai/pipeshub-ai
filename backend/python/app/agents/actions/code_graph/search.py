@@ -213,7 +213,7 @@ async def _by_external(
     blocks = []
     for row in rows[:_EXTERNAL_ROWS]:
         refs = [r for r in row.get("externalRefs") or () if _external_ref_matches(r, module, name)]
-        if refs and row.get("orgId") == org_id:
+        if refs:
             blocks.append({**row, "externalRefs": refs})
     blocks, hidden = await _in_scope(graph_provider, org_id, blocks, path,
                                      include_tests=include_tests, access=access)
@@ -229,11 +229,22 @@ async def _by_external(
     if hidden:
         out["hidden_tests"] = hidden
     if not blocks:
-        out["hint"] = ("Nothing indexed calls into that module through an import. Library calls are "
-                       "recorded per block at edge build from the file's imports; a call on an "
-                       "untyped value (`resp.json()`) names no module. For call sites by text, use "
-                       "mode='text' with a `path`.")
+        out["hint"] = _no_external_callers_hint(name, capped=capped, hidden=bool(hidden))
     return out
+
+
+def _no_external_callers_hint(name: str | None, *, capped: bool, hidden: bool) -> str:
+    """Why an external search found nothing, so an empty answer is not read as "the library is unused"."""
+    target = f"`{name}` of that module" if name else "that module"
+    reasons = [f"No block you can read calls {target} through an import"
+               + (f" among the first {_EXTERNAL_ROWS} blocks calling into the module; narrow `repo` or `path`"
+                  if capped else "") + "."]
+    if hidden:
+        reasons.append("Test files were left out; set include_tests to search them.")
+    reasons.append("Library calls are recorded per block at edge build from the file's imports; a call on an "
+                   "untyped value (`resp.json()`) names no module. For call sites by text, use mode='text' "
+                   "with a `path`.")
+    return " ".join(reasons)
 
 
 async def _by_text(
