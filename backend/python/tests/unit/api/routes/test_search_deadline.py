@@ -47,7 +47,7 @@ async def _search(search_with_filters: Any) -> tuple[int, dict[str, Any], MagicM
 
 def _timing_line(logger: MagicMock) -> str:
     for call in logger.info.call_args_list:
-        if call.args and str(call.args[0]).startswith("⏱"):
+        if call.args and str(call.args[0]).startswith("%s total="):
             return call.args[0] % call.args[1:]
     raise AssertionError("no timing line logged")
 

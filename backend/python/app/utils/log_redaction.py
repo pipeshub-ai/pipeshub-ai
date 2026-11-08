@@ -112,6 +112,12 @@ _PAIR_VALUE = re.compile(
 # that was cut off, to the end of the line.
 _PYDANTIC_INPUT_VALUE = re.compile(r"(input_value=)(?!, input_type=)[^\n][^,\n]*(?:,(?! input_type=)[^,\n]*)*")
 
+# A traceback's source line: the line after `File "...", line N, in f`, two
+# spaces deeper under the same `|` gutter (exception groups). It is code read
+# from a source file, where `token = await f()` is code, not a pair. `, in` ends the
+# digit run, and leaves out a SyntaxError's frame, whose line is the parsed input.
+_TRACEBACK_SOURCE_LINE = re.compile(r'^([ |]*)File "[^"\n]*", line \d+, in [^\n]*\n\1  (\S[^\n]*)', re.MULTILINE)
+
 _PAIR_TRIGGERS = ("pass", "pwd", "secret", "token", "sig", "credential", "api", "auth", "cookie", "private", "key", "connection")
 _AUTH_SCHEME_WORDS = frozenset({"bearer", "basic", "token"})
 # Counts, ports and limits next to a credential word (`token_limit=4096`).
@@ -153,10 +159,42 @@ def _redact_private_keys(text: str) -> str:
 
 
 def _redact_pairs(text: str) -> str:
+    if 'File "' not in text:
+        return _redact_pairs_in(text)
     out = []
     pos = 0
+    for source in _TRACEBACK_SOURCE_LINE.finditer(text):
+        out += (_redact_pairs_in(text[pos : source.start(2)]), _redact_pairs_in(source.group(2), literals_only=True))
+        pos = source.end(2)
+    out.append(_redact_pairs_in(text[pos:]))
+    return "".join(out)
+
+
+def _redact_pairs_in(text: str, *, literals_only: bool = False) -> str:
+    """``literals_only`` is for a traceback's source line, which is code: a
+    pair there is masked only when its value is a non-empty ``"..."``,
+    ``'...'`` or ``b'...'`` literal (a hard-coded secret), since any other
+    value is an expression. A pair inside a string or after a ``#`` is text and
+    keeps the normal rule. Other literals (``r``/``f`` prefixes, triple quotes)
+    leave their content unmasked, as on main."""
+    out = []
+    pos = 0
+    scanned = 0
+    double = single = 0
+    comment = False
     for head in _PAIR_HEAD.finditer(text):
         if head.start() < pos or not is_credential_name(head.group(1)):
+            continue
+        in_code = False
+        if literals_only:
+            # A pair inside a string or comment is text, not code: `"password=x"`.
+            double += text.count('"', scanned, head.end())
+            single += text.count("'", scanned, head.end())
+            comment = comment or "#" in text[scanned : head.end()]
+            scanned = head.end()
+            in_code = not (double % 2 or single % 2 or comment)
+        # Before the value match: a skipped bare value does not move `pos`, so matching it would rescan the run.
+        if in_code and not _QUOTED.match(text, head.end()):
             continue
         value = _PAIR_VALUE.match(text, head.end())
         if value is None:
@@ -165,6 +203,8 @@ def _redact_pairs(text: str) -> str:
         if raw.lower() in _AUTH_SCHEME_WORDS or _SHORT_NUMBER.fullmatch(raw):
             continue
         opening = _QUOTED.match(raw)
+        if in_code and len(raw) <= len(opening.group()) + 1:
+            continue
         out.append(text[pos : head.end()])
         if opening:
             closing = opening.group(2) if len(raw) > len(opening.group()) and raw.endswith(opening.group(2)) else ""
@@ -208,7 +248,14 @@ def redact_secrets_in_text(text: str) -> str:
     """``text`` with credentials masked: private keys, this process's secret
     env values, known key shapes (``phpat_``, ``sk-``, ``AKIA``, ``xox*-``,
     ``AIza``, GitHub tokens, JWTs), credential-named ``name: value`` pairs,
-    ``Bearer``/``Basic`` credentials, and URL passwords and query secrets."""
+    ``Bearer``/``Basic`` credentials, and URL passwords and query secrets.
+
+    On a traceback's source lines a pair in code is masked only when its value
+    is a string literal, so ``token = await f()`` stays readable. A bare value
+    is kept there: a long number (``password = 12345678``), a non-string local
+    that ``capture_locals`` prints under a frame with no source, a one-character
+    unterminated literal, a pair after an odd number of escaped quotes inside
+    a literal (``'it\\'s token=v'``), and anything under a fake frame line."""
     if not text:
         return text
     lower = text.lower()

@@ -32,7 +32,8 @@ __all__ = ["EDGE_RULES_VERSION", "PARSER_VERSION"]
 # 2026.11.19: an exported JS/TS module-level value is a definition; a bare call to a JS/TS parameter or local
 # is no CALLS fact.
 # 2026.11.20: Go embedded fields are heritage facts with context "embeds" (method promotion only).
-PARSER_VERSION = "2026.11.20"
+# 2026.11.21: Python star imports, a literal `__all__`, scoped receiver types and chains, pytest fixtures.
+PARSER_VERSION = "2026.11.21"
 
 # 2026.10.20: EXTENDS merged into INHERITS (an interface extending one stays
 # INHERITS); the full rebuild this forces replaces stored EXTENDS edges.
@@ -41,4 +42,5 @@ PARSER_VERSION = "2026.11.20"
 # 2026.11.13: C# and PHP resolvers; super calls skip interfaces.
 # 2026.11.15: tsconfig/jsconfig `paths` place JS/TS imports; module bindings and module-level values in calls.
 # 2026.11.16: Go embedding promotes the embedded type's methods, depth by depth.
-EDGE_RULES_VERSION = "2026.11.16"
+# 2026.11.21: Python import scoping, star re-exports, function-local imports as the file's, scoped receivers.
+EDGE_RULES_VERSION = "2026.11.21"

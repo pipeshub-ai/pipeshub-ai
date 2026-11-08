@@ -142,11 +142,21 @@ class ImportResolution:
                 if self._is_source_root(p[: -len(suffix)])
             ]
             if len(matches) == 1:
-                return matches[0]
+                # Only ever drops a match, never makes one: leaving a namespace folder out of an ambiguous set
+                # would hand `import asana` to whichever script folder (code-generator/asana.py) is left.
+                return None if self._inside_package(matches[0][: -len(suffix)], from_file) else matches[0]
         return None
 
     def _is_source_root(self, directory: str) -> bool:
         return f"{directory}/__init__.py" not in self._files
+
+    def _inside_package(self, directory: str, from_file: str) -> bool:
+        """A source root candidate that is a namespace folder somewhere inside a package (`app/modules/parsers`,
+        `app/agents/actions/dropbox`): `import yaml` is never its `yaml/`. The importer's own folder is the
+        exception, which a script run or pytest puts on sys.path (`from gcal_fakes import ...`)."""
+        parts = directory.split("/")
+        return directory != posixpath.dirname(from_file) and any(
+            f"{'/'.join(parts[:i])}/__init__.py" in self._files for i in range(1, len(parts)))
 
     def _python_candidates(self, base: str) -> str | None:
         for ext in _PY_EXTENSIONS:
