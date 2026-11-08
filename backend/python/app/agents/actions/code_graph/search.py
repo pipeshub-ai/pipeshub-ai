@@ -43,6 +43,7 @@ from .query import files_by_pattern, path_matches
 from .read import _outer_spans
 from .repos import repo_not_found_message
 from .semantic import _repo_groups
+from .results import saw_commit
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -280,7 +281,7 @@ async def _by_text(
 ) -> dict[str, Any]:
     """Lines matching ``matcher`` in the stored source of the files ``path`` selects."""
     asked = path
-    path, paths, records, scan_capped = await _scoped_files(
+    path, paths, records, scan_capped, commits = await _scoped_files(
         graph_provider, org_id, connector_id, path, repo, access)
     if not records:
         return {"error": await _missing_path_message(graph_provider, org_id, connector_id, asked, repo, access),
@@ -472,6 +473,8 @@ async def _grep(
         roles = await get_record_roles(graph_provider, org_id, set(records))
         tests = {k for k in records if roles.get(k) == TEST_ROLE}
         hidden, records = len(tests), {k: r for k, r in records.items() if k not in tests}
+    for key in records:  # in scope and readable: another repo's copy of a path never reaches the result
+        saw_commit(paths[key], key, commits.get(key))
 
     # Only records with stored source count toward the cap: a repo's images, locale
     # and data files would otherwise take the slots and leave its code unread.
@@ -516,8 +519,8 @@ async def _grep(
 async def _scoped_files(
     graph_provider: IGraphDBProvider, org_id: str, connector_id: str, path: str,
     repo: str | None, access: RecordAccess,
-) -> tuple[str, dict[str, str], dict[str, dict[str, Any]], bool]:
-    """``(path searched, record id -> path, record id -> record, scan_capped)``.
+) -> tuple[str, dict[str, str], dict[str, dict[str, Any]], bool, dict[str, str | None]]:
+    """``(path searched, record id -> path, record id -> record, scan_capped, record id -> commit)``.
 
     The records are the readable ones in this connector (and ``repo``). A path
     written for the caller's checkout (``src/app/models``, ``repo/src/**``) can
@@ -534,13 +537,14 @@ async def _scoped_files(
         candidates.append("/".join(parts[i:]))
     any_capped = False
     for candidate in candidates:
-        paths, capped = await files_by_pattern(graph_provider, org_id, candidate, scan_limit=_TEXT_SCAN_LIMIT)
+        paths, capped, commits = await files_by_pattern(graph_provider, org_id, candidate,
+                                                        scan_limit=_TEXT_SCAN_LIMIT)
         any_capped = any_capped or capped
         records = await _in_repo(graph_provider, org_id, connector_id, repo, await access.readable(paths))
         if records:
-            return candidate, paths, records, capped
+            return candidate, paths, records, capped, commits
     # A capped scan that matched nothing may have stopped short of the files asked for.
-    return path, {}, {}, any_capped
+    return path, {}, {}, any_capped, {}
 
 
 async def _in_repo(
@@ -572,7 +576,7 @@ async def _missing_path_message(
         base = "/".join(parts[:i])
         # As far as the search scans: the scan is org-wide, so at the default 400 rows another
         # repo's files could fill it and leave this repo's directories out, or unlisted.
-        found, capped = await files_by_pattern(graph_provider, org_id, base, scan_limit=_TEXT_SCAN_LIMIT)
+        found, capped, _ = await files_by_pattern(graph_provider, org_id, base, scan_limit=_TEXT_SCAN_LIMIT)
         # Scoped like the search: another repo's names may lie outside a connected app's limit.
         readable = await _in_repo(graph_provider, org_id, connector_id, repo, await access.readable(found))
         if readable:

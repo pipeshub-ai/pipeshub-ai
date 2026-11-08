@@ -244,3 +244,16 @@ def test_the_named_repos_commit_never_overrides_what_the_result_says() -> None:
     assert with_repo_commit({"error": "x"}, COMMIT) == {"error": "x"}
     assert with_repo_commit({"found": False}, None) == {"found": False}      # repo not stamped yet
     assert with_repo_commit({"found": False}, COMMIT) == {"found": False, "indexed_commit": COMMIT}
+
+
+@pytest.mark.parametrize("hidden_by", ["another connector", "no access"])
+async def test_a_text_match_takes_its_own_files_commit_not_a_hidden_copys(hidden_by) -> None:
+    """Another record at the same path, outside the call's repo or unreadable, neither blanks the visible match's
+    commit nor shows through it."""
+    graph = QueryGraphProvider(commits={"rec-x": OTHER},
+                               deny_records={"rec-x"} if hidden_by == "no access" else ())
+    graph.code_files["rec-x"] = "src/b.py"
+    graph.records["rec-x"] = {"_key": "rec-x", "orgId": ORG, "virtualRecordId": "v-x",
+                              "connectorId": "conn-other" if hidden_by == "another connector" else CONN}
+    out = await _call(_tool(graph), "search_code", pattern="return", mode="text", path="src/b.py")
+    assert out["matches"] and out["indexed_commit"] == COMMIT

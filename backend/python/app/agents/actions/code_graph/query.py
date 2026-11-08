@@ -139,11 +139,13 @@ def path_matches(path: str, pattern: str) -> bool:
 
 async def files_by_pattern(
     graph_provider: IGraphDBProvider, org_id: str, pattern: str, *, scan_limit: int | None = None,
-) -> tuple[dict[str, str], bool]:
-    """``(record id -> path, scan_capped)`` for the code files a glob, file or directory matches.
+) -> tuple[dict[str, str], bool, dict[str, str | None]]:
+    """``(record id -> path, scan_capped, record id -> commit)`` for the code files a glob, file or directory
+    matches.
 
     Matched against ``codeFiles``, one row per file. Neither connector nor
-    access is applied here: callers re-apply both.
+    access is applied here: callers re-apply both, and note the commits of
+    only the files they keep.
     """
     # Anchor the DB-side filter on the pattern's literal prefix so the index does
     # the work; the glob itself is applied in Python.
@@ -159,6 +161,7 @@ async def files_by_pattern(
         return_fields=["_key", "filePath", "commitSha"],
     )
     paths: dict[str, str] = {}
+    commits: dict[str, str | None] = {}
     for raw in files or []:
         row = _unwrap(raw)
         key = row.get("_key") or row.get("id")
@@ -166,8 +169,8 @@ async def files_by_pattern(
         if not key or not path or not path_matches(path, pattern):
             continue
         paths[key] = path
-        saw_commit(path, key, row.get("commitSha"))
-    return paths, len(files or []) >= scan_limit
+        commits[key] = row.get("commitSha")
+    return paths, len(files or []) >= scan_limit, commits
 
 
 async def _select_by_path(
@@ -183,7 +186,7 @@ async def _select_by_path(
     caller counts what it got and would report a clean ``truncated: false``
     for a prefix that was cut short.
     """
-    paths, files_capped = await files_by_pattern(graph_provider, org_id, pattern)
+    paths, files_capped, _ = await files_by_pattern(graph_provider, org_id, pattern)
     if not paths:
         return [], False
 
