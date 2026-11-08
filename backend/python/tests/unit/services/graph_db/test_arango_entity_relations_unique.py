@@ -106,3 +106,12 @@ async def test_a_write_conflict_on_the_retry_after_a_unique_violation_is_retried
     conflict = Exception('write-write conflict "errorNum": 1200')
     p.http_client.execute_aql = AsyncMock(side_effect=[_unique_violation(), conflict, [{"_key": "e"}]])
     assert await p._upsert_entity_relations([], "UPDATE edge", None) == [{"_key": "e"}]
+
+
+async def test_an_unreadable_index_list_does_not_stop_setup() -> None:
+    p = _provider()
+    p.http_client.get_indexes = AsyncMock(side_effect=RuntimeError("index list unavailable"))
+    p.http_client.execute_aql = AsyncMock(return_value=[])
+    await p._ensure_indexes()
+    fields = [c.args[1] for c in p.http_client.ensure_persistent_index.await_args_list]
+    assert ["_from", "_to", "edgeType"] in fields and ["tableFqn", "orgId"] in fields
