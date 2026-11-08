@@ -93,3 +93,50 @@ async def test_an_agent_toggle_sends_no_event_and_takes_no_number() -> None:
     graph.begin_transaction.assert_not_awaited()
     graph.increment_node_field.assert_not_awaited()
     assert "transaction" not in request.app.state.connector_registry.update_connector_instance.await_args.kwargs
+
+
+_CONFIG_PATCH = "app.connectors.api.router.resolve_config_service"
+_FILTERS_PATCH = "app.connectors.api.router._validate_sync_filter_selections"
+_INIT_PATCH = "app.connectors.api.router._ensure_connector_initialized"
+
+
+async def _enable_whose_event_fails(graph: AsyncMock, *, revert_lands: bool) -> MagicMock:
+    from app.connectors.api.router import toggle_connector_instance
+
+    request = _request({"type": "sync"})
+    registry = request.app.state.connector_registry
+    registry.get_connector_instance = AsyncMock(return_value=_instance(isActive=False))
+    registry.update_connector_instance = AsyncMock(return_value={"updatedAtTimestamp": 1000})
+    graph.update_node_fields_if_match = AsyncMock(return_value=revert_lands)
+    request.app.container.messaging_producer.send_message = AsyncMock(side_effect=[RuntimeError("broker down"), None])
+    with patch(_BETA_PATCH, new_callable=AsyncMock), patch(_EVICT_PATCH, new_callable=AsyncMock), \
+         patch(_CONFIG_PATCH, return_value=AsyncMock()), patch(_FILTERS_PATCH, new_callable=AsyncMock), \
+         patch(_INIT_PATCH, new_callable=AsyncMock), pytest.raises(HTTPException):
+        await toggle_connector_instance("c1", request, graph_provider=graph)
+    return request
+
+
+@pytest.mark.asyncio
+async def test_a_reverted_enable_takes_the_next_number_and_sends_the_disable_it_owes() -> None:
+    """An off handled while the on stood was skipped as superseded; the revert puts the connector
+    off again, so its sync stop and cleanup are sent once more, under a number a later on beats."""
+    graph = _graph(seq=7)
+
+    request = await _enable_whose_event_fails(graph, revert_lands=True)
+
+    _, _, reverted, expected = graph.update_node_fields_if_match.await_args.args
+    assert reverted["isActive"] is False and reverted["toggleSeq"] == 8
+    assert expected == {"updatedAtTimestamp": 1000, "toggleSeq": 7}
+    sent = [c.kwargs["message"] for c in request.app.container.messaging_producer.send_message.await_args_list]
+    assert [m["eventType"] for m in sent] == ["appEnabled", "appDisabled"]
+    assert sent[1]["payload"]["toggleSeq"] == 8 and sent[1]["payload"]["connectorId"] == "c1"
+
+
+@pytest.mark.asyncio
+async def test_a_revert_beaten_by_a_newer_toggle_sends_nothing() -> None:
+    graph = _graph(seq=7)
+
+    request = await _enable_whose_event_fails(graph, revert_lands=False)
+
+    sent = [c.kwargs["message"]["eventType"] for c in request.app.container.messaging_producer.send_message.await_args_list]
+    assert sent == ["appEnabled"]

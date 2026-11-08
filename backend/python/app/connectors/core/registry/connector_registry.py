@@ -1584,7 +1584,7 @@ class ConnectorRegistry:
             existing_document = await graph_provider.get_document(
                 connector_id,
                 self._collection_name,
-                transaction,
+                transaction=transaction,
             )
 
             if not existing_document:
@@ -1650,7 +1650,7 @@ class ConnectorRegistry:
                 connector_id,
                 self._collection_name,
                 node_updates,
-                transaction,
+                transaction=transaction,
             )
 
             result = [updated_document]
