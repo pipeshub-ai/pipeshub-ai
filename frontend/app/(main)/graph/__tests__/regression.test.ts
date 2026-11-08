@@ -520,3 +520,20 @@ describe('a request is only second-guessed about what was revoked after it began
     expect(ids(controller)).toContain('block:x.new');
   });
 });
+
+
+describe('the browser Back and Forward follow the trail instead of adding to it', () => {
+  it('moves along the trail for the previous and next entry, and adds a step for a node that is not next to the current one', async () => {
+    const { controller } = world();
+    await controller.open('block:a');
+    await controller.open('block:b');
+    expect(await controller.follow('block:a')).toBe(true);
+    expect(useGraphStore.getState().trail).toEqual(['block:a', 'block:b']);
+    expect(useGraphStore.getState().trailIndex).toBe(0);
+    expect(useGraphStore.getState().node).toBe('block:a');
+    expect(await controller.follow('block:b')).toBe(true);
+    expect(useGraphStore.getState().trailIndex).toBe(1);
+    expect(await controller.follow('block:z')).toBe(true);
+    expect(useGraphStore.getState().trail).toEqual(['block:a', 'block:b', 'block:z']);
+  });
+});

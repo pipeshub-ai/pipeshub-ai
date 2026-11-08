@@ -131,6 +131,19 @@ export class ExplorerController {
     return ok;
   }
 
+  /**
+   * The browser's Back or Forward names a centre. When it is the trail's previous or next entry the trail moves to
+   * it, as the toolbar's arrows do; any other node is a new step.
+   */
+  async follow(id: NodeId): Promise<boolean> {
+    const { trail, trailIndex } = useGraphStore.getState();
+    const index = [trailIndex - 1, trailIndex + 1].find((i) => trail[i] === id);
+    if (index === undefined) return this.open(id);
+    const ok = await this.open(id, { track: false });
+    if (ok) useGraphStore.getState().jumpTo(index);
+    return ok;
+  }
+
   /** One step along the trail. A node that is no longer available is dropped from it and the next one is tried. */
   async go(step: -1 | 1): Promise<boolean> {
     this.last = () => this.go(step);

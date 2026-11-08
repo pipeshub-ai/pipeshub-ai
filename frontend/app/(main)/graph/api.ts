@@ -1,5 +1,6 @@
-import { apiClient } from '@/lib/api';
+import { apiClient, type ProcessedError } from '@/lib/api';
 import { i18n } from '@/lib/i18n';
+import { classifyGraphFailure } from './errors';
 import type {
   CodeRepoInfo,
   ExpandRequest,
@@ -24,20 +25,27 @@ export function readableNode<N extends { kind?: string; file?: string; label?: s
   return { ...node, label: i18n.t('graph.ui.fillerNode', { kind: node.kind, file: node.file.split('/').pop() }) };
 }
 
+/**
+ * The page words every failure it can act on in its own notices, so the app-wide error toast (which stays up until
+ * dismissed) is for the one case the page leaves to it: a refused session (401, 403).
+ */
+export const pageHandlesFailure = (error: ProcessedError): boolean => classifyGraphFailure(error) !== 'refused';
+const own = { suppressErrorToast: pageHandlesFailure };
+
 /** The explorer's reads. Access is decided by the server for the caller's own token; nothing here filters. */
 export const GraphApi = {
   async expand(body: ExpandRequest, signal?: AbortSignal): Promise<ExpandResponse> {
-    const { data } = await apiClient.post<ExpandResponse>(`${BASE_URL}/expand`, body, { signal });
+    const { data } = await apiClient.post<ExpandResponse>(`${BASE_URL}/expand`, body, { signal, ...own });
     return { ...data, nodes: (data.nodes ?? []).map(readableNode) };
   },
 
   async resolve(body: ResolveRequest, signal?: AbortSignal): Promise<ResolveResponse> {
-    const { data } = await apiClient.post<ResolveResponse>(`${BASE_URL}/resolve`, body, { signal });
+    const { data } = await apiClient.post<ResolveResponse>(`${BASE_URL}/resolve`, body, { signal, ...own });
     return data;
   },
 
   async repos(signal?: AbortSignal): Promise<CodeRepoInfo[]> {
-    const { data } = await apiClient.get<{ repos?: CodeRepoInfo[] }>(`${CODE_URL}/repos`, { signal });
+    const { data } = await apiClient.get<{ repos?: CodeRepoInfo[] }>(`${CODE_URL}/repos`, { signal, ...own });
     return data?.repos ?? [];
   },
 
@@ -46,13 +54,13 @@ export const GraphApi = {
     const { data } = await apiClient.post<{ matches?: SearchMatch[] }>(
       `${CODE_URL}/search`,
       { mode: 'identifier', limit: 20, ...body },
-      { signal },
+      { signal, ...own },
     );
     return (data?.matches ?? []).filter((m) => m.file_path && m.qualified_name);
   },
 
   async revalidate(body: RevalidateRequest, signal?: AbortSignal): Promise<RevalidateResponse> {
-    const { data } = await apiClient.post<RevalidateResponse>(`${BASE_URL}/revalidate`, body, { signal });
+    const { data } = await apiClient.post<RevalidateResponse>(`${BASE_URL}/revalidate`, body, { signal, ...own });
     return data;
   },
 };

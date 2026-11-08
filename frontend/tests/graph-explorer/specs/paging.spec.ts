@@ -74,6 +74,7 @@ test.describe('paging, table and trail', () => {
     await page.goBack(); // undoes the Open, not the filter
     await expect.poll(() => urlParams(page).get('node')).toBe('block:b0001');
     await expect(page.getByRole('row').filter({ hasText: 'Centre' })).toContainText('fn_1');
+    await expect(page.getByRole('button', { name: 'Forward' })).toBeEnabled(); // the trail kept the step it went Back from
     await page.goForward();
     await expect.poll(() => urlParams(page).get('node')).toBe(second);
   });

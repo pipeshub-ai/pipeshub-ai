@@ -104,7 +104,7 @@ export function GraphExplorer() {
   useEffect(() => {
     if (!started.current || entryPending.current || !urlNode || urlNode === useGraphStore.getState().node) return;
     following.current = urlNode;
-    void controller.open(urlNode).finally(() => {
+    void controller.follow(urlNode).finally(() => {
       if (following.current === urlNode) following.current = null;
     });
   }, [urlNode]);
