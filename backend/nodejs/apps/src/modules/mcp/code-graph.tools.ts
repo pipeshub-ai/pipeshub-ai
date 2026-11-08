@@ -111,7 +111,14 @@ const edgeTypes = z
 // The query service's IMPACT_RELATIONS: a value impact cannot follow is refused here.
 const impactEdgeTypes = z
   .array(
-    z.enum(['CALLS', 'INDIRECT_CALL', 'IMPORTS_FROM', 'INHERITS', 'IMPLEMENTS', 'OVERRIDES']),
+    z.enum([
+      'CALLS',
+      'INDIRECT_CALL',
+      'IMPORTS_FROM',
+      'INHERITS',
+      'IMPLEMENTS',
+      'OVERRIDES',
+    ]),
   )
   .optional()
   .describe(
@@ -454,7 +461,7 @@ export function registerCodeGraphToolDefinitions(
       description:
         'Use when you know a name or exact text but not its file. `mode: "identifier"` ' +
         '(default) lists definitions with that bare name (`Client.fetch` finds every ' +
-        '`fetch`; `truncated`: more exist). ' +
+        '`fetch`; `truncated`: more may exist). ' +
         '`mode: "text"` or `"regex"` finds ' +
         'lines in file bodies (a string, a call site, a config key). With a repo-relative ' +
         '`path` they read at most 1000 files under it; without it, the keyword index ' +

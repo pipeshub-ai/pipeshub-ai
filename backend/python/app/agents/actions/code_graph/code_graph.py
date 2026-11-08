@@ -563,7 +563,7 @@ class CodeGraph:
         ),
         description=(
             "Use for the structure one hop around a file or symbol: METHOD/CONTAINS (its "
-            "class), CALLS, INDIRECT_CALL (passed as a value), INHERITS/IMPLEMENTS, "
+            "class), CALLS, INDIRECT_CALL, INHERITS/IMPLEMENTS, "
             "OVERRIDES, IMPORTS_FROM. A read shows none of these. For what a change "
             "breaks, use impact.\n\n"
             "Give it something you already hold — a `record_id`, a `file_path` on its "
@@ -1004,7 +1004,7 @@ class CodeGraph:
             "Use when you know a name or exact text but not its file.\n\n"
             "`mode='identifier'` (default): the definitions with that bare name "
             "(case-insensitive) across the repo — `Client.fetch` and `method:Client.fetch` "
-            "find every `fetch`; `truncated` says there are more.\n\n"
+            "find every `fetch`; `truncated` says there may be more.\n\n"
             "`mode='text'` or `mode='regex'`: lines in file bodies that contain the text or "
             "match the regex — a string literal, a call site, a config key. With `path` (a "
             "directory, file or glob) they read the files it selects and stop after "

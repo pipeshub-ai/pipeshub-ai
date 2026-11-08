@@ -72559,7 +72559,7 @@ paths:
         `pipeshub_code_neighbours`, `pipeshub_code_read`, `pipeshub_code_path`,
         `pipeshub_code_search`, `pipeshub_code_semantic_search`, `pipeshub_code_outline`,
         `pipeshub_code_impact` and `pipeshub_code_entry_points`. `pipeshub_code_impact`'s optional
-        `edge_types` takes any of `CALLS`, `IMPORTS_FROM`, `INHERITS`, `IMPLEMENTS` and
+        `edge_types` takes any of `CALLS`, `INDIRECT_CALL`, `IMPORTS_FROM`, `INHERITS`, `IMPLEMENTS` and
         `OVERRIDES`; another value is refused. Their usage guidance (call `pipeshub_code_impact`
         before grep for who-calls and what-breaks questions) is sent in the `initialize` result's
         `instructions`. They are listed and callable only when the caller can read at least one
