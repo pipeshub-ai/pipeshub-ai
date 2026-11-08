@@ -17,7 +17,7 @@
     verdicts:
       u: {i: admit}
   tags: [rules, jira]
-  comment: jira_issue_security.py:644-651 (apply_issue_access_settled, STRICT)
+  comment: jira_issue_security.py:663-671 (apply_issue_access_settled, STRICT)
 - id: RULE-J02
   title: 'Jira: issue with a level, U is a level holder, Browse granted'
   source: rule cases R1-R13 (spec)
@@ -96,7 +96,7 @@
     verdicts:
       u: {i: deny}
   tags: [rules, jira]
-  comment: jira_issue_security.py:531-534 (ANYONE_AUTHENTICATED_SCOPE)
+  comment: jira_issue_security.py:551-554 (ANYONE_AUTHENTICATED_SCOPE)
 - id: RULE-J06
   title: 'Jira: sub-task of a leveled parent, U holds the level (both granted)'
   source: rule cases R1-R13 (spec)
@@ -119,7 +119,7 @@
     verdicts:
       u: {sub: admit}
   tags: [rules, jira]
-  comment: jira_issue_security.py:522-524 (group holders)
+  comment: jira_issue_security.py:542-544 (group holders)
 - id: RULE-J07
   title: 'Jira: sub-task granted but parent issue not (parent''s level excludes U)'
   source: rule cases R1-R13 (spec)
@@ -182,4 +182,4 @@
     verdicts:
       u: {att: deny}
   tags: [rules, jira]
-  comment: apply_attachment_access, jira_issue_security.py:717-721; U not in the level.
+  comment: apply_attachment_access, jira_issue_security.py:737-741; U not in the level.
