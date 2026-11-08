@@ -597,8 +597,8 @@ export function registerCodeGraphToolDefinitions(
     {
       description:
         'What a patch or PR diff breaks, in one call: give a unified diff (`git diff` output). ' +
-        'Returns the symbols it changes (`changed`, or the whole file when no definition holds ' +
-        'the change), the files and tests that reach them (`impacted_files`, `impacted_tests`), ' +
+        'Returns the symbols it changes (`changed`, plus the whole file for a module-level ' +
+        'change), the files and tests that reach them (`impacted_files`, `impacted_tests`), ' +
         'and `untested_callers`, direct callers no test reaches. Lines are matched against the ' +
         `indexed commit, so a patch on another base can drift. ${COVERAGE}`,
       inputSchema: {

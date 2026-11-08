@@ -1328,8 +1328,8 @@ class CodeGraph:
         short_description="What a patch or PR diff changes and what that can break",
         description=(
             "Give it a unified diff (`git diff` output). It names the symbols the diff changes "
-            "(`changed`: the innermost definition around each changed line, or the whole file "
-            "when no definition holds it), then runs impact on each: the files and tests that "
+            "(`changed`: the innermost definition around each changed line, plus the whole file "
+            "for a module-level change or one no definition holds), then runs impact on each: the files and tests that "
             "reach them, merged by file (`impacted_files`, `impacted_tests`), and "
             "`untested_callers`, direct callers that no test reaches within two hops. Lines are "
             "matched against the indexed commit, so a patch made on another base can drift. "

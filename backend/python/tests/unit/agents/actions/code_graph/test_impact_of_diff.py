@@ -9,7 +9,7 @@ from app.agents.actions.code_graph import diff_impact
 from app.agents.actions.code_graph.diff_impact import impact_of_diff_impl
 from app.agents.actions.code_graph.results import without_marker
 
-from .conftest import CONN, ORG, USER, QueryGraphProvider
+from .conftest import CONN, ORG, USER, QueryGraphProvider, _block
 
 pytestmark = pytest.mark.asyncio
 
@@ -174,3 +174,42 @@ async def test_a_failed_walk_is_named_and_its_caller_is_not_called_untested(monk
     assert out["failed_walks"] == [{"file_path": "src/b.py", "qualified_name": "function:target",
                                     "error": "No symbol 'x' in this file."}]
     assert out["untested_callers"] == [] and out["untested_unchecked"] == 1 and out["truncated"] is True
+
+
+async def test_a_failed_caller_lookup_is_named_not_dropped(monkeypatch) -> None:
+    """When the direct-caller lookup of a changed symbol fails, its callers are unknown: say so."""
+    real = diff_impact.impact_impl
+
+    async def no_callers(**kwargs) -> dict:
+        if kwargs.get("edge_types") == ["CALLS"] and kwargs.get("depth") == 1:
+            return {"error": "Caller lookup failed."}
+        return await real(**kwargs)
+
+    monkeypatch.setattr(diff_impact, "impact_impl", no_callers)
+    out = await _impact(_patch("src/b.py", "@@ -2 +2 @@", "-a\n+b\n"))
+    assert out["failed_walks"] == [{"file_path": "src/b.py", "qualified_name": "function:target",
+                                    "error": "Caller lookup failed."}]
+    assert out["untested_callers"] == [] and out["truncated"] is True
+
+
+def _with_filler(graph: QueryGraphProvider) -> QueryGraphProvider:
+    """src/b.py's imports (6-7) and a module-level constant (8-9), between target (1-5) and Thing (10-30)."""
+    for key, kind, (start, end) in (("k_imports", "imports", (6, 7)), ("k_consts", "statements", (8, 9))):
+        graph.blocks[key] = {**_block(key, "rec-b", "src/b.py", f"src_b_{key}", f"@{key}", kind=kind),
+                             "startLine": start, "endLine": end}
+    return graph
+
+
+async def test_a_module_level_change_beside_a_symbol_also_walks_the_whole_file() -> None:
+    """A changed constant is read by whatever uses the file, not only by the symbol changed beside it."""
+    out = await _impact(_patch("src/b.py", "@@ -2,8 +2,8 @@", "-a\n+b\n" + " x\n" * 6 + "-C = 1\n+C = 2\n"),
+                        _with_filler(_graph()))
+    assert _changed(out) == [("src/b.py", "function:target"), ("src/b.py", None)]
+    assert out["changed"][1]["whole_file"] is True
+
+
+async def test_an_import_change_beside_a_symbol_is_not_a_whole_file_change() -> None:
+    """A file's imports are what it uses, not what uses it: the symbol's walk is the whole answer."""
+    out = await _impact(_patch("src/b.py", "@@ -2,6 +2,6 @@", "-a\n+b\n" + " x\n" * 4 + "-import os\n+import re\n"),
+                        _with_filler(_graph()))
+    assert _changed(out) == [("src/b.py", "function:target")]

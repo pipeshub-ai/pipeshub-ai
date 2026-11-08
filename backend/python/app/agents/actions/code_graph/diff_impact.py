@@ -30,6 +30,8 @@ _MAX_SYMBOLS = 25
 # Direct callers checked for a test that reaches them; each check is one more walk.
 _MAX_UNTESTED_CHECKS = 10
 _WALKS_AT_ONCE = 4
+# Filler a change can sit in without changing what depends on the file: its imports, comments and header.
+_NOT_READ_BY_DEPENDENTS = FILLER_KINDS - {"statements"}
 
 _NOTE = ("Changed lines are matched against the indexed commit; when the patch's base is "
          "another commit, line numbers can drift onto a neighbouring symbol.")
@@ -84,7 +86,7 @@ async def impact_of_diff_impl(
                                      qualified_name=row.get("qualified_name"), repo=repo, **kwargs)
 
     walks = await asyncio.gather(*(walk(r, depth=depth, include_tests=include_tests) for r in walked))
-    untested, unchecked = await _untested_callers(walked, walk)
+    untested, unchecked, failed_direct = await _untested_callers(walked, walk)
     out: dict[str, Any] = {
         "changed": walked,
         "added_files": [d.path for d in files if d.old_path is None],
@@ -96,8 +98,8 @@ async def impact_of_diff_impl(
         "note": _NOTE,
     }
     # A walk can fail (the symbol was re-indexed away since its blocks were read): name it, never drop it.
-    failed = [{"file_path": r["file_path"], "qualified_name": r.get("qualified_name"), "error": w["error"]}
-              for r, w in zip(walked, walks) if w.get("error")]
+    failed = list({(f["file_path"], f["qualified_name"]): f
+                   for f in [*_failures(walked, walks), *failed_direct]}.values())
     if failed:
         out.update(failed_walks=failed, truncated=True)
     if unchecked:
@@ -113,7 +115,8 @@ async def _file_blocks(
     graph_provider: IGraphDBProvider, org_id: str, connector_id: str, file_path: str, repo: str | None,
     access: RecordAccess,
 ) -> tuple[str, list[dict[str, Any]]] | None:
-    """The indexed path and its symbol blocks, or None when no readable file in this connector has the path."""
+    """The indexed path and its blocks (symbols and the filler between them), or None when no readable file in this
+    connector has the path."""
     async def choose(keys: list[str]) -> list[str]:
         return await _choose_records(graph_provider, org_id, keys, connector_id, file_path=file_path, repo=repo,
                                      access=access)
@@ -128,13 +131,14 @@ async def _file_blocks(
     # The records are already this org's, this connector's and readable (`_choose_records`), so are their blocks:
     # valid while record ids are globally unique.
     blocks = [b for b in (_unwrap(r) for r in rows)
-              if b.get("qualifiedName") and (b.get("kind") or "") not in FILLER_KINDS
+              if b.get("qualifiedName")
               and isinstance(b.get("startLine"), int) and isinstance(b.get("endLine"), int)]
     return path, blocks
 
 
 def _changed_symbols(diff: FileDiff, path: str, blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The innermost block around each removed line and each insertion point, in line order; else the whole file.
+    """The innermost symbol around each removed line and each insertion point, in line order, and the whole file
+    when a change is module-level code (or nothing else changed).
 
     An insertion after line A is inside a block that spans A, its last line included: an append to a Python
     function lands after its last line, and nothing in the diff says whether it stayed inside."""
@@ -145,14 +149,20 @@ def _changed_symbols(diff: FileDiff, path: str, blocks: list[dict[str, Any]]) ->
         return max(around, key=lambda b: (b["startLine"], -(b["endLine"] - b["startLine"])), default=None)
 
     hits: dict[str, dict[str, Any]] = {}
+    module_level = False
     for line in sorted({*diff.removed, *diff.inserted_after}):
-        if (block := innermost(line)) is not None:
+        block = innermost(line)
+        kind = (block or {}).get("kind")
+        if block is not None and kind not in FILLER_KINDS:
             hits.setdefault(block["qualifiedName"], block)
-    if not hits:
-        return [{"file_path": path, "whole_file": True}]
-    return [{"file_path": path, "qualified_name": b["qualifiedName"], "kind": b.get("kind"),
+        elif kind not in _NOT_READ_BY_DEPENDENTS:
+            module_level = True  # a module-level constant or statement: whatever uses the file can read it
+    rows = [{"file_path": path, "qualified_name": b["qualifiedName"], "kind": b.get("kind"),
              "lines": f"{b['startLine']}-{b['endLine']}"}
             for b in sorted(hits.values(), key=lambda b: b["startLine"])]
+    if module_level or not rows:
+        rows.append({"file_path": path, "whole_file": True})
+    return rows
 
 
 def _merge(groups: Iterable[list[dict[str, Any]] | None]) -> list[dict[str, Any]]:
@@ -170,11 +180,20 @@ def _merge(groups: Iterable[list[dict[str, Any]] | None]) -> list[dict[str, Any]
     return sorted(by_file.values(), key=lambda f: (f["nearest_hop"], f["file_path"]))
 
 
-async def _untested_callers(changed: list[dict[str, Any]], walk: Walk) -> tuple[list[dict[str, str]], int]:
-    """Direct callers of a changed symbol that no test reaches within two hops (the change's unguarded edges),
-    and how many callers were not checked: past the cap, or because their check failed."""
-    direct = await asyncio.gather(*(walk(r, depth=1, include_tests=False, edge_types=["CALLS"])
-                                    for r in changed if r.get("qualified_name")))
+def _failures(rows: list[dict[str, Any]], walks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The walks that failed, named by the symbol they started from."""
+    return [{"file_path": r["file_path"], "qualified_name": r.get("qualified_name"), "error": w["error"]}
+            for r, w in zip(rows, walks) if w.get("error")]
+
+
+async def _untested_callers(
+    changed: list[dict[str, Any]], walk: Walk,
+) -> tuple[list[dict[str, str]], int, list[dict[str, Any]]]:
+    """Direct callers of a changed symbol that no test reaches within two hops (the change's unguarded edges), how
+    many callers were not checked (past the cap, or their check failed), and the caller lookups that failed (their
+    callers are unknown)."""
+    symbols = [r for r in changed if r.get("qualified_name")]
+    direct = await asyncio.gather(*(walk(r, depth=1, include_tests=False, edge_types=["CALLS"]) for r in symbols))
     callers = list(dict.fromkeys((f["file_path"], s) for w in direct for f in w.get("impacted_files") or ()
                                  for s in f.get("symbols", ())))
     checked = callers[:_MAX_UNTESTED_CHECKS]
@@ -182,4 +201,4 @@ async def _untested_callers(changed: list[dict[str, Any]], walk: Walk) -> tuple[
                                      for p, q in checked))
     untested = [{"file_path": p, "qualified_name": q} for (p, q), w in zip(checked, reached)
                 if not w.get("error") and not w.get("impacted_tests")]
-    return untested, len(callers) - len(checked) + sum(1 for w in reached if w.get("error"))
+    return untested, len(callers) - len(checked) + sum(1 for w in reached if w.get("error")), _failures(symbols, direct)
