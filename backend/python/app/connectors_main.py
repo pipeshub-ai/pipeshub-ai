@@ -1,6 +1,7 @@
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 
 import asyncio
+import functools
 import logging
 import os
 import traceback
@@ -21,6 +22,7 @@ from app.edition_config import (
 )
 from app.core.envelope import configure_from_config as configure_envelope
 from app.core.org_context import spawn_detached, for_org, system
+from app.core.org_jobs import for_each_org
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.modules.demo_data.router import demo_data_router
 from app.utils.logger import install_log_redaction
@@ -197,23 +199,46 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
     It also gets pendingResync: nothing finished that run, so the request it
     was serving is still owed, and that is what lets the boot resume restart it
     on a MANUAL connector too (see ``resumes_interrupted_full_sync``).
+
+    Org by org: the startup task binds no org, and the graph is org-scoped on
+    Postgres (an unbound read raises).
     """
+    try:
+        await for_each_org(
+            graph_provider, "stale_sync_reset",
+            functools.partial(_reset_org_stale_sync_state, graph_provider, logger), logger,
+        )
+    except Exception as e:
+        logger.error(f"Startup sweep for stale sync state failed: {e}", exc_info=True)
+
+
+def _of_org(docs: list[dict] | None, org_id: str) -> list[dict]:
+    """The bound org's docs: Arango and Neo4j ignore the bound org and answer for every org.
+
+    A doc with no orgId is kept: on Postgres it is in the bound org's partition (a
+    legacy App nothing backfilled), and elsewhere the first org's pass resets it once.
+    """
+    return [d for d in docs or [] if d.get("orgId") in (org_id, None)]
+
+
+async def _reset_org_stale_sync_state(graph_provider: IGraphDBProvider, logger: logging.Logger, org_id: str) -> None:
+    """One org's part of ``reset_stale_sync_state``, called under that org."""
     try:
         # Both lookups go through get_nodes_by_field_in: it is the one that
         # translates _key back to "id" on both providers (Arango stores _key,
         # so a filters-based lookup would hand back {"id": None} there).
-        stuck = await graph_provider.get_nodes_by_field_in(
+        stuck = _of_org(await graph_provider.get_nodes_by_field_in(
             CollectionNames.APPS.value,
             "status",
             [AppStatus.SYNCING.value, AppStatus.FULL_SYNCING.value],
-            ["id", "status"],
-        )
-        locked = await graph_provider.get_nodes_by_field_in(
+            ["id", "status", "orgId"],
+        ), org_id)
+        locked = _of_org(await graph_provider.get_nodes_by_field_in(
             CollectionNames.APPS.value,
             "isLocked",
             [True],
-            ["id", "status"],
-        )
+            ["id", "status", "orgId"],
+        ), org_id)
 
         stuck_keys = {doc["id"] for doc in (stuck or []) if doc.get("id")}
         full_sync_keys = {
@@ -306,7 +331,9 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
                 f"they resume in full: {owed}"
             )
     except Exception as e:
-        logger.error(f"Startup sweep for stale sync state failed: {e}", exc_info=True)
+        # ERROR, not the helper's WARNING: this runs once per boot, and the org's
+        # locked connectors keep answering 409 until the next one.
+        logger.error(f"Startup sweep for stale sync state failed org={org_id}: {e}", exc_info=True)
 
 
 async def resume_sync_services(app_container: ConnectorAppContainer, data_store: GraphDataStore = None) -> bool:
