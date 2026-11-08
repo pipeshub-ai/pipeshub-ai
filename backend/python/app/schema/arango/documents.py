@@ -440,6 +440,12 @@ record_schema = {
             "propsGen": {"type": ["number", "null"]},
             "propsSrc": {"type": ["number", "null"]},
             "propsVer": {"type": ["number", "null"]},
+            # The parse-now marker (app.modules.indexing.parse_now_marker). A pattern, not an
+            # enum, for the same reason as entityExtractionStatus.
+            "parseNowStatus": {"type": ["string", "null"], "pattern": "^[A-Z_]{1,32}$"},
+            "parseNowRev": {"type": ["string", "null"]},
+            "parseNowReason": {"type": ["string", "null"]},
+            "parseNowAt": {"type": ["number", "null"]},
         },
         "required": [
             "recordName",
