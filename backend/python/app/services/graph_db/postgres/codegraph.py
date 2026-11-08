@@ -343,6 +343,26 @@ class CodeGraphMixin(PgBase):
         return [{"anchorKey": r["anchor"], "direction": r["dir"], **_neighbour(r, r["key"], r["coll"]),
                  **({"cursor": r["page_key"]} if paged else {})} for r in rows]
 
+    async def find_blocks_by_external_ref_prefix(self, org_id: str, connector_id: str, prefixes: list[str], limit: int,
+                                                 record_group_ids: list[str] | None = None, transaction: str | None = None, *,
+                                                 raise_on_error: bool = False) -> list[dict[str, Any]]:
+        org = current_org_id()
+        if not prefixes:
+            return []
+        try:
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.find_blocks_by_external_ref_prefix */ SELECT n.doc FROM graph.nodes n
+                WHERE n.org_id = $1 AND n.coll = $2 AND n.doc->>'orgId' = $3 AND n.doc->>'connectorId' = $4
+                AND ($5::text[] IS NULL OR n.doc->>'recordGroupId' = ANY($5::text[]))
+                AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(n.doc->'externalRefs') = 'array'
+                    THEN n.doc->'externalRefs' END) r(v), unnest($6::text[]) p(v) WHERE starts_with(r.v, p.v))
+                ORDER BY n.id LIMIT $7""", org, _BLOCKS, org_id, connector_id, record_group_ids, prefixes, limit), transaction)
+        except Exception:
+            if raise_on_error:
+                raise
+            self.logger.exception("find_blocks_by_external_ref_prefix failed")
+            return []
+        return [_arango(_doc(r["doc"]), _BLOCKS) for r in rows]
+
     async def get_edges_by_target_keys(self, target_keys: list[str], edge_collection: str, filters: dict[str, Any] | None = None,
                                        return_field: str = "_from", transaction: str | None = None, *, raise_on_error: bool = False) -> list[str]:
         org = current_org_id()
