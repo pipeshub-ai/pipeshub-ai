@@ -1468,6 +1468,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                     self.logger.debug(f"Keeping the grant to {group}: its members cannot be listed")
                     out.append(p)
                     continue
+                # shortcut: these grants are as of this read, so a later change to the group reaches them only when the item is
+                # synced again; upgrade by granting through the group and intersecting at read time.
                 for email in sorted(members):
                     if email_ok(email) and (email, p.type.value) not in seen:
                         seen.add((email, p.type.value))
