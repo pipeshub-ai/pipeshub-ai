@@ -150,9 +150,9 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Config path for Linear connector
 LINEAR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
-# Renamed when projects stopped being shared into their non-lead teams: a key with no
-# checkpoint re-lists every project once, and that rewrite drops the old team edges.
-PROJECTS_CHECKPOINT_KEY = "projects-by-lead-team"
+# Renamed when projects stopped being shared into their non-lead teams, and again when archived
+# projects joined the listing: a key with no checkpoint re-lists every project once.
+PROJECTS_CHECKPOINT_KEY = "projects-with-archived"
 
 # Placeholder ancestor sweep (parent sub-issue hierarchy left out of sync filters)
 PLACEHOLDER_SWEEP_BATCH: int = 50
@@ -2279,9 +2279,13 @@ class LinearConnector(BaseConnector):
 
             async for projects_list, end_cursor, _ in self._api.pages(
                 "projects", ["projects"], page_size=PROJECT_PAGE_SIZE, after=run.cursor,
-                fetch=lambda ds, first, after: ds.projects(first=first, after=after, filter=project_filter),
+                fetch=lambda ds, first, after: ds.projects(
+                    first=first, after=after, filter=project_filter, includeArchived=True),
             ):
                 for project_data in projects_list:
+                    # includeArchived also lists the trash; trashed projects leave through the deletion sync.
+                    if project_data.get("trashed"):
+                        continue
                     try:
                         records = await self._project_to_records(project_data.get("id", ""), set(scope))
                         if records:
@@ -2399,7 +2403,8 @@ class LinearConnector(BaseConnector):
         if not project_id:
             return []
         full_project_data = await self._fetch_full_project(project_id)
-        if full_project_data is None:
+        # Trashed projects leave through the deletion sync; a comment on one must not write it back.
+        if full_project_data is None or full_project_data.get("trashed"):
             return []
 
         team_id = self._project_home(full_project_data, scope)

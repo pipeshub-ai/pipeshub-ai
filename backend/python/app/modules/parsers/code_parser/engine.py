@@ -1725,7 +1725,7 @@ class _Walker:
             parent_chain=chain,
             text=self.src[span.start:span.end].decode("utf-8", errors="replace"),
             decorators=span.decorators,
-            modifiers=self._modifiers(span.def_node, kind) if span.kind == "definition" else (),
+            modifiers=self._modifiers(span, kind) if span.kind == "definition" else (),
             is_exported=span.is_exported,
             parent=parent_idx,
             type_param_count=_type_param_count(span.def_node) if span.kind == "definition" else 0,
@@ -2064,14 +2064,18 @@ class _Walker:
         self.out.pending.extend(facts)
         return True
 
-    def _modifiers(self, def_node: Node | None, kind: str) -> tuple[str, ...]:
-        """The words of a language with a modifier handler, after DECLARATION for a function or method with no
-        body (a C++ pure virtual, a C# or PHP interface or abstract method): what runs is elsewhere. A language without a handler has none."""
-        handler = languages.MODIFIER_HANDLERS.get(self.cfg.name)
-        if def_node is None or handler is None:
+    def _modifiers(self, span: _Span, kind: str) -> tuple[str, ...]:
+        """DECLARATION for a function or method with no body, in every language (an interface or abstract method,
+        a C++ pure virtual, a TS overload signature): what runs is elsewhere. A body the span claimed as a sibling
+        (Dart's `function_body`) is a body. Then the words of a language with a modifier handler (C/C++, C#); a
+        language without one has no others."""
+        def_node = span.def_node
+        if def_node is None:
             return ()
-        words = handler(def_node, self.src)
-        if kind in _CALLABLE_KINDS and _body_of(def_node, self.cfg) is None:
+        handler = languages.MODIFIER_HANDLERS.get(self.cfg.name)
+        words = handler(def_node, self.src) if handler else ()
+        trailing_body = any(node.type in self.cfg.trailing_body_types for node in span.nodes)
+        if kind in _CALLABLE_KINDS and _body_of(def_node, self.cfg) is None and not trailing_body:
             words = (DECLARATION, *words)
         return words
 
