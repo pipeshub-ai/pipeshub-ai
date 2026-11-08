@@ -1,5 +1,6 @@
 """Gate settings for the pdfplumber layout model (app.modules.parsers.pdf.table_detector)."""
 import importlib
+import os
 from collections.abc import Callable, Iterator
 from types import ModuleType
 
@@ -48,3 +49,47 @@ def test_gate_loads_the_bundled_model_unless_turned_off(monkeypatch: pytest.Monk
     monkeypatch.setenv("PDF_TABLE_GATE_MODEL", "off")
     mod = fresh_td()
     assert mod._session("gate") is None
+
+
+@pytest.mark.parametrize(
+    ("explicit", "lane", "expected"),
+    [(None, None, 4), (None, "1", 1), (None, "3", 3), (None, "0", 4), (None, "x", 4),
+     ("2", "1", 2), ("0", "1", 0), ("6", None, 6)],
+)
+def test_threads_from_lane_env(
+    monkeypatch: pytest.MonkeyPatch, fresh_td: Callable[[], ModuleType], explicit: str | None, lane: str | None, expected: int
+) -> None:
+    monkeypatch.delenv("PDF_TABLE_MODEL_THREADS", raising=False)
+    monkeypatch.delenv("PIPESHUB_LANE_THREADS", raising=False)
+    if explicit is not None:
+        monkeypatch.setenv("PDF_TABLE_MODEL_THREADS", explicit)
+    if lane is not None:
+        monkeypatch.setenv("PIPESHUB_LANE_THREADS", lane)
+    assert fresh_td()._threads() == expected
+
+
+def test_explicit_threads_win(monkeypatch: pytest.MonkeyPatch, fresh_td: Callable[[], ModuleType]) -> None:
+    """A setting made when the module was imported beats a lane value that arrives later."""
+    monkeypatch.setenv("PDF_TABLE_MODEL_THREADS", "0")
+    mod = fresh_td()
+    monkeypatch.setenv("PIPESHUB_LANE_THREADS", "1")
+    assert mod._threads() == 0
+
+
+@pytest.mark.parametrize("raw", [None, "2", "0", "", "junk"])
+def test_legacy_thread_constant_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch, fresh_td: Callable[[], ModuleType], raw: str | None
+) -> None:
+    monkeypatch.delenv("PIPESHUB_LANE_THREADS", raising=False)
+    if raw is None:
+        monkeypatch.delenv("PDF_TABLE_MODEL_THREADS", raising=False)
+    else:
+        monkeypatch.setenv("PDF_TABLE_MODEL_THREADS", raw)
+    try:
+        legacy = int(os.environ.get("PDF_TABLE_MODEL_THREADS", "4"))
+    except ValueError:
+        with pytest.raises(ValueError):
+            fresh_td()
+        return
+    mod = fresh_td()
+    assert mod._THREADS == legacy and mod._threads() == legacy

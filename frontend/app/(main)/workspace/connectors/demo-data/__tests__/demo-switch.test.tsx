@@ -6,6 +6,7 @@ import { Theme } from '@radix-ui/themes';
 import en from '@/lib/i18n/locales/en-US.json';
 import { DemoDataApi, type DemoDataStatus } from '../api';
 import { useDemoDataStore } from '../store';
+import { clearSessionCache } from '@/lib/api/session-cache';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useDemoSwitch } from '../use-demo-switch';
 import { DemoDataSection } from '@/app/(main)/workspace/profile/components/demo-data-section';
@@ -44,7 +45,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  useDemoDataStore.getState().reset();
+  // Also resets the demo store, which registers for session end.
+  clearSessionCache();
 });
 
 describe('demo data switch in the store', () => {

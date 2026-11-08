@@ -405,9 +405,11 @@
         "is_executable": false,
         "kind": null,
         "language": "python",
+        "pending_edges": null,
         "qualified_name": null,
         "signature": null,
-        "start_line": null
+        "start_line": null,
+        "type_table": null
       },
       "comments": [],
       "data": "def render(issue: dict) -> BlocksContainer:\n    return build_blocks(issue[\"body\"], issue[\"comments\"])",

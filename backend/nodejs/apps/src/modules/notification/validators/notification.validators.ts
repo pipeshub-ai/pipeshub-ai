@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { integerCheck } from '../../../libs/utils/zod-formats';
 
 const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
 
@@ -8,7 +9,7 @@ const objectId = (label: string) =>
 /** Coerce a query-string value to an integer page-size (1–100, default 20). */
 const pageSizeSchema = z.preprocess(
   (arg) => (arg === undefined || arg === '' ? undefined : Number(arg)),
-  z.number().int().min(1).max(100).default(20),
+  z.number().check(integerCheck()).min(1).max(100).default(20),
 );
 
 /** `GET /` — list notifications */

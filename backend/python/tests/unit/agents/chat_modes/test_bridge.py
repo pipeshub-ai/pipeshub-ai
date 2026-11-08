@@ -415,6 +415,36 @@ class TestRunChatStream:
         assert events[0].startswith("event: complete\n")
         assert json.loads(events[0].split("data: ", 1)[1].strip()) == {"answer": "42"}
 
+    async def test_a_failed_run_leaves_no_conversation_tasks_behind(self) -> None:
+        from app.utils import conversation_tasks as ct
+
+        pending = asyncio.ensure_future(asyncio.sleep(60))
+
+        async def _fake_create(
+            self: object, context: object, llm: object, chat_mode: object, *,
+            query: object, model_name: str = "", model_key: object = None,
+        ) -> Never:
+            ct.register_task("conv-bridge-err", pending)
+            raise RuntimeError("boom")
+
+        sql_patch, slack_patch = _patch_connectors()
+        kwargs = self._base_kwargs()
+        kwargs["query_info"]["conversationId"] = "conv-bridge-err"
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+        ):
+            _ = [chunk async for chunk in run_chat_stream(**kwargs)]
+        await asyncio.sleep(0.05)
+
+        assert "conv-bridge-err" not in ct._conversation_tasks
+        assert pending.cancelled()
+
     async def test_record_dates_in_the_run_use_the_users_time_zone(self) -> None:
         """Tools run inside the run's task render record dates in the user's
         zone, weekday included; nothing outside the run is affected."""

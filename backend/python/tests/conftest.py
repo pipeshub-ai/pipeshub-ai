@@ -27,7 +27,7 @@ os.environ.setdefault("TELEMETRY_COLLECTION_FLAG", "true")
 for _opik_var in ("OPIK_API_KEY", "OPIK_WORKSPACE", "OPIK_URL_OVERRIDE", "OPIK_PROJECT_NAME"):
     os.environ[_opik_var] = ""
 os.environ["OPIK_TRACK_DISABLE"] = "true"
-_EMPTY_OPIK_CONFIG = os.path.join(tempfile.gettempdir(), "pipeshub-tests-empty-opik.config")
+_EMPTY_OPIK_CONFIG = os.path.join(tempfile.gettempdir(), f"pipeshub-tests-empty-opik-{getattr(os, "getuid", os.getpid)()}.config")
 with open(_EMPTY_OPIK_CONFIG, "w", encoding="utf-8") as _opik_config:
     _opik_config.write("[opik]\n")
 os.environ["OPIK_CONFIG_PATH"] = _EMPTY_OPIK_CONFIG

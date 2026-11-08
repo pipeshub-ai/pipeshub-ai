@@ -33,13 +33,9 @@ describe('ConfigurePanel header icon', () => {
     expect(getByTestId('icon').querySelector('img')?.getAttribute('src')).toBe('/icons/auth-config/google.svg');
   });
 
-  it.each([
-    ['microsoft', 'window'],
-    ['samlSso', 'security'],
-    ['oauth', 'vpn_key'],
-  ] as const)('keeps the icon-font name for %s', (method, name) => {
-    open(method);
+  it('keeps the icon-font name for Microsoft', () => {
+    open('microsoft');
 
-    expect(panel.icon).toBe(name);
+    expect(panel.icon).toBe('window');
   });
 });

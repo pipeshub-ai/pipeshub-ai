@@ -18,6 +18,10 @@ _TRANSIENT_RETRY = Retry(
     total=3,
     backoff_factor=1.0,
     status_forcelist=(500, 502, 503, 504),
+    # Reads only. urllib3's default also retries PUT and DELETE: a merge (PUT) that
+    # GitHub completed behind a 502 was sent again, failed as "not mergeable", and was
+    # reported to the user as a failed merge.
+    allowed_methods=frozenset({"GET", "HEAD"}),
 )
 
 from app.config.configuration_service import ConfigurationService
@@ -82,6 +86,11 @@ class GitHubResponse(BaseModel):
     # it asked us to wait on a rate limit, so tools can explain a failure plainly.
     api_message: str | None = None
     retry_after_seconds: int | None = None
+    # A listing cut at the SDK's item cap; more items exist on GitHub.
+    truncated: bool = False
+    # The ``after`` cursor from a listing page's ``Link: rel="next"``, when GitHub
+    # offers one. Listings that refuse deep ``page`` numbers are read with it.
+    next_cursor: str | None = None
 
     def to_dict(self) -> dict[str, Any]:  # type: ignore
         return self.model_dump()

@@ -149,7 +149,8 @@ class TestSendMessage:
         assert "key" not in fields
 
     @pytest.mark.asyncio
-    async def test_uses_maxlen_from_config(self, producer):
+    async def test_uses_maxlen_from_config(self, logger, config) -> None:
+        producer = RedisStreamsProducer(logger, config.model_copy(update={"retention_mode": "maxlen"}))
         mock_redis = AsyncMock()
         mock_redis.xadd = AsyncMock(return_value="1-0")
         producer.redis = mock_redis
@@ -159,6 +160,16 @@ class TestSendMessage:
         kwargs = mock_redis.xadd.call_args[1]
         assert kwargs["maxlen"] == 5000
         assert kwargs["approximate"] is True
+
+    @pytest.mark.asyncio
+    async def test_default_mode_does_not_trim_on_write(self, producer) -> None:
+        mock_redis = AsyncMock()
+        mock_redis.xadd = AsyncMock(return_value="1-0")
+        producer.redis = mock_redis
+
+        await producer.send_message("t", {"d": 1})
+
+        assert "maxlen" not in mock_redis.xadd.call_args[1]
 
     @pytest.mark.asyncio
     async def test_auto_initializes(self, logger, config):
@@ -301,7 +312,7 @@ class TestPipelinedSendMessages:
         _args, kwargs = pipeline.xadd.call_args
         fields = pipeline.xadd.call_args[0][1]
         assert fields["key"] == "conn-1"
-        assert kwargs["approximate"] is True
+        assert "maxlen" not in kwargs
 
     async def test_connection_failure_marks_every_message_failed(self, producer):
         producer.redis.pipeline = MagicMock(side_effect=RuntimeError("down"))

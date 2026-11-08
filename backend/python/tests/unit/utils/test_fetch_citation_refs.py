@@ -178,9 +178,8 @@ async def test_a_fetch_result_prints_each_ref_beside_its_own_block(multimodal: b
     data = output.data
     parts = data if isinstance(data, list) else [data]
     text = "".join(getattr(p, "text", p if isinstance(p, str) else "") or "" for p in parts)
-    images = context.tool_state.get("pending_tool_images") or []
     labelled = _assert_refs_resolve(text, mapper, [])
     assert set(labelled.values()) == set(range(11))
     if multimodal:
         assert len([p for p in parts if not isinstance(p, str) and getattr(p, "type", "") != "text"]) == 2
-    assert images == []
+    assert "pending_tool_images" not in context.tool_state

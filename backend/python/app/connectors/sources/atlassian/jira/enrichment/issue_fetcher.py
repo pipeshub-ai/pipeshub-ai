@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import urlparse
 
@@ -71,23 +72,37 @@ def _build_jql_for_ids(issue_ids: list[str]) -> str:
     return f"id in ({quoted})"
 
 
+# Only well-formed keys reach JQL, so a stored value cannot change the query.
+_ISSUE_KEY_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]*-\d+")
+
+
+def _build_jql_for_keys(keys: list[str]) -> str:
+    return "key in ({})".format(", ".join(f'"{k}"' for k in keys if _ISSUE_KEY_RE.fullmatch(k)))
+
+
 async def batch_fetch_issues(
     data_source: JiraDataSource,
     *,
     is_cloud: bool,
     issue_ids: list[str],
     discovered_custom_ids: dict[str, str],
+    by_key: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    """Fetch issues by numeric id in one (or chunked) JQL search per connector."""
+    """Fetch issues by numeric id (or, with ``by_key``, by issue key) in chunked JQL searches.
+
+    ``by_key`` is for resolving keys to ids: it asks for the summary only.
+    """
     if not issue_ids:
         return {}
 
     unique_ids = list(dict.fromkeys(str(i) for i in issue_ids if i))
-    fields = build_search_field_list(discovered_custom_ids)
+    if by_key:
+        unique_ids = [k for k in unique_ids if _ISSUE_KEY_RE.fullmatch(k)]
+    fields = ["summary"] if by_key else build_search_field_list(discovered_custom_ids)
     result: dict[str, dict[str, Any]] = {}
 
     for id_chunk in _chunk_ids(unique_ids, BATCH_ID_CHUNK_SIZE):
-        jql = _build_jql_for_ids(id_chunk)
+        jql = _build_jql_for_keys(id_chunk) if by_key else _build_jql_for_ids(id_chunk)
         try:
             if is_cloud:
                 response = await data_source.search_and_reconsile_issues_using_jql_post(

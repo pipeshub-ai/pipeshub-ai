@@ -76,7 +76,9 @@ class MarkdownItParser:
 
         urls_to_convert = [image["url"] for image in images]
         if urls_to_convert:
-            base64_urls = await ImageParser.urls_to_base64(urls_to_convert)
+            base64_urls = await ImageParser.urls_to_base64(
+                urls_to_convert, allow_remote_fetch=True  # file bytes, not a pushed blocks document
+            )
             for i, image in enumerate(images):
                 if base64_urls[i]:
                     caption_map[image["new_alt_text"]] = base64_urls[i]

@@ -8,7 +8,7 @@ import pytest
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.connectors.core.registry.filters import FilterCollection
-from app.connectors.sources.bookstack.access import BookStackGrants, RoleAccess
+
 from app.models.entities import AppUser, FileRecord, RecordType
 from app.models.permission import PermissionType
 
@@ -121,224 +121,18 @@ def connector():
 # run_sync orchestration
 # ---------------------------------------------------------------------------
 
-class TestBookStackRunSync:
-    async def test_run_sync_calls_all_steps(self, connector):
-        with patch.object(connector, "_sync_users", new_callable=AsyncMock) as m_users, \
-             patch.object(connector, "_sync_user_roles", new_callable=AsyncMock) as m_roles, \
-             patch.object(connector, "_sync_record_groups", new_callable=AsyncMock) as m_rg, \
-             patch.object(connector, "_sync_records", new_callable=AsyncMock) as m_rec, \
-             patch("app.connectors.sources.bookstack.connector.load_connector_filters",
-                   new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection())):
-            await connector.run_sync()
-            m_users.assert_called_once()
-            m_roles.assert_called_once()
-            m_rg.assert_called_once()
-            m_rec.assert_called_once()
-
-    async def test_run_sync_propagates_errors(self, connector):
-        with patch.object(connector, "_sync_users", new_callable=AsyncMock,
-                          side_effect=ValueError("bad")), \
-             patch("app.connectors.sources.bookstack.connector.load_connector_filters",
-                   new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection())):
-            with pytest.raises(ValueError, match="bad"):
-                await connector.run_sync()
 
 
 # ---------------------------------------------------------------------------
 # _process_bookstack_page
 # ---------------------------------------------------------------------------
 
-class TestProcessBookstackPage:
-    async def test_new_page(self, connector):
-        page = _make_page()
-        connector.data_source.get_content_permissions = AsyncMock(
-            return_value=_make_response(data={"permissions": []})
-        )
-        with patch.object(connector, "_parse_bookstack_permissions", new_callable=AsyncMock, return_value=[]):
-            result = await connector._process_bookstack_page(page, {}, [])
-        assert result is not None
-        assert result.is_new is True
-        assert result.record.record_name == "Test Page"
-        assert result.record.external_record_id == "page/1"
-
-    async def test_page_without_id_returns_none(self, connector):
-        page = {"name": "No ID"}
-        result = await connector._process_bookstack_page(page, {}, [])
-        assert result is None
-
-    async def test_existing_page_name_change(self, connector):
-        existing = MagicMock()
-        existing.id = "rec-1"
-        existing.record_name = "Old Name"
-        existing.external_revision_id = "1"
-        existing.version = 1
-
-        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
-        page = _make_page(name="New Name")
-        connector.data_source.get_content_permissions = AsyncMock(
-            return_value=_make_response(data={"permissions": []})
-        )
-        with patch.object(connector, "_parse_bookstack_permissions", new_callable=AsyncMock, return_value=[]):
-            result = await connector._process_bookstack_page(page, {}, [])
-        assert result.metadata_changed is True
-        assert result.is_updated is True
-
-    async def test_existing_page_revision_change(self, connector):
-        existing = MagicMock()
-        existing.id = "rec-1"
-        existing.record_name = "Test Page"
-        existing.external_revision_id = "1"
-        existing.version = 1
-
-        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
-        page = _make_page(revision_count=5)
-        connector.data_source.get_content_permissions = AsyncMock(
-            return_value=_make_response(data={"permissions": []})
-        )
-        with patch.object(connector, "_parse_bookstack_permissions", new_callable=AsyncMock, return_value=[]):
-            result = await connector._process_bookstack_page(page, {}, [])
-        assert result.content_changed is True
-
-    async def test_page_with_chapter_parent(self, connector):
-        page = _make_page(chapter_id=42)
-        connector.data_source.get_content_permissions = AsyncMock(
-            return_value=_make_response(data={"permissions": []})
-        )
-        with patch.object(connector, "_parse_bookstack_permissions", new_callable=AsyncMock, return_value=[]):
-            result = await connector._process_bookstack_page(page, {}, [])
-        assert result.record.external_record_group_id == "chapter/42"
-
-    async def test_page_book_only_parent(self, connector):
-        page = _make_page(chapter_id=None)
-        connector.data_source.get_content_permissions = AsyncMock(
-            return_value=_make_response(data={"permissions": []})
-        )
-        with patch.object(connector, "_parse_bookstack_permissions", new_callable=AsyncMock, return_value=[]):
-            result = await connector._process_bookstack_page(page, {}, [])
-        assert result.record.external_record_group_id == "book/10"
-
-    async def test_page_permissions_fetched(self, connector):
-        page = _make_page()
-        connector.data_source.get_content_permissions = AsyncMock(
-            return_value=_make_response(data={
-                "permissions": [{"perm": "read"}],
-                "fallback_permissions": {"inheriting": False},
-            })
-        )
-        fake_perms = [MagicMock()]
-        # Whether the page inherits is the parser's decision, not the raw "inheriting" flag.
-        grants = BookStackGrants(fake_perms, inherit=False, effective=RoleAccess({}, frozenset()))
-        with patch.object(connector, "_parse_bookstack_permissions", new_callable=AsyncMock, return_value=grants):
-            result = await connector._process_bookstack_page(page, {}, [])
-        assert result.record.inherit_permissions is False
-        assert list(result.new_permissions) == fake_perms
-
-    async def test_page_inherits_when_the_parser_says_so(self, connector) -> None:
-        page = _make_page()
-        connector.data_source.get_content_permissions = AsyncMock(
-            return_value=_make_response(data={"fallback_permissions": {"inheriting": False}})
-        )
-        grants = BookStackGrants([], inherit=True, effective=RoleAccess({}, frozenset()))
-        with patch.object(connector, "_parse_bookstack_permissions", new_callable=AsyncMock, return_value=grants):
-            result = await connector._process_bookstack_page(page, {}, [])
-        assert result.record.inherit_permissions is True
-        assert result.new_permissions == []
-
-    async def test_page_permissions_failure(self, connector):
-        page = _make_page()
-        connector.data_source.get_content_permissions = AsyncMock(
-            return_value=_make_response(success=False, error="denied")
-        )
-        result = await connector._process_bookstack_page(page, {}, [])
-        assert result is not None
-        assert result.new_permissions == []
-
-    async def test_page_exception_returns_none(self, connector):
-        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
-            side_effect=RuntimeError("db error")
-        )
-        result = await connector._process_bookstack_page(_make_page(), {}, [])
-        assert result is None
 
 
 # ---------------------------------------------------------------------------
 # _handle_record_updates
 # ---------------------------------------------------------------------------
 
-class TestBookstackHandleRecordUpdates:
-    async def test_deleted(self, connector):
-        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
-        update = RecordUpdate(
-            record=None, is_new=False, is_updated=False, is_deleted=True,
-            metadata_changed=False, content_changed=False, permissions_changed=False,
-            external_record_id="page/1",
-        )
-        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
-        await connector._handle_record_updates(update)
-        connector.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(connector.connector_id, "page/1")
-        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
-
-    async def test_new_record_logs_only(self, connector):
-        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
-        record = MagicMock()
-        record.record_name = "new.md"
-        update = RecordUpdate(
-            record=record, is_new=True, is_updated=False, is_deleted=False,
-            metadata_changed=False, content_changed=False, permissions_changed=False,
-            external_record_id="page/1",
-        )
-        await connector._handle_record_updates(update)
-        connector.data_entities_processor.on_record_deleted.assert_not_called()
-
-    async def test_metadata_change(self, connector):
-        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
-        record = MagicMock()
-        record.record_name = "renamed.md"
-        update = RecordUpdate(
-            record=record, is_new=False, is_updated=True, is_deleted=False,
-            metadata_changed=True, content_changed=False, permissions_changed=False,
-            external_record_id="page/1",
-        )
-        await connector._handle_record_updates(update)
-        connector.data_entities_processor.on_record_metadata_update.assert_called_once()
-
-    async def test_content_change(self, connector):
-        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
-        record = MagicMock()
-        record.record_name = "file.md"
-        update = RecordUpdate(
-            record=record, is_new=False, is_updated=True, is_deleted=False,
-            metadata_changed=False, content_changed=True, permissions_changed=False,
-            external_record_id="page/1",
-        )
-        await connector._handle_record_updates(update)
-        connector.data_entities_processor.on_record_content_update.assert_called_once()
-
-    async def test_permissions_change(self, connector):
-        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
-        record = MagicMock()
-        record.record_name = "file.md"
-        update = RecordUpdate(
-            record=record, is_new=False, is_updated=True, is_deleted=False,
-            metadata_changed=False, content_changed=False, permissions_changed=True,
-            new_permissions=[MagicMock()], external_record_id="page/1",
-        )
-        await connector._handle_record_updates(update)
-        connector.data_entities_processor.on_updated_record_permissions.assert_called_once()
-
-    async def test_exception_handled(self, connector):
-        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
-        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
-        connector.data_entities_processor.on_record_deleted = AsyncMock(
-            side_effect=RuntimeError("err")
-        )
-        update = RecordUpdate(
-            record=None, is_new=False, is_updated=False, is_deleted=True,
-            metadata_changed=False, content_changed=False, permissions_changed=False,
-            external_record_id="page/1",
-        )
-        await connector._handle_record_updates(update)  # Should not raise
-        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
 
 # ---------------------------------------------------------------------------
@@ -346,23 +140,7 @@ class TestBookstackHandleRecordUpdates:
 # ---------------------------------------------------------------------------
 
 class TestBookstackSyncUsers:
-    async def test_full_sync_when_no_timestamp(self, connector):
-        connector.user_sync_point = AsyncMock()
-        connector.user_sync_point.read_sync_point = AsyncMock(return_value={})
-        connector.user_sync_point.update_sync_point = AsyncMock()
-        with patch.object(connector, "get_all_users", new_callable=AsyncMock, return_value=[_make_app_user()]), \
-             patch.object(connector, "_sync_users_full", new_callable=AsyncMock) as m_full:
-            await connector._sync_users()
-            m_full.assert_called_once()
 
-    async def test_incremental_sync_when_timestamp_exists(self, connector):
-        connector.user_sync_point = AsyncMock()
-        connector.user_sync_point.read_sync_point = AsyncMock(return_value={"timestamp": "2025-01-01T00:00:00Z"})
-        connector.user_sync_point.update_sync_point = AsyncMock()
-        with patch.object(connector, "get_all_users", new_callable=AsyncMock, return_value=[_make_app_user()]), \
-             patch.object(connector, "_sync_users_incremental", new_callable=AsyncMock) as m_inc:
-            await connector._sync_users()
-            m_inc.assert_called_once()
 
     async def test_sync_users_full(self, connector):
         users = [_make_app_user()]

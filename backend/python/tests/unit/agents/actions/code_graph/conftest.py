@@ -15,6 +15,7 @@ from app.services.graph_db.interface.graph_db_provider import CodeFileInfo
 BLOCKS = CollectionNames.BLOCKS.value
 CODE_FILES = CollectionNames.CODE_FILES.value
 RECORDS = CollectionNames.RECORDS.value
+RECORD_GROUPS = CollectionNames.RECORD_GROUPS.value
 ORG = "org-1"
 USER = "user-1"
 CONN = "conn-1"
@@ -85,6 +86,8 @@ class FakeGraphProvider:
             rid: {"_key": rid, "orgId": ORG, "connectorId": CONN, "virtualRecordId": f"v-{rid[-1]}"}
             for rid in ("rec-a", "rec-b", "rec-c", "rec-d")
         }
+        self.record_groups = {"repo-1": {"_key": "repo-1", "orgId": ORG, "connectorId": CONN,
+                                         "groupName": "acme/shop"}}
 
     def _code_file_docs(self) -> list[dict]:
         return [
@@ -116,6 +119,8 @@ class FakeGraphProvider:
             docs = self.records.values()
         elif collection == CODE_FILES:
             docs = self._code_file_docs()
+        elif collection == RECORD_GROUPS:
+            docs = self.record_groups.values()
         else:
             docs = self.blocks.values()
         return [d for d in docs if d.get(field_name) in wanted]
@@ -179,10 +184,10 @@ class FakeGraphProvider:
 
     async def get_neighbors_for_nodes_by_relationship_types(self, node_keys, node_collection,
                                                             relationship_types, direction,
-                                                            limit=5000, transaction=None, raise_on_error=False) -> list[dict]:
+                                                            limit=5000, transaction=None, raise_on_error=False, after=None) -> list[dict]:
         anchors = {f"{node_collection}/{k}" for k in node_keys}
         out = []
-        for edge in self.edges:
+        for n, edge in enumerate(self.edges):
             if edge.get("relationshipType") not in relationship_types:
                 continue
             for anchor_f, other_f, label in (("_from", "_to", "outbound"),
@@ -194,8 +199,18 @@ class FakeGraphProvider:
                 collection, _, key = edge[other_f].partition("/")
                 _, _, anchor_key = edge[anchor_f].partition("/")
                 out.append({"anchorKey": anchor_key, "collection": collection, "key": key,
-                            "direction": label, "relationshipType": edge["relationshipType"]})
-        return out[:limit]
+                            "direction": label, "relationshipType": edge["relationshipType"],
+                            "_edge": n})
+        if after is None:
+            for row in out:
+                row.pop("_edge")
+            return out[:limit]
+        # The real stores' paging contract: ascending cursor, strictly after `after`.
+        for row in out:
+            # The edge's own number ends the key, as the stores' edge keys do, so parallel edges never tie.
+            row["cursor"] = "\x01".join((row["anchorKey"], row["direction"], row["collection"], row["key"],
+                                         row["relationshipType"], f"{row.pop('_edge'):08d}"))
+        return sorted((r for r in out if r["cursor"] > after), key=lambda r: r["cursor"])[:limit]
 
 
 class FakeBlobStore:
@@ -213,7 +228,7 @@ class FakeBlobStore:
             }
         }
 
-    async def get_record_from_storage(self, virtual_record_id, org_id) -> dict | None:
+    async def get_record_from_storage(self, virtual_record_id, org_id, lookup_result=None) -> dict | None:
         return self.records.get(virtual_record_id)
 
 
@@ -268,7 +283,7 @@ class QueryGraphProvider(FakeGraphProvider):
 
     async def get_nodes_by_field_prefix(
         self, collection, field_name, prefix, filters=None, limit=400,
-        transaction=None, raise_on_error=False
+        transaction=None, raise_on_error=False, return_fields=None
     ) -> list[dict]:
         docs = self._code_file_docs() if collection == CODE_FILES else self.blocks.values()
         return [

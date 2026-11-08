@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.config.constants.arangodb import Connectors, OriginTypes
+from app.models.blocks import Block, BlocksContainer, BlockType
 from app.modules.indexing import named_entity_persist_retry as retry
 
 LOG = logging.getLogger("test")
@@ -65,7 +67,7 @@ async def test_a_record_that_is_gone_has_nothing_to_retry(record):
 
 
 async def test_the_stored_extraction_is_written_again_without_a_model_call():
-    record = {"_key": "r1", "id": "r1", "orgId": "o1", "virtualRecordId": "v1"}
+    record = {"_key": "r1", "id": "r1", "orgId": "o1", "virtualRecordId": "v1", "contentRev": "rev-a"}
     sink = MagicMock()
     sink.blob_storage.get_record_from_storage = AsyncMock(return_value={"semantic_metadata": {"summary": "s"}})
     sink.reproject_named_entities = AsyncMock(return_value="written")
@@ -75,7 +77,49 @@ async def test_the_stored_extraction_is_written_again_without_a_model_call():
         assert await retry._retry_one(_graph([], record), sink, "r1", "o1", 100) == "written"
     assert context.call_args.kwargs["record"].semantic_metadata.summary == "s"
     # The write lands only while this retry (due at 100) is still the pending one.
-    sink.reproject_named_entities.assert_awaited_once_with(context.return_value, retry_due=100, retry_attempts=0)
+    sink.reproject_named_entities.assert_awaited_once_with(
+        context.return_value, content_rev="rev-a", retry_due=100, retry_attempts=0
+    )
+
+
+async def test_an_unclassified_record_is_still_reprojected_from_its_kept_extraction() -> None:
+    """The entities stage keeps its extraction outside the stored record, so a record with no
+    classification stored must still reach the reprojection."""
+    record = {"_key": "r1", "id": "r1", "orgId": "o1", "virtualRecordId": "v1", "contentRev": "rev-a"}
+    sink = MagicMock()
+    sink.blob_storage.get_record_from_storage = AsyncMock(return_value={"semantic_metadata": None})
+    sink.reproject_named_entities = AsyncMock(return_value="written")
+    context = MagicMock()
+    with patch("app.events.processor.convert_record_dict_to_record", return_value=SimpleNamespace(id="r1")), \
+            patch("app.modules.transformers.transformer.TransformContext", context):
+        assert await retry._retry_one(_graph([], record), sink, "r1", "o1", 100) == "written"
+    assert context.call_args.kwargs["record"].semantic_metadata is None
+    sink.reproject_named_entities.assert_awaited_once()
+
+
+@pytest.mark.parametrize(("switch", "loaded"), [("true", True), ("", False)], ids=["content-dates", "off"])
+async def test_an_upload_is_retried_with_its_blocks_only_when_its_content_dates_it(
+    monkeypatch: pytest.MonkeyPatch, switch: str, loaded: bool,
+) -> None:
+    """The persist also dates an upload by what its text states; without the blocks it
+    would know nothing of it."""
+    monkeypatch.setenv("CONTENT_DOCUMENT_DATES", switch)
+    stored = BlocksContainer(blocks=[Block(index=0, type=BlockType.TEXT, data="Date: 2025-02-11")], block_groups=[])
+    record = {"_key": "r1", "id": "r1", "orgId": "o1", "virtualRecordId": "v1", "contentRev": "rev-a"}
+    sink = MagicMock()
+    sink.blob_storage.get_record_from_storage = AsyncMock(
+        return_value={"semantic_metadata": None, "block_containers": stored.model_dump(mode="json", exclude_none=True)}
+    )
+    sink.reproject_named_entities = AsyncMock(return_value="written")
+    upload = SimpleNamespace(
+        id="r1", connector_name=Connectors.KNOWLEDGE_BASE, origin=OriginTypes.UPLOAD, block_containers=None,
+    )
+    context = MagicMock()
+    with patch("app.events.processor.convert_record_dict_to_record", return_value=upload), \
+            patch("app.modules.transformers.transformer.TransformContext", context):
+        assert await retry._retry_one(_graph([], record), sink, "r1", "o1", 100) == "written"
+    blocks = context.call_args.kwargs["record"].block_containers
+    assert (blocks == stored) is loaded
 
 
 async def test_without_a_sink_nothing_is_read():
@@ -146,3 +190,48 @@ async def test_the_record_lease_is_released_whatever_the_retry_does(result):
         )
     pool, owner = manager.release.await_args.args
     assert pool == "record:r1" and owner == manager.try_acquire.await_args.args[1]
+
+
+async def test_the_rebuilt_record_reaches_the_reprojection_with_its_content_id() -> None:
+    # The real conversion: without the content id the reprojection read nothing, and every
+    # retry was cleared as "nothing to write" while the record kept its old entities.
+    record = {
+        "_key": "r1", "orgId": "o1", "recordName": "Doc", "recordType": "FILE", "externalRecordId": "e1",
+        "connectorId": "c1", "virtualRecordId": "v1", "contentRev": "rev-a", "mimeType": "text/plain",
+    }
+    sink = MagicMock()
+    sink.blob_storage.get_record_from_storage = AsyncMock(return_value={"semantic_metadata": {}})
+    sink.reproject_named_entities = AsyncMock(return_value="written")
+    assert await retry._retry_one(_graph([], record), sink, "r1", "o1", 100) == "written"
+    (ctx,), _ = sink.reproject_named_entities.await_args
+    assert ctx.record.virtual_record_id == "v1"
+
+
+async def test_a_retry_with_no_org_is_dropped_so_it_does_not_fill_the_page() -> None:
+    """Skipped and left, a page of them would take every later pass's place; nothing can run for them without an organisation."""
+    rows = [{"recordId": "missing", "orgId": None, "attempts": 1, "dueAt": 100}, {"recordId": "valid", "orgId": "o1", "attempts": 1, "dueAt": 100}]
+    pending = list(rows)
+    graph = _graph(rows)
+    graph.get_due_named_entity_persist_retries = AsyncMock(side_effect=lambda page_size: pending[:page_size])
+
+    async def clear(record_id: str, due: int) -> bool:
+        pending[:] = [row for row in pending if (row["recordId"], row["dueAt"]) != (record_id, due)]
+        return True
+
+    graph.clear_named_entity_persist_retry = AsyncMock(side_effect=clear)
+    one = AsyncMock(return_value="written")
+    sink = MagicMock()
+    with patch.object(retry, "_retry_one", one):
+        assert await retry.retry_pending_named_entity_persists(graph_provider=graph, sink=sink, logger=LOG, page_size=1) == 0
+        assert await retry.retry_pending_named_entity_persists(graph_provider=graph, sink=sink, logger=LOG, page_size=1) == 1
+    assert one.await_args.args[2] == "valid"
+    assert [c.args for c in graph.clear_named_entity_persist_retry.await_args_list] == [("missing", 100), ("valid", 100)]
+
+
+@pytest.mark.parametrize("clear", [AsyncMock(return_value=False), AsyncMock(side_effect=RuntimeError("write failed"))])
+async def test_a_missing_org_retry_that_could_not_be_cleared_is_not_counted_as_dropped(clear) -> None:
+    graph = _graph([{"recordId": "r1", "orgId": None, "attempts": 1, "dueAt": 100}])
+    graph.clear_named_entity_persist_retry = clear
+    with patch.object(retry, "record_recovery_org_pass") as counted:
+        await _drain(graph, MagicMock())
+    counted.assert_not_called()

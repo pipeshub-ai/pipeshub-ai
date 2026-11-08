@@ -17,13 +17,16 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import AppStatus, CollectionNames
+from app.connectors.core.base.connector.connector_service import IncompleteSyncError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.constants import ConnectorStateKeys
+from app.connectors.core.sync import sync_runner
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.sync.sync_coordinator import SyncLease
 from app.connectors.core.sync.sync_runner import run_sync_task
+from tests.support.data_store import runs_in_its_transaction
 
 _LOG = logging.getLogger("test")
 _OWED = ConnectorStateKeys.PENDING_FULL_SYNC
@@ -154,15 +157,88 @@ async def test_an_incremental_sync_unlinks_nothing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_sync_that_skipped_part_of_the_source_unlinks_nothing() -> None:
+async def test_a_sync_that_skipped_part_of_the_source_unlinks_nothing_and_owes_one_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sync_runner, "_INCOMPLETE_FULL_SYNC_RETRYING", set())
+
+    async def full_sync(complete: bool = False) -> AsyncMock:
+        gp = _graph_provider()
+        connector = _connector(None, FullSyncCoverage(complete=complete))
+        connector.run_sync = _writes_one_record(connector)
+        await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
+        if not complete:
+            gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        return gp
+
+    assert _owed(await full_sync())
+    # The retry skips part again: no more owed, or a quota would loop it.
+    assert not _owed(await full_sync())
+    # A later full sync that skips part owes a retry again.
+    assert _owed(await full_sync())
+    # So does one after a retry that read everything.
+    assert not _owed(await full_sync(complete=True))
+    assert _owed(await full_sync())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("complete", [True, False])
+async def test_a_source_that_lists_only_part_of_itself_unlinks_nothing_and_owes_nothing(
+    complete: bool, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A feed, say: not seeing a node is normal, so it is no error and a retry would see no more.
+    It overrides ``complete``. Group members read in full are still replaced, so a member
+    removed at the source loses the group's access."""
+    monkeypatch.setattr(sync_runner, "_INCOMPLETE_FULL_SYNC_RETRYING", set())
+    for _ in range(3):
+        gp = _graph_provider()
+        connector = _connector(None, FullSyncCoverage(complete=complete, lists_everything=False))
+        connector.run_sync = _writes_one_record(connector)
+        connector.data_entities_processor.finish_full_sync_memberships = AsyncMock()
+        caplog.clear()
+
+        with caplog.at_level(logging.WARNING, logger=_LOG.name):
+            await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
+
+        gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        finish = connector.data_entities_processor.finish_full_sync_memberships
+        assert finish.await_count == (1 if complete else 0)
+        if complete:
+            assert finish.await_args.args[1].by_collection[RECORDS] == {"r1"}
+        assert not _owed(gp)
+        assert not [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert sync_runner._INCOMPLETE_FULL_SYNC_RETRYING == set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lists_everything", [True, False])
+async def test_a_full_sync_owes_another_when_replacing_members_failed(lists_everything: bool) -> None:
     gp = _graph_provider()
-    connector = _connector(None, FullSyncCoverage(complete=False))
+    connector = _connector(None, FullSyncCoverage(lists_everything=lists_everything))
     connector.run_sync = _writes_one_record(connector)
+    connector.data_entities_processor.finish_full_sync_memberships = AsyncMock(side_effect=RuntimeError("db down"))
 
     await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
 
     gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
-    assert not _owed(gp)
+    assert _owed(gp)
+
+
+@pytest.mark.asyncio
+async def test_a_source_that_lists_only_part_of_itself_still_owes_a_full_sync_when_it_raised() -> None:
+    gp = _graph_provider()
+    connector = _connector(None, FullSyncCoverage(lists_everything=False))
+
+    async def run_sync() -> None:
+        connector.data_entities_processor._note_full_sync_seen("c1", RECORDS, "r1")
+        raise RuntimeError("no feed could be read")
+
+    connector.run_sync = run_sync
+    with pytest.raises(RuntimeError):
+        await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
+
+    gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+    assert _owed(gp)
 
 
 @pytest.mark.asyncio
@@ -221,7 +297,7 @@ class TestWhatTheProcessorNotes:
     """Seen only once its write committed; first visit replaces, later ones add."""
 
     def _processor(self, transaction) -> DataSourceEntitiesProcessor:
-        store = MagicMock()
+        store = runs_in_its_transaction(MagicMock())
         store.transaction = transaction
         return DataSourceEntitiesProcessor(_LOG, store, MagicMock())
 
@@ -265,6 +341,15 @@ class TestWhatTheProcessorNotes:
         processor = self._processor(self._transaction())
         processor._note_full_sync_seen("c1", RECORDS, "r1")
         assert not processor._first_full_sync_visit("c1", RECORDS, "r1")
+
+    def test_full_sync_running_follows_the_run(self) -> None:
+        processor = self._processor(self._transaction())
+        assert processor.full_sync_running("c1") is False
+        run = processor.begin_full_sync_run("c1")
+        assert processor.full_sync_running("c1") is True
+        assert processor.full_sync_running("other") is False
+        processor.end_full_sync_run("c1", run)
+        assert processor.full_sync_running("c1") is False
 
     def test_runs_of_two_connectors_on_one_shared_processor_stay_apart(self) -> None:
         processor = self._processor(self._transaction())
@@ -467,3 +552,45 @@ async def test_memberships_are_replaced_before_the_unlink() -> None:
     await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
 
     assert order == ["memberships", "unlink"]
+
+
+@pytest.mark.asyncio
+async def test_a_full_sync_that_kept_failed_projects_as_stored_still_unlinks_what_it_saw_gone() -> None:
+    """IncompleteSyncError fails the run, but the removal still runs: the parts it read in full lose what is gone,
+    and no further full sync is owed."""
+    gp = _graph_provider()
+    connector = _connector(None)
+
+    async def run_sync() -> None:
+        connector.data_entities_processor._note_full_sync_seen("c1", RECORDS, "r1")
+        raise IncompleteSyncError("1 project failed")
+
+    connector.run_sync = run_sync
+    with pytest.raises(IncompleteSyncError):
+        await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
+
+    gp.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+    assert gp.unlink_nodes_missed_by_full_sync.await_args.args[1][RECORDS] == {"r1"}
+    assert not _owed(gp)
+
+
+@pytest.mark.asyncio
+async def test_repeated_incomplete_full_syncs_stop_owing_a_full_sync() -> None:
+    """When the connector reports an incomplete read as well, nothing is unlinked, and one retry is owed, not a chain."""
+    sync_runner._INCOMPLETE_FULL_SYNC_RETRYING.discard("c1")
+    owed = []
+    for _ in range(3):
+        gp = _graph_provider()
+        connector = _connector(None, FullSyncCoverage(complete=False))
+
+        async def run_sync(connector: MagicMock = connector) -> None:
+            connector.data_entities_processor._note_full_sync_seen("c1", RECORDS, "r1")
+            raise IncompleteSyncError("1 project failed")
+
+        connector.run_sync = run_sync
+        with pytest.raises(IncompleteSyncError):
+            await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
+        gp.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        owed.append(_owed(gp))
+
+    assert owed == [True, False, True], "one retry is owed, then the count starts again"

@@ -11,7 +11,7 @@ import {
   PresignedUrlError,
 } from '../../../../src/libs/errors/storage.errors'
 
-import { S3 } from 'aws-sdk'
+import type { S3Service as S3 } from '../../../../src/modules/storage/providers/s3-client'
 import mongoose from 'mongoose'
 import AmazonS3Adapter from '../../../../src/modules/storage/providers/s3.provider'
 import {

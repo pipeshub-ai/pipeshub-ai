@@ -562,6 +562,50 @@ class TestSharedToolNames:
             registry.resolve_by_name("web_agent")._spec.tool_names)
         assert "codegraph__get_neighbour" in top_names
 
+    def test_entity_and_value_tools_go_to_the_explorer_and_stay_with_the_parent(self) -> None:
+        """In composed modes the explorer could only full-text search "documents over
+        $50k" or "everything naming Acme"; the parent held the tools that answer them."""
+        registry = _full_registry()
+        for short in ("search_entities", "find_records_by_value"):
+            registry.register_tool(FakeAppTool("knowledgegraph", short))
+        runtime = AgentRuntime(tool_registry=registry)
+        entity_tools = frozenset({
+            "knowledgegraph__search_entities", "knowledgegraph__find_records_by_value",
+            # Not registered this request (switch off): never granted.
+            "knowledgegraph__search_by_entities",
+        })
+
+        top_names = compose_domain_agents(
+            registry, runtime, make_context(), provider="scripted", model_name="scripted-model",
+            entity_tool_names=entity_tools,
+        )
+
+        explorer = registry.resolve_by_name("internal_exploration_agent")._spec
+        assert {"knowledgegraph__search_entities", "knowledgegraph__find_records_by_value"} <= set(explorer.tool_names)
+        assert "knowledgegraph__search_by_entities" not in explorer.tool_names
+        assert {"knowledgegraph__search_entities", "knowledgegraph__find_records_by_value"} <= set(top_names)
+        for other in ("web_agent", "coding_agent"):
+            assert not set(registry.resolve_by_name(other)._spec.tool_names) & entity_tools
+
+    def test_the_explorer_prompt_names_entity_search_only_when_it_holds_it(self) -> None:
+        """The source catalog's Entities paragraph follows the child's own grant."""
+        def explorer_prompt(entity_tools: frozenset[str]) -> str:
+            registry = _full_registry()
+            registry.register_tool(FakeAppTool("knowledgegraph", "search_entities"))
+            # A knowledge source, so the source catalog (and its Entities paragraph) renders.
+            context = make_context(
+                agent_knowledge=[{"displayName": "Confluence", "type": "confluence", "connectorId": "conn-1"}],
+            )
+            compose_domain_agents(
+                registry, AgentRuntime(tool_registry=registry), context,
+                provider="scripted", model_name="scripted-model", entity_tool_names=entity_tools,
+            )
+            return registry.resolve_by_name("internal_exploration_agent")._spec.system_prompt
+
+        held = explorer_prompt(frozenset({"knowledgegraph__search_entities"}))
+        assert "**Entities.**" in held and "knowledgegraph__search_entities(query=...)" in held
+        assert "knowledgegraph__search_entities" not in explorer_prompt(frozenset())
+
     def test_defaults_to_empty_and_changes_nothing(self) -> None:
         registry = _full_registry()
         runtime = AgentRuntime(tool_registry=registry)

@@ -363,19 +363,21 @@ class TestFinalizeIndicesAndMetadata:
 class TestCalculateListIndentLevels:
     def test_nested_list_items(self):
         parser = _p()
-        group0 = BlockGroup(index=0, type=GroupType.TEXT_SECTION, parent_index=None)
-        group1 = BlockGroup(index=1, type=GroupType.TEXT_SECTION, parent_index=0)
-        b0 = Block(index=0, parent_index=0, type=BlockType.BULLET_LIST,
+        # As the connector builds it: b0 has children, so it is the first child of its wrapper group0;
+        # b1 is one of those children and has children too (its own wrapper group1, inside group0).
+        group0 = BlockGroup(index=0, type=GroupType.TEXT_SECTION, parent_index=None, source_group_id="b0")
+        group1 = BlockGroup(index=1, type=GroupType.TEXT_SECTION, parent_index=0, source_group_id="b1")
+        b0 = Block(index=0, parent_index=0, source_id="b0", type=BlockType.BULLET_LIST,
                     sub_type=BlockSubType.LIST_ITEM, data="item",
                     format=DataFormat.MARKDOWN,
                     list_metadata=ListMetadata(list_style="bullet", indent_level=0))
-        b1 = Block(index=1, parent_index=1, type=BlockType.BULLET_LIST,
+        b1 = Block(index=1, parent_index=1, source_id="b1", type=BlockType.BULLET_LIST,
                     sub_type=BlockSubType.LIST_ITEM, data="nested",
                     format=DataFormat.MARKDOWN,
                     list_metadata=ListMetadata(list_style="bullet", indent_level=0))
         parser._calculate_list_indent_levels([b0, b1], [group0, group1])
-        assert b0.list_metadata.indent_level == 1
-        assert b1.list_metadata.indent_level == 2
+        assert b0.list_metadata.indent_level == 0  # its own wrapper is not a nesting level
+        assert b1.list_metadata.indent_level == 1  # nested under b0
 
 
 class TestFixNumberedListNumbering:
@@ -1048,19 +1050,21 @@ class TestFinalizeIndicesAndMetadataFullCoverage:
 class TestCalculateListIndentLevelsFullCoverage:
     def test_nested_list_items(self):
         parser = _p()
-        group0 = BlockGroup(index=0, type=GroupType.TEXT_SECTION, parent_index=None)
-        group1 = BlockGroup(index=1, type=GroupType.TEXT_SECTION, parent_index=0)
-        b0 = Block(index=0, parent_index=0, type=BlockType.BULLET_LIST,
+        # As the connector builds it: b0 has children, so it is the first child of its wrapper group0;
+        # b1 is one of those children and has children too (its own wrapper group1, inside group0).
+        group0 = BlockGroup(index=0, type=GroupType.TEXT_SECTION, parent_index=None, source_group_id="b0")
+        group1 = BlockGroup(index=1, type=GroupType.TEXT_SECTION, parent_index=0, source_group_id="b1")
+        b0 = Block(index=0, parent_index=0, source_id="b0", type=BlockType.BULLET_LIST,
                     sub_type=BlockSubType.LIST_ITEM, data="item",
                     format=DataFormat.MARKDOWN,
                     list_metadata=ListMetadata(list_style="bullet", indent_level=0))
-        b1 = Block(index=1, parent_index=1, type=BlockType.BULLET_LIST,
+        b1 = Block(index=1, parent_index=1, source_id="b1", type=BlockType.BULLET_LIST,
                     sub_type=BlockSubType.LIST_ITEM, data="nested",
                     format=DataFormat.MARKDOWN,
                     list_metadata=ListMetadata(list_style="bullet", indent_level=0))
         parser._calculate_list_indent_levels([b0, b1], [group0, group1])
-        assert b0.list_metadata.indent_level == 1
-        assert b1.list_metadata.indent_level == 2
+        assert b0.list_metadata.indent_level == 0  # its own wrapper is not a nesting level
+        assert b1.list_metadata.indent_level == 1  # nested under b0
 
 
 class TestFixNumberedListNumberingFullCoverage:
@@ -1765,8 +1769,8 @@ class TestExtractPropertyValueException:
     def test_unknown_property_type(self):
         parser = _p()
         prop = {"type": "custom_unknown", "custom_unknown": {"foo": "bar"}}
-        result = parser._extract_property_value(prop)
-        assert "foo" in result or "bar" in result
+        # A structure of a type the parser does not know is left out rather than shown as a Python repr.
+        assert parser._extract_property_value(prop) == ""
 
     def test_exception_returns_empty(self):
         parser = _p()
@@ -1881,3 +1885,81 @@ class TestCommentParsing:
             comment_group_indices=[BlockContainerIndex(block_group_index=0)],
         )
         assert thread.sub_type == GroupSubType.COMMENT_THREAD
+
+
+# ---------------------------------------------------------------------------
+# Property values: newer types, values cut at 25, comment links
+# ---------------------------------------------------------------------------
+
+
+class TestPropertyValuesBeyondTheClassicTypes:
+    def test_unique_id_with_and_without_prefix(self) -> None:
+        assert _p()._extract_property_value({"type": "unique_id", "unique_id": {"prefix": "T", "number": 5}}) == "T-5"
+        assert _p()._extract_property_value({"type": "unique_id", "unique_id": {"prefix": None, "number": 7}}) == "7"
+
+    def test_verification_button_and_rollups(self) -> None:
+        p = _p()
+        assert p._extract_property_value({"type": "verification", "verification": {"state": "verified"}}) == "verified"
+        assert p._extract_property_value({"type": "button", "button": {}}) == ""
+        assert p._extract_property_value(
+            {"type": "rollup", "rollup": {"type": "date", "date": {"start": "2026-01-02", "end": None}}}) == "2026-01-02"
+        assert p._extract_property_value({"type": "rollup", "rollup": {"type": "incomplete", "incomplete": {}}}) == ""
+
+    def test_an_unknown_structured_type_is_never_a_python_repr(self) -> None:
+        assert _p()._extract_property_value({"type": "place", "place": {"lat": 1, "lon": 2}}) == ""
+        assert _p()._extract_property_value({"type": "newthing", "newthing": "shown"}) == "shown"
+
+
+def _list(kind: str, items: list, has_more: bool = False, cursor: Optional[str] = None) -> MagicMock:
+    data = {"object": "list", "results": [{"object": "property_item", "type": kind, kind: i} for i in items],
+            "has_more": has_more, "next_cursor": cursor, "property_item": {"id": "p", "type": kind}}
+    response = MagicMock(success=True)
+    response.data.json.return_value = data
+    return response
+
+
+class TestValuesCutAt25:
+    @pytest.mark.asyncio
+    async def test_a_relation_with_has_more_is_read_in_full(self) -> None:
+        from app.connectors.sources.notion.block_parser import property_items_fetcher
+
+        ids = [{"id": f"r{i}"} for i in range(40)]
+        ds = MagicMock()
+        ds.retrieve_page_property_item = AsyncMock(side_effect=[_list("relation", ids[:25], True, "c1"),
+                                                                _list("relation", ids[25:])])
+        rows = [{"id": "row1", "properties": {"Rel": {"id": "p", "type": "relation", "relation": ids[:25],
+                                                      "has_more": True}}}]
+        await _p().expand_truncated_properties(rows, property_items_fetcher(ds))
+        assert [r["id"] for r in rows[0]["properties"]["Rel"]["relation"]] == [f"r{i}" for i in range(40)]
+        assert ds.retrieve_page_property_item.await_args_list[1].kwargs["start_cursor"] == "c1"
+
+    @pytest.mark.asyncio
+    async def test_short_values_are_not_fetched_and_a_failure_keeps_the_value(self) -> None:
+        fetch = AsyncMock(return_value=None)
+        people = [{"object": "user", "id": f"u{i}"} for i in range(25)]
+        rows = [{"id": "row1", "properties": {
+            "Few": {"id": "a", "type": "people", "people": people[:3]},
+            "Many": {"id": "b", "type": "people", "people": people}}}]
+        await _p().expand_truncated_properties(rows, fetch)
+        fetch.assert_awaited_once_with("row1", "b")
+        assert len(rows[0]["properties"]["Many"]["people"]) == 25
+
+    @pytest.mark.asyncio
+    async def test_parse_data_source_uses_the_fetcher(self) -> None:
+        fetch = AsyncMock(return_value={"results": [{"type": "relation", "relation": {"id": f"r{i}"}}
+                                                    for i in range(30)]})
+        rows = [{"id": "row1", "properties": {
+            "Name": {"id": "title", "type": "title", "title": [{"plain_text": "A"}]},
+            "Rel": {"id": "p", "type": "relation", "relation": [{"id": "r0"}], "has_more": True}}}]
+        meta = {"properties": {"Name": {"type": "title"}, "Rel": {"type": "relation"}}}
+        blocks, _ = await _p().parse_data_source_to_blocks(meta, rows, "ds1", property_items_fetcher=fetch)
+        assert "r29" in json.dumps([b.model_dump(mode="json") for b in blocks])
+
+
+class TestCommentLinks:
+    def test_a_comment_links_to_its_discussion(self) -> None:
+        comment = _p().parse_notion_comment_to_block_comment(
+            {"id": "c1", "discussion_id": "aaaa-bbbb", "rich_text": [], "created_by": {"id": "u"}},
+            page_url="https://www.notion.so/Page-123")
+        assert str(comment.weburl) == "https://www.notion.so/Page-123?d=aaaabbbb"
+        assert _p().parse_notion_comment_to_block_comment({"id": "c1", "rich_text": []}).weburl is None

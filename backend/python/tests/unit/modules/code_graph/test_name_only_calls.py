@@ -15,8 +15,8 @@ CALLS = RecordRelations.CALLS.value
      [("g", False, None), ("H", True, "obj"), ("K", True, "pkg")]),
     ("java", "class A { void f() { g(1); obj.h(2); new B(); } }",
      [("g", False, None), ("h", True, "obj"), ("B", False, None)]),
-    ("rust", "fn f() { g(1); obj.h(2); m::k(3); }",
-     [("g", False, None), ("h", True, "obj"), ("k", True, "m")]),
+    ("rust", "fn f() { g(1); obj.h(2); m::k(3); }",   # `m::k` is module m's function
+     [("g", False, None), ("h", True, "obj"), ("k", False, None)]),
     ("c", "void f() { g(1); obj->h(2); }", [("g", False, None), ("h", True, "obj")]),
     ("cpp", "void f() { g(1); ns::k(3); }", [("g", False, None), ("k", True, "ns")]),
     ("csharp", "class A { void F() { G(1); obj.H(2); new B(); } }",
@@ -66,11 +66,12 @@ async def test_a_name_never_crosses_languages(graph, index_file) -> None:
 
 
 def test_coverage_says_which_languages_are_name_matched() -> None:
-    assert {"rust", "kotlin"} <= NAME_ONLY_LANGUAGES
+    assert {"kotlin", "swift"} <= NAME_ONLY_LANGUAGES
     assert "java" not in NAME_ONLY_LANGUAGES, "Java resolves imports and heritage now"
     assert "go" not in NAME_ONLY_LANGUAGES, "Go resolves package imports now"
-    gap = coverage_for([{"language": "rust"}, {"language": "dart"}])
-    assert gap["name_matched_calls"] == ["rust"]
+    assert "rust" not in NAME_ONLY_LANGUAGES, "Rust resolves `use` paths, impls and traits now"
+    gap = coverage_for([{"language": "kotlin"}, {"language": "dart"}])
+    assert gap["name_matched_calls"] == ["kotlin"]
     assert "INFERRED" in gap["note"] and "dart" in gap["note"]
     assert coverage_for([{"language": "python"}]) is None
 

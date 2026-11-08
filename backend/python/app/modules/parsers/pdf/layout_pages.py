@@ -38,6 +38,26 @@ class ParsedPageData:
 _UNMAPPED_GLYPH_RE = re.compile(r"\(cid:\d+\)")
 
 
+_cv2_cap = {"applied": False}
+
+
+def _cap_cv2_threads() -> None:
+    """Size OpenCV to the lane once per process: it otherwise uses every visible CPU.
+
+    ``PIPESHUB_LANE_CV2_THREADS`` overrides the lane value; ``0`` leaves OpenCV alone.
+    """
+    if _cv2_cap["applied"]:
+        return
+    _cv2_cap["applied"] = True
+    raw = os.environ.get("PIPESHUB_LANE_CV2_THREADS")
+    if raw is None:
+        raw = os.environ.get("PIPESHUB_LANE_THREADS", "")
+    if raw.isdigit() and int(raw) > 0:
+        import cv2
+
+        cv2.setNumThreads(int(raw))
+
+
 def _release_freed_memory() -> None:
     """Hand memory freed by a parse back to the OS.
 
@@ -69,6 +89,7 @@ def _drop_unmapped_glyphs(regions: list[LayoutRegion]) -> list[LayoutRegion]:
 
 
 def parse_pdf_layout(pdf_bytes: bytes) -> list[ParsedPageData]:
+    _cap_cv2_threads()
     # The rasteriser reads the file by path.
     tmp_path: str | None = None
     try:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from app.modules.artifacts.reader import record_artifact_reader
 from app.modules.parsers.code_parser.models import FILLER_KINDS
 
 from .ops import (
@@ -54,7 +55,7 @@ async def read_code_impl(
 ) -> dict[str, Any]:
     """Source for one symbol, one line range, or a whole file.
 
-    All three modes cost the same single blob fetch -- ``get_record_from_storage``
+    All three modes cost the same single blob fetch -- ``read_record``
     returns every block of the file regardless -- so reading five symbols from
     one file should be one call, not five downloads of the same blob.
 
@@ -88,7 +89,7 @@ async def read_code_impl(
     )
     if isinstance(loaded, dict):
         return loaded
-    record_id, record_doc, record = loaded
+    record_id, record_doc, record, file_path = loaded
 
     # `_record_id` is an internal handle the tool wrapper strips before the
     # model sees it: record-escalation keys on record ids, but every code tool
@@ -149,17 +150,20 @@ async def _load_blob(
     access: RecordAccess,
     record_id: str | None = None,
     miss: dict[str, Any] | None = None,
-) -> tuple[str, dict[str, Any], dict[str, Any]] | dict[str, Any]:
-    """``(record_id, record node, stored record)`` for one readable file, or the error to return.
+) -> tuple[str, dict[str, Any], dict[str, Any], str] | dict[str, Any]:
+    """``(record_id, record node, stored record, indexed path)`` for one readable file, or the error.
 
     Every tool that reads a file's stored content goes through here, so a
     denied, missing or test file answers the same way from each of them.
     """
     miss = miss or {"error": f"No indexed code at {file_path!r}"}
     if record_id is None:
-        record_ids = await _choose_records(
-            graph_provider, org_id, await _records_for_path(graph_provider, org_id, file_path),
-            connector_id, file_path=file_path, repo=repo, access=access,
+        record_ids, file_path = await _records_for_path(
+            graph_provider, org_id, file_path,
+            choose=lambda ids: _choose_records(
+                graph_provider, org_id, ids, connector_id,
+                file_path=file_path, repo=repo, access=access,
+            ),
         )
         record_id = record_ids[0] if record_ids else None
         if record_id is None:
@@ -184,15 +188,13 @@ async def _load_blob(
         return {"error": f"No stored content for {file_path!r}"}
 
     try:
-        record = await blob_store.get_record_from_storage(
-            virtual_record_id=virtual_record_id, org_id=org_id
-        )
+        record = await record_artifact_reader(blob_store).read_record(virtual_record_id, org_id)
     except Exception as exc:
         logger.warning("Blob fetch failed for %s: %s", virtual_record_id, exc)
         return {"error": f"Failed to read stored content for {file_path!r}"}
     if not record:
         return {"error": f"No stored content for {file_path!r}"}
-    return record_id, record_doc or {}, record
+    return record_id, record_doc or {}, record, file_path
 
 
 async def outline_impl(
@@ -218,7 +220,7 @@ async def outline_impl(
     )
     if isinstance(loaded, dict):
         return loaded
-    _record_id, _record_doc, record = loaded
+    _record_id, _record_doc, record, file_path = loaded
     symbols = []
     for meta in sorted(_named_spans(record), key=lambda m: (m["start_line"], m.get("end_line") or 0)):
         entry: dict[str, Any] = {

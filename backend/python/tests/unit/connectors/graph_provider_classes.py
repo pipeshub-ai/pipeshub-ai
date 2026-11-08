@@ -1,0 +1,120 @@
+"""The closed-world classification of every public method of `IGraphDBProvider`, kept by hand.
+
+Each method is exactly one of:
+
+- READS: reads (or opens/closes a connection or a transaction, or builds a view). Changes nothing.
+- HARMLESS: writes, but never a hierarchy, group, inherit or grant edge, never the existence, rule, model, place or trash state of a record or
+  record group (users, teams, people, apps, sync points, indexing status, named entities, taxonomy, knowledge-hub listing state, knowledge-base
+  and team grants, schema, bookkeeping).
+- STRUCTURAL: can change what a vector point's scope fields are made of: a hierarchy, group, inherit or grant edge, or whether a record or group
+  exists or is deleted. A caller outside `GraphTransactionStore` must move the connector's structure generation itself or be listed with the
+  reason it is safe (`test_structural_writers.py`).
+- PATCH: a generic node write whose effect depends on the fields it carries (the access rule, model, deleted, placeholder or parent id of a
+  record or group) or on the collection it names (`remove_nodes_by_field`: its callers remove mapping rows, not records). The store compares those fields; a caller outside the store that names one of them is listed.
+
+A method added to the interface fails `test_every_provider_method_is_classified` until someone puts it here, which is the point.
+"""
+
+READS = frozenset("""
+    check_access check_agent_permission check_api_toolset_in_use check_collection_has_document check_connector_in_use
+    check_connector_name_exists check_connector_name_uniqueness check_edge_exists check_mcp_instance_in_use
+    check_record_access_with_details check_toolset_instance_in_use count_active_apps_by_type count_connector_instances_by_scope
+    count_kb_owners count_legacy_kb_record_groups count_nodes_by_filters filter_accessible_record_ids
+    filter_accessible_virtual_record_ids filter_linked_record_ids filter_nodes_with_permission_role find_duplicate_records
+    find_file_by_name_in_parent find_folder_by_name_in_parent find_legacy_taxonomy_nodes find_merged_taxonomy_nodes_with_edges find_named_entities
+    find_named_entities_by_alias find_named_entities_by_key_prefix find_next_queued_duplicate find_organizations find_orphan_named_entities
+    find_slack_burst_record_by_ts find_taxonomy_nodes find_team_by_name find_users get_accessible_connector_types
+    get_accessible_containers get_accessible_virtual_record_ids get_account_type get_address_links_batch get_agent
+    get_agents_by_model_key get_agents_by_web_search_provider get_all_documents get_all_orgs get_app_creator_user
+    get_app_needing_vector_membership_backfill get_app_role_by_external_id get_app_user_by_email get_app_users
+    get_artifact_detail get_child_record_ids_by_relation_type get_connector_instances_with_filters get_connector_stats
+    get_departments get_descendant_virtual_record_ids get_document get_documents_by_status get_documents_paginated
+    get_drive_sync_state get_due_named_entity_persist_retries get_edge get_edge_rollup_by_file_prefix get_edges_by_target_keys
+    get_edges_from_node get_edges_from_node_with_target_name get_edges_to_node get_entity_access_context
+    get_entity_candidate_records get_entity_id_by_email get_entity_index_candidate get_existing_keys get_existing_record_keys
+    get_failed_records_by_org get_file_paths_for_records get_file_record_by_id get_filtered_connector_instances
+    get_first_user_with_permission_to_node get_folder_children get_folder_depth get_folder_subtree_height get_gated_apps
+    get_graph_user_keys_by_mongo_user_ids get_groups_with_permission_to_node get_hidden_app_ids get_issue_sites get_kb_children
+    get_kb_permissions get_key_by_external_file_id get_key_by_external_message_id get_knowledge_base
+    get_knowledge_hub_access_context_v2 get_knowledge_hub_access_v3 get_knowledge_hub_breadcrumbs
+    get_knowledge_hub_connector_grants get_knowledge_hub_connector_page_v3 get_knowledge_hub_context_permissions
+    get_knowledge_hub_filter_options get_knowledge_hub_node_access get_knowledge_hub_parent_node get_knowledge_hub_root_nodes_v2
+    get_knowledge_hub_warm_sample get_legacy_kb_record_groups get_linked_records get_message_id_header_by_key
+    get_named_entities_by_ids get_named_entities_for_record get_named_entity_date_spans get_named_entity_mentions_from_records
+    get_named_entity_mentions_in_records get_named_entity_values_in_records get_neighbors_by_relationship_types
+    get_neighbors_for_nodes_by_relationship_types get_node_depths_batch get_node_relations_batch get_nodes_by_field_in
+    get_nodes_by_field_prefix get_nodes_by_filters get_nodes_updated_since get_org_apps get_organization_record_reach get_organization_users get_page_token_db
+    get_parent_record_ids_by_relation_type get_permitted_entity_records get_person_by_email get_person_by_source_key get_purgeable_trashed_records
+    get_record_by_conversation_index get_record_by_external_id get_record_by_external_revision_id get_record_by_id
+    get_record_by_issue_key get_record_by_path get_record_by_weburl get_record_content_revs get_record_group_by_external_id
+    get_record_group_by_id get_record_group_path get_record_group_virtual_record_ids get_record_key_by_external_id
+    get_record_owner_source_user_email get_record_parent_adjacency get_record_parent_info get_record_path
+    get_record_path_segments get_record_people get_record_taxonomy_links get_records_by_file_path get_records_by_parent
+    get_records_by_parent_record get_records_by_record_group get_records_by_record_ids get_records_by_record_type
+    get_records_by_status get_records_by_virtual_record_id get_records_by_weburls get_records_for_named_entities
+    get_records_in_delete_batch get_records_linking_to_weburls get_records_pending_duplicate_reconcile get_ref_access
+    get_related_mails_by_message_id_header get_related_node_field get_revision_pointers get_selection_nodes
+    get_stage_states_with_records get_structure_of_nodes get_switch_pointers get_sync_point get_taxonomy_entities_for_record
+    get_taxonomy_entity_membership get_team_owner_removal_info get_team_permissions_and_owner_count get_team_users
+    get_team_with_users get_template get_trash_purge_stats get_typed_records_batch get_unreached_taxonomy_entities
+    get_uploaded_document_ids get_user_app_ids get_user_apps get_user_by_email get_user_by_source_id get_user_by_user_id
+    get_users_by_emails get_user_connector_instances get_user_directory_groups get_user_group_by_external_id get_user_groups get_user_kb_permission
+    get_user_permission_app_ids get_user_sync_state get_user_teams get_users get_users_with_permission_to_node
+    get_virtual_record_holders get_virtual_record_ids_for_record_ids get_virtual_record_ids_in_use has_nodes_by_filters
+    has_records_indexed_since is_named_entity_write_retryable is_record_descendant_of is_record_folder is_transient_error
+    is_trash_walk_index_ready is_write_conflict list_accessible_artifacts list_kb_permissions list_kb_records
+    get_record_group_organization get_record_organizations get_record_people
+    list_trashed_records list_user_knowledge_bases opens_explicit_transaction page_record_ids_by_type query_named_entities
+    resolve_named_entity_redirects search_nodes_by_field_terms stage_state_org_for_virtual_record validate_folder_exists_in_kb validate_folder_for_upload
+    validate_folder_in_kb
+""".split())
+
+HARMLESS = frozenset("""
+    stamp_external_org_parents
+    add_named_entity_aliases add_taxonomy_aliases add_user_to_all_team apply_verified_user_email backfill_app_org_ids
+    backfill_block_name_folded backfill_indexed_copy_flags batch_create_entity_relations batch_create_user_app_edges
+    batch_update_connector_status batch_update_team_member_roles batch_upsert_app_roles batch_upsert_app_users batch_upsert_orgs
+    batch_upsert_people batch_upsert_user_groups begin_transaction bulk_get_entity_ids_by_email claim_push_record
+    clear_named_entity_persist_retry clear_orphan_named_entity_marks clone_agent_template commit_transaction
+    compare_and_set_indexing_status connect copy_document_relationships copy_named_entity_mentions create_kb_permissions
+    create_named_entities_if_absent create_node_if_absent create_organization_if_absent create_taxonomy_node_if_absent delete_all_team_permissions
+    delete_blocks_for_records delete_dangling_named_entity_mentions delete_dangling_named_entity_values
+    delete_orphan_named_entities delete_record_entity_relations delete_sync_points_by_connector_id delete_team_member_edges disconnect
+    ensure_all_team_with_users ensure_app_membership ensure_nodes ensure_pipeline_schema ensure_schema
+    ensure_taxonomy_hierarchy_edge ensure_team_app_edge increment_node_field kb_exists kh_scope_enabled
+    kh_scope_forget kh_scope_mark_changed kh_scope_mark_stale kh_scope_reset_syncing kh_scope_restamp_stale kh_scope_stamp
+    kh_scope_sync_ended mark_orphan_named_entities migrate_agent_hub_knowledge migrate_person_to_user move_taxonomy_edges
+    name_knowledge_hub_parents normalize_folder_mime_types organization_exists page_entity_index_source
+    page_records_for_vector_membership_backfill permission_hierarchy_view permission_stamp_graph
+    reap_stale_external_app_relations record_purge_failure records_accept_indexed_copy reindex_record_group_records
+    reindex_single_record remove_authenticated_as remove_kb_permission remove_sync_point
+    replace_named_entity_values reset_indexing_status_for_connector retag_push_record rollback_transaction
+    schedule_named_entity_persist_retry schedule_named_entity_reextract schedule_named_entity_reproject set_record_properties
+    stage_state_compare_and_set stage_state_create stage_state_get stage_states_delete_for_virtual_records
+    stage_states_delete_unheld_revisions stage_states_for_revision stage_states_stale stage_states_unheld_revisions
+    stamp_kh_listing_state store_page_token update_drive_sync_state update_indexing_status_for_record_ids update_kb_permission
+    update_knowledge_base update_queued_duplicates_status update_sync_point_if update_user_sync_state upsert_authenticated_as
+    upsert_person_by_email upsert_person_by_source_key upsert_sync_point
+""".split())
+
+STRUCTURAL = frozenset("""
+    backfill_hierarchy batch_create_edges batch_delete_edges batch_upsert_node_relations batch_upsert_record_groups
+    batch_upsert_record_permissions batch_upsert_records create_edges_if_absent create_inherit_permissions_relation_record_group
+    create_record_group_relation create_record_groups_relation create_record_relation delete_all_edges_for_node
+    delete_connector_instance delete_connector_sync_edges delete_edge delete_edges_between_collections
+    delete_edges_by_relationship_types delete_edges_by_source_keys delete_edges_from delete_edges_to delete_edges_to_groups
+    delete_edges_touching_nodes delete_inherit_permissions_relation_record_group delete_kb_hub_app delete_nodes
+    delete_nodes_and_edges delete_parent_child_edge_to_record delete_record delete_record_by_external_id
+    delete_records_and_relations delete_records_recursive delete_single_record drop_redundant_group_edges link_record_to_group
+    migrate_legacy_kb_to_app migrate_legacy_relation_edge purge_trash_kept_record_groups purge_trashed_records
+    remove_user_access_to_connector remove_user_access_to_record replace_edges_to replace_record_permissions restore_records
+    soft_delete_records split_link_edges take_back_kept_record_group unlink_nodes_missed_by_full_sync update_edge
+    upsert_record_under_parent
+    execute_query
+""".split())
+
+PATCH = frozenset("""
+    batch_update_nodes batch_upsert_nodes compare_and_set_record_fields update_node update_node_fields_if
+    update_node_fields_if_match update_node_if_match update_nodes_fields_if_match
+    remove_nodes_by_field
+""".split())

@@ -26,6 +26,8 @@ from app.agent_loop_lib.core.messages import (
     Message,
     MessageRole,
     ToolCall,
+    as_sent,
+    image_data_url,
 )
 from app.agent_loop_lib.core.responses import StopReason
 from app.agent_loop_lib.core.tool_schema import ToolSchema
@@ -99,8 +101,6 @@ def _responses_content_blocks(parts: list[Any]) -> list[dict[str, Any]]:
     `input_text` / `input_image`, and `image_url` is a bare string rather than
     an object -- so the two cannot share one formatter.
     """
-    from app.agent_loop_lib.core.messages import image_data_url
-
     blocks: list[dict[str, Any]] = []
     for part in parts:
         if getattr(part, "type", None) == "image" and getattr(part, "source", None):
@@ -132,11 +132,24 @@ def format_responses_input(
         items.append({"type": "message", "role": "system", "content": system})
 
     for msg in messages:
+        msg = as_sent(msg)
         if msg.role == MessageRole.TOOL:
+            step_footer = getattr(msg, "step_footer", "")
+            content = msg.content
+            if isinstance(content, list):
+                # A multipart result (text plus retrieved images) goes out as
+                # input blocks; concatenating the footer onto the list raised
+                # TypeError and failed the whole turn.
+                output: Any = _responses_content_blocks(content)
+                if step_footer:
+                    output.append({"type": "input_text", "text": step_footer})
+                output = output or ""
+            else:
+                output = (content or "") + step_footer
             items.append({
                 "type": "function_call_output",
                 "call_id": msg.tool_call_id,
-                "output": (msg.content or "") + getattr(msg, "step_footer", ""),
+                "output": output,
             })
             continue
 

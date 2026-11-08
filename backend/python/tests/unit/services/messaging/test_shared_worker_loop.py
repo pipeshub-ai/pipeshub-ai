@@ -1,6 +1,7 @@
 """Indexing consumers sharing one worker loop, on both brokers."""
 
 import asyncio
+import json
 import logging
 import threading
 from collections.abc import Callable
@@ -20,8 +21,10 @@ from app.services.messaging.redis_streams.indexing_consumer import (
     IndexingRedisStreamsConsumer,
 )
 from app.services.messaging.worker_loop import WorkerLoop
+from tests.unit.services.messaging.test_worker_loop import kill_worker_loop
 
 _LOGGER = logging.getLogger("shared-worker-loop-test")
+_DIES = pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
 _STAGE = StageAdmission(stage="classify", limit=2)
 
 
@@ -149,6 +152,66 @@ def test_stopping_waits_for_the_lease_renewer_to_stop(build: Build, monkeypatch:
         assert stopped.is_set()
         assert consumer.lease_renewer is None
     finally:
+        worker.stop()
+
+
+@BROKERS
+@_DIES
+def test_every_consumer_on_the_loop_stops_taking_work_when_it_dies(build: Build) -> None:
+    worker = WorkerLoop(_LOGGER)
+    record, stage = build(worker), build(worker, _STAGE)
+    try:
+        _start(record)
+        _start(stage)
+        record.running = stage.running = True
+
+        kill_worker_loop(worker, SystemExit("boom"))
+
+        assert record.running is False and stage.running is False
+    finally:
+        _stop(stage)
+        _stop(record)
+        worker.stop()
+
+
+@BROKERS
+def test_a_consumer_that_left_the_loop_is_not_held_by_it(build: Build) -> None:
+    worker = WorkerLoop(_LOGGER)
+    left, staying = build(worker), build(worker, _STAGE)
+    try:
+        _start(left)
+        _start(staying)
+        _stop(left)
+        left.running = staying.running = True
+
+        kill_worker_loop(worker)
+
+        assert left.running is True and staying.running is False
+    finally:
+        _stop(staying)
+        worker.stop()
+
+
+@_DIES
+async def test_a_redis_consumer_on_a_dead_loop_dispatches_and_claims_nothing() -> None:
+    """Each XAUTOCLAIM bumps times_delivered toward the dead-letter backstop, so claiming
+    for a loop that cannot run the work fails healthy records."""
+    worker = WorkerLoop(_LOGGER)
+    consumer = _redis(worker)
+    try:
+        _start(consumer)
+        consumer.running = True
+        kill_worker_loop(worker, SystemExit())
+        consumer.redis = AsyncMock()
+
+        await consumer._start_processing_task("t", "1-0", {"value": json.dumps({"eventType": "x", "payload": {}})})
+        await consumer._drain_pending()
+
+        assert consumer._get_active_task_count() == 0
+        assert not consumer._is_in_flight("1-0", "t")
+        consumer.redis.xautoclaim.assert_not_awaited()
+    finally:
+        _stop(consumer)
         worker.stop()
 
 

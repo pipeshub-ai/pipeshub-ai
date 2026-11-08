@@ -69,7 +69,7 @@ class TestStartNoWait:
         svc = _make_service()
         svc._refresh_all_tokens = AsyncMock()
         svc._periodic_refresh_check = AsyncMock()
-        with patch("asyncio.create_task") as mock_create:
+        with patch("app.connectors.core.base.token_service.token_refresh_service.spawn_detached") as mock_create:
             await svc.start(wait_for_initial_refresh=False)
         assert svc._running is True
         svc._refresh_all_tokens.assert_not_awaited()

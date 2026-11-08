@@ -82,10 +82,11 @@ def assign_namespaces(instances: Iterable[dict[str, Any]]) -> dict[str, str]:
     )
 
 
-def build_namespaced_tool_name(namespace: str, tool_name: str) -> str:
+def build_namespaced_tool_name(namespace: str, tool_name: str, *, prefix: str = _PREFIX) -> str:
+    """`{prefix}{namespace}_{tool}`, valid for every provider. API Toolsets pass `api_`."""
     key = _INVALID_KEY_CHARS.sub("_", _legacy_key(namespace)) or "server"
     tool = _INVALID_TOOL_CHARS.sub("_", tool_name) or "tool"
-    name = f"{_PREFIX}{key}_{tool}"
+    name = f"{prefix}{key}_{tool}"
     # Only " " and "-" were ever rewritten in the key; any other change means the old
     # name was invalid, so nothing persisted can depend on it.
     unchanged = key == _legacy_key(namespace) and tool == tool_name
@@ -94,5 +95,5 @@ def build_namespaced_tool_name(namespace: str, tool_name: str) -> str:
 
     suffix = f"_{_short_hash(f'{namespace}/{tool_name}', _HASH_LENGTH)}"
     key = key[:_MAX_KEY_LENGTH] if len(name) + len(suffix) > MAX_TOOL_NAME_LENGTH else key
-    room = MAX_TOOL_NAME_LENGTH - len(_PREFIX) - len(key) - 1 - len(suffix)
-    return f"{_PREFIX}{key}_{tool[:room]}{suffix}"
+    room = MAX_TOOL_NAME_LENGTH - len(prefix) - len(key) - 1 - len(suffix)
+    return f"{prefix}{key}_{tool[:room]}{suffix}"

@@ -9,6 +9,11 @@ class DirectoryListingError(Exception):
         self.message = message
 
 
+class AccessDeniedError(DirectoryListingError):
+    """The account may not list this folder. It stays that way until someone changes its
+    permissions, unlike a dropped connection or a busy server."""
+
+
 class ShareListingError(Exception):
     def __init__(self, message: str) -> None:
         super().__init__(message)
@@ -23,6 +28,14 @@ class NetworkShareAuthError(Exception):
 
 class DialectError(Exception):
     """The server negotiated a dialect this connector refuses."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+class ShareWalkIncompleteError(Exception):
+    """A sync listed only part of what it should have. What it did not read was kept, not removed."""
 
     def __init__(self, message: str) -> None:
         super().__init__(message)

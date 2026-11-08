@@ -239,7 +239,7 @@ class TestStartExceptionHandling:
         async def handler(msg):
             yield {"event": "done"}
 
-        with patch("asyncio.create_task", side_effect=Exception("task error")):
+        with patch("app.services.messaging.kafka.consumer.indexing_consumer.spawn_detached", side_effect=Exception("task error")):
             with pytest.raises(Exception, match="task error"):
                 await consumer.start(handler)
 

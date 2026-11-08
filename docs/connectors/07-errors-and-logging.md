@@ -30,6 +30,8 @@ Use these instead of writing a new one.
 
 `stream_errors.py` reports an expired or revoked connection as **409**, not 401: the frontend treats any 401 as the PipesHub session expiring and logs the user out. Keep that rule when you map errors in `stream_record`. `to_stream_error` passes any `HTTPException` through unchanged, and the client exceptions in `exception.py` are `HTTPException`s, so an `UnauthorizedError` raised by your client would reach the user as 401. In `stream_record`, convert them with `map_source_status(e.status_code, connector=self.display_name)`.
 
+A request to an address the deployment refuses raises `AddressNotAllowedError` (`app/sources/client/http/address_guard.py`) before anything is sent. Its message names the address and the rule, so show it. It is not an `httpx.HTTPError`, and an `except httpx.HTTPError` does not catch it. In `test_connection_and_access`, raise `ConnectorInitError(str(e))` from it. In `stream_record`, `to_stream_error` turns it into a 409 that carries the message.
+
 If your vendor's errors have a stable shape, write one small function in the connector package that turns a vendor exception or response into `"<code>: <message> (HTTP <status>)"`, the way `sanitize_graph_error` does, and use it at every log site. That keeps the format the same across the connector and keeps secrets out in one place.
 
 ## Examples

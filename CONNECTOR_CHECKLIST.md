@@ -74,7 +74,7 @@ Copy this list into the PR description and tick each item, or say why it does no
 - [ ] An expired or invalid delta/history cursor re-lists that container in full and notifies the user, instead of skipping changes.
 - [ ] Date filters and checkpoints use UTC epoch milliseconds and are correct for a source in another time zone.
 - [ ] Every listing is paginated to the end: users, groups, members, containers, items, comments, attachments and permissions. (Behaviour test with more than one page of each.)
-- [ ] One bad item or container is logged, counted in `FailedItems` or reported as `FullSyncCoverage(complete=False)`, and skipped; the sync continues. A date-window filter is reported as `window_start_ms`, not `complete=False`. A failure that makes the whole run meaningless (auth, missing scope) fails the sync.
+- [ ] One bad item or container is logged, counted in `FailedItems` or reported as `FullSyncCoverage(complete=False)`, and skipped; the sync continues. A date-window filter is reported as `window_start_ms`, and a source that only ever lists part of itself (a feed) as `lists_everything=False`, not `complete=False`. A failure that makes the whole run meaningless (auth, missing scope) fails the sync.
 - [ ] `SyncStrategy.WEBHOOK` is not declared: the platform does not call `handle_webhook_notification`.
 - [ ] A scheduled run is not described as a full sync. Deletions that depend on full-sync cleanup name the event that sets `fullSync` or `pendingFullSync`.
 - [ ] Adding the connector to `ROOT_SCOPED_CONNECTOR_TYPES`, or a new `RecordType` / `RecordGroupType` / `SyncFilterKey`, was asked for as a framework change. Slack's `RECORD_GROUP_LEVEL` on a channel was not copied onto a container that has a private child.
@@ -121,7 +121,7 @@ Copy this list into the PR description and tick each item, or say why it does no
 - [ ] Rate limits come from `with_resilience_config`; `Retry-After` is honoured; parallel calls are bounded.
 - [ ] Listing and writing go page by page and batch by batch; memory stays bounded on a large tenant; files are streamed.
 - [ ] No graph, vector, broker or config-store client is imported.
-- [ ] A user-supplied base URL (self-hosted sources) is validated with `validate_public_http_url` (`app/utils/url_fetcher.py`) before use, and requires `https` unless the human agreed otherwise.
+- [ ] Every request to a user-supplied address goes through the address guard: `HTTPClient`, `guarded_async_client` or `AddressGuardAdapter`, or `check_url_allowed` only for an SDK that connects by itself and takes no guarded transport ([02-low-level-design.md](./docs/connectors/02-low-level-design.md)). No bare `httpx.AsyncClient`, `aiohttp.ClientSession` or `requests.Session`. A user-supplied base URL requires `https` unless the human agreed otherwise.
 
 ## 14. Tests and CI
 

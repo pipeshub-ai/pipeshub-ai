@@ -135,11 +135,9 @@ describe('MongoDB code paths against a real MongoDB', function () {
     const orgId = await newOrg();
     const admin = await newUser(orgId, 'admin');
     await newUser(orgId, 'member');
-
-    admin.role = 'member';
     let caught: unknown;
     try {
-      await saveUserEnsuringOrgRetainsAdmin(admin, rsAvailable);
+      await saveUserEnsuringOrgRetainsAdmin(String(admin.orgId), String(admin._id), { role: 'member' }, rsAvailable);
     } catch (error) {
       caught = error;
     }
@@ -152,9 +150,7 @@ describe('MongoDB code paths against a real MongoDB', function () {
     const orgId = await newOrg();
     const first = await newUser(orgId, 'admin');
     await newUser(orgId, 'admin');
-
-    first.role = 'member';
-    await saveUserEnsuringOrgRetainsAdmin(first, rsAvailable);
+    await saveUserEnsuringOrgRetainsAdmin(String(first.orgId), String(first._id), { role: 'member' }, rsAvailable);
     expect((await Users.findById(first._id).lean())?.role).to.equal('member');
     expect(await adminCount(orgId)).to.equal(1);
   });
@@ -163,12 +159,10 @@ describe('MongoDB code paths against a real MongoDB', function () {
     const orgId = await newOrg();
     const a = await newUser(orgId, 'admin');
     const b = await newUser(orgId, 'admin');
-    a.role = 'member';
-    b.role = 'member';
 
     const { ok, refused } = await raceSaves([
-      () => saveUserEnsuringOrgRetainsAdmin(a, rsAvailable),
-      () => saveUserEnsuringOrgRetainsAdmin(b, rsAvailable),
+      () => saveUserEnsuringOrgRetainsAdmin(String(a.orgId), String(a._id), { role: 'member' }, rsAvailable),
+      () => saveUserEnsuringOrgRetainsAdmin(String(b.orgId), String(b._id), { role: 'member' }, rsAvailable),
     ]);
 
     expect(await adminCount(orgId)).to.be.at.least(1);
@@ -185,11 +179,9 @@ describe('MongoDB code paths against a real MongoDB', function () {
       await newUser(orgId, 'admin');
     }
     const member = await newUser(orgId, 'member');
-
-    member.role = 'admin';
     let caught: unknown;
     try {
-      await saveUserEnsuringAdminCap(member, rsAvailable);
+      await saveUserEnsuringAdminCap(String(member.orgId), String(member._id), { role: 'admin' }, rsAvailable);
     } catch (error) {
       caught = error;
     }
@@ -205,12 +197,10 @@ describe('MongoDB code paths against a real MongoDB', function () {
     }
     const x = await newUser(orgId, 'member');
     const y = await newUser(orgId, 'member');
-    x.role = 'admin';
-    y.role = 'admin';
 
     const { ok, refused } = await raceSaves([
-      () => saveUserEnsuringAdminCap(x, rsAvailable),
-      () => saveUserEnsuringAdminCap(y, rsAvailable),
+      () => saveUserEnsuringAdminCap(String(x.orgId), String(x._id), { role: 'admin' }, rsAvailable),
+      () => saveUserEnsuringAdminCap(String(y.orgId), String(y._id), { role: 'admin' }, rsAvailable),
     ]);
 
     expect(await adminCount(orgId)).to.be.at.most(MAX_ORG_ADMINS);

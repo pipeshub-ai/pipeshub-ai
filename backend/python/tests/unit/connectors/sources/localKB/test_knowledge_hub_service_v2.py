@@ -21,8 +21,12 @@ import pytest
 from app.connectors.sources.localKB.handlers.kh_search import SearchPage
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     _MAX_FILTER_SOURCES,
-    _MAX_PAGE_WALK,
+    MAX_PAGE_WALK,
     KnowledgeHubService,
+)
+from app.exceptions.graph_db_exceptions import (
+    KnowledgeHubListingBusy,
+    KnowledgeHubListingTooLarge,
 )
 from app.utils.kh_cursor import (
     Boundary,
@@ -208,24 +212,8 @@ async def test_a_filtered_scoped_request_flattens(service, provider) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason="depth is accepted by get_nodes and never read; "
-           "the connector page query has no depth parameter to receive it",
-)
 async def test_depth_bounds_a_flattened_request(service, provider) -> None:
-    """The agent navigator asks for a bounded flatten.
-
-    `navigator.py` clamps depth to its own maximum, passes it, and then computes
-    each row's nesting level from it — so it believes the bound was applied. v2
-    drops it and flattens the whole subtree up to `_KH_V2_MAX_DEPTH` (50), so an
-    agent asking for two levels can receive fifty. No error is raised anywhere,
-    which is why nothing caught it.
-
-    Marked xfail rather than fixed: the remedy is a product decision — bound the
-    traversal in the provider, clamp by level in the service after fetching, or
-    retire the parameter and update the navigator.
-    """
+    """The agent navigator asks for a bounded flatten: the provider walks at most `depth` levels."""
     provider.get_knowledge_hub_connector_page_v3.return_value = page_of(
         [row("r1", "Record")], scope=admitted_scope()
     )
@@ -234,7 +222,16 @@ async def test_depth_bounds_a_flattened_request(service, provider) -> None:
         flattened=True, depth=2,
     )
     kwargs = provider.get_knowledge_hub_connector_page_v3.call_args.kwargs
-    assert kwargs.get("depth") == 2, sorted(kwargs)
+    assert kwargs["max_depth"] == 2
+
+
+@pytest.mark.asyncio
+async def test_depth_bounds_a_flatten_from_the_root_one_hop_below_it(service, provider) -> None:
+    """From the root an App is one hop away, so each connector is walked `depth - 1` levels."""
+    provider.get_knowledge_hub_connector_page_v3.return_value = page_of([row("r1", "Record")])
+    await service.get_nodes(user_id="u1", org_id="o1", flattened=True, depth=3)
+    calls = provider.get_knowledge_hub_connector_page_v3.call_args_list
+    assert calls and {c.kwargs["max_depth"] for c in calls} == {2}
 
 
 @pytest.mark.asyncio
@@ -425,6 +422,36 @@ async def test_an_inadmissible_node_is_a_404_that_names_nothing(service, provide
 
 
 @pytest.mark.asyncio
+async def test_a_listing_too_large_to_walk_is_a_422_that_says_to_open_a_folder(service, provider) -> None:
+    """Not a 500: the reader gets the sentence the refusal was written with."""
+    provider.get_knowledge_hub_connector_page_v3.side_effect = KnowledgeHubListingTooLarge()
+    result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app", flattened=True)
+
+    assert (result.success, result.errorCode) == (False, 422)
+    assert result.error == "This view has too many records to list at once. Open a folder, or narrow by search."
+    assert result.items == []
+
+
+@pytest.mark.asyncio
+async def test_a_busy_listing_is_a_503(service, provider) -> None:
+    provider.get_knowledge_hub_connector_page_v3.side_effect = KnowledgeHubListingBusy()
+    result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app", flattened=True)
+
+    assert (result.success, result.errorCode) == (False, 503)
+
+
+@pytest.mark.asyncio
+async def test_any_statement_finding_the_memory_pool_spent_is_a_503_not_a_500(service, provider) -> None:
+    class PoolSpent(Exception):
+        code = "Neo.TransientError.General.MemoryPoolOutOfMemoryError"
+
+    provider.get_knowledge_hub_access_context_v2.side_effect = PoolSpent()
+    result = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app", flattened=True)
+
+    assert (result.success, result.errorCode) == (False, 503)
+
+
+@pytest.mark.asyncio
 async def test_the_wrong_type_in_the_url_is_still_a_400(service, provider) -> None:
     provider.get_knowledge_hub_connector_page_v3.return_value = page_of(
         [], scope=admitted_scope(node_type="app")
@@ -543,14 +570,14 @@ async def test_the_page_walk_is_bounded_by_queries_not_items(service, provider) 
     provider.get_knowledge_hub_root_nodes_v2.return_value = envelope(
         [row("app1", "App One", node_type="app")], total=100_000, has_more=True
     )
-    refused = await service.get_nodes(user_id="u1", org_id="o1", page=_MAX_PAGE_WALK + 1, limit=1)
+    refused = await service.get_nodes(user_id="u1", org_id="o1", page=MAX_PAGE_WALK + 1, limit=1)
     assert (refused.success, refused.errorCode) == (False, 400)
     assert "invalid page" in refused.error.lower()
     provider.get_knowledge_hub_root_nodes_v2.assert_not_called()
 
-    allowed = await service.get_nodes(user_id="u1", org_id="o1", page=_MAX_PAGE_WALK, limit=1)
+    allowed = await service.get_nodes(user_id="u1", org_id="o1", page=MAX_PAGE_WALK, limit=1)
     assert allowed.success is True
-    assert provider.get_knowledge_hub_root_nodes_v2.await_count == _MAX_PAGE_WALK
+    assert provider.get_knowledge_hub_root_nodes_v2.await_count == MAX_PAGE_WALK
 
 
 def _sorted_listing(names: list[str]) -> tuple[list[dict], Callable[..., Awaitable[dict]]]:

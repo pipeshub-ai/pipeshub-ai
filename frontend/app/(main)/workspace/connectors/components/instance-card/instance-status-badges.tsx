@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { Flex, Text, Tooltip } from '@radix-ui/themes';
+import { Badge, Flex, Text, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
 import {
@@ -12,6 +12,7 @@ import {
   type InstanceSyncOperationKey,
 } from './instance-status';
 import type { ConnectorConfig, ConnectorInstance } from '../../types';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 const SYNC_VALUE_COLOR: Record<
   NonNullable<ReturnType<typeof deriveInstanceSyncOperation>>['badgeColor'],
@@ -24,7 +25,6 @@ const SYNC_VALUE_COLOR: Record<
 
 const ROW_LABEL_STYLE: React.CSSProperties = {
   color: 'var(--gray-10)',
-  width: 164,
   flexShrink: 0,
   textTransform: 'uppercase',
   letterSpacing: '0.04px',
@@ -37,12 +37,14 @@ const SETUP_VALUE_COLOR: Record<
 > = {
   gray: 'var(--gray-11)',
   amber: 'var(--amber-11)',
+  red: 'var(--red-11)',
   green: 'var(--green-11)',
 };
 
 const SETUP_I18N: Record<InstanceSetupStatusKey, string> = {
   not_configured: 'workspace.connectors.instanceStatus.setup.notConfigured',
   needs_authentication: 'workspace.connectors.instanceStatus.setup.needsAuth',
+  action_needed: 'workspace.connectors.instanceStatus.setup.actionNeeded',
   desktop_offline: 'workspace.connectors.instanceStatus.setup.desktopOffline',
   ready: 'workspace.connectors.instanceStatus.setup.ready',
 };
@@ -50,6 +52,7 @@ const SETUP_I18N: Record<InstanceSetupStatusKey, string> = {
 const SETUP_TOOLTIP_I18N: Record<InstanceSetupStatusKey, string> = {
   not_configured: 'workspace.connectors.instanceStatus.setup.notConfiguredTooltip',
   needs_authentication: 'workspace.connectors.instanceStatus.setup.needsAuthTooltip',
+  action_needed: 'workspace.connectors.instanceStatus.setup.actionNeededTooltip',
   desktop_offline: 'workspace.connectors.instanceStatus.setup.desktopOfflineTooltip',
   ready: 'workspace.connectors.instanceStatus.setup.readyTooltip',
 };
@@ -130,18 +133,27 @@ export function InstanceSetupStatusRow({
   instance: ConnectorInstance;
   config?: ConnectorConfig;
 }) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
   const setup = deriveInstanceSetupStatus(instance, config);
   const valueLabel = t(SETUP_I18N[setup.key]);
   const valueColor = SETUP_VALUE_COLOR[setup.badgeColor];
 
+  // The items' own titles say what to do; the generic text only frames them.
+  const tooltip =
+    setup.key === 'action_needed'
+      ? t(SETUP_TOOLTIP_I18N[setup.key], {
+          items: (instance.actionItems ?? []).map((item) => item.title).join('; '),
+        })
+      : t(SETUP_TOOLTIP_I18N[setup.key]);
+
   return (
-    <Tooltip content={t(SETUP_TOOLTIP_I18N[setup.key])}>
-      <Flex align="center" gap="4" style={{ width: '100%' }}>
+    <Tooltip content={tooltip}>
+      <Flex direction={isMobile ? 'column' : 'row'} align={isMobile ? 'start' : 'center'} gap={isMobile ? '1' : '4'} style={{ width: '100%' }}>
         <Text
           size="1"
           weight="medium"
-          style={ROW_LABEL_STYLE}
+          style={{ ...ROW_LABEL_STYLE, width: isMobile ? 'auto' : 164 }}
         >
           {t('workspace.connectors.instanceStatus.setup.rowLabel')}
         </Text>
@@ -152,6 +164,38 @@ export function InstanceSetupStatusRow({
           </Text>
         </Flex>
       </Flex>
+    </Tooltip>
+  );
+}
+
+/** Header badge of an instance with something for its admin to do; opens the instance panel. */
+export function InstanceActionNeededBadge({
+  instance,
+  onOpen,
+}: {
+  instance: ConnectorInstance;
+  onOpen?: (instance: ConnectorInstance) => void;
+}) {
+  const { t } = useTranslation();
+  const items = instance.actionItems ?? [];
+  if (items.length === 0) return null;
+  const anError = items.some((item) => item.severity === 'error');
+  const label = t('workspace.connectors.actionItems.badge');
+
+  return (
+    <Tooltip content={items.map((item) => item.title).join('; ')}>
+      <Badge
+        asChild
+        color={anError ? 'red' : 'amber'}
+        variant="soft"
+        size="1"
+        style={{ flexShrink: 0, cursor: onOpen ? 'pointer' : 'default', minHeight: 24 }}
+      >
+        <button type="button" aria-label={label} onClick={() => onOpen?.(instance)} disabled={!onOpen}>
+          <MaterialIcon name="priority_high" size={14} />
+          {label}
+        </button>
+      </Badge>
     </Tooltip>
   );
 }

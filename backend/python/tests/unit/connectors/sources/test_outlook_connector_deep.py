@@ -334,10 +334,10 @@ class TestDetermineFolderFilterStrategy:
 
     def test_scenario1_no_selection_custom_enabled(self):
         c, *_ = _make_connector()
-        # No folders filter, custom enabled (default)
+        # No folders filter, custom enabled (default): everything but Deleted Items
         folders, mode = c._determine_folder_filter_strategy()
-        assert folders is None
-        assert mode is None
+        assert folders == ["Deleted Items"]
+        assert mode == "exclude"
 
     def test_scenario2_no_selection_custom_disabled(self):
         c, *_ = _make_connector()
@@ -352,7 +352,7 @@ class TestDetermineFolderFilterStrategy:
         }.get(key.value if hasattr(key, 'value') else key))
 
         folders, mode = c._determine_folder_filter_strategy()
-        assert folders == STANDARD_OUTLOOK_FOLDERS
+        assert folders == [f for f in STANDARD_OUTLOOK_FOLDERS if f != "Deleted Items"]
         assert mode == "include"
 
     def test_scenario3_selected_folders_no_custom(self):
@@ -481,7 +481,7 @@ class TestGetChildFoldersRecursive:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_no_client(self):
+    async def test_no_client_raises(self):
         c, *_ = _make_connector()
         c.external_outlook_client = None
         folder = MagicMock()
@@ -489,8 +489,8 @@ class TestGetChildFoldersRecursive:
         folder.display_name = "Test"
         folder.child_folder_count = 2
 
-        result = await c._get_child_folders_recursive("user1", folder)
-        assert result == []
+        with pytest.raises(Exception, match="not initialized"):
+            await c._get_child_folders_recursive("user1", folder)
 
     @pytest.mark.asyncio
     async def test_no_folder_id(self):
@@ -571,8 +571,9 @@ class TestPopulateUserCache:
         c.external_users_client = MagicMock()
         c.external_users_client.users_user_list_user = AsyncMock(side_effect=Exception("API fail"))
 
-        # Should not raise
-        await c._populate_user_cache()
+        # Raises: group memberships must never be built from an empty cache.
+        with pytest.raises(Exception, match="API fail"):
+            await c._populate_user_cache()
 
 
 # ===========================================================================

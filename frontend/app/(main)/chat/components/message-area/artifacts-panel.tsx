@@ -8,6 +8,7 @@ import { Spinner } from '@/app/components/ui/spinner';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { isProcessedError } from '@/lib/api';
 import { isSignedUrl, isTrustedApiUrl } from '../../utils/parse-download-markers';
+import { classifyImageUrl } from '@/lib/utils/image-url-policy';
 import type { ChatArtifact } from '../../types';
 
 interface ArtifactsPanelProps {
@@ -190,12 +191,12 @@ function ArtifactThumbnail({ artifact, onGone }: { artifact: ChatArtifact; onGon
       if (!value) setErrored(true);
     };
 
-    // SECURITY: if there is no recordId we will only render a raw URL when it
-    // is explicitly trusted — never an arbitrary marker-supplied URL.
+    // SECURITY: markers can come from model output. A thumbnail loads with no
+    // click, so only a URL the image policy auto-loads is used; a presigned
+    // URL is recognised by its query string alone, which any host can fake.
     const trustedFallbackUrl = () => {
-      const u = artifact.downloadUrl?.trim();
-      if (!u) return undefined;
-      return isTrustedApiUrl(u) || isSignedUrl(u) ? u : undefined;
+      const decision = classifyImageUrl(artifact.downloadUrl);
+      return decision.kind === 'auto' ? decision.src : undefined;
     };
 
     if (!artifact.recordId) {

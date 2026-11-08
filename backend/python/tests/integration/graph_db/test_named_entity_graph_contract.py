@@ -125,14 +125,31 @@ def _quarter(org_id: str) -> ResolvedEntity:
     return ResolvedEntity(entity=entity, graph_key=named_entity_key(org_id, entity.kind.value, entity.norm_key))
 
 
-def _amount(org_id: str, amount: str, currency: str = "USD") -> ResolvedEntity:
+def _amount(org_id: str, amount: str, currency: str = "USD", high: str | None = None) -> ResolvedEntity:
     value = Decimal(amount)
     entity = NamedEntity(
         kind=EntityKind.CURRENCY,
-        display_name=f"{currency} {amount}",
-        norm_key=f"{currency}:{amount}",
-        value=MoneyValue(amount=value, amount_float=float(value), currency=currency),
+        display_name=f"{currency} {amount}" + (f"-{high}" if high else ""),
+        norm_key=f"{currency}:{amount}" + (f"..{high}" if high else ""),
+        value=MoneyValue(
+            amount=value, amount_float=float(value), currency=currency,
+            amount_high=Decimal(high) if high else None,
+        ),
         mentions=[_mention(f"{currency} {amount}")],
+    )
+    return ResolvedEntity(entity=entity, graph_key=named_entity_key(org_id, entity.kind.value, entity.norm_key))
+
+
+def _duration(org_id: str, surface: str) -> ResolvedEntity:
+    from app.modules.named_entities.normalizers.dates import (
+        NormalizationContext,
+        normalize_temporal,
+    )
+
+    value = normalize_temporal(EntityKind.DURATION, surface, NormalizationContext())
+    entity = NamedEntity(
+        kind=EntityKind.DURATION, display_name=surface, norm_key=f"duration:{value.iso}", value=value,
+        mentions=[_mention(surface)],
     )
     return ResolvedEntity(entity=entity, graph_key=named_entity_key(org_id, entity.kind.value, entity.norm_key))
 
@@ -198,6 +215,36 @@ async def test_aliases_are_partitioned_per_kind(graph) -> None:
     assert await provider.find_named_entities(f"{org_id}-other", "organization", ["acme corp"]) == []
 
 
+async def test_a_learned_alias_is_found_on_the_one_node_that_carries_it(graph) -> None:
+    provider, org_id, _ = graph
+    full, short = _org(org_id, "Pinecrest Hospitality"), _org(org_id, "Pinecrest")
+    now = get_epoch_timestamp_in_ms()
+    await provider.create_named_entities_if_absent([node_document(org_id, item, now) for item in (full, short)])
+    await provider.add_named_entity_aliases(org_id, "organization", full.graph_key, ["Pinecrest"], ["pinecrest"])
+
+    rows = await provider.find_named_entities_by_alias(
+        org_id, [("organization", "pinecrest"), ("organization", "pinecrest hospitality"), ("product", "pinecrest")],
+    )
+    # The short node's own key is not an alias of it; only the full node carries "pinecrest".
+    assert [(row["key"], row["id"]) for row in rows] == [("pinecrest", full.graph_key)]
+    (by_id,) = await provider.get_named_entities_by_ids(org_id, [full.graph_key])
+    assert set(by_id["normalizedAliases"]) == {"pinecrest hospitality", "pinecrest"}
+    assert await provider.find_named_entities_by_alias(f"{org_id}-other", [("organization", "pinecrest")]) == []
+
+
+async def test_a_reprojection_is_due_now_counts_no_failure_and_keeps_a_pending_job(graph) -> None:
+    provider, org_id, _ = graph
+    await provider.schedule_named_entity_reproject(org_id, f"{org_id}-r1")
+    await provider.schedule_named_entity_reextract(org_id, f"{org_id}-r2")
+    await provider.schedule_named_entity_reproject(org_id, f"{org_id}-r2")
+
+    due = {row["recordId"]: row for row in await provider.get_due_named_entity_persist_retries(10)}
+    assert due[f"{org_id}-r1"]["attempts"] == 0
+    # The pending re-extraction is untouched: still a re-extraction job.
+    assert f"{org_id}-r2" not in due
+    assert f"{org_id}-r2" in {row["recordId"] for row in await provider.get_due_named_entity_persist_retries(10, reextract=True)}
+
+
 async def test_range_and_overlap_queries_return_the_same_records(graph) -> None:
     provider, org_id, _ = graph
     first, second = await _records(provider, org_id, 2)
@@ -234,6 +281,29 @@ async def test_range_and_overlap_queries_return_the_same_records(graph) -> None:
         amount_min=90_000, amount_max=90_000, date_start_ms=_ms(2025, 8, 1), date_end_ms=_ms(2025, 8, 2),
     )
     assert (await provider.get_records_for_named_entities(org_id, None, no_record_has_both))["hits"] == []
+
+
+async def test_an_amount_range_matches_any_window_it_overlaps(graph) -> None:
+    provider, org_id, _ = graph
+    ranged, exact = await _records(provider, org_id, 2)
+    writer = _writer(provider)
+    # "$5-10M" and an exact $5M.
+    await writer.write(org_id, ranged, [_amount(org_id, "5000000", high="10000000")])
+    await writer.write(org_id, exact, [_amount(org_id, "5000000")])
+
+    async def found(low: float, high: float) -> set[str]:
+        query = NamedEntityQuery(kinds=["currency"], amount_min=low, amount_max=high, currency="USD")
+        return {hit["recordId"] for hit in (await provider.get_records_for_named_entities(org_id, None, query))["hits"]}
+
+    assert await found(8_000_000, 12_000_000) == {ranged}
+    assert await found(4_000_000, 5_000_000) == {ranged, exact}
+    assert await found(10_000_000, 10_000_000) == {ranged}
+    assert await found(11_000_000, 20_000_000) == set()
+    assert await found(1_000_000, 4_999_999) == set()
+    in_window = await provider.get_named_entity_values_in_records(
+        org_id, NamedEntityQuery(amount_min=8_000_000, amount_max=9_000_000), [ranged, exact],
+    )
+    assert set(in_window) == {ranged}
 
 
 async def test_name_filter_narrows_and_an_oversized_match_is_truncated(graph) -> None:
@@ -397,9 +467,43 @@ async def test_records_a_caller_cannot_read_change_neither_hits_nor_too_broad(gr
     acme_and_amount = NamedEntityQuery(name_prefix="acme", amount_min=1000, amount_max=2000)
     assert (await provider.get_records_for_named_entities(org_id, None, acme_and_amount, limit=2))["truncated"] is True
     within = await provider.get_records_for_named_entities(org_id, None, acme_and_amount, limit=2, within=[readable])
-    assert within == {"hits": [{"recordId": readable, "virtualRecordId": f"v-{readable}", "connectorId": f"{org_id}-conn"}], "truncated": False}
+    assert within == {"hits": [{
+        "recordId": readable, "virtualRecordId": f"v-{readable}", "connectorId": f"{org_id}-conn",
+        # A listing orders and filters by these; no timestamp set falls back to 0.
+        "recordType": "FILE", "sortTs": 0,
+    }], "truncated": False}
     nothing_readable = await provider.get_records_for_named_entities(org_id, None, acme_and_amount, within=[f"{org_id}-none"])
     assert nothing_readable == {"hits": [], "truncated": False}
+
+
+async def test_a_zero_modification_time_sorts_by_the_update_time_on_both_backends(graph) -> None:
+    provider, org_id, _ = graph
+    (record,) = await _records(provider, org_id, 1)
+    await provider.batch_upsert_nodes([{
+        "id": record, "orgId": org_id, "recordName": "Doc 0", "externalRecordId": record, "recordType": "MAIL",
+        "origin": "CONNECTOR", "connectorId": f"{org_id}-conn", "virtualRecordId": f"v-{record}",
+        "sourceLastModifiedTimestamp": 0, "updatedAtTimestamp": 5,
+    }], RECORDS)
+    await _writer(provider).write(org_id, record, [_amount(org_id, "1250")])
+
+    found = await provider.get_records_for_named_entities(org_id, None, NamedEntityQuery(amount_min=1000, amount_max=2000))
+
+    assert [(h["recordType"], h["sortTs"]) for h in found["hits"]] == [("MAIL", 5)]
+
+
+async def test_values_in_records_name_only_the_matching_values_of_the_given_records(graph) -> None:
+    provider, org_id, _ = graph
+    first, second, other = await _records(provider, org_id, 3)
+    writer = _writer(provider)
+    await writer.write(org_id, first, [_amount(org_id, "1250"), _amount(org_id, "90")])
+    await writer.write(org_id, second, [_amount(org_id, "1500")])
+    await writer.write(org_id, other, [_amount(org_id, "1700")])
+    over_1000 = NamedEntityQuery(amount_min=1000, amount_max=2000)
+
+    found = await provider.get_named_entity_values_in_records(org_id, over_1000, [first, second])
+
+    assert found == {first: ["USD 1250"], second: ["USD 1500"]}
+    assert await provider.get_named_entity_values_in_records(org_id, NamedEntityQuery(name_prefix="acme"), [first]) == {}
 
 
 async def test_value_rows_of_a_deleted_record_are_invisible_then_swept(graph) -> None:
@@ -1196,3 +1300,101 @@ async def test_mentions_in_records_are_the_named_records_edges_only(graph) -> No
     assert all(row["extractedNames"] and row["mentionCount"] == 1 for row in rows)
     assert await provider.get_named_entity_mentions_in_records(f"{org_id}-other", [acme.graph_key], [first]) == []
     assert await provider.get_named_entity_mentions_in_records(org_id, [], [first]) == []
+
+
+async def test_mentions_from_records_list_every_live_entity_of_only_those_records(graph) -> None:
+    """The co-mention tool counts over these rows, so they must come only from the
+    records passed, from this org, and never from a merged node."""
+    provider, org_id, backend = graph
+    first, second, other = await _records(provider, org_id, 3)
+    writer = _writer(provider)
+    acme, globex, initech = _org(org_id, "Acme"), _org(org_id, "Globex"), _org(org_id, "Initech")
+    await writer.write(org_id, first, [acme, globex])
+    await writer.write(org_id, second, [acme, initech])
+    await writer.write(org_id, other, [globex])
+
+    rows = await provider.get_named_entity_mentions_from_records(org_id, [first, second])
+    seen = {(row["recordId"], row["entityId"], row["kind"]) for row in rows}
+    assert seen == {
+        (first, acme.graph_key, "organization"), (first, globex.graph_key, "organization"),
+        (second, acme.graph_key, "organization"), (second, initech.graph_key, "organization"),
+    }
+    assert all(row["extractedNames"] for row in rows)
+    assert await provider.get_named_entity_mentions_from_records(f"{org_id}-other", [first, second]) == []
+    assert await provider.get_named_entity_mentions_from_records(org_id, []) == []
+
+    await _merge(provider, backend, initech.graph_key, acme.graph_key)
+    rows = await provider.get_named_entity_mentions_from_records(org_id, [second])
+    assert {row["entityId"] for row in rows} == {acme.graph_key}
+
+
+async def test_an_entity_with_a_value_kind_finds_the_records_that_have_both(graph) -> None:
+    """entity_ids with kinds=["currency"] matched nothing: the value kind made the entity part empty."""
+    provider, org_id, _ = graph
+    both, entity_only, amount_only = await _records(provider, org_id, 3)
+    writer = _writer(provider)
+    acme = _org(org_id, "Acme")
+    await writer.write(org_id, both, [acme, _amount(org_id, "1250")])
+    await writer.write(org_id, entity_only, [acme])
+    await writer.write(org_id, amount_only, [_amount(org_id, "900")])
+
+    hits = await provider.get_records_for_named_entities(org_id, [acme.graph_key], NamedEntityQuery(kinds=["currency"]))
+    assert {hit["recordId"] for hit in hits["hits"]} == {both}
+
+
+async def test_records_stating_a_date_inside_a_window_are_told_from_wider_ranges(graph) -> None:
+    provider, org_id, _ = graph
+    quarter_only, with_day = await _records(provider, org_id, 2)
+    writer = _writer(provider)
+    day = NamedEntity(
+        kind=EntityKind.DATE, display_name="Aug 5, 2025", norm_key="2025-08-05",
+        value=DateRangeValue(start_ms=_ms(2025, 8, 5), end_ms=_ms(2025, 8, 6), granularity="day", timex="2025-08-05"),
+        mentions=[_mention("Aug 5, 2025")],
+    )
+    await writer.write(org_id, quarter_only, [_quarter(org_id)])
+    await writer.write(org_id, with_day, [
+        _quarter(org_id), ResolvedEntity(entity=day, graph_key=named_entity_key(org_id, "date", "2025-08-05")),
+    ])
+
+    day_ms = _ms(2025, 8, 6) - _ms(2025, 8, 5)
+    quarter_ms = _ms(2025, 10, 1) - _ms(2025, 7, 1)
+    spans = await provider.get_named_entity_date_spans(
+        org_id, [quarter_only, with_day, f"{org_id}-missing"], _ms(2025, 8, 5), _ms(2025, 8, 6),
+    )
+    # The quarter covers the day but does not name it; the record naming the day does.
+    assert spans == {quarter_only: (False, quarter_ms), with_day: (True, day_ms)}
+    # A day asked with its end written as the last millisecond still counts the whole-day value.
+    last_ms = await provider.get_named_entity_date_spans(
+        org_id, [quarter_only, with_day], _ms(2025, 8, 5), _ms(2025, 8, 6) - 1,
+    )
+    assert last_ms[with_day] == (True, day_ms)
+    whole_quarter = await provider.get_named_entity_date_spans(
+        org_id, [quarter_only, with_day], _ms(2025, 7, 1), _ms(2025, 10, 1),
+    )
+    assert {record for record, (named, _) in whole_quarter.items() if named} == {quarter_only, with_day}
+    assert await provider.get_named_entity_date_spans(f"{org_id}-other", [with_day], _ms(2025, 8, 5), _ms(2025, 8, 6)) == {}
+
+
+async def test_a_duration_is_a_quantity_of_time_in_seconds(graph) -> None:
+    """"Latency above 200 ms" could never match: durations had no siValue or dimension."""
+    provider, org_id, _ = graph
+    fast, slow, months = await _records(provider, org_id, 3)
+    writer = _writer(provider)
+    await writer.write(org_id, fast, [_duration(org_id, "200 ms")])
+    await writer.write(org_id, slow, [_duration(org_id, "4 hours")])
+    # Months have no fixed length in seconds: never matched.
+    await writer.write(org_id, months, [_duration(org_id, "3 months")])
+
+    async def found(**query: object) -> set[str]:
+        hits = await provider.get_records_for_named_entities(org_id, None, NamedEntityQuery(**query))
+        return {hit["recordId"] for hit in hits["hits"]}
+
+    assert await found(quantity_min=0.1, quantity_max=1e18, dimension="time") == {fast, slow}
+    assert await found(quantity_min=3600, quantity_max=1e18, dimension="time") == {slow}
+    assert await found(quantity_min=-1e18, quantity_max=1, dimension="time") == {fast}
+    assert await found(quantity_min=0.1, quantity_max=1e18, dimension="length") == set()
+    assert await found(kinds=["duration"], quantity_min=3600, quantity_max=1e18, dimension="time") == {slow}
+    shown = await provider.get_named_entity_values_in_records(
+        org_id, NamedEntityQuery(quantity_min=0.1, quantity_max=1e18, dimension="time"), [fast, slow],
+    )
+    assert shown == {fast: ["200 ms"], slow: ["4 hours"]}

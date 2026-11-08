@@ -92,6 +92,9 @@ class AgentContext(BaseModel):
     # (`app/agents/agent_loop/mcp_access.py` / `mcp_tool_loader.py`).
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     mcp_server_configs: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # API toolset operations the agent may call, as stored on the agent:
+    # `"<instanceId>:<toolName>"` (see `app/agents/openapi/attachments.py`).
+    api_toolset_tools: list[str] = Field(default_factory=list)
 
     # Knowledge config
     has_knowledge: bool = False
@@ -156,6 +159,9 @@ class AgentContext(BaseModel):
     # (see `prompt_builder.py`), distinct from `instructions` (agent-specific)
     # and `custom_instructions` (org-level) — never touches agent identity.
     project_instructions: str | None = None
+    # A project chat: every tool loaded is one enabled on the project (Node
+    # narrows `tools` to them), which `tool_approvals.decide` relies on.
+    project_tools_selected: bool = False
     timezone: str | None = None
     current_time: str | None = None
 
@@ -462,6 +468,7 @@ class AgentContext(BaseModel):
             toolset_configs=state.get("toolset_configs") or {},
             mcp_servers=state.get("mcp_servers") or [],
             mcp_server_configs=state.get("mcp_server_configs") or {},
+            api_toolset_tools=state.get("api_toolset_tools") or [],
             web_search_config=state.get("web_search_config"),
             deep_research=bool(state.get("deep_research", False)) and bool(state.get("web_search_config")),
             has_knowledge=bool(state.get("has_knowledge", False)),
@@ -485,6 +492,7 @@ class AgentContext(BaseModel):
             instructions=state.get("instructions"),
             custom_instructions=state.get("custom_instructions"),
             project_instructions=state.get("project_instructions"),
+            project_tools_selected=bool(state.get("project_tools_selected", False)),
             timezone=state.get("timezone"),
             current_time=state.get("current_time"),
             conversation_id=state.get("conversation_id"),
@@ -537,6 +545,12 @@ class AgentContext(BaseModel):
             return False
         self._run_usage_claimed = True
         return True
+
+    def citation_ref_to_url(self) -> dict[str, str] | None:
+        """This request's citation refs and the URLs they stand for, read at
+        call time: the mapper in `tool_state` can be replaced mid-request."""
+        mapper = self.tool_state.get("citation_ref_mapper")
+        return mapper.ref_to_url if mapper is not None else None
 
     def get_source_catalog(self) -> Any:
         """Return the per-request `SourceCatalog`, building it once on first use."""
@@ -625,6 +639,7 @@ class AgentContext(BaseModel):
             "instructions": self.instructions,
             "custom_instructions": self.custom_instructions,
             "project_instructions": self.project_instructions,
+            "project_tools_selected": self.project_tools_selected,
             "timezone": self.timezone,
             "current_time": self.current_time,
             "previous_conversations": self.previous_conversations,

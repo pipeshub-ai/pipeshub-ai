@@ -358,11 +358,11 @@ describe('streamRegenerateForSlot — reasoningEffort forwarding', () => {
     return slotId;
   }
 
-  async function regenerate(agentId: string | null): Promise<Record<string, unknown>> {
+  async function regenerate(agentId: string | null, answers?: string): Promise<Record<string, unknown>> {
     const assistant = vi.spyOn(ChatApi, 'streamRegenerate').mockResolvedValue(undefined);
     const agent = vi.spyOn(ChatApi, 'streamAgentRegenerate').mockResolvedValue(undefined);
     try {
-      await streamRegenerateForSlot(regenSlot(agentId), 'a1', model);
+      await streamRegenerateForSlot(regenSlot(agentId), 'a1', model, undefined, undefined, answers);
       if (agentId) {
         expect(assistant).not.toHaveBeenCalled();
         return agent.mock.calls[0][4] as Record<string, unknown>;
@@ -378,6 +378,39 @@ describe('streamRegenerateForSlot — reasoningEffort forwarding', () => {
   it('omits reasoningEffort for a reasoning-capable model when the user chose none', async () => {
     registerModel(ASSISTANT_CTX, { isReasoning: true });
     expect(await regenerate(null)).not.toHaveProperty('reasoningEffort');
+  });
+
+  const ANSWERS = 'User selections:\n1. "Which region?" → US';
+
+  it('sends changed question-card answers, for an assistant chat and for an agent', async () => {
+    registerModel(ASSISTANT_CTX, { isReasoning: false });
+    expect(await regenerate(null, ANSWERS)).toMatchObject({ answers: ANSWERS });
+    registerModel(ctxKeyFromAgent('agent-1'), { isReasoning: false });
+    expect(await regenerate('agent-1', ANSWERS)).toMatchObject({ answers: ANSWERS });
+  });
+
+  // Python turns web search off when `tools` is a list without a web_search entry; omitted, it keeps every tool.
+  it('leaves the tool list out when every tool is selected, as a normal send does', async () => {
+    registerModel(ASSISTANT_CTX, { isReasoning: false });
+    useChatStore.setState({
+      universalAgentStreamTools: null,
+      universalAgentToolCatalogFullNames: ['jira.search_issues', 'slack.send_message'],
+    });
+    expect(await regenerate(null)).not.toHaveProperty('agentStreamTools');
+  });
+
+  it('sends the chosen tools when only some are selected', async () => {
+    registerModel(ASSISTANT_CTX, { isReasoning: false });
+    useChatStore.setState({
+      universalAgentStreamTools: ['inst-1:jira.search_issues'],
+      universalAgentToolCatalogFullNames: ['inst-1:jira.search_issues', 'inst-1:slack.send_message'],
+    });
+    expect((await regenerate(null)).agentStreamTools).toEqual(['jira.search_issues']);
+  });
+
+  it('leaves answers out of an ordinary regenerate', async () => {
+    registerModel(ASSISTANT_CTX, { isReasoning: false });
+    expect(await regenerate(null)).not.toHaveProperty('answers');
   });
 
   it("sends the user's choice", async () => {
@@ -495,5 +528,43 @@ describe('reasoning effort picker', () => {
     renderPicker({ value: null, agentDefault: 'low', modelDefault: 'max' });
     expect(screen.getByRole('radio', { name: 'Low' }).getAttribute('aria-checked')).toBe('true');
     expect(screen.getByText('Defaults to Low when not set.')).toBeTruthy();
+  });
+});
+
+describe('a model menu entry an edition adds', () => {
+  const editionEntry = { modelKey: 'edition-entry', modelName: 'edition-entry', modelFriendlyName: 'Edition entry' };
+
+  it('sends no reasoningEffort, even with a stale pick', () => {
+    registerModel(ASSISTANT_CTX, { isReasoning: true });
+    useChatStore.getState().setSelectedModelForCtx(ASSISTANT_CTX, editionEntry);
+    useChatStore.getState().setReasoningEffortForCtx(ASSISTANT_CTX, 'max');
+    const request = buildStreamChatRequestForSlot(useChatStore.getState().createSlot(null), 'hello');
+    expect(request?.modelKey).toBe('edition-entry');
+    expect(request).not.toHaveProperty('reasoningEffort');
+  });
+
+  it("sends no reasoningEffort in an agent chat with a default effort", () => {
+    registerModel('agent-99', { isReasoning: true });
+    setAgentDefault('agent-99', 'medium');
+    useChatStore.getState().setSelectedModelForCtx('agent-99', editionEntry);
+    const slotId = useChatStore.getState().createSlot(null);
+    useChatStore.getState().updateSlot(slotId, { threadAgentId: 'agent-99' });
+    expect(buildStreamChatRequestForSlot(slotId, 'hello')).not.toHaveProperty('reasoningEffort');
+  });
+
+  it('regenerating with it sends no reasoningEffort', async () => {
+    registerModel('agent-99', { isReasoning: true });
+    useChatStore.getState().setReasoningEffortForCtx('agent-99', 'max');
+    const agent = vi.spyOn(ChatApi, 'streamAgentRegenerate').mockResolvedValue(undefined);
+    try {
+      const slotId = useChatStore.getState().createSlot('conv-1');
+      useChatStore.getState().updateSlot(slotId, { threadAgentId: 'agent-99' });
+      await streamRegenerateForSlot(slotId, 'a1', editionEntry);
+      const body = agent.mock.calls[0][4] as Record<string, unknown>;
+      expect(body.modelKey).toBe('edition-entry');
+      expect(body).not.toHaveProperty('reasoningEffort');
+    } finally {
+      agent.mockRestore();
+    }
   });
 });

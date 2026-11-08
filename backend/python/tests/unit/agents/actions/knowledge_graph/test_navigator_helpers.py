@@ -82,6 +82,11 @@ class TestNodeItemToRow:
         row = _node_item_to_row(_item(nodeType=enum_like))
         assert row.node_type == "folder"
 
+    def test_a_knowledge_base_file_is_dated_by_its_upload(self) -> None:
+        assert _node_item_to_row(_item(origin="COLLECTION")).upload_dated is True
+        assert _node_item_to_row(_item(origin="CONNECTOR")).upload_dated is False
+        assert _node_item_to_row(_item(origin="COLLECTION", nodeType="folder")).upload_dated is False
+
     def test_size_kilobytes(self) -> None:
         row = _node_item_to_row(_item(sizeInBytes=2048))
         assert row.detail is not None

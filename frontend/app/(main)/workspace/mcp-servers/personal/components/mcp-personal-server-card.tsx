@@ -5,10 +5,13 @@ import { useTranslation } from 'react-i18next';
 import { Badge, Flex, Text } from '@radix-ui/themes';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { asArray } from '@/lib/utils/safe';
 import { EntityRowActionMenu, type RowAction } from '../../../components';
 import type { McpMyServerEntry } from '../../types';
 import { MCP_TRANSPORT_LABELS, isPersonalMcpInstance } from '../../types';
-import { isMcpInstanceDisabled, McpDisabledBadge } from '../../components';
+import { isMcpInstanceDisabled, McpDisabledBadge, McpLogoImage } from '../../components';
+import { useMcpServerLogo } from '../../logo-store';
 import { McpStatusBadge, mcpConnectionState, usesSharedCredential } from '../../connection-state';
 
 interface McpPersonalServerCardProps {
@@ -39,6 +42,7 @@ export function McpPersonalServerCard({
 
   const needsAuth = instance.authMode !== 'none' && !usesSharedCredential(instance);
   const connectorType = resolveConnectorType(instance.typeId || instance.name);
+  const logo = useMcpServerLogo(instance._id);
   const state = mcpConnectionState(instance);
   const signInAction =
     state === 'needs_connect'
@@ -112,7 +116,7 @@ export function McpPersonalServerCard({
             flexShrink: 0,
           }}
         >
-          <ConnectorIcon type={connectorType} size={16} color="var(--gray-10)" />
+          {logo ? <McpLogoImage src={logo} size={16} /> : <ConnectorIcon type={connectorType} size={16} color="var(--gray-10)" />}
         </Flex>
         <Flex align="center" gap="1" flexShrink="0">
           {isMcpInstanceDisabled(instance) ? (
@@ -149,7 +153,7 @@ export function McpPersonalServerCard({
         >
           {instance.description || MCP_TRANSPORT_LABELS[instance.transport]}
         </Text>
-        {instance.isAuthenticated && instance.tools.length > 0 && (
+        {instance.isAuthenticated && asArray(instance.tools).length > 0 && (
           <Text
             size="1"
             style={{ color: 'var(--gray-9)' }}
@@ -159,7 +163,7 @@ export function McpPersonalServerCard({
                 : undefined
             }
           >
-            {t('workspace.mcpServers.toolsCount', { count: instance.tools.length })}
+            {t('workspace.mcpServers.toolsCount', { count: asArray(instance.tools).length })}
           </Text>
         )}
         {instance.toolsError && (
@@ -220,6 +224,7 @@ function ActionButton({
   tone?: 'accent' | 'neutral';
 }) {
   const [isHovered, setIsHovered] = useState(false);
+  const isMobile = useIsMobile();
   const scale = tone === 'accent' ? 'accent' : 'gray';
   const color = `var(--${scale}-11)`;
   return (
@@ -240,7 +245,7 @@ function ActionButton({
         justifyContent: 'center',
         gap: 6,
         maxWidth: '100%',
-        height: 24,
+        height: isMobile ? 44 : 24,
         padding: '0 10px',
         overflow: 'hidden',
         borderRadius: 'var(--radius-2)',

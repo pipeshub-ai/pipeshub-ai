@@ -370,7 +370,9 @@ class TestNotebooks:
         assert [p["page_id"] for p in data["pages"]][-2:] == ["pg-49", "pg-50"]
         assert "has_more" not in data
 
-    async def test_a_section_too_large_to_list_says_pages_are_missing(self, sp, stub) -> None:
+    async def test_a_section_too_large_to_list_says_pages_are_missing(self, sp, stub, monkeypatch) -> None:
+        # The real cap reads 20 pages of 50 through msgraph's parser, ~16s under coverage.
+        monkeypatch.setattr("app.agents.actions.microsoft.sharepoint.sharepoint._MAX_NOTEBOOK_PAGES", 2)
         stub.on("GET", f"{NOTEBOOKS}/nb-1/sections", page([section("s-1", "Archive")]))
         stub.on("GET", f"{SITE_PATH}/onenote/sections/s-1/pages",
                 lambda request: httpx.Response(200, json=page([onenote_page("pg-x", "P")] * 50)))

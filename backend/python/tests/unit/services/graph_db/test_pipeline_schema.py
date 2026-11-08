@@ -41,7 +41,12 @@ class TestArangoPipelineSchema:
             (STAGES, ["status", "updatedAtMs"]),
             (STAGES, ["virtualRecordId", "rev"]),
             (STAGES, ["connectorId"]),
+            (STAGES, ["connectorId", "stage", "status", "_key"]),
         ]
+        # Named: the stage retry's paging query hints it over the primary index.
+        assert client.ensure_persistent_index.await_args_list[-1].kwargs == {
+            "name": "stage_state_connector_stage_status_key"
+        }
 
     async def test_an_existing_stage_store_is_not_created_again(self) -> None:
         provider, client = _arango()

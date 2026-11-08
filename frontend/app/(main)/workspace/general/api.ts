@@ -1,4 +1,7 @@
+import { mutate } from 'swr';
 import { apiClient } from '@/lib/api';
+import { SWR_NS } from '@/lib/api/swr-cache';
+import { blobToDataUrl } from '@/lib/utils/blob-to-data-url';
 
 const BASE_URL = '/api/v1/org';
 const METRICS_BASE_URL = '/api/v1/configurationManager/metricsCollection';
@@ -51,6 +54,13 @@ export interface UpdateOrgPayload {
   dataCollectionConsent: boolean;
 }
 
+/** SWR keys of the org reads, shared by the sidebar footer and the General page. */
+export const ORG_KEYS = {
+  details: [SWR_NS.org, 'details'],
+  logo: [SWR_NS.org, 'logo'],
+  metrics: [SWR_NS.org, 'metrics'],
+} as const;
+
 // ========================================
 // API functions
 // ========================================
@@ -62,39 +72,44 @@ export const OrgApi = {
     return data;
   },
 
-  /** GET /api/v1/org/logo — download logo and return a local blob URL (null when the org has no logo, i.e. 204). */
+  /** GET /api/v1/org/logo — download logo and return a data URL (null when the org has no logo, i.e. 204); throws when the read fails. */
   async getLogoUrl(): Promise<string | null> {
-    try {
-      const response = await apiClient.get<Blob>(`${BASE_URL}/logo`, {
-        responseType: 'blob',
-      });
-      if (response.status === 204) {
-        return null;
-      }
-      return response.data instanceof Blob ? URL.createObjectURL(response.data) : null;
-    } catch {
+    // A failed read throws, so the cache asks again instead of keeping "no logo" for the session.
+    const response = await apiClient.get<Blob>(`${BASE_URL}/logo`, {
+      responseType: 'blob',
+    });
+    if (response.status === 204) {
       return null;
     }
+    return response.data instanceof Blob ? await blobToDataUrl(response.data) : null;
   },
 
-  /** PUT /api/v1/org/ — update org fields */
-  async updateOrg(payload: UpdateOrgPayload): Promise<OrgResponse> {
-    const { data } = await apiClient.put<OrgResponse>(`${BASE_URL}/`, payload);
-    return data;
+  /** PUT /api/v1/org/ — update org fields, then refetch the cached org (the response is an envelope). */
+  async updateOrg(payload: UpdateOrgPayload): Promise<void> {
+    await apiClient.put(`${BASE_URL}/`, payload);
+    void mutate(ORG_KEYS.details);
   },
 
-  /** PUT /api/v1/org/logo — upload org logo (multipart form) */
-  async uploadLogo(file: File): Promise<void> {
+  /** PUT /api/v1/org/logo — upload org logo (multipart form); returns the stored logo, now also cached. */
+  async uploadLogo(file: File): Promise<string | null> {
     const formData = new FormData();
     formData.append('file', file);
     await apiClient.put(`${BASE_URL}/logo`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
+    try {
+      return await mutate(ORG_KEYS.logo, OrgApi.getLogoUrl(), { revalidate: false });
+    } catch {
+      // The upload worked; only the read-back failed. Mark the cached logo stale so it is read again.
+      void mutate(ORG_KEYS.logo);
+      return null;
+    }
   },
 
   /** DELETE /api/v1/org/logo — remove org logo */
   async deleteLogo(): Promise<void> {
     await apiClient.delete(`${BASE_URL}/logo`);
+    void mutate(ORG_KEYS.logo, null, { revalidate: false });
   },
 };
 
@@ -108,5 +123,6 @@ export const MetricsApi = {
   /** PUT /api/v1/configurationManager/metricsCollection/toggle */
   async toggleMetricsCollection(enabled: boolean): Promise<void> {
     await apiClient.put(METRICS_URL, { enableMetricCollection: enabled });
+    void mutate(ORG_KEYS.metrics);
   },
 };

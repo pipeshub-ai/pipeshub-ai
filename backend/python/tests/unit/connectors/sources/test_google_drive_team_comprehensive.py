@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
 
+from app.connectors.sources.google.drive.team.user_status import UserStatusChange
 from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import (
@@ -143,6 +144,13 @@ def connector():
         c.drive_data_source = AsyncMock()
         c.sync_filters = FilterCollection()
         c.indexing_filters = FilterCollection()
+        # Collaborators the run safety fixes call: account status, groups, access withdrawal.
+        c._user_status = MagicMock(compare=AsyncMock(return_value=UserStatusChange()), save=AsyncMock())
+        dep.get_all_user_groups = AsyncMock(return_value=[])
+        dep.remove_user_access_to_connector = AsyncMock(return_value=0)
+        dep.on_new_user_groups = AsyncMock()
+        dep.inheritance_when_unreadable = AsyncMock(return_value=False)
+        dep.add_permission_to_record = AsyncMock()
         yield c
 
 

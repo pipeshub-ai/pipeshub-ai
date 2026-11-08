@@ -23,6 +23,7 @@ logger = logging.getLogger("ai-agents-it")
 AI_MODELS = "/api/v1/configurationManager/ai-models"
 PLATFORM_SETTINGS = "/api/v1/configurationManager/platform/settings"
 MCP_SERVERS = "/api/v1/mcp-servers"
+API_TOOLSETS = "/api/v1/api-toolsets"
 PATS = "/api/v1/personal-access-tokens"
 
 STREAM_TIMEOUT = int(os.getenv("PIPESHUB_TEST_STREAM_TIMEOUT") or 300)

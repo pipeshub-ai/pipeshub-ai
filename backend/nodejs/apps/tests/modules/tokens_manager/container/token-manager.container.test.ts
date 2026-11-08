@@ -4,6 +4,7 @@ import sinon from 'sinon'
 import { TokenManagerContainer } from '../../../../src/modules/tokens_manager/container/token-manager.container'
 import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
 import { MongoService } from '../../../../src/libs/services/mongo.service'
+import * as docStoreModule from '../../../../src/libs/repositories/doc-store'
 import * as config from '../../../../src/modules/tokens_manager/config/config'
 import * as messageBrokerFactory from '../../../../src/libs/services/message-broker.factory'
 
@@ -248,6 +249,38 @@ describe('TokenManagerContainer - coverage', () => {
         // MongoService.initialize may fail in test env, that's okay
         // We're verifying the initialization path gets exercised
         expect(error).to.exist
+      }
+    })
+
+    it('does not contact MongoDB or bind MongoService under DOC_STORE=postgres', async () => {
+      const prev = process.env.DOC_STORE
+      process.env.DOC_STORE = 'postgres'
+      sinon.stub(config, 'loadAppConfig').resolves({
+        mongo: { uri: 'mongodb://localhost:27017/test' },
+        redis: { host: 'localhost', port: 6379, username: '', password: '', db: 0 },
+        jwtSecret: 'test-jwt-secret',
+        scopedJwtSecret: 'test-scoped-jwt-secret',
+        kafka: { brokers: ['localhost:9092'], clientId: 'test' },
+      } as any)
+      sinon.stub(KeyValueStoreService, 'getInstance').returns({
+        connect: sinon.stub().resolves(),
+        disconnect: sinon.stub().resolves(),
+        isConnected: sinon.stub().returns(true),
+      } as any)
+      const mongoInit = sinon.stub(MongoService.prototype, 'initialize').resolves()
+      sinon.stub(docStoreModule, 'initDocStore').resolves()
+      const { TokenEventProducer } = require('../../../../src/modules/tokens_manager/services/token-event.producer')
+      sinon.stub(TokenEventProducer.prototype, 'start').resolves()
+      try {
+        const container = await TokenManagerContainer.initialize({
+          host: 'localhost', port: 2379, storeType: 'etcd' as const, algorithm: 'aes-256-cbc', secretKey: 'test-secret-key-32-chars-long!!',
+        } as any)
+        expect(mongoInit.called).to.be.false
+        expect(container.isBound('MongoService')).to.be.false
+        ;(TokenManagerContainer as any).instance = null
+      } finally {
+        if (prev === undefined) delete process.env.DOC_STORE
+        else process.env.DOC_STORE = prev
       }
     })
 

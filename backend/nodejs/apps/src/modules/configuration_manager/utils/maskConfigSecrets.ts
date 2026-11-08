@@ -1,3 +1,4 @@
+import { EXTRA_AI_PUBLIC_CONFIG_KEYS } from '../../../edition';
 import type { AIModelConfiguration } from '../types/ai-models.types';
 
 /** Placeholder shown in API responses when sensitive values are hidden. */
@@ -31,7 +32,62 @@ export const AI_PUBLIC_CONFIG_KEYS = [
   'modelFriendlyName',
   'dimensions',
   'defaultReasoningEffort',
+  // Settings only. The service API key stays out and shows up in `configuredFields`.
+  'identityForwardingEnabled',
+  'identityForwardingMode',
+  'identityForwardingPreset',
+  'identityForwardingHeaderTemplates',
+  'identityForwardingJwtAudience',
+  'identityForwardingServiceAuth',
 ] as const;
+
+const CREDENTIAL_HEADER_HINT =
+  /auth|cookie|(api|access|subscription|functions|private)[-_]?key|token|secret|password|credential|signature|assertion/i;
+
+/**
+ * A header template may carry a literal credential (e.g. a static bearer token
+ * on `Authorization`). The value is write-only: a response keeps the header
+ * name so the editor can show it, and the placeholder stands in for the value.
+ */
+export function redactCredentialTemplates(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [name, template] of Object.entries(
+    value as Record<string, unknown>,
+  )) {
+    out[name] =
+      CREDENTIAL_HEADER_HINT.test(name) &&
+      typeof template === 'string' &&
+      template.length > 0
+        ? CONFIG_SECRET_PLACEHOLDER
+        : template;
+  }
+  return out;
+}
+
+/** Swap a redacted template back for the stored one. A placeholder with nothing to restore is dropped. */
+export function restoreCredentialTemplates(
+  incoming: Record<string, string>,
+  stored: unknown,
+): Record<string, string> {
+  const previous =
+    stored && typeof stored === 'object' && !Array.isArray(stored)
+      ? (stored as Record<string, unknown>)
+      : {};
+  const out: Record<string, string> = {};
+  for (const [name, template] of Object.entries(incoming)) {
+    const storedTemplate = previous[name];
+    if (template !== CONFIG_SECRET_PLACEHOLDER) {
+      out[name] = template;
+    } else if (
+      typeof storedTemplate === 'string' &&
+      storedTemplate.length > 0
+    ) {
+      out[name] = storedTemplate;
+    }
+  }
+  return out;
+}
 
 export function stripAiModelSecrets(entry: AIModelConfiguration): AIModelConfiguration {
   const cfg = entry.configuration;
@@ -41,10 +97,16 @@ export function stripAiModelSecrets(entry: AIModelConfiguration): AIModelConfigu
 
   const src = cfg as Record<string, unknown>;
   const safeCfg: Record<string, unknown> = {};
-  for (const key of AI_PUBLIC_CONFIG_KEYS) {
+  const publicKeys = [...AI_PUBLIC_CONFIG_KEYS, ...EXTRA_AI_PUBLIC_CONFIG_KEYS];
+  for (const key of publicKeys) {
     if (key in src) {
       safeCfg[key] = src[key];
     }
+  }
+  if ('identityForwardingHeaderTemplates' in safeCfg) {
+    safeCfg.identityForwardingHeaderTemplates = redactCredentialTemplates(
+      safeCfg.identityForwardingHeaderTemplates,
+    );
   }
 
   return {
@@ -100,6 +162,17 @@ export function stripAiModelsStoredConfig<T extends object>(
  * (e.g. dropping `awsAccessKeyId` to fall back to the EC2 IAM role) and is left
  * alone.
  */
+/** Keys the identity forwarding route owns on a connection's entries. Flat, so the model dialog renders them. */
+export const IDENTITY_FORWARDING_KEYS = {
+  enabled: 'identityForwardingEnabled',
+  mode: 'identityForwardingMode',
+  preset: 'identityForwardingPreset',
+  headerTemplates: 'identityForwardingHeaderTemplates',
+  jwtAudience: 'identityForwardingJwtAudience',
+  serviceAuth: 'identityForwardingServiceAuth',
+  serviceApiKey: 'identityForwardingServiceApiKey',
+} as const;
+
 /** Fields a credential rotation may replace. Endpoints and model settings are not credentials. */
 export const AI_MODEL_CREDENTIAL_KEYS = [
   'apiKey',

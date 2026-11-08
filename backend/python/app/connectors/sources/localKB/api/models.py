@@ -172,6 +172,7 @@ class KnowledgeBaseResponse(BaseModel):
     updatedAtTimestamp: int = Field(..., description="Update timestamp")
     createdBy: str = Field(..., description="Created by user ID")
     userRole: Optional[str] = Field(None, description="User's role in this KB")
+    status: Optional[str] = Field(None, description="DELETING while the knowledge base is being deleted; absent otherwise")
     folders: Optional[List[FolderResponse]] = Field(None, description="List of folders")
 
 class KnowledgeBasePaginationResponse(BaseModel):
@@ -282,7 +283,7 @@ class UpdateRecordResponse(BaseModel):
     location: str = Field(..., description="The location of the record, e.g., 'kb_root' or 'folder'.")
     folderId: Optional[str] = Field(None, description="The ID of the parent folder, if the record is in a folder.")
     kb: Dict[str, Any] = Field(..., description="Information about the knowledge base containing the record.")
-    userPermission: str = Field(..., description="The permission role of the user who performed the update.")
+    userPermission: Optional[str] = Field(None, description="The permission role of the user who performed the update. Null when it could not be read.")
 
 class DeleteRecordResponse(BaseModel):
     """Response model for deleting a record"""

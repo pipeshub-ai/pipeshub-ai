@@ -15,6 +15,9 @@ import {
   getPersonalConnectorRedirectType,
   personalConnectorHref,
 } from '../utils/admin-access-helpers';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { pagePaddingX } from '@/app/components/ui/responsive';
+import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
 // Props
@@ -23,8 +26,8 @@ import {
 interface ConnectorDetailsLayoutProps {
   /** Connector type info */
   connector: Connector | null;
-  /** Scope: team or personal */
-  scope: ConnectorScope;
+  /** @deprecated Not read; kept so edition pages that still pass it compile. */
+  scope?: ConnectorScope;
   /** Scope label for breadcrumb */
   scopeLabel: string;
   /** Instances for this connector type */
@@ -62,7 +65,6 @@ interface ConnectorDetailsLayoutProps {
 
 export function ConnectorDetailsLayout({
   connector,
-  scope,
   scopeLabel,
   instances,
   instanceConfigs,
@@ -79,6 +81,7 @@ export function ConnectorDetailsLayout({
   onRefreshInstance,
   renderInstanceActions,
 }: ConnectorDetailsLayoutProps) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
   const connectorName = connector?.name ?? '';
@@ -143,10 +146,9 @@ export function ConnectorDetailsLayout({
       style={{
         width: '100%',
         height: '100%',
-        paddingTop: 32,
+        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP,
         paddingBottom: 64,
-        paddingLeft: 100,
-        paddingRight: 100,
+        paddingInline: pagePaddingX(100),
         overflowY: 'auto',
       }}
     >
@@ -180,7 +182,7 @@ export function ConnectorDetailsLayout({
       </Flex>
 
       {/* ── Header: icon + name + actions ── */}
-      <Flex justify="between" align="start" gap="4" style={{ width: '100%' }}>
+      <Flex justify="between" align="start" wrap="wrap" gap="4" style={{ width: '100%' }}>
         <Flex align="center" gap="4">
           <ConnectorTypeIcon connector={connector} />
           <Flex direction="column" gap="1">
@@ -343,7 +345,6 @@ export function ConnectorDetailsLayout({
             <InstanceCard
               key={`${instance._key}-${instance.isAuthenticated ? '1' : '0'}`}
               instance={instance}
-              scope={scope}
               config={instance._key ? instanceConfigs?.[instance._key] : undefined}
               onManage={onManageInstance}
               onToggleSyncActive={onToggleSyncActive}

@@ -630,6 +630,28 @@ describe('createAGUIEventHandler — live agent-activity parts timeline', () => 
     ]);
   });
 
+  it('takes the args from argsPreview, the text the saved part keeps, not the whole delta', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+    const query = `SELECT id FROM users WHERE active = true${' AND x = 1'.repeat(300)}`;
+    const argsPreview = JSON.stringify({ query: `${query.slice(0, 1200)}… [truncated, 1200 of ${query.length} chars]` });
+
+    handle(frame('TOOL_CALL_START', { runId: 'root', toolCallId: 'call-1', toolCallName: 'sql__execute_sql_query' }));
+    handle(frame('TOOL_CALL_ARGS', { runId: 'root', toolCallId: 'call-1', delta: JSON.stringify({ query }), argsPreview }));
+
+    expect(spies.onParts.mock.calls.at(-1)?.[0][0].args).toBe(argsPreview);
+  });
+
+  it('cuts the delta to 2000 characters from a server that sends no argsPreview', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    handle(frame('TOOL_CALL_START', { runId: 'root', toolCallId: 'call-1', toolCallName: 'x' }));
+    handle(frame('TOOL_CALL_ARGS', { runId: 'root', toolCallId: 'call-1', delta: JSON.stringify({ q: 'z'.repeat(5000) }) }));
+
+    expect(spies.onParts.mock.calls.at(-1)?.[0][0].args).toHaveLength(2000);
+  });
+
   it('keeps up to 2000 characters of the result preview, matching the server cap', () => {
     const { callbacks, spies } = makeCallbacks();
     const handle = createAGUIEventHandler(callbacks);

@@ -23,7 +23,7 @@ describe('user_management/utils/org.utils', () => {
 
       const result = await findActiveOrgById(validOrgId);
 
-      expect(result).to.equal(mockOrg);
+      expect(result).to.deep.equal(mockOrg);
       expect(findOneStub.calledOnce).to.be.true;
       expect(findOneStub.firstCall.args[0]).to.deep.equal({
         _id: validOrgId,
@@ -51,7 +51,7 @@ describe('user_management/utils/org.utils', () => {
 
       const result = await findActiveOrgById(objectId);
 
-      expect(result).to.equal(mockOrg);
+      expect(result).to.deep.equal(mockOrg);
       expect(findOneStub.calledOnce).to.be.true;
       expect(findOneStub.firstCall.args[0]).to.deep.equal({
         _id: validOrgId,

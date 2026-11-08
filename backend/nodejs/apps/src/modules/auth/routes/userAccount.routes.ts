@@ -1,24 +1,42 @@
-import { Router, Response, NextFunction } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { Container } from 'inversify';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 
-import {
-  authSessionMiddleware,
-  userValidator,
-} from '../middlewares/userAuthentication.middleware';
+import { authSessionMiddleware } from '../middlewares/userAuthentication.middleware';
 import { attachContainerMiddleware } from '../middlewares/attachContainer.middleware';
 import { AuthSessionRequest } from '../middlewares/types';
-import { UserAccountController } from '../controller/userAccount.controller';
+import {
+  PASSWORD_RESET_REQUESTED,
+  SIGN_IN_CODE_REQUESTED,
+  UserAccountController,
+} from '../controller/userAccount.controller';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
+import { requireSessionAuth } from '../../../libs/middlewares/require-session-auth.middleware';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
-import { createAuthRateLimiter } from '../../../libs/middlewares/rate-limit.middleware';
+import {
+  createAuthIpRateLimiter,
+  createAuthRateLimiter,
+  createInitAuthRateLimiter,
+} from '../../../libs/middlewares/rate-limit.middleware';
 import { Logger } from '../../../libs/services/logger.service';
-import { AppConfig } from '../../tokens_manager/config/config';
+import type { RedisService } from '../../../libs/services/redis.service';
+import {
+  addressRateLimitPerMinute,
+  createEmailRateLimiter,
+  lazyRedisCounter,
+} from '../../../libs/middlewares/email-rate-limit.middleware';
+import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
+import {
+  AUTH_APP_CONFIG_RELOADER,
+  AuthAppConfigReloader,
+} from '../container/authService.container';
+import { emailCheck } from '../../../libs/utils/zod-formats';
+import { AuthMethodType } from '../types/auth-method';
 
 const otpGenerationBody = z.object({
-  email: z.string().email('Invalid email'),
+  email: z.string().check(emailCheck('Invalid email')),
   'cf-turnstile-response': z.string().optional(), // Add Turnstile token for forgot password
 });
 
@@ -34,7 +52,8 @@ const initAuthBody = z.object({
     .string()
     // .min(1, 'Email is required')
     .max(254, 'Email address is too long') // RFC 5321 limit
-    .email('Invalid email format').optional(),
+    .check(emailCheck('Invalid email format'))
+    .optional(),
 });
 
 const initAuthValidationSchema = z.object({
@@ -49,15 +68,48 @@ export function createUserAccountRouter(container: Container) {
 
   router.use(attachContainerMiddleware(container));
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
-  // One per-IP bucket shared by all credential/OTP/email routes below.
+  const authenticate = authMiddleware.authenticate.bind(authMiddleware);
+  const logger = container.get<Logger>('Logger');
+  const { maxAuthRequestsPerMinute } = container.get<AppConfig>('AppConfig');
+  // Shared by all credential/OTP/email routes below: one bucket per account
+  // (or signed-in user), plus a looser per-IP backstop on anonymous routes.
   const authRateLimiter = createAuthRateLimiter(
-    container.get<Logger>('Logger'),
-    container.get<AppConfig>('AppConfig').maxAuthRequestsPerMinute,
+    logger,
+    maxAuthRequestsPerMinute,
   );
+  const authIpRateLimiter = createAuthIpRateLimiter(
+    logger,
+    maxAuthRequestsPerMinute,
+  );
+  // A provider sign-in (Google, Microsoft, OAuth) carries a token the
+  // provider verifies, so there is nothing to guess, and it usually names no
+  // email: the account limiter would put everyone on one IP in one bucket.
+  // Those count against the per-IP backstop only; every other method,
+  // including an unknown one, is counted per account.
+  const providerVerifiedMethods = new Set<string>([
+    AuthMethodType.GOOGLE,
+    AuthMethodType.MICROSOFT,
+    AuthMethodType.AZURE_AD,
+    AuthMethodType.OAUTH,
+    AuthMethodType.GITHUB,
+  ]);
+  const authenticateRateLimiter = (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): void => {
+    const method: unknown = (req.body as { method?: unknown } | undefined)
+      ?.method;
+    if (typeof method === 'string' && providerVerifiedMethods.has(method)) {
+      next();
+      return;
+    }
+    void authRateLimiter(req, res, next);
+  };
 
   router.post(
     '/initAuth',
-    authRateLimiter,
+    createInitAuthRateLimiter(logger, maxAuthRequestsPerMinute),
     ValidationMiddleware.validate(initAuthValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
@@ -82,12 +134,12 @@ export function createUserAccountRouter(container: Container) {
         code: z.string().optional(),
         accessToken: z.string().optional(),
         idToken: z.string().optional(),
-      }).passthrough(), // Allow additional fields for OAuth providers
+      }).loose(), // Allow additional fields for OAuth providers
     ]),
     email: z
       .string()
       .max(254, 'Email address is too long') // RFC 5321 limit
-      .email('Invalid email format')
+      .check(emailCheck('Invalid email format'))
       .optional(),
     'cf-turnstile-response': z.string().optional(), // Add Turnstile token
   }).strict();
@@ -101,8 +153,9 @@ export function createUserAccountRouter(container: Container) {
 
   router.post(
     '/authenticate',
-    authRateLimiter,
+    authIpRateLimiter,
     authSessionMiddleware,
+    authenticateRateLimiter,
     ValidationMiddleware.validate(authenticateValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
@@ -118,7 +171,21 @@ export function createUserAccountRouter(container: Container) {
 
   router.post(
     '/login/otp/generate',
+    authIpRateLimiter,
     authRateLimiter,
+    createEmailRateLimiter(
+      lazyRedisCounter(() => container.get<RedisService>('RedisService')),
+      container.get<Logger>('Logger'),
+      {
+        prefix: 'otp-request',
+        maxPerMinute: addressRateLimitPerMinute(),
+        emailOf: (req) => (req.body as { email?: string } | undefined)?.email,
+        // the answer a request gets whether or not the address has an account
+        onLimit: (res) => {
+          res.status(200).send(SIGN_IN_CODE_REQUESTED);
+        },
+      },
+    ),
     ValidationMiddleware.validate(otpGenerationValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
@@ -140,10 +207,45 @@ export function createUserAccountRouter(container: Container) {
     }),
   });
 
+  router.get(
+    '/password/status',
+    authenticate,
+    requireSessionAuth,
+    async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
+      try {
+        const userAccountController = container.get<UserAccountController>(
+          'UserAccountController',
+        );
+        await userAccountController.getPasswordStatus(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.post(
+    '/password/setup/email',
+    authenticate,
+    requireSessionAuth,
+    authRateLimiter,
+    ValidationMiddleware.validate(z.object({ body: z.object({}).optional() })),
+    async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
+      try {
+        const userAccountController = container.get<UserAccountController>(
+          'UserAccountController',
+        );
+        await userAccountController.sendPasswordSetupEmail(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   router.post(
     '/password/reset',
+    authenticate,
+    requireSessionAuth,
     authRateLimiter,
-    userValidator,
     ValidationMiddleware.validate(resetPasswordValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
@@ -178,7 +280,8 @@ export function createUserAccountRouter(container: Container) {
 
   router.post(
     '/logout/manual',
-    userValidator,
+    authenticate,
+    requireSessionAuth,
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         const userAccountController = container.get<UserAccountController>(
@@ -211,7 +314,21 @@ export function createUserAccountRouter(container: Container) {
 
   router.post(
     '/password/forgot',
+    authIpRateLimiter,
     authRateLimiter,
+    createEmailRateLimiter(
+      lazyRedisCounter(() => container.get<RedisService>('RedisService')),
+      container.get<Logger>('Logger'),
+      {
+        prefix: 'password-forgot',
+        maxPerMinute: addressRateLimitPerMinute(),
+        emailOf: (req) => (req.body as { email?: string } | undefined)?.email,
+        // the answer a request gets whether or not the address has an account
+        onLimit: (res) => {
+          res.status(200).send(PASSWORD_RESET_REQUESTED);
+        },
+      },
+    ),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         const userAccountController = container.get<UserAccountController>(
@@ -244,29 +361,48 @@ export function createUserAccountRouter(container: Container) {
     },
   );
 
-  router.post(
-    '/oauth/exchange',
-    async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
-      try {
-        const userAccountController = container.get<UserAccountController>(
-          'UserAccountController',
-        );
-        await userAccountController.exchangeOAuthToken(req, res, next);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-
   router.put(
     '/validateEmailChange',
     authMiddleware.scopedTokenValidator(TokenScopes.VALIDATE_EMAIL),
+    createEmailRateLimiter(
+      lazyRedisCounter(() => container.get<RedisService>('RedisService')),
+      container.get<Logger>('Logger'),
+      {
+        prefix: 'email-change',
+        maxPerMinute: addressRateLimitPerMinute(),
+        emailOf: (req) =>
+          (req as AuthenticatedServiceRequest).tokenPayload?.newEmail as
+            string | undefined,
+      },
+    ),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         const userAccountController = container.get<UserAccountController>(
           'UserAccountController',
         );
         await userAccountController.validateEmailChange(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // Called by the configuration manager after settings such as the frontend URL change.
+  router.post(
+    '/updateAppConfig',
+    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    async (
+      _req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        container.get<AuthAppConfigReloader>(AUTH_APP_CONFIG_RELOADER)(
+          await loadAppConfig(),
+        );
+        res
+          .status(200)
+          .json({ message: 'Auth configuration updated successfully' });
       } catch (error) {
         next(error);
       }

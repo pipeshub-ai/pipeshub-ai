@@ -197,6 +197,28 @@ export const deleteMcpInstance = proxyMcp(
 );
 
 // ============================================================================
+// Logos — custom servers only
+// ============================================================================
+
+export const getMcpLogos = proxyMcp(
+  HttpMethod.GET,
+  () => '/logos',
+  'Get MCP server logos',
+);
+
+export const setMcpInstanceLogo = proxyMcp(
+  HttpMethod.PUT,
+  (req) => `/instances/${encInstanceId(req)}/logo`,
+  'Set MCP server logo',
+);
+
+export const removeMcpInstanceLogo = proxyMcp(
+  HttpMethod.DELETE,
+  (req) => `/instances/${encInstanceId(req)}/logo`,
+  'Remove MCP server logo',
+);
+
+// ============================================================================
 // Auth — API token / headers
 // ============================================================================
 

@@ -1,17 +1,25 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import useSWR from 'swr';
 import { Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/store/toast-store';
 import { isProcessedError } from '@/lib/api/api-error';
+import { SWR_POLICY } from '@/lib/api/swr-cache';
 import { DestructiveTypedConfirmationDialog } from '@/app/(main)/workspace/components';
-import { AIModelsApi } from '../api';
+import { AI_MODEL_KEYS, AIModelsApi } from '../api';
 import type { AIModelProvider, CapabilitySection, ConfiguredModel } from '../types';
 import { CAPABILITY_TO_MODEL_TYPE } from '../types';
 import type { MainSection } from '../store';
 import { ModelConfigDialog, type ModelConfigSaveResult } from '../components/model-config-dialog';
 import { RotateCredentialsDialog } from '../components/rotate-credentials-dialog';
+import { IdentityForwardingDialog } from '../components/identity-forwarding-dialog';
+import { IdentityPolicyDialog } from '../components/identity-policy-dialog';
+
+// Stable empties: callers run effects on these values.
+const EMPTY_PROVIDERS: AIModelProvider[] = [];
+const EMPTY_MODELS: Record<string, ConfiguredModel[]> = {};
 
 interface UseAiModelsManagerOptions {
   enabled?: boolean;
@@ -39,11 +47,18 @@ export function useAiModelsManager({
   onModelSaved,
 }: UseAiModelsManagerOptions) {
   const { t } = useTranslation();
-  const [providers, setProviders] = useState<AIModelProvider[]>([]);
-  const [configuredModels, setConfiguredModels] = useState<Record<string, ConfiguredModel[]>>({});
-  const [loadingProviders, setLoadingProviders] = useState(true);
-  const [loadingModels, setLoadingModels] = useState(true);
-  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const registry = useSWR(
+    enabled ? AI_MODEL_KEYS.registry(registryCapability) : null,
+    () => AIModelsApi.getRegistry(registryCapability ? { capability: registryCapability } : undefined),
+    SWR_POLICY.sessionStable,
+  );
+  const models = useSWR(enabled ? AI_MODEL_KEYS.all : null, () => AIModelsApi.getAllModels(), SWR_POLICY.sessionStable);
+  const providers = useMemo(() => {
+    const list = registry.data?.providers ?? EMPTY_PROVIDERS;
+    return orderProviders ? orderProviders(list) : list;
+  }, [registry.data, orderProviders]);
+  const configuredModels =
+    (models.data?.models as unknown as Record<string, ConfiguredModel[]> | undefined) ?? EMPTY_MODELS;
   const [searchQuery, setSearchQuery] = useState('');
   const [mainSection, setMainSection] = useState<MainSection>('providers');
   const [capabilitySection, setCapabilitySection] = useState<CapabilitySection>(initialCapabilitySection);
@@ -60,43 +75,29 @@ export function useAiModelsManager({
   } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [rotateTarget, setRotateTarget] = useState<ConfiguredModel | null>(null);
+  const [identityTarget, setIdentityTarget] = useState<ConfiguredModel | null>(null);
+  const [identityPolicyOpen, setIdentityPolicyOpen] = useState(false);
 
-  const loadProviders = useCallback(async () => {
-    setLoadingProviders(true);
-    try {
-      const data = await AIModelsApi.getRegistry(
-        registryCapability ? { capability: registryCapability } : undefined,
-      );
-      const next = orderProviders ? orderProviders(data.providers ?? []) : (data.providers ?? []);
-      setProviders(next);
-      onProvidersLoaded?.(data.providers ?? []);
-    } catch {
-      toast.error(t(providerErrorKey));
-      onProvidersLoaded?.([]);
-    } finally {
-      setLoadingProviders(false);
-    }
-  }, [onProvidersLoaded, orderProviders, providerErrorKey, registryCapability, t]);
-
-  const loadModels = useCallback(async () => {
-    setLoadingModels(true);
-    try {
-      const data = await AIModelsApi.getAllModels();
-      setConfiguredModels(data.models as unknown as Record<string, ConfiguredModel[]>);
-      setModelsLoaded(true);
-    } catch {
-      toast.error(t(modelsErrorKey));
-      setModelsLoaded(true);
-    } finally {
-      setLoadingModels(false);
-    }
-  }, [modelsErrorKey, t]);
+  // Each response or failure is reported once, not again on every new callback identity.
+  useEffect(() => {
+    if (registry.data) onProvidersLoaded?.(registry.data.providers ?? EMPTY_PROVIDERS);
+  }, [registry.data]);
 
   useEffect(() => {
-    if (!enabled) return;
-    void loadProviders();
-    void loadModels();
-  }, [enabled, loadProviders, loadModels]);
+    if (!registry.error) return;
+    toast.error(t(providerErrorKey));
+    onProvidersLoaded?.(EMPTY_PROVIDERS);
+  }, [registry.error]);
+
+  useEffect(() => {
+    if (models.error) toast.error(t(modelsErrorKey));
+  }, [models.error]);
+
+  // Explicit Refresh only: writes through AIModelsApi refresh the cache themselves.
+  const { mutate: mutateRegistry } = registry;
+  const { mutate: mutateModels } = models;
+  const loadProviders = useCallback(() => mutateRegistry(), [mutateRegistry]);
+  const loadModels = useCallback(() => mutateModels(), [mutateModels]);
 
   const openAdd = useCallback((provider: AIModelProvider, capability: string) => {
     setDialogMode('add');
@@ -125,11 +126,10 @@ export function useAiModelsManager({
     try {
       await AIModelsApi.setDefault(modelType, modelKey);
       toast.success(t(setDefaultSuccessKey));
-      await loadModels();
     } catch {
       toast.error(t(setDefaultErrorKey));
     }
-  }, [loadModels, setDefaultErrorKey, setDefaultSuccessKey, t]);
+  }, [setDefaultErrorKey, setDefaultSuccessKey, t]);
 
   const openDelete = useCallback((modelType: string, modelKey: string, modelName: string) => {
     setDeleteTarget({ modelType, modelKey, modelName });
@@ -144,7 +144,6 @@ export function useAiModelsManager({
       toast.success(t('workspace.aiModels.toastDeleted', { name: deleteTarget.modelName }));
       setDeleteDialogOpen(false);
       setDeleteTarget(null);
-      await loadModels();
     } catch (error: unknown) {
       const detail = isProcessedError(error) && error.message.trim() ? error.message.trim() : undefined;
       toast.error(t('workspace.aiModels.toastDeleteError'), {
@@ -153,7 +152,7 @@ export function useAiModelsManager({
     } finally {
       setIsDeleting(false);
     }
-  }, [deleteTarget, loadModels, t]);
+  }, [deleteTarget, t]);
 
   const existingModelsCount = useMemo(() => {
     if (dialogMode !== 'add' || !dialogCapability) return 0;
@@ -174,10 +173,7 @@ export function useAiModelsManager({
         editModel={dialogEditModel}
         existingModelsCount={existingModelsCount}
         onClose={closeDialog}
-        onSaved={(result) => {
-          onModelSaved?.(result);
-          void loadModels();
-        }}
+        onSaved={(result) => onModelSaved?.(result)}
       />
       <DestructiveTypedConfirmationDialog
         open={deleteDialogOpen}
@@ -201,21 +197,19 @@ export function useAiModelsManager({
         confirmLoadingLabel={t('action.deleting')}
         onConfirm={() => void handleDelete()}
       />
-      <RotateCredentialsDialog
-        model={rotateTarget}
-        onClose={() => setRotateTarget(null)}
-        onSaved={() => { void loadModels(); }}
-      />
+      <RotateCredentialsDialog model={rotateTarget} onClose={() => setRotateTarget(null)} />
+      <IdentityForwardingDialog model={identityTarget} onClose={() => setIdentityTarget(null)} />
+      <IdentityPolicyDialog open={identityPolicyOpen} onClose={() => setIdentityPolicyOpen(false)} />
     </>
   );
 
   return {
     providers,
     configuredModels,
-    loadingProviders,
-    loadingModels,
-    modelsLoaded,
-    isLoading: loadingProviders || loadingModels,
+    loadingProviders: registry.isLoading,
+    loadingModels: models.isLoading,
+    modelsLoaded: models.data !== undefined || models.error !== undefined,
+    isLoading: registry.isLoading || models.isLoading,
     searchQuery,
     setSearchQuery,
     mainSection,
@@ -228,6 +222,8 @@ export function useAiModelsManager({
     openEdit,
     openDelete,
     openRotate: setRotateTarget,
+    openIdentityForwarding: setIdentityTarget,
+    openIdentityPolicy: () => setIdentityPolicyOpen(true),
     handleSetDefault,
     dialogs,
   };

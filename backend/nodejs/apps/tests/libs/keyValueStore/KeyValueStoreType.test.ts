@@ -23,6 +23,10 @@ describe('KeyValueStoreType', () => {
     it('should have Redis value', () => {
       expect(StoreType.Redis).to.equal('redis');
     });
+
+    it('should have Postgres value', () => {
+      expect(StoreType.Postgres).to.equal('postgres');
+    });
   });
 
   describe('fromString', () => {
@@ -36,6 +40,10 @@ describe('KeyValueStoreType', () => {
 
     it('should return StoreType.Redis for "redis"', () => {
       expect(KeyValueStoreType.fromString('redis')).to.equal(StoreType.Redis);
+    });
+
+    it('should return StoreType.Postgres for "postgres"', () => {
+      expect(KeyValueStoreType.fromString('postgres')).to.equal(StoreType.Postgres);
     });
 
     it('should throw Error for unsupported store type', () => {

@@ -1,0 +1,117 @@
+column kt.apps.client_id type=uuid notnull=true identity= generated= default=gen_random_uuid()
+column kt.apps.id type=text notnull=true identity= generated= default=-
+column kt.apps.org_id type=text notnull=true identity= generated= default=-
+column kt.apps.redirect type=text notnull=true identity= generated= default=-
+column kt.cfg.k type=text notnull=true identity= generated= default=-
+column kt.cfg.org_id type=text notnull=true identity= generated= default=-
+column kt.cfg.v type=text notnull=false identity= generated= default=-
+column kt.docs.body type=text notnull=false identity= generated= default=-
+column kt.docs.id type=text notnull=true identity= generated= default=-
+column kt.docs.org_id type=text notnull=true identity= generated= default=-
+column kt.docs.title type=text notnull=false identity= generated= default=-
+column kt.events.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column kt.events.id type=bigint notnull=true identity=a generated= default=-
+column kt.events.note type=text notnull=false identity= generated= default=-
+column kt.events.org_id type=text notnull=true identity= generated= default=-
+column kt.tokens.org_id type=text notnull=true identity= generated= default=-
+column kt.tokens.token_hash type=text notnull=true identity= generated= default=-
+column kt.tokens.user_id type=text notnull=true identity= generated= default=-
+constraint kt.apps apps_client_id_key u def=f1974cb5ee52f06829281e97fe032f0e
+constraint kt.apps apps_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint kt.apps org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint kt.apps org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint kt.cfg cfg_pkey p def=298354b0f79e88b9f503b00778f78508
+constraint kt.cfg org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint kt.cfg org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint kt.docs docs_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint kt.docs org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint kt.docs org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint kt.events events_pkey p def=0626fc429a1362e58aef82e1bf2d4c83
+constraint kt.events org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint kt.events org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint kt.tokens tokens_pkey p def=38fa6cfabf70c39cd7b2697e9b8e809f
+databaseacl pipeshub_node TEMPORARY grantable=false
+func kt.docs_search(text) owner=pipeshub_vetted_kt secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, kt, pg_temp;standard_conforming_strings=on body=f45159b84936a7fa2b13f734ce428746 ext=-
+func kt.fence(integer) owner=pipeshub_vetted_kt secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kt, pg_temp;standard_conforming_strings=on body=144b82eb9dfbbd6102d5b08342da275d ext=-
+func kt.import_tokens(text,text,text) owner=pipeshub_vetted_kt secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kt, pg_temp;standard_conforming_strings=on body=4d6b1a841a452dd51f7b6163ba306903 ext=-
+func kt.set_redirect(uuid,text) owner=pipeshub_vetted_kt secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kt, pg_temp;standard_conforming_strings=on body=f381a7506bdf38657426a8638866dbec ext=-
+funcacl kt.docs_search(text) pipeshub_app EXECUTE
+funcacl kt.fence(integer) pipeshub_connectors_login EXECUTE
+funcacl kt.fence(integer) pipeshub_indexing_login EXECUTE
+funcacl kt.fence(integer) pipeshub_node_login EXECUTE
+funcacl kt.fence(integer) pipeshub_query_login EXECUTE
+funcacl kt.import_tokens(text,text,text) pipeshub_jobs EXECUTE
+funcacl kt.set_redirect(uuid,text) pipeshub_node EXECUTE
+index kt.apps_client_id_key on kt.apps unique=true exclusion=false valid=true def=ce31d959f073e0ddb0aa231310a0a0b6
+index kt.apps_pkey on kt.apps unique=true exclusion=false valid=true def=d3ce4a963927e3e60b9863650f98f107
+index kt.cfg_pkey on kt.cfg unique=true exclusion=false valid=true def=3a005d5e96170653e79cf21cb837646a
+index kt.docs_pkey on kt.docs unique=true exclusion=false valid=true def=4c1257180f282d602b51e3c21a96bc8a
+index kt.events_pkey on kt.events unique=true exclusion=false valid=true def=4d5262ed25a9b8c5378129dbe71ac6df
+index kt.tokens_pkey on kt.tokens unique=true exclusion=false valid=true def=3081542da512286fbea93829f2c3cc6c
+policy kt.apps backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy kt.apps org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy kt.apps restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy kt.apps vetted_read cmd=r permissive=true roles=pipeshub_vetted_kt using=true check=-
+policy kt.apps vetted_write cmd=* permissive=true roles=pipeshub_vetted_kt using=true check=true
+policy kt.cfg backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy kt.cfg lineage_read cmd=r permissive=true roles=pipeshub_app using=(org_id = ANY (string_to_array(NULLIF(current_setting('app.org_lineage'::text, true), ''::text), ','::text))) check=-
+policy kt.cfg org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy kt.cfg restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy kt.docs backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy kt.docs jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy kt.docs org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy kt.docs restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy kt.docs vetted_read cmd=r permissive=true roles=pipeshub_vetted_kt using=true check=-
+policy kt.events backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy kt.events org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy kt.events restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+rel kt.apps kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel kt.cfg kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel kt.docs kind=p owner=pipeshub_owner rls=true force=true options=- ext=-
+rel kt.events kind=p owner=pipeshub_owner rls=true force=true options=- ext=-
+rel kt.events_id_seq kind=S owner=pipeshub_owner rls=false force=false options=- ext=-
+rel kt.tokens kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
+relacl kt.apps pipeshub_backup SELECT grantable=false
+relacl kt.apps pipeshub_restore INSERT grantable=false
+relacl kt.apps pipeshub_vetted_kt INSERT grantable=false
+relacl kt.apps pipeshub_vetted_kt SELECT grantable=false
+relacl kt.apps pipeshub_vetted_kt UPDATE grantable=false
+relacl kt.cfg pipeshub_backup SELECT grantable=false
+relacl kt.cfg pipeshub_jobs SELECT grantable=false
+relacl kt.cfg pipeshub_node DELETE grantable=false
+relacl kt.cfg pipeshub_node INSERT grantable=false
+relacl kt.cfg pipeshub_node SELECT grantable=false
+relacl kt.cfg pipeshub_node UPDATE grantable=false
+relacl kt.cfg pipeshub_restore INSERT grantable=false
+relacl kt.docs pipeshub_backup SELECT grantable=false
+relacl kt.docs pipeshub_connectors SELECT grantable=false
+relacl kt.docs pipeshub_jobs SELECT grantable=false
+relacl kt.docs pipeshub_node DELETE grantable=false
+relacl kt.docs pipeshub_node INSERT grantable=false
+relacl kt.docs pipeshub_node SELECT grantable=false
+relacl kt.docs pipeshub_node UPDATE grantable=false
+relacl kt.docs pipeshub_restore INSERT grantable=false
+relacl kt.docs pipeshub_vetted_kt SELECT grantable=false
+relacl kt.events pipeshub_backup SELECT grantable=false
+relacl kt.events pipeshub_node DELETE grantable=false
+relacl kt.events pipeshub_node INSERT grantable=false
+relacl kt.events pipeshub_node SELECT grantable=false
+relacl kt.events pipeshub_node UPDATE grantable=false
+relacl kt.events pipeshub_restore INSERT grantable=false
+relacl kt.events_id_seq pipeshub_node USAGE grantable=false
+relacl kt.tokens pipeshub_backup SELECT grantable=false
+relacl kt.tokens pipeshub_vetted_kt INSERT grantable=false
+relacl kt.tokens pipeshub_vetted_kt SELECT grantable=false
+relacl kt.tokens pipeshub_vetted_kt UPDATE grantable=false
+relacl platform.jobs pipeshub_vetted_kt SELECT grantable=false
+schema kt owner=pipeshub_owner
+schemaacl kt pipeshub_app USAGE grantable=false
+schemaacl kt pipeshub_backup USAGE grantable=false
+schemaacl kt pipeshub_connectors_login USAGE grantable=false
+schemaacl kt pipeshub_indexing_login USAGE grantable=false
+schemaacl kt pipeshub_jobs USAGE grantable=false
+schemaacl kt pipeshub_node_login USAGE grantable=false
+schemaacl kt pipeshub_query_login USAGE grantable=false
+schemaacl kt pipeshub_restore USAGE grantable=false
+schemaacl kt pipeshub_vetted_kt USAGE grantable=false
+schemaacl platform pipeshub_vetted_kt USAGE grantable=false

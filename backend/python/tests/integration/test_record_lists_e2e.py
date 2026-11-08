@@ -254,10 +254,15 @@ async def _seed(w: _World) -> None:
         collection=teams,
     )
     await g.batch_create_edges(
+        # Nothing this user is a member of is worth more than READER, and
+        # neither is their direct grant. The only WRITER anywhere is on team
+        # A's grant, so the expected role is unreachable unless the grant is
+        # what counts — which is the rule this is here to hold.
         [edge(w.team_user_key, users, w.team_ids[0], teams, role="READER", type="USER"),
-         edge(w.team_user_key, users, w.team_ids[1], teams, role="WRITER", type="USER"),
+         edge(w.team_user_key, users, w.team_ids[1], teams, role="READER", type="USER"),
          edge(w.team_user_key, users, w.kb_id, apps, role="FILEORGANIZER", type="USER"),
-         *(edge(t, teams, w.kb_id, apps, role="READER", type="TEAM") for t in w.team_ids)],
+         edge(w.team_ids[0], teams, w.kb_id, apps, role="WRITER", type="TEAM"),
+         edge(w.team_ids[1], teams, w.kb_id, apps, role="READER", type="TEAM")],
         collection=CollectionNames.PERMISSION.value,
     )
 
@@ -342,8 +347,19 @@ async def test_all_records_answers_404_for_an_unknown_caller(world: _World) -> N
 async def test_a_kb_reached_through_several_grants_is_listed_once(world: _World) -> None:
     """Each team grant used to add another copy of every record in the KB.
 
-    The strongest grant wins. FILEORGANIZER is a retired role and reads as
-    READER, so the WRITER membership of the second team is the strongest here.
+    The strongest of them wins, and what a team grant is worth is the role on
+    the team's own grant rather than the member's role inside the team (see
+    graph_db/common/team_grant_role.py).
+
+    This user reaches the same knowledge base three ways, and is a READER
+    everywhere they could be read as one: a READER in both teams, and directly
+    a FILEORGANIZER, a retired role that reads as READER. The only WRITER in
+    reach is on team A's grant.
+
+    So WRITER is the answer only if the grant is what counts. Read the
+    member's role instead, as this did before #4626, and every path gives
+    READER and this fails — which is the point, since that reading is what let
+    a team OWNER own every knowledge base shared with the team.
     """
     listing = await _all_records(world, user_id=world.team_user_id)
     ids = [item.id for item in listing.items]

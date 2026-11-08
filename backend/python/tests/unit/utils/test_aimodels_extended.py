@@ -635,3 +635,22 @@ class TestBedrockReasoningAndTemperature:
                 kwargs = mock_chat.call_args.kwargs
                 assert "additional_model_request_fields" not in kwargs
                 assert kwargs["temperature"] == 0.2
+
+
+class TestEmbeddingConfigHashIdentityForwarding:
+    def _cfg(self, **configuration: object) -> list[dict]:
+        return [{"provider": "openAI", "configuration": {"model": "m", "apiKey": "k", **configuration}}]
+
+    def test_flat_forwarding_fields_change_the_hash(self) -> None:
+        from app.utils.aimodels import embedding_config_hash
+
+        off = embedding_config_hash(self._cfg())
+        on = embedding_config_hash(self._cfg(identityForwardingEnabled=True))
+        assert off != on
+
+    def test_identical_forwarding_settings_hash_identically(self) -> None:
+        from app.utils.aimodels import embedding_config_hash
+
+        a = embedding_config_hash(self._cfg(identityForwardingEnabled=True))
+        b = embedding_config_hash(self._cfg(identityForwardingEnabled=True))
+        assert a == b

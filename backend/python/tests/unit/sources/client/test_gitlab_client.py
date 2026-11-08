@@ -1,8 +1,13 @@
 """Unit tests for GitLab client module."""
 
+import http.server
 import logging
+import socket
+import threading
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import gitlab
 import pytest
 import requests
 
@@ -10,7 +15,9 @@ from app.sources.client.gitlab.gitlab import (
     GitLabClient,
     GitLabClientViaToken,
     GitLabConfig,
+    GitLabReadTimeout,
     GitLabResponse,
+    _TokenSafeSession,
 )
 
 
@@ -912,3 +919,100 @@ class TestRedirectsKeepTheTokenOffPlainHttp:
 
         session.get("https://gitlab.example/api/v4/projects", headers={"PRIVATE-TOKEN": "pat-tok"})
         assert adapter.sent[1].headers.get("PRIVATE-TOKEN") == "pat-tok"
+
+
+# ---------------------------------------------------------------------------
+# Read timeouts are not retried inside python-gitlab
+# ---------------------------------------------------------------------------
+
+
+class TestReadTimeoutIsNotRetriedBySdk:
+    """python-gitlab 8 retries a read timeout when retry_transient_errors is on.
+
+    A stalled call would then hold its worker thread for up to ten per-request
+    timeouts, which asyncio.wait_for cannot interrupt.
+    """
+
+    @staticmethod
+    def _stalled_server() -> tuple[http.server.ThreadingHTTPServer, list[str]]:
+        hits: list[str] = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                hits.append(self.path)
+                time.sleep(1.0)
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server, hits
+
+    def test_first_read_timeout_is_raised_after_one_request(self) -> None:
+        server, hits = self._stalled_server()
+        try:
+            gl = gitlab.Gitlab(
+                f"http://127.0.0.1:{server.server_port}",
+                private_token="t",
+                timeout=0.2,
+                retry_transient_errors=True,
+                session=_TokenSafeSession(),
+            )
+            with pytest.raises(GitLabReadTimeout):
+                gl.http_get("/projects/1/issues")
+        finally:
+            server.shutdown()
+        assert len(hits) == 1
+
+    def test_a_stall_while_reading_the_body_is_raised_after_one_request(self) -> None:
+        hits: list[str] = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                hits.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", "100")
+                self.end_headers()
+                self.wfile.write(b"{")
+                self.wfile.flush()
+                time.sleep(1.0)
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            gl = gitlab.Gitlab(
+                f"http://127.0.0.1:{server.server_port}",
+                private_token="t",
+                timeout=0.2,
+                retry_transient_errors=True,
+                session=_TokenSafeSession(),
+            )
+            with pytest.raises(GitLabReadTimeout):
+                gl.http_get("/projects/1/issues")
+        finally:
+            server.shutdown()
+        assert len(hits) == 1
+
+    def test_connect_failures_are_still_retried_by_the_sdk(self) -> None:
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        session = _TokenSafeSession()
+        calls: list[int] = []
+        real = requests.Session.send
+
+        def counting(self_: requests.Session, request: requests.PreparedRequest, **kw: object) -> requests.Response:
+            calls.append(1)
+            return real(self_, request, **kw)
+
+        gl = gitlab.Gitlab(f"http://127.0.0.1:{port}", private_token="t", timeout=0.2,
+                           retry_transient_errors=True, session=session)
+        with patch.object(requests.Session, "send", counting), patch("time.sleep"):
+            with pytest.raises(requests.exceptions.ConnectionError):
+                gl.http_get("/projects/1/issues", max_retries=2)
+        assert len(calls) == 3

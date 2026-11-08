@@ -393,6 +393,81 @@ def merge_enrichment_context(
     return _rebuild_context(base_context, ticket_lines)
 
 
+# Curated custom fields whose value names another issue by key.
+_CROSS_ISSUE_CUSTOM_KEYS = ("epic_link", "parent_link")
+
+
+def _link_targets(issue: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every other-issue reference in the live fields: parent, linked issues, sub-tasks."""
+    fields = issue.get("fields") or {}
+    refs = [fields.get("parent")]
+    for link in fields.get("issuelinks") or []:
+        if isinstance(link, dict):
+            refs += [link.get("outwardIssue"), link.get("inwardIssue")]
+    refs += fields.get("subtasks") or []
+    return [r for r in refs if isinstance(r, dict)]
+
+
+def referenced_issue_ids(issue: dict[str, Any]) -> set[str]:
+    return {str(r["id"]) for r in _link_targets(issue) if r.get("id")}
+
+
+def key_only_refs(issue: dict[str, Any], discovered_custom_ids: dict[str, str]) -> dict[str, str]:
+    """Curated custom fields (epic link, parent link) holding only an issue key: field id -> key."""
+    fields = issue.get("fields") or {}
+    refs: dict[str, str] = {}
+    for reg_key in _CROSS_ISSUE_CUSTOM_KEYS:
+        field_id = discovered_custom_ids.get(reg_key, "")
+        value = fields.get(field_id)
+        key = value.get("key") if isinstance(value, dict) else value
+        if field_id and isinstance(key, str) and key:
+            refs[field_id] = key
+    return refs
+
+
+def restrict_cross_issue_refs(
+    issue: dict[str, Any],
+    readable_ids: set[str],
+    discovered_custom_ids: dict[str, str],
+    key_ids: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Copy of ``issue`` where another issue is named only if the viewer may read it.
+
+    The live fetch runs with service credentials, so a parent's title or a link
+    target may be an issue the viewer cannot open. An unreadable one is dropped
+    whole, key and title. Curated custom fields that hold only an issue key (epic
+    link, parent link) are kept when ``key_ids`` maps that key to a readable issue id.
+    """
+    def keep(ref: Any) -> dict[str, Any] | None:  # noqa: ANN401
+        return ref if isinstance(ref, dict) and str(ref.get("id")) in readable_ids else None
+
+    fields = dict(issue.get("fields") or {})
+    if "parent" in fields:
+        fields["parent"] = keep(fields["parent"])
+    if fields.get("issuelinks"):
+        links = []
+        for link in fields["issuelinks"]:
+            if not isinstance(link, dict):
+                continue
+            out = {k: v for k, v in link.items() if k not in ("outwardIssue", "inwardIssue")}
+            for side in ("outwardIssue", "inwardIssue"):
+                if side in link and (kept := keep(link[side])):
+                    out[side] = kept
+            if "outwardIssue" in out or "inwardIssue" in out:
+                links.append(out)
+        fields["issuelinks"] = links
+    if fields.get("subtasks"):
+        fields["subtasks"] = [k for k in map(keep, fields["subtasks"]) if k]
+    # Allow-list: an epic or parent link stays only if its value is a key that
+    # resolved to an issue the viewer can read; any other shape is dropped.
+    keyed = key_only_refs(issue, discovered_custom_ids)
+    for reg_key in _CROSS_ISSUE_CUSTOM_KEYS:
+        field_id = discovered_custom_ids.get(reg_key)
+        if field_id and field_id in fields and (key_ids or {}).get(keyed.get(field_id, ""), None) not in readable_ids:
+            fields.pop(field_id)
+    return {**issue, "fields": fields}
+
+
 def enrich_from_issue(
     base_context: str,
     issue: dict[str, Any],

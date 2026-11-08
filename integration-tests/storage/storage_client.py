@@ -347,3 +347,56 @@ class StorageClient:
             headers=self._json_headers(),
             timeout=self._c.timeout_seconds,
         )
+
+    # Routes the indexer and the connector service use for processed records.
+
+    def move_tree(
+        self,
+        old_path: str,
+        new_path: str,
+        *,
+        virtual_record_id: str | None = None,
+        virtual_record_ids: list[str] | None = None,
+    ) -> requests.Response:
+        body: dict[str, object] = {"oldPath": old_path, "newPath": new_path}
+        if virtual_record_id is not None:
+            body["virtualRecordId"] = virtual_record_id
+        if virtual_record_ids is not None:
+            body["virtualRecordIds"] = virtual_record_ids
+        return requests.post(
+            self._url("/move-tree"),
+            headers=self._json_headers(),
+            json=body,
+            timeout=self._c.timeout_seconds,
+        )
+
+    def virtual_record_documents(self, virtual_record_id: str) -> requests.Response:
+        return requests.get(
+            self._url(f"/records/{virtual_record_id}/documents"),
+            headers=self._json_headers(),
+            timeout=self._c.timeout_seconds,
+        )
+
+    def flat_record_documents(self, *, after: str | None = None, limit: int | None = None) -> requests.Response:
+        params = {k: v for k, v in (("after", after), ("limit", limit)) if v is not None}
+        return requests.get(
+            self._url("/records/flat-documents"),
+            headers=self._json_headers(),
+            params=params,
+            timeout=self._c.timeout_seconds,
+        )
+
+    def delete_connector_storage(self, connector_id: str) -> requests.Response:
+        return requests.delete(
+            self._url(f"/connector/{connector_id}"),
+            headers=self._json_headers(),
+            timeout=self._c.timeout_seconds,
+        )
+
+    def purge_virtual_record(self, virtual_record_id: str) -> requests.Response:
+        """Remove every stored document of a virtual record, files included."""
+        return requests.delete(
+            self._url(f"/records/{virtual_record_id}/purge"),
+            headers=self._json_headers(),
+            timeout=self._c.timeout_seconds,
+        )

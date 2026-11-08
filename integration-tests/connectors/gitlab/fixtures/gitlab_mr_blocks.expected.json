@@ -556,9 +556,11 @@
         "is_executable": false,
         "kind": null,
         "language": null,
+        "pending_edges": null,
         "qualified_name": null,
         "signature": null,
-        "start_line": null
+        "start_line": null,
+        "type_table": null
       },
       "comments": [],
       "data": "def handle(self, payload: dict) -> dict:\n    if not isinstance(payload, dict):\n        raise TypeError(\"payload must be a dict\")\n    return {\"ok\": True, \"echo\": payload, \"env\": self.settings.env}",
@@ -643,9 +645,11 @@
         "is_executable": false,
         "kind": null,
         "language": null,
+        "pending_edges": null,
         "qualified_name": null,
         "signature": null,
-        "start_line": null
+        "start_line": null,
+        "type_table": null
       },
       "comments": [],
       "data": " def handle(self, payload: dict) -> dict:",

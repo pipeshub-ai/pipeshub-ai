@@ -3,11 +3,15 @@ from typing import TYPE_CHECKING, Optional
 
 from app.config.constants.arangodb import CollectionNames, EventTypes, ProgressStatus
 from app.modules.reconciliation.service import ReconciliationMetadata, ReconciliationService
+from app.modules.transformers.blob_storage import StorageLookupUnavailableError
 from app.modules.transformers.block_container_validator import BlockContainerValidator
 from app.modules.transformers.document_extraction import DocumentExtraction
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
+from app.modules.indexing.parse_now_marker import shape_status_write
 from app.modules.transformers.transformer import (
+    ENRICHMENT_DEFERRED,
     ENRICHMENT_FOLLOWS,
+    STORE_ONLY,
     ReconciliationContext,
     TransformContext,
 )
@@ -102,8 +106,13 @@ class IndexingPipeline:
         return ReconciliationContext(new_metadata=new_metadata.to_dict())
 
     async def apply(self, ctx: TransformContext) -> None:
-        """Validate, index (the record becomes searchable), then hand it to the stage runtime."""
+        """Validate, index (the record becomes searchable), then hand it to the stage runtime.
+
+        A store-only run (parse now, automatic indexing off) validates and stores, and stops: nothing is
+        purged, reconciled or handed to the stages.
+        """
         try:
+            store_only = bool(ctx.settings.get(STORE_ONLY))
             record = ctx.record
             block_containers = record.block_containers
 
@@ -125,7 +134,8 @@ class IndexingPipeline:
 
                 # For reconciliation-enabled 1:1 updates, clean up old vectors and metadata
                 if (
-                    ctx.event_type in (EventTypes.UPDATE_RECORD.value, EventTypes.REINDEX_RECORD.value)
+                    not store_only
+                    and ctx.event_type in (EventTypes.UPDATE_RECORD.value, EventTypes.REINDEX_RECORD.value)
                     and ctx.prev_virtual_record_id
                     and ctx.prev_virtual_record_id == record.virtual_record_id
                 ):
@@ -145,15 +155,27 @@ class IndexingPipeline:
                         # actual_storage_path tracking and
                         # get_actual_content_path().
                         empty_metadata = ReconciliationMetadata().to_dict()
-                        actual_content_path = await self.sink_orchestrator.blob_storage.get_actual_content_path(
-                            record.org_id, record.virtual_record_id
-                        )
+                        # The metadata must still be emptied, or the next update
+                        # diffs against stale block hashes and skips re-embedding.
+                        # With the content's path unknown, only an existing
+                        # metadata document is updated: none is created at a
+                        # guessed path, away from the content it describes.
+                        try:
+                            actual_content_path = await self.sink_orchestrator.blob_storage.get_actual_content_path(
+                                record.org_id, record.virtual_record_id
+                            )
+                            path_known = True
+                        except StorageLookupUnavailableError:
+                            actual_content_path, path_known = None, False
                         await self.sink_orchestrator.blob_storage.save_reconciliation_metadata(
                             record.org_id, record_id, record.virtual_record_id, empty_metadata,
                             document_path=actual_content_path,
                             connector_id=getattr(record, "connector_id", None),
                             record_group_id=getattr(record, "record_group_id", None),
+                            create_if_missing=path_known,
                         )
+                    except StorageLookupUnavailableError:
+                        raise  # the event is retried; stale metadata must not stay
                     except Exception as e:
                         self.logger.warning(
                             f"⚠️ Failed to clean up old vectors for empty document: {str(e)}"
@@ -171,7 +193,7 @@ class IndexingPipeline:
                 success = await self.document_extraction.graph_provider.update_node(
                     record_id,
                     CollectionNames.RECORDS.value,
-                    status_fields,
+                    shape_status_write(status_fields),
                 )
                 if not success:
                     self.logger.warning(
@@ -180,7 +202,7 @@ class IndexingPipeline:
                     )
                 return
 
-            if ctx.reconciliation_context is None:
+            if ctx.reconciliation_context is None and not store_only:
                 with stage("reconcile"):
                     ctx.reconciliation_context = await IndexingPipeline.build_reconciliation_context(
                         ctx, self.logger, self.sink_orchestrator
@@ -189,6 +211,9 @@ class IndexingPipeline:
             # Phase 1: Index (VectorStore + BlobStorage)
             # Document becomes searchable after this call; enrichment follows as
             # the classify stage.
+            if store_only:
+                await self._index(ctx)
+                return
             ctx.settings = {**ctx.settings, ENRICHMENT_FOLLOWS: True}
             await self._index(ctx)
 
@@ -206,4 +231,8 @@ class IndexingPipeline:
     async def _dispatch_stages(self, ctx: TransformContext) -> None:
         if self.stage_ingress is None:
             raise RuntimeError("the pipeline stage runtime is not wired into this IndexingPipeline")
-        _ = await self.stage_ingress.on_indexed(ctx.record, trigger=ctx.event_type)
+        _ = await self.stage_ingress.on_indexed(
+            ctx.record,
+            trigger=ctx.event_type,
+            defer_classify=bool(ctx.settings.get(ENRICHMENT_DEFERRED)),
+        )

@@ -231,6 +231,7 @@ class CollectionNames(Enum):
     ARTIFACTS = "artifacts"
     CODE_FILES = "codeFiles"
     SQL_TABLES = "sqlTables"
+    SQL_COLUMNS = "sqlColumns"
     SQL_VIEWS = "sqlViews"
 
     # Users and groups
@@ -390,6 +391,25 @@ class ExtensionTypes(Enum):
     YAML = "yaml"
     YML = "yml"
 
+# Common file types PipesHub cannot index. Sync filters offer them so a user can
+# exclude them (Not in); they are kept out of ExtensionTypes because that enum
+# lists the types that can be indexed.
+EXCLUDABLE_FILE_EXTENSIONS: tuple[str, ...] = (
+    # archives
+    "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz",
+    # databases
+    "db", "sqlite", "sqlite3", "mdb", "accdb",
+    # executables and installers
+    "exe", "dll", "msi", "bin", "iso", "dmg", "apk", "jar",
+    # temporary and backup files
+    "tmp", "bak", "swp", "lock",
+    # logs
+    "log",
+    # video and audio
+    "mp4", "mov", "avi", "mkv", "webm", "wmv",
+    "mp3", "wav", "flac", "m4a", "aac", "ogg",
+)
+
 class MimeTypes(Enum):
     PDF = "application/pdf"
     GMAIL = "text/gmail_content"
@@ -451,6 +471,8 @@ class MimeTypes(Enum):
     SHELLSCRIPT = "text/x-shellscript"
     SQL_TABLE = "application/vnd.sql.table"  
     SQL_VIEW = "application/vnd.sql.view"  
+    SQL_COLUMN = "application/vnd.sql.column"
+
 
 # Every mimeType a folder record has been written with. Folders are written as
 # MimeTypes.FOLDER only; readers accept the older values too, so a folder the
@@ -644,6 +666,9 @@ class ProgressStatus(Enum):
     QUEUED = "QUEUED"
     # A stage that does not apply to this record (policy off, nothing to process).
     SKIPPED = "SKIPPED"
+    # The file needs a password to open. Terminal: only a new version of the
+    # file (or, later, a password) changes the outcome, so nothing retries it.
+    PASSWORD_PROTECTED = "PASSWORD_PROTECTED"
 
 
 class DeleteSource(str, Enum):
@@ -740,6 +765,28 @@ class EntityRelations(Enum):
     RELATED_TO_PERSON = "RELATED_TO_PERSON"
     MENTIONED_IN = "MENTIONED_IN"  # User mentioned in a message/record
     INVOLVED_IN = "INVOLVED_IN"
+    # Record -> member edges written by record_people (KG-13)
+    AUTHORED_BY = "AUTHORED_BY"
+    # Who last changed the record's current version (source-reported)
+    LAST_MODIFIED_BY = "LAST_MODIFIED_BY"
+    ADDRESSED_TO = "ADDRESSED_TO"
+    REVIEWED_BY = "REVIEWED_BY"
+    OWNED_BY = "OWNED_BY"
+    # Record -> the CRM account (external organisation) it belongs to (KG-13).
+    FOR_ACCOUNT = "FOR_ACCOUNT"
+    # Record -> an organisation its content names (KG-13 slice 3b, EXTRACTED).
+    MENTIONS = "MENTIONS"
+
+
+class EntityOrigin(str, Enum):
+    """Where a record -> entity link came from (KG-13). Stored as ``origin``
+    on ``entityRelations`` edges; an edge without one predates the field
+    and came from a connector."""
+
+    # Taken directly from a connector's structured data.
+    INFERRED = "INFERRED"
+    # Produced by a model or agent while indexing or building knowledge.
+    EXTRACTED = "EXTRACTED"
 
 
 class EventTypes(Enum):
@@ -803,6 +850,7 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "CODE_FILE": CollectionNames.CODE_FILES.value,
     "PULL_REQUEST":CollectionNames.PULLREQUESTS.value,
     "SQL_TABLE": CollectionNames.SQL_TABLES.value,
+    "SQL_COLUMN": CollectionNames.SQL_COLUMNS.value,
     "SQL_VIEW": CollectionNames.SQL_VIEWS.value,
     # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }

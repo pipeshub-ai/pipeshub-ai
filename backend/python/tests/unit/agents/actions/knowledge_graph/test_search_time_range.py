@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -243,3 +243,37 @@ class TestSearchTimeRangeFanOut:
             fg = call.kwargs.get("filter_groups", {})
             called_apps.update(fg.get("apps", []))
         assert called_apps == {"app-1", "app-2"}
+
+
+class TestSearchIgnoresTheAgentsClockAsABound:
+    """An upper bound on or after the day the agent is told it is filters
+    nothing a question asked for; it is not applied (``upper_bounds_before_today``)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("bounds", "forwarded"), [
+        ({"created_before": "2026-03-29"}, None),
+        ({"created_after": "2026-03-01", "created_before": "2026-04-30"}, {"source_created_after_ms": 1772323200000}),
+        ({"created_before": "2026-03-28"}, {"source_created_before_ms": 1774742399999}),
+    ], ids=["today", "after-today-with-a-lower-bound", "before-today"])
+    async def test_against_the_requests_current_time(self, bounds: dict, forwarded: dict | None) -> None:
+        retrieval_service = _empty_results_service()
+        state = _make_state(retrieval_service=retrieval_service, current_time="2026-03-29T00:00:00Z")
+
+        await execute_search(state, query="vendor renewal terms", **bounds)
+
+        assert retrieval_service.search_with_filters.await_args.kwargs["time_range"] == forwarded
+
+    @pytest.mark.asyncio
+    async def test_a_wide_span_ending_today_is_searched_to_now(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Before the span is checked for a timeline, so the timeline does not stop at the agent's date either."""
+        from app.agents.actions.knowledge_graph.ops import search as search_op
+
+        monkeypatch.setenv(TIMELINE_SUMMARIES_ENV_VAR, "true")
+        timeline = AsyncMock(return_value=None)
+        state = _make_state(retrieval_service=_empty_results_service(), current_time="2026-03-29T10:00:00Z")
+        with patch("app.agents.actions.knowledge_graph.ops.timeline.automatic_timeline_search", timeline), \
+                patch.object(search_op, "_execute_search", AsyncMock(return_value="ranked")):
+            await execute_search(state, query="vendor renewal terms", created_after="2026-01-01", created_before="2026-03-29")
+
+        assert timeline.await_args.kwargs["created_after"] == "2026-01-01"
+        assert timeline.await_args.kwargs["created_before"] is None

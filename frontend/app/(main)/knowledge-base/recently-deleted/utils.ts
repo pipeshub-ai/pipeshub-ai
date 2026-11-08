@@ -1,5 +1,6 @@
 import type { TFunction } from 'i18next';
 import { getUserFacingErrorMessage, isProcessedError } from '@/lib/api/api-error';
+import { formatDate } from '@/lib/utils/formatters';
 import type { BulkRestoreResponse, RestoreResponse, RestoreResultEntry, TrashItem, TrashListResponse } from './types';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -19,8 +20,9 @@ export function canOpenRecentlyDeleted(role: string | null | undefined): boolean
 /** Failures named one by one in a message before the rest are counted. */
 const MAX_FAILURES_LISTED = 3;
 
-export function formatTrashDate(timestamp: number, locale?: string): string {
-  return new Date(timestamp).toLocaleDateString(locale, { day: 'numeric', month: 'short', year: 'numeric' });
+/** The same date form as the Collections table. */
+export function formatTrashDate(timestamp: number): string {
+  return formatDate(timestamp);
 }
 
 /** Whole days the trash keeps an item, or null when unknown or shorter than a day (test overrides). */
@@ -86,9 +88,9 @@ export function deletedByLabel(item: TrashItem, t: TFunction): string {
   return item.deletedBy?.name?.trim() || item.deletedBy?.email?.trim() || t('collections.trash.unknownUser');
 }
 
-export function removalLabel(item: TrashItem, t: TFunction, locale?: string): string {
+export function removalLabel(item: TrashItem, t: TFunction): string {
   if (typeof item.removableAfterTimestamp === 'number') {
-    return t('collections.trash.removedAfterDate', { date: formatTrashDate(item.removableAfterTimestamp, locale) });
+    return t('collections.trash.removedAfterDate', { date: formatTrashDate(item.removableAfterTimestamp) });
   }
   return t('collections.trash.removedAfterDays', { days: DEFAULT_RETENTION_DAYS });
 }

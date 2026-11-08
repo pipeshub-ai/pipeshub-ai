@@ -11,10 +11,11 @@ import { ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useChatStore, selectPendingForSidebar } from '@/chat/store';
+import type { Conversation } from '@/chat/types';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { openFreshAgentChat } from '@/chat/build-chat-url';
 import { ChatSidebarFooter } from '@/config';
-import { getAgentSidebarRowMenuAccess } from './agent-sidebar-row-access';
+import { useAgentDetail } from '@/chat/hooks/use-agent-detail';
 import { ChatSidebarHeader } from './header';
 import { ChatSection } from './chat-section';
 import { groupConversationsByTime, getNonEmptyGroups } from './time-group';
@@ -51,9 +52,10 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
   const setIsAgentConversationsLoading = useChatStore((s) => s.setIsAgentConversationsLoading);
   const setAgentConversationsError = useChatStore((s) => s.setAgentConversationsError);
   const setAgentStreamTools = useChatStore((s) => s.setAgentStreamTools);
-  const setAgentContextAccess = useChatStore((s) => s.setAgentContextAccess);
 
   const agentConversations = useChatStore((s) => s.agentConversations);
+  // Kept local, not in the store's `sharedConversations`, which belongs to the global chat list.
+  const [sharedAgentConversations, setSharedAgentConversations] = useState<Conversation[]>([]);
   const agentConversationsPagination = useChatStore((s) => s.agentConversationsPagination);
   const isAgentConversationsLoading = useChatStore((s) => s.isAgentConversationsLoading);
   const agentConversationsError = useChatStore((s) => s.agentConversationsError);
@@ -74,26 +76,31 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
     return () => setAgentSidebarAgentId(null);
   }, [agentId, setAgentSidebarAgentId]);
 
+  // The agent lookup is allowed to fail on its own: someone a chat was shared with may have
+  // no access to the agent itself, and must still see the chats shared with them. The chat
+  // page reads the same cached detail and sets the agent's access from it.
+  const { detail: agentResult, unavailable: agentUnavailable } = useAgentDetail(agentId);
+  // False once the agent is known to be off limits: someone a chat was shared with cannot start chats on it.
+  const canStartChat = !agentUnavailable && agentResult?.agent !== null;
+
   const loadAgentConversations = useCallback(async () => {
     setIsAgentConversationsLoading(true);
     setAgentConversationsError(null);
     try {
-      const [agentRes, conv] = await Promise.all([
-        AgentsApi.getAgent(agentId),
-        AgentsApi.fetchAgentConversations(agentId, { page: 1, limit: SIDEBAR_AGENT_CONVERSATIONS_PAGE_SIZE }),
-      ]);
+      const conv = await AgentsApi.fetchAgentConversations(agentId, {
+        page: 1,
+        limit: SIDEBAR_AGENT_CONVERSATIONS_PAGE_SIZE,
+      });
       setAgentStreamTools(null);
-      setAgentContextAccess(
-        agentRes.agent ? getAgentSidebarRowMenuAccess(agentRes.agent) : null,
-      );
       setAgentConversations(conv.conversations);
+      setSharedAgentConversations(conv.sharedConversations);
       setAgentConversationsPagination(conv.pagination);
     } catch {
       setAgentConversationsError(t('chat.failedToLoad'));
       setAgentConversations([]);
+      setSharedAgentConversations([]);
       setAgentConversationsPagination(null);
       setAgentStreamTools(null);
-      setAgentContextAccess(null);
     } finally {
       setIsAgentConversationsLoading(false);
     }
@@ -105,7 +112,6 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
     setIsAgentConversationsLoading,
     setAgentConversationsError,
     setAgentStreamTools,
-    setAgentContextAccess,
   ]);
 
   useEffect(() => {
@@ -133,6 +139,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
     : agentConversations;
 
   const yourTimeGroups = getNonEmptyGroups(groupConversationsByTime(visibleYour));
+  const visibleShared = sharedAgentConversations.slice(0, MAX_VISIBLE_CHATS);
 
   const activePendingConversations = useMemo(() => {
     const agentConvIds = new Set(agentConversations.map((c) => c.id));
@@ -171,15 +178,17 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
           onClick={handleBackHome}
         />
 
-        <SidebarItem
-          icon={
-            <ChatStarIcon size={ICON_SIZE_DEFAULT} color="var(--accent-8)" />
-          }
-          label={t('chat.newChat')}
-          onClick={handleNewAgentChat}
-          textColor="var(--accent-8)"
-          fontWeight={500}
-        />
+        {canStartChat && (
+          <SidebarItem
+            icon={
+              <ChatStarIcon size={ICON_SIZE_DEFAULT} color="var(--accent-8)" />
+            }
+            label={t('chat.newChat')}
+            onClick={handleNewAgentChat}
+            textColor="var(--accent-8)"
+            fontWeight={500}
+          />
+        )}
 
         {/* Recents — collapsible wrapper for agent conversations */}
         <Flex
@@ -222,8 +231,22 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
           </Flex>
 
           {!recentsCollapsed && (
-            <Flex direction="column" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+            <Flex direction="column" gap="3" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+              {visibleShared.length > 0 && (
+                <ChatSection
+                  title={t('chat.sharedChats')}
+                  conversations={visibleShared}
+                  isLoading={isAgentConversationsLoading}
+                  hasError={!!agentConversationsError}
+                  currentConversationId={currentConversationId}
+                  onSelectConversation={handleSelectConversation}
+                  onNewChat={handleNewAgentChat}
+                  skeletonCount={2}
+                  agentId={agentId}
+                />
+              )}
               <ChatSection
+                title={visibleShared.length > 0 ? t('chat.yourChats') : undefined}
                 timeGroups={yourTimeGroups}
                 isLoading={isAgentConversationsLoading}
                 hasError={!!agentConversationsError}
@@ -231,6 +254,7 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
                 onSelectConversation={handleSelectConversation}
                 onNewChat={handleNewAgentChat}
                 skeletonCount={YOUR_CHATS_SKELETON_COUNT}
+                emptyStateText={canStartChat ? undefined : t('chat.noChatsYet')}
                 isScrollable
                 hasMore={hasMoreYour}
                 onMore={toggleAgentMoreChatsPanel}

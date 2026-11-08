@@ -31,6 +31,9 @@ from tests.support.vector_db import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+pytestmark = pytest.mark.usefixtures("bound_org")
+
+
 def _make_vectorstore(supports_sparse=False):
     """Instantiate a VectorStore with everything mocked to bypass __init__ side effects."""
     from unittest.mock import MagicMock as _MM
@@ -389,7 +392,7 @@ class TestCreateEmbeddings:
 
         await vs._create_embeddings(chunks, "rec-1", "vr-1", "test_collection")
 
-        vs.delete_embeddings.assert_awaited_once_with("vr-1", "test_collection")
+        vs.delete_embeddings.assert_awaited_once_with("vr-1", "test_collection", org_id=None)
         vs._process_document_chunks.assert_awaited_once()
 
     @pytest.mark.asyncio

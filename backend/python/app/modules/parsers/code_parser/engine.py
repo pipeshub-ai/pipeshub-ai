@@ -20,12 +20,14 @@ import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.modules.parsers.code_parser import languages
 from app.modules.parsers.code_parser.lang_config import (
     COMMENT_NODE_TYPES,
     LANGUAGES,
     LanguageConfig,
 )
 from app.modules.parsers.code_parser.models import (
+    DECLARATION,
     ParsedFile,
     ParsedSymbol,
     PendingEdgeFact,
@@ -107,6 +109,8 @@ _PARSER_LOCK = threading.Lock()
 _NAME_NODE_TYPES = frozenset({
     "identifier", "type_identifier", "field_identifier", "property_identifier",
     "simple_identifier", "name", "constant",
+    # C++ names that are no identifier: an in-class `~Executor()` or `operator==` had no name, so no symbol.
+    "destructor_name", "operator_name",
 })
 
 # Checked in order, so `method_types` wins over `function_types` for a grammar
@@ -167,31 +171,100 @@ def _field(node: Node, name: str) -> Node | None:
         return None
 
 
+# The fields of a transparent node that are its condition, not its members: `#ifdef NAME`, `#if COND`, `extern "C"`.
+_TRANSPARENT_NON_MEMBERS = ("name", "condition", "value")
+
+# Declarators that hold the next one as a plain child, not in a `declarator` field: `T& f()`, `int (*f(int))(int)`.
+_UNFIELDED_DECLARATORS = frozenset({"reference_declarator", "parenthesized_declarator"})
+
+
+def _next_declarator(cur: Node) -> Node | None:
+    inner = _field(cur, "declarator")
+    if inner is None and cur.type in _UNFIELDED_DECLARATORS and cur.named_children:
+        inner = cur.named_children[-1]
+    return inner
+
+
+_OPERATOR_SPACE = re.compile(r"\s+(?=\W)|(?<=\W)\s+")
+
+
+def _name_text(node: Node, src: bytes) -> str:
+    """A name node's text; `operator <` is `operator<` as a compiler index names it (`operator new` keeps its space)."""
+    text = _text(node, src)
+    return _OPERATOR_SPACE.sub("", text) if node.type == "operator_name" else text
+
+
+def _qualified_parts(node: Node, src: bytes) -> list[str]:
+    """`net::Map<K, V>::at` -> ["net", "Map", "at"]: a template scope is named without its arguments,
+    which may hold `::` themselves (`Table<std::map<int, int>>::size`)."""
+    parts: list[str] = []
+    cur: Node | None = node
+    while cur is not None and cur.type == "qualified_identifier":
+        scope = _field(cur, "scope")
+        if scope is not None:
+            head = _field(scope, "name") if scope.type == "template_type" else scope
+            parts.append(_text(head if head is not None else scope, src))
+        cur = _field(cur, "name")
+    if cur is not None:
+        parts.append(_name_text(cur, src))
+    return parts
+
+
 def _name_via_declarator(node: Node, src: bytes) -> str | None:
     """Follow the ``declarator`` chain grammars use to bury a name.
 
-    C and C++ wrap a function's name in pointer, array and function declarators;
-    a Java or Groovy field hides it one level down in a ``variable_declarator``.
+    C and C++ wrap a function's name in pointer, reference, array and function
+    declarators; a Java or Groovy field hides it one level down in a
+    ``variable_declarator``. A reference declarator has no ``declarator`` field,
+    so `const T& Foo::name()` was named by its return type, `T`.
     """
     cur = _field(node, "declarator")
     for _ in range(8):
         if cur is None:
             return None
         if cur.type in _NAME_NODE_TYPES:
-            return _text(cur, src)
+            return _name_text(cur, src)
         if cur.type == "qualified_identifier":
-            return _text(cur, src).rsplit("::", 1)[-1]
+            return _qualified_parts(cur, src)[-1]
         named = _field(cur, "name")
         if named is not None and named.type in _NAME_NODE_TYPES:
-            return _text(named, src)
-        cur = _field(cur, "declarator")
+            return _name_text(named, src)
+        cur = _next_declarator(cur)
     return None
 
 
+# A type written with arguments, a reference, a path or `dyn`, and the field that holds what it wraps.
+_TYPE_WRAPPERS = {"generic_type": "type", "reference_type": "type", "pointer_type": "type",
+                  "scoped_type_identifier": "name", "dynamic_type": "trait", "abstract_type": "trait"}
+
+
+def _type_head(node: Node, src: bytes) -> str:
+    """The type a written type is about: `Foo<T>`, `&'a mut Foo` and `crate::m::Foo` all name `Foo`.
+
+    A Rust impl is named by the type it implements for, the way a compiler index
+    names it; the written text (`Renderer<'a>`) named its methods `Renderer<'a>.new`,
+    so no edge into them matched the type's own name.
+    """
+    cur = node
+    for _ in range(8):
+        inner = _field(cur, _TYPE_WRAPPERS[cur.type]) if cur.type in _TYPE_WRAPPERS else None
+        if inner is None:
+            break
+        cur = inner
+    return _text(cur, src)
+
+
 def _name_of(node: Node, src: bytes, cfg: LanguageConfig) -> str | None:
-    named = _field(node, cfg.name_field_overrides.get(node.type, cfg.name_field))
+    override = cfg.name_field_overrides.get(node.type)
+    named = _field(node, override or cfg.name_field)
+    if named is not None and named.type == "qualified_identifier" and cfg.unwrap_declarator:
+        # `struct ApiClient::TypeInterpretation<Int8> {` is TypeInterpretation, a member of ApiClient (_owner_of).
+        return _qualified_parts(named, src)[-1].split("<", 1)[0].strip()
+    if named is not None and named.type == "template_type":
+        # A C++ explicit specialization (`struct hash<ns::Boolean>`) is the template's own class, as indexed.
+        named = _field(named, "name") or named
     if named is not None:
-        return _text(named, src)
+        return _type_head(named, src) if override else _text(named, src)
     if cfg.unwrap_declarator:
         name = _name_via_declarator(node, src)
         if name:
@@ -215,19 +288,23 @@ def _owner_of(node: Node, src: bytes) -> tuple[str, ...]:
     defines a member out of line (`int Resizer::run() {}`). Without it the
     qualified name was `run`, not `Server.run`, and every edge into the
     method named the wrong symbol (P-3).
+    A template owner is named without its arguments (`Box<T>::get` belongs to
+    `Box`), as the class itself is.
     """
     receiver = _field(node, "receiver")
     if receiver is not None:
         names = [c for c in _walk_types(receiver) if c.type == "type_identifier"]
         return (_text(names[0], src),) if names else ()
+    named = _field(node, "name") if node.type.endswith("_specifier") else None
+    if named is not None and named.type == "qualified_identifier":  # C++ `struct Outer::Inner<T> {`
+        return tuple(part for part in _qualified_parts(named, src)[:-1] if part)
     cur = _field(node, "declarator")
     for _ in range(8):
         if cur is None:
             return ()
         if cur.type == "qualified_identifier":
-            scope = _text(cur, src).rsplit("::", 1)[0]
-            return tuple(part for part in scope.split("::") if part)
-        cur = _field(cur, "declarator")
+            return tuple(part for part in _qualified_parts(cur, src)[:-1] if part)
+        cur = _next_declarator(cur)
     return ()
 
 
@@ -238,6 +315,16 @@ def _walk_types(node: Node) -> list[Node]:
         out.append(current)
         stack.extend(reversed(current.named_children))
     return out
+
+
+_TYPE_PARAMETER_LISTS = frozenset({"type_parameter_list", "type_parameters"})
+
+
+def _type_param_count(def_node: Node | None) -> int:
+    """`class Foo<T, U>` / `Foo<T>()`: 2 / 1, telling `Foo<T>` from a plain `Foo` of the same name."""
+    params = next((c for c in def_node.named_children if c.type in _TYPE_PARAMETER_LISTS), None) \
+        if def_node is not None else None
+    return sum(1 for c in params.named_children if c.type != "comment") if params is not None else 0
 
 
 def _body_of(node: Node, cfg: LanguageConfig) -> Node | None:
@@ -506,9 +593,20 @@ def _heritage_java(node: Node, src: bytes, out: list[PendingEdgeFact], idx: int)
                 ))
 
 
-_IMPORT_HANDLERS = {"python": _imports_python, "js": _imports_js, "java": _imports_java, "go": _imports_go}
-_HERITAGE_HANDLERS = {"python": _heritage_python, "js": _heritage_js, "ts": _heritage_ts,
-                      "java": _heritage_java}
+def _with_languages(core: dict, added: dict, kind: str) -> dict:
+    """*core* plus a language module's handlers; a module may add names, never replace a core one."""
+    reused = sorted(core.keys() & added.keys())
+    if reused:
+        raise ValueError(f"languages.{kind} reuses core handler names: {reused}")
+    return {**core, **added}
+
+
+_IMPORT_HANDLERS = _with_languages(
+    {"python": _imports_python, "js": _imports_js, "java": _imports_java, "go": _imports_go},
+    languages.IMPORT_HANDLERS, "IMPORT_HANDLERS")
+_HERITAGE_HANDLERS = _with_languages(
+    {"python": _heritage_python, "js": _heritage_js, "ts": _heritage_ts, "java": _heritage_java},
+    languages.HERITAGE_HANDLERS, "HERITAGE_HANDLERS")
 # Handlers whose call sites are read as references (`a.b.c()` with its qualifier
 # and receiver). Every other grammar keeps the generic callee reader, even when
 # it has an import handler.
@@ -519,28 +617,255 @@ _REFERENCE_CALLEE_HANDLERS = frozenset({"python", "js"})
 # Type tables
 # --------------------------------------------------------------------------
 
+_TS_NAMED_TYPES = ("type_identifier", "generic_type", "nested_type_identifier")
+_TS_OWNER_TYPES = ("class_declaration", "abstract_class_declaration", "interface_declaration")
+# `this._register(new Emitter())`, `store.add(new X())`: these return their argument.
+_TS_PASSTHROUGH_CALLS = frozenset({"_register", "register", "add"})
+_TS_CLASS_ARG_CALLS = frozenset({"createInstance", "get"})
+_TS_HEAD = re.compile(r"[A-Za-z_$][\w$]*")
+_TS_COLLECTIONS = frozenset({"Array", "ReadonlyArray", "Set", "ReadonlySet", "Iterable", "IterableIterator"})
+# `xs.forEach(x => x.run())`: the callback's first parameter is an element of `xs`.
+_TS_ELEMENT_CALLBACKS = frozenset({"forEach", "map", "filter", "some", "every", "find", "findIndex", "flatMap"})
+_TS_SCOPE_TYPES = ("function_declaration", "method_definition", "arrow_function", "function_expression",
+                   "generator_function_declaration", "generator_function")
+
+
+def _ts_named_type(node: Node | None, src: bytes) -> str | None:
+    """`Foo`, `ns.Foo<T>`, `Foo | undefined` -> `Foo`; `Foo[]`, `Array<Foo>` -> `Foo[]`;
+    anything else (unions of two types, function types) -> None."""
+    if node is not None and node.type == "type_annotation":
+        node = node.named_children[0] if node.named_children else None
+    if node is not None and node.type == "union_type":
+        stack, named = [node], []
+        while stack:
+            for c in stack.pop().named_children:
+                if c.type == "union_type":
+                    stack.append(c)
+                elif c.type in _TS_NAMED_TYPES:
+                    named.append(c)
+        node = named[0] if len(named) == 1 else None
+    if node is not None and node.type == "readonly_type" and node.named_children:
+        node = node.named_children[0]
+    if node is not None and node.type == "array_type" and node.named_children:
+        element = _ts_named_type(node.named_children[0], src)  # `Foo[]`: what a for-of yields
+        return f"{element}[]" if element and not element.endswith("[]") else None
+    if node is None or node.type not in _TS_NAMED_TYPES:
+        return None
+    name = _text(node, src).split("<")[0].rsplit(".", 1)[-1]
+    args = _field(node, "type_arguments") if node.type == "generic_type" else None
+    if name in _TS_COLLECTIONS and args is not None and len(args.named_children) == 1:
+        element = _ts_named_type(args.named_children[0], src)
+        return f"{element}[]" if element and not element.endswith("[]") else None
+    return name
+
+
+def _ts_value_type(value: Node | None, src: bytes) -> str | None:
+    """What an initializer says about its variable's type: a class for `new Foo()`,
+    else `=<expression>` for the builder to evaluate (`=Foo.get()`, `=this._model`)."""
+    while value is not None and value.type in ("await_expression", "non_null_expression",
+                                               "parenthesized_expression"):
+        value = value.named_children[0] if value.named_children else None
+    if value is None:
+        return None
+    if value.type in ("as_expression", "satisfies_expression") and len(value.named_children) == 2:
+        return _ts_named_type(value.named_children[1], src)
+    if value.type == "new_expression":
+        ctor = _field(value, "constructor")
+        return _text(ctor, src).rsplit(".", 1)[-1] if ctor is not None else None
+    if value.type == "call_expression":
+        fn, args = _field(value, "function"), _field(value, "arguments")
+        first = args.named_children[0] if args is not None and args.named_children else None
+        callee = _text(fn, src).rsplit(".", 1)[-1] if fn is not None else ""
+        if first is not None and callee in _TS_PASSTHROUGH_CALLS:
+            return _ts_value_type(first, src)
+        # Dependency injection: `createInstance(Foo, ...)` makes a Foo, `accessor.get(IFoo)`
+        # returns the IFoo service.
+        if (first is not None and callee in _TS_CLASS_ARG_CALLS and first.type == "identifier"
+                and _text(first, src)[:1].isupper()):
+            return _text(first, src)
+    if value.type in ("call_expression", "member_expression", "identifier", "this"):
+        text = _text(value, src)
+        if len(text) <= 200 and "\n" not in text:
+            return "=" + text
+    return None
+
+
+def _ts_owner(node: Node, src: bytes) -> str | None:
+    parent = node.parent
+    while parent is not None and parent.type not in _TS_OWNER_TYPES:
+        if parent.type in ("function_declaration", "arrow_function", "function_expression"):
+            return None
+        parent = parent.parent
+    name = _field(parent, "name") if parent is not None else None
+    return _text(name, src) if name is not None else None
+
+
+# `(fn)`, `fn as T`, `fn satisfies T`, `fn!`, `<T>fn`: the same value under a wrapper.
+_VALUE_WRAPPERS = ("parenthesized_expression", "as_expression", "satisfies_expression",
+                   "non_null_expression", "type_assertion")
+
+
+def _mark_function_field(node: Node, name: str, src: bytes, table: dict[str, str]) -> None:
+    """`static make = () => ...` defines a function, so a call to it is not a call
+    through a callback slot; the builder reads `Owner.name=>` to tell them apart."""
+    value = _field(node, "value")
+    while value is not None and value.type in _VALUE_WRAPPERS and value.named_children:
+        value = value.named_children[-1 if value.type == "type_assertion" else 0]
+    if value is not None and value.type in ("arrow_function", "function_expression", "function") \
+            and (owner := _ts_owner(node, src)):
+        table.setdefault(f"{owner}.{name}=>", "function")
+
+
+def _ts_type_arg(node: Node | None, src: bytes) -> str | None:
+    """`IObservable<Foo | undefined>` -> `Foo`: a generic's one named type argument,
+    which a `read(): T` on it returns."""
+    if node is not None and node.type == "type_annotation":
+        node = node.named_children[0] if node.named_children else None
+    args = _field(node, "type_arguments") if node is not None and node.type == "generic_type" else None
+    if args is None or len(args.named_children) != 1 or _ts_named_type(node, src) is None:
+        return None
+    arg = _ts_named_type(args.named_children[0], src)
+    return arg if arg and not arg.endswith("[]") else None
+
+
+def _ts_owner_type_params(node: Node, src: bytes) -> set[str]:
+    """`T` for a member of `interface IObservable<T>`."""
+    parent = node.parent
+    while parent is not None and parent.type not in _TS_OWNER_TYPES:
+        parent = parent.parent
+    params = _field(parent, "type_parameters") if parent is not None else None
+    return {_text(n, src) for p in (params.named_children if params is not None else ())
+            if (n := _field(p, "name")) is not None}
+
+
+def _ts_union_members(node: Node, src: bytes) -> list[str]:
+    """`A | (B | C) | undefined` -> `[A, B, C]`: the named, non-array types it can be."""
+    stack, members = [node], []
+    while stack:
+        n = stack.pop()
+        if n.type in ("union_type", "parenthesized_type"):
+            stack.extend(reversed(n.named_children))
+        elif (member := _ts_named_type(n, src)) and not member.endswith("[]"):
+            members.append(member)
+    return members
+
+
 def _collect_type_table_ts(root: Node, src: bytes, table: dict[str, str], cfg: LanguageConfig) -> None:
-    """Harvest `name: Type` bindings from declarations and constructor params."""
-    for node in _nodes_of_types(root, cfg, ("variable_declarator", "required_parameter", "optional_parameter")):
-        if node.type in ("variable_declarator", "required_parameter", "optional_parameter"):
-            name_node = _field(node, "name") or next(
-                (c for c in node.named_children if c.type == "identifier"), None
-            )
-            ann = next((c for c in node.named_children if c.type == "type_annotation"), None)
-            if name_node is not None and ann is not None:
-                type_node = next(
-                    (c for c in ann.named_children if c.type in ("type_identifier", "generic_type")), None
-                )
-                if type_node is not None:
-                    table.setdefault(
-                        _text(name_node, src), _text(type_node, src).split("<")[0]
-                    )
+    """Harvest `name: Type` bindings from declarations, constructor params and class fields
+    (`this._model.run()` resolves through the field), and initializers.
+
+    Members are also keyed by owner -- `Owner.field`, `Owner.method()` (its return
+    type), `fn()` -- so the builder can follow `this._editor.getModel().getValue()`
+    through other files. An `=expr` value is an initializer the builder evaluates.
+    """
+    for node in _nodes_of_types(root, cfg, ("variable_declarator", "required_parameter", "optional_parameter",
+                                            "public_field_definition", "property_signature", "method_definition",
+                                            "method_signature", "abstract_method_signature",
+                                            "function_declaration")):
+        name_node = _field(node, "name") or next(
+            (c for c in node.named_children if c.type in ("identifier", "property_identifier")), None
+        )
+        if name_node is None:
+            continue
+        name = _text(name_node, src)
+        if node.type in ("method_definition", "method_signature", "abstract_method_signature",
+                         "function_declaration"):
+            type_name = _ts_named_type(_field(node, "return_type"), src)
+            if type_name is None:
+                continue
+            owner = _ts_owner(node, src) if node.type != "function_declaration" else None
+            if owner and type_name in _ts_owner_type_params(node, src):
+                type_name = f"<{type_name}>"  # the receiver's type argument, see `Owner.field<>`
+            if any(c.type == "get" for c in node.children):  # a getter reads as a field
+                table.setdefault(name, type_name)
+                if owner:
+                    table.setdefault(f"{owner}.{name}", type_name)
+            else:
+                table.setdefault(f"{owner}.{name}()" if owner else f"{name}()", type_name)
+            continue
+        if node.type == "public_field_definition":
+            _mark_function_field(node, name, src, table)
+        ann = next((c for c in node.named_children if c.type == "type_annotation"), None)
+        type_name = _ts_named_type(ann, src) if ann is not None else _ts_value_type(_field(node, "value"), src)
+        if type_name is None and ann is not None and ann.named_children:
+            # `e: A | B`: the builder resolves the call on each member.
+            members = _ts_union_members(ann.named_children[0], src)
+            type_name = "|".join(members) if len(members) >= 2 else None
+        if type_name is None:
+            continue
+        table.setdefault(name, type_name)
+        type_arg = _ts_type_arg(ann, src)
+        if type_arg:
+            table.setdefault(f"{name}<>", type_arg)
+        # A field, an interface property, or a `private readonly x: T` constructor parameter.
+        if node.type in ("public_field_definition", "property_signature") or (
+                node.type in ("required_parameter", "optional_parameter")
+                and any(c.type in ("accessibility_modifier", "readonly") for c in node.children)):
+            owner = _ts_owner(node, src)
+            if owner:
+                table.setdefault(f"{owner}.{name}", type_name)
+                if type_arg:
+                    table.setdefault(f"{owner}.{name}<>", type_arg)
+    for node in _nodes_of_types(root, cfg, ("type_alias_declaration",)):
+        # `type Expr = A | B | C`: a call on an `Expr` may run any member's method.
+        name_node, value = _field(node, "name"), _field(node, "value")
+        if name_node is None or value is None:
+            continue
+        # `type Public = Base` is kept too, so the builder can follow it to Base's members.
+        if members := _ts_union_members(value, src):
+            table.setdefault(f"{_text(name_node, src)}|", "|".join(members))
+    _collect_narrowings_ts(root, src, table, cfg)
+
+
+def _element_source(node: Node | None, src: bytes) -> str | None:
+    """`=xs[*]`: an element of the array expression *node*, for the builder to evaluate."""
+    if node is None or node.type not in ("identifier", "member_expression", "call_expression"):
+        return None
+    text = _text(node, src)
+    return f"={text}[*]" if len(text) <= 200 and "\n" not in text else None
+
+
+def _collect_narrowings_ts(root: Node, src: bytes, table: dict[str, str], cfg: LanguageConfig) -> None:
+    """Types the code implies without declaring: `for (const x of xs)`, `xs.forEach(x => ...)`,
+    and `if (x instanceof Foo)`."""
+    for node in _nodes_of_types(root, cfg, ("for_in_statement", "call_expression", "binary_expression")):
+        if node.type == "for_in_statement":
+            left, op = _field(node, "left"), _field(node, "operator")
+            if left is not None and left.type == "identifier" and op is not None and op.type == "of":
+                element = _element_source(_field(node, "right"), src)
+                if element:
+                    table.setdefault(_text(left, src), element)
+        elif node.type == "call_expression":
+            fn, args = _field(node, "function"), _field(node, "arguments")
+            prop = _field(fn, "property") if fn is not None and fn.type == "member_expression" else None
+            callback = args.named_children[0] if args is not None and args.named_children else None
+            if prop is None or _text(prop, src) not in _TS_ELEMENT_CALLBACKS or callback is None \
+                    or callback.type != "arrow_function":
+                continue
+            param = _field(callback, "parameter")
+            if param is None:
+                params = _field(callback, "parameters")
+                first = params.named_children[0] if params is not None and params.named_children else None
+                if first is not None and first.type == "required_parameter" and not any(
+                        c.type == "type_annotation" for c in first.named_children):
+                    param = _field(first, "pattern")
+            element = _element_source(_field(fn, "object"), src)
+            if param is not None and param.type == "identifier" and element:
+                table.setdefault(_text(param, src), element)
+        else:
+            left, op, right = _field(node, "left"), _field(node, "operator"), _field(node, "right")
+            if (op is not None and op.type == "instanceof" and left is not None and left.type == "identifier"
+                    and right is not None and right.type == "identifier"):
+                table.setdefault(_text(left, src), _text(right, src))
 
 
 def _collect_type_table_js(root: Node, src: bytes, table: dict[str, str], cfg: LanguageConfig) -> None:
     """JS has no annotations; `const x = new Foo()` is the only reliable binding."""
-    for node in _nodes_of_types(root, cfg, ("variable_declarator",)):
-        if node.type == "variable_declarator":
+    for node in _nodes_of_types(root, cfg, ("variable_declarator", "field_definition")):
+        if node.type == "field_definition":
+            if (name_node := _field(node, "property")) is not None:
+                _mark_function_field(node, _text(name_node, src), src, table)
+        elif node.type == "variable_declarator":
             name_node = _field(node, "name")
             value = _field(node, "value")
             if name_node is not None and value is not None and value.type == "new_expression":
@@ -585,7 +910,14 @@ def _nodes_of_types(root: Node, cfg: LanguageConfig, types: tuple[str, ...]) -> 
 
 
 def _collect_type_table_python(root: Node, src: bytes, table: dict[str, str], cfg: LanguageConfig) -> None:
-    """`self.x = Foo()`, `x: Foo = …` and a parameter's `x: Foo` are the usable bindings."""
+    """`self.x = Foo()`, `x: Foo = …` and a parameter's `x: Foo` are the usable bindings.
+
+    Python is mostly untyped, so members are also keyed by owner for the builder to
+    evaluate: `Owner.x` from `self.x = …` in a method (or `x = Foo()` in the class
+    body), and `Owner.m()` / `f()` from a return annotation or, unannotated, from
+    returns that all agree. A value that is not a constructor call is kept as
+    `=expr` (`self.admin = model_admin`, `return self._chain()`).
+    """
     for node in _nodes_of_types(root, cfg, ("typed_parameter", "typed_default_parameter", "assignment")):
         if node.type in ("typed_parameter", "typed_default_parameter"):
             # A parameter's annotation types every call on it in the body (P-5).
@@ -605,6 +937,104 @@ def _collect_type_table_python(root: Node, src: bytes, table: dict[str, str], cf
                     called = _text(fn, src).rsplit(".", 1)[-1]
                     if called[:1].isupper():
                         table.setdefault(_text(left, src).split(".")[-1], called)
+    for cls in _nodes_of_types(root, cfg, ("class_definition",)):
+        owner_node, body = _field(cls, "name"), _field(cls, "body")
+        if owner_node is None or body is None:
+            continue
+        owner = _text(owner_node, src)
+        for stmt in body.named_children:
+            if stmt.type == "expression_statement" and stmt.named_children and stmt.named_children[0].type == "assignment":
+                assign = stmt.named_children[0]
+                left, right = _field(assign, "left"), _field(assign, "right")
+                value = _py_value(right, src)
+                if left is not None and left.type == "identifier" and value and not value.startswith("="):
+                    table.setdefault(f"{owner}.{_text(left, src)}", value)
+            func = stmt.named_children[-1] if stmt.type == "decorated_definition" and stmt.named_children else stmt
+            if func.type == "function_definition":
+                _py_function_types(func, src, table, cfg, owner)
+    for stmt in root.named_children if root.type == "module" else ():
+        func = stmt.named_children[-1] if stmt.type == "decorated_definition" and stmt.named_children else stmt
+        if func.type == "function_definition":
+            _py_function_types(func, src, table, cfg, None)
+
+
+_PY_SIMPLE_EXPR = re.compile(r"[A-Za-z_][\w.]*(\(.*\))?(\.[A-Za-z_]\w*(\(.*\))?)*", re.S)
+
+
+def _py_value(node: Node | None, src: bytes) -> str | None:
+    """What a Python expression is worth to the type table: the class a
+    constructor call names, `=expr` for a name or call chain, else None."""
+    if node is None:
+        return None
+    if node.type == "call":
+        fn = _field(node, "function")
+        if fn is not None and fn.type in ("identifier", "attribute"):
+            called = _text(fn, src).rsplit(".", 1)[-1]
+            if called[:1].isupper():
+                return called
+    if node.type in ("identifier", "attribute", "call"):
+        text = _text(node, src)
+        if len(text) <= 200 and _PY_SIMPLE_EXPR.fullmatch(text):
+            return "=" + text
+    return None
+
+
+def _py_function_types(func: Node, src: bytes, table: dict[str, str], cfg: LanguageConfig,
+                       owner: str | None) -> None:
+    """A Python function's return type, and in a method the `self.x` it assigns."""
+    name_node = _field(func, "name")
+    if name_node is None:
+        return
+    name = _text(name_node, src)
+    returns_key = f"{owner}.{name}()" if owner else f"{name}()"
+    ann = _field(func, "return_type")
+    if ann is not None:
+        table.setdefault(returns_key, _annotated_type(_text(ann, src)))
+    else:
+        body = _field(func, "body")
+        locals_ = _py_local_values(func, src, cfg)
+        values = set()
+        for ret in _nodes_of_types(body, cfg, ("return_statement",)) if body is not None else ():
+            if _py_enclosing_function(ret) != func:
+                continue
+            expr = ret.named_children[0] if ret.named_children else None
+            if expr is None or (expr.type == "none"):
+                continue
+            value = _py_value(expr, src)
+            if value and value.startswith("=") and value[1:] in locals_:  # `return clone` with `clone = self._chain()`
+                value = locals_[value[1:]]
+            values.add(value)
+        if len(values) == 1 and None not in values:
+            table.setdefault(returns_key, values.pop())
+    if owner is None:
+        return
+    for node in _nodes_of_types(func, cfg, ("assignment",)):
+        left, right = _field(node, "left"), _field(node, "right")
+        if left is None or left.type != "attribute" or _text(left, src).count(".") != 1:
+            continue
+        obj, _, attr = _text(left, src).partition(".")
+        value = _py_value(right, src)
+        if obj == "self" and value:
+            table.setdefault(f"{owner}.{attr}", value)
+
+
+def _py_enclosing_function(node: Node) -> Node | None:
+    scope = node.parent
+    while scope is not None and scope.type not in ("function_definition", "lambda"):
+        scope = scope.parent
+    return scope
+
+
+def _py_local_values(func: Node, src: bytes, cfg: LanguageConfig) -> dict[str, str]:
+    """`x = …` assigned once in *func* itself (not a nested function): x's table value."""
+    seen: dict[str, set[str | None]] = {}
+    for node in _nodes_of_types(func, cfg, ("assignment",)):
+        left = _field(node, "left")
+        if left is None or left.type != "identifier" or _py_enclosing_function(node) != func:
+            continue
+        seen.setdefault(_text(left, src), set()).add(_py_value(_field(node, "right"), src))
+    return {name: next(iter(values)) for name, values in seen.items()
+            if len(values) == 1 and None not in values}
 
 
 def _collect_type_table_java(root: Node, src: bytes, table: dict[str, str], cfg: LanguageConfig) -> None:
@@ -660,13 +1090,15 @@ def _collect_type_table_go(root: Node, src: bytes, table: dict[str, str], cfg: L
             table.setdefault(name, next(iter(types)))
 
 
-_TYPE_TABLE_HANDLERS = {
+_TYPE_TABLE_HANDLERS = _with_languages({
     "python": _collect_type_table_python,
     "js": _collect_type_table_js,
     "ts": _collect_type_table_ts,
     "java": _collect_type_table_java,
     "go": _collect_type_table_go,
-}
+}, languages.TYPE_TABLE_HANDLERS, "TYPE_TABLE_HANDLERS")
+# Type-table handlers whose receivers are typed by their own function's table before the file's.
+_FUNCTION_SCOPES = {"go": ("function_declaration", "method_declaration"), "cpp": ("function_definition",)}
 
 
 # --------------------------------------------------------------------------
@@ -677,6 +1109,9 @@ def _callee_info(
     node: Node, src: bytes, cfg: LanguageConfig,
 ) -> tuple[str | None, bool, str | None, str | None]:
     """Return (name, is_member, receiver, qualified_prefix) for a call node."""
+    own = languages.CALLEE_HANDLERS.get(cfg.name)
+    if own is not None:
+        return own(node, src, cfg)
     if cfg.import_handler_name not in _REFERENCE_CALLEE_HANDLERS:
         return _generic_callee(node, src, cfg)
     target = _field(node, cfg.call_function_field) or _field(node, "constructor")
@@ -690,6 +1125,8 @@ _IDENTIFIER_TYPES = frozenset({
     "property_identifier", "constant",
 })
 _SEPARATORS = (".", "->", "::", ":", "?.", "!.")
+# C++ `f<T>(x)`, `obj.template get<T>()`, `Box<int>::make()`: the arguments name types, never the callee.
+_TEMPLATE_ARGS = "template_argument_list"
 
 
 def _identifier_leaves(node: Node) -> list[Node]:
@@ -698,8 +1135,44 @@ def _identifier_leaves(node: Node) -> list[Node]:
         current = stack.pop()
         if current.type in _IDENTIFIER_TYPES and not current.named_children:
             out.append(current)
-        stack.extend(reversed(current.named_children))
+        stack.extend(reversed([c for c in current.named_children if c.type != _TEMPLATE_ARGS]))
     return out
+
+
+def _untemplated(target: Node, end: int, src: bytes) -> str:
+    """*target*'s source up to *end* without its C++ template arguments or a `template` disambiguator:
+    `ns::Box<int>::` -> `ns::Box::`, `obj.template ` -> `obj.`."""
+    skipped = sorted((n.start_byte, n.end_byte) for n in _walk_types(target) if n.type == _TEMPLATE_ARGS)
+    out, at = [], target.start_byte
+    for start, stop in skipped:
+        if at <= start and stop <= end:
+            out.append(src[at:start])
+            at = stop
+    out.append(src[at:end])
+    text = b"".join(out).decode("utf-8", "replace").rstrip()
+    return re.sub(r"\btemplate$", "", text).rstrip() if skipped else text
+
+
+def _arrow_call(node: Node) -> bool:
+    """`p->f()`: a C++ call whose callee is a member read through `->`."""
+    callee = _field(node, "function")
+    operator = _field(callee, "operator") if callee is not None and callee.type == "field_expression" else None
+    return operator is not None and operator.type == "->"
+
+
+# C++ constructions with no call node: `Conn c(args);` and a constructor's `: Base(args)` initializer.
+_CONSTRUCTIONS = frozenset({"init_declarator", "field_initializer"})
+
+
+def _constructed_type(node: Node) -> Node | None:
+    """What a C++ construction names: the declared type of `Conn c(args)` (not of `Conn c = x` or `int n(1)`,
+    which name no class), or the base or member a `: Base(args)` initializer starts."""
+    if node.type == "field_initializer":
+        return node.named_children[0] if node.named_children else None
+    value, declaration = _field(node, "value"), node.parent
+    if value is None or value.type != "argument_list" or declaration is None or declaration.type != "declaration":
+        return None
+    return _field(declaration, "type")
 
 
 def _generic_callee(
@@ -713,9 +1186,10 @@ def _generic_callee(
     what precedes it as the receiver: `pkg.Run`, `obj->run`, `ns::run`, `m:run`.
     """
     named = _field(node, cfg.call_name_field) if cfg.call_name_field else None
-    target = (named or _field(node, cfg.call_function_field) or _field(node, "type")
-              or _field(node, "constructor")
-              or (node.named_children[0] if node.named_children else None))
+    target = _constructed_type(node) if node.type in _CONSTRUCTIONS else (
+        named or _field(node, cfg.call_function_field) or _field(node, "type")
+        or _field(node, "constructor")
+        or (node.named_children[0] if node.named_children else None))
     if target is None:
         return None, False, None, None
     if target.type in _IDENTIFIER_TYPES:
@@ -729,7 +1203,7 @@ def _generic_callee(
         return None, False, None, None
     # `List<Order>` names List, not its argument.
     leaf = leaves[0] if "generic" in target.type else leaves[-1]
-    qualifier = src[target.start_byte:leaf.start_byte].decode("utf-8", "replace").rstrip()
+    qualifier = _untemplated(target, leaf.start_byte, src)
     for sep in _SEPARATORS:
         if qualifier.endswith(sep):
             qualifier = qualifier[: -len(sep)].rstrip()
@@ -750,6 +1224,8 @@ def _reference_info(
     if target.type in cfg.accessor_types:
         prop = _field(target, cfg.accessor_property_field)
         obj = _field(target, cfg.accessor_object_field)
+        if obj is not None and obj.type == "non_null_expression" and obj.named_children:
+            obj = obj.named_children[0]  # `e!.go()`: the assertion keeps e's type
         if prop is None:
             return None, False, None, None
         name = _text(prop, src)
@@ -783,6 +1259,8 @@ class _Span:
     name: str | None = None
     decorators: tuple[str, ...] = ()
     is_exported: bool = False
+    # The statement namespace (`namespace X;`) above the span, prefixed to its chain.
+    namespace: tuple[str, ...] = ()
 
 
 # Filler kinds that absorb an adjacent run of the same kind.
@@ -824,6 +1302,8 @@ class _Walker:
         self.builtins = _BUILTIN_GLOBALS.get(cfg.name, frozenset())
         self.import_handler = _IMPORT_HANDLERS.get(cfg.import_handler_name)
         self._scope_tables: dict[int, dict[str, str]] = {}
+        # Macro invocation start byte -> its arguments parsed as code (languages.MACRO_ARGUMENT_HANDLERS).
+        self._macro_arguments: dict[int, Node] = {}
         self.heritage_handler = _HERITAGE_HANDLERS.get(cfg.heritage_handler_name)
 
     # -- symbols --------------------------------------------------------
@@ -849,6 +1329,12 @@ class _Walker:
         handler = _TYPE_TABLE_HANDLERS.get(self.cfg.type_table_handler_name)
         if handler:
             handler(root, self.src, self.out.type_table, self.cfg)
+        arguments = languages.MACRO_ARGUMENT_HANDLERS.get(self.cfg.name)
+        if arguments:
+            self._macro_arguments = arguments(root, self.src, _get_parser(self.cfg).parse, self.cfg)
+        macros = languages.MACRO_TABLE_HANDLERS.get(self.cfg.macro_table_handler_name)
+        if macros:
+            self.out.macros_dropped = macros(root, self.src, self.out.macro_table, self.cfg)
         self._scope(root, 0, len(self.src), (), None, container_kind=None)
         return self.out
 
@@ -865,7 +1351,7 @@ class _Walker:
         spans = self._collect(members_parent, in_container=is_container, in_type=in_type)
         spans = self._tile(spans, scope_start, scope_end, is_container=is_container)
         for span in spans:
-            self._emit(span, chain, parent_idx, in_type=in_type)
+            self._emit(span, (*chain, *span.namespace), parent_idx, in_type=in_type)
 
     def _collect(self, members_parent: Node | None, *,
                  in_container: bool, in_type: bool) -> list[_Span]:
@@ -893,7 +1379,8 @@ class _Walker:
             attached = []
 
         seen_member = False
-        for child in (members_parent.named_children if members_parent is not None else []):
+        namespace: tuple[str, ...] = ()
+        for child in self._flatten(members_parent.named_children if members_parent is not None else []):
             if child.type in cfg.attached_types:
                 attached.append(child)
                 continue
@@ -920,6 +1407,14 @@ class _Walker:
             span = self._classify(child, in_container=in_container, in_type=in_type)
             if span is None:
                 continue
+            if child.type in cfg.module_types and span.name:
+                # `App\Models` is `App.Models`, as the namespace's classes are named.
+                span.name = span.name.replace("\\", ".")
+            if child.type in cfg.statement_namespace_types and _body_of(child, cfg) is None:
+                # `namespace X;` owns no body: it names everything after it, up to the next one.
+                namespace = (span.name,) if span.name else ()
+            else:
+                span.namespace = namespace
 
             if attached:
                 if self._blank_lines_between(attached[-1].end_byte, span.start) <= _COMMENT_ATTACH_MAX_BLANK_LINES:
@@ -938,9 +1433,85 @@ class _Walker:
         flush_unattached()
         return self._coalesce(spans)
 
+    def _flatten(self, nodes: list[Node]) -> list[Node]:
+        """``nodes`` with each transparent node (``#ifndef``, ``#if``/``#else``, ``extern "C"``)
+        replaced by its own members, in source order. Its condition, guard name or
+        linkage string is never a member; the branch text between members is tiled
+        as before. An include-guarded header had no symbols at all."""
+        transparent = self.cfg.transparent_types
+        if not transparent:
+            return list(nodes)
+        out: list[Node] = []
+        for node in nodes:
+            if node.type not in transparent:
+                out.append(node)
+                continue
+            skip = {(n.start_byte, n.type) for f in _TRANSPARENT_NON_MEMBERS if (n := _field(node, f)) is not None}
+            members: list[Node] = []
+            for child in node.named_children:
+                if (child.start_byte, child.type) in skip:
+                    continue
+                if node.type == "linkage_specification" and child.type == "declaration_list":
+                    members.extend(child.named_children)  # extern "C" { ... }: the braces' contents
+                else:
+                    members.append(child)
+            out.extend(self._flatten(members))
+        return out
+
+    def _c_declaration(self, child: Node) -> _Span | None:
+        """C/C++ declarations that define something, or that a compiler index never names.
+
+        - a member declared with its type's body (`class Inner {...};` in a class) defines that type;
+        - a pure virtual member (`virtual void f() = 0;`) is the method's only definition;
+        - any other member prototype (`void f(int);`) is no symbol: its definition holds the body,
+          and calls land there, not on a field named like it;
+        - `T Cls::member(...)` at namespace scope defines a static data member of `Cls`.
+        None for everything else, which is classified as before.
+        """
+        span = None
+        decl = _field(child, "declarator")
+        spec = _field(child, "type")
+        if spec is not None and _field(spec, "body") is not None and self._kind_for(spec.type, in_type=True):
+            span = _Span(child.start_byte, child.end_byte, "definition", nodes=[child],
+                         def_node=spec, name=_name_of(spec, self.src, self.cfg))
+        elif child.type == "field_declaration" and decl is not None and decl.type == "function_declarator" \
+                and _field(decl, "declarator") is not None and _field(decl, "declarator").type in _NAME_NODE_TYPES:
+            default = _field(child, "default_value")
+            if default is not None and _text(default, self.src).strip() == "0":
+                span = _Span(child.start_byte, child.end_byte, "definition", nodes=[child], def_node=child,
+                             def_kind="method", name=_name_via_declarator(child, self.src))
+            else:
+                span = _Span(child.start_byte, child.end_byte, "statements", nodes=[child])
+        elif child.type == "declaration" and decl is not None:
+            target = _field(decl, "declarator") if decl.type == "init_declarator" else decl
+            if target is not None and target.type == "qualified_identifier":
+                span = _Span(child.start_byte, child.end_byte, "definition", nodes=[child], def_node=child,
+                             def_kind="field", name=_qualified_parts(target, self.src)[-1])
+        return span
+
+    def _macro_namespace(self, child: Node) -> _Span | None:
+        """`ABSL_NAMESPACE_BEGIN` on the line before `namespace x {`: with the macro unexpanded, tree-sitter reads
+        a function named `namespace` (its name an ERROR node), so its definitions lost their namespace."""
+        decl = _field(child, "declarator")
+        if decl is None or decl.type != "identifier" or _text(decl, self.src) != "namespace":
+            return None
+        named = next((c for c in child.named_children if c.type == "ERROR"), None)
+        name = _text(named, self.src).strip() if named is not None else ""
+        return _Span(child.start_byte, child.end_byte, "definition", nodes=[child], def_node=child,
+                     def_kind="module", name=name if re.fullmatch(r"\w+", name) else None)
+
     def _classify(self, child: Node, *, in_container: bool, in_type: bool) -> _Span | None:
         cfg = self.cfg
         ntype = child.type
+
+        if cfg.unwrap_declarator and ntype in ("field_declaration", "declaration"):
+            span = self._c_declaration(child)
+            if span is not None:
+                return span
+        if cfg.unwrap_declarator and ntype == "function_definition":
+            span = self._macro_namespace(child)
+            if span is not None:
+                return span
 
         if ntype in cfg.decorator_wrapper_types:
             inner = next(
@@ -1154,8 +1725,10 @@ class _Walker:
             parent_chain=chain,
             text=self.src[span.start:span.end].decode("utf-8", errors="replace"),
             decorators=span.decorators,
+            modifiers=self._modifiers(span, kind) if span.kind == "definition" else (),
             is_exported=span.is_exported,
             parent=parent_idx,
+            type_param_count=_type_param_count(span.def_node) if span.kind == "definition" else 0,
         ))
 
         if span.kind != "definition":
@@ -1195,6 +1768,8 @@ class _Walker:
         # definitions inside it become blocks parented to it. Their bytes appear
         # twice by design: `outer` is still retrievable whole, `outer.inner` alone.
         if body is not None and (kind in _CALLABLE_KINDS or kind in cfg.container_kinds):
+            for init in (c for c in span.def_node.named_children if c.type == "field_initializer_list"):
+                self._facts_of(init, idx)  # a C++ constructor's `: Base(x), m_(make())` runs before its body
             self._emit_nested(body, idx, child_chain,
                               in_type=kind in cfg.method_container_kinds)
             return
@@ -1219,7 +1794,7 @@ class _Walker:
         # its body, and the loop below only sees the call's children.
         if body.type in cfg.call_types:
             self._emit_call(body, enclosing)
-        for child in body.named_children:
+        for child in self._flatten(body.named_children):
             span = self._classify(child, in_container=in_type, in_type=in_type)
             if span is not None and span.kind == "definition":
                 self._emit(span, chain, enclosing, in_type=in_type)
@@ -1308,6 +1883,9 @@ class _Walker:
             if ntype in cfg.import_types or ntype in cfg.export_types:
                 self._run_handler(child, enclosing)
                 continue
+            if (arguments := self._macro_arguments.get(child.start_byte)) is not None and ntype == "macro_invocation":
+                stack.extend(reversed(arguments.named_children))
+                continue
             if ntype in cfg.call_types:
                 self._emit_call(child, enclosing)
             elif ntype in cfg.jsx_element_types:
@@ -1333,28 +1911,98 @@ class _Walker:
             to_kind="block",
             is_member_call=is_member,
             receiver=receiver,
-            receiver_type=self._receiver_type(node, receiver),
+            receiver_type=self._receiver_type(node, receiver, qualifier),
             qualified_prefix=qualifier,
+            head_type=self._head_type(node, qualifier),
+            head_type_arg=self._head_type(node, qualifier, suffix="<>"),
+            context=self.cfg.construction_contexts.get(node.type),
+            arrow=is_member and self.cfg.type_table_handler_name == "cpp" and _arrow_call(node),
         ))
 
-    def _receiver_type(self, node: Node, receiver: str | None) -> str | None:
-        """The receiver's type, from its own function first in Go: one file's
+    def _head_type(self, node: Node, qualifier: str | None, suffix: str = "") -> str | None:
+        """The function-scoped type of the variable a TS or C++ receiver chain starts from;
+        *suffix* `<>` asks for its type argument instead (TS, and C++ `operator->`)."""
+        if qualifier and self.cfg.type_table_handler_name == "python" and not suffix:
+            head = _TS_HEAD.match(qualifier)
+            if not head or head.group() in ("self", "cls"):
+                return None
+            func = _py_enclosing_function(node)
+            if func is None or func.type != "function_definition":
+                return None
+            table = self._scope_tables.get(func.start_byte)
+            if table is None:
+                table = self._scope_tables[func.start_byte] = _py_local_values(func, self.src, self.cfg)
+            return table.get(head.group())
+        if qualifier and self.cfg.type_table_handler_name == "cpp":
+            # `cfg.root()->child()`: `cfg`'s type (or `=initializer`) in its own function, for the builder; with
+            # *suffix*, `x->open()` on `optional_ptr<Conn> x`: Conn, reached through optional_ptr's operator->.
+            head = _TS_HEAD.match(qualifier)
+            if suffix:
+                return (self._function_scoped(node, qualifier + suffix) or self.out.type_table.get(qualifier + suffix)) \
+                    if head and head.group() == qualifier and _arrow_call(node) else None
+            return self._function_scoped(node, head.group()) \
+                if head and head.group() not in ("this", qualifier) else None
+        if not qualifier or self.cfg.type_table_handler_name != "ts":
+            return None
+        head = _TS_HEAD.match(qualifier)
+        if not head or head.group() == "this" or self._ts_scoped_type(node, head.group()) is None:
+            return None
+        return self._ts_scoped_type(node, head.group() + suffix)
+
+    def _function_scoped(self, node: Node, name: str) -> str | None:
+        """*name*'s type in the function holding *node* (Go, C++), from that function's own type table."""
+        function_types = _FUNCTION_SCOPES.get(self.cfg.type_table_handler_name)
+        scope = node.parent if function_types else None
+        while scope is not None and scope.type not in function_types:
+            scope = scope.parent
+        if scope is None:
+            return None
+        table = self._scope_tables.get(scope.start_byte)
+        if table is None:
+            table = self._scope_tables[scope.start_byte] = {}
+            _TYPE_TABLE_HANDLERS[self.cfg.type_table_handler_name](scope, self.src, table, self.cfg)
+        return table.get(name)
+
+    def _receiver_type(self, node: Node, receiver: str | None, qualifier: str | None = None) -> str | None:
+        """The receiver's type, from its own function first in Go and C++: one file's
         methods reuse `c` for `*Client` and `*Config`, which the file-wide table
         has to drop."""
         if not receiver:
             return None
-        if self.cfg.type_table_handler_name == "go":
-            scope = node.parent
-            while scope is not None and scope.type not in ("function_declaration", "method_declaration"):
-                scope = scope.parent
-            if scope is not None:
+        own = languages.RECEIVER_TYPE_HANDLERS.get(self.cfg.name)
+        if own is not None:   # the file-wide guess as below: none for a chained receiver's `f()`
+            chained = receiver.endswith(")") and qualifier != receiver
+            return own(node, self.src, self._scope_tables, self.cfg,
+                       None if chained else self.out.type_table.get(receiver))
+        if receiver.endswith(")") and qualifier != receiver:
+            # `a.f().g()` keeps only `f()`, the key of a bare `function f()`'s return type;
+            # the builder evaluates the whole chain.
+            return None
+        scoped = self._function_scoped(node, receiver)
+        if scoped is not None:
+            return scoped
+        if self.cfg.type_table_handler_name == "ts":
+            scoped = self._ts_scoped_type(node, receiver)
+            if scoped is not None:
+                return scoped if not scoped.startswith("=") and not scoped.endswith("[]") else None
+        found = self.out.type_table.get(receiver)
+        # `=expr` initializers are evaluated by the builder, which can see other files.
+        return found if found and not found.startswith("=") and not found.endswith("[]") else None
+
+    def _ts_scoped_type(self, node: Node, name: str) -> str | None:
+        """*name*'s type in the innermost function that declares it: one file reuses
+        `provider` or `e` for different types, which a file-wide table cannot hold."""
+        scope = node.parent
+        while scope is not None:
+            if scope.type in _TS_SCOPE_TYPES:
                 table = self._scope_tables.get(scope.start_byte)
                 if table is None:
                     table = self._scope_tables[scope.start_byte] = {}
-                    _collect_type_table_go(scope, self.src, table, self.cfg)
-                if receiver in table:
-                    return table[receiver]
-        return self.out.type_table.get(receiver)
+                    _collect_type_table_ts(scope, self.src, table, self.cfg)
+                if name in table:
+                    return table[name]
+            scope = scope.parent
+        return None
 
     def _emit_reference(self, target: Node, enclosing: int) -> None:
         """A CALLS fact for something referenced as a callee without a call node."""
@@ -1365,7 +2013,7 @@ class _Walker:
             relation=Relation.CALLS, to_name=name, line=self._line_at(target.start_byte),
             byte_offset=target.start_byte, from_symbol=enclosing, to_kind="block",
             is_member_call=is_member, receiver=receiver,
-            receiver_type=self._receiver_type(target, receiver),
+            receiver_type=self._receiver_type(target, receiver, qualifier),
             qualified_prefix=qualifier,
         ))
 
@@ -1416,6 +2064,21 @@ class _Walker:
         self.out.pending.extend(facts)
         return True
 
+    def _modifiers(self, span: _Span, kind: str) -> tuple[str, ...]:
+        """DECLARATION for a function or method with no body, in every language (an interface or abstract method,
+        a C++ pure virtual, a TS overload signature): what runs is elsewhere. A body the span claimed as a sibling
+        (Dart's `function_body`) is a body. Then the words of a language with a modifier handler (C/C++, C#); a
+        language without one has no others."""
+        def_node = span.def_node
+        if def_node is None:
+            return ()
+        handler = languages.MODIFIER_HANDLERS.get(self.cfg.name)
+        words = handler(def_node, self.src) if handler else ()
+        trailing_body = any(node.type in self.cfg.trailing_body_types for node in span.nodes)
+        if kind in _CALLABLE_KINDS and _body_of(def_node, self.cfg) is None and not trailing_body:
+            words = (DECLARATION, *words)
+        return words
+
     def _line_at(self, offset: int) -> int:
         return bisect.bisect_right(self._line_starts, offset)
 
@@ -1444,14 +2107,18 @@ def parse_code(source: bytes, language: str) -> ParsedFile:
 
     # A member call on a built-in container can never resolve -- resolution
     # needs a known receiver type and these receivers are language primitives
-    # -- so keeping the fact would only bloat a traversed node.
-    builtin_methods = _BUILTIN_METHODS.get(cfg.name, frozenset())
+    # -- so keeping the fact would only bloat a traversed node. Python keeps them:
+    # an untyped receiver there is as often a repo object (`qs.count()`, `cache.get()`)
+    # whose type the builder can still work out, and it guesses no further.
+    builtin_methods = _BUILTIN_METHODS.get(cfg.name, frozenset()) if cfg.name != "python" else frozenset()
     parsed.pending = [
         fact for fact in parsed.pending
         if not (
             fact.is_member_call
             and not fact.receiver_type
             and fact.receiver not in ("self", "this")
+            and not (fact.receiver or "")[:1].isupper()  # `Controller.get(editor)`: a class
+            and fact.receiver not in parsed.type_table
             and fact.to_name in builtin_methods
         )
     ]

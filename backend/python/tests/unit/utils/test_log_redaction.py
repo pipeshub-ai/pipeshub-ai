@@ -21,7 +21,6 @@ from app.utils.log_redaction import (
     redact_secrets_in_text,
 )
 from app.utils.logger import (
-    ColoredFormatter,
     RedactingFormatter,
     create_logger,
     install_log_redaction,
@@ -50,6 +49,12 @@ PEM = (
         ("key sk-proj-SENTINELabcdefghijklmnop", "sk-proj-SENTINELabcdefghijklmnop"),
         ("key sk-ant-api03-SENTINELabcdefghijk", "sk-ant-api03-SENTINELabcdefghijk"),
         ("aws AKIAIOSFODNN7SENTINL", "AKIAIOSFODNN7SENTINL"),
+        ("file report_sk-SENTINELabcdefghijklmnop.txt", "sk-SENTINELabcdefghijklmnop"),
+        ("file report-sk-SENTINELabcdefghijklmnop.txt", "sk-SENTINELabcdefghijklmnop"),
+        ("file report.sk-SENTINELabcdefghijklmnop.txt", "sk-SENTINELabcdefghijklmnop"),
+        ("file backup_AKIAIOSFODNN7SENTINL.csv", "AKIAIOSFODNN7SENTINL"),
+        ("password=alice_sk-2026-account-production-report:SENTINEL-pw2@host", "SENTINEL-pw2"),
+        ("file out_ghp_SENTINEL0123456789abcdefghijklmnopqrstuvwx", "ghp_SENTINEL0123456789abcdefghijklmnopqrstuvwx"),
         ("slack xoxb-123456789012-SENTINELabc", "xoxb-123456789012-SENTINELabc"),
         ("google AIzaSyA-SENTINEL_0123456789abcdefghijk", "AIzaSyA-SENTINEL_0123456789abcdefghijk"),
         ("gh ghp_SENTINEL0123456789abcdefghijklmnopqrstuvwx", "ghp_SENTINEL0123456789abcdefghijklmnopqrstuvwx"),
@@ -110,6 +115,8 @@ def test_secret_is_masked(text: str, secret: str) -> None:
         '  File "/app/python/app/config/configuration_service.py", line 97, in get_config',
         "2026-10-18 16:43:27,879 - etcd - DEBUG - [etcd3_store.py:395] - Getting key from ETCD: /services/endpoints",
         "task-runner-abcdefghijklmnopqrstuvwxyz finished on disk-cache",
+        "risk-assessment-for-the-quarterly-review.pdf and desk-booking-report-final-v2.xlsx",
+        "ask-the-team-about-the-migration-plan_v3 ask_sk-",
         "GET https://h.example.com/api/v1/records?page=2&limit=50 200",
         "password=",
         "secret: [REDACTED]",
@@ -154,7 +161,8 @@ class TestLinearTime:
 
     Wall-clock limits break under coverage or a loaded xdist worker, so each
     shape is timed at two sizes instead: linear work grows about 4x from n to
-    4n, quadratic work 16x.
+    4n, quadratic work 16x. Runs are timed in this thread's CPU time, so a run
+    that waits for a CPU taken by other workers does not count as slower.
     """
 
     SMALL = 250_000
@@ -173,9 +181,9 @@ class TestLinearTime:
     def _best_of_three(text: str) -> float:
         best = float("inf")
         for _ in range(3):
-            start = time.perf_counter()
+            start = time.thread_time()
             redact_secrets_in_text(text)
-            best = min(best, time.perf_counter() - start)
+            best = min(best, time.thread_time() - start)
         return best
 
     def _assert_linear(self, make: Callable[[int], str]) -> None:
@@ -193,7 +201,7 @@ class TestLinearTime:
     @pytest.mark.parametrize(
         "unit",
         [
-            "eyJ", "eyJaaaaaaaa.", "sk-", "AKIA", "phpat_", "xoxb-", "AIza", "gh",
+            "eyJ", "eyJaaaaaaaa.", "_eyJ", "-eyJaaaaaaaa.", "sk-", "_sk-", "_xoxb-", "AKIA", "phpat_", "xoxb-", "AIza", "gh",
             "password=", 'password:"', "password: '", "a:", "a=", "a.", "a" * 200 + ":",
             "-----BEGIN ", "-----BEGIN PRIVATE KEY-----", "Bearer ", "Basic AAAAAAA= ",
             "https://", "://", "https://h/?" + "=" * 900 + " ", "https://u:" + "p@" * 400 + " ",
@@ -269,26 +277,22 @@ class TestFormatters:
         assert "Traceback" in out
         assert "SENTINEL-tb" not in out
 
-    def test_colored_formatter_redacts_and_still_colors(self) -> None:
-        out = ColoredFormatter("%(message)s").format(_record("token: SENTINEL-color"))
-        assert out.startswith(ColoredFormatter.RED)
-        assert "SENTINEL-color" not in out
-
 
 class TestInstallation:
     def test_create_logger_handlers_redact(self) -> None:
         logger = create_logger("test_log_redaction_service")
         try:
             assert logger.handlers
-            assert all(isinstance(h.formatter, RedactingFormatter) for h in logger.handlers)
+            # By attribute: tests that reload app.utils.logger leave new formatter classes behind.
+            assert all(getattr(h.formatter, "_pipeshub_redacting", False) for h in logger.handlers)
         finally:
             for handler in logger.handlers:
                 handler.close()
             logger.handlers.clear()
 
-    def test_root_handler_from_basicconfig_redacts(self) -> None:
+    def test_root_console_handler_redacts(self) -> None:
         # A fresh interpreter: under pytest the root logger already has
-        # handlers, so the module's basicConfig() would add none.
+        # handlers, so the module adds no console handler of its own.
         backend = Path(__file__).resolve().parents[3]
         code = (
             "import logging, app.utils.logger; "
@@ -299,8 +303,8 @@ class TestInstallation:
             [sys.executable, "-c", code], cwd=backend, env=env, capture_output=True, text=True, timeout=60,
         )
         assert result.returncode == 0, result.stderr
-        assert "password=" in result.stderr
-        assert "SENTINEL-basic" not in result.stderr
+        assert "password=" in result.stdout
+        assert "SENTINEL-basic" not in result.stdout + result.stderr
 
     def test_a_module_logger_reaches_the_root_handler_redacted(self) -> None:
         stream = io.StringIO()

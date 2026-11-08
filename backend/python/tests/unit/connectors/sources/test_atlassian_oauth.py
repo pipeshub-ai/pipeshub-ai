@@ -45,6 +45,7 @@ class TestAtlassianScopeEnum:
             "read:jira-work", "read:jira-user", "read:user:jira",
             "read:group:jira", "read:avatar:jira", "read:audit-log:jira",
             "read:application-role:jira", "read:project-role:jira",
+            "read:issue-security-level:jira", "read:issue-security-scheme:jira",
             "read:account", "offline_access",
         ]
         for s in expected:

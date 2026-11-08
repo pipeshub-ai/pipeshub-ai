@@ -69,7 +69,10 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return ConfluenceConnector(logger, dep, dsp, cs, "conn-conf-1", "team", "test-user")
+    c = ConfluenceConnector(logger, dep, dsp, cs, "conn-conf-1", "team", "test-user")
+    # As after a first complete group read; a just-started connector holds every user back.
+    c._account_statuses_known = True
+    return c
 
 
 def _resp(status=200, data=None):
@@ -199,7 +202,7 @@ class TestSyncUsers:
         connector.data_entities_processor.on_new_app_users.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_paginates_until_less_than_batch(self):
+    async def test_paginates_until_an_empty_page(self) -> None:
         connector = _make_connector()
 
         call_count = 0
@@ -211,9 +214,12 @@ class TestSyncUsers:
                 return _resp(200, {
                     "results": [{"user": {"accountId": f"u{i}"}, "email": f"u{i}@x.com"} for i in range(100)],
                 })
-            return _resp(200, {
-                "results": [{"user": {"accountId": "u100"}, "email": "u100@x.com"}],
-            })
+            if call_count == 2:
+                # A short page is not the end: Cloud can return one before it.
+                return _resp(200, {
+                    "results": [{"user": {"accountId": "u100"}, "email": "u100@x.com"}],
+                })
+            return _resp(200, {"results": []})
 
         ds = MagicMock()
         ds.search_users = AsyncMock(side_effect=mock_search)
@@ -223,7 +229,7 @@ class TestSyncUsers:
         ))
 
         await connector._sync_users()
-        assert call_count == 2
+        assert call_count == 3
 
     @pytest.mark.asyncio
     async def test_skips_users_without_email(self):
@@ -572,6 +578,52 @@ class TestSyncContent:
 
         await connector._sync_content("DEV", RecordType.CONFLUENCE_PAGE)
         connector.data_entities_processor.on_new_records.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_changed_page_publishes_a_content_update(self) -> None:
+        connector = _make_connector()
+        from app.connectors.core.registry.filters import FilterCollection
+        connector.sync_filters = FilterCollection()
+        connector.indexing_filters = FilterCollection()
+        connector.pages_sync_point = MagicMock()
+        connector.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.pages_sync_point.update_sync_point = AsyncMock()
+
+        existing = MagicMock()
+        existing.is_placeholder = False
+        existing.external_revision_id = "1"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.on_record_content_update = AsyncMock()
+
+        page = MagicMock()
+        page.id = "rec-1"
+        page.version = 2
+        page.external_revision_id = "2"
+        page.rewrite_permissions = True
+        page.inherit_permissions = True
+        page.indexing_status = None
+        update = MagicMock()
+        update.record = page
+        connector._process_webpage_with_update = AsyncMock(return_value=update)
+
+        ds = MagicMock()
+        ds.get_pages_v1 = AsyncMock(return_value=_resp(200, {
+            "results": [{
+                "id": "pg1",
+                "title": "TestPage",
+                "space": {"id": 123},
+                "children": {"attachment": {"results": []}},
+            }],
+            "_links": {},
+        }))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        grants = [MagicMock()]
+        connector._fetch_page_permissions = AsyncMock(return_value=grants)
+
+        await connector._sync_content("DEV", RecordType.CONFLUENCE_PAGE)
+
+        connector.data_entities_processor.on_new_records.assert_not_awaited()
+        connector.data_entities_processor.on_record_content_update.assert_awaited_once_with(page, grants)
 
 
 # ===========================================================================

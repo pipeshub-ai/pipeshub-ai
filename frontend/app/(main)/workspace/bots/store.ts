@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { resetStoreOnSessionEnd } from '@/lib/api/session-cache';
 import { immer } from 'zustand/middleware/immer';
 import { devtools } from 'zustand/middleware';
 import type { SlackBotConfig, AgentOption, PanelView } from './types';
@@ -11,6 +12,8 @@ interface BotsState {
   // ── Data ──
   slackBotConfigs: SlackBotConfig[];
   agents: AgentOption[];
+  /** The agent list arrived whole; only then is a bot's missing agent known to be deleted. */
+  agentsComplete: boolean;
 
   // ── UI ──
   isLoading: boolean;
@@ -26,7 +29,7 @@ interface BotsState {
 
 interface BotsActions {
   setConfigs: (configs: SlackBotConfig[]) => void;
-  setAgents: (agents: AgentOption[]) => void;
+  setAgents: (agents: AgentOption[], complete?: boolean) => void;
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
   setSearchQuery: (query: string) => void;
@@ -46,6 +49,7 @@ interface BotsActions {
 const initialState: BotsState = {
   slackBotConfigs: [],
   agents: [],
+  agentsComplete: false,
   isLoading: false,
   error: null,
   searchQuery: '',
@@ -68,9 +72,10 @@ export const useBotsStore = create<BotsState & BotsActions>()(
           state.slackBotConfigs = configs;
         }),
 
-      setAgents: (agents) =>
+      setAgents: (agents, complete = true) =>
         set((state) => {
           state.agents = agents;
+          state.agentsComplete = complete;
         }),
 
       setLoading: (loading) =>
@@ -119,3 +124,5 @@ export const useBotsStore = create<BotsState & BotsActions>()(
     { name: 'bots-store' }
   )
 );
+
+resetStoreOnSessionEnd(useBotsStore);

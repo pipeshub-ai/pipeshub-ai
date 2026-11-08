@@ -32,7 +32,11 @@ from ai_models_setup import (  # noqa: E402
     setup_test_embedding_model,
     setup_test_llm_model,
 )
-from local_auth import obtain_local_oauth_credentials, obtain_user_session_token  # noqa: E402
+from local_auth import (  # noqa: E402
+    SERVICE_ACCOUNT_ENV,
+    obtain_local_oauth_credentials,
+    obtain_user_session_token,
+)
 from pipeshub_client import PipeshubClient  # noqa: E402
 
 logging.basicConfig(
@@ -94,6 +98,19 @@ def seed_models(client: PipeshubClient) -> None:
     log.info(
         "Seeded LLM %s and embedding model %s", llm.model_name, embedding.model_name
     )
+
+
+def share_service_account_with_later_steps() -> None:
+    """Make the suites' OAuth apps act as the account that owns the seed document.
+
+    with_oauth_app.py runs in a new process for each step and would otherwise create
+    another service account, which cannot see the knowledge base seeded here, so
+    search would answer empty_response.
+    """
+    github_env = os.getenv("GITHUB_ENV")
+    if github_env:
+        with open(github_env, "a", encoding="utf-8") as env_file:
+            env_file.write(f"{SERVICE_ACCOUNT_ENV}={os.environ[SERVICE_ACCOUNT_ENV]}\n")
 
 
 def client_credentials_token(base_url: str, client_id: str, client_secret: str) -> str:
@@ -178,6 +195,10 @@ def main() -> int:
     client_id, client_secret = obtain_local_oauth_credentials(base_url)
     os.environ["CLIENT_ID"] = client_id
     os.environ["CLIENT_SECRET"] = client_secret
+    share_service_account_with_later_steps()
+    # The app acts as a service account, which is never an admin, and the model
+    # routes are admin-only, so the models are added with the admin's login.
+    os.environ["PIPESHUB_TEST_ENV"] = "local"
     seed_models(PipeshubClient(base_url=base_url))
     seed_search_document(
         base_url, client_credentials_token(base_url, client_id, client_secret)

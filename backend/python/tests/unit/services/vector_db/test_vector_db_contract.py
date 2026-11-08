@@ -141,14 +141,22 @@ class TestContainerPermissionFilterContract:
         assert expr.must and expr.should
 
     @pytest.mark.asyncio
-    async def test_empty_should_values_produce_no_condition(self, connected_service):
-        """An empty list must not become a condition. If it did, the filter
-        would degenerate to `orgId` alone and match every document in the org —
-        which is why the caller refuses to build a filter from empty buckets."""
+    async def test_empty_list_is_a_condition_that_matches_nothing(self, connected_service) -> None:
+        """An empty list stays a condition with no values. Dropping it would
+        degenerate the filter to `orgId` alone and match every document in the
+        org, in a search and in a delete alike."""
         expr = await connected_service.filter_collection(
-            must={"orgId": "o1"}, should={"connectorIds": []}
+            must={"orgId": "o1", "virtualRecordId": []}, should={"connectorIds": []}
         )
-        assert not expr.should
+        assert [c.values for c in expr.must if c.key == "metadata.virtualRecordId"] == [[]]
+        assert [c.values for c in expr.should] == [[]]
+
+    @pytest.mark.asyncio
+    async def test_none_is_still_no_condition(self, connected_service) -> None:
+        expr = await connected_service.filter_collection(
+            must={"orgId": "o1", "virtualRecordId": None}
+        )
+        assert [c.key for c in expr.must] == ["metadata.orgId"]
 
 
 class TestFilterCollectionContract:

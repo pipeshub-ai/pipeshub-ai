@@ -85,6 +85,9 @@ class _AutoCommitGraph:
         self.parent_edge = True
         self.writes = 0
 
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+        return False
+
     async def begin_transaction(self, read: list | None = None, write: list | None = None,
                                 explicit: bool | None = None) -> str:
         self.explicit = explicit
@@ -105,6 +108,13 @@ class _AutoCommitGraph:
     async def get_document(self, key: str, collection: str, *, transaction: str | None = None,
                            raise_on_error: bool = False) -> dict | None:
         return dict(self.record) if self.record else None
+
+    async def get_nodes_by_field_in(self, collection: str, field: str, values: list, return_fields: list | None = None,
+                                    transaction: str | None = None, *, raise_on_error: bool = False) -> list[dict]:
+        return [{"_key": v, **self.record} for v in values] if self.record else []
+
+    async def batch_update_nodes(self, nodes: list[dict], collection: str, transaction: str | None = None) -> bool:
+        return True  # the scope-generation bump of the connector the delete touched
 
     def _statement(self) -> None:
         self.writes += 1

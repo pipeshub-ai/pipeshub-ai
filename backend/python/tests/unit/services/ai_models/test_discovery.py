@@ -96,6 +96,45 @@ async def test_openai_auth_error():
 
 
 @pytest.mark.asyncio
+async def test_openai_wrong_regional_host_names_the_base_url_to_use() -> None:
+    """OpenAI answers a key used on another region's host with 401
+    incorrect_hostname. The key is fine; the Base URL is not."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": {
+            "message": "Attempted to access resource with incorrect regional hostname. "
+                       "Please make your request to api.openai.com",
+            "type": "invalid_request_error", "param": None, "code": "incorrect_hostname",
+        }})
+
+    result = await _service(handler).discover(DiscoveryRequest(
+        provider="openAICompatible",
+        configuration={"apiKey": "sk-secret", "endpoint": "https://us.api.openai.com/v1"},
+    ))
+    assert result.error_code.value == "auth_error"
+    assert "https://api.openai.com/v1" in result.message
+    assert "rejected these credentials" not in result.message
+    assert "sk-secret" not in result.message
+
+
+@pytest.mark.asyncio
+async def test_a_gateway_passing_on_a_wrong_openai_region_keeps_its_base_url() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": {
+            "message": "Attempted to access resource with incorrect regional hostname. "
+                       "Please make your request to us.api.openai.com",
+            "type": "invalid_request_error", "param": None, "code": "incorrect_hostname",
+        }})
+
+    result = await _service(handler).discover(DiscoveryRequest(
+        provider="openAICompatible",
+        configuration={"apiKey": "sk-secret", "endpoint": "https://litellm.internal:4000/v1"},
+    ))
+    assert result.error_code.value == "auth_error"
+    assert "Change the Base URL" not in result.message
+    assert "https://us.api.openai.com/v1" in result.message
+
+
+@pytest.mark.asyncio
 async def test_anthropic_paginates_with_after_id():
     seen = []
 
@@ -247,6 +286,17 @@ async def test_static_voyage_needs_no_credentials():
     ))
     assert result.supported is True
     assert any(model.id == "voyage-3-large" for model in result.models)
+
+
+@pytest.mark.asyncio
+async def test_static_vertex_lists_only_current_gemini_models():
+    result = await ModelDiscoveryService().discover(DiscoveryRequest(
+        provider="vertexAI", configuration={}
+    ))
+    ids = {model.id for model in result.models}
+    assert "gemini-3.8-flash" in ids
+    # Retired on Vertex AI (2.0 earlier, 2.5-* on 2026-10-20)
+    assert not {i for i in ids if i.startswith(("gemini-2.0", "gemini-2.5"))}
 
 
 def test_missing_catalog_flag_is_not_false():
@@ -558,3 +608,22 @@ def test_a_timestamp_without_an_offset_is_read_as_utc(
     finally:
         monkeypatch.undo()
         time.tzset()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["openAI", "openAICompatible"])
+async def test_endpoint_with_an_api_path_names_the_base_url_without_calling_out(provider) -> None:
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url)
+        return httpx.Response(404)
+
+    result = await _service(handler).discover(DiscoveryRequest(
+        provider=provider,
+        configuration={"apiKey": "sk-secret", "endpoint": "https://us.api.openai.com/v1/responses"},
+    ))
+    assert calls == []
+    assert result.error_code is not None
+    assert "'https://us.api.openai.com/v1'" in result.message
+    assert "/responses" in result.message

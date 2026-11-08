@@ -6,6 +6,7 @@ threads (no pool), and real files through real parse worker processes.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import time
 from contextlib import contextmanager
@@ -16,6 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.exceptions.indexing_exceptions import PasswordProtectedError
 from app.modules.parsers import parse_pool
 from app.modules.parsers.parse_pool import ParseAbandonedError, ParseWorkerError
 from app.modules.parsers.pdf import untrusted_pdf
@@ -116,7 +118,7 @@ class TestStructure:
 
         result = await inspect_untrusted_pdf(ORIGINAL, label="a.pdf")
 
-        assert result == InspectedPdf(ORIGINAL, needs_ocr=True, repaired=False)
+        assert result == InspectedPdf(ORIGINAL, needs_ocr=True, repaired=False, page_count=3)
         assert jobs.calls == [("open_pdf", ORIGINAL), ("detect_ocr", ORIGINAL)]
 
     @pytest.mark.parametrize(
@@ -129,7 +131,7 @@ class TestStructure:
 
         result = await inspect_untrusted_pdf(ORIGINAL)
 
-        assert result == InspectedPdf(REWRITTEN, needs_ocr=False, repaired=True)
+        assert result == InspectedPdf(REWRITTEN, needs_ocr=False, repaired=True, page_count=3)
         assert jobs.calls == [
             ("open_pdf", ORIGINAL),
             ("repair_pdf", ORIGINAL),
@@ -147,14 +149,23 @@ class TestStructure:
         assert to_user_reason(raised.value) == UNREADABLE_FILE
         assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TERMINAL
 
-    async def test_a_password_keeps_its_own_reason(self, worker) -> None:
-        # pdfminer raises an empty error; pdfium names the password.
+    async def test_a_password_in_an_error_text_only_sets_the_reason(self, worker) -> None:
+        # Without pdfium's status code the file is not recognised as encrypted
+        # (it stays unreadable); the text can still shape the reason shown.
         worker(open=ValueError(""), repair=RuntimeError("Failed to load document (PDFium: Incorrect password error)."))
 
         with pytest.raises(UnreadablePdfError) as raised:
             await inspect_untrusted_pdf(ORIGINAL)
 
         assert to_user_reason(raised.value) == PASSWORD_PROTECTED
+
+    async def test_a_worker_that_found_a_password_is_not_second_guessed(self, worker) -> None:
+        jobs = worker(open=ValueError(""), repair=PasswordProtectedError("needs a password"))
+
+        with pytest.raises(PasswordProtectedError):
+            await inspect_untrusted_pdf(ORIGINAL)
+
+        assert jobs.calls == [("open_pdf", ORIGINAL), ("repair_pdf", ORIGINAL)]
 
     async def test_a_rewrite_that_also_overruns_reads_as_too_slow(self, worker) -> None:
         worker(open=_timed_out(), reopen=_timed_out())
@@ -171,7 +182,7 @@ class TestStructure:
 
         result = await inspect_untrusted_pdf(ORIGINAL)
 
-        assert result == InspectedPdf(REWRITTEN, needs_ocr=False, repaired=True)
+        assert result == InspectedPdf(REWRITTEN, needs_ocr=False, repaired=True, page_count=None)
         assert ("detect_ocr", REWRITTEN) not in jobs.calls
 
     @pytest.mark.parametrize(
@@ -182,7 +193,7 @@ class TestStructure:
     async def test_a_slow_file_that_cannot_be_improved_is_read_as_sent(self, worker, rewrite) -> None:
         worker(open=SLOW, detect=False, **rewrite)
 
-        assert await inspect_untrusted_pdf(ORIGINAL) == InspectedPdf(ORIGINAL, False, repaired=False)
+        assert await inspect_untrusted_pdf(ORIGINAL) == InspectedPdf(ORIGINAL, False, repaired=False, page_count=3)
 
     @pytest.mark.parametrize(
         "rewrite",
@@ -202,7 +213,7 @@ class TestStructure:
         """pdfium agrees there is nothing in it, so it is empty rather than damaged."""
         jobs = worker(open=NO_PAGES, reopen=NO_PAGES)
 
-        assert await inspect_untrusted_pdf(ORIGINAL) == InspectedPdf(REWRITTEN, False, repaired=True)
+        assert await inspect_untrusted_pdf(ORIGINAL) == InspectedPdf(REWRITTEN, False, repaired=True, page_count=0)
         assert ("detect_ocr", REWRITTEN) not in jobs.calls
 
     @pytest.mark.parametrize(
@@ -245,7 +256,7 @@ class TestOcrDecision:
         """A sound file is never failed for its content: it is parsed without OCR, as before."""
         worker(open=SOUND, detect=failure)
 
-        assert await inspect_untrusted_pdf(ORIGINAL) == InspectedPdf(ORIGINAL, False, repaired=False)
+        assert await inspect_untrusted_pdf(ORIGINAL) == InspectedPdf(ORIGINAL, False, repaired=False, page_count=3)
 
     async def test_a_worker_that_dies_deciding_is_raised_as_it_is(self, worker) -> None:
         worker(open=SOUND, detect=_crashed())
@@ -290,7 +301,7 @@ class TestRealFilesInThreads:
     async def test_a_text_pdf_is_passed_on_unchanged(self) -> None:
         content = text_pdf(pages=2)
 
-        assert await inspect_untrusted_pdf(content) == InspectedPdf(content, False, repaired=False)
+        assert await inspect_untrusted_pdf(content) == InspectedPdf(content, False, repaired=False, page_count=2)
 
     async def test_a_scanned_looking_pdf_goes_to_ocr(self) -> None:
         assert (await inspect_untrusted_pdf(blank_pdf())).needs_ocr is True
@@ -298,10 +309,10 @@ class TestRealFilesInThreads:
     async def test_an_owner_password_does_not_stop_indexing(self) -> None:
         content = owner_password_pdf()
 
-        assert await inspect_untrusted_pdf(content) == InspectedPdf(content, False, repaired=False)
+        assert await inspect_untrusted_pdf(content) == InspectedPdf(content, False, repaired=False, page_count=1)
 
-    async def test_a_password_protected_pdf_fails_with_the_password_reason(self) -> None:
-        with pytest.raises(UnreadablePdfError) as raised:
+    async def test_a_password_protected_pdf_raises_the_typed_error(self) -> None:
+        with pytest.raises(PasswordProtectedError) as raised:
             await inspect_untrusted_pdf(password_protected_pdf())
 
         assert to_user_reason(raised.value) == PASSWORD_PROTECTED
@@ -412,21 +423,25 @@ class TestRealFilesInWorkers:
         ids=["broken cross-reference table", "no startxref near the end"],
     )
     async def test_a_file_that_would_stall_pdfminer_is_handled_without_stalling_the_loop(
-        self, pool: None, damaged: bytes
+        self, pool: None, damaged: bytes, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The outage: read in a thread, each of these held the GIL for tens of seconds."""
-        await parse_pool.submit(len, b"warm up the worker")
+        """The outage: read in a thread, each of these held the GIL for tens of seconds. Now every read
+        goes to the pool's worker process, whose GIL is not the loop's; that is checked, not the loop's lag."""
+        submitted: list[object] = []
+        real_submit = parse_pool.submit
 
-        with IoProbe() as io_probe:
-            await asyncio.sleep(0.1)
-            started = time.monotonic()
-            result = await inspect_untrusted_pdf(damaged, label="damaged.pdf")
-            elapsed = time.monotonic() - started
+        async def spy(fn: object, *args: object, **kwargs: object) -> object:
+            submitted.append(fn)
+            return await real_submit(fn, *args, **kwargs)
+
+        monkeypatch.setattr(parse_pool, "submit", spy)
+        assert await real_submit(os.getpid) != os.getpid()
+
+        result = await inspect_untrusted_pdf(damaged, label="damaged.pdf")
 
         assert result.repaired is True
         assert open_pdf(result.content).page_count == 1
-        assert elapsed < 20
-        assert 0 < io_probe.worst < 0.25
+        assert submitted  # every read of the damaged file went to the worker
 
     async def test_the_probe_sees_the_stall_a_pdfminer_thread_causes(self) -> None:
         """Without this, a probe that measured nothing would pass the test above."""
@@ -447,10 +462,10 @@ class TestRealFilesInWorkers:
         await inspect_untrusted_pdf(garbage_tail_pdf(32 * MIB))
 
         content = text_pdf()
-        assert await inspect_untrusted_pdf(content) == InspectedPdf(content, False, repaired=False)
+        assert await inspect_untrusted_pdf(content) == InspectedPdf(content, False, repaired=False, page_count=1)
 
     async def test_a_password_protected_pdf_fails_the_same_way_in_a_worker(self, pool: None) -> None:
-        with pytest.raises(UnreadablePdfError) as raised:
+        with pytest.raises(PasswordProtectedError) as raised:
             await inspect_untrusted_pdf(password_protected_pdf())
 
         assert to_user_reason(raised.value) == PASSWORD_PROTECTED

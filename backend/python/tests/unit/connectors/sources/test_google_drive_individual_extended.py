@@ -320,6 +320,7 @@ class TestHandleRecordUpdates:
         update.is_deleted = True
         update.is_new = False
         update.is_updated = False
+        update.content_changed = False
         update.external_record_id = "ext-1"
         await connector._handle_record_updates(update)
         connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(
@@ -331,6 +332,7 @@ class TestHandleRecordUpdates:
         update.is_deleted = False
         update.is_new = True
         update.is_updated = False
+        update.content_changed = False
         update.record = MagicMock(record_name="new.txt")
         await connector._handle_record_updates(update)
 
@@ -375,6 +377,7 @@ class TestHandleRecordUpdates:
         existing = MagicMock(spec=FileRecord)
         existing.id = "record-1"
         existing.record_name = "deleted.txt"
+        existing.mime_type = "text/plain"
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         update = MagicMock()
         update.is_deleted = True
@@ -450,6 +453,8 @@ class TestRunSync:
         connector._create_app_user = AsyncMock()
         connector._create_personal_record_group = AsyncMock(return_value=MagicMock())
         connector._sync_user_personal_drive = AsyncMock()
+        # A listing that is not a drive list makes the run incomplete, so the mock lists none.
+        connector.drive_data_source.drives_list = AsyncMock(return_value={"drives": []})
         await connector.run_sync()
         connector._sync_user_personal_drive.assert_awaited_once()
 

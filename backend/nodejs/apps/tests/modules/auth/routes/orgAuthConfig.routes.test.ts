@@ -2,12 +2,30 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import { Container } from 'inversify';
-import { createOrgAuthConfigRouter } from '../../../../src/modules/auth/routes/orgAuthConfig.routes';
+import {
+  createOrgAuthConfigRouter,
+  SAML_IN_MULTI_STEP_POLICY,
+  signInMethodRemoved,
+  signInMethodRenamed,
+} from '../../../../src/modules/auth/routes/orgAuthConfig.routes';
+import * as signInRemoval from '../../../../src/modules/auth/services/signInRemoval.service';
 import { UserAccountController } from '../../../../src/modules/auth/controller/userAccount.controller';
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 import { ValidationError } from '../../../../src/libs/errors/validation.error';
 import type { Request, Response, NextFunction } from 'express';
+import { useCommunitySignInLists } from '../../../helpers/sign-in-lists';
+import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
+import { requireSessionAuth } from '../../../../src/libs/middlewares/require-session-auth.middleware';
+import { userAdminCheck } from '../../../../src/modules/user_management/middlewares/userAdminCheck';
+
+const mockAuthMiddleware = { authenticate: sinon.stub() };
+
+function bindAuthMiddleware(container: Container): void {
+  container
+    .bind<AuthMiddleware>('AuthMiddleware')
+    .toConstantValue(mockAuthMiddleware as unknown as AuthMiddleware);
+}
 
 describe('createOrgAuthConfigRouter', () => {
   let container: Container;
@@ -35,6 +53,7 @@ describe('createOrgAuthConfigRouter', () => {
     container
       .bind<AppConfig>('AppConfig')
       .toConstantValue(mockConfig as any);
+    bindAuthMiddleware(container);
   });
 
   afterEach(() => {
@@ -100,11 +119,24 @@ describe('createOrgAuthConfigRouter', () => {
     );
     expect(middlewareLayers.length).to.be.greaterThanOrEqual(1);
   });
+
+  // A PAT or OAuth token signed with the same secret as a session must not be
+  // able to change how the workspace signs in, nor may a revoked session.
+  it('should require an admin with a live interactive session before every route', () => {
+    const router = createOrgAuthConfigRouter(container);
+    const firstRoute = router.stack.findIndex((layer: any) => layer.route);
+    const guards = router.stack
+      .slice(0, firstRoute)
+      .map((layer: any) => layer.handle);
+    mockAuthMiddleware.authenticate.resetHistory();
+    guards[1]({}, {}, () => undefined);
+    expect(mockAuthMiddleware.authenticate.calledOnce).to.be.true;
+    expect(guards.slice(2)).to.deep.equal([requireSessionAuth, userAdminCheck]);
+  });
 });
 
 describe('POST /updateAuthMethod policy validation', () => {
-  const SAML_MESSAGE =
-    "SAML single sign-on can't be combined with other sign-in steps yet. Use SAML on its own as a one-step sign-in, or remove it from the policy.";
+  useCommunitySignInLists();
 
   let container: Container;
   let savedDoc: { orgId: string; authSteps: unknown; save: sinon.SinonStub };
@@ -133,6 +165,7 @@ describe('POST /updateAuthMethod policy validation', () => {
     container
       .bind<UserAccountController>('UserAccountController')
       .toConstantValue(controller);
+    bindAuthMiddleware(container);
 
     savedDoc = { orgId: 'o1', authSteps: [], save: sinon.stub().resolves() };
     findOne = sinon.stub(OrgAuthConfig, 'findOne').resolves(savedDoc as never);
@@ -142,8 +175,8 @@ describe('POST /updateAuthMethod policy validation', () => {
     sinon.restore();
   });
 
-  // Starts after userValidator and adminValidator, which need a live token and
-  // session; req.user is set here the way they would set it.
+  // The router-level auth guards need a live token and session; req.user is set
+  // here the way authenticate would set it.
   async function postPolicy(authMethod: unknown): Promise<{
     res: { status: sinon.SinonStub; json: sinon.SinonStub };
     error: unknown;
@@ -153,7 +186,7 @@ describe('POST /updateAuthMethod policy validation', () => {
       (l) => l.route?.path === '/updateAuthMethod',
     );
     if (!layer?.route) throw new Error('updateAuthMethod route not registered');
-    const handlers = layer.route.stack.slice(2).map((l) => l.handle);
+    const handlers = layer.route.stack.map((l) => l.handle);
 
     const req = {
       user: { orgId: 'o1', userId: 'u1' },
@@ -181,36 +214,46 @@ describe('POST /updateAuthMethod policy validation', () => {
     return { res, error };
   }
 
-  it('rejects a two-step policy that includes SAML and saves nothing', async () => {
-    const { res, error } = await postPolicy([
+  for (const removed of ['samlSso', 'oauth']) {
+    it(`refuses a policy offering ${removed}, which 1.0 removed, and saves nothing`, async () => {
+      const { res, error } = await postPolicy([
+        { order: 1, allowedMethods: [{ type: removed }, { type: 'password' }] },
+      ]);
+
+      expect(error).to.be.instanceOf(ValidationError);
+      expect((error as ValidationError).statusCode).to.equal(400);
+      expect((error as ValidationError).message).to.equal(signInMethodRemoved(removed));
+      expect(findOne.callCount).to.equal(0);
+      expect(savedDoc.save.callCount).to.equal(0);
+      expect(res.status.callCount).to.equal(0);
+    });
+  }
+
+  it('refuses SAML in a two-step policy as removed, and under the multi-step rule', async () => {
+    const { error } = await postPolicy([
       { order: 1, allowedMethods: [{ type: 'samlSso' }] },
       { order: 2, allowedMethods: [{ type: 'otp' }] },
     ]);
 
-    expect(error).to.be.instanceOf(ValidationError);
-    expect((error as ValidationError).statusCode).to.equal(400);
-    expect((error as ValidationError).message).to.equal(SAML_MESSAGE);
-    expect(findOne.callCount).to.equal(0);
+    const { message } = error as ValidationError;
+    expect(message).to.include(signInMethodRemoved('samlSso'));
+    expect(message).to.include(SAML_IN_MULTI_STEP_POLICY);
     expect(savedDoc.save.callCount).to.equal(0);
-    expect(res.status.callCount).to.equal(0);
   });
 
-  it('still accepts a one-step policy offering SAML alongside other methods', async () => {
-    const policy = [
-      {
-        order: 1,
-        allowedMethods: [{ type: 'samlSso' }, { type: 'password' }],
-      },
-    ];
-    const { res, error } = await postPolicy(policy);
+  it('refuses Azure AD and names Microsoft instead', async () => {
+    const { error } = await postPolicy([
+      { order: 1, allowedMethods: [{ type: 'azureAd' }] },
+    ]);
 
-    expect(error).to.equal(undefined);
-    expect(savedDoc.save.callCount).to.equal(1);
-    expect(savedDoc.authSteps).to.deep.equal(policy);
-    expect(res.status.firstCall.args).to.deep.equal([200]);
+    expect(error).to.be.instanceOf(ValidationError);
+    expect((error as ValidationError).message).to.equal(
+      signInMethodRenamed('azureAd', 'microsoft'),
+    );
+    expect(savedDoc.save.callCount).to.equal(0);
   });
 
-  it('still accepts a two-step policy without SAML', async () => {
+  it('accepts a two-step policy of methods that stay', async () => {
     const policy = [
       { order: 1, allowedMethods: [{ type: 'password' }] },
       { order: 2, allowedMethods: [{ type: 'otp' }] },
@@ -221,5 +264,48 @@ describe('POST /updateAuthMethod policy validation', () => {
     expect(savedDoc.save.callCount).to.equal(1);
     expect(savedDoc.authSteps).to.deep.equal(policy);
     expect(res.status.firstCall.args).to.deep.equal([200]);
+  });
+});
+
+describe('GET /signInRemoval', () => {
+  afterEach(() => {
+    sinon.restore();
+  });
+
+  function handler() {
+    const container = new Container();
+    container
+      .bind<UserAccountController>('UserAccountController')
+      .toConstantValue({} as UserAccountController);
+    bindAuthMiddleware(container);
+    const layer = createOrgAuthConfigRouter(container).stack.find(
+      (l) => l.route?.path === '/signInRemoval' && (l.route as any).methods.get,
+    );
+    if (!layer?.route) throw new Error('signInRemoval route not registered');
+    const handlers = layer.route.stack.map((l) => l.handle);
+    return handlers[handlers.length - 1];
+  }
+
+  it("answers with this workspace's notice", async () => {
+    const notice = { removedMethods: ['samlSso'], peopleWithoutPassword: [] };
+    const find = sinon.stub(signInRemoval, 'findSignInRemovalNotice').resolves(notice);
+    const res = { status: sinon.stub().returnsThis(), json: sinon.stub().returnsThis() };
+    const next = sinon.stub();
+
+    await handler()({ user: { orgId: 'o1' } } as unknown as Request, res as unknown as Response, next);
+
+    expect(find.calledOnceWithExactly('o1')).to.be.true;
+    expect(res.status.calledWith(200)).to.be.true;
+    expect(res.json.calledWith(notice)).to.be.true;
+    expect(next.called).to.be.false;
+  });
+
+  it('passes a failed lookup to next', async () => {
+    sinon.stub(signInRemoval, 'findSignInRemovalNotice').rejects(new Error('db down'));
+    const next = sinon.stub();
+
+    await handler()({ user: { orgId: 'o1' } } as unknown as Request, {} as Response, next);
+
+    expect(next.calledOnce).to.be.true;
   });
 });

@@ -3,6 +3,7 @@
 import logging
 import os
 import sys
+from collections.abc import Callable
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -10,88 +11,13 @@ import pytest
 
 from app.utils.logger import (
     AccessLogRedactionFilter,
-    ColoredFormatter,
     HealthCheckFilter,
     HttpxSuccessFilter,
+    RedactingFormatter,
+    _install_console_handler,
+    _route_root_handlers,
     create_logger,
 )
-
-
-# ---------------------------------------------------------------------------
-# ColoredFormatter
-# ---------------------------------------------------------------------------
-class TestColoredFormatter:
-    """Tests for ColoredFormatter."""
-
-    def _make_record(self, level, msg="test message"):
-        record = logging.LogRecord(
-            name="test",
-            level=level,
-            pathname="test.py",
-            lineno=1,
-            msg=msg,
-            args=(),
-            exc_info=None,
-        )
-        return record
-
-    def test_warning_gets_yellow(self):
-        formatter = ColoredFormatter("%(message)s")
-        record = self._make_record(logging.WARNING)
-        output = formatter.format(record)
-        assert ColoredFormatter.YELLOW in output
-        assert ColoredFormatter.RESET in output
-        assert "test message" in output
-
-    def test_error_gets_red(self):
-        formatter = ColoredFormatter("%(message)s")
-        record = self._make_record(logging.ERROR)
-        output = formatter.format(record)
-        assert ColoredFormatter.RED in output
-        assert ColoredFormatter.RESET in output
-
-    def test_critical_gets_red(self):
-        formatter = ColoredFormatter("%(message)s")
-        record = self._make_record(logging.CRITICAL)
-        output = formatter.format(record)
-        assert ColoredFormatter.RED in output
-        assert ColoredFormatter.RESET in output
-
-    def test_info_no_color(self):
-        formatter = ColoredFormatter("%(message)s")
-        record = self._make_record(logging.INFO)
-        output = formatter.format(record)
-        assert ColoredFormatter.YELLOW not in output
-        assert ColoredFormatter.RED not in output
-        assert ColoredFormatter.RESET not in output
-        assert "test message" in output
-
-    def test_debug_no_color(self):
-        formatter = ColoredFormatter("%(message)s")
-        record = self._make_record(logging.DEBUG)
-        output = formatter.format(record)
-        assert ColoredFormatter.YELLOW not in output
-        assert ColoredFormatter.RED not in output
-
-    def test_format_preserves_message(self):
-        formatter = ColoredFormatter("%(levelname)s - %(message)s")
-        record = self._make_record(logging.WARNING, "detailed warning")
-        output = formatter.format(record)
-        assert "detailed warning" in output
-        assert "WARNING" in output
-
-    def test_colors_constants(self):
-        assert ColoredFormatter.YELLOW == "\033[33m"
-        assert ColoredFormatter.RED == "\033[31m"
-        assert ColoredFormatter.RESET == "\033[0m"
-
-    def test_colors_dict_mapping(self):
-        assert ColoredFormatter.COLORS[logging.WARNING] == ColoredFormatter.YELLOW
-        assert ColoredFormatter.COLORS[logging.ERROR] == ColoredFormatter.RED
-        assert ColoredFormatter.COLORS[logging.CRITICAL] == ColoredFormatter.RED
-        assert logging.INFO not in ColoredFormatter.COLORS
-        assert logging.DEBUG not in ColoredFormatter.COLORS
-
 
 
 # ---------------------------------------------------------------------------
@@ -236,97 +162,59 @@ class TestHealthCheckFilter:
 
 
 class TestCreateLogger:
-    """Tests for create_logger()."""
+    """Tests for create_logger(). Levels: tests/unit/utils/test_logging_pipeline.py."""
 
-    def test_returns_logger(self):
-        with patch.dict(os.environ, {}, clear=False):
-            logger = create_logger("test_service_basic")
+    def test_returns_logger(self) -> None:
+        logger = create_logger("test_service_basic")
         assert isinstance(logger, logging.Logger)
         assert logger.name == "test_service_basic"
-        # Clean up
         logger.handlers.clear()
 
-    def test_logger_has_handlers(self):
-        with patch.dict(os.environ, {}, clear=False):
-            logger = create_logger("test_service_handlers")
-        assert len(logger.handlers) >= 2  # file + console
-        handler_types = [type(h) for h in logger.handlers]
-        assert logging.FileHandler in handler_types
-        assert logging.StreamHandler in handler_types
+    def test_only_a_file_handler(self) -> None:
+        """Console output goes through the root handler, so the logger has none of its own."""
+        logger = create_logger("test_service_handlers")
+        assert [type(h) for h in logger.handlers] == [logging.FileHandler]
         logger.handlers.clear()
 
-    def test_logger_propagate_false(self):
-        with patch.dict(os.environ, {}, clear=False):
-            logger = create_logger("test_service_propagate")
-        assert logger.propagate is False
+    def test_logger_propagates(self) -> None:
+        logger = create_logger("test_service_propagate")
+        assert logger.propagate is True
         logger.handlers.clear()
 
-    def test_debug_log_level(self):
-        with patch.dict(os.environ, {"LOG_LEVEL": "debug"}, clear=False):
-            logger = create_logger("test_service_debug")
-        assert logger.level == logging.DEBUG
-        logger.handlers.clear()
-
-    def test_info_log_level_default(self):
-        env = os.environ.copy()
-        env.pop("LOG_LEVEL", None)
-        with patch.dict(os.environ, env, clear=True):
-            logger = create_logger("test_service_info_default")
-        assert logger.level == logging.INFO
-        logger.handlers.clear()
-
-    def test_info_log_level_explicit(self):
-        with patch.dict(os.environ, {"LOG_LEVEL": "info"}, clear=False):
-            logger = create_logger("test_service_info_explicit")
-        assert logger.level == logging.INFO
-        logger.handlers.clear()
-
-    def test_non_debug_log_level_falls_to_info(self):
-        with patch.dict(os.environ, {"LOG_LEVEL": "warning"}, clear=False):
-            logger = create_logger("test_service_warning_fallback")
-        # Only debug sets DEBUG, everything else gets INFO
-        assert logger.level == logging.INFO
-        logger.handlers.clear()
-
-    def test_no_duplicate_handlers(self):
+    def test_no_duplicate_handlers(self) -> None:
         """Calling create_logger twice for same service should not duplicate handlers."""
         name = "test_service_no_dup"
-        # Ensure clean state
         existing = logging.getLogger(name)
         existing.handlers.clear()
 
-        with patch.dict(os.environ, {}, clear=False):
-            logger1 = create_logger(name)
-            count1 = len(logger1.handlers)
-            logger2 = create_logger(name)
-            count2 = len(logger2.handlers)
+        logger1 = create_logger(name)
+        count1 = len(logger1.handlers)
+        logger2 = create_logger(name)
+        count2 = len(logger2.handlers)
 
         assert logger1 is logger2  # same logger instance
-        assert count1 == count2
+        assert count1 == count2 == 1
         logger1.handlers.clear()
 
-    def test_file_handler_uses_utf8(self):
-        with patch.dict(os.environ, {}, clear=False):
-            logger = create_logger("test_service_utf8")
+    def test_file_handler_uses_utf8(self) -> None:
+        logger = create_logger("test_service_utf8")
         file_handlers = [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
         assert len(file_handlers) >= 1
         assert file_handlers[0].encoding == "utf-8"
         logger.handlers.clear()
 
-    def test_console_handler_uses_colored_formatter(self):
-        with patch.dict(os.environ, {}, clear=False):
-            logger = create_logger("test_service_colored")
-        stream_handlers = [
-            h for h in logger.handlers
-            if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
-        ]
-        assert len(stream_handlers) >= 1
-        assert isinstance(stream_handlers[0].formatter, ColoredFormatter)
+    def test_file_handler_formats_text_with_fields(self) -> None:
+        logger = create_logger("test_service_file_format")
+        formatter = logger.handlers[0].formatter
         logger.handlers.clear()
+        record = logging.getLogRecordFactory()("x", logging.ERROR, __file__, 1, "m password=hunter2", None, None)
+        record.record_id = "r1"
+        line = formatter.format(record)
+        assert line.endswith("m password=[REDACTED] | record_id=r1")
+        assert "\033[" not in line
 
-    def test_file_handler_path(self):
-        with patch.dict(os.environ, {}, clear=False):
-            logger = create_logger("test_service_path")
+    def test_file_handler_path(self) -> None:
+        logger = create_logger("test_service_path")
         file_handlers = [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
         assert len(file_handlers) >= 1
         assert "test_service_path.log" in file_handlers[0].baseFilename
@@ -548,3 +436,207 @@ class TestAccessLogRedactionFilter:
         uvicorn_access = logging.getLogger("uvicorn.access")
         filter_types = [type(f) for f in uvicorn_access.filters]
         assert AccessLogRedactionFilter in filter_types
+
+
+# ---------------------------------------------------------------------------
+# Logging provider
+# ---------------------------------------------------------------------------
+
+
+class _FakeProvider:
+    def __init__(
+        self,
+        files: bool = True,
+        org_hash: Callable[[str], str] | None = None,
+        formatter: logging.Formatter | None = None,
+    ) -> None:
+        self.files = files
+        self.org_hash = org_hash
+        self.formatter = formatter
+        self.defaults_seen: list[logging.Formatter] = []
+
+    def console_formatter(self, default: logging.Formatter) -> logging.Formatter:
+        self.defaults_seen.append(default)
+        return self.formatter or default
+
+    def file_logging_enabled(self) -> bool:
+        return self.files
+
+    def hash_org_id(self, org_id: str) -> str | None:
+        return self.org_hash(org_id) if self.org_hash else None
+
+
+class TestCreateLoggerUsesProvider:
+    """The provider's formatter goes on the one console handler, on root."""
+
+    def _console(
+        self, monkeypatch: pytest.MonkeyPatch, name: str, provider: _FakeProvider
+    ) -> tuple[logging.Logger, logging.Handler]:
+        monkeypatch.setattr("app.utils.logger.get_provider", lambda: provider)
+        monkeypatch.setattr(logging.getLogger(), "handlers", [])
+        _install_console_handler()
+        logging.getLogger(name).handlers.clear()
+        return create_logger(name), logging.getLogger().handlers[0]
+
+    def test_console_gets_provider_formatter(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        custom = logging.Formatter("%(message)s")
+        provider = _FakeProvider(formatter=custom)
+        logger, console = self._console(monkeypatch, "t_provider_fmt", provider)
+        try:
+            # A plain provider formatter is installed behind the redacting wrapper.
+            assert console.formatter.inner is custom
+            # The provider is offered the text formatter it would otherwise get.
+            assert type(provider.defaults_seen[0]).__name__ == "TextFormatter"
+        finally:
+            for h in logger.handlers:
+                h.close()
+            logger.handlers.clear()
+
+    def test_default_provider_keeps_the_redacting_console_formatter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        provider = _FakeProvider(files=False)
+        _, console = self._console(monkeypatch, "t_provider_default_fmt", provider)
+        assert console.formatter is provider.defaults_seen[0]
+
+    def test_console_redacts_through_a_plain_provider_formatter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        provider = _FakeProvider(files=False, formatter=logging.Formatter("%(message)s"))
+        _, console = self._console(monkeypatch, "t_provider_redacts", provider)
+        record = logging.LogRecord(
+            "x", logging.INFO, __file__, 1, "login password=hunter2", None, None
+        )
+        line = console.format(record)
+        assert "hunter2" not in line
+        assert "[REDACTED]" in line
+
+    def test_no_file_handler_when_provider_says_so(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        logger, _ = self._console(monkeypatch, "t_provider_nofile", _FakeProvider(files=False))
+        assert logger.handlers == []
+
+    def test_file_handler_when_provider_keeps_files(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        logger, _ = self._console(monkeypatch, "t_provider_file", _FakeProvider(files=True))
+        try:
+            assert [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
+        finally:
+            for h in logger.handlers:
+                h.close()
+            logger.handlers.clear()
+
+
+class TestOrgOnRecord:
+    def _record(self) -> logging.LogRecord:
+        return logging.getLogRecordFactory()("t", logging.INFO, "p.py", 1, "m", (), None)
+
+    def test_provider_hash_is_stamped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.utils.request_context import (
+            reset_context,
+            set_context,
+            set_context_org,
+        )
+
+        monkeypatch.setattr(
+            "app.utils.logger.get_provider", lambda: _FakeProvider(org_hash=lambda o: f"h:{o}")
+        )
+        token = set_context("req-org")
+        try:
+            set_context_org("org-1")
+            assert self._record().organization_id_hash == "h:org-1"
+        finally:
+            reset_context(token)
+
+    def test_no_attribute_when_provider_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.utils.request_context import (
+            reset_context,
+            set_context,
+            set_context_org,
+        )
+
+        monkeypatch.setattr("app.utils.logger.get_provider", _FakeProvider)
+        token = set_context("req-org")
+        try:
+            set_context_org("org-1")
+            assert not hasattr(self._record(), "organization_id_hash")
+        finally:
+            reset_context(token)
+
+    def test_no_attribute_without_org(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.utils.request_context import reset_context, set_context
+
+        monkeypatch.setattr(
+            "app.utils.logger.get_provider", lambda: _FakeProvider(org_hash=lambda o: "h")
+        )
+        token = set_context("req-noorg")
+        try:
+            assert not hasattr(self._record(), "organization_id_hash")
+        finally:
+            reset_context(token)
+
+
+class TestRootHandlersUseProvider:
+    """Third-party libraries log through the root handlers."""
+
+    def _run(
+        self, monkeypatch: pytest.MonkeyPatch, provider: _FakeProvider, name: str
+    ) -> tuple[logging.Handler, logging.Formatter]:
+        root = logging.getLogger()
+        handler = logging.StreamHandler()
+        original = logging.Formatter("%(message)s")
+        handler.setFormatter(original)
+        monkeypatch.setattr(root, "handlers", [handler])
+        monkeypatch.setattr("app.utils.logger.get_provider", lambda: provider)
+        logging.getLogger(name).handlers.clear()
+        logger = create_logger(name)
+        logger.handlers.clear()
+        return handler, original
+
+    def test_default_provider_keeps_root_formatter(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        handler, original = self._run(monkeypatch, _FakeProvider(files=False), "t_root_default")
+        assert handler.formatter.inner is original
+
+    def test_default_provider_keeps_a_redacting_root_formatter_as_is(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        handler = logging.StreamHandler()
+        redacting = RedactingFormatter("%(message)s")
+        handler.setFormatter(redacting)
+        monkeypatch.setattr(logging.getLogger(), "handlers", [handler])
+        _route_root_handlers(_FakeProvider(files=False))
+        assert handler.formatter is redacting
+
+    def test_provider_formatter_reaches_root(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        custom = logging.Formatter("%(levelname)s")
+        handler, _ = self._run(monkeypatch, _FakeProvider(files=False, formatter=custom), "t_root_custom")
+        assert handler.formatter.inner is custom
+
+    def test_root_redacts_through_a_plain_provider_formatter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        handler, _ = self._run(
+            monkeypatch,
+            _FakeProvider(files=False, formatter=logging.Formatter("%(message)s")),
+            "t_root_redacts",
+        )
+        record = logging.LogRecord(
+            "x", logging.INFO, __file__, 1, "Authorization: Bearer abc.def.ghi", None, None
+        )
+        assert "abc.def.ghi" not in handler.format(record)
+
+    def test_handler_without_formatter_keeps_logging_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        handler = logging.StreamHandler()
+        monkeypatch.setattr(logging.getLogger(), "handlers", [handler])
+        _route_root_handlers(_FakeProvider(files=False))
+        record = logging.LogRecord("x", logging.INFO, __file__, 1, "hello", None, None)
+        assert handler.format(record) == "hello"
+
+    def test_routed_only_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        provider = _FakeProvider(files=False)
+        self._run(monkeypatch, provider, "t_root_once_a")
+        calls = len(provider.defaults_seen)
+        logging.getLogger("t_root_once_b").handlers.clear()
+        create_logger("t_root_once_b").handlers.clear()
+        # The root handlers are not routed again, and a service logger has no console handler.
+        assert len(provider.defaults_seen) == calls

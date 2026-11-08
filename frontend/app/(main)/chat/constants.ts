@@ -92,7 +92,7 @@ export const QUERY_MODES: QueryModeConfig[] = [
   },
   {
     id: 'chat',
-    label: 'Internal Search',
+    label: 'Internal search',
     toolbarLabel: 'chat.queryModes.chat.toolbarLabel',
     description: 'Search and reason across your internal knowledge base',
     icon: 'chat-star',
@@ -107,7 +107,7 @@ export const QUERY_MODES: QueryModeConfig[] = [
   },
   {
     id: 'web-search',
-    label: 'Web Search',
+    label: 'Web search',
     toolbarLabel: 'chat.queryModes.web-search.toolbarLabel',
     description: 'Live web search',
     icon: 'language',
@@ -228,12 +228,7 @@ export const CONVERSATION_MESSAGES_PAGE_SIZE = 20;
  */
 export const CHAT_CONTENT_MAX_WIDTH = '800px';
 
-export const CHAT_CONTENT_PADDING_X = {
-  mobile: 'var(--space-4)',
-  desktop: '0px',
-} as const;
-
-export function chatContentColumnStyle(isMobile: boolean): {
+export function chatContentColumnStyle(): {
   maxWidth: string;
   width: string;
   minWidth: number;
@@ -241,13 +236,15 @@ export function chatContentColumnStyle(isMobile: boolean): {
   paddingLeft: string;
   paddingRight: string;
 } {
+  // Always pad: a pane narrower than the max (tablet, split pane) still gets a gutter.
+  // The max grows by the padding so the text column stays CHAT_CONTENT_MAX_WIDTH wide.
   return {
-    maxWidth: CHAT_CONTENT_MAX_WIDTH,
+    maxWidth: `calc(${CHAT_CONTENT_MAX_WIDTH} + 2 * var(--space-4))`,
     width: '100%',
     minWidth: 0,
     boxSizing: 'border-box',
-    paddingLeft: isMobile ? CHAT_CONTENT_PADDING_X.mobile : CHAT_CONTENT_PADDING_X.desktop,
-    paddingRight: isMobile ? CHAT_CONTENT_PADDING_X.mobile : CHAT_CONTENT_PADDING_X.desktop,
+    paddingLeft: 'var(--space-4)',
+    paddingRight: 'var(--space-4)',
   };
 }
 
@@ -267,3 +264,11 @@ export const CHAT_PASTE_MAX_SIZE_BYTES = 128 * 1024;
 
 /** Filename prefix for synthetic pasted-text attachments (`<prefix><timestamp>.txt`). */
 export const CHAT_PASTE_FILENAME_PREFIX = 'pasted-text-';
+
+/**
+ * Chat column width in the desktop split pane: at most 60% of the viewport, so a
+ * width saved on a wider screen never squeezes the preview to nothing.
+ */
+export function clampSplitWidth(saved: number, viewport: number): number {
+  return Math.min(saved, viewport * 0.6);
+}

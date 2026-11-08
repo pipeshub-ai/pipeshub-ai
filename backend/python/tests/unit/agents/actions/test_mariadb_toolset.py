@@ -19,11 +19,18 @@ import pytest
 from app.agents.actions.mariadb.mariadb import MariaDB
 from app.modules.transformers.blob_storage import BlobStorage
 from app.sources.client.mariadb import mariadb as mariadb_client_module
-from app.sources.client.mariadb.mariadb import MariaDBClient
+from app.sources.client.mariadb.mariadb import READ_ONLY_TIMEOUT_S, MariaDBClient
 from app.utils.conversation_tasks import pop_tasks
+from app.utils.sql_limits import SQL_MAX_ROWS, SQL_QUERY_TIMEOUT_S
 
 if TYPE_CHECKING:
     from types import ModuleType
+
+
+@pytest.fixture(autouse=True)
+def _address_check_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The address check has its own tests (test_connector_address_rule.py); these hosts are made up.
+    monkeypatch.setattr("app.sources.client.mariadb.mariadb.vetted_addresses", AsyncMock(return_value=[]))
 
 
 def _import_real_driver() -> ModuleType:
@@ -71,7 +78,12 @@ class _FakeCursor:
         self._rows = rows
 
     async def fetchall(self) -> list[dict[str, Any]]:
+        self._pool.fetched.append(len(self._rows))
         return list(self._rows)
+
+    async def fetchmany(self, size: int) -> list[dict[str, Any]]:
+        self._pool.fetched.append(min(size, len(self._rows)))
+        return list(self._rows[:size])
 
     async def close(self) -> None:
         return None
@@ -80,10 +92,11 @@ class _FakeCursor:
 class _FakeConnection:
     def __init__(self, pool: "_FakePool") -> None:
         self._pool = pool
+        self.connection_id = 7
         self.commit = AsyncMock()
         self.rollback = AsyncMock()
 
-    def cursor(self, dictionary: bool = False) -> _FakeCursor:
+    def cursor(self, dictionary: bool = False, buffered: bool = True) -> _FakeCursor:
         return _FakeCursor(self._pool)
 
 
@@ -91,6 +104,7 @@ class _FakePool:
     def __init__(self, responder: Responder) -> None:
         self.responder = responder
         self.calls: list[tuple[str, tuple]] = []
+        self.fetched: list[int] = []  # rows the driver was asked to hand over, per fetch
         self.connections: list[_FakeConnection] = []
 
     @asynccontextmanager
@@ -122,11 +136,12 @@ class _Catalog:
             return [{"Table": "t", "Create Table": f"CREATE TABLE ... /* {query} */"}]
         if "information_schema.VIEWS" in query:
             return [{"name": v, "database": params[0], "definition": "select 1"} for v in self.views]
-        if "CONSTRAINT_TYPE = 'PRIMARY KEY'" in query:
-            return [{"column_name": c} for c in self.tables.get(params[1], {}).get("pk", [])]
-        if "CONSTRAINT_TYPE = 'FOREIGN KEY'" in query:
+        if "information_schema.STATISTICS" in query:
+            return [{"index_name": "PRIMARY", "column_name": c, "sub_part": None}
+                    for c in self.tables.get(params[1], {}).get("pk", [])]
+        if "information_schema.KEY_COLUMN_USAGE" in query:
             return list(self.tables.get(params[1], {}).get("fk", []))
-        if "CONSTRAINT_TYPE = 'UNIQUE'" in query or "CHECK_CONSTRAINTS" in query:
+        if "CHECK_CONSTRAINTS" in query:
             return []
         if "information_schema.COLUMNS" in query:
             return [{"name": c, "data_type": "int", "nullable": 0}
@@ -159,8 +174,10 @@ def make_tool() -> Callable[..., tuple[MariaDB, _FakePool]]:
               ) -> tuple[MariaDB, _FakePool]:
         pool = _FakePool(responder or _Catalog(SHOP))
         create_pool = AsyncMock(side_effect=pool_error) if pool_error else AsyncMock(return_value=pool)
+        # The client dials one connection before the pool; these hosts are made up.
         for p in (patch.object(mariadb_client_module, "mariadb", mariadb_driver),
-                  patch.object(mariadb_driver, "create_async_pool", create_pool)):
+                  patch.object(mariadb_driver, "create_async_pool", create_pool),
+                  patch.object(mariadb_client_module, "_open_and_close", MagicMock())):
             p.start()
             patches.append(p)
         client = MariaDBClient(host="db.internal", user="agent", password=PASSWORD,
@@ -295,7 +312,10 @@ class TestExecuteQuery:
         result = await tool.execute_query(query=sql)
 
         assert result[0] is True
-        assert pool.statements() == ["USE `shop`", sql]
+        assert pool.statements() == [
+            "USE `shop`", "START TRANSACTION READ ONLY",
+            f"SET STATEMENT max_statement_time={READ_ONLY_TIMEOUT_S} FOR {sql}",
+        ]
         body = _body(result)
         assert (body["row_count"], body["database"]) == (2, DATABASE)
         assert "truncated" not in body
@@ -307,6 +327,39 @@ class TestExecuteQuery:
         assert body["row_count"] == 250
         assert len(body["data"]) == 100
         assert (body["truncated"], body["displayed_row_count"]) == (True, 100)
+
+    async def test_at_most_the_cap_plus_one_rows_are_read_and_the_cut_is_reported(self, make_tool) -> None:
+        tool, pool = make_tool(_Catalog(SHOP, on_query=lambda q, p: _rows(SQL_MAX_ROWS + 500)))
+        body = _body(await tool.execute_query(query="SELECT * FROM customers"))
+
+        assert pool.fetched == [SQL_MAX_ROWS + 1]
+        assert (body["row_count"], body["rows_cut_at"]) == (SQL_MAX_ROWS, SQL_MAX_ROWS)
+        assert f"cut at {SQL_MAX_ROWS} rows" in body["message"]
+
+    async def test_a_result_of_exactly_the_cap_is_not_cut(self, make_tool) -> None:
+        tool, _ = make_tool(_Catalog(SHOP, on_query=lambda q, p: _rows(SQL_MAX_ROWS)))
+        body = _body(await tool.execute_query(query="SELECT * FROM customers"))
+        assert body["row_count"] == SQL_MAX_ROWS and "rows_cut_at" not in body
+
+    async def test_long_text_is_clipped_for_the_model_but_not_in_the_csv(self, make_tool) -> None:
+        blob = create_autospec(BlobStorage, instance=True)
+        blob.save_conversation_file_to_storage.return_value = {"signedUrl": "https://files/x.csv"}
+        state = {"conversation_id": "conv-clip", "org_id": "org-1", "blob_storage": blob}
+        long_row = [{"id": 1, "email": "x" * 500}]
+        tool, _ = make_tool(_Catalog(SHOP, on_query=lambda q, p: long_row), state=state)
+        body = _body(await tool.execute_query(query="SELECT * FROM customers"))
+        assert len(body["data"][0]["email"]) == 100
+        await pop_tasks("conv-clip")[0]
+        assert "x" * 500 in blob.save_conversation_file_to_storage.call_args.kwargs["file_bytes"].decode()
+
+    async def test_a_server_timeout_is_a_tool_error(self, make_tool) -> None:
+        def stopped(q: str, p: tuple) -> None:
+            raise mariadb_driver.OperationalError("Query execution was interrupted (max_statement_time exceeded)")
+
+        tool, _ = make_tool(_Catalog(SHOP, on_query=stopped))
+        ok, payload = await tool.execute_query(query="SELECT * FROM customers")
+        assert ok is False
+        assert f"up to {SQL_QUERY_TIMEOUT_S}s" in json.loads(payload)["error"]
 
     async def test_full_result_is_exported_as_csv(self, make_tool) -> None:
         blob = create_autospec(BlobStorage, instance=True)
@@ -384,6 +437,24 @@ class TestExecuteQuery:
         tool, _ = make_tool(_Catalog(SHOP, on_query=lambda q, p: _rows(3)), state={"org_id": "org-1"})
         await tool.execute_query(query="SELECT * FROM customers")
         assert pop_tasks("") == []
+
+    async def test_an_approved_write_runs_as_written_outside_a_read_only_transaction(self, make_tool) -> None:
+        tool, pool = make_tool(_Catalog(SHOP, on_query=lambda q, p: None))
+        ok, _ = await tool.execute_query(query="UPDATE customers SET email = NULL WHERE id = 1")
+
+        assert ok is True
+        assert pool.statements() == [
+            "USE `shop`",
+            f"SET STATEMENT max_statement_time={SQL_QUERY_TIMEOUT_S} FOR UPDATE customers SET email = NULL WHERE id = 1",
+        ]
+
+    async def test_a_read_that_calls_a_server_side_function_is_not_run_read_only(self, make_tool) -> None:
+        # It asks first (see test_tool_approvals); once approved it runs as written.
+        tool, pool = make_tool(_Catalog(SHOP, on_query=lambda q, p: []))
+        await tool.execute_query(query="SELECT SLEEP(1)")
+        assert pool.statements() == [
+            "USE `shop`", f"SET STATEMENT max_statement_time={SQL_QUERY_TIMEOUT_S} FOR SELECT SLEEP(1)",
+        ]
 
     async def test_statement_without_rows_reports_affected_rows(self, make_tool) -> None:
         tool, pool = make_tool(_Catalog(SHOP, on_query=lambda q, p: None))
@@ -467,3 +538,17 @@ class TestConnectionFailures:
         assert caplog.records
         assert PASSWORD not in caplog.text
         assert all(PASSWORD not in payload for _, payload in outputs)
+
+
+class TestReadOnlyGuardFailsClosed:
+    async def test_a_server_that_rejects_the_guard_never_runs_the_bare_query(self, make_tool) -> None:
+        def reject(q: str, p: tuple) -> list:
+            if q.startswith("SET STATEMENT"):
+                raise mariadb_driver.ProgrammingError("You have an error in your SQL syntax near 'STATEMENT'")
+            return []
+
+        tool, pool = make_tool(_Catalog(SHOP, on_query=reject))
+        ok, _ = await tool.execute_query(query="SELECT id FROM customers")
+
+        assert ok is False
+        assert "SELECT id FROM customers" not in pool.statements()

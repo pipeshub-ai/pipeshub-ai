@@ -1,15 +1,18 @@
-"""PRE_MODEL shaper: loop-level turn-boundary compaction.
+"""PRE_MODEL shaper: loop-level compaction of older messages.
 
-Fires every ``compact_every_n_turns`` turns and deterministically
-compresses older messages into a **single merged summary** message,
+Once the context passes its trigger, deterministically compresses each run
+of unprotected messages before the recent tail into one summary message,
 preserving artifact references and key decisions.
 
 Key design choices for long conversations:
 
-* **Summary merging** — previous compaction summaries (recognised by the
-  ``_COMPACTION_MARKER`` prefix) are absorbed into the new summary
-  rather than being recursively summarised.  This prevents the lossy
-  cascade where a summary-of-a-summary-of-a-summary loses all signal.
+* **Stable summaries** — a run summarised on an earlier call of the run is
+  sent as the same summary on every later call
+  (``context/compaction_memo.py``); messages that age out after it get a
+  summary of their own only while the context is over the trigger, and only
+  once there are enough of them to be worth one batch
+  (``context/watermark.py``). The sent prefix therefore stays the same from
+  call to call, and a summary is never re-summarised.
 
 * **Tiered extraction** — tool results with ``artifact_meta`` keep
   their artifact ID (always recoverable); tool results without it
@@ -27,12 +30,25 @@ from __future__ import annotations
 import logging
 import re
 
+from app.agent_loop_lib.context.compaction_memo import (
+    RunPlan,
+    assemble,
+    compacted_before,
+    held_elsewhere,
+    plan_runs,
+)
+from app.agent_loop_lib.context.protection import compactable_runs, protected_indices
+from app.agent_loop_lib.context.watermark import Watermarks, watermarks
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
     ToolMessage,
     UserMessage,
 )
-from app.agent_loop_lib.core.tokens import count_tokens, extract_text
+from app.agent_loop_lib.core.tokens import (
+    count_message_tokens,
+    count_tokens,
+    extract_text,
+)
 from app.agent_loop_lib.core.types import Message, MessageRole
 from app.agent_loop_lib.hooks.middleware.builtin._message_boundaries import (
     safe_tail_boundary,
@@ -41,45 +57,8 @@ from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 
 logger = logging.getLogger(__name__)
 
+LAYER = "loop_compaction"
 _COMPACTION_MARKER = "[Loop compaction:"
-
-
-def _is_compaction_summary(msg: Message) -> bool:
-    """True when *msg* was produced by a previous loop compaction pass."""
-    if not isinstance(msg, UserMessage) or not getattr(msg, "injected", False):
-        return False
-    text = msg.content if isinstance(msg.content, str) else extract_text(msg)
-    return text.startswith(_COMPACTION_MARKER)
-
-
-_OMITTED_MARKER = "[...and "
-
-
-def _extract_prior_summary_lines(msg: UserMessage) -> list[str]:
-    """Pull the body lines out of a previous compaction summary.
-
-    Returns the individual ``[user] …`` / ``[assistant] …`` lines so
-    they can be merged directly into the new summary instead of being
-    recursively compressed (which would truncate them to 150 chars and
-    lose signal on every pass).
-
-    Structural lines (compaction header, artifact index, omission
-    counts) are filtered out — the new summary produces its own.
-    """
-    text = msg.content if isinstance(msg.content, str) else extract_text(msg)
-    lines = text.split("\n")
-    body: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith(_COMPACTION_MARKER):
-            continue
-        if stripped.startswith("[artifacts:"):
-            continue
-        if stripped.startswith(_OMITTED_MARKER):
-            continue
-        if stripped:
-            body.append(stripped)
-    return body
 
 
 def _extract_artifact_ids(msg: Message) -> list[str]:
@@ -119,100 +98,132 @@ def _extract_turn_summary(msg: Message) -> str | None:
 _MAX_SUMMARY_LINES = 50
 
 
+def _summary_message(
+    run: list[Message], turn_index: int, max_summary_lines: int,
+) -> UserMessage | None:
+    """One injected summary for a run of messages, or None when nothing in
+    the run is worth a line."""
+    artifact_ids: list[str] = []
+    summaries: list[str] = []
+    for msg in run:
+        artifact_ids.extend(_extract_artifact_ids(msg))
+        line = _extract_turn_summary(msg)
+        if line:
+            summaries.append(line)
+    if not summaries:
+        return None
+
+    if len(summaries) > max_summary_lines:
+        omitted = len(summaries) - max_summary_lines
+        summaries = [
+            f"[...and {omitted} earlier turns omitted]",
+            *summaries[-max_summary_lines:],
+        ]
+
+    unique_artifacts = list(dict.fromkeys(artifact_ids))
+    parts: list[str] = [
+        f"{_COMPACTION_MARKER} {len(run)} messages compressed at turn {turn_index}]",
+    ]
+    if unique_artifacts:
+        parts.append(f"[artifacts: {', '.join(unique_artifacts)}]")
+    parts.append("\n".join(summaries))
+    return UserMessage(content="\n".join(parts), injected=True, compacted_by=LAYER)
+
+
+def _batch(
+    messages: list[Message],
+    plans: list[RunPlan],
+    turn_index: int,
+    max_summary_lines: int,
+    marks: Watermarks,
+    total: int,
+) -> dict[int, UserMessage]:
+    """The summary of each run's unsummarised rest, keyed by where the rest
+    starts; empty when summarising every rest would not be worth a batch."""
+    batch: dict[int, UserMessage] = {}
+    saving = 0
+    for plan in plans:
+        rest = list(messages[plan.rest.start:plan.rest.stop])
+        summary = _summary_message(rest, turn_index, max_summary_lines) if rest else None
+        if summary is not None:
+            batch[plan.rest.start] = summary
+            saving += count_tokens(rest) - count_message_tokens(summary)
+    return batch if marks.worth_compacting(total, saving) else {}
+
+
 def shape_loop_compaction(
-    compact_every_n_turns: int = 5,
     keep_recent: int = 6,
-    pin_first_n: int = 1,
     trigger_ratio: float = 0.6,
     max_summary_lines: int = _MAX_SUMMARY_LINES,
+    protected_tools: frozenset[str] = frozenset(),
 ):
-    """PRE_MODEL middleware that compresses older turns at regular
-    boundaries.
+    """PRE_MODEL middleware that compresses older messages once the context
+    passes the trigger.
+
+    Every run of unprotected messages before the recent tail becomes one
+    summary in place; protected messages (the current request, pinned
+    messages, protected tool groups, see ``context/protection.py``) stay
+    verbatim between them. Runs summarised on an earlier call of the run are
+    sent as the same summary again; the rest is summarised only while the
+    context is over the trigger, in batches (``context/watermark.py``).
 
     Parameters
     ----------
-    compact_every_n_turns:
-        Only fires when ``turn_index`` is a multiple of this value.
     keep_recent:
         Number of most-recent messages to keep verbatim.
-    pin_first_n:
-        Number of leading messages (system/goal) to never compact.
     trigger_ratio:
         Only fires when context exceeds ``budget.trigger_tokens(trigger_ratio)``.
     max_summary_lines:
-        Maximum number of summary lines to keep.  When merging prior
-        summaries, only the most recent lines are retained; older ones
-        are replaced with a count.
+        Maximum number of lines in one summary; older lines are replaced
+        with a count.
+    protected_tools:
+        Tool groups that called one of these are kept verbatim.
     """
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
-        if ctx.turn_index == 0 or ctx.turn_index % compact_every_n_turns != 0:
-            await next_fn()
-            return
-
         total = count_tokens(ctx.messages)
-        if total <= ctx.budget.trigger_tokens(trigger_ratio):
+        trigger = ctx.budget.trigger_tokens(trigger_ratio)
+        if total <= trigger and not compacted_before(ctx.compaction_memo, LAYER):
             await next_fn()
             return
 
         messages = ctx.messages
-        if len(messages) <= pin_first_n + keep_recent:
-            await next_fn()
-            return
-
-        head = messages[:pin_first_n]
         raw_tail_start = len(messages) - keep_recent if keep_recent > 0 else len(messages)
-        tail_start = safe_tail_boundary(messages, raw_tail_start, pin_first_n)
-        tail = messages[tail_start:]
-        middle = messages[pin_first_n:tail_start]
-        if not middle:
+        tail_start = safe_tail_boundary(messages, raw_tail_start, 0)
+        memo = ctx.compaction_memo
+        held = protected_indices(messages, protected_tools=protected_tools) | held_elsewhere(memo, LAYER, messages)
+        runs = compactable_runs(held, 0, tail_start)
+        plans = plan_runs(memo, LAYER, messages, runs)
+        reused = sum(len(plan.hits) for plan in plans)
+        shaped = assemble(messages, plans)
+
+        marks = watermarks(ctx.budget, trigger)
+        new_summaries: dict[int, list[Message]] = {}
+        compressed = 0
+        replayed_total = count_tokens(shaped)
+        if replayed_total > trigger:
+            batch = _batch(messages, plans, ctx.turn_index, max_summary_lines, marks, replayed_total)
+            for plan in plans:
+                summary = batch.get(plan.rest.start)
+                if summary is None:
+                    continue
+                new_summaries[plan.rest.start] = [summary]
+                compressed += len(plan.rest)
+                if memo is not None:
+                    memo.remember(LAYER, messages[plan.rest.start:plan.rest.stop], [summary])
+            shaped = assemble(messages, plans, new_summaries)
+
+        if memo is not None:
+            memo.log_stats(LAYER, ctx.run_id, ctx.turn_index)
+        if not new_summaries and not reused:
             await next_fn()
             return
-
-        all_artifact_ids: list[str] = []
-        summaries: list[str] = []
-
-        for msg in middle:
-            all_artifact_ids.extend(_extract_artifact_ids(msg))
-
-            if _is_compaction_summary(msg):
-                summaries.extend(_extract_prior_summary_lines(msg))
-                continue
-
-            line = _extract_turn_summary(msg)
-            if line:
-                summaries.append(line)
-
-        if not summaries:
-            await next_fn()
-            return
-
-        if len(summaries) > max_summary_lines:
-            omitted = len(summaries) - max_summary_lines
-            summaries = [
-                f"[...and {omitted} earlier turns omitted]",
-                *summaries[-max_summary_lines:],
-            ]
-
-        unique_artifacts = list(dict.fromkeys(all_artifact_ids))
-        parts: list[str] = [
-            f"{_COMPACTION_MARKER} {len(middle)} messages compressed "
-            f"at turn {ctx.turn_index}]",
-        ]
-        if unique_artifacts:
-            parts.append(f"[artifacts: {', '.join(unique_artifacts)}]")
-        parts.append("\n".join(summaries))
-
-        summary_msg = UserMessage(
-            content="\n".join(parts),
-            injected=True,
-        )
-        ctx.messages = [*head, summary_msg, *tail]
+        ctx.messages = shaped
         logger.info(
-            "loop_compaction: compressed %d messages into one summary "
-            "(%d lines, %d artifacts), %d→%d tokens (turn=%d, budget=%d)",
-            len(middle), len(summaries), len(unique_artifacts), total, count_tokens(ctx.messages),
-            ctx.turn_index, ctx.budget.effective_max_tokens,
+            "loop_compaction: compressed %d messages into %d new summaries (%d reused from earlier calls), "
+            "%d→%d tokens (low_water=%d, run=%s, turn=%d, budget=%d)",
+            compressed, len(new_summaries), reused, total, count_tokens(shaped),
+            marks.low_water, ctx.run_id, ctx.turn_index, ctx.budget.effective_max_tokens,
         )
         await next_fn()
 

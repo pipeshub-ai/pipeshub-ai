@@ -11,6 +11,10 @@ from typing import Awaitable, Callable, Literal, Optional
 
 ScaleReads = Literal["master", "slave", "all"]
 
+# redis-py 6+ defaults to RESP3, which turns FT.* / XREAD replies into maps.
+# The vector store, streams and Lua helpers parse the RESP2 array shapes.
+RESP_PROTOCOL = 2
+
 # The spellings operators actually write. Matching only "true" meant
 # `REDIS_TLS_ENABLED=1` produced a *plaintext* connection still carrying the
 # Redis password, and -- worse, because it defaults on --

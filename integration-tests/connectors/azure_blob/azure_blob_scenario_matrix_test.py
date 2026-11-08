@@ -63,4 +63,5 @@ async def scenario_adapter(
 @pytest.mark.azure_blob
 class TestAzureBlobScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "Azure Blob"
+    TREE_MOVES = True
     UNSUPPORTED = {Action.CHANGE_PERMISSION.value: APP_LEVEL_PERMISSIONS}

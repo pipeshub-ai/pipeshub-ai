@@ -1,4 +1,5 @@
 import { useAuthStore } from '@/lib/store/auth-store';
+import { onSessionEnd } from '@/lib/api/session-cache';
 import { useKnowledgeBaseStore } from '../store';
 import { forgetPendingNodeChildrenRequests } from '../api';
 import { resetRootListLoads } from './root-app-list';
@@ -24,17 +25,17 @@ export function resetKnowledgeBaseSession(): void {
 let watching = false;
 
 /**
- * Resets on sign-out and when a different user signs in. The app has no
- * in-place org switcher: changing org means signing in again, which this
- * covers.
+ * Resets at every session end (sign-out, or a switch to another org while the
+ * app stays open: the loaders' requests of the ended session never settle, so
+ * nothing may keep waiting on them) and when a different user signs in.
  */
 export function watchKnowledgeBaseSession(): void {
   if (watching) return;
   watching = true;
+  onSessionEnd(resetKnowledgeBaseSession);
   useAuthStore.subscribe((state, previous) => {
-    const signedOut = previous.isAuthenticated && !state.isAuthenticated;
     const userChanged = !!previous.user && !!state.user && previous.user.id !== state.user.id;
-    if (signedOut || userChanged) resetKnowledgeBaseSession();
+    if (userChanged) resetKnowledgeBaseSession();
   });
 }
 

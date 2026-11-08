@@ -1529,9 +1529,11 @@
         "is_executable": false,
         "kind": null,
         "language": null,
+        "pending_edges": null,
         "qualified_name": null,
         "signature": null,
-        "start_line": null
+        "start_line": null,
+        "type_table": null
       },
       "comments": [],
       "data": "POST /api/v2/auth/login HTTP/1.1\nHost: example.com\nContent-Type: application/json\n\n{\n  \"username\": \"john.doe@example.com\",\n  \"password\": \"********\"\n}",

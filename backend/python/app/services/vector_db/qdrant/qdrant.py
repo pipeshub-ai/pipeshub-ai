@@ -16,14 +16,17 @@ from qdrant_client.http.models import (  # type: ignore
     BinaryQuantization,
     BinaryQuantizationConfig,
     Distance,
+    FieldCondition as QdrantFieldCondition,
     Filter,
     FilterSelector,
     HasIdCondition,
     HnswConfigDiff,
     KeywordIndexParams,
     KeywordIndexType,
+    MatchValue,
     Modifier,
     OptimizersConfigDiff,
+    PayloadSchemaType,
     ProductQuantization,
     ProductQuantizationConfig,
     CompressionRatio,
@@ -38,6 +41,13 @@ from qdrant_client.http.models import (  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.services.vector_db.errors import OrgRequired
+from app.services.vector_db.filters import (
+    forbid_org_in_payload,
+    is_missing,
+    keep_org_in_overwrite,
+    require_filter_org,
+)
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import (
     CollectionConfig,
@@ -64,7 +74,7 @@ from app.services.vector_db.models import (
 from app.services.vector_db.qdrant.config import QdrantConfig
 from app.services.vector_db.qdrant.errors import classify_qdrant_search_error
 from app.services.vector_db.qdrant.memory_sizing import assess_memory, parse_memory_size
-from app.services.vector_db.qdrant.utils import QdrantUtils
+from app.services.vector_db.qdrant.utils import MAX_HNSW_EF_CONSTRUCT, QdrantUtils, env_number
 from app.utils.logger import create_logger
 from app.services.resource_governor.feedback import get_default_downstream_feedback
 
@@ -74,6 +84,9 @@ logger = create_logger("qdrant_service")
 # the deployment states it here; compose and Helm set it from the same value
 # they give Qdrant's memory limit.
 QDRANT_MEMORY_LIMIT_ENV = "QDRANT_MEMORY_LIMIT"
+# Applies to collections created after it is set; an existing graph keeps the value it was built with.
+QDRANT_HNSW_EF_CONSTRUCT_ENV = "QDRANT_HNSW_EF_CONSTRUCT"
+DEFAULT_HNSW_EF_CONSTRUCT = 256
 _MEMORY_REPORT_CONCURRENCY = 8
 
 
@@ -368,6 +381,7 @@ class QdrantService(IVectorDBService):
             client_kwargs: dict = dict(
                 host=cfg.host,
                 port=cfg.port,
+                grpc_port=cfg.grpc_port,
                 # api_key may be empty string — only pass it when truthy
                 api_key=cfg.api_key or None,
                 prefer_grpc=cfg.prefer_grpc,
@@ -561,7 +575,10 @@ class QdrantService(IVectorDBService):
         )
         optimizers_config = OptimizersConfigDiff(default_segment_number=8)
 
-        hnsw_kwargs: dict = {"on_disk": config.on_disk_hnsw}
+        hnsw_kwargs: dict = {
+            "on_disk": config.on_disk_hnsw,
+            "ef_construct": int(env_number(QDRANT_HNSW_EF_CONSTRUCT_ENV, DEFAULT_HNSW_EF_CONSTRUCT, 4, MAX_HNSW_EF_CONSTRUCT, int)),
+        }
         if config.hnsw is not None:
             if config.hnsw.m is not None:
                 hnsw_kwargs["m"] = config.hnsw.m
@@ -719,6 +736,8 @@ class QdrantService(IVectorDBService):
         self._assert_connected()
         if field_schema.get("type") == "keyword":
             schema = KeywordIndexParams(type=KeywordIndexType.KEYWORD)
+        elif field_schema.get("type") == "integer":
+            schema = PayloadSchemaType.INTEGER
         else:
             schema = field_schema  # type: ignore
         try:
@@ -817,11 +836,11 @@ class QdrantService(IVectorDBService):
             requests=qdrant_requests,
         )
         results: List[List[SearchResult]] = []
-        for batch_result in raw_results:
+        for req, batch_result in zip(requests, raw_results):
             results.append(
                 [
                     QdrantUtils.qdrant_result_to_search_result(p)
-                    for p in batch_result.points
+                    for p in QdrantUtils.stable_top(batch_result.points, req.limit)
                 ]
             )
         return results
@@ -879,6 +898,7 @@ class QdrantService(IVectorDBService):
                 "most of the collection. Pair it with a value match "
                 "(e.g. connectorIds)."
             )
+        require_filter_org(filter)
         self._assert_connected()
         qdrant_filter = QdrantUtils.filter_expression_to_qdrant(filter)
         # wait=True: callers sequence work after a delete (the connector cleanup
@@ -905,6 +925,8 @@ class QdrantService(IVectorDBService):
                 "every point in the collection. Populate at least one filter "
                 "condition (e.g. virtualRecordId)."
             )
+        require_filter_org(points)
+        keep_org_in_overwrite(payload, points)
         self._assert_connected()
         qdrant_filter = QdrantUtils.filter_expression_to_qdrant(points)
         await self.client.overwrite_payload(  # type: ignore
@@ -925,6 +947,8 @@ class QdrantService(IVectorDBService):
                 "set_payload called with an empty filter — this would update the entire "
                 "collection. Populate at least one filter condition (e.g. virtualRecordId)."
             )
+        require_filter_org(filter)
+        forbid_org_in_payload(payload)
         self._assert_connected()
         qdrant_filter = QdrantUtils.filter_expression_to_qdrant(filter)
         # wait=True for the same reason as delete_points: the connector cleanup
@@ -941,8 +965,13 @@ class QdrantService(IVectorDBService):
         collection_name: str,
         point_ids: List[str],
         payload: dict,
+        *,
+        org_id: str,
     ) -> None:
         self._assert_connected()
+        if is_missing(org_id):
+            raise OrgRequired("update_payload_by_ids needs the org of the points")
+        forbid_org_in_payload(payload)
         if not point_ids:
             return
         # A plain id list fails the whole call with a 404 if any id is missing;
@@ -950,7 +979,10 @@ class QdrantService(IVectorDBService):
         await self.client.set_payload(  # type: ignore
             collection_name=collection_name,
             payload=payload,
-            points=FilterSelector(filter=Filter(must=[HasIdCondition(has_id=list(point_ids))])),
+            points=FilterSelector(filter=Filter(must=[
+                HasIdCondition(has_id=list(point_ids)),
+                QdrantFieldCondition(key="metadata.orgId", match=MatchValue(value=org_id)),
+            ])),
             wait=True,
         )
 

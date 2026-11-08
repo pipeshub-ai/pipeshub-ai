@@ -19,6 +19,7 @@ import {
   mergeWebSearchProviderPlaceholders,
   maskSlackBotConfig,
   mergeSlackBotConfigPlaceholders,
+  redactCredentialTemplates,
 } from '../../../../src/modules/configuration_manager/utils/maskConfigSecrets'
 
 const strip = (entry: unknown) => stripAiModelSecrets(entry as any) as any
@@ -45,7 +46,9 @@ describe('maskConfigSecrets', () => {
         dimensions: '',
         defaultReasoningEffort: 'low',
       })
-      expect(Object.keys(result)).to.have.members([...AI_PUBLIC_CONFIG_KEYS])
+      expect(Object.keys(result)).to.have.members(
+        AI_PUBLIC_CONFIG_KEYS.filter((key) => key in entry.configuration),
+      )
       expect(strip(entry).provider).to.equal('azureOpenAI')
       expect(strip(entry).modelKey).to.equal('mk-1')
       expect(strip(entry).isDefault).to.equal(true)
@@ -85,6 +88,23 @@ describe('maskConfigSecrets', () => {
       const entry = { provider: 'openai', configuration: { model: 'gpt-4', apiKey: 'secret' } }
       strip(entry)
       expect(entry.configuration.apiKey).to.equal('secret')
+    })
+  })
+
+  describe('redactCredentialTemplates', () => {
+    it('redacts credential headers and keeps identity headers readable', () => {
+      const out = redactCredentialTemplates({
+        Authorization: 'Bearer abc',
+        'Ocp-Apim-Subscription-Key': 'k',
+        'x-functions-key': 'k',
+        'x-pipeshub-counter-key': '{{SUBJECT}}',
+        'x-litellm-customer-id': '{{SUBJECT}}',
+      }) as Record<string, string>
+      expect(out['Authorization']).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(out['Ocp-Apim-Subscription-Key']).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(out['x-functions-key']).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(out['x-pipeshub-counter-key']).to.equal('{{SUBJECT}}')
+      expect(out['x-litellm-customer-id']).to.equal('{{SUBJECT}}')
     })
   })
 

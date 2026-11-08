@@ -89,8 +89,10 @@ def route_sharepoint_http(monkeypatch: pytest.MonkeyPatch, stub: MicrosoftCloudS
         return real_async_client(*args, **kwargs)
 
     monkeypatch.setattr(f"{MODULE}.httpx", SimpleNamespace(**{**vars(httpx), "AsyncClient": _async_client}))
+    # The connector no longer imports aiohttp; kept for a module that still does.
     monkeypatch.setattr(
-        f"{MODULE}.aiohttp", SimpleNamespace(**{**vars(aiohttp), "ClientSession": lambda *a, **k: _AiohttpSession(stub)})
+        f"{MODULE}.aiohttp", SimpleNamespace(**{**vars(aiohttp), "ClientSession": lambda *a, **k: _AiohttpSession(stub)}),
+        raising=False,
     )
 
 

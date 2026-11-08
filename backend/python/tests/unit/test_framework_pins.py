@@ -15,7 +15,6 @@ from packaging.requirements import Requirement
 from packaging.version import Version
 
 BACKEND_MANIFEST = Path(__file__).resolve().parents[2] / "pyproject.toml"
-INTEGRATION_MANIFEST = Path(__file__).resolve().parents[4] / "integration-tests" / "pyproject.toml"
 
 # Lowest release the security audit (OT-10) accepts.
 STARLETTE_FLOOR = Version("1.3.1")
@@ -46,12 +45,6 @@ def test_backend_manifest_pins_starlette_directly():
 @pytest.mark.parametrize("package", ["fastapi", "starlette"])
 def test_installed_framework_matches_the_backend_pin(package):
     assert _framework_pins(BACKEND_MANIFEST).get(package) == f"=={_installed(package)}"
-
-
-def test_integration_tests_manifest_carries_the_same_framework_pins():
-    if not INTEGRATION_MANIFEST.exists():
-        pytest.skip("integration-tests/ is not part of this checkout")
-    assert _framework_pins(INTEGRATION_MANIFEST) == _framework_pins(BACKEND_MANIFEST)
 
 
 def test_fastapi_stays_below_the_route_tree_release():

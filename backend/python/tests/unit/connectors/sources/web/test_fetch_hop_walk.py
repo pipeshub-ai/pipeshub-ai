@@ -175,3 +175,64 @@ def test_an_answer_from_another_address_than_the_checked_one_is_dropped() -> Non
 
     with pytest.raises(FetchError):
         _curl_hop(client, contextlib.nullcontext(), "https://site.example/", {}, 5, None, pin)
+
+
+# The fetcher answers a redirect loop itself with a made-up 508. It used to reach
+# the status checks below as a site's 5xx and be logged as "Server error 508 for
+# https://admin.google.com/", which reads as the site being down.
+async def test_a_redirect_loop_is_logged_as_a_skip_not_a_server_error(
+    offline: MagicMock, caplog: pytest.LogCaptureFixture,
+) -> None:
+    _FakeCurl.answers = {
+        "https://site.example/a": (302, {"Location": "/b"}, b""),
+        "https://site.example/b": (302, {"Location": "/a"}, b""),
+    }
+
+    with caplog.at_level(logging.DEBUG, logger=log.name):
+        result = await _fetch(offline, "https://site.example/a")
+
+    assert result is not None
+    assert result.headers.get("X-Fetch-Skip-Reason") == "too_many_redirects"
+    assert [r.levelname for r in caplog.records if r.levelno >= logging.ERROR] == []
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("Skipping https://site.example/a: it redirects in a loop" in m for m in warnings), warnings
+    assert not any("Server error" in m for m in warnings)
+
+
+async def test_a_sites_own_5xx_is_still_a_server_error(
+    offline: MagicMock, caplog: pytest.LogCaptureFixture,
+) -> None:
+    _FakeCurl.answers = {"https://site.example/down": (508, {}, b"loop detected")}
+
+    with caplog.at_level(logging.DEBUG, logger=log.name):
+        result = await _fetch(offline, "https://site.example/down")
+
+    assert result is not None and result.status_code == 508
+    assert any("Server error 508" in r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR)
+
+
+async def test_a_skip_header_sent_by_the_site_is_not_trusted(
+    offline: MagicMock, caplog: pytest.LogCaptureFixture,
+) -> None:
+    _FakeCurl.answers = {"https://site.example/x": (500, {"X-Fetch-Skip-Reason": "too_many_redirects"}, b"")}
+
+    with caplog.at_level(logging.DEBUG, logger=log.name):
+        await _fetch(offline, "https://site.example/x")
+
+    assert any("Server error 500" in r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR)
+    assert not any("Skipping" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_redirect_to_a_private_address_names_the_refused_target(
+    offline: MagicMock, caplog: pytest.LogCaptureFixture,
+) -> None:
+    _FakeCurl.answers = {"https://site.example/start": (302, {"Location": "http://10.0.0.5/admin"}, b"")}
+
+    with caplog.at_level(logging.DEBUG, logger=log.name):
+        await _fetch(offline, "https://site.example/start")
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(
+        "Skipping http://10.0.0.5/admin (reached from https://site.example/start): it is on a private" in m
+        for m in warnings
+    ), warnings

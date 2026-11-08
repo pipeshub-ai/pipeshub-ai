@@ -15,6 +15,8 @@ export interface IAuthorizationCode extends Document {
   expiresAt: Date
   isUsed: boolean
   usedAt?: Date
+  /** Set when a used code was presented again; the redeemer that won takes its own tokens back. */
+  replayedAt?: Date;
   createdAt: Date
 }
 
@@ -56,6 +58,7 @@ const AuthorizationCodeSchema = new Schema<IAuthorizationCode>(
     },
     isUsed: { type: Boolean, default: false },
     usedAt: { type: Date },
+    replayedAt: { type: Date },
   },
   { timestamps: true },
 )

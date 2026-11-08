@@ -1325,6 +1325,33 @@ class TestFetchThreadReplies:
         assert len(reps) == 1 and reps[0]["ts"] == "1.1"
         assert complete is True
 
+    @pytest.mark.asyncio
+    async def test_fetch_thread_replies_raw_later_page_gone_is_incomplete(self) -> None:
+        c = _make_connector()
+        ctx = _ctx(c)
+        pages = iter([
+            MagicMock(success=True, data={"messages": [{"ts": "1.0"}, {"ts": "1.1"}],
+                                          "response_metadata": {"next_cursor": "z"}}),
+            MagicMock(success=False, error="not_in_channel"),
+        ])
+        ds = MagicMock()
+        ds.conversations_replies = AsyncMock(side_effect=lambda **kw: next(pages))
+        with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)):
+            got, complete = await c._fetch_thread_replies_raw("C1", "1.0", ctx)
+        assert [m["ts"] for m in got] == ["1.1"]
+        assert complete is False
+
+    @pytest.mark.asyncio
+    async def test_fetch_thread_replies_raw_first_page_gone_is_complete(self) -> None:
+        c = _make_connector()
+        ctx = _ctx(c)
+        ds = MagicMock()
+        ds.conversations_replies = AsyncMock(return_value=MagicMock(success=False, error="thread_not_found"))
+        with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)):
+            got, complete = await c._fetch_thread_replies_raw("C1", "1.0", ctx)
+        assert got == []
+        assert complete is True
+
 
 class TestProcessThread:
     @pytest.mark.asyncio
@@ -2299,6 +2326,7 @@ class TestFilterOptions:
                     "channels": [
                         {"id": "C1", "name": "general", "is_member": True},
                         {"id": "C2", "name": "general-public", "is_member": False},
+                        {"id": "C3", "name": "general-private", "is_private": True, "is_member": False},
                         {"id": None},
                     ],
                     "response_metadata": {"next_cursor": ""},
@@ -2311,7 +2339,7 @@ class TestFilterOptions:
         ):
             r = await c.get_filter_options("channel_ids", search="gen")
         assert r.success
-        assert [option.id for option in r.options] == ["C1"]
+        assert [option.id for option in r.options] == ["C1", "C2"]
 
         ds.conversations_list = AsyncMock(return_value=MagicMock(success=False, error="bad"))
         with (

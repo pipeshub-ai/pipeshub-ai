@@ -56,8 +56,9 @@ describe('AuthorizationCodeService', () => {
       )
       expect((createStub.firstCall.args[0] as any).knowledgeLimit).to.deep.equal(knowledgeLimit)
 
+      sinon.stub(AuthorizationCode, 'updateOne').resolves({ modifiedCount: 1 } as any)
       sinon.stub(AuthorizationCode, 'findOne').resolves({
-        _id: new Types.ObjectId(), userId: new Types.ObjectId(), orgId: new Types.ObjectId(),
+        _id: new Types.ObjectId(), code: 'c', clientId: 'client-1', userId: new Types.ObjectId(), orgId: new Types.ObjectId(),
         redirectUri: 'https://example.com/cb', scopes: ['org:read'], knowledgeLimit,
         expiresAt: new Date(Date.now() + 600000), isUsed: false, save: sinon.stub().resolves(),
       } as any)
@@ -85,6 +86,12 @@ describe('AuthorizationCodeService', () => {
   })
 
   describe('exchangeCode', () => {
+    // Redemption is one conditional write; the result says whether this call won.
+    let consume: sinon.SinonStub
+    beforeEach(() => {
+      consume = sinon.stub(AuthorizationCode, 'updateOne').resolves({ modifiedCount: 1 } as any)
+    })
+
     it('should exchange valid code without PKCE for a confidential client', async () => {
       const userId = new Types.ObjectId()
       const orgId = new Types.ObjectId()
@@ -114,7 +121,7 @@ describe('AuthorizationCodeService', () => {
       expect(result.userId).to.equal(userId.toString())
       expect(result.orgId).to.equal(orgId.toString())
       expect(result.scopes).to.deep.equal(['org:read'])
-      expect(mockCode.isUsed).to.be.true
+      expect(consume.calledOnce).to.be.true
     })
 
     it('should throw InvalidGrantError when code not found', async () => {
@@ -147,6 +154,75 @@ describe('AuthorizationCodeService', () => {
         expect(error).to.be.instanceOf(InvalidGrantError)
         expect((error as InvalidGrantError).message).to.include('already been used')
       }
+    })
+
+    describe('losing the write for the code', () => {
+      const unused = () => ({
+        _id: new Types.ObjectId(),
+        code: 'raced-code',
+        clientId: 'client-1',
+        userId: new Types.ObjectId(),
+        orgId: new Types.ObjectId(),
+        redirectUri: 'https://example.com/cb',
+        scopes: ['org:read'],
+        expiresAt: new Date(Date.now() + 600000),
+        isUsed: false,
+      })
+
+      it('is a replay when the code was used meanwhile: flags it and revokes what it issued', async () => {
+        const mockCode = unused()
+        sinon.stub(AuthorizationCode, 'findOne')
+          .onFirstCall().resolves(mockCode as any)
+          .onSecondCall().resolves({ ...mockCode, isUsed: true } as any)
+        consume.resolves({ modifiedCount: 0 } as any)
+        const access = sinon.stub(OAuthAccessToken, 'updateMany').resolves({} as any)
+        sinon.stub(OAuthRefreshToken, 'updateMany').resolves({} as any)
+
+        try {
+          await service.exchangeCode('raced-code', 'client-1', 'https://example.com/cb', undefined, true)
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidGrantError)
+          expect((error as InvalidGrantError).message).to.include('already been used')
+        }
+        expect(access.calledOnce).to.be.true
+        expect(access.firstCall.args[1]).to.include({ revokedReason: 'code_reuse_detected' })
+        const flag = consume.getCalls().find((c) => (c.args[1] as any).$set?.replayedAt)
+        expect(flag, 'replayedAt written').to.exist
+      })
+
+      it('is not a replay when the code expired or was swept between validation and redemption: nothing is revoked', async () => {
+        for (const reread of [{ ...unused(), isUsed: false }, null]) {
+          sinon.restore()
+          consume = sinon.stub(AuthorizationCode, 'updateOne').resolves({ modifiedCount: 0 } as any)
+          sinon.stub(AuthorizationCode, 'findOne')
+            .onFirstCall().resolves(unused() as any)
+            .onSecondCall().resolves(reread as any)
+          const access = sinon.stub(OAuthAccessToken, 'updateMany').resolves({} as any)
+          const refresh = sinon.stub(OAuthRefreshToken, 'updateMany').resolves({} as any)
+
+          try {
+            await service.exchangeCode('raced-code', 'client-1', 'https://example.com/cb', undefined, true)
+            expect.fail('Should have thrown')
+          } catch (error) {
+            expect(error).to.be.instanceOf(InvalidGrantError)
+            expect((error as InvalidGrantError).message).to.not.include('already been used')
+          }
+          expect(access.called).to.be.false
+          expect(refresh.called).to.be.false
+          expect(consume.calledOnce, 'only the redemption write, no replay flag').to.be.true
+        }
+      })
+    })
+
+    it('wasReplayed reads the flag the losing redeemer left', async () => {
+      const findOne = sinon.stub(AuthorizationCode, 'findOne')
+      findOne.onFirstCall().resolves({ _id: new Types.ObjectId(), replayedAt: new Date() } as any)
+      findOne.onSecondCall().resolves({ _id: new Types.ObjectId() } as any)
+      findOne.onThirdCall().resolves(null)
+      expect(await service.wasReplayed('c', 'client-1')).to.be.true
+      expect(await service.wasReplayed('c', 'client-1')).to.be.false
+      expect(await service.wasReplayed('c', 'client-1')).to.be.false
     })
 
     it('should throw InvalidGrantError when code is expired', async () => {
@@ -333,7 +409,7 @@ describe('AuthorizationCodeService', () => {
           'no-pkce-code', 'client-1', 'https://example.com/cb', undefined, true,
         )
         expect(result.scopes).to.deep.equal(['org:read'])
-        expect(mockCode.isUsed).to.be.true
+        expect(consume.calledOnce).to.be.true
       })
 
       it('lets a public client redeem a code with an S256 challenge and matching verifier', async () => {
@@ -352,7 +428,7 @@ describe('AuthorizationCodeService', () => {
           'no-pkce-code', 'client-1', 'https://example.com/cb', verifier, false,
         )
         expect(result.scopes).to.deep.equal(['org:read'])
-        expect(mockCode.isUsed).to.be.true
+        expect(consume.calledOnce).to.be.true
       })
 
       it('rejects a public client whose verifier does not match the S256 challenge', async () => {

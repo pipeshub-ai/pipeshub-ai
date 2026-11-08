@@ -131,6 +131,7 @@ function CitationNumberCircleImpl({
   const circle = (
     <Flex
       as="span"
+      className="citation-number-circle"
       align="center"
       justify="center"
       style={{

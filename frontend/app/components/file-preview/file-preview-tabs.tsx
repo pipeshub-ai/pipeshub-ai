@@ -1,6 +1,7 @@
 'use client';
 
-import { SegmentedControl } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
+import { SegmentedTabs } from '@/app/components/ui/segmented-tabs';
 import type { FilePreviewTab, TabConfig } from './types';
 
 interface FilePreviewTabsProps {
@@ -10,19 +11,17 @@ interface FilePreviewTabsProps {
 }
 
 export function FilePreviewTabs({ tabs, activeTab, onTabChange }: FilePreviewTabsProps) {
-  const visibleTabs = tabs.filter(tab => tab.visible);
-  
+  const { t } = useTranslation();
+  const labels: Record<FilePreviewTab, string> = {
+    preview: t('filePreview.preview'),
+    'file-details': t('filePreview.fileDetails'),
+  };
+
   return (
-    <SegmentedControl.Root 
-      value={activeTab} 
-      onValueChange={(value) => onTabChange(value as FilePreviewTab)}
-      style={{ width: '100%' }}
-    >
-      {visibleTabs.map((tab) => (
-        <SegmentedControl.Item key={tab.id} value={tab.id}>
-          {tab.label}
-        </SegmentedControl.Item>
-      ))}
-    </SegmentedControl.Root>
+    <SegmentedTabs
+      value={activeTab}
+      onValueChange={onTabChange}
+      items={tabs.filter((tab) => tab.visible).map((tab) => ({ value: tab.id, label: labels[tab.id] }))}
+    />
   );
 }

@@ -1,0 +1,40 @@
+# Linear teams (permission model doc, linear section), written the way the Linear connector writes it on main.
+#   team group: RECORD_GROUP_LEVEL, OPEN, does not inherit the app: linear/connector.py:1163-1177
+#   every team: a GROUP grant to the team's user group; a public team also gets the workspace-members group, which holds the
+#          active accounts that are not guests (linear/team_access.py:62-70, connector.py:929-941, fetched at :996-1031)
+#   issues: inherit the team (inherit_permissions=True): connector.py:1653
+principals:
+  - {id: ann}
+  - {id: ben}
+  - {id: gus}
+  - {id: g:workspace-members, kind: group}
+  - {id: g:team-platform, kind: group}
+  - {id: g:team-payments, kind: group}
+  - {id: g:team-support, kind: group}
+nodes:
+  - {id: app, kind: app, app_type: LINEAR}
+  - {id: team:Platform, kind: group, connector: app, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [app], belongs: [app]}
+  - {id: team:Payments, kind: group, connector: app, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [app], belongs: [app]}
+  - {id: team:Support, kind: group, connector: app, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [app], belongs: [app]}
+  - {id: PLAT-7, kind: record, connector: app, rule: OPEN, parents: [team:Platform], inherits: [team:Platform], belongs: [team:Platform]}
+  - {id: PAY-12, kind: record, connector: app, rule: OPEN, parents: [team:Payments], inherits: [team:Payments], belongs: [team:Payments]}
+  - {id: SUP-3, kind: record, connector: app, rule: OPEN, parents: [team:Support], inherits: [team:Support], belongs: [team:Support]}
+grants:
+  - [g:team-platform, team:Platform]
+  - [g:workspace-members, team:Platform]
+  - [g:team-payments, team:Payments]
+  - [g:team-support, team:Support]
+  - [g:workspace-members, team:Support]
+memberships:
+  - [ann, g:workspace-members]
+  - [ben, g:workspace-members]
+  - [ann, g:team-platform]
+  - [ann, g:team-payments]
+  - [ann, g:team-support]
+  - [ben, g:team-platform]
+  - [ben, g:team-support]
+  - [gus, g:team-support]
+gates:
+  - [ann, app]
+  - [ben, app]
+  - [gus, app]

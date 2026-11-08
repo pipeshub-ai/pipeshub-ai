@@ -27,6 +27,7 @@ import {
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
+import { integerCheck } from '../../../libs/utils/zod-formats';
 
 // ============================================================================
 // Validation Schemas
@@ -38,10 +39,10 @@ import { guardPathParams } from '../../../libs/middlewares/safe-path-params.midd
 const oauthConfigRegistrySchema = z.object({
   query: z.object({
     page: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1))
       .optional(),
     limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1).max(200))
       .optional(),
     search: z.string().optional(),
   }),
@@ -53,10 +54,10 @@ const oauthConfigRegistrySchema = z.object({
 const getAllOAuthConfigsSchema = z.object({
   query: z.object({
     page: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1))
       .optional(),
     limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1).max(200))
       .optional(),
     search: z.string().optional(),
   }),
@@ -71,10 +72,10 @@ const oauthConfigListSchema = z.object({
   }),
   query: z.object({
     page: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1))
       .optional(),
     limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1).max(200))
       .optional(),
     search: z.string().optional(),
     scope: z.enum(['personal', 'team']).optional(),
@@ -91,7 +92,7 @@ const createOAuthConfigSchema = z.object({
   }),
   body: z.object({
     oauthInstanceName: z.string().min(1, 'OAuth instance name is required'),
-    config: z.any(),
+    config: z.any().optional(),
     baseUrl: z.string().optional(),
   }),
 });

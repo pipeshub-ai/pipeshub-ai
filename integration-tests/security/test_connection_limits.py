@@ -25,6 +25,7 @@ import base64
 import json
 import logging
 import os
+import re
 import uuid
 from collections.abc import Callable, Iterator
 from typing import Any
@@ -90,7 +91,7 @@ def _rest_search(base_url: str, token: str, query: str, filters: dict | None = N
 
 
 async def _call_tools(url: str, token: str, calls: list[tuple[str, dict]]) -> list[tuple[str, bool]]:
-    async with Client(StreamableHttpTransport(url, auth=token), timeout=300) as client:
+    async with Client(StreamableHttpTransport(url, auth=token), timeout=300, mode="legacy") as client:
         results = []
         for name, args in calls:
             result = await client.call_tool_mcp(name, args)
@@ -101,6 +102,19 @@ async def _call_tools(url: str, token: str, calls: list[tuple[str, dict]]) -> li
 
 def mcp(base_url: str, token: str, *calls: tuple[str, dict]) -> list[tuple[str, bool]]:
     return asyncio.run(_call_tools(mcp_url(base_url), token, list(calls)))
+
+
+def _tool_calls(base_url: str, user_jwt: str, answer: str) -> list[dict[str, Any]]:
+    """The tool calls a chat turn made, with their results, as the conversation stored them."""
+    found = re.search(r'"conversationId":\s*"([0-9a-f]{24})"', answer)
+    assert found, f"no conversationId in the chat answer: {answer[:500]}"
+    resp = requests.get(f"{base_url}/api/v1/conversations/{found.group(1)}", headers=_bearer(user_jwt), timeout=30)
+    assert resp.status_code == 200, f"reading the conversation: {resp.status_code} {resp.text[:300]}"
+    messages = resp.json()["conversation"]["messages"]
+    return [
+        part for message in messages if message.get("messageType") == "bot_response"
+        for part in message.get("parts") or [] if part.get("type") == "tool_call"
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +162,7 @@ def corpus(kb_client: KBClient, ai_models_configured) -> Iterator[dict[str, str]
         final = asyncio.run(wait_until_finished(kb_client, list(records.values())))
         assert all(final.get(r) == "COMPLETED" for r in records.values()), final
         yield {
-            "kb_in": kb_in, "kb_out": kb_out, "picked_folder": picked, "other_folder": other,
+            "tag": tag, "kb_in": kb_in, "kb_out": kb_out, "picked_folder": picked, "other_folder": other,
             **{f"{k}_record": v for k, v in records.items()},
             **{f"{k}_needle": v for k, v in needles.items()},
         }
@@ -200,6 +214,12 @@ def collection_pat(mint_pat, corpus) -> str:
 @pytest.fixture(scope="module")
 def folder_pat(mint_pat, corpus) -> str:
     return _token(mint_pat({"records": [corpus["picked_folder"]]}))
+
+
+@pytest.fixture(scope="module")
+def file_pat(mint_pat, corpus) -> str:
+    """Limited to the one file in the picked folder, not the folder itself."""
+    return _token(mint_pat({"records": [corpus["inside_record"]]}))
 
 
 # ---------------------------------------------------------------------------
@@ -258,17 +278,22 @@ class TestSearch:
         text = _rest_search(base_url, collection_pat, corpus["outside_needle"], {"kb": [corpus["kb_out"]]})
         assert corpus["outside_record"] not in text
 
+    @pytest.mark.parametrize("key", ["connectionApps", "connectionRecordGroups", "connectionRecords"])
     def test_a_client_cannot_send_the_servers_own_limit_keys(
-        self, base_url, unlimited_pat, collection_pat, corpus,
+        self, base_url, unlimited_pat, collection_pat, corpus, key,
     ) -> None:
-        # A limited token cannot widen its limit by sending one of its own ...
-        widened = _rest_search(base_url, collection_pat, corpus["outside_needle"],
-                               {"connectionApps": [corpus["kb_out"]]})
-        assert corpus["outside_record"] not in widened
-        # ... and an unlimited one is not narrowed by a client-sent key either: it is dropped.
-        ignored = _rest_search(base_url, unlimited_pat, corpus["outside_needle"],
-                               {"connectionApps": [corpus["kb_in"]]})
-        assert corpus["outside_record"] in ignored
+        """The gateway refuses the keys the server sets the limit with, so a
+        limited token cannot widen its limit with one, nor an unlimited one
+        narrow itself. Behind the gateway the query service drops them too."""
+        for token, ids in ((collection_pat, [corpus["kb_out"]]), (unlimited_pat, [corpus["kb_in"]])):
+            resp = requests.post(
+                f"{base_url}/api/v1/search",
+                headers=_bearer(token),
+                json={"query": corpus["outside_needle"], "limit": 10, "filters": {key: ids}},
+                timeout=120,
+            )
+            assert resp.status_code == 400, f"{resp.status_code} {resp.text[:400]}"
+            assert key in resp.text and corpus["outside_record"] not in resp.text, resp.text[:400]
 
     def test_the_website_session_is_not_limited(self, base_url, user_jwt, corpus) -> None:
         assert corpus["outside_record"] in _rest_search(base_url, user_jwt, corpus["outside_needle"])
@@ -332,17 +357,27 @@ class TestMcp:
         assert corpus["outside_needle"] not in outside
 
     def test_browsing_shows_only_what_is_shared(self, base_url, collection_pat, unlimited_pat, corpus) -> None:
-        (root, _), (opened_out, err_out) = mcp(
+        # Depth 3 lists records across the root's apps (app, folder, file),
+        # whatever a depth-1 root lists: the limit has to hold over records.
+        records = {"mode": "navigate", "depth": 3, "limit": 200}
+        (root, _), (root_records, _), (opened_out, err_out) = mcp(
             base_url, collection_pat,
             ("pipeshub_get_record_content", {"mode": "navigate"}),
+            ("pipeshub_get_record_content", records),
             ("pipeshub_get_record_content", {"mode": "navigate", "nodeId": corpus["kb_out"]}),
         )
-        (control_root, _), = mcp(base_url, unlimited_pat, ("pipeshub_get_record_content", {"mode": "navigate"}))
-        # The root lists records flattened across apps, not the collections themselves.
-        assert corpus["outside_record"] in control_root, "the unlimited token should list both collections' records"
-        assert corpus["inside_record"] in root and corpus["outside_record"] not in root, root[:1500]
+        (control_records, _), = mcp(base_url, unlimited_pat, ("pipeshub_get_record_content", records))
+        assert corpus["outside_record"] in control_records, "the unlimited token should list both collections' records"
+        assert corpus["inside_record"] in root_records, root_records[:1500]
+        assert corpus["outside_record"] not in root_records, root_records[:1500]
+        assert corpus["kb_out"] not in root and corpus["outside_record"] not in root, root[:1500]
         assert err_out or OUTSIDE_MESSAGE in opened_out, opened_out[:1000]
         assert corpus["outside_record"] not in opened_out
+
+    def test_a_folder_limit_browses_from_its_folder(self, base_url, folder_pat, corpus) -> None:
+        (root, _), = mcp(base_url, folder_pat, ("pipeshub_get_record_content", {"mode": "navigate"}))
+        assert corpus["picked_folder"] in root, root[:1500]
+        assert corpus["other_folder"] not in root and corpus["sibling_record"] not in root, root[:1500]
 
     def test_the_source_list_names_only_what_is_shared(self, base_url, collection_pat, unlimited_pat, corpus) -> None:
         (limited, _), = mcp(base_url, collection_pat, ("pipeshub_sources", {"include": ["sources"]}))
@@ -351,8 +386,13 @@ class TestMcp:
         assert corpus["kb_in"] in limited and corpus["kb_out"] not in limited, limited[:1500]
 
     @pytest.mark.slow
-    def test_chat_cites_only_what_is_shared(self, base_url, collection_pat, corpus) -> None:
-        """Chat goes through its own path (the turn scope), not the search route."""
+    def test_chat_cites_only_what_is_shared(self, base_url, user_jwt, collection_pat, corpus) -> None:
+        """Chat goes through its own path (the turn scope), not the search route.
+
+        The answer alone catches a leak only when the model repeats it, so every
+        tool result of the turn is checked too: a name search once listed the
+        outside file by name and id, and the answer mentioned it only sometimes.
+        """
         (answer, err), = mcp(
             base_url, collection_pat,
             ("pipeshub_chat", {"query": f"Who keeps the {corpus['outside_needle']}? Quote the document."}),
@@ -360,6 +400,18 @@ class TestMcp:
         assert not err, answer[:2000]
         assert corpus["outside_record"] not in answer, answer[:2000]
         assert "outside team closes its books" not in answer, answer[:2000]
+
+        calls = _tool_calls(base_url, user_jwt, answer)
+        assert calls, "the stored turn records no tool calls, so nothing below was checked"
+        outside_name = f"pp7-outside-{corpus['tag']}"
+        for call in calls:
+            result = f"{call.get('resultPreview') or ''}\n{call.get('resultSummary') or ''}"
+            seen = f"{call.get('toolName')}({call.get('args')}) -> {result[:1500]}"
+            assert corpus["outside_record"] not in result, seen
+            assert corpus["kb_out"] not in result, seen
+            # A result may echo what the model asked for; only a name it was not given is a leak.
+            if outside_name not in str(call.get("args") or ""):
+                assert outside_name not in result, seen
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +467,7 @@ class TestOAuthApps:
             create_oauth_app(base_url, user_jwt, name=f"pp7-it-{uuid.uuid4().hex[:10]}",
                              knowledge_limit={"apps": []})
 
-    def test_a_new_limit_and_a_lifted_one_both_revoke_the_apps_tokens(
+    def test_a_new_limit_revokes_the_apps_tokens_and_a_lifted_one_keeps_them_at_their_limit(
         self, base_url, user_jwt, corpus,
     ) -> None:
         app = create_oauth_app(base_url, user_jwt, name=f"pp7-it-{uuid.uuid4().hex[:10]}")
@@ -432,11 +484,19 @@ class TestOAuthApps:
             after = authorization_code_token(base_url, user_jwt, app)
             assert _claims(after["access_token"])["knowledgeLimit"]["apps"] == [corpus["kb_in"]]
 
-            # Users agreed to the limit, so lifting it makes them connect again.
+            # Lifting widens what the app may reach, so connected clients stay connected, each at the
+            # limit its user agreed to; the new reach comes with the next connection.
             lifted = requests.put(edit, headers=_bearer(user_jwt), timeout=30, json={"knowledgeLimit": None})
             assert lifted.status_code == 200, f"{lifted.status_code} {lifted.text[:300]}"
-            with pytest.raises(RuntimeError):
-                refresh_token_grant(base_url, app, after["refresh_token"])
+            # The access token issued under the limit is not revoked either.
+            assert corpus["inside_record"] in _rest_search(
+                base_url, after["access_token"], corpus["inside_needle"],
+            )
+            kept = refresh_token_grant(base_url, app, after["refresh_token"])
+            assert _claims(kept["access_token"])["knowledgeLimit"]["apps"] == [corpus["kb_in"]]
+            assert corpus["outside_record"] not in _rest_search(
+                base_url, kept["access_token"], corpus["outside_needle"],
+            )
             again = authorization_code_token(base_url, user_jwt, app)
             assert "knowledgeLimit" not in _claims(again["access_token"])
         finally:
@@ -460,3 +520,88 @@ class TestKnowledgeBaseRoutes:
                               params={"limit": 100}, timeout=30)
         assert listed.status_code == 200, listed.text[:300]
         assert corpus["kb_out"] not in listed.text and corpus["kb_in"] in listed.text
+
+    def test_a_folder_limit_lists_its_folder_at_the_knowledge_hub_root(self, base_url, folder_pat, corpus) -> None:
+        listed = requests.get(f"{base_url}/api/v1/knowledgeBase/knowledge-hub/nodes",
+                              headers=_bearer(folder_pat), params={"limit": 50}, timeout=30)
+        assert listed.status_code == 200, listed.text[:300]
+        ids = [item["id"] for item in listed.json()["items"]]
+        assert corpus["picked_folder"] in ids, ids
+        assert not {corpus["kb_in"], corpus["kb_out"], corpus["other_folder"]} & set(ids), ids
+        assert listed.json()["pagination"]["totalItems"] == len(ids)
+
+    @pytest.mark.parametrize("token", ["folder_pat", "file_pat"])
+    def test_a_narrow_limits_filter_menu_names_no_partly_shared_collection(
+        self, base_url, corpus, request, token,
+    ) -> None:
+        pat = request.getfixturevalue(token)
+        for params in ({"limit": 50}, {"limit": 50, "q": corpus["tag"]}):
+            listed = requests.get(f"{base_url}/api/v1/knowledgeBase/knowledge-hub/nodes", headers=_bearer(pat),
+                                  params={**params, "include": "availableFilters"}, timeout=60)
+            assert listed.status_code == 200, listed.text[:300]
+            available = (listed.json().get("filters") or {}).get("available") or {}
+            offered = {option["id"] for option in available.get("connectors") or []}
+            assert not {corpus["kb_in"], corpus["kb_out"]} & offered, offered
+            assert f"pp7-in-{corpus['tag']}" not in str(available)
+
+    def test_a_folder_limited_search_pages_over_what_it_shares(self, base_url, folder_pat, corpus) -> None:
+        """Every name in the corpus carries the tag; the limit shares only the folder and its file."""
+        url = f"{base_url}/api/v1/knowledgeBase/knowledge-hub/nodes"
+        first = requests.get(url, headers=_bearer(folder_pat), params={"q": corpus["tag"], "limit": 1}, timeout=60)
+        assert first.status_code == 200, first.text[:300]
+        page = first.json()["pagination"]
+        assert len(first.json()["items"]) == 1 and page["hasNext"] and page["nextCursor"], page
+        second = requests.get(url, headers=_bearer(folder_pat),
+                              params={"cursor": page["nextCursor"], "limit": 1}, timeout=60)
+        assert second.status_code == 200, second.text[:300]
+        found = {item["id"] for body in (first.json(), second.json()) for item in body["items"]}
+        assert found == {corpus["picked_folder"], corpus["inside_record"]}, found
+        assert second.json()["pagination"]["hasNext"] is False
+        assert second.json()["pagination"]["totalItems"] == 2
+
+    def test_a_file_limit_does_not_name_the_folder_above_the_file(
+        self, base_url, file_pat, folder_pat, corpus,
+    ) -> None:
+        folder, folder_name = corpus["picked_folder"], f"picked-{corpus['tag']}"
+        listed = requests.get(f"{base_url}/api/v1/knowledgeBase/knowledge-hub/nodes", headers=_bearer(file_pat),
+                              params={"q": corpus["tag"], "limit": 50}, timeout=60)
+        assert listed.status_code == 200, listed.text[:300]
+        rows = {item["id"]: item for item in listed.json()["items"]}
+        assert corpus["inside_record"] in rows, list(rows)
+        assert rows[corpus["inside_record"]].get("parent") is None
+        assert rows[corpus["inside_record"]].get("parentId") is None
+        assert folder not in listed.text and folder_name not in listed.text
+
+        searched = _rest_search(base_url, file_pat, corpus["inside_needle"])
+        assert corpus["inside_record"] in searched
+        assert folder not in searched and folder_name not in searched
+        # Nor the collection, by its name on each hit.
+        assert f"pp7-in-{corpus['tag']}" not in searched
+
+        # The folder's own limit shares the folder, so the same file names it.
+        assert folder in _rest_search(base_url, folder_pat, corpus["inside_needle"])
+
+    def test_a_file_limit_reads_its_file_without_the_folder_or_its_path(
+        self, base_url, file_pat, collection_pat, corpus,
+    ) -> None:
+        folder, folder_name = corpus["picked_folder"], f"picked-{corpus['tag']}"
+        record_url = f"{base_url}/api/v1/knowledgeBase/record/{corpus['inside_record']}"
+        details = requests.get(record_url, headers=_bearer(file_pat), timeout=60)
+        assert details.status_code == 200, details.text[:300]
+        body = details.json()
+        assert body.get("folder") is None and body.get("knowledgeBase") is None
+        assert ((body.get("record") or {}).get("fileRecord") or {}).get("path") is None
+        assert folder not in details.text and folder_name not in details.text
+
+        content = requests.get(f"{base_url}/api/v1/connectors/record/{corpus['inside_record']}/content",
+                               headers=_bearer(file_pat), timeout=120)
+        assert content.status_code == 200, content.text[:300]
+        assert corpus["inside_needle"] in content.text
+        assert folder not in content.text and folder_name not in content.text
+
+        # The whole collection's limit shares the folder, so the same file names
+        # it, by its source parent: the details' ``folder`` is not filled for a
+        # collection file on either store, limited or not.
+        whole = requests.get(record_url, headers=_bearer(collection_pat), timeout=60)
+        assert whole.status_code == 200, whole.text[:300]
+        assert (whole.json().get("record") or {}).get("externalParentId") == folder, whole.text[:500]

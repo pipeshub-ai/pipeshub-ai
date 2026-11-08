@@ -322,13 +322,15 @@ def _people_request(blocks: int, **budgets: int) -> NamedEntityRequest:
     )
 
 
-def _people_reply(fail_call: int | None = None) -> Callable[[str, str], Awaitable[str]]:
+def _people_reply(
+    fail_call: int | None = None, error: Exception | None = None,
+) -> Callable[[str, str], Awaitable[str]]:
     calls = {"n": 0}
 
     async def complete(system, prompt) -> str:
         calls["n"] += 1
         if calls["n"] == fail_call:
-            raise TransportError("window timed out")
+            raise error or TransportError("window timed out")
         blocks = [int(b) for b in re.findall(r"\[B(\d+)\]", prompt)]
         return json.dumps({"entities": [
             {"text": f"Person{b} Example", "block": b, "kind": "person", "normalized": ""} for b in blocks
@@ -353,8 +355,21 @@ async def test_a_failed_window_among_good_ones_is_partial() -> None:
     extractor = NamedEntityExtractor(single=SingleCallExtractionStrategy(complete=_people_reply(fail_call=2)))
     result = await extractor.extract(_people_request(15, max_window_chars=_FIVE_BLOCKS))
     assert (result.termination_reason, result.status) == ("single_call", "PARTIAL")
-    assert (result.stats.windows_run, result.stats.windows_failed) == (3, 1)
+    assert (result.stats.windows_run, result.stats.windows_failed, result.stats.windows_unavailable) == (3, 1, 0)
     assert len(result.entities) == 10
+
+
+@pytest.mark.parametrize(("error", "unavailable"), [
+    (ProviderUnavailableError("down", provider="openAI"), 1),
+    (type("RateLimitError", (Exception,), {})("429"), 1),
+    # This call's own budget, which a slow document hits every time: not an outage.
+    (TimeoutError("window budget spent"), 0),
+])
+async def test_a_window_the_provider_could_not_serve_is_counted_as_unavailable(error: Exception, unavailable: int) -> None:
+    # The entities stage waits out an outage rather than spending its attempts on it.
+    extractor = NamedEntityExtractor(single=SingleCallExtractionStrategy(complete=_people_reply(2, error)))
+    result = await extractor.extract(_people_request(15, max_window_chars=_FIVE_BLOCKS))
+    assert (result.stats.windows_failed, result.stats.windows_unavailable) == (1, unavailable)
 
 
 async def test_a_document_the_windows_cover_stays_completed() -> None:

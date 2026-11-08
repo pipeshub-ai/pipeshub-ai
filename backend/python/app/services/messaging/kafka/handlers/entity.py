@@ -14,6 +14,9 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.connectors.core.base.connector.connector_service import (
+    connector_sync_lock,
+)
 from app.connectors.core.base.data_store.graph_data_store import (
     GraphDataStore,
     ensure_written,
@@ -23,16 +26,21 @@ from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.sync_coordinator import get_coordinator, stop_wait_sec
 from app.connectors.core.sync.task_manager import reindex_task_manager
+from app.connectors.services.event_service import evict_cached_connector
 from app.containers.connector import (
     ConnectorAppContainer,
 )
 from app.edition_services import get_data_entities_processor_cls
 from app.modules.indexing.record_republish import record_event
+from app.schema.node_validator import SchemaValidationError
+from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     is_live_record,
 )
+from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.telemetry.modules.schema_metrics import record_schema_rejection
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import CONNECTOR_OFF
 
@@ -40,12 +48,21 @@ if TYPE_CHECKING:
     from app.connectors.core.base.data_store.data_store import TransactionStore
 
 _REQUEUE_PAGE_SIZE = 100
+# A burst of added users is collected for this long, then linked by one pass per connector.
+_LINK_DEBOUNCE_SEC = 10
+# A pass waits for a running sync (it may be past its user step) for at most this many debounces.
+_LINK_MAX_DEFERRALS = 360
 # Parked by a turn-off, as opposed to AUTO_INDEX_OFF from the connector's own
 # indexing filters, which carries no such reason.
 _PARKED_WHILE_OFF = {
     "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
     "reason": CONNECTOR_OFF,
 }
+
+
+# Events that change who a person is or which apps they reach, and with it what they may read. Each moves the
+# viewer-scope version (tests/unit/services/permissions/test_permission_writers_bump.py keeps this list complete).
+PRINCIPAL_EVENTS = frozenset({"userAdded", "userUpdated", "userDeleted", "appEnabled", "appDisabled", "orgDeleted"})
 
 
 class EntityEventService(BaseEventService):
@@ -58,12 +75,24 @@ class EntityEventService(BaseEventService):
         self.logger = logger
         self.graph_provider = graph_provider
         self.graph_data_store = GraphDataStore(logger, graph_provider)
+        self._link_state: dict[str, dict] = {}
         self.app_container = app_container
 
     async def process_event(self, event_type: str, payload: dict) -> bool:
         """Handle entity-related events by calling appropriate handlers"""
         try:
             self.logger.info(f"Processing entity event: {event_type}")
+            handled = await self._dispatch(event_type, payload)
+            if event_type in PRINCIPAL_EVENTS:
+                # Success or not: a handler that failed half way may have changed edges. Nothing here widens access.
+                await notify_principals_changed(payload.get("orgId") if isinstance(payload, dict) else None)
+            return handled
+        except Exception as e:
+            self.logger.error(f"Error processing entity event: {str(e)}")
+            return False
+
+    async def _dispatch(self, event_type: str, payload: dict) -> bool:
+        try:
             if event_type == "orgCreated":
                 return await self._handle_org_created(payload)
             elif event_type == "orgUpdated":
@@ -83,6 +112,13 @@ class EntityEventService(BaseEventService):
             else:
                 self.logger.error(f"Unknown entity event type: {event_type}")
                 return False
+        except SchemaValidationError as e:
+            # Permanent: redelivering the event cannot make the payload valid. Handled, not retried.
+            # The data processor marks an error it already logged and counted: report it once.
+            if not getattr(e, "schema_reported", False):
+                self.logger.error(f"Entity event {event_type} rejected by schema validation (collection={e.collection}): {e}")
+                record_schema_rejection(e.collection)
+            return True
         except Exception as e:
             self.logger.error(f"Error processing entity event: {str(e)}")
             return False
@@ -123,8 +159,9 @@ class EntityEventService(BaseEventService):
             else AccountType.INDIVIDUAL.value
         )
         try:
+            org_id = payload["orgId"]
             org_data = {
-                "_key": payload["orgId"],
+                "_key": org_id,
                 "name": payload.get("registeredName", "Individual Account"),
                 "accountType": accountType,
                 "isActive": True,
@@ -179,6 +216,8 @@ class EntityEventService(BaseEventService):
 
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error creating organization: {str(e)}")
             return False
@@ -205,6 +244,8 @@ class EntityEventService(BaseEventService):
             )
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error updating organization: {str(e)}")
             return False
@@ -213,8 +254,9 @@ class EntityEventService(BaseEventService):
         """Handle organization deletion event"""
         try:
             self.logger.info(f"📥 Processing org deleted event: {payload}")
+            org_id = payload["orgId"]
             org_data = {
-                "_key": payload["orgId"],
+                "_key": org_id,
                 "isActive": False,
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }
@@ -226,13 +268,17 @@ class EntityEventService(BaseEventService):
             await self.graph_provider.batch_upsert_nodes(
                 [org_data], CollectionNames.ORGS.value
             )
+            await notify_principals_changed(org_id)  # before the cleanup below; see process_event
             self.logger.info(
                 f"✅ Successfully soft-deleted organization: {payload['orgId']}"
             )
             await self._remove_mcp_data("org", payload["orgId"])
             await self._remove_personal_toolsets("org", payload["orgId"])
+            await self._remove_api_toolset_data(payload["orgId"])
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error deleting organization: {str(e)}")
             return False
@@ -241,7 +287,7 @@ class EntityEventService(BaseEventService):
     async def _handle_user_added(self, payload: dict) -> bool:
         """Handle user creation event"""
         try:
-            self.logger.info(f"📥 Processing user added event: {payload}")
+            self.logger.info("Processing user added event for user %s", payload.get("userId"))
             # raise_on_error: the providers answer None to a failed read too, and
             # "nobody" here would mint a second user for someone who is there.
             existing_user = await self.graph_provider.get_user_by_email(
@@ -260,6 +306,19 @@ class EntityEventService(BaseEventService):
                     "isActive": True,
                     "updatedAtTimestamp": current_timestamp,
                 }
+                # Set on the existing node too: a service account that is
+                # restored, or recreated under an address the graph already
+                # knows, arrives here rather than below. Left alone when
+                # absent, so an older producer cannot blank a value a newer
+                # one has already set. Nodes that predate the field are filled
+                # in by the backfill, not from here.
+                if payload.get("kind"):
+                    user_data["kind"] = payload["kind"]
+                # Sent by restore, which has just switched the account back on
+                # in the collection that owns the answer. Left alone when
+                # absent, so a producer that says nothing cannot change it.
+                if payload.get("isDisabled") is not None:
+                    user_data["isDisabled"] = bool(payload["isDisabled"])
             else:
                 user_key = str(uuid4())
                 user_data = {
@@ -274,6 +333,16 @@ class EntityEventService(BaseEventService):
                     "designation": payload.get("designation", ""),
                     "businessPhones": payload.get("businessPhones", []),
                     "isActive": True,
+                    # Absence means a person. Every producer of a service
+                    # account sends this; nothing else needs to.
+                    "kind": payload.get("kind") or "human",
+                # Absence means not disabled, so only a true value is worth
+                # storing; a person never carries this at all.
+                **(
+                    {"isDisabled": True}
+                    if payload.get("isDisabled") is True
+                    else {}
+                ),
                     "createdAtTimestamp": current_timestamp,
                     "updatedAtTimestamp": current_timestamp,
                 }
@@ -319,19 +388,78 @@ class EntityEventService(BaseEventService):
             # Get or create "All" team for org and add user with PERMISSION edge
             await self._get_or_create_all_team_and_add_user(payload["orgId"], user_key)
 
-            self.logger.info(
-                f"✅ Successfully created/updated user: {payload['email']}"
-            )
+            self.logger.info("Created or updated user %s", payload["userId"])
+            self._schedule_connector_link(payload["orgId"])
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error creating/updating user: {str(e)}")
             return False
 
+    def _schedule_connector_link(self, org_id: str) -> None:
+        """Ask the org's running connectors that link users to do so, without holding up the event.
+
+        At most one pass per connector is in flight; adds that arrive meanwhile are folded
+        into one more pass that starts after the debounce.
+        """
+        for connector_id, connector in list(getattr(self.app_container, "connectors_map", {}).items()):
+            if not getattr(connector, "user_link_steps", ()):
+                continue
+            if getattr(connector.data_entities_processor, "org_id", None) != org_id:
+                continue
+            state = self._link_state.setdefault(connector_id, {"dirty": False, "task": None})
+            state["dirty"] = True
+            if state["task"] is None:
+                state["task"] = asyncio.create_task(self._link_passes(connector_id))
+
+    async def _link_passes(self, connector_id: str) -> None:
+        state = self._link_state[connector_id]
+        deferrals = 0
+        try:
+            while state["dirty"]:
+                await asyncio.sleep(_LINK_DEBOUNCE_SEC)
+                state["dirty"] = False
+                if await self._link_connector(connector_id):
+                    deferrals = 0
+                elif deferrals < _LINK_MAX_DEFERRALS:
+                    deferrals += 1
+                    state["dirty"] = True
+        finally:
+            state["task"] = None
+
+    async def _link_connector(self, connector_id: str) -> bool:
+        """Best effort: a user added after a connector's last user sync has no edge to it
+        until the next sync, so run the connector's own user-link steps (the source alone
+        decides what the user may reach). Holds connector_sync_lock for the whole pass, so a
+        sync that is admitted meanwhile waits for it, and is not run while the connector syncs
+        (the caller retries once it has ended) nor for a connector that is off or being
+        deleted. Returns False only when deferred; never raises.
+        """
+        try:
+            connector = getattr(self.app_container, "connectors_map", {}).get(connector_id)
+            if connector is None:
+                return True
+            lock = connector_sync_lock(connector_id)
+            if lock.locked():
+                return False
+            async with lock:
+                coordinator = get_coordinator()
+                if coordinator is not None and await coordinator.is_running(connector_id):
+                    return False
+                app = await self.graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+                if not app or not app.get("isActive", False) or app.get("status") == APP_STATUS_DELETING:
+                    return True
+                await connector.link_new_users()
+        except Exception as e:
+            self.logger.warning("Could not link new users to connector %s: %s", connector_id, e)
+        return True
+
     async def _handle_user_updated(self, payload: dict) -> bool:
         """Handle user update event"""
         try:
-            self.logger.info(f"📥 Processing user updated event: {payload}")
+            self.logger.info("Processing user updated event for user %s", payload.get("userId"))
             # Find existing user by userId
             existing_user = await self.graph_provider.get_user_by_user_id(
                 payload["userId"],
@@ -354,9 +482,27 @@ class EntityEventService(BaseEventService):
                 "designation": payload.get("designation", ""),
                 "businessPhones": payload.get("businessPhones", []),
 
-                "isActive": True,
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }
+
+            # `isActive` is deliberately absent from the fields above. Soft
+            # delete writes `isActive: False` (`_handle_user_deleted`) and
+            # these upserts merge, so any `True` here would overwrite it. The
+            # two handlers run at the same time: delete and update are
+            # separate event types on one stream, the chart runs two connector
+            # replicas in the same consumer group
+            # (`app/services/messaging/utils.py:239`), and each can take one.
+            # A `True` decided before a delete commits would land after it and
+            # put a removed user back. The field belongs to the events that
+            # own it — create, delete and restore. A rename is no evidence
+            # that a user still exists.
+
+            # The only signal the graph gets that an account was switched
+            # off. Written only when the event carries it, so an update that
+            # says nothing about it — one from a producer that predates the
+            # field — cannot switch an account back on.
+            if payload.get("isDisabled") is not None:
+                user_data["isDisabled"] = bool(payload["isDisabled"])
 
             # Add only non-null optional fields
             optional_fields = [
@@ -378,9 +524,27 @@ class EntityEventService(BaseEventService):
             await self.graph_provider.batch_upsert_nodes(
                 [user_data], CollectionNames.USERS.value
             )
-            self.logger.info(f"✅ Successfully updated user: {payload['email']}")
+
+            # A node written before the field existed carries no `isActive`,
+            # and the permission reads filter on `isActive == true`, so such a
+            # node drops out of them. Stamped here rather than merged above
+            # because the condition is evaluated inside the write: a delete
+            # that lands first leaves `False` in place and this does nothing.
+            # Skipped outright when the read already saw the field, which is
+            # every account created since.
+            if existing_user.get("isActive") is None:
+                await self.graph_provider.update_node_fields_if_match(
+                    user_id,
+                    CollectionNames.USERS.value,
+                    {"isActive": True},
+                    {"isActive": None},
+                )
+
+            self.logger.info("Updated user %s", payload["userId"])
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error updating user: {str(e)}")
             return False
@@ -388,18 +552,19 @@ class EntityEventService(BaseEventService):
     async def _handle_user_deleted(self, payload: dict) -> bool:
         """Handle user deletion event"""
         try:
-            self.logger.info(f"📥 Processing user deleted event: {payload}")
+            self.logger.info("Processing user deleted event for user %s", payload.get("userId"))
             # Find existing user by email
             existing_user_id = await self.graph_provider.get_entity_id_by_email(
                 payload["email"]
             )
             if not existing_user_id:
-                self.logger.error(f"User not found with mail: {payload['email']}")
+                self.logger.error("No graph user has the deleted user's email (user %s)", payload.get("userId"))
                 return False
 
+            org_id = payload["orgId"]
             user_data = {
                 "id": existing_user_id,
-                "orgId": payload["orgId"],
+                "orgId": org_id,
                 "email": payload["email"],
                 "isActive": False,
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
@@ -409,12 +574,17 @@ class EntityEventService(BaseEventService):
             await self.graph_provider.batch_upsert_nodes(
                 [user_data], CollectionNames.USERS.value
             )
-            self.logger.info(f"✅ Successfully soft-deleted user: {payload['email']}")
+            # At once, not after the cleanup below: until it moves, a scope read before the delete is still served.
+            await notify_principals_changed(org_id)
+            self.logger.info("Soft-deleted graph user %s", existing_user_id)
             if payload.get("userId"):
                 await self._remove_mcp_data("user", payload["orgId"], payload["userId"])
                 await self._remove_personal_toolsets("user", payload["orgId"], payload["userId"])
+                await self._remove_api_toolset_data(payload["orgId"], payload["userId"])
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error deleting user: {str(e)}")
             return False
@@ -448,6 +618,20 @@ class EntityEventService(BaseEventService):
             self.logger.info(f"Removed {removed} personal toolset instance(s) for deleted {owner_kind} {user_id or org_id}")
         except Exception as e:
             self.logger.error(f"Could not remove personal toolset instances for deleted {owner_kind} {user_id or org_id}: {e}")
+
+    async def _remove_api_toolset_data(self, org_id: str, user_id: str | None = None) -> None:
+        """A deleted org's API toolsets, or a deleted user's credentials for them. The graph
+        change is already done, so a failure here is logged, not raised."""
+        from app.agents.openapi.store import ApiToolsetStore
+
+        try:
+            store = ApiToolsetStore(self.app_container.config_service())
+            if user_id:
+                await store.remove_owner(org_id, user_id)
+            else:
+                await store.remove_org(org_id)
+        except Exception as e:
+            self.logger.error(f"Could not remove API toolset data for deleted {'user' if user_id else 'org'} {user_id or org_id}: {e}")
 
     # APP EVENTS
     async def _handle_app_enabled(self, payload: dict) -> bool:
@@ -490,6 +674,8 @@ class EntityEventService(BaseEventService):
             self.logger.info(f"✅ Successfully enabled apps for org: {org_id}")
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error enabling apps: {str(e)}")
             return False
@@ -509,7 +695,6 @@ class EntityEventService(BaseEventService):
             self.logger.info(f"📥 Processing app disabled event: {payload}")
 
             # Set apps as inactive
-            app_updates = []
             for app_name in apps:
                 app_doc = await self.graph_provider.get_document(
                     connector_id, CollectionNames.APPS.value
@@ -517,21 +702,17 @@ class EntityEventService(BaseEventService):
                 if not app_doc:
                     self.logger.error(f"App not found: {app_name}")
                     return False
-                app_data = {
-                    "id": connector_id,
-                    "name": app_doc.get("name", app_doc.get("_key", connector_id)),
-                    "type": app_doc.get("type"),
-                    "appGroup": app_doc.get("appGroup"),
-                    "isActive": False,
-                    "createdAtTimestamp": app_doc.get("createdAtTimestamp"),
-                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                }
-                app_updates.append(app_data)
 
-            # Update apps in database
-            await self.graph_provider.batch_upsert_nodes(
-                app_updates, CollectionNames.APPS.value
-            )
+            # Update apps in database. Only the two fields that change: rebuilding the
+            # whole document from the stored one would write None for a field a legacy
+            # app lacks, which the schema (rightly) rejects.
+            for _ in apps:
+                await self.graph_provider.update_node(
+                    connector_id,
+                    CollectionNames.APPS.value,
+                    {"isActive": False, "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
+                )
+            await notify_principals_changed(org_id)  # before the (slow) cleanup below; see process_event
 
             # Stop any running sync/reindex and wait for it to unwind, bounded:
             # the sweep and the cleanup below must not run while the sync is
@@ -603,21 +784,13 @@ class EntityEventService(BaseEventService):
                     f"connector {connector_id}: {sweep_err}"
                 )
 
-            if (
-                hasattr(self.app_container, "connectors_map")
-                and connector_id in self.app_container.connectors_map
-            ):
-                existing_connector = self.app_container.connectors_map.pop(connector_id)
-                try:
-                    if hasattr(existing_connector, "cleanup"):
-                        await existing_connector.cleanup()
-                    self.logger.info(f"Cleaned up connector instance {connector_id}")
-                except Exception as cleanup_err:
-                    self.logger.error(f"Error cleaning up connector {connector_id}: {cleanup_err}")
+            await evict_cached_connector(self.app_container, connector_id, self.logger)
 
             self.logger.info(f"✅ Successfully disabled apps for org: {org_id}")
             return True
 
+        except SchemaValidationError:
+            raise  # permanent: _dispatch logs it once and the event is not redelivered
         except Exception as e:
             self.logger.error(f"❌ Error disabling apps: {str(e)}")
             return False
@@ -633,14 +806,9 @@ class EntityEventService(BaseEventService):
         try:
             mode = await self.graph_provider.migrate_person_to_user(email, user_key, org_id)
             if mode:
-                self.logger.info(
-                    f"✅ Adopted existing person for {email} ({mode})"
-                )
+                self.logger.info("Adopted existing person for user %s (%s)", user_key, mode)
         except Exception as e:
-            self.logger.error(
-                f"❌ Failed to adopt existing person for {email}: {str(e)}",
-                exc_info=True,
-            )
+            self.logger.error("Failed to adopt existing person for user %s: %s", user_key, e, exc_info=True)
 
     async def _start_requeue_of_parked_records(self, connector_id: str) -> None:
         """Queue again, in the background, what was parked while the connector was off.

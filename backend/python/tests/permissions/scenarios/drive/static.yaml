@@ -1,0 +1,23 @@
+- id: DRIVE-S-01
+  title: Planning folder and Marketing drive, the worked example (Lee, Ed, Ivy, CFO, Mo)
+  source: permission model doc, google-drive section
+  rule: union
+  world: golden/drive_q4
+  expect:
+    verdicts:
+      lee: {minutes: deny, plan: admit, budget: admit, roadmap: admit, launch-plan: deny}
+      ed: {minutes: deny, plan: admit, budget: deny, roadmap: deny, launch-plan: deny}
+      ivy: {minutes: deny, plan: deny, budget: admit, roadmap: deny, launch-plan: deny}
+      cfo: {minutes: admit, plan: deny, budget: deny, roadmap: deny, launch-plan: deny}
+      mo: {minutes: deny, plan: deny, budget: deny, roadmap: deny, launch-plan: admit}
+  tags: [drive, "cell:drive/folder-share", "cell:drive/sub-folder-share", "cell:drive/direct-file-share", "cell:drive/limited-folder", "cell:drive/shared-drive-member", "cell:drive/link-only"]
+- id: DRIVE-S-02
+  title: The owner keeps access to a limited folder
+  source: permission model doc, google-drive section (owners and organizers keep access)
+  rule: union
+  world: golden/drive_q4
+  expect:
+    verdicts:
+      henry: {minutes: admit, folder:Q4-Board: admit, plan: admit}
+      lee: {folder:Q4-Board: deny}
+  tags: [drive, "cell:drive/limited-folder"]

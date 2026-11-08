@@ -5,13 +5,15 @@ import { Flex, Box, Text, Badge, IconButton, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { SearchResultsExtras } from '@/config';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { SearchDegradedNote } from '../message-area/search-degraded-note';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { useChatStore } from '@/chat/store';
 import { useCitationActions } from '../message-area/response-tabs/citations/use-citation-actions';
 import { SearchResultCard } from './search-result-card';
 import { searchResultToCitationData } from './search-result-to-citation';
 import { useDemoDataActive } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
-import type { SearchResultItem } from '@/chat/types';
+import { ConnectorIcon } from '@/app/components/ui';
+import type { SearchResultItem, UnindexedMatch } from '@/chat/types';
 
 /**
  * Skeleton card for loading state.
@@ -112,6 +114,11 @@ export function SearchResultsView() {
   const isSearching = useChatStore((s) => s.isSearching);
   const searchError = useChatStore((s) => s.searchError);
   const searchResponseMeta = useChatStore((s) => s.searchResponseMeta);
+  const serverEmptyMessage =
+    typeof searchResponseMeta?.message === 'string' ? searchResponseMeta.message : '';
+  const unindexedMatches =
+    (searchResponseMeta?.searchResponse as { unindexedMatches?: UnindexedMatch[] } | undefined)
+      ?.unindexedMatches ?? [];
   const setMode = useChatStore((s) => s.setMode);
   const { onPreview } = useCitationActions();
 
@@ -252,6 +259,11 @@ export function SearchResultsView() {
           paddingBottom: 'var(--space-4)',
         }}
       >
+        {!isSearching && !searchError &&
+          (searchResponseMeta?.searchResponse as { searchDegraded?: boolean } | undefined)?.searchDegraded === true && (
+            <SearchDegradedNote />
+          )}
+
         {/* Loading state */}
         {isSearching && (
           <>
@@ -276,7 +288,7 @@ export function SearchResultsView() {
         )}
 
         {/* Empty state */}
-        {!isSearching && !searchError && searchResults.length === 0 && searchQuery && (
+        {!isSearching && !searchError && searchResults.length === 0 && unindexedMatches.length === 0 && searchQuery && (
           <Flex
             direction="column"
             align="center"
@@ -285,7 +297,7 @@ export function SearchResultsView() {
             style={{ padding: 'var(--space-6)' }}
           >
             <Text size="2" style={{ color: 'var(--slate-11)' }}>
-              No results found for &ldquo;{searchQuery}&rdquo;
+              {serverEmptyMessage || t('chat.noResultsFor', { query: searchQuery })}
             </Text>
           </Flex>
         )}
@@ -300,6 +312,44 @@ export function SearchResultsView() {
               onPreview={handlePreview}
             />
           ))}
+        {/* Name-only matches: records whose content is not indexed yet */}
+        {!isSearching && !searchError && unindexedMatches.length > 0 && (
+          <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-3)' }}>
+            <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+              {t('chat.matchedByName')}
+            </Text>
+            {unindexedMatches.map((m) => (
+              <a
+                key={m.recordId}
+                href={`/record/${encodeURIComponent(m.recordId)}/`}
+                target="_blank"
+                rel="noreferrer"
+                style={{ textDecoration: 'none' }}
+              >
+                <Flex
+                  align="center"
+                  gap="3"
+                  style={{
+                    backgroundColor: 'var(--olive-2)',
+                    border: '1px solid var(--olive-3)',
+                    borderRadius: 'var(--radius-1)',
+                    padding: 'var(--space-3) var(--space-4)',
+                  }}
+                >
+                  <ConnectorIcon type={(m.connector ?? '').toLowerCase()} size={16} />
+                  <Flex direction="column" style={{ minWidth: 0 }}>
+                    <Text size="2" weight="medium" truncate style={{ color: 'var(--slate-12)' }}>
+                      {m.recordName}
+                    </Text>
+                    <Text size="1" style={{ color: 'var(--slate-11)' }}>
+                      {t('chat.contentNotIndexedYet')}
+                    </Text>
+                  </Flex>
+                </Flex>
+              </a>
+            ))}
+          </Flex>
+        )}
       </Flex>
     </Flex>
   );

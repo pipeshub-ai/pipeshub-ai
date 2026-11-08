@@ -6,6 +6,9 @@ import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-bu
 
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 
+const canHover = vi.hoisted(() => ({ value: true }));
+vi.mock('@/lib/hooks/use-can-hover', () => ({ useCanHover: () => canHover.value }));
+
 import { ChatItemMenu } from '../chat-item-menu';
 
 async function openMenu() {
@@ -27,7 +30,10 @@ function renderMenu(props: Partial<React.ComponentProps<typeof ChatItemMenu>> = 
   return { ...handlers, onRowClick };
 }
 
-beforeEach(() => installBrowserShims());
+beforeEach(() => {
+  canHover.value = true;
+  installBrowserShims();
+});
 afterEach(() => cleanup());
 
 describe('chat row menu', () => {
@@ -106,5 +112,18 @@ describe('chat row menu', () => {
     expect(onRename).not.toHaveBeenCalled();
     expect(onArchive).not.toHaveBeenCalled();
     expect(onDelete).not.toHaveBeenCalled();
+  });
+});
+
+describe('chat row menu on touch', () => {
+  it('hides the trigger on a hover device until the row is hovered', () => {
+    renderMenu({ isParentHovered: false });
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+
+  it('keeps the trigger visible when the row cannot be hovered', () => {
+    canHover.value = false;
+    renderMenu({ isParentHovered: false });
+    expect(screen.getByRole('button')).toBeTruthy();
   });
 });

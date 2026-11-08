@@ -35,7 +35,9 @@ export interface EditionBoot {
   mountRawRoutes(app: Express): void;
   mountRoutes(app: Express, containers: EditionContainers): void;
   startWorkers(logger: Logger): void;
-  /** After the HTTP server listens and SAML strategies are loaded. */
+  /** Extra Markdown sections for `/auth.md`, after the built-in ways in; `origin` is the instance's. */
+  authMdSections(origin: string): string[];
+  /** After the HTTP server listens. */
   afterListen(logger: Logger, containers: EditionContainers): Promise<void>;
   stop(logger: Logger, containers: EditionContainers): Promise<void>;
   dispose(): Promise<void>;
@@ -48,6 +50,7 @@ export const noopEditionBoot: EditionBoot = {
   mountRawRoutes: () => {},
   mountRoutes: () => {},
   startWorkers: () => {},
+  authMdSections: () => [],
   afterListen: async () => {},
   stop: async () => {},
   dispose: async () => {},

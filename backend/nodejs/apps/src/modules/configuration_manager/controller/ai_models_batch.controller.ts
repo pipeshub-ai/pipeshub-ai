@@ -27,7 +27,12 @@ import {
   findModelEntry,
 } from '../services/aiModelsConfig.repository';
 import { AIModelConfiguration } from '../types/ai-models.types';
-import { mergeAiModelCredentials, pickAiModelCredentials } from '../utils/maskConfigSecrets';
+import {
+  AI_PUBLIC_CONFIG_KEYS,
+  mergeAiModelCredentials,
+  pickAiModelCredentials,
+} from '../utils/maskConfigSecrets';
+import { EXTRA_AI_PUBLIC_CONFIG_KEYS } from '../../../edition';
 
 const logger = Logger.getInstance({ service: 'AI Models Batch Controller' });
 const BATCH_CONCURRENCY = 3;
@@ -38,7 +43,24 @@ type BatchModel = {
   isMultimodal: boolean;
   isReasoning: boolean;
   contextLength?: number | null;
+  /** Configuration keys that differ for this model, applied over the shared ones. */
+  configuration?: Record<string, unknown>;
 };
+
+/** Settings a model may set for itself; credentials and the endpoint stay shared by the connection. */
+const PER_MODEL_CONFIG_KEYS: ReadonlySet<string> = new Set(
+  [...AI_PUBLIC_CONFIG_KEYS, ...EXTRA_AI_PUBLIC_CONFIG_KEYS].filter(
+    (key) => key !== 'model' && key !== 'modelFriendlyName',
+  ),
+);
+
+function perModelConfiguration(model: BatchModel): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(model.configuration ?? {}).filter(([key]) =>
+      PER_MODEL_CONFIG_KEYS.has(key),
+    ),
+  );
+}
 
 async function publishConfigured(
   eventService: AiConfigEventProducer,
@@ -247,6 +269,7 @@ export function batchAddAIModels(
         writeSse(res, 'progress', { model: model.model, status: 'checking' });
         const modelConfiguration = {
           ...shared,
+          ...perModelConfiguration(model),
           model: model.model,
           ...(model.modelFriendlyName ? { modelFriendlyName: model.modelFriendlyName } : {}),
         };

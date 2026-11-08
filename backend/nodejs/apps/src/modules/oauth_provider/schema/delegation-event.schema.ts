@@ -1,16 +1,29 @@
 import mongoose, { Document, Schema, Model, Types } from 'mongoose';
 
 /**
- * How long a delegation record is kept.
+ * How long a delegation record is kept in this edition.
  *
  * Delegation without a log is the genuinely dangerous combination: a
- * credential that can be anyone, with no record of who it was. So these rows
- * are the point of the feature as much as the token is, and they are kept well
- * past the longest service-token lifetime (365 days) — long enough that the
- * credential which produced a record has expired before the record has, and
- * an annual review can still see the full year it is reviewing.
+ * credential that can be anyone, with no record of who it was. So nothing is
+ * hidden while it is here — refusals included, and they are the most telling
+ * of the four — but this is the local record, not an audit trail. Keeping it
+ * long enough to be evidence, proving it was not altered, exporting it and
+ * reporting on it are what the Enterprise audit log is for, and its shortest
+ * retention is ninety days.
+ *
+ * Thirty days sits clearly below that, and is long enough to answer the
+ * question a free user actually has, which is what this machine did recently.
+ *
+ * Two consequences worth knowing, because the first version of this kept 400
+ * days precisely to avoid them. A service token may live up to 365 days, so a
+ * credential can now outlive the record of what it was given. And an
+ * allow-list entry never expires, so a permission granted three months ago is
+ * still live while the record of who granted it, and why, has gone. The
+ * permission itself stays visible and revocable; only its provenance ages
+ * out. That is the line this edition draws: the mechanism is here, the
+ * evidence is bought.
  */
-export const DELEGATION_EVENT_RETENTION_DAYS = 400;
+export const DELEGATION_EVENT_RETENTION_DAYS = 30;
 
 /**
  * What happened.

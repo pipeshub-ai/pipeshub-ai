@@ -48,7 +48,14 @@ def _io(sink: MagicMock, order: list[str], classification: SemanticMetadata | No
     graph.get_departments = AsyncMock(return_value=[])
     blob = AsyncMock()
     blob.get_record_from_storage = AsyncMock(return_value={"block_containers": {"blocks": [], "block_groups": []}})
-    blob.save_semantic_metadata = AsyncMock(side_effect=lambda *a: order.append("blob"))
+    blob.config_service.get_config = AsyncMock(return_value={})
+
+    async def rewrite(org_id, record_id, vrid, transform, **_):  # noqa: ANN202
+        new = await transform({"semantic_metadata": None})
+        order.append("blob")
+        return {"semantic_metadata": new}
+
+    blob.rewrite_semantic_metadata = AsyncMock(side_effect=rewrite)
     return GraphClassifyIO(
         _job(), Deadline(30), policy=DEFAULT_POLICY, graph=graph, blob_storage=blob, sink=sink,
         classifier=AsyncMock(return_value=classification), config_service=MagicMock(),

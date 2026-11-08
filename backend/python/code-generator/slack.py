@@ -293,7 +293,7 @@ def build_method_code(op: Operation) -> str:
             )
         
         try:
-            response = getattr(self.client, '{op.client_alias}')(**kwargs_api)
+            response = await self._call(getattr(self.client, '{op.client_alias}'), **kwargs_api)
             return await self._handle_slack_response(response)
         except Exception as e:
             return await self._handle_slack_error(e)
@@ -305,8 +305,12 @@ def build_method_code(op: Operation) -> str:
 def build_class_code(class_name: str, ops: Sequence[Operation]) -> str:
     methods = [build_method_code(o) for o in ops]
 
-    header = f'''import logging
-from typing import Any, Dict
+    header = f'''import asyncio
+import functools
+import logging
+from collections.abc import Callable
+from concurrent.futures import Executor
+from typing import Any, Dict, Optional
 from app.sources.client.slack.slack import SlackClient, SlackResponse
 
 # Set up logger
@@ -319,8 +323,19 @@ class {class_name}:
     - **No fallback** to `api_call`: if SDK alias missing, returns SlackResponse with error
     - All responses wrapped in standardized SlackResponse format
     """
-    def __init__(self, client: SlackClient) -> None:
+    def __init__(self, client: SlackClient, executor: Executor | None = None) -> None:
         self.client = client.get_web_client()
+        self._executor = executor
+
+    async def _call(self, method: Callable[..., Any], **kwargs: Any) -> Any:  # noqa: ANN401 - slack_sdk response
+        """Run a blocking ``slack_sdk`` call in ``executor`` (the loop's default when None).
+
+        The SDK client is synchronous; called on the event loop, every Slack request
+        would stall the whole service for as long as Slack takes to answer.
+        """
+        return await asyncio.get_running_loop().run_in_executor(
+            getattr(self, "_executor", None), functools.partial(method, **kwargs)
+        )
 '''
 
     runtime_helpers = """

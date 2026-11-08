@@ -146,8 +146,8 @@ function ServerUrlSetupScreen({ onComplete }: { onComplete: () => void }) {
     <Flex
       align="center"
       justify="center"
+      className="viewport-height"
       style={{
-        height: '100vh',
         width: '100vw',
         backgroundColor: 'var(--color-background)',
       }}

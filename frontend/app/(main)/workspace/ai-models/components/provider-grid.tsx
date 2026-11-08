@@ -2,11 +2,13 @@
 
 import React, { useCallback, useMemo } from 'react';
 import type { TFunction } from 'i18next';
-import { Box, Button, Flex, Grid, Heading, IconButton, SegmentedControl, Text, TextField } from '@radix-ui/themes';
+import { Box, Button, Flex, Grid, Heading, IconButton, Text, TextField } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { useBrand } from '@/lib/branding';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 import type { AIModelProvider, ConfiguredModel } from '../types';
 import type { CapabilitySection } from '../types';
 import { CAPABILITY_SECTION_ORDER, modelTypesForSection } from '../types';
@@ -14,6 +16,7 @@ import type { MainSection } from '../store';
 import { aiModelsCapabilityBadge, aiModelsCapabilityLabel, aiModelsCapabilitySectionTab } from '../capability-i18n';
 import { ProviderRow } from './provider-card';
 import { ConfiguredModelsGrid } from './configured-models-grid';
+import { SegmentedTabs } from '@/app/components/ui/segmented-tabs';
 
 export type ProviderGridLayout = 'page' | 'embedded';
 
@@ -31,6 +34,7 @@ interface ProviderGridProps {
   onSetDefault: (modelType: string, modelKey: string) => Promise<void>;
   onDelete: (modelType: string, modelKey: string, modelName: string) => void;
   onRotate?: (model: ConfiguredModel) => void;
+  onIdentityForwarding?: (model: ConfiguredModel) => void;
   isLoading?: boolean;
   onRefresh: () => void;
   /** Full workspace page vs compact onboarding-style panel. */
@@ -43,6 +47,10 @@ interface ProviderGridProps {
   hideCapabilityBadges?: boolean;
   /** Passed to configured-models list; false hides built-in embedding row (e.g. onboarding). */
   showEmbeddingBuiltinPlaceholder?: boolean;
+  /** Extra page-header actions, rendered before Documentation. */
+  headerActions?: React.ReactNode;
+  /** Content rendered between the page header and the section tabs. */
+  belowHeader?: React.ReactNode;
 }
 
 function providerMatchesSearch(
@@ -79,6 +87,7 @@ export function ProviderGrid({
   onSetDefault,
   onDelete,
   onRotate,
+  onIdentityForwarding,
   isLoading = false,
   onRefresh,
   layout = 'page',
@@ -86,8 +95,11 @@ export function ProviderGrid({
   capabilityTabs: capabilityTabsProp,
   hideCapabilityBadges = false,
   showEmbeddingBuiltinPlaceholder = true,
+  headerActions,
+  belowHeader,
 }: ProviderGridProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const brand = useBrand();
   const docsOverviewUrl =
     brand.docsHref('ai-models/overview') ?? `${EXTERNAL_LINKS.documentation}ai-models/overview`;
@@ -185,7 +197,7 @@ export function ProviderGrid({
             paddingRight: 0,
           }
           : {
-            paddingTop: pagePaddingY,
+            paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP,
             paddingBottom: pagePaddingY,
             paddingLeft: pagePaddingX,
             paddingRight: pagePaddingX,
@@ -204,6 +216,7 @@ export function ProviderGrid({
           </Flex>
 
           <Flex align="center" gap="3" wrap="wrap" justify="end">
+            {headerActions}
             <Button
               variant="outline"
               color="gray"
@@ -221,45 +234,48 @@ export function ProviderGrid({
         </Flex>
       ) : null}
 
+      {belowHeader}
+
       {/* Primary sections: page = tabs + search; embedded = tabs + refresh + search */}
       <Flex
         direction={{ initial: 'column', sm: 'row' }}
         align={{ initial: 'stretch', sm: 'center' }}
         justify={{ initial: 'start', sm: 'between' }}
         gap="3"
+        wrap="wrap"
         style={{ width: '100%', minWidth: 0, flexShrink: 0 }}
       >
         <Box width={{ initial: '100%', sm: 'auto' }} minWidth="0">
-          <SegmentedControl.Root
+          <SegmentedTabs
             value={mainSection}
-            onValueChange={(v) => onMainSectionChange(v as MainSection)}
-            size="2"
-            style={{ width: '100%' }}
-          >
-            <SegmentedControl.Item value="providers">
-              {t('workspace.aiModels.mainSectionProviders')}
-            </SegmentedControl.Item>
-            <SegmentedControl.Item value="configured">
-              {t('workspace.aiModels.mainSectionConfigured')}
-              {configuredCount > 0 ? (
-                <Text
-                  as="span"
-                  size="1"
-                  weight="medium"
-                  style={{
-                    marginLeft: 6,
-                    padding: '1px 6px',
-                    borderRadius: 999,
-                    backgroundColor: 'var(--gray-a4)',
-                    color: 'var(--gray-12)',
-                    lineHeight: '16px',
-                  }}
-                >
-                  {configuredCount}
-                </Text>
-              ) : null}
-            </SegmentedControl.Item>
-          </SegmentedControl.Root>
+            onValueChange={(v) => onMainSectionChange(v)}
+            fill={isMobile}
+            items={[
+              { value: 'providers' as MainSection, label: t('workspace.aiModels.mainSectionProviders') },
+              {
+                value: 'configured' as MainSection,
+                label: t('workspace.aiModels.mainSectionConfigured'),
+                badge:
+                  configuredCount > 0 ? (
+                    <Text
+                      as="span"
+                      size="1"
+                      weight="medium"
+                      style={{
+                        flexShrink: 0,
+                        padding: '0 6px',
+                        borderRadius: 999,
+                        backgroundColor: 'var(--gray-a4)',
+                        color: 'var(--gray-12)',
+                        lineHeight: '16px',
+                      }}
+                    >
+                      {configuredCount}
+                    </Text>
+                  ) : undefined,
+              },
+            ]}
+          />
         </Box>
         {showPageHeader ? (
           <Flex
@@ -267,7 +283,8 @@ export function ProviderGrid({
             gap="3"
             wrap="wrap"
             justify={{ initial: 'start', sm: 'end' }}
-            style={{ flex: 1, minWidth: 0, width: '100%', alignSelf: 'stretch' }}
+            // Basis 240px in the row layout: below that the search drops under the tabs instead of shrinking.
+            style={{ flex: isMobile ? 1 : '1 1 240px', minWidth: 0, width: '100%', alignSelf: 'stretch' }}
           >
             {searchField}
           </Flex>
@@ -373,6 +390,7 @@ export function ProviderGrid({
           onSetDefault={onSetDefault}
           onDelete={onDelete}
           onRotate={onRotate}
+          onIdentityForwarding={onIdentityForwarding}
           isLoading={isLoading}
           showEmbeddingBuiltinPlaceholder={showEmbeddingBuiltinPlaceholder}
         />

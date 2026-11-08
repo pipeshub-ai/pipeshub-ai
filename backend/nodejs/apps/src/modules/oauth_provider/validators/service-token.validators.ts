@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { mongoIdRegex } from './oauth.validators';
 import { SERVICE_TOKEN_MAX_EXPIRY_DAYS } from '../services/service-token.service';
+import { integerCheck } from '../../../libs/utils/zod-formats';
 
 export const createServiceTokenSchema = z.object({
   body: z.object({
@@ -13,7 +14,7 @@ export const createServiceTokenSchema = z.object({
     scopes: z.array(z.string()).min(1, 'Choose at least one scope'),
     expiryDays: z
       .number()
-      .int()
+      .check(integerCheck())
       .min(1)
       .max(SERVICE_TOKEN_MAX_EXPIRY_DAYS)
       .optional(),

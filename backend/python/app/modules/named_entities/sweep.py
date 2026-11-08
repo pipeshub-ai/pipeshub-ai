@@ -26,6 +26,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from app.core.org_context import for_org, system
 from app.modules.named_entities.domain.kinds import VECTOR_KINDS
 from app.modules.named_entities.write_retry import retry_named_entity_write
 from app.telemetry.modules.named_entity_metrics import record_sweep
@@ -150,12 +151,15 @@ class NamedEntitySweeper:
 
     async def sweep_all(self) -> SweepResult:
         total = SweepResult()
-        for org in await self._graph.get_all_orgs(active=True) or []:
+        with system("named_entity_sweep"):
+            orgs = await self._graph.get_all_orgs(active=True) or []
+        for org in orgs:
             org_id = org.get("_key") or org.get("id")
             if not org_id:
                 continue
             try:
-                part = await self.sweep_org(str(org_id))
+                with for_org(str(org_id), job="named_entity_sweep"):
+                    part = await self.sweep_org(str(org_id))
             except Exception as exc:
                 self._logger.warning("named entity sweep failed org=%s error=%s", org_id, type(exc).__name__)
                 continue

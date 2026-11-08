@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from app.config.constants.arangodb import ProgressStatus
+from app.core.org_context import for_org
 from app.modules.pipeline.models import (
     Priority,
     RecordView,
@@ -63,6 +64,8 @@ class SweepReport:
     scanned: int
     republished: int
     reclaimed: int
+    # Stale states with no organisation: left alone, never run unscoped.
+    skipped_no_org: int = 0
 
 
 def _now_ms() -> int:
@@ -99,12 +102,14 @@ class Coordinator:
         trigger: str,
         force: bool = False,
         keep_claim_on_publish_failure: bool = False,
+        defer: frozenset[str] = frozenset(),
     ) -> list[str]:
         """A prerequisite produced outside the stage runtime finished for this revision.
 
         ``keep_claim_on_publish_failure`` is for callers that cannot cheaply retry (the
         record is already searchable): a job the broker refused stays QUEUED for the
-        sweeper instead of failing the caller.
+        sweeper instead of failing the caller. Stages in ``defer`` are left without a
+        state, as if never reached, until something redrives them.
         """
         if not self._registry.is_external(stage):
             raise ValueError(f"{stage!r} is not an external prerequisite")
@@ -120,7 +125,7 @@ class Coordinator:
                     patch=StageStatePatch.dispatch(job),
                 )
         return await self._dispatch_after(
-            stage, view, priority=priority, force=force, keep_claim=keep_claim_on_publish_failure
+            stage, view, priority=priority, force=force, keep_claim=keep_claim_on_publish_failure, defer=defer
         )
 
     async def on_stage_done(self, job: StageJob, result: StageResult) -> list[str]:
@@ -192,21 +197,32 @@ class Coordinator:
         refuses a late settle.
         """
         now = self._clock_ms()
-        scanned = republished = reclaimed = 0
+        scanned = republished = reclaimed = skipped_no_org = 0
+
+        def has_org(state: StageState) -> bool:
+            # The follow-ups below are org-scoped; a state naming no org is skipped, never run unscoped.
+            nonlocal skipped_no_org
+            if state.org_id:
+                return True
+            skipped_no_org += 1
+            self._logger.warning("Stage sweep: state %s has no organisation and is skipped", state.key)
+            return False
+
         queued = await self._states.stale(
             statuses=(ProgressStatus.QUEUED,), updated_before_ms=now - queued_older_than_ms, limit=limit
         )
         for state in queued:
             scanned += 1
-            if not self._registry.has(state.stage):
+            if not self._registry.has(state.stage) or not has_org(state):
                 continue
             if state.published_at_ms is not None and now - state.published_at_ms < republish_after_ms:
                 # On the broker, waiting its turn behind the backlog.
                 continue
             job = state.to_job()
-            if await self._send(job):
-                await self._mark_published(job)
-                republished += 1
+            with for_org(state.org_id, job="stage_sweep"):
+                if await self._send(job):
+                    await self._mark_published(job)
+                    republished += 1
         # A paused job rewrites its state every time it comes back (at least every few minutes),
         # so one untouched for the republish backstop has lost its message.
         paused = await self._states.stale(
@@ -214,14 +230,15 @@ class Coordinator:
         )
         for state in paused:
             scanned += 1
-            if not self._registry.has(state.stage):
+            if not self._registry.has(state.stage) or not has_org(state):
                 continue
             job = state.to_job()
-            if await self._states.cas(state.key, expected=ProgressStatus.PAUSED, new=ProgressStatus.QUEUED) and (
-                await self._send(job)
-            ):
-                await self._mark_published(job)
-                republished += 1
+            with for_org(state.org_id, job="stage_sweep"):
+                if await self._states.cas(
+                    state.key, expected=ProgressStatus.PAUSED, new=ProgressStatus.QUEUED
+                ) and await self._send(job):
+                    await self._mark_published(job)
+                    republished += 1
         if in_progress_older_than_ms is not None:
             running = await self._states.stale(
                 statuses=(ProgressStatus.IN_PROGRESS,),
@@ -230,7 +247,7 @@ class Coordinator:
             )
             for state in running:
                 scanned += 1
-                if not self._registry.has(state.stage):
+                if not self._registry.has(state.stage) or not has_org(state):
                     continue
                 job = state.to_job()
                 if is_job_active is not None:
@@ -238,19 +255,29 @@ class Coordinator:
                         continue
                 elif now - state.updated_at_ms <= self._registry.get(state.stage).budget_s * 1000:
                     continue
-                reclaimed_state = await self._states.cas(
-                    state.key,
-                    expected=ProgressStatus.IN_PROGRESS,
-                    new=ProgressStatus.QUEUED,
-                    patch=StageStatePatch(worker_id=None, reason="re-dispatched: worker lost"),
-                )
-                if reclaimed_state and await self._send(job):
-                    await self._mark_published(job)
-                    reclaimed += 1
-        return SweepReport(scanned=scanned, republished=republished, reclaimed=reclaimed)
+                with for_org(state.org_id, job="stage_sweep"):
+                    reclaimed_state = await self._states.cas(
+                        state.key,
+                        expected=ProgressStatus.IN_PROGRESS,
+                        new=ProgressStatus.QUEUED,
+                        patch=StageStatePatch(worker_id=None, reason="re-dispatched: worker lost"),
+                    )
+                    if reclaimed_state and await self._send(job):
+                        await self._mark_published(job)
+                        reclaimed += 1
+        return SweepReport(
+            scanned=scanned, republished=republished, reclaimed=reclaimed, skipped_no_org=skipped_no_org
+        )
 
     async def _dispatch_after(
-        self, upstream: str, view: RecordView, *, priority: Priority, force: bool, keep_claim: bool = False
+        self,
+        upstream: str,
+        view: RecordView,
+        *,
+        priority: Priority,
+        force: bool,
+        keep_claim: bool = False,
+        defer: frozenset[str] = frozenset(),
     ) -> list[str]:
         policy = self._policy_for(view.org_id)
         published: list[str] = []
@@ -266,6 +293,8 @@ class Coordinator:
                     # The last prerequisite to finish dispatches it.
                     continue
                 evaluated.add(stage.name)
+                if stage.name in defer:
+                    continue
                 if not stage.applies(view, policy):
                     await self._skip(stage, view, priority=priority, trigger=done)
                     frontier.append(stage.name)

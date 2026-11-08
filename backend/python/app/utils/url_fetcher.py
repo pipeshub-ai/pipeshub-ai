@@ -96,18 +96,6 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 IPAddress = ipaddress.IPv4Address | ipaddress.IPv6Address
 
-# How much of the address space a fetch may reach.
-#   "public_only": the public internet only; the default for user/admin-supplied URLs.
-#   "no_local":    private networks too (``allow_private``: RFC1918, ULA, CGNAT), but never
-#                  loopback, link-local or cloud metadata.
-HostPolicy = Literal["public_only", "no_local"]
-PUBLIC_ONLY: HostPolicy = "public_only"
-NO_LOCAL: HostPolicy = "no_local"
-
-
-def _allows_private(policy: HostPolicy) -> bool:
-    return policy == NO_LOCAL
-
 
 @dataclass(frozen=True)
 class PublicTarget:
@@ -182,11 +170,6 @@ def _ip_is_blocked(ip: IPAddress, *, block_non_global: bool = True, allow_privat
         or ip.is_unspecified
         or (block_non_global and not ip.is_global)
     )
-
-
-def ip_is_blocked(ip: IPAddress, policy: HostPolicy) -> bool:
-    """``_ip_is_blocked`` under a host-policy tier, for resolvers that vet at connect time."""
-    return _ip_is_blocked(ip, allow_private=_allows_private(policy))
 
 
 PRIVATE_ADDRESS_SWITCH_ENV = "PIPESHUB_BLOCK_PRIVATE_ADDRESSES"
@@ -284,19 +267,6 @@ def check_http_url_without_resolving(
     _check_static(url, block_non_global=block_non_global, allow_private=allow_private)
 
 
-def check_url_host_without_dns(url: str, policy: HostPolicy) -> None:
-    """``check_http_url_without_resolving`` under a host-policy tier.
-
-    For callers whose HTTP client vets resolved addresses at connect time: that covers
-    hostnames, and this covers what never reaches a resolver (literal addresses and
-    blocked names) on the first request and on every redirect.
-
-    Raises:
-        FetchError: if the URL is disallowed under *policy*.
-    """
-    check_http_url_without_resolving(url, allow_private=_allows_private(policy))
-
-
 def resolve_public_http_target(
     url: str, *, block_non_global: bool = True, allow_private: bool = False,
 ) -> PublicTarget:
@@ -341,7 +311,23 @@ class HostCheckError(ValueError):
     """A host a user typed may not be connected to. The message is written for that user."""
 
 
-async def vetted_addresses(host: str, *, lookup_timeout_s: float = 5.0) -> list[IPAddress]:
+def public_address_refusal(host: str) -> str:
+    """What a user is told when a personal connector's host is not a public address.
+
+    One text for every way a host can fail (private, loopback, link-local, metadata, an
+    unknown name or a lookup that timed out), so it says nothing about the network behind
+    the name.
+    """
+    return (
+        f'"{host}" is not a public server address. Personal connectors can only connect to '
+        "servers on public addresses. Ask an administrator to set up a team connector for "
+        "servers on your network."
+    )
+
+
+async def vetted_addresses(
+    host: str, *, lookup_timeout_s: float = 5.0, public_only: bool = False
+) -> list[IPAddress]:
     """The addresses to connect to for ``host`` (a database server, say), looked up once.
 
     Connect to these, not to ``host``: a second lookup could answer differently. The rule
@@ -350,15 +336,27 @@ async def vetted_addresses(host: str, *, lookup_timeout_s: float = 5.0) -> list[
     PIPESHUB_BLOCK_PRIVATE_ADDRESSES is on. Empty for a Unix socket path the deployment
     allows, which has nothing to look up.
 
+    ``public_only`` is for a connector any user can create (personal scope): only public
+    addresses, whatever the deployment setting. It never loosens the deployment's rule.
+
     Raises:
         HostCheckError: the host is refused, doesn't resolve, or its lookup timed out. The
             message does not say what a name resolves to, which would describe the
             deployment's network.
     """
+    try:
+        return await _vetted_addresses(host, lookup_timeout_s, public_only=public_only)
+    except HostCheckError as e:
+        if public_only:
+            raise HostCheckError(public_address_refusal(host)) from e
+        raise
+
+
+async def _vetted_addresses(host: str, lookup_timeout_s: float, *, public_only: bool) -> list[IPAddress]:
     # model_egress imports this module.
     from app.utils.model_egress import parse_answers
 
-    allow_private = not private_addresses_blocked()
+    allow_private = not (public_only or private_addresses_blocked())
     private_reason = (
         f'"{host}" is a private or internal address, which this deployment does not allow '
         f"({PRIVATE_ADDRESS_SWITCH_ENV})."
@@ -386,11 +384,11 @@ async def vetted_addresses(host: str, *, lookup_timeout_s: float = 5.0) -> list[
         addresses = parse_answers(infos)
         if not addresses:
             raise HostCheckError(f'Could not find a server named "{host}". Check the host name.')
-    check_addresses(host, addresses)
+    check_addresses(host, addresses, public_only=public_only)
     return addresses
 
 
-def check_addresses(host: str, addresses: list[IPAddress]) -> None:
+def check_addresses(host: str, addresses: list[IPAddress], *, public_only: bool = False) -> None:
     """Apply ``vetted_addresses``' rule to addresses already looked up for ``host``.
 
     Raises:
@@ -399,11 +397,16 @@ def check_addresses(host: str, addresses: list[IPAddress]) -> None:
     # model_egress imports this module.
     from app.utils.model_egress import address_refusal
 
-    allow_private = not private_addresses_blocked()
-    _check_hostname(host, allow_private=allow_private)
-    reason = address_refusal(addresses, allow_private=allow_private)
-    if reason is not None:
-        raise HostCheckError(f'"{host}" is {reason}.')
+    allow_private = not (public_only or private_addresses_blocked())
+    try:
+        _check_hostname(host, allow_private=allow_private)
+        reason = address_refusal(addresses, allow_private=allow_private)
+        if reason is not None:
+            raise HostCheckError(f'"{host}" is {reason}.')
+    except HostCheckError as e:
+        if public_only:
+            raise HostCheckError(public_address_refusal(host)) from e
+        raise
 
 
 def _check_hostname(host: str, *, allow_private: bool) -> None:
@@ -796,7 +799,6 @@ def fetch_url(
     profile: str | None = None,
     verbose: bool = False,
     block_private_hosts: bool = True,
-    host_policy: HostPolicy | None = None,
 ) -> FetchResult:
     """
     Fetch a URL using a multi-strategy fallback chain.
@@ -825,10 +827,6 @@ def fetch_url(
             without environment proxies or the cloudscraper strategy. Set False only
             for URLs an operator configured, never for URLs a user, a model or a
             third-party document supplied.
-        host_policy: The address tier every hop is judged under. ``None`` means
-            ``"public_only"`` when ``block_private_hosts`` is True and no checks otherwise;
-            ``"no_local"`` also reaches private networks (never loopback, link-local or
-            metadata), with the same per-hop resolution and pinning.
 
     Returns:
         FetchResult with .text, .content, .status_code, .strategy, etc.
@@ -848,18 +846,15 @@ def fetch_url(
         profile=profile,
         verbose=verbose,
     )
-    if host_policy is None and block_private_hosts:
-        host_policy = PUBLIC_ONLY
-    if host_policy is None:
+    if not block_private_hosts:
         return run(url, follow_redirects=True, pin=None)
-    allow_private = _allows_private(host_policy)
 
     # Each hop is resolved once and pinned to that answer, so a second DNS answer
     # (rebinding) cannot move the connection somewhere the check never saw.
     current_url = url
     for _ in range(_MAX_REDIRECTS + 1):
         _reject_http_userinfo(current_url)
-        target = resolve_public_http_target(current_url, allow_private=allow_private)
+        target = resolve_public_http_target(current_url)
         result = _run_pinned_with_failover(run, current_url, target)
         location = _redirect_location(result)
         if location is None:

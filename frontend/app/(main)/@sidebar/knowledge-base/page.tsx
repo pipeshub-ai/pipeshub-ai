@@ -14,6 +14,8 @@ import '../../knowledge-base/utils/sidebar-session';
 import { fetchAppDirectChildren } from '../../knowledge-base/utils/fetch-app-direct-children';
 import { buildNavUrl, getIsAllRecordsMode, pushKbUrl } from '../../knowledge-base/utils/nav';
 import { findNodeInCategorized } from '../../knowledge-base/utils/find-node';
+import { collectionNameError, folderNameError } from '../../knowledge-base/utils/name-rules';
+import { useTranslation } from 'react-i18next';
 import { useCallback, useMemo, Suspense } from 'react';
 import { toast } from '@/lib/store/toast-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
@@ -23,6 +25,7 @@ import { useUserPermission, usePermissionDeniedDialog } from '@/config';
 
 function KnowledgeBaseSidebarSlotContent() {
   const router = useRouter();
+  const { t } = useTranslation();
   const searchParams = useSearchParams();
   const isAllRecordsMode = getIsAllRecordsMode(searchParams);
   const canCreateCollection = useUserPermission('createCollection');
@@ -212,6 +215,13 @@ function KnowledgeBaseSidebarSlotContent() {
     const state = useKnowledgeBaseStore.getState();
     const { node, rootKbId } = findNodeInCategorized(state.categorizedNodes, nodeId);
     const kind = node?.nodeType === 'folder' ? 'folder' : 'collection';
+    const refusal = kind === 'folder'
+      ? folderNameError(newName, t)
+      : collectionNameError(newName, state.categorizedNodes, t, nodeId);
+    if (refusal) {
+      toast.error(refusal);
+      throw new Error(refusal);
+    }
     try {
       await KnowledgeBaseApi.renameNode({
         nodeId,
@@ -225,6 +235,8 @@ function KnowledgeBaseSidebarSlotContent() {
       throw error;
     }
     toast.success(kind === 'folder' ? 'Folder renamed successfully' : 'Collection renamed successfully');
+    // The page header, breadcrumbs and "Ask in …" bar read tableData, which no reload below refetches.
+    useKnowledgeBaseStore.getState().applyNodeRename(nodeId, newName);
 
     // Reload in place rather than clearing the caches first: the reload walks
     // the cached tree to find every open folder that may show the old name.
@@ -240,7 +252,7 @@ function KnowledgeBaseSidebarSlotContent() {
         description: `The ${kind} was renamed, but the list didn't refresh. Refresh the page to see the latest list.`,
       });
     }
-  }, []);
+  }, [t]);
 
   const handleSidebarDelete = useCallback((nodeId: string) => {
     if (!canDeleteCollection) return;

@@ -55,7 +55,7 @@ test.describe('Teams Create', () => {
 
       // Submit inside the dialog (not the page CTA behind the overlay)
       const dialog = page.getByRole('dialog');
-      await dialog.getByRole('button', { name: 'Create Team' }).click();
+      await dialog.getByRole('button', { name: 'Create team' }).click();
       await expect(dialog).toBeHidden({ timeout: 10_000 });
 
       const searchInput = page.locator('input[placeholder*="Search"]');
@@ -75,7 +75,7 @@ test.describe('Teams Create', () => {
     await page.waitForTimeout(500);
 
     const dialog = page.getByRole('dialog');
-    const submitButton = dialog.getByRole('button', { name: 'Create Team' });
+    const submitButton = dialog.getByRole('button', { name: 'Create team' });
     await expect(submitButton).toBeDisabled();
   });
 });

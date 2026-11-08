@@ -85,6 +85,7 @@ class _Hub:
             "lineage": [{"ancestors": ["a1"], "declared": ["g1"]}],
             "browse_start": [{"handle": "records/f1", "fromApp": from_app, "crumbNodes": [], "crumbEdges": []}],
             "enrich": [{"i": 0, "row": row}],
+            "enrich_exact": [{"i": 0, "row": row}],
             "check:targets": [target],
             "check:seeds": [{"node": "p1", "seed": "s2"}],
             "slim": [["records/r1", "record", "a"]],
@@ -96,7 +97,8 @@ class _Hub:
         self._levels = {"step_app": ["records/r1"], "step_open": ["records/r2"],
                         "step_browse": ["records/r3"], "step_browse_open": ["records/r3"],
                         "step_up": ["records/s1"],
-                        "step_app_within": ["records/r1"], "step_open_within": ["records/r2"]}
+                        "step_app_within": ["records/r1"], "step_open_within": ["records/r2"],
+                        "step_hier": ["records/r1"]}
 
     async def __call__(self, query: str, bind_vars: dict[str, Any] | None = None, **_: object) -> list[Any]:
         self.calls.append((query, dict(bind_vars or {})))
@@ -137,7 +139,9 @@ async def test_all_records_sends_exactly_the_binds_it_declares(view, opens, from
     )
 
     assert [row["id"] for row in page["rows"]] == ["r1"], "the listing stopped before its page"
-    assert {"app", "slim", "enrich", "check:targets"} <= hub.sent, hub.sent
+    assert {"app", "slim", "check:targets"} <= hub.sent, hub.sent
+    # A browse reads the exact arrows, a flatten the strict ones.
+    assert hub.sent & {"enrich", "enrich_exact"} == ({"enrich"} if flatten else {"enrich_exact"}), hub.sent
     for query, binds in hub.calls:
         assert _declared(query) == set(binds), query
 
@@ -153,7 +157,7 @@ async def test_every_knowledge_hub_statement_is_reached_by_some_view() -> None:
                     await provider.get_knowledge_hub_connector_page_v3(
                         "app1", "org1", ["uk1", "org1"], ["app1"], ["s1", "g1"], 10,
                         flatten=flatten, start_id=start_id, start_type=start_type, include_scope=True,
-                        filters=filters,
+                        filters=filters, max_depth=2,
                     )
                     reached |= hub.sent
     provider = _arango()

@@ -1,8 +1,10 @@
 """A write that fails partway leaves the graph as it was, on Neo4j 5.26 and ArangoDB 3.12.
 
-With NEO4J_EXPLICIT_TRANSACTIONS off (the default), every Neo4j statement
-commits on its own, so a write split over several statements kept its first
-steps when a later one failed. ArangoDB rolls the whole transaction back. Each
+With NEO4J_EXPLICIT_TRANSACTIONS off, every Neo4j statement commits on its own,
+so a write split over several statements kept its first steps when a later one
+failed. It is on by default now and these writes are single statements anyway;
+the tests run in the default mode, and a plain multi-statement block that
+fails midway is checked to leave nothing. ArangoDB rolls the whole transaction back. Each
 write below is now one statement on Neo4j:
 
 - a sync rewriting a user group's members, a record group's permissions or an
@@ -108,6 +110,7 @@ from app.connectors.core.base.data_store import (
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+from app.core.org_context import OrgContext, bind
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -184,7 +187,7 @@ async def _require_lock_timeout(graph: Neo4jProvider) -> None:
 
 @pytest.fixture(params=["neo4j", "arango"])
 async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_World]:
-    # The default, where each Neo4j statement commits on its own.
+    # The default: Neo4j runs each transaction block as one real transaction.
     monkeypatch.delenv("NEO4J_EXPLICIT_TRANSACTIONS", raising=False)
     # The failure is the point: a retry would only wait on the same hold again.
     monkeypatch.setattr(graph_data_store_module, "_is_retryable", lambda _instance, _error: False)
@@ -951,13 +954,13 @@ async def test_a_failed_permission_upgrade_keeps_the_old_permission(world: _Worl
             alice, CollectionNames.USERS.value, record.id, CollectionNames.RECORDS.value, permission
         )
 
-    # Neither store can write this edge: Neo4j takes no map as a property value,
-    # and ArangoDB's schema wants a number.
+    # Neither store can write this edge: both refuse a map for createdAtTimestamp, which the
+    # permissions schema wants as a number (Neo4j through the shared schema, before any statement).
     refused = Permission.model_construct(
         type=PermissionType.WRITE, entity_type=EntityType.USER, created_at={"refused": True},
         updated_at=get_epoch_timestamp_in_ms(),
     )
-    expected = "Property values can only be of primitive types" if w.neo4j else "permissions schema"
+    expected = "is not of type 'number'" if w.neo4j else "permissions schema"
     assert expected in await _failure(lambda: upgrade(refused))
 
     assert await _roles(w, alice, record.id) == ["READER"]
@@ -1498,9 +1501,10 @@ async def test_a_failed_knowledge_base_create_leaves_no_knowledge_base(world: _W
 async def test_with_create_transactions_off_a_failed_knowledge_base_create_leaves_it_half_made(
     world: _World, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """NEO4J_CREATE_TRANSACTIONS=false is today's auto-commit, which the hold above does fail partway."""
+    """With both flags false it is the old auto-commit, which the hold above does fail partway."""
     w = world
     monkeypatch.setenv("NEO4J_CREATE_TRANSACTIONS", "false")
+    monkeypatch.setenv("NEO4J_EXPLICIT_TRANSACTIONS", "false")
     graph = await connect_neo4j(logger, monkeypatch)
     try:
         await _add_org(w)
@@ -1609,13 +1613,17 @@ async def test_a_failed_team_create_leaves_no_team(world: _World) -> None:
         hold = _neo4j_hold(w, "MATCH (u:User {id: $id}) SET u.heldByTest = true RETURN count(u) AS n", {"id": member})
     else:
         hold = _arango_unique(w, CollectionNames.PERMISSION.value, ["_to"])
+    # The auth middleware binds the caller's org; this calls the route directly.
+    caller_org = OrgContext(w.org_id, creator, "user", "jwt", "req-test")
     async with hold:
-        assert await _route_failure(lambda: create_team(_route_request(w, creator, body))) == 500
+        with bind(caller_org):
+            assert await _route_failure(lambda: create_team(_route_request(w, creator, body))) == 500
 
     teams = await w.graph.get_nodes_by_filters(CollectionNames.TEAMS.value, {"orgId": w.org_id}, raise_on_error=True)
     assert teams == []
 
-    response = await create_team(_route_request(w, creator, body))
+    with bind(caller_org):
+        response = await create_team(_route_request(w, creator, body))
     assert response.status_code == 200
     (team,) = await w.graph.get_nodes_by_filters(CollectionNames.TEAMS.value, {"orgId": w.org_id})
     w.ids.add(team.get("id") or team.get("_key"))
@@ -1651,3 +1659,23 @@ async def test_a_failed_agent_create_leaves_no_agent(world: _World) -> None:
     assert await _sources(w, agent.get("id") or agent["_key"], CollectionNames.AGENT_INSTANCES.value) == {
         owner, w.org_id,
     }
+
+
+async def test_a_plain_block_that_fails_midway_writes_nothing(world: _World) -> None:
+    """The default on both stores: statements before the failure are rolled back."""
+    w = world
+    key = f"user-midway-{uuid.uuid4().hex[:8]}"
+    w.ids.add(key)
+    store = GraphDataStore(logger, w.graph)
+
+    async def write_then_fail(tx_store) -> None:
+        await tx_store.batch_upsert_nodes(
+            [{"id": key, "userId": key, "orgId": w.org_id, "email": f"{key}@example.com", "isActive": True}],
+            CollectionNames.USERS.value,
+        )
+        raise RuntimeError("fail after the first statement")
+
+    with pytest.raises(RuntimeError, match="after the first statement"):
+        await store.execute_in_transaction(write_then_fail)
+
+    assert await w.graph.get_document(key, CollectionNames.USERS.value) is None

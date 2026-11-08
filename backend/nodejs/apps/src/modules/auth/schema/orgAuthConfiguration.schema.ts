@@ -1,19 +1,8 @@
 import mongoose, { Schema, Document, Types, Model } from 'mongoose';
+import { AuthMethodType, type IAuthMethod } from '../types/auth-method';
 
-export interface IAuthMethod {
-  type: 'samlSso' | 'otp' | 'password' | 'google' | 'microsoft' | 'azureAd' | 'oauth' | 'github';
-}
-
-export enum AuthMethodType {
-  SAML_SSO = 'samlSso',
-  OTP = 'otp',
-  PASSWORD = 'password',
-  GOOGLE = 'google',
-  MICROSOFT = 'microsoft',
-  AZURE_AD = 'azureAd',
-  OAUTH = 'oauth',
-  GITHUB = 'github',
-}
+export { AuthMethodType };
+export type { IAuthMethod };
 
 interface IAuthStep {
   order: number;
@@ -24,6 +13,8 @@ interface IOrgAuthConfig extends Document {
   orgId: Types.ObjectId;
   domain?: string;
   authSteps: IAuthStep[];
+  /** Methods the 1.0 upgrade took out of this policy (see removedSignInMethods.ts). */
+  removedSignInMethods?: string[];
   isDeleted?: boolean;
   createdAt?: Date;
   updatedAt?: Date;
@@ -71,6 +62,7 @@ const OrgAuthConfigSchema = new Schema<IOrgAuthConfig>(
         },
       ],
     },
+    removedSignInMethods: { type: [String], default: undefined },
     isDeleted: { type: Boolean, default: false },
   },
   { timestamps: true },

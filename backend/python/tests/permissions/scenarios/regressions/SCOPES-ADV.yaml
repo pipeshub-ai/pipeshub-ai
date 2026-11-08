@@ -1,0 +1,280 @@
+# Adversarial worlds for the viewer scopes.
+# Stamps are for the reference filter in test_scopes_reference_filter.py.
+- id: SCOPES-ADV-01
+  title: Deep chain (14 pages) with a group-restricted page at depth 7 and a no-inherit page at depth 10
+  source: review of the viewer scopes (deep nesting, restricted scopes under a readable container)
+  rule: intersection
+  world:
+    principals:
+      - {id: a}
+      - {id: b}
+      - {id: c}
+      - {id: d}
+      - {id: g:readers, kind: group}
+      - {id: g:inner, kind: group}
+    nodes:
+      - {id: app, kind: app, app_type: CONFLUENCE}
+      - {id: space, kind: group, connector: app, rule: RESTRICTED, parents: [app], inherits: [app], belongs: [app]}
+      - {id: p1, kind: record, connector: app, rule: STRICT, parents: [space], inherits: [space], belongs: [space]}
+      - {id: p2, kind: record, connector: app, rule: STRICT, parents: [p1], inherits: [p1], belongs: [space]}
+      - {id: p3, kind: record, connector: app, rule: STRICT, parents: [p2], inherits: [p2], belongs: [space]}
+      - {id: p4, kind: record, connector: app, rule: STRICT, parents: [p3], inherits: [p3], belongs: [space]}
+      - {id: p5, kind: record, connector: app, rule: STRICT, parents: [p4], inherits: [p4], belongs: [space]}
+      - {id: p6, kind: record, connector: app, rule: STRICT, parents: [p5], inherits: [p5], belongs: [space]}
+      - {id: p7, kind: record, connector: app, rule: RESTRICTED, parents: [p6], inherits: [p6], belongs: [space]}
+      - {id: p8, kind: record, connector: app, rule: STRICT, parents: [p7], inherits: [p7], belongs: [space]}
+      - {id: p9, kind: record, connector: app, rule: STRICT, parents: [p8], inherits: [p8], belongs: [space]}
+      - {id: p10, kind: record, connector: app, rule: STRICT, parents: [p9], belongs: [space]}
+      - {id: p11, kind: record, connector: app, rule: STRICT, parents: [p10], inherits: [p10], belongs: [space]}
+      - {id: p12, kind: record, connector: app, rule: STRICT, parents: [p11], inherits: [p11], belongs: [space]}
+      - {id: p13, kind: record, connector: app, rule: STRICT, parents: [p12], inherits: [p12], belongs: [space]}
+      - {id: p14, kind: record, connector: app, rule: STRICT, parents: [p13], inherits: [p13], belongs: [space]}
+      - {id: att, kind: record, connector: app, rule: OPEN, parents: [{id: p14, rel: ATTACHMENT}], inherits: [p14], belongs: [space]}
+    grants:
+      - [g:readers, space]
+      - [g:inner, p7]
+      - [a, p10]
+      - [c, p14]
+    memberships:
+      - [a, g:readers]
+      - [a, g:inner]
+      - [b, g:readers]
+      - [b, g:inner]
+    gates:
+      - [a, app]
+      - [b, app]
+      - [c, app]
+      - [d, app]
+  mutations:
+    - {kind: member_removed, node: g:inner, ref: a}
+  expect:
+    before:
+      a: {p6: admit, p9: admit, p10: admit, p14: admit, att: admit}
+      b: {p9: admit, p10: deny, att: deny}
+      c: {p1: deny, p14: deny}
+      d: {space: deny, att: deny}
+    verdicts:
+      a: {p6: admit, p7: deny, p14: deny, att: deny}
+  tags: [regression, scopes, deep]
+
+- id: SCOPES-ADV-02
+  title: An OPEN attachment granted directly under a restricted page the viewer cannot read (R9 seed)
+  source: review of the viewer scopes (pruning and the Intersection exclusion)
+  rule: intersection
+  world:
+    principals:
+      - {id: hr}
+      - {id: dee}
+      - {id: g:hr, kind: group}
+    nodes:
+      - {id: app, kind: app, app_type: CONFLUENCE}
+      - {id: space, kind: group, connector: app, rule: RESTRICTED, parents: [app], inherits: [app], belongs: [app]}
+      - {id: secret, kind: record, connector: app, rule: RESTRICTED, parents: [space], inherits: [space], belongs: [space]}
+      - {id: shared, kind: record, connector: app, rule: OPEN, parents: [{id: secret, rel: ATTACHMENT}], inherits: [secret], belongs: [space]}
+      - {id: below, kind: record, connector: app, rule: OPEN, parents: [{id: shared, rel: ATTACHMENT}], inherits: [shared], belongs: [space]}
+    grants:
+      - [g:hr, space]
+      - [g:hr, secret]
+      - [dee, shared]
+    memberships:
+      - [hr, g:hr]
+    gates:
+      - [hr, app]
+      - [dee, app]
+  expect:
+    verdicts:
+      dee: {space: deny, secret: deny, shared: admit, below: admit}
+      hr: {secret: admit, shared: admit, below: admit}
+  tags: [regression, scopes, seed]
+
+- id: SCOPES-ADV-03
+  title: Groups of groups, a role and a team; org grants typed ORGANIZATION and USER; an outsider and an idle viewer
+  source: review of the viewer scopes (principals)
+  rule: intersection
+  world:
+    principals:
+      - {id: u}
+      - {id: idle}
+      - {id: outsider, org_member: false}
+      - {id: nobody}
+      - {id: g:outer, kind: group}
+      - {id: g:inner, kind: group}
+      - {id: r:lead, kind: role}
+      - {id: t:core, kind: team}
+    nodes:
+      - {id: app, kind: app, app_type: CONFLUENCE}
+      - {id: space, kind: group, connector: app, rule: RESTRICTED, parents: [app], inherits: [app], belongs: [app]}
+      - {id: nested, kind: record, connector: app, rule: RESTRICTED, parents: [space], inherits: [space], belongs: [space]}
+      - {id: byrole, kind: record, connector: app, rule: RESTRICTED, parents: [space], inherits: [space], belongs: [space]}
+      - {id: byteam, kind: record, connector: app, rule: RESTRICTED, parents: [space], inherits: [space], belongs: [space]}
+      - {id: orgwide, kind: record, connector: app, rule: RESTRICTED, parents: [space], inherits: [space], belongs: [space]}
+      - {id: orguser, kind: record, connector: app, rule: RESTRICTED, parents: [space], inherits: [space], belongs: [space]}
+      - {id: noinherit, kind: record, connector: app, rule: STRICT, parents: [space], belongs: [space]}
+    grants:
+      - [org, space, ORGANIZATION]
+      - [g:outer, nested]
+      - [r:lead, byrole]
+      - [t:core, byteam]
+      - [org, orgwide, ORG]
+      - [org, orguser, USER]
+      - [g:inner, noinherit]
+    memberships:
+      - [g:inner, g:outer]
+      - [u, g:inner]
+      - [u, r:lead]
+      - [u, t:core]
+      - [outsider, r:lead]
+    gates:
+      - [u, app]
+      - [idle, app]
+      - [outsider, app]
+  expect:
+    verdicts:
+      u: {space: admit, nested: deny, byrole: admit, byteam: admit, orgwide: admit, orguser: deny, noinherit: admit}
+      idle: {space: admit, orgwide: admit, nested: deny, noinherit: deny}
+      outsider: {space: deny, byrole: deny}
+      nobody: {space: deny}
+  tags: [regression, scopes, principals]
+
+- id: SCOPES-ADV-04
+  title: Pruning edge cases - root record, a parent not inherited, a deleted gate with a grant, a placeholder with a list, a linked source account
+  source: review of the viewer scopes (needs_grant)
+  rule: union
+  world:
+    principals:
+      - {id: v}
+      - {id: w}
+      - {id: src, org_member: false}
+      - {id: g:src, kind: group, org_member: false}
+      - {id: g:team, kind: group}
+    nodes:
+      - {id: app, kind: app, app_type: DRIVE}
+      - {id: drive, kind: group, connector: app, rule: OPEN, parents: [app], inherits: [app], belongs: [app]}
+      - {id: root, kind: record, connector: app, rule: OPEN, belongs: [drive]}
+      - {id: rootkid, kind: record, connector: app, rule: OPEN, parents: [root], inherits: [root], belongs: [drive]}
+      - {id: fa, kind: record, connector: app, rule: OPEN, parents: [drive], inherits: [drive], belongs: [drive]}
+      - {id: fb, kind: record, connector: app, rule: RESTRICTED, parents: [drive], inherits: [drive], belongs: [drive]}
+      - {id: twoparents, kind: record, connector: app, rule: OPEN, parents: [fa, fb], inherits: [fb], belongs: [drive]}
+      - {id: gone, kind: record, connector: app, rule: OPEN, parents: [drive], inherits: [drive], belongs: [drive], deleted: true}
+      - {id: undergone, kind: record, connector: app, rule: OPEN, parents: [gone], inherits: [gone], belongs: [drive]}
+      - {id: ph, kind: record, connector: app, rule: OPEN, parents: [drive], inherits: [drive], belongs: [drive], placeholder: true}
+      - {id: viasrc, kind: record, connector: app, rule: RESTRICTED, parents: [drive], inherits: [drive], belongs: [drive]}
+      - {id: viasrcgroup, kind: record, connector: app, rule: STRICT, parents: [drive], belongs: [drive]}
+      - {id: viateam, kind: record, connector: app, rule: STRICT, parents: [fb], belongs: [drive]}
+    grants:
+      - [v, drive]
+      - [w, drive]
+      - [v, root]
+      - [v, gone]
+      - [v, undergone]
+      - [v, ph]
+      - [w, fb]
+      - [src, viasrc]
+      - [g:src, viasrcgroup]
+      - [g:team, viateam]
+      - [w, twoparents]
+    memberships:
+      - [src, g:src]
+      - [v, g:team]
+    gates:
+      - [v, app]
+      - [w, app]
+    links:
+      - [v, src, app]
+  expect:
+    verdicts:
+      v: {root: admit, rootkid: admit, twoparents: deny, fb: deny, gone: deny, undergone: admit, ph: deny, viasrc: admit, viasrcgroup: admit, viateam: deny}
+      w: {root: deny, twoparents: admit, fb: admit, viasrc: deny}
+  tags: [regression, scopes, pruning]
+
+- id: SCOPES-ADV-05
+  title: Withdrawn app link keeps direct grants inert, then a deactivation drops the memberships
+  source: review of the viewer scopes
+  rule: intersection
+  world:
+    principals:
+      - {id: kept}
+      - {id: gone}
+      - {id: g:staff, kind: group}
+    nodes:
+      - {id: app, kind: app, app_type: CONFLUENCE}
+      - {id: other, kind: app, app_type: JIRA}
+      - {id: space, kind: group, connector: app, rule: RESTRICTED, parents: [app], inherits: [app], belongs: [app]}
+      - {id: page, kind: record, connector: app, rule: RESTRICTED, parents: [space], inherits: [space], belongs: [space]}
+      - {id: proj, kind: group, connector: other, rule: RESTRICTED, parents: [other], inherits: [other], belongs: [other]}
+      - {id: issue, kind: record, connector: other, rule: RESTRICTED, parents: [proj], inherits: [proj], belongs: [proj]}
+    grants:
+      - [g:staff, space]
+      - [gone, page]
+      - [kept, page]
+      - [g:staff, proj]
+      - [gone, issue]
+      - [kept, issue]
+    memberships:
+      - [kept, g:staff]
+      - [gone, g:staff]
+    gates:
+      - [kept, app]
+      - [kept, other]
+      - [gone, other]
+  mutations:
+    - {kind: user_deactivated, node: kept}
+  expect:
+    before:
+      gone: {space: deny, page: deny, issue: admit}
+      kept: {page: admit, issue: admit}
+    verdicts:
+      kept: {space: deny, page: deny, proj: deny}
+  tags: [regression, scopes, pm-14]
+
+- id: SCOPES-ADV-06
+  title: Mixed apps in one org - APP_LEVEL, KB, a record-group-level team, Override items and a Union file
+  source: review of the viewer scopes (mixed rules)
+  rule: union
+  world:
+    principals:
+      - {id: x}
+      - {id: y}
+      - {id: g:sp, kind: group}
+    nodes:
+      - {id: open, kind: app, app_type: WEB, model: APP_LEVEL}
+      - {id: wsite, kind: group, connector: open, rule: RESTRICTED, parents: [open], belongs: [open]}
+      - {id: wpage, kind: record, connector: open, rule: RESTRICTED, parents: [wsite], belongs: [wsite]}
+      - {id: kb, kind: app, app_type: KB}
+      - {id: kbg, kind: group, connector: kb, rule: OPEN, parents: [kb], inherits: [kb], belongs: [kb]}
+      - {id: kbdoc, kind: record, connector: kb, rule: OPEN, parents: [kbg], belongs: [kbg]}
+      - {id: lin, kind: app, app_type: LINEAR}
+      - {id: team, kind: group, connector: lin, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [lin], belongs: [lin]}
+      - {id: tissue, kind: record, connector: lin, rule: RESTRICTED, parents: [team], inherits: [team], belongs: [team]}
+      - {id: sp, kind: app, app_type: SHAREPOINT}
+      - {id: site, kind: group, connector: sp, rule: OPEN, parents: [sp], inherits: [sp], belongs: [sp]}
+      - {id: lib, kind: record, connector: sp, rule: OPEN, parents: [site], inherits: [site], belongs: [site]}
+      - {id: uniq, kind: record, connector: sp, rule: OPEN, parents: [lib], belongs: [site]}
+      - {id: inh, kind: record, connector: sp, rule: OPEN, parents: [lib], inherits: [lib], belongs: [site]}
+      - {id: dr, kind: app, app_type: DRIVE}
+      - {id: drv, kind: group, connector: dr, rule: OPEN, parents: [dr], inherits: [dr], belongs: [dr]}
+      - {id: fx, kind: record, connector: dr, rule: OPEN, parents: [drv], belongs: [drv]}
+      - {id: fy, kind: record, connector: dr, rule: OPEN, parents: [drv], belongs: [drv]}
+      - {id: multi, kind: record, connector: dr, rule: OPEN, parents: [fx, fy], inherits: [fx, fy], belongs: [drv]}
+    grants:
+      - [x, team]
+      - [g:sp, site]
+      - [x, uniq]
+      - [x, fx]
+      - [y, fy]
+    memberships:
+      - [x, g:sp]
+    gates:
+      - [x, open]
+      - [x, kb]
+      - [x, lin]
+      - [x, sp]
+      - [x, dr]
+      - [y, open]
+      - [y, lin]
+      - [y, dr]
+  expect:
+    verdicts:
+      x: {wpage: admit, kbdoc: admit, tissue: admit, uniq: admit, inh: admit, multi: admit, fy: deny}
+      y: {wpage: admit, tissue: deny, multi: admit, fx: deny}
+  tags: [regression, scopes, mixed]

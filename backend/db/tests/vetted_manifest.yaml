@@ -1,0 +1,305 @@
+# Vetted functions of the test schemas kt and ku (two schemas, two vetted owners). Rendered and installed by test_vetted.py.
+functions:
+  # a plain org-scoped lookup with an index to check (the generated V-suite checks the index with auto_explain and with EXPLAIN)
+  - name: kt.notes_by_title
+    class: read
+    scope: org
+    args:
+      - {name: p_title, type: text, length: [1, 64]}
+      - {name: p_limit, type: int, default: "20", range: [1, 100]}
+    returns: "TABLE (id text, title text)"
+    reads: [kt.notes]
+    body: |
+      RETURN QUERY SELECT n.id, n.title FROM kt.notes n WHERE n.org_id = v_org AND n.title = p_title ORDER BY n.id LIMIT p_limit;
+    test:
+      needle: "INSERT INTO kt.notes (org_id, id, title) VALUES ('{org}', 'needle-1', 'findme') ON CONFLICT (org_id, id) DO UPDATE SET title = 'findme'"
+      volume: "INSERT INTO kt.notes (org_id, id, title) SELECT '{org}', 'v' || g, 't' || (g % 500) FROM generate_series(1, 20000) g ON CONFLICT DO NOTHING"
+      args: ["findme", 5]
+      own_result: [["needle-1", "findme"]]
+      bad_args: [["", 5], ["findme", 0], ["findme", 101], [null, 5], ["findme", null]]
+      index: notes_title_idx
+      max_ms: 250
+
+  # a write function on a table the application cannot write directly: the org predicate is in the WHERE, a foreign id answers false
+  - name: kt.set_note_title
+    class: write
+    scope: org
+    writer: pipeshub_node
+    args:
+      - {name: p_id, type: text, length: [1, 64]}
+      - {name: p_title, type: text, length: [1, 64]}
+    returns: boolean
+    no_org: "false"
+    reads: [kt.notes]
+    body: |
+      UPDATE kt.notes SET title = p_title WHERE org_id = v_org AND id = p_id;
+      RETURN FOUND;
+    test:
+      needle: "INSERT INTO kt.notes (org_id, id, title) VALUES ('{org}', 'needle-1', 'findme') ON CONFLICT (org_id, id) DO UPDATE SET title = 'findme'"
+      state: "SELECT title FROM kt.notes WHERE org_id = '{org}' AND id = 'needle-1'"
+      args: ["needle-1", "changed"]
+      own_result: [[true]]
+      other_result: [[false]]
+      no_org_result: [[false]]
+      bad_args: [["", "x"], ["a", ""], [null, "x"]]
+
+  # a lookup before the org is known: exact key only, nothing about the caller's org
+  - name: kt.token_owner
+    class: read
+    scope: global
+    args:
+      - {name: p_hash, type: text, length: [8, 64]}
+    returns: "TABLE (org_id text, user_id text)"
+    reads: [kt.tokens]
+    body: |
+      RETURN QUERY SELECT t.org_id, t.user_id FROM kt.tokens t WHERE t.token_hash = p_hash LIMIT 1;
+    test:
+      needle: "INSERT INTO kt.tokens VALUES ('hash-0001', '{org}', 'u1') ON CONFLICT DO NOTHING"
+      args: ["hash-0001"]
+      own_result: [["{org}", "u1"]]
+      other_result: [["{org}", "u1"]]
+      no_org_result: [["{org}", "u1"]]
+      bad_args: [["short"], [null]]
+
+  # the second schema: its own vetted owner, which cannot read schema kt
+  - name: ku.item_labels
+    class: read
+    scope: org
+    args:
+      - {name: p_limit, type: int, default: "10", range: [1, 100]}
+    returns: "TABLE (id text, label text)"
+    reads: [ku.items]
+    body: |
+      RETURN QUERY SELECT i.id, i.label FROM ku.items i WHERE i.org_id = v_org ORDER BY i.id LIMIT p_limit;
+    test:
+      needle: "INSERT INTO ku.items (org_id, id, label) VALUES ('{org}', 'i1', 'needle-label') ON CONFLICT DO NOTHING"
+      args: [10]
+      own_result: [["i1", "needle-label"]]
+      bad_args: [[0], [101], [null]]
+
+  # ---- pinned writes: access-style tables only the connectors service writes, through pinned functions -------------
+  # The shapes the catalog accepts: an upsert from arrays, a delete by the whole primary key from capped arrays, a delete by one scalar
+  # key, a delete of the current transaction's rows, a DO NOTHING upsert, a scalar upsert, a plain insert and a plain update.
+  - name: kt.w_grants_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: [python/app/services/graph_db/postgres/kg_write.py]
+    pins: [{op: upsert, rel: kt.grants, set: [role]}]
+    args:
+      - {name: p_principals, type: "bigint[]", max_items: 5000, item_not_null: true}
+      - {name: p_nodes, type: "bigint[]", max_items: 5000, item_not_null: true}
+      - {name: p_gtypes, type: "smallint[]", max_items: 5000, item_not_null: true, item_range: [1, 4]}
+      - {name: p_roles, type: "smallint[]", max_items: 5000, item_not_null: true, item_enum: [1, 2, 3]}
+    returns: int
+    no_org: "0"
+    reads: [kt.grants]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_nodes) <> cardinality(p_principals) OR cardinality(p_gtypes) <> cardinality(p_principals) OR cardinality(p_roles) <> cardinality(p_principals) THEN
+          RAISE EXCEPTION 'w_grants_set: the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        INSERT INTO kt.grants (org_id, principal_sk, node_sk, gtype, role) SELECT v_org, k.a, k.b, k.c, k.d FROM unnest(p_principals, p_nodes, p_gtypes, p_roles) AS k(a, b, c, d)
+          ON CONFLICT (org_id, principal_sk, node_sk, gtype) DO UPDATE SET role = excluded.role;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+    test:
+      needle: "INSERT INTO kt.grants (org_id, principal_sk, node_sk, gtype, role) VALUES ('{org}', 17, 18, 1, 1) ON CONFLICT DO NOTHING"
+      volume: "INSERT INTO kt.grants (org_id, principal_sk, node_sk, gtype, role) SELECT '{org}', g, g + 1, 2, 1 FROM generate_series(100, 20000) g ON CONFLICT DO NOTHING"
+      state: "SELECT role FROM kt.grants WHERE org_id = '{org}' AND principal_sk = 17 AND node_sk = 18 AND gtype = 1"
+      args: [[17], [18], [1], [2]]
+      own_result: [[1]]
+      other_result: [[1]]
+      no_org_result: [[0]]
+      bad_args: [[[17], [18], [1], [4]], [[17], [18], [9], [2]], [[17, 18], [18], [1], [2]], [[null], [18], [1], [2]], [[17], [18], [1], [null]], [null, [18], [1], [2]],
+                 [[17], [18], [1], [2, 2]]]
+      max_ms: 250
+
+  - name: kt.w_grants_delete
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: [python/app/services/graph_db/postgres/kg_write.py]
+    pins: [{op: delete, rel: kt.grants, key: [principal_sk, node_sk, gtype]}]
+    args:
+      - {name: p_principals, type: "bigint[]", max_items: 5000, item_not_null: true}
+      - {name: p_nodes, type: "bigint[]", max_items: 5000, item_not_null: true}
+      - {name: p_gtypes, type: "smallint[]", max_items: 5000, item_not_null: true}
+    returns: int
+    no_org: "0"
+    reads: [kt.grants]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_nodes) <> cardinality(p_principals) OR cardinality(p_gtypes) <> cardinality(p_principals) THEN
+          RAISE EXCEPTION 'w_grants_delete: the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        DELETE FROM kt.grants t USING unnest(p_principals, p_nodes, p_gtypes) AS k(a, b, c) WHERE t.org_id = v_org AND t.principal_sk = k.a AND t.node_sk = k.b AND t.gtype = k.c;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+    test:
+      needle: "INSERT INTO kt.grants (org_id, principal_sk, node_sk, gtype, role) VALUES ('{org}', 7, 8, 1, 1) ON CONFLICT DO NOTHING"
+      volume: "INSERT INTO kt.grants (org_id, principal_sk, node_sk, gtype, role) SELECT '{org}', g, g + 1, 2, 1 FROM generate_series(100, 20000) g ON CONFLICT DO NOTHING"
+      state: "SELECT count(*) FROM kt.grants WHERE org_id = '{org}' AND principal_sk = 7"
+      args: [[7], [8], [1]]
+      own_result: [[1]]
+      other_result: [[0]]
+      no_org_result: [[0]]
+      bad_args: [[[7], [8], []], [[7, 8], [8], [1]], [[null], [8], [1]], [null, [8], [1]]]
+      max_ms: 250
+
+  - name: kt.w_fence_remove
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    callers: [python/app/services/graph_db/postgres/kg_write.py]
+    pins: [{op: delete, rel: kt.fences, key: [id]}]
+    args:
+      - {name: p_id, type: bigint, range: [1, 9223372036854775807]}
+    returns: int
+    no_org: "0"
+    reads: [kt.fences]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        DELETE FROM kt.fences t WHERE t.org_id = v_org AND t.id = p_id;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+    test:
+      needle: "INSERT INTO kt.fences (org_id, id, reason) VALUES ('{org}', 41, 'needle') ON CONFLICT DO NOTHING"
+      state: "SELECT reason FROM kt.fences WHERE org_id = '{org}' AND id = 41"
+      args: [41]
+      own_result: [[1]]
+      other_result: [[0]]
+      no_org_result: [[0]]
+      bad_args: [[0], [-1], [null]]
+
+  - name: kt.w_fence_add
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    callers: [python/app/services/graph_db/postgres/kg_write.py]
+    pins: [{op: insert, rel: kt.fences}]
+    args:
+      - {name: p_id, type: bigint, range: [1, 9223372036854775807]}
+      - {name: p_reason, type: text, length: [1, 64]}
+    returns: boolean
+    no_org: "false"
+    body: |
+      INSERT INTO kt.fences (org_id, id, reason) VALUES (v_org, p_id, p_reason);
+      RETURN true;
+    test:
+      state: "SELECT count(*) FROM kt.fences WHERE org_id = '{org}' AND id = 42"
+      args: [42, "added"]
+      own_result: [[true]]
+      other_result: [[true]]
+      no_org_result: [[false]]
+      bad_args: [[0, "x"], [1, ""], [null, "x"], [1, null]]
+
+  - name: kt.w_fence_reason
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    callers: [python/app/services/graph_db/postgres/kg_write.py]
+    pins: [{op: update, rel: kt.fences}]
+    args:
+      - {name: p_id, type: bigint, range: [1, 9223372036854775807]}
+      - {name: p_reason, type: text, length: [1, 64]}
+    returns: boolean
+    no_org: "false"
+    reads: [kt.fences]
+    body: |
+      UPDATE kt.fences t SET reason = p_reason WHERE t.org_id = v_org AND t.id = p_id;
+      RETURN FOUND;
+    test:
+      needle: "INSERT INTO kt.fences (org_id, id, reason) VALUES ('{org}', 43, 'needle') ON CONFLICT (org_id, id) DO UPDATE SET reason = 'needle'"
+      state: "SELECT reason FROM kt.fences WHERE org_id = '{org}' AND id = 43"
+      args: [43, "changed"]
+      own_result: [[true]]
+      other_result: [[false]]
+      no_org_result: [[false]]
+      bad_args: [[0, "x"], [1, ""], [null, "x"], [1, null]]
+
+  - name: kt.w_changes_ack
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    callers: [python/app/services/graph_db/postgres/kg_write.py]
+    pins: [{op: delete, rel: kt.changes, txn: txid}]
+    returns: int
+    no_org: "0"
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        DELETE FROM kt.changes t WHERE t.org_id = v_org AND t.txid = pg_current_xact_id();
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+    test:
+      needle: "INSERT INTO kt.changes (org_id, coll, node_id) VALUES ('{org}', 1, 'needle')"
+      state: "SELECT count(*) FROM kt.changes WHERE org_id = '{org}'"
+      args: []
+      own_result: [[0]]
+      other_result: [[0]]
+      no_org_result: [[0]]
+
+  - name: kt.w_keys_add
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    callers: [python/app/services/graph_db/postgres/kg_write.py]
+    pins: [{op: upsert, rel: kt.keys, set: []}]
+    args:
+      - {name: p_colls, type: "smallint[]", max_items: 5000, item_not_null: true, item_range: [1, 20]}
+      - {name: p_ids, type: "text[]", max_items: 5000, item_not_null: true, item_length: [1, 256]}
+    returns: int
+    no_org: "0"
+    reads: [kt.keys]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_ids) <> cardinality(p_colls) THEN
+          RAISE EXCEPTION 'w_keys_add: the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        INSERT INTO kt.keys (org_id, coll, id) SELECT v_org, k.a, k.b FROM unnest(p_colls, p_ids) AS k(a, b) ON CONFLICT (org_id, coll, id) DO NOTHING;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+    test:
+      needle: "INSERT INTO kt.keys (org_id, coll, id) VALUES ('{org}', 1, 'needle') ON CONFLICT DO NOTHING"
+      state: "SELECT count(*) FROM kt.keys WHERE org_id = '{org}'"
+      args: [[1], ["needle"]]
+      own_result: [[0]]
+      other_result: [[1]]
+      no_org_result: [[0]]
+      bad_args: [[[0], ["x"]], [[1], [""]], [[1], [null]], [[1, 1], ["x"]], [null, ["x"]]]
+
+  - name: kt.w_pref_put
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    callers: [python/app/services/graph_db/postgres/kg_write.py]
+    pins: [{op: upsert, rel: kt.prefs, set: [v]}]
+    args:
+      - {name: p_k, type: text, length: [1, 64]}
+      - {name: p_v, type: text, length: [1, 256]}
+    returns: boolean
+    no_org: "false"
+    reads: [kt.prefs]
+    body: |
+      INSERT INTO kt.prefs (org_id, k, v) VALUES (v_org, p_k, p_v) ON CONFLICT (org_id, k) DO UPDATE SET v = excluded.v;
+      RETURN true;
+    test:
+      needle: "INSERT INTO kt.prefs (org_id, k, v) VALUES ('{org}', 'needle', 'orig') ON CONFLICT (org_id, k) DO UPDATE SET v = 'orig'"
+      state: "SELECT v FROM kt.prefs WHERE org_id = '{org}' AND k = 'needle'"
+      args: ["needle", "changed"]
+      own_result: [[true]]
+      other_result: [[true]]
+      no_org_result: [[false]]
+      bad_args: [["", "x"], ["a", ""], [null, "x"], ["a", null]]

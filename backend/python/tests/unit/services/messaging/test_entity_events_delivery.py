@@ -59,6 +59,12 @@ class InMemoryGraph:
             bucket[key] = {**bucket.get(key, {}), **node}
         return True
 
+    async def update_node(self, key: str, collection: str, node_updates: dict, transaction: str | None = None) -> bool:
+        self._maybe_fail(f"update:{collection}")
+        bucket = self.nodes.setdefault(collection, {})
+        bucket[key] = {**bucket.get(key, {}), **node_updates}
+        return True
+
     async def batch_create_edges(self, edges: list[dict], collection: str, transaction: str | None = None) -> bool:
         self._maybe_fail(f"edges:{collection}")
         bucket = self.edges.setdefault(collection, [])
@@ -120,6 +126,9 @@ class InMemoryGraph:
             [{"from_id": user_key, "to_id": f"all_{org_id}", "type": "USER"}],
             CollectionNames.PERMISSION.value,
         )
+
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+        return False
 
     async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         return "txn-1"

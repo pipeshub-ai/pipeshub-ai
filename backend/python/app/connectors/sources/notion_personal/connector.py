@@ -29,10 +29,11 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.notion.connector import NotionConnector
 from app.connectors.sources.notion_personal.common.apps import NotionPersonalApp
 from app.models.entities import RecordGroup, RecordGroupType
+from app.sources.client.notion.notion import notion_api_base_url
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-AUTHORIZE_URL = "https://api.notion.com/v1/oauth/authorize"
-TOKEN_URL = "https://api.notion.com/v1/oauth/token"
+AUTHORIZE_URL = f"{notion_api_base_url()}/oauth/authorize"
+TOKEN_URL = f"{notion_api_base_url()}/oauth/token"
 
 CONNECTOR_NOTION_PERSONAL_INFO = (
     "Only you can search the content synced by this connector. It indexes exactly the pages "
@@ -127,20 +128,17 @@ CONNECTOR_NOTION_PERSONAL_INFO = (
 class NotionPersonalConnector(NotionConnector):
     """Personal Notion connector.
 
-    Permission model:
+    Permission model (APP_LEVEL):
       - No Notion user directory is synced.
-      - An internal ``AppUserGroup`` (name: ``ConnectorGroup``, scoped by
-        ``connector_id``) is materialized once per sync, with the connector's
-        creator as its sole member.
-      - The workspace ``RecordGroup`` receives a GROUP permission edge pointing
-        at that internal group. Records are created with empty ACLs and
-        ``inherit_permissions=True``, so all of them resolve through that one
-        edge.
+      - The creator's user-app relation is written before any record group, and the
+        workspace ``RecordGroup`` inherits from the app with no grant of its own.
+        Records are created with empty ACLs and ``inherit_permissions=True``, so the
+        creator is the whole audience.
 
     The team connector inherits the workspace from the app, because Notion's API
     exposes no per-page sharing and the user sync is the whole audience. Here the
     token is one user's own OAuth grant covering only the pages they picked
-    during authorization, so the creator's ConnectorGroup grant is the audience.
+    during authorization, so the creator alone is the audience.
     """
 
     def __init__(
@@ -167,6 +165,18 @@ class NotionPersonalConnector(NotionConnector):
         # when serializing, and the parent stamps this onto every record it builds.
         self.connector_name = Connectors.NOTION_PERSONAL
 
+    async def _load_bot_user_ids(self) -> None:
+        """Only the integration's own bot: a personal connection never enumerates the workspace's users."""
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.retrieve_bot_user()
+            bot_user = response.data.json() if response and response.success and response.data else {}
+            if isinstance(bot_user, dict) and bot_user.get("id"):
+                self._bot_user_ids.add(bot_user["id"])
+                self._bot_ids_complete = True  # a personal connection sees no other bots
+        except Exception as e:
+            self.logger.warning("Could not load the Notion bot user: %s", e)
+
     async def _sync_users(self) -> None:
         """Resolve the workspace from the bot user; never enumerate its members.
 
@@ -186,7 +196,11 @@ class NotionPersonalConnector(NotionConnector):
                 self.logger.error(f"❌ Failed to retrieve bot user: {error_msg}")
                 raise Exception(f"Notion API error while retrieving bot user: {error_msg}")
 
-            bot_data = (response.data.json() if response.data else {}).get("bot", {})
+            bot_user = response.data.json() if response.data else {}
+            if bot_user.get("id"):
+                self._bot_user_ids.add(bot_user["id"])
+                self._bot_ids_complete = True
+            bot_data = bot_user.get("bot", {})
             workspace_id = bot_data.get("workspace_id")
 
             if not workspace_id:
@@ -194,7 +208,8 @@ class NotionPersonalConnector(NotionConnector):
                 raise Exception("Notion bot user response missing workspace_id")
 
             self.workspace_id = workspace_id
-            self.workspace_name = bot_data.get("workspace_name")
+            # Null for a user-owned bot, which is what an OAuth grant is; the group needs a name.
+            self.workspace_name = bot_data.get("workspace_name") or self._DEFAULT_WORKSPACE_NAME
 
             self.logger.info(
                 f"Resolved workspace - ID: {self.workspace_id}, Name: {self.workspace_name}"
@@ -230,11 +245,17 @@ class NotionPersonalConnector(NotionConnector):
         record_group.inherit_permissions = True
         await self.data_entities_processor.on_new_record_groups([(record_group, [])])
 
-    async def run_sync(self) -> None:
-        """Sync the pages this user shared with the integration; access via ConnectorGroup."""
+    async def _run_sync_once(self) -> None:
+        """Sync the pages this user shared with the integration; the creator is the audience.
+
+        ``NotionConnector.run_sync`` wraps this: a 401 refreshes the token once and retries, and
+        a failure is notified.
+        """
         try:
             org_id = self.data_entities_processor.org_id
             self.logger.info(f"🚀 Starting Notion Personal sync for org: {org_id}")
+            self._sync_incomplete = False
+            self._failed_pages = set()
 
             datasource = await self._get_fresh_datasource()
             await self._assert_required_capabilities(datasource)
@@ -268,20 +289,10 @@ class NotionPersonalConnector(NotionConnector):
             await self._sync_objects_by_type("data_source")
             await self._sync_objects_by_type("page")
 
-            # Inherited from NotionConnector, but this run_sync does not call super(),
-            # so the sweep has to be invoked here too or personal connectors keep
-            # accumulating UUID-named parent stubs.
-            try:
-                await self._sweep_placeholder_records()
-            except Exception as e:
-                self.logger.error(f"Placeholder sweep failed: {e}", exc_info=True)
-
-            try:
-                await self._retire_leftover_database_records()
-            except Exception as e:
-                self.logger.error(
-                    f"Leftover database pass failed: {e}", exc_info=True
-                )
+            # Inherited from NotionConnector: reconciliation with what the token can read (pages
+            # unshared during authorization are removed), the placeholder sweep and the leftover
+            # database pass.
+            await self._finish_sync()
 
             self.logger.info("✅ Notion Personal sync completed successfully")
 

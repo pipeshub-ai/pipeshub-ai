@@ -4,7 +4,7 @@ import base64
 import logging
 import os
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.sandbox.coding.base import CodeRequest
 from app.agent_loop_lib.sandbox.manager import (
@@ -25,6 +25,9 @@ from app.agent_loop_lib.tools.builtin.sandbox.input_staging import (
     peek_staged_input_files,
     peek_staged_skill_resources,
 )
+
+if TYPE_CHECKING:
+    from app.agent_loop_lib.core.types import ToolResult
 
 """The coding sandbox's three tools — `run_code`, `install_packages`,
 `read_sandbox_file` — all constructor-injected with the (generic, typed)
@@ -426,6 +429,9 @@ class CodingSandboxTool(Tool):
             ),
         ]
 
+    def result_failed(self, args: dict[str, Any], result: ToolResult) -> bool:
+        return isinstance(result.content, dict) and result.content.get("exit_code", 0) != 0
+
     async def execute(
         self,
         code: str,
@@ -563,6 +569,9 @@ class InstallPackagesTool(Tool):
                 description="Sandbox to reuse. Omit to create a fresh sandbox.",
             ),
         ]
+
+    def result_failed(self, args: dict[str, Any], result: ToolResult) -> bool:
+        return isinstance(result.content, dict) and result.content.get("success") is False
 
     async def execute(
         self,

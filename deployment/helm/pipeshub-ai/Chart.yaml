@@ -2,8 +2,8 @@ apiVersion: v2
 name: pipeshub-ai
 description: AI-powered workflow automation and integration platform
 type: application
-version: 0.2.0
-appVersion: "v0.3.0"
+version: 0.2.1
+appVersion: "0.10.0"
 home: https://pipeshub.com
 icon: https://pipeshub.com/logo.svg
 sources:

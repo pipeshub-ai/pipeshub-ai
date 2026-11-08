@@ -51,29 +51,34 @@ export function EgressIpNotice({ connectorName }: { connectorName: string }) {
     <Box
       style={{
         position: 'relative',
-        overflow: 'hidden',
         padding: 2,
         borderRadius: 'var(--radius-3)',
         background: 'var(--accent-a5)',
         boxShadow: '0 0 14px var(--accent-a4)',
       }}
     >
-      {/* Moving border so the card isn't overlooked; 1.5x the card's width keeps the corners covered as it rotates. */}
+      {/* Clipped by a layer of its own, not by the card: a card that clips counts the spinning
+          border as its own overflowing content, which reads as a box cutting off its content. */}
       <Box
         aria-hidden
-        data-ph-egress-glow
-        style={{
-          position: 'absolute',
-          left: '-25%',
-          top: '50%',
-          width: '150%',
-          aspectRatio: '1',
-          marginTop: '-75%',
-          background:
-            'conic-gradient(transparent 0deg 100deg, var(--accent-a8) 150deg, var(--accent-11) 178deg, transparent 180deg 280deg, var(--accent-a8) 330deg, var(--accent-11) 358deg, transparent 360deg)',
-          animation: 'spin 3s linear infinite',
-        }}
-      />
+        style={{ position: 'absolute', inset: 0, overflow: 'hidden', borderRadius: 'inherit' }}
+      >
+        {/* Moving border so the card isn't overlooked; 1.5x the card's width keeps the corners covered as it rotates. */}
+        <Box
+          data-ph-egress-glow
+          style={{
+            position: 'absolute',
+            left: '-25%',
+            top: '50%',
+            width: '150%',
+            aspectRatio: '1',
+            marginTop: '-75%',
+            background:
+              'conic-gradient(transparent 0deg 100deg, var(--accent-a8) 150deg, var(--accent-11) 178deg, transparent 180deg 280deg, var(--accent-a8) 330deg, var(--accent-11) 358deg, transparent 360deg)',
+            animation: 'spin 3s linear infinite',
+          }}
+        />
+      </Box>
       <Flex
         direction="column"
         gap="2"

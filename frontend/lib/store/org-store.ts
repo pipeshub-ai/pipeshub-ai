@@ -3,6 +3,7 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
+import { resetStoreOnSessionEnd } from '@/lib/api/session-cache';
 
 interface OrgState {
   isInitialized: boolean;
@@ -34,5 +35,7 @@ export const useOrgStore = create<OrgStore>()(
     { name: 'OrgStore' }
   )
 );
+
+resetStoreOnSessionEnd(useOrgStore);
 
 export const selectIsOrgInitialized = (s: OrgStore) => s.isInitialized;

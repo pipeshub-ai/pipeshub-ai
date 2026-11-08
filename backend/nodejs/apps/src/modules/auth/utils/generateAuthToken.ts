@@ -8,8 +8,8 @@ import {
 } from '../../../libs/utils/createJwt';
 import { findActiveOrgById } from '../../user_management/utils/org.utils';
 import { normalizeUserRole } from '../../user_management/services/user-admin.service';
-import { Users } from '../../user_management/schema/users.schema';
-import mongoose from 'mongoose';
+import { getUserRepository } from '../../../libs/repositories/user';
+import { isValidId } from '../../../libs/repositories/ids';
 
 export const SERVICE_ACCOUNT_SIGN_IN_MESSAGE =
   'Service accounts cannot sign in. Use a service token instead.';
@@ -20,8 +20,7 @@ export const DISABLED_ACCOUNT_SIGN_IN_MESSAGE =
 /**
  * Issues the session token that every interactive sign-in ends with.
  *
- * Password, OTP, Google, Microsoft, Azure AD, generic OAuth, SAML, the refresh
- * exchange and the OAuth token exchange all converge here, which makes this
+ * Every sign-in method and the refresh exchange converge here, which makes this
  * the one place worth checking whether this account is allowed a session at
  * all. Two kinds are not: service accounts, which exist to be authenticated as
  * by machines and never by people, and accounts an administrator has disabled.
@@ -48,15 +47,14 @@ export async function generateAuthToken(
   // than surfacing as an unhandled cast error.
   const rawId: unknown = user._id;
   const userId =
-    rawId instanceof mongoose.Types.ObjectId ? rawId.toHexString() : rawId;
-  if (typeof userId !== 'string' || !mongoose.isValidObjectId(userId)) {
+    rawId != null && typeof rawId === 'object'
+      ? (rawId as { toString(): string }).toString()
+      : rawId;
+  if (typeof userId !== 'string' || !isValidId(userId)) {
     throw new NotFoundError('User not found');
   }
 
-  const account = await Users.findOne({ _id: userId, isDeleted: false })
-    .select('kind isDisabled')
-    .lean()
-    .exec();
+  const account = await getUserRepository().getAccountState(userId);
 
   if (!account) {
     throw new NotFoundError('User not found');

@@ -59,9 +59,7 @@ export class DocumentOrgIdBackfillMigration {
         return { updated: 0, errored: 0 };
       }
 
-      this.logger.info(
-        `Found ${missingCount} storage documents missing orgId`,
-      );
+      this.logger.info(`Found ${missingCount} storage documents missing orgId`);
 
       const org = await Org.findOne({ isDeleted: { $ne: true } })
         .select('_id')

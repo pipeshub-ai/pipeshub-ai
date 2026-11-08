@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { Flex, Text } from '@radix-ui/themes';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 export function StatCard({
   label,
@@ -18,6 +19,7 @@ export function StatCard({
 }) {
   const [isHovered, setIsHovered] = useState(false);
   const isClickable = !!onClick;
+  const isMobile = useIsMobile();
 
   return (
     <Flex
@@ -26,11 +28,25 @@ export function StatCard({
       justify="center"
       gap="2"
       onClick={onClick}
+      // A clickable card is a button for the keyboard and assistive technology too.
+      role={isClickable ? 'button' : undefined}
+      tabIndex={isClickable ? 0 : undefined}
+      onKeyDown={
+        isClickable
+          ? (e) => {
+              if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
+                e.preventDefault();
+                onClick?.();
+              }
+            }
+          : undefined
+      }
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={{
         flex: 1,
-        padding: 'var(--space-6) var(--space-4)',
+        minWidth: 0,
+        padding: isMobile ? 'var(--space-4) var(--space-2)' : 'var(--space-6) var(--space-4)',
         backgroundColor: isHovered && isClickable ? 'var(--olive-3)' : 'var(--olive-2)',
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',

@@ -61,6 +61,7 @@ class TestQdrantConfigProperty:
             "prefer_grpc": True,
             "https": False,
             "timeout": 180,
+            "grpc_port": 6334,
         }
 
     def test_qdrant_config_all_fields_present(self):
@@ -68,7 +69,7 @@ class TestQdrantConfigProperty:
             host="h", port=1, api_key="k", prefer_grpc=False, https=True, timeout=10
         )
         result = config.qdrant_config
-        assert set(result.keys()) == {"host", "port", "api_key", "prefer_grpc", "https", "timeout"}
+        assert set(result.keys()) == {"host", "port", "api_key", "prefer_grpc", "https", "timeout", "grpc_port"}
 
 
 class TestQdrantConfigFromDict:
@@ -136,7 +137,17 @@ class TestQdrantConfigFromDict:
             "prefer_grpc": False,
             "https": True,
             "timeout": 42,
+            "grpc_port": 7778,
         }
         config = QdrantConfig.from_dict(original)
         result = config.qdrant_config
         assert result == original
+
+
+class TestGrpcPort:
+    def test_default_is_6334(self) -> None:
+        assert QdrantConfig.from_dict({"host": "h"}).grpc_port == 6334
+
+    @pytest.mark.parametrize("key", ["grpc_port", "grpcPort"])
+    def test_from_dict_reads_both_spellings(self, key: str) -> None:
+        assert QdrantConfig.from_dict({"host": "h", key: 16334}).grpc_port == 16334

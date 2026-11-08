@@ -180,6 +180,7 @@ class AgenticExtractionStrategy:
             return StrategyResult(
                 mentions=session.staging.mentions(),
                 termination_reason="llm_error",
+                **_unavailable(transport),
                 submitted=session.staging.submitted,
                 rejected=session.staging.rejected,
                 failed_before_first_turn=failed_early,
@@ -205,11 +206,19 @@ class AgenticExtractionStrategy:
             incomplete=bool(session.unread()),
             failed_before_first_turn=reason == "llm_error" and not turns,
             tools_unsupported=reason == "llm_error" and "bind_tools" in (getattr(result, "error", None) or ""),
+            **(_unavailable(transport) if reason == "llm_error" else {}),
         )
 
 
 async def agent_run(spec: AgentSpec, runtime: AgentRuntime, goal: Goal) -> AgentResult:
     return await Agent(spec, runtime).run(goal)
+
+
+def _unavailable(transport: SlottedTransport) -> dict[str, int]:
+    """A run that ended on a call the provider could not serve counts as one failed,
+    unavailable call, so the entities stage waits out the outage instead of retrying."""
+    down = int(transport.provider_unavailable)
+    return {"windows_failed": down, "windows_unavailable": down}
 
 
 def _kept(session: ExtractionSession, reason: str) -> StrategyResult:

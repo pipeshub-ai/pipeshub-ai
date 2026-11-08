@@ -3,7 +3,7 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
 import { OutboxDispatcher } from '../../../../src/libs/services/outbox/outbox.dispatcher';
-import { OutboxEvent } from '../../../../src/libs/services/outbox/outbox.schema';
+import { OutboxEvent } from '../../../../src/libs/repositories/outbox/schema/outbox.schema';
 
 function makeLogger() {
   return {

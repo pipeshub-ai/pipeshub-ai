@@ -64,6 +64,41 @@ class TestBatchFetchIssues:
         assert "10024" in result
 
 
+class TestBatchFetchByKey:
+    @pytest.mark.asyncio
+    async def test_cloud_looks_keys_up_with_minimal_fields(self) -> None:
+        ds = MagicMock()
+        ds.search_and_reconsile_issues_using_jql_post = AsyncMock(
+            return_value=_ok_response([{"id": "7", "key": "PROJ-1"}])
+        )
+        result = await batch_fetch_issues(
+            ds, is_cloud=True, issue_ids=["PROJ-1", "OPS_2-30"], discovered_custom_ids={}, by_key=True,
+        )
+        kwargs = ds.search_and_reconsile_issues_using_jql_post.await_args.kwargs
+        assert kwargs["jql"] == 'key in ("PROJ-1", "OPS_2-30")'
+        assert kwargs["fields"] == ["summary"]
+        assert result == {"7": {"id": "7", "key": "PROJ-1"}}
+
+    @pytest.mark.asyncio
+    async def test_data_center_uses_v2_and_malformed_keys_never_reach_jql(self) -> None:
+        ds = MagicMock()
+        ds.search_issues_post_v2 = AsyncMock(return_value=_ok_response([]))
+        await batch_fetch_issues(
+            ds, is_cloud=False, issue_ids=['PROJ-1") OR project is not EMPTY OR key in ("X-1', "PROJ-2"],
+            discovered_custom_ids={}, by_key=True,
+        )
+        assert ds.search_issues_post_v2.await_args.kwargs["jql"] == 'key in ("PROJ-2")'
+
+    @pytest.mark.asyncio
+    async def test_only_malformed_keys_makes_no_call(self) -> None:
+        ds = MagicMock()
+        ds.search_issues_post_v2 = AsyncMock()
+        assert await batch_fetch_issues(
+            ds, is_cloud=False, issue_ids=["bad key"], discovered_custom_ids={}, by_key=True,
+        ) == {}
+        ds.search_issues_post_v2.assert_not_called()
+
+
 class TestResolveIsCloudApi:
     def test_atlassian_net_hostname_is_cloud(self):
         assert _is_atlassian_cloud_site_url("https://mycompany.atlassian.net") is True

@@ -1,12 +1,15 @@
 from collections.abc import AsyncGenerator
-from typing import Any
+from contextlib import aclosing
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.services.messaging.kafka.handlers.record import RecordEventHandler
 
 from app.services.messaging.kafka.config.kafka_config import kafka_security_kwargs
 from app.config.constants.service import KafkaConfig as KafkaConstants, config_node_constants
 from app.edition_services import (
     EntityEventService,
     EventService,
-    RecordEventHandler,
 )
 from app.connectors.services.code_graph_event_service import CodeGraphEventService
 from app.containers.connector import ConnectorAppContainer
@@ -16,6 +19,10 @@ from app.modules.code_graph.edge_build_runner import CodeEdgeBuildRunner
 from app.modules.code_graph.facts_source import BlobCodeFactsSource
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.model_identity.boundary import config_service_of
+from app.services.model_identity.principal import service_principal
+from app.services.model_identity.runtime import call_scope
+from app.services.model_identity.workload import Workload
 from app.services.messaging.config import (
     IndexingMessageHandler,
     MessageHandler,
@@ -27,8 +34,13 @@ from app.services.messaging.kafka.config.kafka_config import (
     KafkaConsumerConfig,
     KafkaProducerConfig,
 )
+from app.services.messaging.error_classifier import is_expected_outcome
 from app.services.messaging.kafka.handlers.ai_config import AiConfigEventService
 from app.services.vector_db.rebuild_state import redis_from_config_service
+
+
+def _str_or_none(value: Any) -> str | None:  # noqa: ANN401 - a message field of unknown type
+    return str(value) if value else None
 
 
 class KafkaUtils:
@@ -176,7 +188,7 @@ class KafkaUtils:
     async def create_record_event_handler(
         app_container: IndexingAppContainer,
         producer: Any = None,
-    ) -> RecordEventHandler:
+    ) -> "RecordEventHandler":
         """Build the record event handler.
 
         Separate from ``create_record_message_handler`` because the consumer
@@ -184,6 +196,11 @@ class KafkaUtils:
         puts a record into a terminal status when its message is discarded — and
         two instances would mean two graph clients for one job.
         """
+        # Imported here: the record handler pulls in the event processor and the whole
+        # parser stack, which services that only use other helpers in this module
+        # (the connector service) must not load.
+        from app.edition_services import RecordEventHandler
+
         logger = app_container.logger()
         event_processor = getattr(app_container, '_event_processor', None)
         if not event_processor:
@@ -199,7 +216,7 @@ class KafkaUtils:
     async def create_record_message_handler(
         app_container: IndexingAppContainer,
         producer: Any = None,
-        record_event_service: RecordEventHandler | None = None,
+        record_event_service: "RecordEventHandler | None" = None,
     ) -> IndexingMessageHandler:
         """Create a message handler for record events.
 
@@ -240,11 +257,28 @@ class KafkaUtils:
                 payload["is_final_failure"] = message.is_final_failure
 
                 logger.debug(f"Processing record event: {event_type}")
-                async for event in record_event_service.process_event(event_type, payload):
-                    yield event
+                # Every model call this record makes (describe images, embed, extract)
+                # goes out as the indexing service, not as whoever happens to be
+                # logged in. Bound here because this generator is driven by one worker
+                # task for the whole record; the handler's own coroutines copy it.
+                async with call_scope(
+                    service_principal("indexing", str(payload.get("orgId") or "")),
+                    Workload.INDEXING,
+                    config_service=config_service_of(app_container),
+                    container=app_container,
+                    record_id=_str_or_none(payload.get("recordId")),
+                    connector_id=_str_or_none(payload.get("connectorId")),
+                ):
+                    async with aclosing(record_event_service.process_event(event_type, payload)) as events:
+                        async for event in events:
+                            yield event
 
             except Exception as e:
-                logger.error(f"Error processing record message: {str(e)}", exc_info=True)
+                if is_expected_outcome(e):
+                    # Expected and already logged by the handler, once.
+                    logger.debug(f"Record message ended as expected: {e}")
+                else:
+                    logger.error(f"Error processing record message: {str(e)}", exc_info=True)
                 raise
 
         return handle_record_message

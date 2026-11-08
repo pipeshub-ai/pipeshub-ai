@@ -31,6 +31,7 @@ from app.agents.agent_loop.protocol.retrieval_context import (
     RETRIEVAL_CONTEXT_EVENT_NAME,
 )
 from app.agents.agent_loop.protocol.run_usage import RUN_USAGE_EVENT_NAME
+from app.modules.retrieval import degraded_notice
 
 if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
@@ -133,7 +134,7 @@ class LegacyFormatter(ProtocolFormatter):
         return [{"event": "answer_chunk", "data": data}]
 
     def answer_final(self, context, *, completion_data):
-        return [{"event": "complete", "data": completion_data}]
+        return [{"event": "complete", "data": degraded_notice.flag(completion_data)}]
 
     def ask_user_question(self, context, *, status, tool_data):
         return [{"event": "ask_user_question", "data": {"status": status, "toolData": tool_data}}]
@@ -198,6 +199,7 @@ class AGUIFormatter(ProtocolFormatter):
         )]
 
     def answer_final(self, context, *, completion_data):
+        degraded_notice.flag(completion_data)
         return [
             frame(AGUIEventType.STATE_SNAPSHOT, runId=context.run_id, snapshot={"final": True, **completion_data}),
             frame(

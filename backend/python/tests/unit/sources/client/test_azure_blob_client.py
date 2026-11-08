@@ -21,6 +21,12 @@ from app.sources.client.azure.azure_blob import (
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _address_check_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The address check has its own tests (test_connector_address_rule.py); these hosts are made up.
+    monkeypatch.setattr("app.sources.client.azure.azure_blob.check_url_allowed", lambda *_a, **_k: None)
+
+
 @pytest.fixture
 def logger():
     return logging.getLogger("test_azure_blob_client")

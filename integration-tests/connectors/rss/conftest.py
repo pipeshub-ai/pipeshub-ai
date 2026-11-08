@@ -28,12 +28,33 @@ CHANGELOG_FEED = "feeds/changelog.atom"
 MAX_ARTICLES_PER_FEED = 3
 
 
+def item_record_id(feed_url: str, guid: str) -> str:
+    """The connector's record id for a feed item, as the connector builds it.
+
+    An RSS guid need only be unique within its feed, so one that is not a URL or
+    URN carries the feed URL; a URL or URN guid is the id as it is.
+    """
+    if "://" in guid or guid.lower().startswith(("urn:", "tag:")):
+        return guid
+    return f"{feed_url}#{guid}"
+
+
+def news_record_id(guid: str) -> str:
+    return item_record_id(WebFixtures().url_for_connector(NEWS_FEED), guid)
+
+
 @dataclass(frozen=True)
 class FeedItem:
+    """An item of the news feed."""
+
     guid: str
     title: str
     article_path: str
     pub_date: str
+
+    @property
+    def record_id(self) -> str:
+        return news_record_id(self.guid)
 
 
 # Mirrors web_fixtures/seed/feeds/news.xml, so tests can serve a changed feed.
@@ -49,9 +70,13 @@ NEWS_ITEMS = [
 ]
 CHANGELOG_GUIDS = ["urn:fixture:changelog:1", "urn:fixture:changelog:2"]
 
-# The feed's first MAX_ARTICLES_PER_FEED items, plus every changelog entry.
-EXPECTED_GUIDS = [item.guid for item in NEWS_ITEMS[:MAX_ARTICLES_PER_FEED]] + CHANGELOG_GUIDS
-PAST_LIMIT_GUID = NEWS_ITEMS[MAX_ARTICLES_PER_FEED].guid
+
+def expected_record_ids() -> list[str]:
+    """The feed's first MAX_ARTICLES_PER_FEED items, plus every changelog entry."""
+    return [item.record_id for item in NEWS_ITEMS[:MAX_ARTICLES_PER_FEED]] + CHANGELOG_GUIDS
+
+
+PAST_LIMIT_ITEM = NEWS_ITEMS[MAX_ARTICLES_PER_FEED]
 
 
 def news_feed(items: list[FeedItem]) -> str:
@@ -104,7 +129,7 @@ async def rss_connector(
         connector_type="RSS",
         connector_name=f"rss-lifecycle-test-{uuid.uuid4().hex[:8]}",
         connector_config=config,
-        expected_records=len(EXPECTED_GUIDS),
+        expected_records=len(expected_record_ids()),
         scope="team",
     )
 

@@ -2,18 +2,14 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import AmazonS3Adapter from '../../../../src/modules/storage/providers/s3.provider'
+// The health check reads createS3Service off this exports object at call time.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const s3Provider = require('../../../../src/modules/storage/providers/s3.provider') as typeof import('../../../../src/modules/storage/providers/s3.provider')
 import { StorageUploadError } from '../../../../src/libs/errors/storage.errors'
 import {
   buildS3HealthCheckErrorMessage,
   validateS3Capabilities,
 } from '../../../../src/modules/storage/utils/s3-health-check.util'
-
-// aws-sdk v2 attaches service methods to instances (not the prototype), so we
-// cannot use sinon.stub(S3.prototype, …). Instead we replace the constructor
-// on the live module object, which TypeScript accesses at call time via the
-// module reference (aws_sdk_1.S3), making the swap transparent to the util.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const awsSdk = require('aws-sdk') as { S3: new (...args: unknown[]) => unknown }
 
 function buildFakeS3DeleteStub(resolves = true) {
   const deleteFn = resolves
@@ -22,15 +18,12 @@ function buildFakeS3DeleteStub(resolves = true) {
   return { deleteObject: () => ({ promise: deleteFn }) }
 }
 
-function replaceSdkS3(fakeInstance: object) {
-  const originalS3 = awsSdk.S3
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ;(awsSdk as any).S3 = function MockS3() {
-    return fakeInstance
-  }
-  return () => {
-    ;(awsSdk as any).S3 = originalS3
-  }
+// The health check calls createS3Service through the provider module binding,
+// so replacing that export is visible to the compiled call site.
+function stubCleanupClient(fakeInstance: object) {
+  sinon.stub(s3Provider, 'createS3Service').returns(
+    fakeInstance as ReturnType<typeof s3Provider.createS3Service>,
+  )
 }
 
 const VALID_CREDS = {
@@ -44,13 +37,10 @@ const FAKE_URL = 'https://my-bucket.s3.us-east-1.amazonaws.com/.pipeshub-health-
 const HEALTH_CHECK_CONTENT = 'pipeshub-s3-health-check'
 
 describe('s3-health-check.util', () => {
-  let restoreS3: (() => void) | undefined
   let fetchStub: sinon.SinonStub | undefined
 
   afterEach(() => {
     sinon.restore()
-    restoreS3?.()
-    restoreS3 = undefined
     fetchStub?.restore()
     fetchStub = undefined
   })
@@ -168,7 +158,7 @@ describe('s3-health-check.util', () => {
   // -------------------------------------------------------------------------
   describe('validateS3Capabilities — all checks pass', () => {
     it('should return success with 6 passing checks', async () => {
-      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub())
+      stubCleanupClient(buildFakeS3DeleteStub())
       stubAllAdapterMethodsPassing()
       stubFetchSuccess()
 
@@ -199,7 +189,7 @@ describe('s3-health-check.util', () => {
     }
 
     it('should pass every check when accessKeyId/secretAccessKey are omitted', async () => {
-      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub())
+      stubCleanupClient(buildFakeS3DeleteStub())
       stubAllAdapterMethodsPassing()
       stubFetchSuccess()
 
@@ -211,7 +201,7 @@ describe('s3-health-check.util', () => {
     })
 
     it('should return success with empty-string credential fields (treated as IAM role mode)', async () => {
-      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub())
+      stubCleanupClient(buildFakeS3DeleteStub())
       stubAllAdapterMethodsPassing()
       stubFetchSuccess()
 
@@ -226,7 +216,7 @@ describe('s3-health-check.util', () => {
     })
 
     it('should classify upload permission failures the same way as explicit-credential mode', async () => {
-      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub())
+      stubCleanupClient(buildFakeS3DeleteStub())
       sinon
         .stub(AmazonS3Adapter.prototype, 'uploadDocumentToStorageService')
         .rejects(
@@ -251,7 +241,7 @@ describe('s3-health-check.util', () => {
 
     it('should still clean up the probe object via the delete-only S3 client', async () => {
       const deleteFn = sinon.stub().resolves()
-      restoreS3 = replaceSdkS3({ deleteObject: () => ({ promise: deleteFn }) })
+      stubCleanupClient({ deleteObject: () => ({ promise: deleteFn }) })
       sinon.stub(AmazonS3Adapter.prototype, 'uploadDocumentToStorageService').resolves({
         statusCode: 200,
         data: FAKE_URL,
@@ -295,7 +285,7 @@ describe('s3-health-check.util', () => {
   // -------------------------------------------------------------------------
   describe('validateS3Capabilities — upload fails with bucket error', () => {
     it('should classify NoSuchBucket error as bucketAccess failure', async () => {
-      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub())
+      stubCleanupClient(buildFakeS3DeleteStub())
       sinon
         .stub(AmazonS3Adapter.prototype, 'uploadDocumentToStorageService')
         .rejects(
@@ -324,7 +314,7 @@ describe('s3-health-check.util', () => {
     })
 
     it('should classify "bucket is not valid" as bucketAccess failure', async () => {
-      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub())
+      stubCleanupClient(buildFakeS3DeleteStub())
       sinon
         .stub(AmazonS3Adapter.prototype, 'uploadDocumentToStorageService')
         .rejects(
@@ -345,7 +335,7 @@ describe('s3-health-check.util', () => {
     })
 
     it('should classify AccessDenied as upload failure while bucketAccess passes', async () => {
-      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub())
+      stubCleanupClient(buildFakeS3DeleteStub())
       sinon
         .stub(AmazonS3Adapter.prototype, 'uploadDocumentToStorageService')
         .rejects(
@@ -374,7 +364,7 @@ describe('s3-health-check.util', () => {
   // -------------------------------------------------------------------------
   describe('validateS3Capabilities — read check fails', () => {
     it('should report read failure independently when upload passes', async () => {
-      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub())
+      stubCleanupClient(buildFakeS3DeleteStub())
       sinon.stub(AmazonS3Adapter.prototype, 'uploadDocumentToStorageService').resolves({
         statusCode: 200,
         data: FAKE_URL,
@@ -401,7 +391,7 @@ describe('s3-health-check.util', () => {
     })
 
     it('should report read failure when content does not match uploaded data', async () => {
-      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub())
+      stubCleanupClient(buildFakeS3DeleteStub())
       sinon.stub(AmazonS3Adapter.prototype, 'uploadDocumentToStorageService').resolves({
         statusCode: 200,
         data: FAKE_URL,
@@ -434,7 +424,7 @@ describe('s3-health-check.util', () => {
   // -------------------------------------------------------------------------
   describe('validateS3Capabilities — getContent check', () => {
     it('should report getContent failure when signed URL fetch returns non-200', async () => {
-      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub())
+      stubCleanupClient(buildFakeS3DeleteStub())
       stubAllAdapterMethodsPassing()
       stubFetchFailure(403)
 
@@ -448,7 +438,7 @@ describe('s3-health-check.util', () => {
     })
 
     it('should report getContent failure when fetched content does not match', async () => {
-      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub())
+      stubCleanupClient(buildFakeS3DeleteStub())
       stubAllAdapterMethodsPassing()
       stubFetchSuccess('totally-different-content')
 
@@ -461,7 +451,7 @@ describe('s3-health-check.util', () => {
     })
 
     it('should report getContent failure when fetch rejects (e.g. network error)', async () => {
-      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub())
+      stubCleanupClient(buildFakeS3DeleteStub())
       stubAllAdapterMethodsPassing()
       stubFetchReject(new Error('getaddrinfo ENOTFOUND s3.wrong-region.amazonaws.com'))
 
@@ -474,7 +464,7 @@ describe('s3-health-check.util', () => {
     })
 
     it('should skip getContent when signed URL generation fails', async () => {
-      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub())
+      stubCleanupClient(buildFakeS3DeleteStub())
       sinon.stub(AmazonS3Adapter.prototype, 'uploadDocumentToStorageService').resolves({
         statusCode: 200,
         data: FAKE_URL,
@@ -503,7 +493,7 @@ describe('s3-health-check.util', () => {
   // -------------------------------------------------------------------------
   describe('validateS3Capabilities — signedUrlGet check fails', () => {
     it('should report signedUrlGet failure independently', async () => {
-      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub())
+      stubCleanupClient(buildFakeS3DeleteStub())
       sinon.stub(AmazonS3Adapter.prototype, 'uploadDocumentToStorageService').resolves({
         statusCode: 200,
         data: FAKE_URL,
@@ -532,7 +522,7 @@ describe('s3-health-check.util', () => {
   // -------------------------------------------------------------------------
   describe('validateS3Capabilities — signedUrlPut check fails', () => {
     it('should report signedUrlPut failure independently', async () => {
-      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub())
+      stubCleanupClient(buildFakeS3DeleteStub())
       sinon.stub(AmazonS3Adapter.prototype, 'uploadDocumentToStorageService').resolves({
         statusCode: 200,
         data: FAKE_URL,
@@ -564,7 +554,7 @@ describe('s3-health-check.util', () => {
   // -------------------------------------------------------------------------
   describe('validateS3Capabilities — StorageError includes underlying cause', () => {
     it('should include originalError message in capability error string', async () => {
-      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub())
+      stubCleanupClient(buildFakeS3DeleteStub())
       sinon
         .stub(AmazonS3Adapter.prototype, 'uploadDocumentToStorageService')
         .rejects(
@@ -590,7 +580,7 @@ describe('s3-health-check.util', () => {
   describe('validateS3Capabilities — input normalisation', () => {
     it('should trim surrounding whitespace from bucketName and region', async () => {
       // region is valid after trim, bucket has spaces → adapter succeeds but upload fails
-      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub())
+      stubCleanupClient(buildFakeS3DeleteStub())
       sinon
         .stub(AmazonS3Adapter.prototype, 'uploadDocumentToStorageService')
         .rejects(new Error('SomeBucketError'))
@@ -615,7 +605,7 @@ describe('s3-health-check.util', () => {
   // -------------------------------------------------------------------------
   describe('validateS3Capabilities — cleanup error is ignored', () => {
     it('should still return success even when S3 deleteObject rejects', async () => {
-      restoreS3 = replaceSdkS3(buildFakeS3DeleteStub(false)) // delete rejects
+      stubCleanupClient(buildFakeS3DeleteStub(false)) // delete rejects
       stubAllAdapterMethodsPassing()
       stubFetchSuccess()
 

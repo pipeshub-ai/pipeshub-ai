@@ -35,6 +35,12 @@ export interface OAuthTokenPayload {
   act?: { sub: string };
   /** Absent when the app may see everything its user can. */
   knowledgeLimit?: KnowledgeLimit;
+  /** Access tokens: the resource (RFC 8707) the token is for, when its client named one. */
+  aud?: string;
+  /** Refresh tokens: the resource the access tokens it mints are for. */
+  resource?: string;
+  /** The agent registration this token was issued under; revoking the token revokes the registration. */
+  agent_registration_id?: string;
 }
 
 // Generated Tokens Response
@@ -61,6 +67,8 @@ export interface GenerateTokensOptions {
   // User grants only: PAT and service pseudo-apps store allowedScopes once
   // and validate against MCP_SCOPES instead.
   recheckAppScopes?: boolean;
+  /** Stamps the token with the agent registration (`reg_…`) it was issued under. */
+  agentRegistrationId?: string;
   /**
    * Mint this as a delegated token: `userId` keeps speaking as the person,
    * while this names the service account acting as them. See the `act` claim
@@ -68,6 +76,15 @@ export interface GenerateTokensOptions {
    */
   actorUserId?: string;
   knowledgeLimit?: KnowledgeLimit;
+  /**
+   * The limit the user agreed to, for tokens minted from their grant (a
+   * code, a device approval, a refresh). Widening the app's limit later
+   * leaves these tokens at it. `null` is no limit; left out, the token takes
+   * the app's current limit.
+   */
+  grantedKnowledgeLimit?: KnowledgeLimit | null;
+  /** The resource (RFC 8707) the tokens are for; see `OAuthTokenService.audienceFor`. */
+  audience?: string;
 }
 
 // Token Response (RFC 6749 compliant)
@@ -92,6 +109,8 @@ export interface AuthorizeRequest {
   code_challenge?: string;
   code_challenge_method?: 'S256';
   nonce?: string;
+  /** RFC 8707: checked here so the client hears of an unknown resource before consent. */
+  resource?: string | string[];
 }
 
 // Token Request Parameters
@@ -101,7 +120,9 @@ export interface TokenRequest {
     | 'client_credentials'
     | 'refresh_token'
     | 'urn:ietf:params:oauth:grant-type:device_code'
-    | 'urn:ietf:params:oauth:grant-type:token-exchange';
+    | 'urn:ietf:params:oauth:grant-type:token-exchange'
+    | 'urn:workos:agent-auth:grant-type:claim'
+    | 'urn:ietf:params:oauth:grant-type:jwt-bearer';
   code?: string;
   redirect_uri?: string;
   client_id: string;
@@ -110,11 +131,17 @@ export interface TokenRequest {
   scope?: string;
   code_verifier?: string;
   device_code?: string;
+  /** auth.md claim grant: the agent's claim_token. */
+  claim_token?: string;
+  /** RFC 7523: the identity assertion a claim grant returned. */
+  assertion?: string;
   /** RFC 8693: the credential being exchanged — here, a service token. */
   subject_token?: string;
   subject_token_type?: string;
   /** The person the caller wants to act as, by user id or email address. */
   requested_subject?: string;
+  /** RFC 8707: the resource the token is for (repeatable in a form body). */
+  resource?: string | string[];
 }
 
 // Revoke Request
@@ -174,6 +201,15 @@ export interface CreateOAuthAppRequest {
   accessTokenLifetime?: number;
   refreshTokenLifetime?: number;
   knowledgeLimit?: KnowledgeLimit;
+  /**
+   * The service account this app's own tokens act as.
+   *
+   * Required when the app allows `client_credentials`, and ignored otherwise.
+   * That grant has no person in it, so without this the app acts as whoever
+   * created it — and an app created by an administrator would carry
+   * administrator rights for as long as it exists.
+   */
+  tokenIdentityUserId?: string;
 }
 
 // Update OAuth App Request
@@ -210,6 +246,15 @@ export interface OAuthAppResponse {
   accessTokenLifetime: number;
   refreshTokenLifetime: number;
   knowledgeLimit?: KnowledgeLimit;
+  /**
+   * The service account this app's own `client_credentials` tokens act as.
+   *
+   * Absent means the app has no service account and its tokens act as whoever
+   * created it. Apps created since that became a requirement always have one;
+   * an app registered before it may not, and those are the ones an
+   * administrator still has to move.
+   */
+  tokenIdentityUserId?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -228,6 +273,8 @@ export interface ConsentData {
     homepageUrl?: string;
     privacyPolicyUrl?: string;
     isDynamic?: boolean;
+    /** Host of a client metadata document client id: the only part of the app's identity it cannot choose. */
+    clientIdHost?: string;
     /** What the app's creator let it see; absent for everything the user can. */
     knowledgeLimit?: KnowledgeLimit;
   };
@@ -290,9 +337,18 @@ export interface OpenIDConfiguration {
   introspection_endpoint: string;
   jwks_uri: string;
   registration_endpoint?: string;
+  /** draft-ietf-oauth-client-id-metadata-document: an https URL may be used as client_id. */
+  client_id_metadata_document_supported?: boolean;
   device_authorization_endpoint?: string;
   /** PipesHub first-party device client. Present when device grant is on and the instance has an org. */
   pipeshub_device_client_id?: string;
+  /** auth.md agent registration. Present only where it is enabled. */
+  agent_auth?: {
+    skill: string;
+    identity_endpoint: string;
+    claim_endpoint: string;
+    identity_types_supported: string[];
+  };
   scopes_supported: string[];
   response_types_supported: string[];
   grant_types_supported: string[];

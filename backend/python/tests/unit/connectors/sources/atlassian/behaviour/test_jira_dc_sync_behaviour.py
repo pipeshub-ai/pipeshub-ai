@@ -30,7 +30,8 @@ from app.connectors.sources.atlassian.jira_data_center.connector import (
     JiraDataCenterConnector,
     _parse_jira_dc_user_list_page,
 )
-from app.models.entities import AppUser, FileRecord, RecordType, TicketRecord
+from app.connectors.utils.record_ids import new_record_id
+from app.models.entities import AppUser, FileRecord, Record, RecordType, TicketRecord
 from app.models.permission import EntityType, PermissionType
 from app.services.graph_db.common.record_visibility import is_live_record
 from app.sources.client.http.http_client import HTTPClient
@@ -2305,3 +2306,96 @@ class TestUnreadApplicationRoles:
         groups = {p.external_id for p in db.record_group_permissions["10000"] if p.entity_type == EntityType.GROUP}
         assert "jira-software-users" not in groups
         assert "new-licensees" in groups
+
+
+class LookupsBeforeEitherStores(JiraRecordsDb):
+    """The sync and the stream of an issue each look for its attachment before either
+    has stored it, and every record either one writes is kept, as the graph keeps it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ids_written: dict[str, set[str]] = {}
+
+    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
+        if external_record_id.startswith("attachment_"):
+            return None
+        return await super().get_record_by_external_id(connector_id, external_record_id)
+
+    async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
+        await super().on_new_records(records_with_permissions)
+        for record, _ in records_with_permissions:
+            self.ids_written.setdefault(record.external_record_id, set()).add(record.id)
+
+
+def opened_with_log(jira: AtlassianApiStub) -> None:
+    """ENG-1 as GET issue returns it when it is opened: its comment shows log.txt."""
+    jira.on("GET", f"{API}/issue/1001", {
+        "id": "1001", "key": "ENG-1",
+        "fields": {
+            "summary": "Crash on save",
+            "attachment": [attachment("203", "log.txt", "text/plain")],
+            "comment": {"comments": [{"id": "c1", "author": {"displayName": "Bob"}}], "total": 1},
+            "project": {"id": "10000"},
+        },
+        "renderedFields": {"description": "<p>crash</p>", "comment": {"comments": [
+            {"id": "c1", "body": '<p>see <a href="/secure/attachment/203/log.txt">log</a></p>'},
+        ]}},
+    })
+
+
+async def children_of_streamed(connector: JiraDataCenterConnector, record: TicketRecord) -> list[str]:
+    response = await connector.stream_record(record)
+    container = json.loads(b"".join([chunk async for chunk in response.body_iterator]))
+    return [c["child_id"] for g in container["block_groups"] for c in g.get("children_records") or []]
+
+
+class TestAttachmentMetByTwoWritersAtOnce:
+    """Each writer that found the attachment unstored created its own record, so the
+    graph held two records for one attachment. The next full sync rewrote the one its
+    lookup found and unlinked the other, which lost its issue and the access it inherits."""
+
+    async def test_the_sync_and_the_stream_store_one_record(self, jira, store, search) -> None:
+        db = LookupsBeforeEitherStores()
+        stub_site(jira, search)
+        search.add("ENG", 0, [issue("1001", "ENG-1", ts(1), attachments=[attachment("203", "log.txt", "text/plain")])])
+        opened_with_log(jira)
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+        linked = await children_of_streamed(connector, db.records["1001"])
+
+        assert sum(r.external_record_id == "attachment_203" for b in db.record_batches for r in b) == 2, (
+            "both writers created the attachment")
+        assert len(db.ids_written["attachment_203"]) == 1, (
+            f"one attachment stored as {len(db.ids_written['attachment_203'])} records")
+        assert linked == [db.records["attachment_203"].id], "the comment links the record that is stored"
+
+    async def test_a_stored_attachment_keeps_its_id(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        search.add("ENG", 0, [issue("1001", "ENG-1", ts(1), attachments=[attachment("203", "log.txt", "text/plain")])])
+        opened_with_log(jira)
+        connector, _ = await make_connector(db, store)
+        db.records["attachment_203"] = FileRecord(
+            id="f-203", org_id="org-1", external_record_id="attachment_203", record_name="log.txt",
+            record_type=RecordType.FILE, origin="CONNECTOR", connector_name="JIRA DATA CENTER",
+            connector_id=CONNECTOR_ID, version=0, is_file=True, parent_external_record_id="1001",
+            source_updated_at=connector._parse_jira_timestamp(ts(1, 9)),
+        )
+
+        await connector.run_sync()
+        linked = await children_of_streamed(connector, db.records["1001"])
+
+        assert db.records["attachment_203"].id == "f-203"
+        assert linked == ["f-203"]
+
+    async def test_a_new_attachment_gets_the_same_id_from_every_writer(self, jira, store, search) -> None:
+        stub_site(jira, search)
+
+        async def new_id() -> str:
+            connector, _ = await make_connector(JiraRecordsDb(), store)
+            return connector._create_attachment_file_record(
+                attachment_id="203", filename="log.txt", mime_type="text/plain", file_size=10, created_at=0,
+                parent_issue_id="1001", parent_node_id="t-1", project_id="10000", weburl=None,
+            ).id
+
+        assert await new_id() == await new_id() == new_record_id(CONNECTOR_ID, "attachment_203")

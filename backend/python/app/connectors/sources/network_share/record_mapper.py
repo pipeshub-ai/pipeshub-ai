@@ -14,13 +14,13 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.connectors.core.base.data_processor.system_files import is_office_lock_file
 from app.connectors.sources.network_share.pathing import (
     file_extension,
     identity_rel_path,
     is_ads_name,
     is_dot_entry,
     is_excluded_name,
-    is_lock_file,
     join_rel_path,
     parent_of,
 )
@@ -113,7 +113,7 @@ class RecordMapper:
     def skip_reason(self, entry: DirectoryEntry) -> str | None:
         if is_dot_entry(entry.name):
             return "dot-entry"
-        if is_lock_file(entry.name):
+        if is_office_lock_file(entry.name):
             return "office-lock"
         if is_ads_name(entry.name):
             return "alternate-data-stream"

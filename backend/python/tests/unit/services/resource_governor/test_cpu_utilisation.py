@@ -93,3 +93,40 @@ class TestThrottling:
         result = sut.snapshot()
 
         assert result.cpu_throttled_ratio == pytest.approx(0.4, rel=1e-6)
+
+
+class TestCpusetLimitedContainer:
+    def test_brake_fires_on_cpuset_limited_container(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Quota 4 but a 2-CPU cpuset: two busy cores are full load, not 50 %."""
+        from app.services.resource_governor.policy import CPU_BRAKE_UTILISATION
+
+        monkeypatch.setattr(probe_mod, "_affinity_cpu_count", lambda: 2)
+        _write(tmp_path / "cpu.max", "400000 100000")
+        cpu_stat = tmp_path / "cpu.stat"
+        _write(cpu_stat, "usage_usec 0\n")
+        times = iter([0.0, 5.0])
+        probe = SystemResourceProbe(clock=lambda: next(times))
+        probe.snapshot()
+        _write(cpu_stat, "usage_usec 9500000\n")  # 1.9 cores for 5 s
+        snap = probe.snapshot()
+
+        assert snap.cpu_quota == 2.0
+        assert snap.cpu_utilisation == pytest.approx(0.95, rel=1e-6)
+        assert snap.cpu_utilisation > CPU_BRAKE_UTILISATION
+
+    def test_utilisation_divides_by_the_fractional_quota(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(probe_mod, "_affinity_cpu_count", lambda: 8)
+        _write(tmp_path / "cpu.max", "150000 100000")
+        cpu_stat = tmp_path / "cpu.stat"
+        _write(cpu_stat, "usage_usec 0\n")
+        times = iter([0.0, 1.0])
+        probe = SystemResourceProbe(clock=lambda: next(times))
+        probe.snapshot()
+        _write(cpu_stat, "usage_usec 1500000\n")  # 1.5 cores busy of 1.5
+        snap = probe.snapshot()
+
+        assert snap.cpu_utilisation == pytest.approx(1.0, rel=1e-6)

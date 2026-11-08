@@ -113,6 +113,10 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
      * getProjectConversations for the read-side of this rule.
      */
     projectVisibility: { type: String, enum: ['private', 'project'] },
+
+    // ---- Compare models: a hidden branch of another chat; no default, so ordinary chats never carry the key ----
+    compareOf: { type: Schema.Types.ObjectId, index: true },
+    compareFromMessageId: { type: Schema.Types.ObjectId },
   },
   { timestamps: true, collection: 'chatSessions' },
 );

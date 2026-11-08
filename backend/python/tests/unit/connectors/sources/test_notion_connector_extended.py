@@ -32,6 +32,7 @@ Covers methods and branches not exercised by existing test suites:
 - _resolve_block_parent_recursive
 - _get_database_parent_ref
 """
+from app.connectors.sources.notion.connector import _DatabaseUnavailable
 
 import logging
 from datetime import datetime, timezone
@@ -67,6 +68,7 @@ def _make_connector():
     dep.org_id = "org-notion-1"
     dep.on_new_app_users = AsyncMock()
     dep.on_new_records = AsyncMock()
+    dep.on_record_content_update = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.on_record_deleted = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
@@ -324,7 +326,7 @@ class TestGetCommentAttachmentUrl:
         record.external_record_id = "ca_comment1"
         record.signed_url = "fallback-url"
         result = await c._get_comment_attachment_url(record)
-        assert result == "fallback-url"
+        assert result is None  # the stored URL expired; never served
 
     @pytest.mark.asyncio
     async def test_api_failure(self):
@@ -1280,8 +1282,8 @@ class TestResolveBlockParentRecursive:
         ds = _make_datasource_mock()
         c._get_fresh_datasource = AsyncMock(return_value=ds)
         ds.retrieve_block = AsyncMock(return_value=_make_api_response(False))
-        parent_id, parent_type = await c._resolve_block_parent_recursive("block-fail")
-        assert parent_id is None
+        with pytest.raises(_DatabaseUnavailable):
+            await c._resolve_block_parent_recursive("block-fail")
 
     @pytest.mark.asyncio
     async def test_workspace_parent(self):

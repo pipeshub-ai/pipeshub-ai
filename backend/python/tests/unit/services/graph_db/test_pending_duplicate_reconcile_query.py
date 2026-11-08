@@ -130,7 +130,7 @@ class TestUpdateFieldsIfMatch:
 
     async def test_neo4j_no_match(self) -> None:
         p = _neo4j([])
-        assert await p.update_node_fields_if_match("r1", "records", {"a": 1}, {"c": True}) is False
+        assert await p.update_node_fields_if_match("r1", "records", {"recordName": "a"}, {"c": True}) is False
 
     async def test_arango(self) -> None:
         p = _arango([1])
@@ -153,3 +153,21 @@ class TestUpdateFieldsIfMatch:
     async def test_requires_an_expectation(self, make) -> None:
         with pytest.raises(ValueError):
             await make([]).update_node_fields_if_match("r1", "records", {"a": 1}, {})
+
+
+class TestParentLookupIndex:
+    """get_records_by_parent runs once per synced record; without this index each call scanned the connector."""
+
+    def test_neo4j(self) -> None:
+        assert any(
+            "FOR (n:Record) ON (n.externalParentId, n.connectorId)" in s
+            for s in _neo4j([])._generate_performance_indexes()
+        )
+
+    async def test_arango(self) -> None:
+        p = _arango([])
+        p.http_client.ensure_persistent_index = AsyncMock()
+        await p._ensure_indexes()
+        fields = [tuple(c.args[1]) for c in p.http_client.ensure_persistent_index.await_args_list
+                  if c.args[0] == "records"]
+        assert ("externalParentId", "connectorId") in fields

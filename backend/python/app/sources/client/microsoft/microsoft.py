@@ -75,6 +75,25 @@ class MSGraphClientWithCertificatePath:
     def get_mode(self) -> GraphMode:
         return self.mode
 
+class _KeepOpenCredential:
+    """Hands kiota an async credential it cannot close.
+
+    kiota's AzureIdentityAccessTokenProvider closes the credential after every token it
+    fetches, and azure-core never reopens a closed transport. The cached token hides this
+    until it expires; the next renewal then fails with "HTTP transport has already been
+    closed". The credential is closed by ``MSGraphClientWithClientIdSecret.close``.
+    """
+
+    def __init__(self, credential: Any) -> None:  # noqa: ANN401
+        self._credential = credential
+
+    async def get_token(self, *scopes: str, **kwargs: Any) -> Any:  # noqa: ANN401
+        return await self._credential.get_token(*scopes, **kwargs)
+
+    async def close(self) -> None:
+        return None
+
+
 class MSGraphClientWithClientIdSecret:
     def __init__(
         self,
@@ -94,7 +113,7 @@ class MSGraphClientWithClientIdSecret:
             # App-only (client credentials) auth for enterprise/service scenarios
             # Requires Application permissions + Admin consent.
             self.credential = ClientSecretCredential(tenant_id=tenant_id, client_id=client_id, client_secret=client_secret)
-            auth_provider = AzureIdentityAuthenticationProvider(self.credential, scopes=scopes)
+            auth_provider = AzureIdentityAuthenticationProvider(_KeepOpenCredential(self.credential), scopes=scopes)
             adapter = HttpxRequestAdapter(auth_provider)
             self.client = GraphServiceClient(request_adapter=adapter)
         else:
@@ -188,8 +207,11 @@ class MSGraphClientWithDelegatedAuth:
         return self.mode
 
     async def close(self) -> None:
-        """Close the client and release resources."""
-        pass
+        """Close the client's HTTP connection pool."""
+        # Private kiota attribute: if it is renamed, leave the pool to the garbage collector.
+        http_client = getattr(self.client.request_adapter, "_http_client", None)
+        if http_client is not None:
+            await http_client.aclose()
 
     class _MeRedirectingGraphClient:
         """Intercepts .me property access to redirect to .users.by_user_id(oid), fixing SDK's URL template placeholder issue."""

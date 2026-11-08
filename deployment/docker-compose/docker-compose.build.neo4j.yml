@@ -51,6 +51,7 @@ services:
       # Core environment settings
       - NODE_ENV=${NODE_ENV:-production}
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_FORMAT=${LOG_FORMAT:-text}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3001}
       - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
@@ -87,6 +88,7 @@ services:
       # Message broker config
       - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
       - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-500000}
+      - REDIS_STREAMS_RETENTION_MODE=${REDIS_STREAMS_RETENTION_MODE:-after_ack}
       # Indexing lanes on Redis Streams: how many (every service must agree), and
       # how a connector is given one: "assigned" (the least busy lane, recorded
       # once) or "hash", which switches assigned lanes off.
@@ -132,7 +134,7 @@ services:
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
 
       # MCP OAuth scopes
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,code:read}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,kb:write,kb:upload,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,connector:write,connector:sync,code:read,project:read,project:write,project:delete}
 
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
@@ -170,6 +172,9 @@ services:
       - GREP_RANK_FUSION=${GREP_RANK_FUSION:-}
       # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
       - KEYWORD_SEARCH_QUERIES=${KEYWORD_SEARCH_QUERIES:-}
+      # Opt-in only: knowledge-base uploads take the dates their content
+      # states (true: instead of upload times; all: also of file times).
+      - CONTENT_DOCUMENT_DATES=${CONTENT_DOCUMENT_DATES:-}
       - RELEVANCE_ORDERED_CONTEXT=${RELEVANCE_ORDERED_CONTEXT:-}
       - FUSION_RECORD_CUT=${FUSION_RECORD_CUT:-}
       - ANSWER_COMPOSITION_RULES=${ANSWER_COMPOSITION_RULES:-}
@@ -199,6 +204,8 @@ services:
       - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
       - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-1}
       - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}
+      - ENABLE_PDFPLUMBER_PROCESSOR=${ENABLE_PDFPLUMBER_PROCESSOR:-false}
+      - PDF_DOCLING_MAX_PAGES=${PDF_DOCLING_MAX_PAGES:-30}
       # CONNECTOR_SYNC_MAX_CONCURRENT caps how many syncs run at once.
       - CONNECTOR_SYNC_MAX_CONCURRENT=${CONNECTOR_SYNC_MAX_CONCURRENT:-8}
       # How long a delete waits for a running sync to stop.
@@ -386,9 +393,9 @@ services:
       - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-your_password}
       - NEO4J_PLUGINS=["apoc"]
       - NEO4J_dbms_security_procedures_unrestricted=apoc.*
-      - NEO4J_dbms_memory_heap_initial__size=1G
-      - NEO4J_dbms_memory_heap_max__size=2G
-      - NEO4J_dbms_memory_pagecache_size=1G
+      - NEO4J_dbms_memory_heap_initial__size=${NEO4J_HEAP_INITIAL:-1G}
+      - NEO4J_dbms_memory_heap_max__size=${NEO4J_HEAP_MAX:-2G}
+      - NEO4J_dbms_memory_pagecache_size=${NEO4J_PAGECACHE:-1G}
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
@@ -396,10 +403,10 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: 3G
+          memory: ${NEO4J_MEMORY_LIMIT:-3G}
         reservations:
           cpus: '2'
-          memory: 2G
+          memory: ${NEO4J_MEMORY_RESERVATION:-2G}
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
       interval: 10s
@@ -493,7 +500,7 @@ services:
           memory: ${QDRANT_MEMORY_LIMIT:-4G}
         reservations:
           cpus: '2'
-          memory: 2G
+          memory: ${QDRANT_MEMORY_RESERVATION:-2G}
     ulimits:
       nofile:
         soft: 50000

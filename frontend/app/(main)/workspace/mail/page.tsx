@@ -10,7 +10,10 @@ import {
   Heading,
   Button,
   Badge,
+  Callout,
   IconButton,
+  Switch,
+  Tooltip,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -19,6 +22,8 @@ import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/s
 import { SmtpApi } from './api';
 import { SmtpConfigurePanel } from './components/smtp-configure-panel';
 import type { SmtpConfig } from './types';
+import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
+import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
 
 // ============================================================
 // Page
@@ -35,6 +40,13 @@ export default function MailPage() {
   const [smtpConfig, setSmtpConfig] = useState<SmtpConfig | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [panelOpen, setPanelOpen] = useState(false);
+  const [turnOffOpen, setTurnOffOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [isMutating, setIsMutating] = useState(false);
+
+  const isEnabled = smtpConfig?.enabled !== false;
+  // An inherited config belongs to the parent organization; it is not ours to turn off or delete.
+  const canManage = isConfigured && !smtpConfig?.inherited;
 
   useEffect(() => {
     if (isProfileInitialized && isAdmin === false) {
@@ -61,6 +73,13 @@ export default function MailPage() {
     loadSmtpConfig();
   }, [isProfileInitialized, isAdmin, loadSmtpConfig]);
 
+  // A failed request may still have changed what is stored, so show that rather than the old state.
+  const refreshSmtpConfig = useCallback(async () => {
+    const config = await SmtpApi.getSmtpConfig();
+    setSmtpConfig(config);
+    setIsConfigured(!!config?.inherited || (!!config?.host && !!config?.fromEmail));
+  }, []);
+
   // ── Save SMTP config ──────────────────────────────────────
   const handleSave = useCallback(
     async (config: SmtpConfig) => {
@@ -82,6 +101,45 @@ export default function MailPage() {
     });
   }, [addToast]);
 
+  const handleSetEnabled = useCallback(
+    async (enabled: boolean) => {
+      setIsMutating(true);
+      try {
+        await SmtpApi.setSmtpEnabled(enabled);
+        setSmtpConfig((prev) => (prev ? { ...prev, enabled } : prev));
+        setTurnOffOpen(false);
+        addToast({
+          variant: 'success',
+          title: enabled ? t('workspace.mail.toasts.turnedOn') : t('workspace.mail.toasts.turnedOff'),
+        });
+      } catch {
+        addToast({ variant: 'error', title: t('workspace.mail.toasts.actionFailed') });
+        setTurnOffOpen(false);
+        await refreshSmtpConfig();
+      } finally {
+        setIsMutating(false);
+      }
+    },
+    [addToast, t, refreshSmtpConfig],
+  );
+
+  const handleDelete = useCallback(async () => {
+    setIsMutating(true);
+    try {
+      await SmtpApi.deleteSmtpConfig();
+      setSmtpConfig(null);
+      setIsConfigured(false);
+      setDeleteOpen(false);
+      addToast({ variant: 'success', title: t('workspace.mail.toasts.deleted') });
+    } catch {
+      addToast({ variant: 'error', title: t('workspace.mail.toasts.actionFailed') });
+      setDeleteOpen(false);
+      await refreshSmtpConfig();
+    } finally {
+      setIsMutating(false);
+    }
+  }, [addToast, t, refreshSmtpConfig]);
+
   // Prevent rendering while profile is unresolved or for non-admin (redirect above).
   if (!isProfileInitialized || isAdmin === false) {
     return null;
@@ -99,11 +157,11 @@ export default function MailPage() {
   // ── Render ────────────────────────────────────────────────
   return (
     <Box style={{ height: '100%', overflowY: 'auto' }}>
-      <Box style={{ padding: '4em 6.25em 5em' }}>
+      <SettingsPageContainer>
         {/* ── Page header ── */}
-        <Flex align="start" justify="between" style={{ marginBottom: 'var(--space-6)' }}>
-          <Box>
-            <Heading size="6" style={{ color: 'var(--slate-12)' }}>
+        <Flex align="start" justify="between" wrap="wrap" gap="3" style={{ marginBottom: 'var(--space-6)' }}>
+          <Box style={{ flex: '1 1 240px', minWidth: 0 }}>
+            <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.mail.title')}
             </Heading>
             <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', display: 'block' }}>
@@ -161,7 +219,7 @@ export default function MailPage() {
                   border: '1px solid var(--slate-3)',
                   borderRadius: 'var(--radius-1)',
                   background: 'var(--olive-2)',
-                  backdropFilter: 'blur(25px)',
+                  backdropFilter: 'var(--frost-filter)',
                 }}
               >
                 {/* Mail icon box */}
@@ -203,30 +261,67 @@ export default function MailPage() {
                   </Text>
                 </Box>
 
-                {/* Configured / Not Configured badge */}
+                {/* Configured / Turned off / Not Configured badge */}
                 <Badge
-                  color={isConfigured ? 'green' : 'orange'}
+                  color={!isConfigured ? 'orange' : isEnabled ? 'green' : 'gray'}
                   variant="soft"
                   size="1"
                   style={{ flexShrink: 0 }}
                 >
-                  {isConfigured ? t('workspace.mail.configured') : t('workspace.mail.notConfigured')}
+                  {!isConfigured
+                    ? t('workspace.mail.notConfigured')
+                    : isEnabled
+                      ? t('workspace.mail.configured')
+                      : t('workspace.mail.turnedOff')}
                 </Badge>
+
+                {canManage && (
+                  <Tooltip content={t('workspace.mail.emailSending')}>
+                    <Switch
+                      size="1"
+                      checked={isEnabled}
+                      disabled={isMutating}
+                      aria-label={t('workspace.mail.emailSending')}
+                      onCheckedChange={(checked) => {
+                        if (checked) void handleSetEnabled(true);
+                        else setTurnOffOpen(true);
+                      }}
+                      style={{ flexShrink: 0, cursor: 'pointer' }}
+                    />
+                  </Tooltip>
+                )}
 
                 {/* Settings / configure button */}
                 <IconButton
                   variant="ghost"
                   color="gray"
                   size="2"
+                  className="touch-hit"
+                  aria-label={t('workspace.mail.serverConfig')}
                   onClick={() => setPanelOpen(true)}
                   style={{ cursor: 'pointer', flexShrink: 0 }}
                 >
                   <MaterialIcon name="settings" size={18} color="var(--slate-10)" />
                 </IconButton>
+
+                {canManage && (
+                  <IconButton
+                    variant="ghost"
+                    color="red"
+                    size="2"
+                    className="touch-hit"
+                    aria-label={t('workspace.mail.deleteSmtp')}
+                    disabled={isMutating}
+                    onClick={() => setDeleteOpen(true)}
+                    style={{ cursor: 'pointer', flexShrink: 0 }}
+                  >
+                    <MaterialIcon name="delete" size={18} color="var(--red-11)" />
+                  </IconButton>
+                )}
               </Flex>
           </Box>
         </Flex>
-      </Box>
+      </SettingsPageContainer>
 
       {/* ── SMTP Configure Panel ── */}
       <SmtpConfigurePanel
@@ -236,6 +331,42 @@ export default function MailPage() {
         onClose={() => setPanelOpen(false)}
         onSaveSuccess={handleSaveSuccess}
         onSave={handleSave}
+      />
+
+      <ConfirmationDialog
+        open={turnOffOpen}
+        onOpenChange={setTurnOffOpen}
+        title={t('workspace.mail.turnOffDialog.title')}
+        message={t('workspace.mail.turnOffDialog.message')}
+        confirmLabel={t('workspace.mail.turnOffDialog.confirm')}
+        confirmLoadingLabel={t('workspace.mail.turnOffDialog.confirm')}
+        confirmVariant="danger"
+        isLoading={isMutating}
+        onConfirm={() => void handleSetEnabled(false)}
+      />
+
+      <ConfirmationDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title={t('workspace.mail.deleteDialog.title')}
+        message={
+          <Flex direction="column" gap="3">
+            <Callout.Root color="red" size="1">
+              <Callout.Icon>
+                <MaterialIcon name="warning" size={16} color="var(--red-11)" />
+              </Callout.Icon>
+              <Callout.Text>{t('workspace.mail.deleteDialog.warning')}</Callout.Text>
+            </Callout.Root>
+            <Text size="2" style={{ color: 'var(--slate-11)' }}>
+              {t('workspace.mail.deleteDialog.message')}
+            </Text>
+          </Flex>
+        }
+        confirmLabel={t('workspace.mail.deleteDialog.confirm')}
+        confirmLoadingLabel={t('workspace.mail.deleteDialog.deleting')}
+        confirmVariant="danger"
+        isLoading={isMutating}
+        onConfirm={() => void handleDelete()}
       />
     </Box>
   );

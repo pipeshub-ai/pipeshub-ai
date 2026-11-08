@@ -1,8 +1,8 @@
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Union
+from typing import TYPE_CHECKING, Any, Literal, Optional
 from uuid import uuid4
-import hashlib
+
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 if TYPE_CHECKING:
@@ -197,6 +197,11 @@ class CodeMetadata(BaseModel):
     signature: Optional[str] = None
     docstring: Optional[str] = None
     decorators: Optional[list[str]] = None
+    # Words resolution reads (C/C++: "declaration" for no body, "static", "returns:<Class>"; C#: "declaration",
+    # "partial", "extension", "this:<Type>", "explicit:<Interface>").
+    modifiers: Optional[list[str]] = None
+    # Type parameters the declaration takes (`Foo<T, U>`: 2); None when it takes none.
+    type_param_count: Optional[int] = None
     # Repo-unique, human-readable resolution identity. The graph block key is
     # hashed from this, so the blob and the graph must agree on it exactly.
     qualified_name: Optional[str] = None  # "method:Outer.Inner.run"
@@ -208,6 +213,9 @@ class CodeMetadata(BaseModel):
     # Receiver-variable -> declared type for the whole file. Cannot be rebuilt
     # without re-parsing, so the file-summary block carries it.
     type_table: Optional[dict[str, str]] = None
+    # C/C++ function-like macro -> [line, names its body calls]; on the file-summary block, and resident on its
+    # node, as a header's macros are read for files an incremental build is not re-resolving.
+    macro_table: Optional[dict[str, list]] = None
 
 class MediaMetadata(BaseModel):
     """Metadata for media blocks (image, video, audio)"""
@@ -317,6 +325,10 @@ class SemanticMetadata(BaseModel):
     departments: Optional[list[str]] = None
     languages: Optional[list[str]] = None
     topics: Optional[list[str]] = None
+    # Named by the classification call (KG-13 slice 3b); resolved against the
+    # org's organisations, not taxonomy. None is unknown (a fallback summary),
+    # which keeps the record's organisation links; [] removes them.
+    organizations: list[str] | None = None
     record_id: Optional[str] = None
     categories: Optional[list[str]] = Field(default_factory=list)
     sub_category_level_1: Optional[str] = None
@@ -392,9 +404,9 @@ class Block(BaseModel):
     link_metadata: Optional[LinkMetadata] = None
     image_metadata: Optional[ImageMetadata] = None
     semantic_metadata: Optional[SemanticMetadata] = None
-    children_records: Optional[List[ChildRecord]] = Field(default=None, description="List of child records associated with this block")
+    children_records: Optional[list[ChildRecord]] = Field(default=None, description="List of child records associated with this block")
     content_hash: Optional[str] = Field(default=None, description="Hash of the content")
-    
+
 
 class Blocks(BaseModel):
     blocks: list[Block] = Field(default_factory=list)
@@ -514,7 +526,7 @@ class BlockGroup(BaseModel):
     file_metadata: Optional[FileMetadata] = None
     link_metadata: Optional[LinkMetadata] = None
     semantic_metadata: Optional[SemanticMetadata] = None
-    children_records: Optional[List[ChildRecord]] = Field(default=None, description="List of child records associated with this block group")
+    children_records: Optional[list[ChildRecord]] = Field(default=None, description="List of child records associated with this block group")
     content_hash: Optional[str] = Field(default=None, description="Hash of the content for reconciliation")
     children: Optional[BlockGroupChildren] = None
     data: Optional[Any] = None

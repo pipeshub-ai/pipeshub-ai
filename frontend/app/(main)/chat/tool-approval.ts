@@ -108,13 +108,51 @@ export function answeredToolApproval(parts: MessagePart[] | undefined): boolean 
   );
 }
 
-/** One line per argument, for a person to read before approving; long values are cut unless `full`. */
+// Argument names that hold a point in time (`post_at`, `due_date`, `start_time`, `timestamp`, `ts`).
+const TIME_ARG_NAME = /(^|[_\-.])(at|ts|time|timestamp|date|datetime)$|^(ts|timestamp)$|(At|Time|Timestamp|Date)$/;
+// Unix seconds between 2001 and 2286, or the same range in milliseconds.
+const EPOCH_SECONDS = { min: 1e9, max: 1e10 };
+const EPOCH_MILLIS = { min: 1e12, max: 1e13 };
+
+/** A Unix time (seconds or milliseconds) under a time-like argument name, as a local date and time. */
+export function formatEpochArgument(name: string, value: unknown): string | null {
+  if (!TIME_ARG_NAME.test(name)) return null;
+  const n = typeof value === 'number' ? value : typeof value === 'string' && /^\d{9,13}(\.\d+)?$/.test(value.trim()) ? Number(value) : NaN;
+  if (!Number.isFinite(n)) return null;
+  const ms = n >= EPOCH_MILLIS.min && n < EPOCH_MILLIS.max ? n : n >= EPOCH_SECONDS.min && n < EPOCH_SECONDS.max ? n * 1000 : NaN;
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+// A list item that reads the same in a comma list: a person approving a write must see where each
+// item ends and what type it is, so `['admins, owners']` and `['admins', 'owners']`, or `[1, true]`
+// and `['1', 'true']`, cannot look alike.
+function plainListItem(item: unknown): boolean {
+  return typeof item === 'string' && item !== '' && !item.includes(',') && item.trim() === item;
+}
+
+function argumentText(name: string, value: unknown): string {
+  if (typeof value === 'string') return formatEpochArgument(name, value) ?? value;
+  if (typeof value === 'number') return formatEpochArgument(name, value) ?? String(value);
+  if (Array.isArray(value) && value.length > 0 && value.every(plainListItem)) {
+    return value.map((item) => String(item)).join(', ');
+  }
+  if (Array.isArray(value) && value.every((item) => item === null || typeof item !== 'object')) {
+    return JSON.stringify(value);
+  }
+  if (value !== null && typeof value === 'object') return JSON.stringify(value, null, 2);
+  return JSON.stringify(value) ?? String(value);
+}
+
+/** One line per argument, for a person to read before approving; long values are cut unless `full`.
+ * Unix times under time-like names read as dates, lists of plain text as a comma list (as JSON when
+ * the list is empty, holds numbers or booleans, or an item would blur into its neighbour), and nested values as indented JSON. */
 export function approvalArgumentLines(
   args: Record<string, unknown>,
   { full = false }: { full?: boolean } = {}
 ): Array<{ name: string; value: string; cut: boolean }> {
   return Object.entries(args).map(([name, value]) => {
-    const shown = typeof value === 'string' ? value : JSON.stringify(value) ?? String(value);
+    const shown = argumentText(name, value);
     const cut = !full && shown.length > MAX_VALUE_CHARS;
     return { name, value: cut ? `${shown.slice(0, MAX_VALUE_CHARS)}…` : shown, cut };
   });

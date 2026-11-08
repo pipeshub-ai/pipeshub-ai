@@ -7,6 +7,7 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import { StorageController } from '../controllers/storage.controller';
+import { configuredLocalStorageReplicaProblem } from '../utils/replicas';
 
 const loggerConfig = {
   service: 'Storage service',
@@ -46,6 +47,7 @@ export class StorageContainer {
         .bind<KeyValueStoreService>('KeyValueStoreService')
         .toConstantValue(keyValueStoreService);
       this.logger.info('Storage services initialized successfully');
+      await this.warnIfLocalStorageIsSplitAcrossReplicas(keyValueStoreService);
 
       const authTokenService = new AuthTokenService(
         appConfig.jwtSecret,
@@ -79,6 +81,24 @@ export class StorageContainer {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
       throw error;
+    }
+  }
+
+  /** Logged at every start while the deployment is in that state (see /health warnings too). */
+  static async warnIfLocalStorageIsSplitAcrossReplicas(
+    keyValueStoreService: KeyValueStoreService,
+  ): Promise<void> {
+    try {
+      const problem =
+        await configuredLocalStorageReplicaProblem(keyValueStoreService);
+      if (problem) this.logger.error(problem);
+    } catch (error) {
+      this.logger.warn(
+        'Could not read the storage configuration for the replica check',
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
     }
   }
 

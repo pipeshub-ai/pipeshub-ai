@@ -14,7 +14,6 @@ import FormPanel from '../components/form-panel';
 import { SingleProvider, MultipleProviders } from '../forms';
 import { AuthApi, type AuthMethod } from '../api';
 import { getOrgExists, invalidateOrgExistsCache } from '@/lib/api/org-exists-public';
-import { getSamlErrorDescription } from '@/lib/auth/saml-errors';
 import { getUserFacingErrorMessage } from '@/lib/api/api-error';
 import { isElectron } from '@/lib/electron';
 import { requestElectronServerUrlChange } from '@/lib/store/auth-store';
@@ -73,7 +72,6 @@ export default function LoginPage() {
   // (where mount effects are intentionally run twice in development).
   const initAuthCalledRef = useRef(-1);
   const [attempt, setAttempt] = useState(0);
-  const samlErrorHandledRef = useRef(false);
   const emailVerifyHandledRef = useRef(false);
 
   useEffect(() => {
@@ -96,31 +94,6 @@ export default function LoginPage() {
       }
       router.replace('/login');
       return;
-    }
-  }, [isHydrated, router]);
-
-  useEffect(() => {
-    if (!isHydrated) return;
-    if (samlErrorHandledRef.current) return;
-    if (typeof window === 'undefined') return;
-    const params = new URLSearchParams(window.location.search);
-
-    const samlErrorCode = params.get('saml_error');
-    if (samlErrorCode) {
-      samlErrorHandledRef.current = true;
-      toast.error(t('auth.login.samlErrorTitle'), {
-        description: getSamlErrorDescription(samlErrorCode),
-      });
-      router.replace('/login');
-      return;
-    }
-
-    if (params.get('error') === 'saml_sso') {
-      samlErrorHandledRef.current = true;
-      toast.error(t('auth.login.samlSignInFailedTitle'), {
-        description: t('auth.login.samlSignInFailedDescription'),
-      });
-      router.replace('/login');
     }
   }, [isHydrated, router]);
 

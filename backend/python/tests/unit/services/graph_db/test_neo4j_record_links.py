@@ -10,12 +10,14 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames
 from app.migrations.record_link_migration import RecordLinkMigrationService
+from app.schema.node_validator import NodeSchemaValidator
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 
 def _provider(rows=None) -> tuple[Neo4jProvider, list]:
     provider = Neo4jProvider.__new__(Neo4jProvider)
     provider.logger = MagicMock()
+    provider.validator = NodeSchemaValidator()
     queries: list = []
 
     async def execute(query, parameters=None, txn_id=None) -> list:

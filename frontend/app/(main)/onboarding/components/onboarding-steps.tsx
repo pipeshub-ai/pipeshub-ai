@@ -3,6 +3,7 @@
 import React from 'react';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import type { OnboardingStep, OnboardingStepId } from '../types';
 
 interface OnboardingStepsProps {
@@ -12,7 +13,23 @@ interface OnboardingStepsProps {
 
 export function OnboardingSteps({ steps, currentStepId }: OnboardingStepsProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const activeIndex = steps.findIndex((s) => s.id === currentStepId);
+
+  if (isMobile) {
+    const current = steps[activeIndex];
+    return (
+      <Box style={{ width: '100%', padding: '12px 0 0' }}>
+        <Text as="div" size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+          {t('onboarding.stepOf', {
+            current: Math.max(activeIndex, 0) + 1,
+            total: steps.length,
+            title: current ? t(current.title) : '',
+          })}
+        </Text>
+      </Box>
+    );
+  }
 
   return (
     <Flex

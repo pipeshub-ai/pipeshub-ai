@@ -69,8 +69,11 @@ refresh_env_secrets()
 
 
 _TOKEN = r"A-Za-z0-9_\-"
+# A key may follow `_`, `-` or `.` (as in `report_sk-....txt`) but not a letter
+# or digit, so `task-...` and `disk-...` stay. A JWT keeps the stricter rule: a
+# run like `_eyJ_eyJ...` would otherwise be rescanned from every `eyJ`.
 _KEY_SHAPES = re.compile(
-    rf"(?<![{_TOKEN}])(?:"
+    r"(?<![A-Za-z0-9])(?:"
     rf"phpat_[{_TOKEN}]{{8,}}"
     rf"|sk-[{_TOKEN}]{{20,}}"
     rf"|(?:AKIA|ASIA)[0-9A-Z]{{16}}(?![0-9A-Za-z])"
@@ -78,7 +81,7 @@ _KEY_SHAPES = re.compile(
     rf"|AIza[{_TOKEN}]{{30,}}"
     rf"|gh[pousr]_[A-Za-z0-9]{{36,}}"
     rf"|github_pat_[A-Za-z0-9_]{{22,}}"
-    rf"|eyJ[{_TOKEN}]{{8,}}\.[{_TOKEN}]{{8,}}\.[{_TOKEN}]*"
+    rf"|(?<![_\-])eyJ[{_TOKEN}]{{8,}}\.[{_TOKEN}]{{8,}}\.[{_TOKEN}]*"
     rf")"
 )
 _KEY_SHAPE_TRIGGERS = ("phpat_", "sk-", "akia", "asia", "xox", "aiza", "gh", "eyj")
@@ -95,16 +98,19 @@ _AUTH_SCHEME = re.compile(
 # and only after the name has been found to be a credential, so a value
 # that holds a further pair (`Error: password=x`) is still scanned.
 _PAIR_HEAD = re.compile(r"(?<![A-Za-z0-9_.\-])([A-Za-z][A-Za-z0-9_.\-]{0,127})['\"]?[ \t]*[:=][ \t]*")
+# Here and in _PYDANTIC_INPUT_VALUE, runs of plain characters are one
+# character-class repeat: re keeps backtracking state for every pass through
+# a repeated group (about 120 bytes per character of a 1 MB quoted value).
 _PAIR_VALUE = re.compile(
-    r"b?\"(?:[^\"\\\n]|\\.)*\"?"
-    r"|b?'(?:[^'\\\n]|\\.)*'?"
+    r"b?\"[^\"\\\n]*(?:\\.[^\"\\\n]*)*\"?"
+    r"|b?'[^'\\\n]*(?:\\.[^'\\\n]*)*'?"
     r"|(?:(?i:bearer|basic|token)[ \t]+)?[^\s,;&'\"(){}\[\]<>]+"
 )
 # str(pydantic.ValidationError) echoes each rejected value as
 # `input_value=<repr>, input_type=<type>`; the repr can be a password. A repr
 # may hold `]` or `,` itself, so the value runs to `, input_type=` or, when
 # that was cut off, to the end of the line.
-_PYDANTIC_INPUT_VALUE = re.compile(r"(input_value=)(?:(?!, input_type=)[^\n])+")
+_PYDANTIC_INPUT_VALUE = re.compile(r"(input_value=)(?!, input_type=)[^\n][^,\n]*(?:,(?! input_type=)[^,\n]*)*")
 
 _PAIR_TRIGGERS = ("pass", "pwd", "secret", "token", "sig", "credential", "api", "auth", "cookie", "private", "key", "connection")
 _AUTH_SCHEME_WORDS = frozenset({"bearer", "basic", "token"})
@@ -211,12 +217,13 @@ def redact_secrets_in_text(text: str) -> str:
     for secret in _env_secrets:
         if secret in text:
             text = text.replace(secret, REDACTED)
-    if any(t in lower for t in _KEY_SHAPE_TRIGGERS):
-        text = _KEY_SHAPES.sub(REDACTED, text)
     if "input_value=" in text:
         text = _PYDANTIC_INPUT_VALUE.sub(rf"\g<1>{REDACTED}", text)
     if any(t in lower for t in _PAIR_TRIGGERS):
         text = _redact_pairs(text)
+    # After pairs: a `[REDACTED]` inserted inside a pair value would cut that value short.
+    if any(t in lower for t in _KEY_SHAPE_TRIGGERS):
+        text = _KEY_SHAPES.sub(REDACTED, text)
     if "bearer" in lower or "Basic" in text:
         text = _AUTH_SCHEME.sub(lambda m: f"{m.group(1) or m.group(2)} {REDACTED}", text)
     if "://" in text:

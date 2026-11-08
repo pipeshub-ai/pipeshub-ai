@@ -70,6 +70,33 @@ async def test_a_new_guest_is_saved_and_linked_to_the_app_but_not_the_org(make_p
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("make_provider", PROVIDERS)
+async def test_a_new_users_job_title_is_saved_as_their_designation(make_provider) -> None:
+    provider = make_provider()
+    member = _app_user("ana@contoso.com", is_guest=False)
+    member.title = "Staff Engineer"
+    _wire(provider, [None, _stored(member.email, is_active=False)])
+
+    await provider.batch_upsert_app_users([member])
+
+    saved = provider.batch_upsert_nodes.await_args.args[0][0]
+    assert saved["designation"] == "Staff Engineer"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("make_provider", PROVIDERS)
+async def test_an_existing_user_is_not_rewritten_with_the_synced_title(make_provider) -> None:
+    provider = make_provider()
+    member = _app_user("ana@contoso.com", is_guest=False)
+    member.title = "Staff Engineer"
+    _wire(provider, [_stored(member.email, is_active=True)])
+
+    await provider.batch_upsert_app_users([member])
+
+    provider.batch_upsert_nodes.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("make_provider", PROVIDERS)
 async def test_a_new_member_still_joins_the_org(make_provider) -> None:
     provider = make_provider()
     member = _app_user("ana@contoso.com", is_guest=False)
@@ -106,13 +133,14 @@ async def test_an_existing_guest_who_never_joined_pipeshub_loses_the_org_edge(ma
 async def test_an_invited_guest_keeps_the_org_edge(make_provider) -> None:
     provider = make_provider()
     guest = _app_user("bob_partner.com#EXT#@contoso.com", is_guest=True)
-    _wire(provider, [_stored(guest.email, is_active=True)])
+    stored = _stored(guest.email, is_active=True)
+    _wire(provider, [stored])
 
     await provider.batch_upsert_app_users([guest])
 
     provider.delete_edge.assert_not_awaited()
     provider.logger.info.assert_any_call(
-        f"Guest {guest.email} is active in PipesHub; keeping their organization membership"
+        "Guest user %s is active in PipesHub; keeping their organization membership", stored.id
     )
 
 

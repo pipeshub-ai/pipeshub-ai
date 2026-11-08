@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -63,6 +64,7 @@ function handleDescriptionWheel(event: React.WheelEvent<HTMLDivElement>) {
 }
 
 export function Toast({ toast, onDismiss, style }: ToastProps) {
+  const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
   const config = VARIANT_CONFIG[toast.variant];
 
@@ -266,6 +268,7 @@ export function Toast({ toast, onDismiss, style }: ToastProps) {
             variant="ghost"
             color="gray"
             size="1"
+            aria-label={t('common.close')}
             onClick={(e) => {
               e.stopPropagation();
               onDismiss(toast.id);

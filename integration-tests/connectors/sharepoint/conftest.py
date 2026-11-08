@@ -21,6 +21,11 @@ from typing import Any
 import pytest
 import pytest_asyncio
 from connector_lifecycle import destructor
+from connectors.sharepoint.sim_world import (  # noqa: F401 - fixtures of the sharepoint_sim suite
+    sharepoint_sim,
+    sharepoint_sim_people,
+    sharepoint_world,
+)
 from helper.graph_provider import GraphProviderProtocol
 from helper.source_credentials import source_unavailable
 from helper.graph_provider_utils import wait_until_graph_condition

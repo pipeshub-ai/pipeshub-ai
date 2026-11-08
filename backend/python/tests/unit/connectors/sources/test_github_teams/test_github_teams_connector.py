@@ -15,6 +15,7 @@ import pytest
 
 from app.connectors.sources.github_teams import connector as connector_mod
 from app.connectors.sources.github_teams.common.apps import GitHubTeamsApp
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
 
 from tests.unit.connectors.sources.test_github_teams.conftest import (
@@ -37,6 +38,7 @@ def _runnable_connector() -> object:
     c.repos.timestamps.schedule = lambda: None
     c.users.sync_users = AsyncMock()
     c.projects.sync_all_repos = AsyncMock()
+    c.projects.failures = []
     return c
 
 
@@ -182,6 +184,55 @@ class TestConnectionAndAccess:
 
         assert await GitHubTeamsConnector.test_connection_and_access(c) is False
 
+    async def test_rejected_credentials_say_so(self) -> None:
+        c = make_mock_connector()
+        res = failed_response("Bad credentials", status_code=401)
+        res.api_message = "Bad credentials"
+        c.runtime.ds_call = AsyncMock(return_value=res)
+
+        with pytest.raises(ConnectorInitError, match="rejected the credentials"):
+            await GitHubTeamsConnector.test_connection_and_access(c)
+
+    async def test_a_spent_rate_limit_says_so_rather_than_blaming_the_credentials(self) -> None:
+        c = make_mock_connector()
+        res = failed_response(
+            "HTTP 429: PipesHub paused GitHub core requests with 458 of 5000 left until the limit resets in 215s",
+            status_code=429,
+        )
+        res.api_message = "GitHub core rate limit reserve reached"
+        res.retry_after_seconds = 215
+        c.runtime.ds_call = AsyncMock(return_value=res)
+
+        with pytest.raises(ConnectorInitError) as err:
+            await GitHubTeamsConnector.test_connection_and_access(c)
+        message = str(err.value)
+        assert "rate limit" in message
+        assert "reserve reached" in message
+        assert "could not be checked" in message
+        assert "not a sign they are wrong" in message
+        # 215 s rounds up, never down to a time GitHub would still refuse.
+        assert "Try again in 4 min or later" in message
+
+    async def test_a_wait_is_rounded_up_to_the_next_minute(self) -> None:
+        c = make_mock_connector()
+        res = failed_response("HTTP 429: rate limited", status_code=429)
+        res.api_message = "GitHub core rate limit exhausted"
+        res.retry_after_seconds = 149
+        c.runtime.ds_call = AsyncMock(return_value=res)
+
+        with pytest.raises(ConnectorInitError, match="Try again in 3 min or later"):
+            await GitHubTeamsConnector.test_connection_and_access(c)
+
+    async def test_a_rate_limit_without_a_wait_does_not_promise_a_time(self) -> None:
+        # A secondary rate limit can come without Retry-After, and is not tied to the hourly reset.
+        c = make_mock_connector()
+        res = failed_response("HTTP 429: rate limited", status_code=429)
+        res.api_message = None
+        c.runtime.ds_call = AsyncMock(return_value=res)
+
+        with pytest.raises(ConnectorInitError, match="GitHub gave no time to wait"):
+            await GitHubTeamsConnector.test_connection_and_access(c)
+
     async def test_exception_returns_false(self) -> None:
         c = make_mock_connector()
         c.runtime.refresh_token_if_needed = AsyncMock(side_effect=RuntimeError("network"))
@@ -197,6 +248,7 @@ class TestRunSyncAndIncremental:
         order: list[str] = []
         c.users.sync_users = AsyncMock(side_effect=lambda: order.append("users"))
         c.projects.sync_all_repos = AsyncMock(side_effect=lambda: order.append("projects"))
+        c.projects.failures = []
         monkeypatch.setattr(
             connector_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
         )

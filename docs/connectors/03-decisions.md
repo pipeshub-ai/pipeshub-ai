@@ -49,7 +49,7 @@ Adding a `RecordType` or `RecordGroupType` is a framework change. Ask first (`CO
 - `RecordTypes` in `app/config/constants/arangodb.py`. Indexing (`app/services/messaging/kafka/handlers/record.py`) and the Neo4j and Arango providers switch on this one, not on `RecordType`.
 - `RecordTypeEnum` in `backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml`, which the spec says mirrors `RecordType`.
 
-The two Python enums have already drifted. `RecordTypes` has `ATTACHMENT` and `WEBPAGE_COMMENT`, which `RecordType` does not. `RecordType` has `INLINE_COMMENT`, `CONFLUENCE_PAGE`, `CONFLUENCE_BLOGPOST`, `SHAREPOINT_LIST_ITEM`, `SHAREPOINT_DOCUMENT_LIBRARY`, `PROJECT`, `SQL_TABLE`, `SQL_VIEW` and `OTHERS`, which `RecordTypes` does not. `RecordGroupType` lives only in `entities.py` today; a new group type is still a framework change because the graph stores the string.
+The two Python enums have already drifted. `RecordTypes` has `ATTACHMENT` and `WEBPAGE_COMMENT`, which `RecordType` does not. `RecordType` has `INLINE_COMMENT`, `CONFLUENCE_PAGE`, `CONFLUENCE_BLOGPOST`, `SHAREPOINT_LIST_ITEM`, `SHAREPOINT_DOCUMENT_LIBRARY`, `PROJECT`, `SQL_TABLE`, `SQL_COLUMN`, `SQL_VIEW` and `OTHERS`, which `RecordTypes` does not. `RecordGroupType` lives only in `entities.py` today; a new group type is still a framework change because the graph stores the string.
 
 `external_record_id` must be namespaced when the source's id is unique only inside an object type (`0-1:123` versus `0-2:123`).
 

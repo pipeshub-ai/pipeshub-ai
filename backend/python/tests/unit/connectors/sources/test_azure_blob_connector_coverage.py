@@ -11,12 +11,14 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import FilterCollection, FilterOperator
 from app.connectors.sources.azure_blob.connector import (
     AzureBlobConnector,
     AzureBlobDataSourceEntitiesProcessor,
     _container_last_modified_epoch_ms_from_list,
+    _NotReindexable,
     get_file_extension,
     get_folder_path_segments_from_blob_name,
     get_mimetype_for_azure_blob,
@@ -682,15 +684,15 @@ class TestTestConnectionAndAccess:
         azure_connector.data_source.list_containers = AsyncMock(
             return_value=_make_response(False, error="denied")
         )
-        result = await azure_connector.test_connection_and_access()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="Cannot list containers: denied"):
+            await azure_connector.test_connection_and_access()
 
     @pytest.mark.asyncio
     async def test_exception(self, azure_connector):
         azure_connector.data_source = MagicMock()
         azure_connector.data_source.list_containers = AsyncMock(side_effect=Exception("err"))
-        result = await azure_connector.test_connection_and_access()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="err"):
+            await azure_connector.test_connection_and_access()
 
 
 # ===========================================================================
@@ -782,8 +784,9 @@ class TestGetSignedUrl:
 class TestStreamRecord:
     @pytest.mark.asyncio
     async def test_folder_raises(self, azure_connector):
-        from app.models.entities import FileRecord
         from fastapi import HTTPException
+
+        from app.models.entities import FileRecord
         record = MagicMock(spec=FileRecord)
         record.is_file = False
         with pytest.raises(HTTPException):
@@ -952,7 +955,7 @@ class TestCheckAndFetchUpdatedRecord:
             return_value=_make_response(False, error="not found")
         )
         # Raised so reindex_records publishes nothing for a blob that is gone.
-        with pytest.raises(LookupError):
+        with pytest.raises(_NotReindexable):
             await azure_connector._check_and_fetch_updated_record("org-1", record)
 
     @pytest.mark.asyncio

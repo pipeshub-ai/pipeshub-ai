@@ -313,7 +313,7 @@ the `JUDGE_*` settings. The calibration summary and its JSON (`provider`,
 
 ### Calibration
 
-`answer_judge_calibration.yaml` holds 90 hand-labelled hard cases (109 claims):
+`answer_judge_calibration.yaml` holds 94 hand-labelled hard cases (114 claims):
 negation, "under" against "up to and including", the right amount on the
 wrong subject, time phrases ("will sign off on Monday"), hedging, a fact buried
 in a long answer, answers that state a fact and also something incompatible
@@ -323,7 +323,10 @@ instruction to the grader hidden in the answer, and numbers written in unusual
 ways ("$250-million", "$250 (million)", "$250 000", "250 %", "- $250",
 "10 - 15 days"). Most are around the expense
 policy's approval bands; the rest cover PR #482's review, the export fix, the
-Northwind renewal, the on-call handbook, the exports launch and the holiday carry-over change.
+Northwind renewal, the on-call handbook, the exports launch, the holiday carry-over change and the 2026
+pricing strategy, where grandfathering existing customers or a discount for
+moving early is not a conflict but keeping part of Enterprise on per-seat
+pricing for good is.
 
 `run_judge_calibration.py` asks the judge about every case and compares its
 pass or fail on each claim with the label. It fails below 95% agreement and

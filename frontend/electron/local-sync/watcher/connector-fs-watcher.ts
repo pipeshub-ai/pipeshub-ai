@@ -7,6 +7,8 @@ import { expandWatchEventsForReplay, type WatchEvent } from './replay-event-expa
 import {
   WatcherStateStore,
   scanSyncRoot,
+  carryForwardUnreadable,
+  emptyUnreadable,
   contentFileHash,
   normalizeRelKey,
   toEpochMs,
@@ -155,6 +157,16 @@ export class ConnectorFsWatcher {
    * and observe each other's half-applied state. */
   private listenerChain: Promise<void>;
 
+  /** True once start() seeded from the disk alone, with no snapshot to compare against. */
+  seededWithoutSnapshot = false;
+  /**
+   * Folders chokidar has stopped watching because it lost read access to
+   * them. Until they are readable again and watched once more, each pull
+   * reconciles against the disk, since no event will come from inside them.
+   */
+  private blindDirs = new Set<string>();
+  private blind = false;
+
   stateStore: WatcherStateStore;
   dispatcher: BatchDispatcher;
   correlator: EventCorrelator;
@@ -190,9 +202,8 @@ export class ConnectorFsWatcher {
     this.log = log || ((msg: string) => console.log(`[local-sync:${connectorId}]`, msg));
     this.usePolling = usePolling === true;
     this.pollInterval = typeof pollInterval === 'number' && pollInterval > 0 ? pollInterval : 1000;
-    // This is only a fallback snapshot refresh. Event handling updates state
-    // first; running the rescan too soon can erase the "previous" hash before
-    // chokidar's awaitWriteFinish-delayed change/add events reach us.
+    // Only a bookkeeping refresh (inodes, mtimes of unchanged files); events
+    // are what update the snapshot, see WatcherStateStore.refreshUnchanged.
     this.stateSyncDebounceMs = typeof stateSyncDebounceMs === 'number' && stateSyncDebounceMs >= 0 ? stateSyncDebounceMs : 5000;
 
     this.rootCheckIntervalMs = typeof rootCheckIntervalMs === 'number' && rootCheckIntervalMs > 0
@@ -266,7 +277,9 @@ export class ConnectorFsWatcher {
       this.listenerChain = this.listenerChain.then(async () => {
         // Expansion first: the children a DIR_DELETED expands into are created
         // here, so a filter running before it could never see them.
-        const dispatchable = this.filterAndNote(await this.expandForDispatch(events));
+        const dispatchable = await this.dropDeletionsNotProven(
+          this.filterAndNote(await this.expandForDispatch(events)),
+        );
         if (dispatchable.length === 0) return;
         // A delete exists only because something disappeared, so a stat taken
         // here is guaranteed to observe a lost root before the batch reaches
@@ -280,6 +293,81 @@ export class ConnectorFsWatcher {
         this.dispatcher.push(dispatchable);
       }).catch(() => { /* a failed emit must not wedge the chain */ });
     });
+  }
+
+  /**
+   * The folder as it is now, with anything the scan could not read filled in
+   * from the snapshot (see carryForwardUnreadable).
+   */
+  private async scanCarryingForward(reuseCachedHashes: boolean): Promise<Map<string, FileSnapshotEntry>> {
+    const unreadable = emptyUnreadable();
+    const scan = await scanSyncRoot(this.rootPath, { ...this.scanOptions(reuseCachedHashes), unreadable });
+    if (unreadable.dirs.size || unreadable.files.size) {
+      this.log(`Could not read ${unreadable.dirs.size} folder(s) and ${unreadable.files.size} file(s); keeping what was last known about them.`);
+    }
+    return carryForwardUnreadable(scan, unreadable, this.stateStore.getSnapshot().files);
+  }
+
+  /**
+   * Keep a deletion only when the path is really gone. chokidar reports the
+   * contents of a folder that lost its read permission as unlinked, and the
+   * server would remove every one of them; a path that still exists, or that
+   * cannot be looked at, has not been deleted.
+   *
+   * On Windows a directory deleted while a handle is still open on it (which
+   * the watcher's own fs.watch holds) answers EPERM until the handle closes,
+   * so there EPERM means gone, as in checkRootLiveness.
+   */
+  private async dropDeletionsNotProven(events: WatchEvent[]): Promise<WatchEvent[]> {
+    if (!events.some(isDeletion)) return events;
+    const kept: WatchEvent[] = [];
+    for (const event of events) {
+      if (!isDeletion(event)) {
+        kept.push(event);
+        continue;
+      }
+      try {
+        await fs.promises.lstat(path.resolve(this.rootPath, event.path));
+        this.log(`Not reporting ${event.path} as deleted: it is still there.`);
+        this.blind = true;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        const gone = code === 'ENOENT' || code === 'ENOTDIR' || (process.platform === 'win32' && code === 'EPERM');
+        if (gone) {
+          kept.push(event);
+        } else {
+          this.log(`Not reporting ${event.path} as deleted: it cannot be checked (${code}).`);
+          this.blind = true;
+        }
+      }
+    }
+    return kept;
+  }
+
+  /**
+   * While part of the folder is unwatched (see blindDirs), compare it with the
+   * disk and report the difference; once it can be read again, watch it again.
+   */
+  private async reconcileWhileBlind(): Promise<void> {
+    if (!this.blind) return;
+    const unreadable = emptyUnreadable();
+    const replayFiles = { ...this.stateStore.getSnapshot().files };
+    const scan = carryForwardUnreadable(
+      await scanSyncRoot(this.rootPath, { ...this.scanOptions(true), unreadable }),
+      unreadable,
+      this.stateStore.getSnapshot().files,
+    );
+    const events = this.stateStore.commitReconcile(scan);
+    const dispatchable = this.filterAndNote(await this.expandForDispatch(events, replayFiles));
+    if (dispatchable.length > 0) this.dispatcher.push(dispatchable, { source: 'reconcile' });
+    for (const dir of unreadable.dirs) this.blindDirs.add(dir);
+    if (unreadable.dirs.size > 0) return;
+    for (const dir of this.blindDirs) {
+      const abs = path.resolve(this.rootPath, dir);
+      if (this.watcher && fs.existsSync(abs)) this.watcher.add(abs);
+    }
+    this.blindDirs.clear();
+    this.blind = false;
   }
 
   private scanOptions(reuseCachedHashes: boolean) {
@@ -357,8 +445,8 @@ export class ConnectorFsWatcher {
     // snapshot with the contents of a directory we never indexed.
     if (!(await this.verifyRootAlive())) return;
     try {
-      const scan = await scanSyncRoot(this.rootPath, this.scanOptions(true));
-      this.stateStore.applyScan(scan);
+      const scan = await this.scanCarryingForward(true);
+      this.stateStore.refreshUnchanged(scan);
       this.stateStore.flushSave();
     } catch (err) {
       this.log(`State rescan error: ${err instanceof Error ? err.message : String(err)}`);
@@ -482,7 +570,7 @@ export class ConnectorFsWatcher {
     if (touched.length === 0) return;
 
     for (const event of events) {
-      if (event.type !== 'MOVED' && event.type !== 'RENAMED') continue;
+      if (!['MOVED', 'RENAMED', 'DIR_MOVED', 'DIR_RENAMED'].includes(event.type)) continue;
       if (!event.oldPath) continue;
       for (const entry of touched) {
         const suffix = suffixUnder(entry.oldPrefix, event.oldPath);
@@ -528,7 +616,23 @@ export class ConnectorFsWatcher {
     let touched = false;
 
     for (const event of events) {
-      if (!event || event.isDirectory) continue;
+      if (!event) continue;
+      if (event.isDirectory) {
+        // Folder entries are what the next move or delete of a parent is
+        // expanded from, so they have to follow the folder as files do.
+        const files = this.stateStore.getSnapshot().files;
+        const dirPath = String(event.path || '').trim();
+        if (!dirPath) continue;
+        if (event.oldPath && files[String(event.oldPath)]) {
+          files[dirPath] = files[String(event.oldPath)];
+          delete files[String(event.oldPath)];
+          touched = true;
+        } else if (event.type === 'DIR_DELETED') {
+          delete files[dirPath];
+          touched = true;
+        }
+        continue;
+      }
       const nextPath = String(event.path || '').trim();
       if (!nextPath) continue;
       if (event.oldPath) delete this.stateStore.getSnapshot().files[String(event.oldPath)];
@@ -588,7 +692,7 @@ export class ConnectorFsWatcher {
     if (hasPreviousState) {
       this.log('Performing startup reconciliation...');
       const replayFiles = { ...prevState.files };
-      const currentScan = await scanSyncRoot(this.rootPath, this.scanOptions(false));
+      const currentScan = await this.scanCarryingForward(false);
       const offlineEvents = this.stateStore.commitReconcile(currentScan);
       const dispatchable = this.filterAndNote(
         await this.expandForDispatch(offlineEvents, replayFiles),
@@ -609,6 +713,7 @@ export class ConnectorFsWatcher {
       // upserts idempotently by deterministic external_record_id, so this is
       // safe even if some of these paths already exist there.
       this.log('No previous state found. Seeding from current disk contents...');
+      this.seededWithoutSnapshot = true;
       const currentScan = await scanSyncRoot(this.rootPath, this.scanOptions(false));
       const seedEvents: WatchEvent[] = [];
       for (const [relPath, entry] of currentScan) {
@@ -672,6 +777,12 @@ export class ConnectorFsWatcher {
     this.watcher.on('ready', () => {
       this.ready = true;
       this.log('Watcher ready.');
+      // Raw events before ready are dropped, and chokidar's initial scan
+      // reports nothing that is already there when it reaches it, so whatever
+      // changed between the start-up reconcile and now has no event at all.
+      void this.listenerChain
+        .then(() => this.reconcileSinceStart())
+        .catch(() => { /* logged inside */ });
     });
 
     this.watcher.on('error', (err) => {
@@ -697,9 +808,13 @@ export class ConnectorFsWatcher {
       && (await checkRootLiveness(this.rootPath, this.rootFingerprint)) === 'alive';
 
     if (rootAlive) {
-      // Forced: syncStateFromDisk() below rewrites state to match disk, so an
-      // unlink left pending here becomes a deletion no event ever reports.
-      await this.correlator.drain(true);
+      // Pending changes and adds go out as they are. Pending unlinks, and any
+      // write chokidar is still holding back until the file is stable, are
+      // left to the reconcile below: it sees them on disk, so a rename that
+      // straddles the quit stays a rename instead of a delete.
+      await this.correlator.drain(false);
+      await this.listenerChain;
+      this.correlator.discardPending();
       await this.dispatcher.flush();
     } else {
       // Forcing here would turn every pending unlink into a DELETED on app
@@ -713,8 +828,11 @@ export class ConnectorFsWatcher {
       this.watcher = null;
     }
     if (rootAlive) {
-      await this.syncStateFromDisk();
-      this.stateStore.flushSave();
+      // A reconcile, not a plain rescan: writing the disk into the snapshot
+      // without reporting the difference loses every change made in the last
+      // seconds before quit, because the next start compares against a
+      // snapshot that already has them.
+      await this.reconcileBeforeStop();
     }
     this.running = false;
     this.ready = false;
@@ -733,9 +851,45 @@ export class ConnectorFsWatcher {
     };
   }
 
+  /**
+   * Report whatever the disk holds that the snapshot does not, then save it.
+   * Hashes are reused where size and mtime are unchanged: a quit has to stay
+   * quick, and the next start's reconcile re-hashes everything anyway.
+   */
+  private async reconcileBeforeStop(): Promise<void> {
+    if (!(await this.verifyRootAlive())) return;
+    try {
+      const replayFiles = { ...this.stateStore.getSnapshot().files };
+      const scan = await this.scanCarryingForward(true);
+      const events = this.stateStore.commitReconcile(scan);
+      const dispatchable = this.filterAndNote(await this.expandForDispatch(events, replayFiles));
+      if (dispatchable.length > 0) this.dispatcher.push(dispatchable, { source: 'reconcile' });
+      await this.dispatcher.flush();
+    } catch (err) {
+      this.log(`Stop reconcile error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    this.stateStore.flushSave();
+  }
+
+  private async reconcileSinceStart(): Promise<void> {
+    if (!this.running || !(await this.verifyRootAlive())) return;
+    try {
+      const replayFiles = { ...this.stateStore.getSnapshot().files };
+      const scan = await this.scanCarryingForward(true);
+      const events = this.stateStore.commitReconcile(scan);
+      const dispatchable = this.filterAndNote(await this.expandForDispatch(events, replayFiles));
+      if (dispatchable.length > 0) {
+        this.log(`Found ${dispatchable.length} change(s) made while the watcher was starting.`);
+        this.dispatcher.push(dispatchable, { source: 'reconcile' });
+      }
+    } catch (err) {
+      this.log(`Start-up reconcile error: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   async rescan(): Promise<WatchEvent[]> {
     const replayFiles = { ...this.stateStore.getSnapshot().files };
-    const scan = await scanSyncRoot(this.rootPath, this.scanOptions(false));
+    const scan = await this.scanCarryingForward(false);
     const events = this.stateStore.commitReconcile(scan);
     this.stateStore.flushSave();
     const dispatchable = this.filterAndNote(
@@ -769,7 +923,41 @@ export class ConnectorFsWatcher {
     // Every pull comes through here, so this is what makes a lost root fail
     // the current tick as ROOT_MISSING instead of surfacing at next launch.
     if (!(await this.verifyRootAlive())) throw this.rootUnavailableError();
+    await this.listenerChain;
+    await this.reconcileWhileBlind();
+    await this.reportFilesReadableAgain();
     await this.correlator.drain(false);
     await this.dispatcher.flush();
+  }
+
+  /**
+   * Files whose last event went out without a hash. The server skips those,
+   * since it cannot tell what changed, so a file that was locked or unreadable
+   * when it changed would otherwise stay unsynced until a full sync. Each
+   * pull tries them again and reports the ones that can be read now.
+   */
+  private async reportFilesReadableAgain(): Promise<void> {
+    const files = this.stateStore.getSnapshot().files;
+    const events: WatchEvent[] = [];
+    for (const [relPath, entry] of Object.entries(files)) {
+      if (entry.isDirectory || entry.sha256) continue;
+      const absPath = path.resolve(this.rootPath, relPath);
+      const sha256 = await contentFileHash(absPath);
+      if (sha256 === undefined) continue;
+      let stats: fs.Stats;
+      try {
+        stats = await fs.promises.lstat(absPath);
+      } catch {
+        continue;
+      }
+      files[relPath] = { ...entry, sha256, size: stats.size, mtimeMs: toEpochMs(stats.mtimeMs) ?? entry.mtimeMs };
+      events.push({
+        type: 'MODIFIED', path: relPath, timestamp: Date.now(), size: stats.size, isDirectory: false, sha256,
+        mtimeMs: toEpochMs(stats.mtimeMs), birthtimeMs: toEpochMs(stats.birthtimeMs),
+      });
+    }
+    if (events.length === 0) return;
+    this.stateStore.scheduleSave();
+    this.dispatcher.push(events);
   }
 }

@@ -75,3 +75,42 @@ def test_no_arango_query_asks_for_the_plan_cache() -> None:
     backend = pathlib.Path(__file__).resolve().parents[4]
     source = (backend / "app/services/graph_db/arango/arango_http_provider.py").read_text(encoding="utf-8")
     assert "usePlanCache" not in source
+
+
+@pytest.mark.asyncio
+async def test_a_bounded_flatten_keeps_only_nodes_within_the_depth_whichever_arm_lists_them() -> None:
+    """depth=2 from the App: the declared, seed and collection arms start elsewhere,
+    so the bound on the region walk is not enough. A node two arms reach (r1) is kept
+    once; one only a deep arm reaches (deep, s1, dg2) is dropped."""
+    provider = ArangoHTTPProvider.__new__(ArangoHTTPProvider)
+    provider.logger = MagicMock()
+
+    async def walk(starts, step, bind, depth, transaction, within=None) -> list[str]:
+        if step == "step_hier":
+            if depth == 2:
+                # m1: placed under the declared group dg, which the walk from the App does not enter.
+                return ["recordGroups/g1", "records/r1", "recordGroups/dg", "records/m1"]
+            return ["recordGroups/g1", "recordGroups/dg"]
+        return ["recordGroups/g1", "records/r1"] if step == "step_app" else ["records/deep", "records/r1"]
+
+    async def run(name, bind, transaction) -> list:
+        return {
+            "declared": ["recordGroups/dg"],
+            "group_scope": [["recordGroups/dg", False], ["recordGroups/dg2", False]],
+            "seeds": ["records/s1"],
+        }[name]
+
+    provider._kh_v3_walk = walk
+    provider._kh_v3_run = run
+    visible = await provider._kh_v3_flatten(
+        {"handle": "apps/a1", "opens": True}, {"app_id": "a1", "granted": {}}, ["s1"], None, 2,
+    )
+    assert visible.nodes == ["recordGroups/g1", "records/r1", "recordGroups/dg"]
+    assert visible.member_groups == ["recordGroups/dg"]
+    assert visible.collection is True
+    # Members are listed only when the hierarchy does not place them, so belonging
+    # to a near group never admits a deep record.
+    assert visible.unplaced_members_only is True
+    # A placed record within the depth is listed if it belongs to any declared group.
+    assert visible.placed == ["records/m1"]
+    assert visible.placed_groups == ["recordGroups/dg", "recordGroups/dg2"]

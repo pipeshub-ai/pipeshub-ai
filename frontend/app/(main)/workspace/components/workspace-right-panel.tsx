@@ -1,5 +1,7 @@
 'use client';
 
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { sidePanelFrame } from '@/app/components/ui/responsive';
 import React, {
   createContext,
   startTransition,
@@ -47,6 +49,8 @@ interface WorkspaceRightPanelProps {
   /** Footer button labels */
   primaryLabel?: string;
   secondaryLabel?: string;
+  /** Material icon shown before the secondary label, e.g. 'arrow_back' for a Back step. */
+  secondaryIcon?: string;
 
   /** Footer button states */
   primaryDisabled?: boolean;
@@ -170,6 +174,7 @@ export function WorkspaceRightPanel({
   children,
   primaryLabel = 'Submit',
   secondaryLabel = 'Cancel',
+  secondaryIcon,
   primaryDisabled = false,
   primaryLoading = false,
   onPrimaryClick,
@@ -179,6 +184,7 @@ export function WorkspaceRightPanel({
   style,
   secondaryVariant = 'outline',
 }: WorkspaceRightPanelProps) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
   const primaryButtonTooltipText =
     primaryTooltip ??
@@ -253,29 +259,23 @@ export function WorkspaceRightPanel({
         style={{
           position: 'fixed',
           inset: 0,
-          backgroundColor: 'rgba(8, 10, 12, 0.45)',
+          backgroundColor: 'var(--frost-scrim)',
         }}
       />
       <Box
         ref={panelRef}
         data-ph-workspace-drawer-panel
+        className="workspace-drawer-frost"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         style={{
-          position: 'fixed',
-          top: 10,
-          right: 10,
-          bottom: 10,
-          width: '37.5rem',
-          maxWidth: '100vw',
-          maxHeight: 'calc(100vh - 20px)',
+          ...sidePanelFrame(isMobile),
           padding: 0,
           margin: 0,
-          background: 'var(--effects-translucent)',
+          // Frosted surface (tint + blur) comes from .workspace-drawer-frost in globals.css
           border: '1px solid var(--olive-3)',
-          borderRadius: 'var(--radius-2)',
-          backdropFilter: 'blur(25px)',
+          borderRadius: isMobile ? 0 : 'var(--radius-2)',
           overflow: 'hidden',
           display: 'flex',
           flexDirection: 'column',
@@ -294,8 +294,6 @@ export function WorkspaceRightPanel({
           style={{
             padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-4)',
             borderBottom: '1px solid var(--olive-3)',
-            background: 'var(--effects-translucent)',
-            backdropFilter: 'blur(8px)',
             flexShrink: 0,
           }}
         >
@@ -307,7 +305,8 @@ export function WorkspaceRightPanel({
                 size="2"
                 onClick={onBack}
                 aria-label={t('common.back')}
-                style={{ cursor: 'pointer', flexShrink: 0 }}
+                // Radix ghost buttons pull out by their padding; keep the header's own inset
+                style={{ cursor: 'pointer', flexShrink: 0, margin: 0 }}
               >
                 <MaterialIcon name="arrow_back" size={18} color="var(--slate-11)" />
               </IconButton>
@@ -331,7 +330,8 @@ export function WorkspaceRightPanel({
               color="gray"
               size="2"
               onClick={handleClose}
-              style={{ cursor: 'pointer' }}
+              aria-label={t('common.close')}
+              style={{ cursor: 'pointer', margin: 0 }}
             >
               <MaterialIcon name="close" size={18} color="var(--slate-11)" />
             </IconButton>
@@ -344,7 +344,6 @@ export function WorkspaceRightPanel({
             flex: 1,
             overflow: 'auto',
             padding: 'var(--space-4)',
-            background: 'var(--effects-translucent)',
             minHeight: 0,
           }}
         >
@@ -364,8 +363,6 @@ export function WorkspaceRightPanel({
             style={{
             padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-4)',
               borderTop: '1px solid var(--olive-3)',
-              background: 'var(--effects-translucent)',
-              backdropFilter: 'blur(8px)',
               flexShrink: 0,
             }}
           >
@@ -377,6 +374,12 @@ export function WorkspaceRightPanel({
               disabled={primaryLoading}
               style={{ cursor: primaryLoading ? 'not-allowed' : 'pointer' }}
             >
+              {/* Decorative: MaterialIcon renders its name as text, which a screen reader would read out */}
+              {secondaryIcon && (
+                <span aria-hidden style={{ display: 'inline-flex' }}>
+                  <MaterialIcon name={secondaryIcon} size={16} />
+                </span>
+              )}
               {secondaryLabel}
             </Button>
             {showPrimaryButtonTooltip && primaryButtonTooltipText ? (

@@ -8,17 +8,40 @@ MariaDB Connector/Python: https://mariadb.com/docs/connectors/mariadb-connector-
 """
 
 import asyncio
+import contextlib
 import logging
-from typing import Any, Optional
+import os
+import tempfile
+from collections.abc import AsyncIterator
+from typing import Any
 
 from pydantic import AliasChoices, BaseModel, Field, ValidationError
 
 from app.config.configuration_service import ConfigurationService
+from app.core.org_context import spawn_in_request
 from app.sources.client.iclient import IClient
+from app.utils.url_fetcher import HostCheckError, vetted_addresses
 
 logger = logging.getLogger(__name__)
+# Seconds a read-only agent query may run before the server stops it.
+READ_ONLY_TIMEOUT_S = 120
 
 _DEFAULT_MAX_POOL_SIZE = 10
+# The async driver has no read timeout: a stalled server is bounded on our side,
+# this long after the server's own statement limit should have fired.
+READ_TIMEOUT_MARGIN_S = 5.0
+# Pooled reads (catalog, connector metadata, the agent toolset) have no
+# statement limit of their own; this bounds a stalled server.
+POOL_READ_TIMEOUT_S = 300
+_ER_UNKNOWN_SYSTEM_VARIABLE = 1193
+
+
+class NoResultSetError(ValueError):
+    """A read-only query ran a statement that returns no rows."""
+
+
+class QueryTimeoutError(TimeoutError):
+    """No answer within the query's time limit; the connection was closed."""
 
 try:
     import mariadb
@@ -39,7 +62,13 @@ class MariaDBClient:
         password: Password for authentication
         timeout: Connection timeout in seconds
         ssl_ca: Path to CA certificate file (optional)
+        ssl_ca_pem: CA bundle as PEM text (optional); written to a private
+            temp file for the driver, which takes only a path
         charset: Character set (default: utf8mb4)
+
+    With a CA, TLS is on with certificate and hostname checks. Every connect
+    vets the host first: without TLS the vetted address is dialled;
+    with TLS the name is, so the certificate can be checked against it.
     """
 
     def __init__(
@@ -47,12 +76,13 @@ class MariaDBClient:
         host: str,
         user: str,
         password: str,
-        database: Optional[str] = None,
+        database: str | None = None,
         port: int = 3306,
         timeout: int = 30,
-        ssl_ca: Optional[str] = None,
+        ssl_ca: str | None = None,
         charset: str = "utf8mb4",
         pool_acquire_timeout: float = 60.0,
+        ssl_ca_pem: str | None = None,
     ) -> None:
         if mariadb is None:
             raise ImportError(
@@ -75,6 +105,8 @@ class MariaDBClient:
         self.password = password
         self.timeout = timeout
         self.ssl_ca = ssl_ca
+        self.ssl_ca_pem = ssl_ca_pem
+        self._ca_file: str | None = None
         self.charset = charset
         self._max_pool_size = _DEFAULT_MAX_POOL_SIZE
         self.pool_acquire_timeout = pool_acquire_timeout
@@ -105,36 +137,84 @@ class MariaDBClient:
                     f"{self.host}:{self.port}{db_part} (max_size={self._max_pool_size})"
                 )
 
-                connect_kwargs: dict[str, Any] = {
-                    "host": self.host,
-                    "port": self.port,
-                    "user": self.user,
-                    "password": self.password,
-                    "connect_timeout": self.timeout,
-                }
-                if self.database:
-                    connect_kwargs["database"] = self.database
-                if self.ssl_ca:
-                    connect_kwargs["ssl_ca"] = self.ssl_ca
+                connect_kwargs = await self._connect_kwargs()
+                # The pool swallows connect errors and then retries forever; one
+                # connection first, in a thread (the binary driver's connect blocks),
+                # surfaces a wrong password or an unreachable host as an error.
+                await asyncio.to_thread(_open_and_close, connect_kwargs)
 
                 self._pool = await mariadb.create_async_pool(
                     min_size=1,
                     max_size=self._max_pool_size,
                     acquire_timeout=self.pool_acquire_timeout,
                     reset_connection=True,
+                    # A stalled server fails the read instead of hanging the caller.
+                    read_timeout=POOL_READ_TIMEOUT_S,
+                    write_timeout=POOL_READ_TIMEOUT_S,
                     **connect_kwargs,
                 )
 
                 logger.info("🔧 [MariaDBClient] MariaDB async connection pool ready")
                 return self
 
+            except HostCheckError as e:
+                self._remove_ca_file()
+                # As other clients report it: a connection error, the address check as its cause.
+                raise ConnectionError(str(e)) from e
             except Exception as e:
+                self._remove_ca_file()
                 logger.error(f"🔧 [MariaDBClient] Pool initialization failed: {e}")
                 raise ConnectionError(f"Failed to connect to MariaDB: {e}") from e
+
+    async def _connect_kwargs(self) -> dict[str, Any]:
+        """The driver's connect arguments: the vetted address, and TLS when a CA is given.
+
+        Only arguments the binary driver accepts: it raises TypeError on any
+        other (``charset`` among them; utf8mb4 is its default).
+        Raises HostCheckError before anything is dialled when the host is refused.
+        """
+        addresses = await vetted_addresses(self.host, lookup_timeout_s=float(self.timeout))
+        ca_file = self.ssl_ca or self._write_ca_file()
+        kwargs: dict[str, Any] = {
+            "port": self.port,
+            "user": self.user,
+            "password": self.password,
+            "connect_timeout": self.timeout,
+        }
+        if self.host.startswith("/"):
+            kwargs["unix_socket"] = self.host
+        elif ca_file or not addresses:
+            # With TLS the certificate names the host, so the name is dialled.
+            kwargs["host"] = self.host
+        else:
+            ipv4 = [a for a in addresses if a.version == 4]
+            kwargs["host"] = str((ipv4 or addresses)[0])
+        if self.database:
+            kwargs["database"] = self.database
+        if ca_file:
+            kwargs.update(ssl=True, ssl_verify_cert=True, ssl_ca=ca_file)
+        return kwargs
+
+    def _write_ca_file(self) -> str | None:
+        if not self.ssl_ca_pem or not self.ssl_ca_pem.strip():
+            return None
+        if self._ca_file is None:
+            fd, path = tempfile.mkstemp(prefix="mariadb-ca-", suffix=".pem")
+            with os.fdopen(fd, "w") as f:  # mkstemp creates it 0600
+                f.write(self.ssl_ca_pem.strip() + "\n")
+            self._ca_file = path
+        return self._ca_file
+
+    def _remove_ca_file(self) -> None:
+        if self._ca_file is not None:
+            with contextlib.suppress(OSError):
+                os.remove(self._ca_file)
+            self._ca_file = None
 
     async def close(self) -> None:
         """Close all connections in the pool."""
         if self._pool is None:
+            self._remove_ca_file()
             return
 
         pool = self._pool
@@ -146,6 +226,8 @@ class MariaDBClient:
             logger.warning(
                 f"🔧 [MariaDBClient] Failed to close pool gracefully: {e}"
             )
+        finally:
+            self._remove_ca_file()
 
     def is_connected(self) -> bool:
         """Check if the pool is initialized."""
@@ -163,9 +245,18 @@ class MariaDBClient:
     async def execute_query(
         self,
         query: str,
-        params: Optional[dict[str, Any] | list[Any] | tuple] = None,
+        params: dict[str, Any] | list[Any] | tuple | None = None,
+        *,
+        read_only: bool = False,
+        timeout_s: int | None = None,
+        max_rows: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Execute a SQL query and return results as list of dicts."""
+        """Execute a SQL query and return results as list of dicts.
+
+        ``read_only`` runs it in a READ ONLY transaction with a statement timeout, so even a
+        stored function it calls cannot write or hold the server. ``timeout_s`` puts the
+        same server-side limit on any statement (``read_only`` implies READ_ONLY_TIMEOUT_S);
+        ``max_rows`` reads at most that many rows of the result."""
         if not self.is_connected():
             await self.connect()
         if self._pool is None:
@@ -175,12 +266,23 @@ class MariaDBClient:
             async with self._pool.connection() as conn:
                 cursor = None
                 try:
-                    cursor = conn.cursor(dictionary=True)
-                    await cursor.execute(query, params or ())
-                    if cursor.description:
-                        results = await cursor.fetchall()
-                    else:
-                        results = [{"affected_rows": cursor.rowcount}]
+                    # The driver buffers the whole result by default, so a capped read must stream.
+                    cursor = conn.cursor(dictionary=True, buffered=not max_rows)
+                    if read_only:
+                        await cursor.execute("START TRANSACTION READ ONLY")
+                    timeout_s = timeout_s or (READ_ONLY_TIMEOUT_S if read_only else None)
+                    if timeout_s:
+                        # A server that doesn't know SET STATEMENT (older MariaDB, MySQL) rejects it: the
+                        # error propagates and the query is not retried without the guard.
+                        query = f"SET STATEMENT max_statement_time={int(timeout_s)} FOR {query}"
+                    async with self._deadline(conn.connection_id, timeout_s):
+                        await cursor.execute(query, params or ())
+                        if cursor.description:
+                            results = await (cursor.fetchmany(max_rows) if max_rows else cursor.fetchall())
+                            # Unread rows of an unbuffered result would block the commit.
+                            await cursor.close()
+                        else:
+                            results = [{"affected_rows": cursor.rowcount}]
                     await conn.commit()
                     return results
                 except Exception:
@@ -204,9 +306,14 @@ class MariaDBClient:
     async def execute_query_raw(
         self,
         query: str,
-        params: Optional[dict[str, Any] | list[Any] | tuple] = None,
+        params: dict[str, Any] | list[Any] | tuple | None = None,
+        *,
+        timeout_s: int | None = None,
+        max_rows: int | None = None,
     ) -> tuple:
-        """Execute a SQL query and return raw columns and rows."""
+        """Execute a SQL query and return raw columns and rows.
+
+        ``timeout_s`` and ``max_rows`` bound the statement's time and the rows read (see ``execute_query``)."""
         logger.debug(
             f"🔧 [MariaDBClient.execute_query_raw] Executing query: {query[:200]}..."
         )
@@ -220,22 +327,26 @@ class MariaDBClient:
             async with self._pool.connection() as conn:
                 cursor = None
                 try:
-                    cursor = conn.cursor()
-                    await cursor.execute(query, params or ())
-                    if cursor.description:
-                        columns = [desc[0] for desc in cursor.description]
-                        rows = await cursor.fetchall()
-                        logger.debug(
-                            f"🔧 [MariaDBClient.execute_query_raw] Fetched {len(rows)} rows "
-                            f"with columns {columns}"
-                        )
-                    else:
-                        columns = []
-                        rows = []
-                        logger.warning(
-                            "🔧 [MariaDBClient.execute_query_raw] cursor.description is None "
-                            "- no result set"
-                        )
+                    cursor = conn.cursor(buffered=not max_rows)
+                    if timeout_s:
+                        query = f"SET STATEMENT max_statement_time={int(timeout_s)} FOR {query}"
+                    async with self._deadline(conn.connection_id, timeout_s):
+                        await cursor.execute(query, params or ())
+                        if cursor.description:
+                            columns = [desc[0] for desc in cursor.description]
+                            rows = await (cursor.fetchmany(max_rows) if max_rows else cursor.fetchall())
+                            await cursor.close()
+                            logger.debug(
+                                f"🔧 [MariaDBClient.execute_query_raw] Fetched {len(rows)} rows "
+                                f"with columns {columns}"
+                            )
+                        else:
+                            columns = []
+                            rows = []
+                            logger.warning(
+                                "🔧 [MariaDBClient.execute_query_raw] cursor.description is None "
+                                "- no result set"
+                            )
 
                     await conn.commit()
                     return (columns, rows)
@@ -254,6 +365,93 @@ class MariaDBClient:
         except Exception as e:
             logger.error(f"🔧 [MariaDBClient] Query execution failed: {e}")
             raise
+
+    @contextlib.asynccontextmanager
+    async def _deadline(self, thread_id: int, timeout_s: float | None) -> AsyncIterator[None]:
+        """Stop the statement running on connection ``thread_id`` with KILL QUERY if it outlives ``timeout_s``.
+
+        max_statement_time does not stop stored procedures (an approved CALL) and is only
+        checked at certain points. The running await is left alone, since a pooled connection
+        abandoned mid-answer hangs; the kill makes it fail with the server's error instead."""
+        if not timeout_s:
+            yield
+            return
+        killing = asyncio.Event()
+
+        async def kill_when_late() -> None:
+            await asyncio.sleep(timeout_s + READ_TIMEOUT_MARGIN_S)
+            killing.set()
+            logger.warning(f"🔧 [MariaDBClient] Statement on connection {thread_id} outlived {timeout_s:g}s; killing it")
+            try:
+                await asyncio.to_thread(_kill_query, await self._connect_kwargs(), thread_id)
+            except Exception as e:
+                logger.error(f"🔧 [MariaDBClient] KILL QUERY {thread_id} failed: {e}")
+
+        killer = spawn_in_request(kill_when_late())
+        try:
+            yield
+        finally:
+            if killing.is_set():
+                # Let the kill land before the connection runs anything else, or it could stop that.
+                await killer
+            else:
+                killer.cancel()
+
+    async def execute_read_only_query(
+        self,
+        query: str,
+        timeout_s: float,
+        *,
+        max_rows: int | None = None,
+        params: tuple[Any, ...] | None = None,
+        slots: asyncio.Semaphore | None = None,
+    ) -> tuple[list[str], list[tuple], bool]:
+        """Run one reading statement in a read-only transaction, bounded in time.
+
+        On a connection of its own, in a worker thread: the binary driver's
+        connect blocks, and a pooled connection abandoned mid-answer would be
+        reset (and hang) or handed back out of step. The session and the
+        transaction are read-only; the server stops the statement after
+        ``timeout_s`` (``max_statement_time``; MySQL's ``MAX_EXECUTION_TIME``
+        on a MySQL server); the driver's read and write timeouts end a stalled
+        exchange; the transaction is rolled back whatever happened. At most
+        ``max_rows`` rows are read; the third value says whether more existed.
+        ``params`` are bound to ``?`` placeholders. A slot of ``slots`` is held
+        until the worker thread ends, which is after a timeout here.
+
+        Raises:
+            NoResultSetError: the statement returns no rows (refused after it
+                ran; the rollback undoes it).
+            QueryTimeoutError: no answer in time.
+        """
+        kwargs = await self._connect_kwargs()
+        socket_limit = int(timeout_s + READ_TIMEOUT_MARGIN_S)
+        kwargs.update(read_timeout=socket_limit, write_timeout=socket_limit)
+        if slots is not None:
+            await slots.acquire()
+        try:
+            work = spawn_in_request(asyncio.to_thread(_read_only, kwargs, query, timeout_s, max_rows, params))
+        except BaseException:
+            if slots is not None:
+                slots.release()
+            raise
+
+        def finished(future: asyncio.Future) -> None:
+            if slots is not None:
+                slots.release()
+            if not future.cancelled():
+                future.exception()  # read, so an abandoned failure is not reported as unretrieved
+
+        work.add_done_callback(finished)
+        try:
+            return await asyncio.wait_for(
+                asyncio.shield(work),
+                # Connect, statement and the driver's own read timeout, with room.
+                self.timeout + socket_limit + READ_TIMEOUT_MARGIN_S,
+            )
+        except asyncio.TimeoutError:
+            # The thread ends on its own once the driver's read timeout fires.
+            raise QueryTimeoutError(f"MariaDB did not answer within {timeout_s:g} seconds") from None
 
     def get_connection_info(self) -> dict[str, Any]:
         """Get connection information."""
@@ -308,7 +506,7 @@ class MariaDBClient:
                 f"Please verify the instance exists and is properly configured."
             )
 
-        def pick_value(config: dict[str, Any], *keys: str) -> Optional[Any]:
+        def pick_value(config: dict[str, Any], *keys: str) -> Any | None:
             auth_config = config.get("auth", {}) or {}
 
             for container in (config, auth_config):
@@ -363,12 +561,61 @@ class MariaDBClient:
             raise
 
 
+def _open_and_close(kwargs: dict[str, Any]) -> None:
+    mariadb.connect(**kwargs).close()
+
+
+def _kill_query(kwargs: dict[str, Any], thread_id: int) -> None:
+    """KILL QUERY from a connection of its own: the pool may have none free."""
+    conn = mariadb.connect(**kwargs)
+    try:
+        conn.cursor().execute(f"KILL QUERY {int(thread_id)}")
+    finally:
+        conn.close()
+
+
+def _read_only(
+    kwargs: dict[str, Any],
+    query: str,
+    timeout_s: float,
+    max_rows: int | None = None,
+    params: tuple[Any, ...] | None = None,
+) -> tuple[list[str], list[tuple], bool]:
+    """The read-only exchange of ``execute_read_only_query``, on the blocking driver."""
+    conn = mariadb.connect(**kwargs)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SET SESSION TRANSACTION READ ONLY")
+        try:
+            cursor.execute(f"SET SESSION max_statement_time = {float(timeout_s):g}")
+        except Exception as e:
+            if getattr(e, "errno", None) != _ER_UNKNOWN_SYSTEM_VARIABLE:
+                raise
+            cursor.execute(f"SET SESSION MAX_EXECUTION_TIME = {int(timeout_s * 1000)}")
+        cursor.execute("START TRANSACTION READ ONLY")
+        try:
+            cursor.execute(query, params) if params else cursor.execute(query)
+            if not cursor.description:
+                raise NoResultSetError("Only statements that return rows can run here.")
+            columns = [desc[0] for desc in cursor.description]
+            if max_rows is None:
+                return columns, cursor.fetchall(), False
+            rows = cursor.fetchmany(max_rows + 1)
+            return columns, rows[:max_rows], len(rows) > max_rows
+        finally:
+            with contextlib.suppress(Exception):
+                conn.rollback()
+    finally:
+        with contextlib.suppress(Exception):
+            conn.close()
+
+
 class MariaDBConfig(BaseModel):
     """Configuration for MariaDB client."""
 
     host: str = Field(..., description="MariaDB server host")
     port: int = Field(default=3306, description="MariaDB server port", ge=1, le=65535)
-    database: Optional[str] = Field(default=None, description="Database name to connect to (optional)")
+    database: str | None = Field(default=None, description="Database name to connect to (optional)")
     user: str = Field(
         ...,
         description="Username for authentication",
@@ -376,9 +623,10 @@ class MariaDBConfig(BaseModel):
     )
     password: str = Field(default="", description="Password for authentication")
     timeout: int = Field(default=30, description="Connection timeout in seconds", gt=0)
-    ssl_ca: Optional[str] = Field(
+    ssl_ca: str | None = Field(
         default=None, description="Path to CA certificate for SSL"
     )
+    ssl_ca_pem: str | None = Field(default=None, description="CA bundle as PEM text; turns on verified TLS")
     charset: str = Field(default="utf8mb4", description="Character set")
     pool_acquire_timeout: float = Field(
         default=30.0,
@@ -398,6 +646,7 @@ class MariaDBConfig(BaseModel):
             ssl_ca=self.ssl_ca,
             charset=self.charset,
             pool_acquire_timeout=self.pool_acquire_timeout,
+            ssl_ca_pem=self.ssl_ca_pem,
         )
 
 
@@ -406,14 +655,18 @@ class AuthConfig(BaseModel):
 
     host: str = Field(..., description="MariaDB server host")
     port: int = Field(default=3306, description="MariaDB server port")
-    database: Optional[str] = Field(default=None, description="Database name (optional)")
+    database: str | None = Field(default=None, description="Database name (optional)")
     user: str = Field(
         ...,
         description="Username",
         validation_alias=AliasChoices("username", "user"),
     )
     password: str = Field(default="", description="Password")
-    ssl_ca: Optional[str] = Field(default=None, description="Path to CA certificate")
+    ssl_ca: str | None = Field(default=None, description="Path to CA certificate")
+    ssl_ca_pem: str | None = Field(
+        default=None, description="CA bundle as PEM text (the form's sslCa)",
+        validation_alias=AliasChoices("sslCa", "ssl_ca_pem"),
+    )
 
 
 class MariaDBConnectorConfig(BaseModel):
@@ -447,7 +700,7 @@ class MariaDBClientBuilder(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
-        connector_instance_id: Optional[str] = None,
+        connector_instance_id: str | None = None,
     ) -> "MariaDBClientBuilder":
         """Build MariaDBClientBuilder using configuration service."""
         try:
@@ -475,6 +728,7 @@ class MariaDBClientBuilder(IClient):
                 password=config.auth.password,
                 timeout=config.timeout,
                 ssl_ca=config.auth.ssl_ca,
+                ssl_ca_pem=config.auth.ssl_ca_pem or None,
             )
 
             db_part = f"/{config.auth.database}" if config.auth.database else ""
@@ -496,7 +750,7 @@ class MariaDBClientBuilder(IClient):
     async def _get_connector_config(
         logger: logging.Logger,
         config_service: ConfigurationService,
-        connector_instance_id: Optional[str] = None,
+        connector_instance_id: str | None = None,
     ) -> dict[str, Any]:
         """Fetch connector config from etcd for MariaDB."""
         try:
@@ -538,11 +792,11 @@ class MariaDBResponse(BaseModel):
     """Standard response wrapper for MariaDB operations."""
 
     success: bool = Field(..., description="Whether the request was successful")
-    data: Optional[dict[str, Any] | list[Any]] = Field(
+    data: dict[str, Any] | list[Any] | None = Field(
         default=None, description="Response data"
     )
-    error: Optional[str] = Field(default=None, description="Error message if failed")
-    message: Optional[str] = Field(default=None, description="Additional message")
+    error: str | None = Field(default=None, description="Error message if failed")
+    message: str | None = Field(default=None, description="Additional message")
 
     class Config:
         extra = "allow"

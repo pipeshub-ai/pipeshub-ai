@@ -6,7 +6,9 @@
  * the fork only.
  */
 import { describe, it, expect } from 'vitest';
-import { parseArtifactMarkers } from '../parse-download-markers';
+import { extractAnswerMarkers } from '../parse-download-markers';
+
+const parseArtifactMarkers = (content: string) => extractAnswerMarkers(content, 'persisted');
 
 const marker = (version: number) =>
   `::artifact[report.md](record:rec-1){text/markdown|doc-1|rec-1|OTHER|${version}}`;

@@ -71,11 +71,13 @@ from app.connectors.sources.atlassian.core.html_utils import (
     inline_images_as_markdown,
 )
 from app.connectors.sources.atlassian.core.oauth import OAUTH_JIRA_CONFIG_PATH
+from app.connectors.sources.atlassian.core.people import atlassian_person, jira_user, ticket_people
 from app.connectors.sources.atlassian.core.read_outcome import (
     JiraReadError,
     StoredAccessReadError,
     is_inconclusive_status,
 )
+from app.connectors.utils.record_ids import new_record_id
 from app.connectors.utils.value_mapper import ValueMapper, map_relationship_type
 from app.models.blocks import (
     Block,
@@ -100,6 +102,7 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
     RelatedExternalRecord,
+    SourcePerson,
     TicketRecord,
     get_epoch_timestamp_in_ms,
 )
@@ -400,6 +403,12 @@ def _parse_jira_dc_user_list_page(payload: Any) -> tuple[list[dict[str, Any]], s
 )
 class JiraDataCenterConnector(BaseConnector):
     """Jira Data Center connector: sync orchestration aligned with Jira Cloud"""
+
+    user_link_steps = ("_link_users_and_groups",)
+    _SYNC_STATE = (
+        "_kept_unread_access", "_kept_after_refusal", "_user_read_unfinished", "_user_bulk_forbidden",
+        "_dc_name_to_source_id",
+    )
 
     def __init__(
         self,
@@ -1433,6 +1442,18 @@ class JiraDataCenterConnector(BaseConnector):
     # User & Group Management
     # ============================================================================
 
+    async def _link_users_and_groups(self) -> None:
+        """The sync's user and group steps. Project roles, grants and issue edges wait for the next full sync."""
+        if not self.data_source:
+            return
+        with self._keep_sync_state(*self._SYNC_STATE):
+            self._kept_unread_access = False
+            self._kept_after_refusal = []
+            jira_users = await self._fetch_users()
+            if jira_users:
+                await self.data_entities_processor.on_new_app_users(jira_users)
+            await self._sync_user_groups(jira_users)
+
     async def _fetch_users(self) -> list[AppUser]:
         """
         Fetch and resolve active Jira DC users:
@@ -2083,7 +2104,8 @@ class JiraDataCenterConnector(BaseConnector):
                 return None
 
             scheme_id = scheme_response.json().get("id")
-            if not scheme_id:
+            # Jira's built-in "Default Permission Scheme" has id 0, so only a missing id counts.
+            if scheme_id is None:
                 self.logger.warning(
                     "⚠️ Permission scheme for %s has no id — cannot fetch grants",
                     project_key,
@@ -4002,6 +4024,7 @@ class JiraDataCenterConnector(BaseConnector):
             reporter_name=issue_data["reporter_name"],
             assignee=issue_data["assignee_name"],
             assignee_email=issue_data["assignee_email"],
+            **issue_data["ticket_people"],
             external_record_id=stub.external_record_id,
             external_revision_id=f"{PLACEHOLDER_REVISION_PREFIX}{issue_data['updated_at']}",
             record_name=issue_data["issue_name"],
@@ -4086,46 +4109,11 @@ class JiraDataCenterConnector(BaseConnector):
         raw_priority = priority_obj.get("name") if priority_obj else None
         priority = self.value_mapper.map_priority(raw_priority)
 
-        # Extract user information. Email is not available on issue user references,
-        # so resolve via the synced ``source_user_id`` map. DC may expose only
-        # ``key``/``name`` on legacy projects (no ``accountId``) — mirror the
-        # ``accountId or key or name`` fallback from ``_fetch_users`` (~1326).
-        def _dc_user_identifier(user_ref: Optional[dict[str, Any]]) -> Optional[str]:
-            if not user_ref:
-                return None
-            return (
-                user_ref.get("accountId")
-                or user_ref.get("key")
-                or user_ref.get("name")
-            )
-
-        creator = fields.get("creator")
-        creator_account_id = _dc_user_identifier(creator)
-        creator_name = creator.get("displayName") if creator else None
-        creator_email = (
-            user_by_account_id[creator_account_id].email
-            if creator_account_id and creator_account_id in user_by_account_id
-            else None
-        )
-
-        # Reporter (can be changed, unlike creator which is immutable)
-        reporter = fields.get("reporter")
-        reporter_account_id = _dc_user_identifier(reporter)
-        reporter_name = reporter.get("displayName") if reporter else None
-        reporter_email = (
-            user_by_account_id[reporter_account_id].email
-            if reporter_account_id and reporter_account_id in user_by_account_id
-            else None
-        )
-
-        assignee = fields.get("assignee")
-        assignee_account_id = _dc_user_identifier(assignee)
-        assignee_name = assignee.get("displayName") if assignee else None
-        assignee_email = (
-            user_by_account_id[assignee_account_id].email
-            if assignee_account_id and assignee_account_id in user_by_account_id
-            else None
-        )
+        # Email is rarely on issue user references; the synced directory fills it.
+        # DC names users by ``key``/``name`` on legacy projects (no ``accountId``).
+        creator = jira_user(fields.get("creator"), user_by_account_id)
+        reporter = jira_user(fields.get("reporter"), user_by_account_id)
+        assignee = jira_user(fields.get("assignee"), user_by_account_id)
 
         created_at = self._parse_jira_timestamp(fields.get("created"))
         updated_at = self._parse_jira_timestamp(fields.get("updated"))
@@ -4148,12 +4136,13 @@ class JiraDataCenterConnector(BaseConnector):
             # Jira's own name ("Backlog"); `status` is the normalised value (NEW).
             "source_status": raw_status,
             "priority": priority,
-            "creator_email": creator_email,
-            "creator_name": creator_name,
-            "reporter_email": reporter_email,
-            "reporter_name": reporter_name,
-            "assignee_email": assignee_email,
-            "assignee_name": assignee_name,
+            "creator_email": creator.email if creator else None,
+            "creator_name": creator.display_name if creator else None,
+            "reporter_email": reporter.email if reporter else None,
+            "reporter_name": reporter.display_name if reporter else None,
+            "assignee_email": assignee.email if assignee else None,
+            "assignee_name": assignee.display_name if assignee else None,
+            "ticket_people": ticket_people(creator, reporter, assignee),
             "created_at": created_at,
             "updated_at": updated_at,
             "resolved_at": resolved_at,
@@ -4318,6 +4307,7 @@ class JiraDataCenterConnector(BaseConnector):
                     reporter_name=reporter_name,
                     assignee=assignee_name,
                     assignee_email=assignee_email,
+                    **issue_data["ticket_people"],
                     external_record_id=issue_id,
                     external_revision_id=str(updated_at) if updated_at else None,
                     record_name=issue_name,
@@ -4454,6 +4444,7 @@ class JiraDataCenterConnector(BaseConnector):
                     weburl=weburl,
                     record_id=record_id,
                     version=version,
+                    authored_by=atlassian_person(attachment.get("author")),
                 )
 
                 # Attachments inherit permissions from parent issue
@@ -4611,6 +4602,8 @@ class JiraDataCenterConnector(BaseConnector):
         comments_data = issue_data.get("comments", [])
         if isinstance(comments_data, dict):
             comments_data = comments_data.get("comments", [])
+        # A comment restricted to a role or group would reach everyone who can open the issue.
+        comments_data = [c for c in comments_data or [] if not c.get("visibility")]
 
         # 1. Description BlockGroup (index=0) — rendered HTML
         if isinstance(rendered_description_html, str) and rendered_description_html.strip():
@@ -4857,6 +4850,7 @@ class JiraDataCenterConnector(BaseConnector):
                         parent_node_id=issue_node_id,
                         project_id=project_id,
                         weburl=issue_weburl,
+                        authored_by=atlassian_person(attachment.get("author")),
                     )
 
                     new_file_records.append((file_record, []))
@@ -5333,6 +5327,7 @@ class JiraDataCenterConnector(BaseConnector):
         version: int = 0,
         external_id_prefix: str = "attachment_",
         skip_filter_check: bool = False,
+        authored_by: SourcePerson | None = None,
     ) -> FileRecord:
         """
         Create a FileRecord for an attachment with consistent settings.
@@ -5360,7 +5355,7 @@ class JiraDataCenterConnector(BaseConnector):
         external_record_id = f"{external_id_prefix}{attachment_id}"
 
         file_record = FileRecord(
-            id=record_id or str(uuid4()),
+            id=record_id or new_record_id(self.connector_id, external_record_id),
             org_id=self.data_entities_processor.org_id,
             record_name=filename,
             record_type=RecordType.FILE,
@@ -5386,6 +5381,7 @@ class JiraDataCenterConnector(BaseConnector):
             is_file=True,
             is_dependent_node=True,
             parent_node_id=parent_node_id,
+            authored_by=authored_by,
         )
 
         # Set indexing status based on filters (if loaded and not skipping filter check)
@@ -5872,6 +5868,7 @@ class JiraDataCenterConnector(BaseConnector):
                 reporter_name=issue_data["reporter_name"],
                 assignee=issue_data["assignee_name"],
                 assignee_email=issue_data["assignee_email"],
+                **issue_data["ticket_people"],
                 external_record_id=issue_id,
                 external_revision_id=str(current_updated_at) if current_updated_at else None,
                 record_name=issue_data["issue_name"],
@@ -6013,6 +6010,7 @@ class JiraDataCenterConnector(BaseConnector):
                 record_id=record.id,
                 version=version,
                 skip_filter_check=True,
+                authored_by=atlassian_person(attachment_data.get("author")),
             )
 
             # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True

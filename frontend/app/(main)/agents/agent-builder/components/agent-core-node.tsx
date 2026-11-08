@@ -10,12 +10,15 @@ import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/
 import type { ReasoningEffort } from '@/chat/types';
 import { REASONING_EFFORT_OPTIONS } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
 import { useFeatureFlagsStore, selectSkillsEnabled } from '@/lib/store/feature-flags-store';
+import { McpServerIcon } from '@/app/(main)/workspace/mcp-servers/components';
 import type { FlowNodeData } from '../types';
 import {
   AGENT_KNOWLEDGE_FALLBACK_ICON,
   AGENT_LLM_FALLBACK_ICON,
   AGENT_TOOLSET_FALLBACK_ICON,
+  mcpNodeServer,
   normalizeDisplayName,
+  normalizePaletteLabel,
   resolveNodeConnectorType,
   resolveNodeHeaderIconUrl,
 } from '../display-utils';
@@ -79,7 +82,7 @@ function toolsetConnectionChipLabel(n: FlowNodeData): string {
   const c = (n.config || {}) as Record<string, unknown>;
   const inst = String(c.instanceName ?? '').trim();
   const disp = String(c.displayName ?? '').trim();
-  return normalizeDisplayName(inst || disp || n.label);
+  return normalizePaletteLabel(inst || disp || n.label);
 }
 
 /** MCP server instances are named at attach time (no logical "type" grouping to fall back to). */
@@ -87,6 +90,10 @@ function mcpConnectionChipLabel(n: FlowNodeData): string {
   const c = (n.config || {}) as Record<string, unknown>;
   const disp = String(c.displayName ?? '').trim();
   return normalizeDisplayName(disp || n.label);
+}
+
+function mcpChipIcon(n: FlowNodeData): React.ReactNode {
+  return <McpServerIcon {...mcpNodeServer(n)} size={14} color="var(--agent-flow-text)" />;
 }
 
 /** `config.skillName` is the catalog identity; `label` is only its display form,
@@ -141,6 +148,7 @@ function ConnectionChip({
   iconSrc,
   iconFallbackSrc = AGENT_KNOWLEDGE_FALLBACK_ICON,
   connectorType,
+  icon,
 }: {
   label: string;
   variant?: 'default' | 'more';
@@ -152,6 +160,8 @@ function ConnectionChip({
   iconFallbackSrc?: string;
   /** When set, render `ConnectorIcon` (theme-aware brand SVG handling) instead of `ThemeableAssetIcon`. */
   connectorType?: string | null;
+  /** A ready icon (an MCP server's logo), used before `connectorType` and `iconSrc`. */
+  icon?: React.ReactNode;
 }) {
   const isMore = variant === 'more';
   const surfaceStyle: React.CSSProperties = {
@@ -171,7 +181,9 @@ function ConnectionChip({
   };
 
   const iconEl =
-    variant === 'default' && connectorType ? (
+    variant === 'default' && icon ? (
+      icon
+    ) : variant === 'default' && connectorType ? (
       <ConnectorIcon type={connectorType} size={14} color="var(--agent-flow-text)" />
     ) : iconSrc && variant === 'default' ? (
       <ThemeableAssetIcon
@@ -237,12 +249,15 @@ function ConnectedChips({
   max,
   labelOf,
   chipIconKind,
+  iconOf,
 }: {
   nodes: FlowNodeData[];
   max: number;
   labelOf: (n: FlowNodeData) => string;
   /** When set, chips show connector/collection icons with the correct error fallback. */
   chipIconKind?: ChipIconKind;
+  /** Each chip's own icon, for nodes the kinds above don't cover (MCP servers). */
+  iconOf?: (n: FlowNodeData) => React.ReactNode;
 }) {
   const { t } = useTranslation();
   const [showAll, setShowAll] = useState(false);
@@ -263,6 +278,7 @@ function ConnectedChips({
           iconSrc={iconSrcFor?.(n)}
           iconFallbackSrc={iconFallback}
           connectorType={resolveNodeConnectorType(n)}
+          icon={iconOf?.(n)}
         />
       ))}
       {overflow > 0 ? (
@@ -599,7 +615,7 @@ export function AgentCoreNode({
                 nodes={connected.mcpServers}
                 max={MAX_VISIBLE.mcpServers}
                 labelOf={mcpConnectionChipLabel}
-                chipIconKind="toolset"
+                iconOf={mcpChipIcon}
               />
             ) : (
               <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', fontStyle: 'italic' }}>

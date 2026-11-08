@@ -10,6 +10,7 @@ import {
   type ToastPlacement,
 } from '@/lib/store/toast-store';
 import { useThemeAppearance } from '@/app/components/theme-provider';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { Toast } from './toast';
 
 // ========================================
@@ -118,6 +119,7 @@ export function ToastContainer() {
   const isHovered = useToastStore(selectIsHovered);
   const { setHovered, removeToast } = useToastStore();
   const { appearance } = useThemeAppearance();
+  const isMobile = useIsMobile();
 
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
@@ -128,8 +130,9 @@ export function ToastContainer() {
     return null;
   }
 
-  const topToasts = toasts.filter((t) => t.placement === 'top');
-  const bottomToasts = toasts.filter((t) => t.placement !== 'top');
+  // On a phone, side panels fill the screen with their actions in the footer; keep toasts off them.
+  const topToasts = isMobile ? toasts : toasts.filter((t) => t.placement === 'top');
+  const bottomToasts = isMobile ? [] : toasts.filter((t) => t.placement !== 'top');
 
   return ReactDOM.createPortal(
     <Theme accentColor="jade" grayColor="olive" appearance={appearance} radius="medium" data-accent-color="emerald">

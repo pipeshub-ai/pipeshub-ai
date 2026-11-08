@@ -11,8 +11,6 @@ import pytest
 
 from app.utils.url_fetcher import (
     _MAX_REDIRECTS,
-    NO_LOCAL,
-    PUBLIC_ONLY,
     FetchError,
     FetchResult,
     HostCheckError,
@@ -510,7 +508,7 @@ class TestSsrfValidation:
         with pytest.raises(FetchError, match="Only HTTP/HTTPS"):
             fetch_url("file:///etc/passwd")
 
-    # Every hop goes through fetch_url's pinned per-hop loop; these pin the host-policy tiers.
+    # Every hop goes through fetch_url's pinned per-hop loop.
     @staticmethod
     def _redirect_then_ok(location: str) -> list[FetchResult]:
         return [
@@ -528,16 +526,14 @@ class TestSsrfValidation:
 
         return fake_getaddrinfo
 
-    @pytest.mark.parametrize("policy", [PUBLIC_ONLY, NO_LOCAL])
     @pytest.mark.parametrize(
-        "location", ["http://127.0.0.1/secret", "http://169.254.169.254/latest/meta-data/"]
+        "location",
+        ["http://127.0.0.1/secret", "http://169.254.169.254/latest/meta-data/", "http://10.0.0.8/logo.png"],
     )
-    def test_blocks_redirect_to_loopback_or_metadata_under_every_policy(
-        self, policy: str, location: str
-    ) -> None:
+    def test_blocks_redirect_to_loopback_metadata_or_private_literal(self, location: str) -> None:
         with patch("app.utils.url_fetcher._try_requests", side_effect=self._redirect_then_ok(location)) as mock:
             with pytest.raises(FetchError, match="Blocked"):
-                fetch_url("https://example.com/page", strategy="requests", host_policy=policy)  # type: ignore[arg-type]
+                fetch_url("https://example.com/page", strategy="requests")
         assert mock.call_count == 1
 
     def test_blocks_redirect_to_hostname_that_resolves_private(self) -> None:
@@ -545,30 +541,8 @@ class TestSsrfValidation:
         with patch("socket.getaddrinfo", side_effect=self._dns("internal.corp")), \
              patch("app.utils.url_fetcher._try_requests", side_effect=responses) as mock:
             with pytest.raises(FetchError, match="Blocked"):
-                fetch_url("https://example.com/page", strategy="requests", host_policy=PUBLIC_ONLY)
+                fetch_url("https://example.com/page", strategy="requests")
         assert mock.call_count == 1
-
-    def test_no_local_allows_redirect_to_hostname_that_resolves_private(self) -> None:
-        responses = self._redirect_then_ok("http://internal.corp/logo")
-        with patch("socket.getaddrinfo", side_effect=self._dns("internal.corp")), \
-             patch("app.utils.url_fetcher._try_requests", side_effect=responses) as mock:
-            result = fetch_url("https://example.com/page", strategy="requests", host_policy=NO_LOCAL)
-        assert result.status_code == 200
-        assert str(mock.call_args.kwargs["pin"].pinned_address) == "10.0.0.1"
-
-    def test_no_local_allows_redirect_to_private_literal(self) -> None:
-        responses = self._redirect_then_ok("http://10.0.0.8/logo.png")
-        with patch("app.utils.url_fetcher._try_requests", side_effect=responses):
-            result = fetch_url("https://example.com/page", strategy="requests", host_policy=NO_LOCAL)
-        assert result.status_code == 200
-
-    def test_host_policy_applies_even_when_private_hosts_are_not_blocked(self) -> None:
-        with patch("app.utils.url_fetcher._try_requests") as mock:
-            with pytest.raises(FetchError, match="Blocked"):
-                fetch_url(
-                    "http://127.0.0.1/", strategy="requests", block_private_hosts=False, host_policy=NO_LOCAL
-                )
-        mock.assert_not_called()
 
 
 class TestFetchUrl:

@@ -46,6 +46,7 @@ from helper.clients.agents_client import AgentsClient
 from helper.clients.conversations_client import AgentConversationsClient
 from helper.conversation_seeds import seed_query
 from openapi_schema_validator import (
+    assert_error_response_matches_openapi_operation,
     assert_request_body_matches_openapi_operation,
     assert_response_matches_openapi_ref,
 )
@@ -57,6 +58,7 @@ KB_ANSWER_KEYWORDS = ("disaster recovery",)
 
 _AGENT_STREAM_SSE_EVENT_REF = "#/components/schemas/AgentStreamSSEEvent"
 _AGENT_MESSAGE_STREAM_SSE_EVENT_REF = "#/components/schemas/AgentMessageStreamSSEEvent"
+_STREAM_AGENT_CONVERSATION_MESSAGE = "streamAgentConversationMessage"
 
 
 def _response_json(resp: requests.Response) -> dict[str, Any]:
@@ -203,7 +205,6 @@ class _AgentStreamTestBase:
         json_body: dict[str, Any] | None = None,
         query: str | None = None,
         params: dict[str, str] | None = None,
-        allow_error: bool = False,
     ) -> StreamOutcome:
         """Stream a follow-up message on an existing agent conversation.
 
@@ -217,7 +218,6 @@ class _AgentStreamTestBase:
 
         accumulated_answer = ""
         saw_finished = False
-        error_message: str | None = None
         finished_result: dict[str, Any] | None = None
 
         with self.conversations.stream_message(
@@ -248,10 +248,7 @@ class _AgentStreamTestBase:
                     continue
 
                 if is_root_error(event, payload):
-                    if not allow_error:
-                        raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
-                    error_message = run_error_message(payload)
-                    continue
+                    raise AssertionError(f"stream emitted RUN_ERROR: {payload!r}")
 
                 if not is_root_finished(event, payload):
                     continue
@@ -262,9 +259,7 @@ class _AgentStreamTestBase:
                     accumulated_answer = answer_from_completion(finished_result)
                 break
 
-        return StreamOutcome(
-            conversation_id, accumulated_answer, saw_finished, error_message, finished_result
-        )
+        return StreamOutcome(conversation_id, accumulated_answer, saw_finished, None, finished_result)
 
 
 @pytest.mark.integration
@@ -631,32 +626,26 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
         )
         assert resp.status_code in (401, 403), f"{resp.status_code}: {resp.text}"
 
-    def test_add_message_nonexistent_conversation_emits_error(self) -> None:
-        agent_key = self.agent_session["primary_agent"]
-
-        with self.conversations.stream_message(
+    def _assert_conversation_not_found(self, agent_key: str, conversation_id: str) -> None:
+        resp = self.conversations.stream_message(
             agent_key,
-            "0" * 24,
-            query="hi",
-            timeout=self.stream_timeout,
-        ) as resp:
-            if resp.status_code != 200:
-                assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
-                return
+            conversation_id,
+            query=SEARCH_QUERY,
+            stream=False,
+            timeout=self.timeout,
+        )
+        assert resp.status_code == 404, f"{resp.status_code}: {resp.text}"
+        body = _response_json(resp)
+        assert body["error"]["message"] == "Conversation not found", body
+        assert body["error"]["code"] == "HTTP_NOT_FOUND", body
+        assert_error_response_matches_openapi_operation(
+            body, _STREAM_AGENT_CONVERSATION_MESSAGE, 404
+        )
 
-            for envelope in iter_sse_envelopes(resp):
-                payload = json.loads(envelope["data"])
-                if not is_root_error(envelope["event"], payload):
-                    continue
-                msg = run_error_message(payload)
-                assert "not found" in msg.lower(), (
-                    f"unexpected RUN_ERROR payload: {payload!r}"
-                )
-                return
+    def test_add_message_nonexistent_conversation_returns_404(self) -> None:
+        self._assert_conversation_not_found(self.agent_session["primary_agent"], "0" * 24)
 
-        raise AssertionError("stream ended without a RUN_ERROR event")
-
-    def test_add_message_wrong_agent_key_emits_error(
+    def test_add_message_wrong_agent_key_returns_404(
         self,
         readonly_agent_conversation: dict[str, str],
     ) -> None:
@@ -664,54 +653,18 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
         # property under test, and it only holds because the delete-agent test consumes
         # disposable_agent rather than a shared secondary key.
         wrong_key = self.agent_session["secondary_agents"][0]
-
-        outcome = self._stream_add_message(
-            wrong_key,
-            readonly_agent_conversation["conversation_id"],
-            query=SEARCH_QUERY,
-            allow_error=True,
+        self._assert_conversation_not_found(
+            wrong_key, readonly_agent_conversation["conversation_id"]
         )
 
-        # Assert the RUN_ERROR positively: `not finished` alone is also true when
-        # the stream hangs or dies silently, which would make this test unfailable.
-        assert outcome.errored, (
-            f"expected a RUN_ERROR for wrong agent key; finished={outcome.finished}, "
-            f"answer={outcome.answer[:200]!r}"
+    def test_add_message_unknown_agent_returns_404(
+        self,
+        readonly_agent_conversation: dict[str, str],
+    ) -> None:
+        # A real conversation id, so the 404 can only come from the agent key.
+        self._assert_conversation_not_found(
+            str(uuid.uuid4()), readonly_agent_conversation["conversation_id"]
         )
-        assert not outcome.finished, (
-            f"expected no RUN_FINISHED for wrong agent key; error={outcome.error!r}"
-        )
-
-    def test_add_message_unknown_agent_emits_error(self) -> None:
-        unknown_key = str(uuid.uuid4())
-        conversation_id = "0" * 24
-
-        saw_finished = False
-        saw_error = False
-        with self.conversations.stream_message(
-            unknown_key,
-            conversation_id,
-            query=SEARCH_QUERY,
-            timeout=self.stream_timeout,
-        ) as resp:
-            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-
-            for envelope in iter_sse_envelopes(resp):
-                assert_response_matches_openapi_ref(
-                    envelope, _AGENT_MESSAGE_STREAM_SSE_EVENT_REF
-                )
-                payload = json.loads(envelope["data"])
-                if is_root_error(envelope["event"], payload):
-                    saw_error = True
-                    break
-                if is_root_finished(envelope["event"], payload):
-                    saw_finished = True
-                    break
-
-        assert saw_error, (
-            f"expected a RUN_ERROR for unknown agent; saw_finished={saw_finished}"
-        )
-        assert not saw_finished, "expected no RUN_FINISHED for unknown agent"
 
     # ------------------------------------------------------------------------
     # Negative tests — body (Zod)

@@ -18,7 +18,8 @@ from app.connectors.core.base.token_service.oauth_service import (
     OAuthToken,
     RefreshTokenInvalidError,
 )
-from app.utils.oauth_config import get_oauth_config
+from app.core.org_context import spawn_detached
+from app.utils.oauth_config import apply_tenant_to_microsoft_oauth_url, get_oauth_config
 from app.utils.request_context import (
     new_system_root,
     reset_context,
@@ -98,13 +99,13 @@ class ToolsetTokenRefreshService:
         if wait_for_initial_refresh:
             await self._refresh_all_tokens()
         else:
-            asyncio.create_task(self._refresh_all_tokens())
+            spawn_detached(self._refresh_all_tokens())
 
         # Start periodic refresh check
-        asyncio.create_task(self._periodic_refresh_check())
+        spawn_detached(self._periodic_refresh_check())
 
         # Start periodic lock cleanup
-        asyncio.create_task(self._cleanup_old_locks())
+        spawn_detached(self._cleanup_old_locks())
 
     async def stop(self) -> None:
         """Stop the toolset token refresh service"""
@@ -438,8 +439,8 @@ class ToolsetTokenRefreshService:
             if not toolset_registry:
                 return None
 
-            # Get toolset metadata by type (lowercase)
-            metadata = toolset_registry.get_toolset_metadata(toolset_type)
+            # Serialized metadata turns the OAuthConfig into a dict, which the check below rejects.
+            metadata = toolset_registry.get_toolset_metadata(toolset_type, serialize=False)
             if not metadata:
                 return None
 
@@ -490,7 +491,8 @@ class ToolsetTokenRefreshService:
                 if "additionalParams" not in oauth_flow_config:
                     additional_params = getattr(oauth_config_obj, 'additional_params', None)
                     if additional_params:
-                        oauth_flow_config["additionalParams"] = additional_params
+                        # A copy: get_oauth_config writes into it, and the registry's is shared process-wide.
+                        oauth_flow_config["additionalParams"] = dict(additional_params)
 
                 # Add scope_parameter_name if not already set and different from default
                 if "scopeParameterName" not in oauth_flow_config:
@@ -651,7 +653,7 @@ class ToolsetTokenRefreshService:
         elif oauth_config_obj and hasattr(oauth_config_obj, 'scopes'):
             from app.connectors.core.registry.auth_builder import OAuthScopeType
             registry_scopes = oauth_config_obj.scopes.get_scopes_for_type(OAuthScopeType.AGENT)
-            oauth_flow_config["scopes"] = registry_scopes if registry_scopes else []
+            oauth_flow_config["scopes"] = list(registry_scopes) if registry_scopes else []
         else:
             oauth_flow_config["scopes"] = []
 
@@ -664,7 +666,8 @@ class ToolsetTokenRefreshService:
         if "additionalParams" in auth_config:
             oauth_flow_config["additionalParams"] = auth_config["additionalParams"]
         elif oauth_config_obj and hasattr(oauth_config_obj, 'additional_params') and oauth_config_obj.additional_params:
-            oauth_flow_config["additionalParams"] = oauth_config_obj.additional_params
+            # A copy: get_oauth_config writes into it, and the registry's is shared process-wide.
+            oauth_flow_config["additionalParams"] = dict(oauth_config_obj.additional_params)
 
         if "scopeParameterName" in auth_config:
             oauth_flow_config["scopeParameterName"] = auth_config["scopeParameterName"]
@@ -685,6 +688,12 @@ class ToolsetTokenRefreshService:
         for field_name in ["tenantId", "domain", "workspace", "companyUrl", "baseUrl", "instanceUrl", "loginUrl"]:
             if field_name in auth_config:
                 oauth_flow_config[field_name] = auth_config[field_name]
+
+        # Sign-in sends a single-tenant Microsoft app to its tenant's endpoints, and a personal
+        # action keeps only the tenant, so the registry's /common URLs must be moved here too.
+        tenant_id = oauth_flow_config.get("tenantId")
+        for url_field in ("authorizeUrl", "tokenUrl"):
+            oauth_flow_config[url_field] = apply_tenant_to_microsoft_oauth_url(oauth_flow_config[url_field], tenant_id)
 
         # Enrich from registry if fields are still missing
         self._enrich_from_toolset_registry(oauth_flow_config, toolset_type)
@@ -1282,31 +1291,23 @@ class ToolsetTokenRefreshService:
                     )
                     del self._refresh_tasks[config_path]
 
-            # Prevent immediate re-refresh if we just completed one
-            current_time = time.time()
-            last_refresh = self._last_refresh_time.get(config_path, 0)
-            time_since_last_refresh = current_time - last_refresh
-
-            if time_since_last_refresh < REFRESH_COOLDOWN:
-                self.logger.info(
-                    f"⏭️ Skipping schedule request for {config_path} - "
-                    f"refresh completed {time_since_last_refresh:.1f}s ago (cooldown: {REFRESH_COOLDOWN}s)"
-                )
-                return
-
             self.logger.info(f"🔄 Scheduling token refresh for toolset {config_path} (type: {toolset_type})")
 
             # Calculate refresh delay
-            delay, refresh_time = self._calculate_refresh_delay(token)
+            delay, _ = self._calculate_refresh_delay(token)
+            since_last_refresh = max(0.0, time.time() - self._last_refresh_time.get(config_path, 0))
+            cooldown_left = REFRESH_COOLDOWN - since_last_refresh
 
-            # If token is at/past threshold, schedule immediate re-check.
-            if delay <= 0:
-                delay = MIN_IMMEDIATE_RECHECK_DELAY
-                refresh_time = datetime.now() + timedelta(seconds=delay)
+            is_due = delay <= 0
+            # At most one refresh per cooldown, and never dropped: an earlier delay, due or not, waits
+            # out the cooldown, so a slow save cannot leave a due token to the 5-minute scan.
+            delay = max(delay, MIN_IMMEDIATE_RECHECK_DELAY, cooldown_left)
+            if is_due:
                 self.logger.info(
-                    f"⏱️ Token for toolset {config_path} reached refresh threshold. "
-                    f"Scheduling immediate re-check in {delay:.0f}s."
+                    f"Token for toolset {config_path} reached refresh threshold; "
+                    f"re-checking in {delay:.1f}s (cooldown {REFRESH_COOLDOWN}s)"
                 )
+            refresh_time = datetime.now() + timedelta(seconds=delay)
 
             # Create new refresh task atomically while schedule lock is held
             self._create_refresh_task(config_path, toolset_type, delay, refresh_time)

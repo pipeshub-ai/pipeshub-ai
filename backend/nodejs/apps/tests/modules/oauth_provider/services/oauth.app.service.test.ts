@@ -15,6 +15,7 @@ import {
 } from '../../../../src/libs/errors/oauth.errors'
 import { NotFoundError, BadRequestError } from '../../../../src/libs/errors/http.errors'
 import { PAT_APP_CLIENT_ID_PREFIX, SERVICE_TOKEN_APP_CLIENT_ID_PREFIX, FIRST_PARTY_DEVICE_CLIENT_ID } from '../../../../src/modules/oauth_provider/constants/constants'
+import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { createMockLogger } from '../../../helpers/mock-logger'
 
 describe('OAuthAppService', () => {
@@ -22,6 +23,7 @@ describe('OAuthAppService', () => {
   let mockLogger: any
   let mockEncryptionService: any
   let mockScopeValidatorService: any
+  let mockOAuthTokenService: any
 
   const fakeOrgId = new Types.ObjectId().toString()
   const fakeUserId = new Types.ObjectId().toString()
@@ -42,15 +44,215 @@ describe('OAuthAppService', () => {
       validateRequestedScopes: sinon.stub(),
       getAllowedScopeNamesForRole: sinon.stub().returns(['org:read', 'user:read']),
     }
+    mockOAuthTokenService = { revokeAllTokensForApp: sinon.stub().resolves() }
     service = new OAuthAppService(
       mockLogger,
       mockEncryptionService,
       mockScopeValidatorService,
+      mockOAuthTokenService,
     )
   })
 
   afterEach(() => {
     sinon.restore()
+  })
+
+  /**
+   * An app that allows client_credentials must name the service account its
+   * tokens act as.
+   *
+   * That grant has no person in it, so without a service account the app
+   * falls back to whoever created it — and an app created by an
+   * administrator would carry administrator rights for as long as it exists,
+   * with nothing on screen saying so. Required at creation rather than
+   * offered, because a safety step nobody is asked about is one almost nobody
+   * takes.
+   */
+  describe('client_credentials requires a service account', () => {
+    const serviceAccountId = new Types.ObjectId().toString()
+
+    function stubServiceAccount(doc: unknown) {
+      return sinon.stub(Users, 'findOne').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({ exec: sinon.stub().resolves(doc) }),
+        }),
+      } as any)
+    }
+
+    it('refuses to create one without a service account', async () => {
+      const createStub = sinon.stub(OAuthApp, 'create')
+
+      let message = ''
+      try {
+        await service.createApp(fakeOrgId, fakeUserId, true, {
+          name: 'Nightly export',
+          allowedScopes: ['org:read'],
+          allowedGrantTypes: [OAuthGrantType.CLIENT_CREDENTIALS],
+        })
+        expect.fail('Should have thrown')
+      } catch (error: any) {
+        message = error.message ?? ''
+      }
+
+      expect(message).to.contain('service account')
+      // Nothing was written: the refusal comes before the app exists.
+      expect(createStub.called).to.equal(false)
+    })
+
+    it('creates one bound to the service account it was given', async () => {
+      stubServiceAccount({ isDisabled: false })
+      const createStub = sinon
+        .stub(OAuthApp, 'create')
+        .resolves({ _id: new Types.ObjectId(), slug: 'x' } as any)
+
+      await service.createApp(fakeOrgId, fakeUserId, true, {
+        name: 'Nightly export',
+        allowedScopes: ['org:read'],
+        allowedGrantTypes: [OAuthGrantType.CLIENT_CREDENTIALS],
+        tokenIdentityUserId: serviceAccountId,
+      })
+
+      const args = createStub.firstCall.args[0] as any
+      expect(String(args.tokenIdentityUserId)).to.equal(serviceAccountId)
+      // And not the creator, which is the whole point.
+      expect(String(args.tokenIdentityUserId)).to.not.equal(fakeUserId)
+    })
+
+    it('refuses a disabled service account', async () => {
+      stubServiceAccount({ isDisabled: true })
+      const createStub = sinon.stub(OAuthApp, 'create')
+
+      let message = ''
+      try {
+        await service.createApp(fakeOrgId, fakeUserId, true, {
+          name: 'Nightly export',
+          allowedScopes: ['org:read'],
+          allowedGrantTypes: [OAuthGrantType.CLIENT_CREDENTIALS],
+          tokenIdentityUserId: serviceAccountId,
+        })
+        expect.fail('Should have thrown')
+      } catch (error: any) {
+        message = error.message ?? ''
+      }
+
+      expect(message).to.contain('disabled')
+      expect(createStub.called).to.equal(false)
+    })
+
+    it('refuses a colleague\'s user id, not just a missing one', async () => {
+      // `kind: 'service'` is part of the lookup, so an ordinary user simply
+      // is not found. Without that, this would be a way to make an app's
+      // tokens act as a named person.
+      stubServiceAccount(null)
+      const createStub = sinon.stub(OAuthApp, 'create')
+
+      let message = ''
+      try {
+        await service.createApp(fakeOrgId, fakeUserId, true, {
+          name: 'Nightly export',
+          allowedScopes: ['org:read'],
+          allowedGrantTypes: [OAuthGrantType.CLIENT_CREDENTIALS],
+          tokenIdentityUserId: new Types.ObjectId().toString(),
+        })
+        expect.fail('Should have thrown')
+      } catch (error: any) {
+        message = error.message ?? ''
+      }
+
+      // The part that tells someone what to do next, not just that it failed.
+      expect(message).to.contain('Workspace \u2192 Service accounts')
+      expect(createStub.called).to.equal(false)
+    })
+
+    it('refuses a member, because the binding is an admin decision', async () => {
+      // Changing this later needs an administrator (userAdminCheck on
+      // PUT /oauth-clients/:appId/token-identity), and creating an app does
+      // not, so without this a member could set at creation what they would
+      // be refused a minute later.
+      const createStub = sinon.stub(OAuthApp, 'create')
+
+      let message = ''
+      try {
+        await service.createApp(fakeOrgId, fakeUserId, false, {
+          name: 'Nightly export',
+          allowedScopes: ['org:read'],
+          allowedGrantTypes: [OAuthGrantType.CLIENT_CREDENTIALS],
+          tokenIdentityUserId: serviceAccountId,
+        })
+        expect.fail('Should have thrown')
+      } catch (error: any) {
+        message = error.message ?? ''
+      }
+
+      expect(message.toLowerCase()).to.contain('admin')
+      expect(createStub.called).to.equal(false)
+    })
+
+    it('still lets a member create an authorization_code app', async () => {
+      const createStub = sinon
+        .stub(OAuthApp, 'create')
+        .resolves({ _id: new Types.ObjectId(), slug: 'x' } as any)
+
+      await service.createApp(fakeOrgId, fakeUserId, false, {
+        name: 'A normal app',
+        allowedScopes: ['org:read'],
+        allowedGrantTypes: [OAuthGrantType.AUTHORIZATION_CODE],
+        redirectUris: ['https://example.com/cb'],
+      })
+
+      expect(createStub.calledOnce).to.equal(true)
+    })
+
+    it('leaves authorization_code apps alone', async () => {
+      const createStub = sinon
+        .stub(OAuthApp, 'create')
+        .resolves({ _id: new Types.ObjectId(), slug: 'x' } as any)
+
+      // No service account, and no complaint: this grant acts as the person
+      // who authorised it, so there is nothing to inherit.
+      await service.createApp(fakeOrgId, fakeUserId, true, {
+        name: 'A normal app',
+        allowedScopes: ['org:read'],
+        allowedGrantTypes: [OAuthGrantType.AUTHORIZATION_CODE],
+        redirectUris: ['https://example.com/cb'],
+      })
+
+      const args = createStub.firstCall.args[0] as any
+      expect(args.tokenIdentityUserId).to.equal(undefined)
+    })
+  })
+
+  describe('validateDcrRedirectUris', () => {
+    const rejects = (uri: string) =>
+      expect(() => service.validateDcrRedirectUris([uri])).to.throw(InvalidRedirectUriError)
+
+    it('accepts https, loopback http and app schemes as real clients write them', () => {
+      service.validateDcrRedirectUris([
+        'https://claude.ai/api/mcp/auth_callback',
+        'http://127.0.0.1:33418/callback',
+        'http://localhost/callback',
+        'cursor://anysphere.cursor-retrieval/oauth/user-pipeshub/callback',
+        'vscode://vscode.github-authentication/did-authenticate',
+        'com.example.app:/oauth2redirect',
+      ])
+    })
+
+    it('refuses schemes that would hand the code to something other than the client', () => {
+      for (const uri of [
+        'mailto:client@example.com',
+        'tel:+15550100',
+        'sms:+15550100',
+        'javascript:alert(1)',
+        'data:text/html,hi',
+        'blob:https://example.com/x',
+        'about:blank',
+        'wss://example.com/cb',
+        'ftp://example.com/cb',
+        'http://example.com/cb',
+      ]) {
+        rejects(uri)
+      }
+    })
   })
 
   describe('createApp', () => {
@@ -493,6 +695,75 @@ describe('OAuthAppService', () => {
   })
 
   describe('updateApp', () => {
+
+    /**
+     * Adding the grant is the same decision as making it at creation, and
+     * this route has no admin check of its own — so without these the gate on
+     * creation is bypassed by making an authorization_code app and editing it
+     * a moment later.
+     */
+    describe('gaining client_credentials', () => {
+      function appAllowing(grants: OAuthGrantType[], bound?: string) {
+        return {
+          _id: fakeAppId,
+          allowedGrantTypes: grants,
+          allowedScopes: ['org:read'],
+          tokenIdentityUserId: bound ? new Types.ObjectId(bound) : undefined,
+          knowledgeLimit: undefined,
+          save: sinon.stub().resolves(),
+        }
+      }
+
+      async function failureFrom(isAdmin: boolean, app: any): Promise<string> {
+        sinon.stub(OAuthApp, 'findOne').resolves(app)
+        try {
+          await service.updateApp(fakeAppId, fakeOrgId, fakeUserId, isAdmin, {
+            allowedGrantTypes: [OAuthGrantType.CLIENT_CREDENTIALS],
+          })
+          return ''
+        } catch (error: any) {
+          return error.message ?? ''
+        }
+      }
+
+      it('refuses a member', async () => {
+        const app = appAllowing([OAuthGrantType.AUTHORIZATION_CODE])
+        const message = await failureFrom(false, app)
+
+        expect(message.toLowerCase()).to.contain('admin')
+        expect(app.save.called).to.equal(false)
+      })
+
+      it('refuses an admin when nothing is bound', async () => {
+        const app = appAllowing([OAuthGrantType.AUTHORIZATION_CODE])
+        const message = await failureFrom(true, app)
+
+        expect(message).to.contain('service account')
+        expect(app.save.called).to.equal(false)
+      })
+
+      it('refuses when the bound account has since been disabled', async () => {
+        const app = appAllowing(
+          [OAuthGrantType.AUTHORIZATION_CODE],
+          new Types.ObjectId().toString(),
+        )
+        sinon.stub(Users, 'findOne').returns({
+          select: sinon.stub().returns({
+            lean: sinon.stub().returns({
+              exec: sinon.stub().resolves({ isDisabled: true }),
+            }),
+          }),
+        } as any)
+
+        const message = await failureFrom(true, app)
+
+        // Otherwise the update succeeds and every token request afterwards
+        // fails, which is a confusing way to find out.
+        expect(message).to.contain('disabled')
+        expect(app.save.called).to.equal(false)
+      })
+    })
+
     it('should throw NotFoundError when app not found', async () => {
       sinon.stub(OAuthApp, 'findOne').resolves(null)
       try {
@@ -604,6 +875,7 @@ describe('OAuthAppService', () => {
     it('should soft-delete the app', async () => {
       const mockApp = {
         _id: new Types.ObjectId(fakeAppId),
+        clientId: 'cid',
         isDeleted: false,
         status: OAuthAppStatus.ACTIVE,
         save: sinon.stub().resolves(),
@@ -611,10 +883,32 @@ describe('OAuthAppService', () => {
       sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
 
       await service.deleteApp(fakeAppId, fakeOrgId, fakeUserId)
+      expect(mockOAuthTokenService.revokeAllTokensForApp.calledOnceWith('cid')).to.be.true
       expect(mockApp.isDeleted).to.be.true
       expect(mockApp.deletedBy).to.deep.equal(new Types.ObjectId(fakeUserId))
       expect(mockApp.status).to.equal(OAuthAppStatus.REVOKED)
-      expect(mockApp.save.calledOnce).to.be.true
+      expect(mockApp.save.calledTwice).to.be.true
+    })
+
+    it('should leave the app as it was when its tokens cannot be revoked, so the delete can be retried', async () => {
+      const mockApp = {
+        _id: new Types.ObjectId(fakeAppId),
+        clientId: 'cid',
+        isDeleted: false,
+        status: OAuthAppStatus.ACTIVE,
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
+      mockOAuthTokenService.revokeAllTokensForApp.rejects(new Error('redis down'))
+
+      try {
+        await service.deleteApp(fakeAppId, fakeOrgId, fakeUserId)
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect((error as Error).message).to.equal('redis down')
+      }
+      expect(mockApp.isDeleted).to.be.false
+      expect(mockApp.status).to.equal(OAuthAppStatus.ACTIVE)
     })
 
     it('should throw NotFoundError when app not found', async () => {
@@ -688,6 +982,27 @@ describe('OAuthAppService', () => {
 
       await service.suspendApp(fakeAppId, fakeOrgId, fakeUserId)
       expect(mockApp.status).to.equal(OAuthAppStatus.SUSPENDED)
+      // Suspending stops the tokens it already issued, not only new sign-ins.
+      expect(mockOAuthTokenService.revokeAllTokensForApp.calledOnceWith('cid')).to.be.true
+    })
+
+    it('should put the status back when its tokens cannot be revoked, so the suspend can be retried', async () => {
+      const mockApp = {
+        _id: new Types.ObjectId(fakeAppId),
+        clientId: 'cid',
+        status: OAuthAppStatus.ACTIVE,
+        save: sinon.stub().resolves(),
+      }
+      sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
+      mockOAuthTokenService.revokeAllTokensForApp.rejects(new Error('redis down'))
+
+      try {
+        await service.suspendApp(fakeAppId, fakeOrgId, fakeUserId)
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect((error as Error).message).to.equal('redis down')
+      }
+      expect(mockApp.status).to.equal(OAuthAppStatus.ACTIVE)
     })
 
     it('should throw BadRequestError when already suspended', async () => {
@@ -807,6 +1122,27 @@ describe('OAuthAppService', () => {
     })
   })
 
+  describe('validateRedirectUriForApp loopback ports (RFC 8252)', () => {
+    const app = { redirectUris: ['http://localhost/callback', 'http://127.0.0.1:8080/cb', 'https://example.com/cb'] } as any
+
+    it('accepts any port for a loopback URI registered without one', () => {
+      expect(() => service.validateRedirectUriForApp(app, 'http://localhost:53682/callback')).to.not.throw()
+    })
+
+    it('keeps exact matching for everything else', () => {
+      for (const uri of [
+        'http://localhost:53682/other',
+        'http://localhost:53682/callback?x=1',
+        'http://127.0.0.1:9090/cb',
+        'https://example.com:8443/cb',
+        'http://evil.example/callback',
+        'https://localhost:53682/callback',
+      ]) {
+        expect(() => service.validateRedirectUriForApp(app, uri), uri).to.throw(InvalidRedirectUriError)
+      }
+    })
+  })
+
   describe('isGrantTypeAllowed', () => {
     it('should return true when grant type is allowed', () => {
       const app = { allowedGrantTypes: [OAuthGrantType.AUTHORIZATION_CODE] } as any
@@ -905,7 +1241,7 @@ describe('OAuthAppService - branch coverage', () => {
       sinon.stub(OAuthApp, 'findOne').resolves(mockApp as any)
 
       const result = await service.getAppByClientId('client-1')
-      expect(result).to.equal(mockApp)
+      expect(result).to.deep.equal(mockApp)
     })
   })
 
@@ -1395,7 +1731,7 @@ describe('isAppUsableInOrg', () => {
   const otherOrgId = new Types.ObjectId().toString()
 
   it('allows the workspace that owns the app and refuses another one', () => {
-    const app = { orgId: appOrgId, clientId: 'c1' } as any
+    const app = { orgId: appOrgId.toString(), clientId: 'c1' } as any
     expect(isAppUsableInOrg(app, appOrgId.toString())).to.be.true
     expect(isAppUsableInOrg(app, otherOrgId)).to.be.false
   })

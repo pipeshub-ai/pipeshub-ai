@@ -17,8 +17,17 @@ more than ``INDEXING_RATE_LIMIT_MAX_DEFER_SECONDS`` (24h) after it ends the
 record FAILED instead, so no record waits for ever. The default is a day
 because the limits indexing meets reset well inside one (GitHub's primary
 window is an hour, secondary limits a minute or so; a daily API quota is the
-longest common one). A record still refused after a day is not waiting on a
-reset: something else is spending the quota as fast as it comes back.
+longest common one).
+
+A record still refused after a day is not waiting on a reset: something is
+spending the quota as fast as it comes back. On a large first sync that is
+usually the connector's own backlog, the other records ahead of it using each
+window's quota as it opens, so the connector keeps indexing while this record
+keeps missing out. The record handler tells the two apart before failing one:
+if a record of the same connector finished indexing during the wait, the
+record is only waiting its turn, and its run of waits starts again
+(``new_run``). Only a record whose connector got nothing indexed for the whole
+allowance ends FAILED.
 """
 
 from __future__ import annotations
@@ -95,18 +104,26 @@ def plan_deferral(
     *,
     now_ms: int,
     max_total_seconds: float,
+    new_run: bool = False,
 ) -> DeferralPlan:
     """When to send the record again, and whether waiting has gone on too long.
 
     The run of waits carries on from the record's last deferral unless that
     one ended more than the whole allowance ago, which means the record was
-    left alone long enough to count as a new wait.
+    left alone long enough to count as a new wait. ``new_run`` starts a new
+    run now regardless, for a record found to be waiting behind its own
+    connector's backlog; it still gives up if this one wait is too long.
     """
     max_total_ms = max_total_seconds * 1000
     not_before = now_ms + max(_MIN_WAIT_MS, math.ceil(retry_after_seconds * 1000))
     since = _number(record.get(RATE_LIMITED_SINCE_FIELD))
     previous_not_before = _number(record.get(RETRY_NOT_BEFORE_FIELD))
-    if since is None or previous_not_before is None or now_ms - previous_not_before > max_total_ms:
+    if (
+        new_run
+        or since is None
+        or previous_not_before is None
+        or now_ms - previous_not_before > max_total_ms
+    ):
         since = now_ms
     since_ms = int(min(since, now_ms))
     return DeferralPlan(

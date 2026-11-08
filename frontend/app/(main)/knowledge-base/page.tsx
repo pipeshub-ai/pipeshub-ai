@@ -33,7 +33,6 @@ import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
 import { FileRejectionReason, parseFileRejectionReason } from '@/lib/constants/file-rejection-reason';
 import { KnowledgeBaseApi, KnowledgeHubApi, type FileMetadata } from './api';
 import { folderDepthOf, uploadPathOf } from './utils/folder-depth';
-// import KnowledgeBaseSidebar from './sidebar';
 import { useKnowledgeBaseStore, DEFAULT_PAGE_SIZE } from './store';
 import type {
   KnowledgeBaseItem,
@@ -77,13 +76,15 @@ import { createSizeBatches } from './utils/batch-files';
 import { canDeleteKbTableItem, needsCollectionContext, type KbTableItem } from './utils/kb-table-item-actions';
 import { sidebarNodeChildrenMetaFromResponse } from './utils/sidebar-child-pagination-meta';
 import { refreshKbTree } from './utils/refresh-kb-tree';
+import { collectionNameError, folderNameError } from './utils/name-rules';
 import {
   loadRootAppListFirstPage,
   restoreOpenFoldersInSidebar,
   showCollectionsInSidebar,
 } from './utils/root-app-list';
-import { openFolderChildren, storeChildrenList } from './utils/folder-children';
+import { openFolderChildren, seedChildrenFromListing, storeChildrenList } from './utils/folder-children';
 import { kbSessionToken } from './utils/kb-session';
+import { onSessionEnd } from '@/lib/api/session-cache';
 // Registers the sign-out reset for the knowledge base's cached state.
 import './utils/sidebar-session';
 import {
@@ -117,7 +118,7 @@ import { useDebouncedSearch } from './hooks/use-debounced-search';
 import { toPendingChatNode, useTickedRows } from './hooks/use-ticked-rows';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { MAX_SELECTED_NODES } from '@/chat/utils/tree-selection';
-import { ErrorType, getUserFacingErrorMessage, isProcessedError, isRequestCancelledError } from '@/lib/api/api-error';
+import { ErrorType, getUserFacingErrorMessage, isProcessedError, isRequestCancelledError, parseRetryAfter } from '@/lib/api/api-error';
 import { isRejectedCursorError } from './utils/cursor-recovery';
 import { useUserPermission } from '@/config';
 import { useFeatureFlagsStore, selectSoftDeleteEnabled } from '@/lib/store/feature-flags-store';
@@ -598,25 +599,35 @@ function KnowledgeBasePageContent() {
   // Superseded table fetches are aborted so a slower earlier response cannot
   // overwrite the latest one, or clear its loading flag.
   const allRecordsFetchRef = useRef<AbortController | null>(null);
+  const [allRecordsRefused, setAllRecordsRefused] = useState(false);
+  // A busy answer (503) is retried by itself, a few times, after the seconds the server asked for.
+  const allRecordsBusyTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const allRecordsBusyTries = useRef(0);
+  const fetchAllRecordsTableDataRef = useRef<((nodeType?: string, nodeId?: string, page?: number, busyRetry?: boolean) => Promise<void>) | null>(null);
   const collectionsFetchRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     return () => {
+      if (allRecordsBusyTimer.current) clearInterval(allRecordsBusyTimer.current);
       allRecordsFetchRef.current?.abort();
       collectionsFetchRef.current?.abort();
     };
   }, []);
 
   // All Records mode: Fetch table data (reusable callback)
-  const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string, page?: number) => {
+  const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string, page?: number, busyRetry = false) => {
     allRecordsFetchRef.current?.abort();
+    // Each request the user makes gets its own retries; only the timer's retries share them.
+    if (!busyRetry) allRecordsBusyTries.current = 0;
     const controller = new AbortController();
     allRecordsFetchRef.current = controller;
+    if (allRecordsBusyTimer.current) clearInterval(allRecordsBusyTimer.current);
     const fetchGeneration = ++allRecordsFetchGeneration;
     const stillSignedIn = kbSessionToken();
     try {
       setIsLoadingAllRecordsTable(true);
       setAllRecordsTableError(null);
+      setAllRecordsRefused(false);
 
       // Get fresh state from store to avoid stale closure
       const currentState = useKnowledgeBaseStore.getState();
@@ -646,7 +657,7 @@ function KnowledgeBasePageContent() {
           nodeType as NodeType,
           nodeId,
           params,
-          { signal: controller.signal }
+          { signal: controller.signal, quietRefusals: true }
         );
       } else {
         // Root level - fetch all records
@@ -654,6 +665,11 @@ function KnowledgeBasePageContent() {
       }
       if (controller.signal.aborted || !stillSignedIn()) return;
       setAllRecordsTableData(data);
+      // An app's tree lives in the app children cache, which this does not fill.
+      if (nodeType && nodeId && nodeType !== 'app') {
+        seedChildrenFromListing(nodeId, nodeType as NodeType, params, data);
+      }
+      allRecordsBusyTries.current = 0;
       // Sync what the response decided (totals, indices, the two cursors)
       // without touching the cursor the user asked for — overwriting that would
       // re-trigger the effect watching it.
@@ -672,7 +688,29 @@ function KnowledgeBasePageContent() {
         return;
       }
       console.error('Error fetching all records:', error);
-      setAllRecordsTableError('Failed to load records');
+      // Busy (503): say so, count down the seconds the server asked for, and ask again (at most 3 times).
+      if (isProcessedError(error) && error.statusCode === 503 && allRecordsBusyTries.current < 3) {
+        allRecordsBusyTries.current += 1;
+        const headers = (error.originalError as { response?: { headers?: Record<string, unknown> } } | undefined)?.response?.headers;
+        let left = parseRetryAfter(headers?.['retry-after']) ?? 5;
+        const say = () => setAllRecordsTableError(t('kb.allRecordsBusy', { count: left }));
+        setAllRecordsRefused(true);
+        say();
+        allRecordsBusyTimer.current = setInterval(() => {
+          left -= 1;
+          if (left > 0) {
+            say();
+            return;
+          }
+          if (allRecordsBusyTimer.current) clearInterval(allRecordsBusyTimer.current);
+          void fetchAllRecordsTableDataRef.current?.(nodeType, nodeId, page, true);
+        }, 1000);
+        return;
+      }
+      // A view too large to list answers 422 with the sentence to show; asking again cannot change that.
+      const refused = isProcessedError(error) && error.statusCode === 422;
+      setAllRecordsRefused(refused);
+      setAllRecordsTableError(refused ? error.message : t('kb.allRecordsLoadFailed'));
     } finally {
       if (
         allRecordsFetchRef.current === controller &&
@@ -691,7 +729,9 @@ function KnowledgeBasePageContent() {
     setAllRecordsTableError,
     setAllRecordsTableData,
     syncAllRecordsPaginationMeta,
+    t,
   ]);
+  fetchAllRecordsTableDataRef.current = fetchAllRecordsTableData;
 
   // Extract stable primitive values from URL to avoid re-firing effects
   // when router.replace() updates pagination/filter params in the URL.
@@ -822,6 +862,7 @@ function KnowledgeBasePageContent() {
         pendingSilentNotFoundNodeIdsRef.current.delete(nodeId);
 
         setTableData(data);
+        seedChildrenFromListing(nodeId, nodeType as NodeType, params, data);
         // The rows are ready: the sidebar path opened below is separate work and
         // must not hold the table's loader.
         setIsLoadingTableData(false);
@@ -1505,6 +1546,26 @@ function KnowledgeBasePageContent() {
     }
   }, [tableData, canCreateCollection]);
 
+  const validateCreateName = useCallback(
+    (name: string) =>
+      createFolderContext?.type === 'subfolder'
+        ? folderNameError(name, t)
+        : collectionNameError(name, useKnowledgeBaseStore.getState().categorizedNodes, t),
+    [createFolderContext?.type, t]
+  );
+
+  /** Refuses a rename the server would refuse, or that would repeat a collection name, before calling it. */
+  const assertRenameAllowed = useCallback(
+    (nodeId: string, newName: string, isCollection: boolean) => {
+      const error = isCollection
+        ? collectionNameError(newName, useKnowledgeBaseStore.getState().categorizedNodes, t, nodeId)
+        : folderNameError(newName, t);
+      // The caller's catch shows this message in its "Failed to rename" toast.
+      if (error) throw new Error(error);
+    },
+    [t]
+  );
+
   // Handle create folder submission
   const handleCreateFolderSubmit = useCallback(
     async (name: string, description: string) => {
@@ -1594,10 +1655,7 @@ function KnowledgeBasePageContent() {
   // Handle upload save - add items to upload store and start uploading
   const handleUploadSave = useCallback(
     async (items: UploadFileItem[]) => {
-      if (!selectedKbId) {
-        console.error('Cannot upload: No knowledge base ID found');
-        return;
-      }
+      if (!selectedKbId) return;
 
       setIsUploading(true);
 
@@ -1714,6 +1772,10 @@ function KnowledgeBasePageContent() {
       // Mark only valid files as uploading — oversized ones are already failed
       validEntries.forEach((entry) => startUpload(entry.storeId));
 
+      // Signing out cancels the batch in flight and the rest: a later batch would go out
+      // with the next person's token, into the last person's collection.
+      const upload = new AbortController();
+
       let anySuccess = false;
 
       const normalizePath = (p: string) =>
@@ -1723,6 +1785,7 @@ function KnowledgeBasePageContent() {
       // outcomes (rejections, storage upload, indexing). Map each event to its
       // row by file path within the batch.
       const sendBatch = async (batch: FileEntry[]) => {
+        if (upload.signal.aborted) return;
         const batchFiles = batch.map((e) => e.file);
         const batchMetadata: FileMetadata[] = batch.map((e) => ({
           file_path: e.filePath,
@@ -1748,6 +1811,7 @@ function KnowledgeBasePageContent() {
           batchFiles,
           batchMetadata,
           {
+            signal: upload.signal,
             onEvent: (evt) => {
               const data = evt.data as any;
               if (evt.event === 'file:succeeded') {
@@ -1857,49 +1921,13 @@ function KnowledgeBasePageContent() {
 
       remainingBatches.push(...createSizeBatches(standaloneEntries));
 
-      // Send priming batches sequentially to establish folder nodes
-      const failedFolders = new Set<string>();
-      for (const batch of primingBatches) {
-        try {
-          await sendBatch(batch);
-        } catch (error) {
-          const errorMessage =
-            error instanceof Error
-              ? error.message
-              : t('uploadProgress.uploadFailedDefault', {
-                  defaultValue: 'Upload failed',
-                });
-          batch.forEach((entry) => failUpload(entry.storeId, errorMessage));
-          const folder = getTopLevelFolder(batch[0].filePath);
-          if (folder) failedFolders.add(folder);
-        }
-      }
-
-      // Fail remaining batches whose folder priming batch failed
-      const viableBatches = remainingBatches.filter((batch) => {
-        const folder = getTopLevelFolder(batch[0]?.filePath);
-        if (folder && failedFolders.has(folder)) {
-          batch.forEach((entry) =>
-            failUpload(
-              entry.storeId,
-              t('uploadProgress.skippedFolderFailed', {
-                defaultValue: 'Skipped: folder creation failed',
-              })
-            )
-          );
-          return false;
-        }
-        return true;
-      });
-
-      // Run viable batches concurrently via worker pool
-      let nextPoolIdx = 0;
-      const poolWorker = async () => {
-        while (true) {
-          const idx = nextPoolIdx++;
-          if (idx >= viableBatches.length) break;
+      const stopOnSessionEnd = onSessionEnd(() => upload.abort());
+      try {
+        // Send priming batches sequentially to establish folder nodes
+        const failedFolders = new Set<string>();
+        for (const batch of primingBatches) {
           try {
-            await sendBatch(viableBatches[idx]);
+            await sendBatch(batch);
           } catch (error) {
             const errorMessage =
               error instanceof Error
@@ -1907,16 +1935,58 @@ function KnowledgeBasePageContent() {
                 : t('uploadProgress.uploadFailedDefault', {
                     defaultValue: 'Upload failed',
                   });
-            viableBatches[idx].forEach((entry) => failUpload(entry.storeId, errorMessage));
+            batch.forEach((entry) => failUpload(entry.storeId, errorMessage));
+            const folder = getTopLevelFolder(batch[0].filePath);
+            if (folder) failedFolders.add(folder);
           }
         }
-      };
-      await Promise.all(
-        Array.from(
-          { length: Math.min(UPLOAD_BATCH_CONFIG.uploadConcurrency, viableBatches.length) },
-          () => poolWorker()
-        )
-      );
+
+        // Fail remaining batches whose folder priming batch failed
+        const viableBatches = remainingBatches.filter((batch) => {
+          const folder = getTopLevelFolder(batch[0]?.filePath);
+          if (folder && failedFolders.has(folder)) {
+            batch.forEach((entry) =>
+              failUpload(
+                entry.storeId,
+                t('uploadProgress.skippedFolderFailed', {
+                  defaultValue: 'Skipped: folder creation failed',
+                })
+              )
+            );
+            return false;
+          }
+          return true;
+        });
+
+        // Run viable batches concurrently via worker pool
+        let nextPoolIdx = 0;
+        const poolWorker = async () => {
+          while (true) {
+            const idx = nextPoolIdx++;
+            if (idx >= viableBatches.length) break;
+            try {
+              await sendBatch(viableBatches[idx]);
+            } catch (error) {
+              const errorMessage =
+                error instanceof Error
+                  ? error.message
+                  : t('uploadProgress.uploadFailedDefault', {
+                      defaultValue: 'Upload failed',
+                    });
+              viableBatches[idx].forEach((entry) => failUpload(entry.storeId, errorMessage));
+            }
+          }
+        };
+        await Promise.all(
+          Array.from(
+            { length: Math.min(UPLOAD_BATCH_CONFIG.uploadConcurrency, viableBatches.length) },
+            () => poolWorker()
+          )
+        );
+      } finally {
+        stopOnSessionEnd();
+      }
+      if (upload.signal.aborted) return;
 
       // All batch streams have settled — finalize the session (completes any
       // rows still in flight as a safety net).
@@ -1933,6 +2003,22 @@ function KnowledgeBasePageContent() {
       }
     },
     [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, refreshData, maxFileSizeBytes, maxFileSizeMB, t]
+  );
+
+  // Returns false so the upload panel keeps the picked files when there is
+  // nowhere to put them, instead of clearing them with nothing uploaded.
+  const handleUploadSubmit = useCallback(
+    (items: UploadFileItem[]) => {
+      if (!selectedKbId) {
+        toast.error(t('sidebar.noCollectionSelected'), {
+          description: t('sidebar.selectCollectionOrCreate'),
+        });
+        return false;
+      }
+      void handleUploadSave(items);
+      return true;
+    },
+    [selectedKbId, handleUploadSave, t]
   );
 
   // Handle folder info click
@@ -1977,15 +2063,18 @@ function KnowledgeBasePageContent() {
   const nodes = useKnowledgeBaseStore((state) => state.nodes);
 
   // Create the share adapter for the currently selected KB node
-  const shareAdapter = useMemo(() => {
+  const shareKbId = useMemo(() => {
     const nodeId = selectedNode?.nodeId;
     if (!nodeId) return null;
     // Only share root KB collection nodes (app with connector KB)
     if (selectedNode?.nodeType !== 'app') return null;
     const storeNode = nodes.find((n) => n.id === nodeId);
     if (!storeNode || !isKbCollectionsHubApp(storeNode)) return null;
-    return createKBShareAdapter(nodeId);
+    return nodeId;
   }, [selectedNode?.nodeId, selectedNode?.nodeType, nodes]);
+  // A new adapter only for another collection: `nodes` grows as the tree loads,
+  // and a new adapter re-ran the members fetch below.
+  const shareAdapter = useMemo(() => (shareKbId ? createKBShareAdapter(shareKbId) : null), [shareKbId]);
 
   // Share controls are owner-only for collections, and also require group permission.
   const isSelectedKbOwner = !isAllRecordsMode && (tableData?.permissions?.canManagePermissions ?? false);
@@ -2334,9 +2423,11 @@ function KnowledgeBasePageContent() {
         }));
 
         if (isKbCollection) {
+          assertRenameAllowed(hubItem.id, newName, true);
           await KnowledgeBaseApi.renameKnowledgeBase(hubItem.id, newName);
         } else if (hubItem.nodeType === 'folder' || hubItem.nodeType === 'recordGroup' || hubItem.nodeType === 'app') {
           if (!selectedKbId) throw new Error('No collection context for rename');
+          if (hubItem.nodeType === 'folder') assertRenameAllowed(hubItem.id, newName, false);
           await KnowledgeBaseApi.renameNode({
             nodeId: hubItem.id,
             newName,
@@ -2350,6 +2441,7 @@ function KnowledgeBasePageContent() {
         const legacyItem = item as KnowledgeBaseItem;
         if (legacyItem.type === 'folder') {
           if (!selectedKbId) throw new Error('No collection context for rename');
+          assertRenameAllowed(legacyItem.id, newName, false);
           await KnowledgeBaseApi.renameFolder(selectedKbId, legacyItem.id, newName);
         } else {
           await KnowledgeBaseApi.renameRecord(legacyItem.id, newName);
@@ -2359,6 +2451,7 @@ function KnowledgeBasePageContent() {
       toast.success('Renamed successfully', {
         description: `Renamed to "${newName}"`,
       });
+      useKnowledgeBaseStore.getState().applyNodeRename(item.id, newName);
 
       await refreshData();
     } catch (error: unknown) {
@@ -2367,7 +2460,7 @@ function KnowledgeBasePageContent() {
       });
       throw error;
     }
-  }, [selectedKbId, refreshData, canEditCollection]);
+  }, [selectedKbId, refreshData, canEditCollection, assertRenameAllowed]);
 
   // Handle rename from header breadcrumb
   const handleBreadcrumbRename = useCallback(async (
@@ -2382,20 +2475,28 @@ function KnowledgeBasePageContent() {
         (nodeType === 'app' && (!selectedKbId || nodeId === selectedKbId));
 
       if (isKbCollection) {
+        assertRenameAllowed(nodeId, newName, true);
         await KnowledgeBaseApi.renameKnowledgeBase(nodeId, newName);
       } else if (nodeType === 'folder' || nodeType === 'recordGroup' || nodeType === 'app') {
         if (!selectedKbId) throw new Error('No collection context for rename');
+        if (nodeType === 'folder') assertRenameAllowed(nodeId, newName, false);
         await KnowledgeBaseApi.renameNode({
           nodeId,
           newName,
           nodeType,
           rootKbId: selectedKbId,
         });
+      } else if (nodeType === 'record') {
+        await KnowledgeBaseApi.renameRecord(nodeId, newName);
+      } else {
+        // Without this, an unhandled breadcrumb type would report success with nothing saved.
+        throw new Error(`Cannot rename a ${nodeType} from the breadcrumb`);
       }
 
       toast.success('Renamed successfully', {
         description: `Renamed to "${newName}"`,
       });
+      useKnowledgeBaseStore.getState().applyNodeRename(nodeId, newName);
 
       await refreshData();
     } catch (error: unknown) {
@@ -2404,7 +2505,7 @@ function KnowledgeBasePageContent() {
       });
       throw error;
     }
-  }, [selectedKbId, refreshData]);
+  }, [selectedKbId, refreshData, assertRenameAllowed]);
 
   // Handle breadcrumb click - navigate to the clicked breadcrumb
   // Use clean nav URL so filters don't carry over when navigating up the tree
@@ -2911,34 +3012,26 @@ function KnowledgeBasePageContent() {
     }
   }, [tickedRows, selectedKbId, bulkDeleteSelected, refreshDataAfterDelete]);
 
-  // Derive current title based on mode
+  // Derive current title based on mode. A search keeps the scope's name, so the
+  // chat box still says what it searches ("Ask in 'Docs'", not "Ask in 'Results'").
   const currentTitle = useMemo(() => {
-    // Show "Results" when actively searching
-    const activeSearchQuery = isAllRecordsMode ? allRecordsSearchQuery : searchQuery;
-    if (activeSearchQuery && activeSearchQuery.trim()) {
-      return 'Results';
-    }
-
     if (isAllRecordsMode) {
-      if (allRecordsSidebarSelection.type === 'all') {
-        return 'All Records';
-      } else if (allRecordsSidebarSelection.type === 'collection') {
+      if (allRecordsSidebarSelection.type === 'collection') {
         return allRecordsSidebarSelection.name;
       } else if (allRecordsSidebarSelection.type === 'connector') {
         return allRecordsSidebarSelection.itemName || allRecordsSidebarSelection.connectorType;
       } else if (allRecordsSidebarSelection.type === 'explorer') {
-        return allRecordsTableData?.currentNode?.name || 'All Records';
+        return allRecordsTableData?.currentNode?.name || t('nav.allRecords');
       }
-      return 'All';
+      return t('nav.allRecords');
     }
-    return tableData?.currentNode?.name || 'Collections';
+    return tableData?.currentNode?.name || t('nav.collections');
   }, [
     isAllRecordsMode,
     allRecordsSidebarSelection,
     tableData,
-    allRecordsSearchQuery,
-    searchQuery,
     allRecordsTableData?.currentNode?.name,
+    t,
   ]);
 
   const chatScopeNode = useMemo((): MentionNode | null => {
@@ -2992,12 +3085,12 @@ function KnowledgeBasePageContent() {
   const allRecordsBreadcrumbs = useMemo<Breadcrumb[]>(() => {
     const rootCrumb: Breadcrumb = {
       id: 'all-records-root',
-      name: 'All Records',
+      name: t('nav.allRecords'),
       nodeType: 'all-records',
     };
     const apiBreadcrumbs = allRecordsTableData?.breadcrumbs || [];
     return [rootCrumb, ...apiBreadcrumbs];
-  }, [allRecordsTableData?.breadcrumbs]);
+  }, [allRecordsTableData?.breadcrumbs, t]);
 
   return (
     <Flex style={{ height: '100%', width: '100%' }}>
@@ -3034,7 +3127,7 @@ function KnowledgeBasePageContent() {
               isSearchActive={isSearchOpen && !!(isAllRecordsMode ? allRecordsSearchQuery : searchQuery)?.trim()}
               // Collections mode only props
               onCreateFolder={isAllRecordsMode || !canAddFolderHere ? undefined : handleCreateFolder}
-              onUpload={isAllRecordsMode ? undefined : handleUpload}
+              onUpload={isAllRecordsMode || !selectedKbId ? undefined : handleUpload}
               onShare={shareAdapter && isSelectedKbOwner ? handleShare : undefined}
               createPermissionDenied={!isAllRecordsMode && !canCreateCollection && !canEditCollection}
               folderPermissionDenied={!isAllRecordsMode && !canCreateCollection}
@@ -3072,6 +3165,7 @@ function KnowledgeBasePageContent() {
           isLoading={isAllRecordsMode ? isLoadingAllRecordsTable : isLoadingTableData}
           isRefreshing={isRefreshing}
           error={isAllRecordsMode ? allRecordsTableError : tableDataError}
+          errorRetryable={!(isAllRecordsMode && allRecordsRefused)}
           pagination={isAllRecordsMode ? allRecordsTableData?.pagination : tableData?.pagination}
           permissions={isAllRecordsMode ? allRecordsTableData?.permissions : tableData?.permissions}
           currentNodeName={isAllRecordsMode ? currentTitle : tableData?.currentNode?.name}
@@ -3079,6 +3173,7 @@ function KnowledgeBasePageContent() {
           showSourceColumn={isAllRecordsMode}
           hasActiveFilters={hasActiveFilters}
           hasSearchQuery={hasSearchQuery}
+          onClearSearch={handleSearchClose}
           extrasRefreshKey={extrasRefreshKey}
           hasCollections={hasCollections}
           onRefresh={() => { void handleRefresh(); }}
@@ -3127,7 +3222,7 @@ function KnowledgeBasePageContent() {
           onDelete={!isAllRecordsMode ? handleDelete : undefined}
           onDownload={handleDownload}
           onCreateFolder={!isAllRecordsMode && canCreateCollection && canAddFolderHere ? handleCreateFolder : undefined}
-          onUpload={!isAllRecordsMode && canEditCollection ? handleUpload : undefined}
+          onUpload={!isAllRecordsMode && canEditCollection && selectedKbId ? handleUpload : undefined}
           onGoToCollection={handleGoToCollection}
           refreshData={refreshDataAfterDelete}
           hasCollectionContext={Boolean(selectedKbId)}
@@ -3257,13 +3352,14 @@ function KnowledgeBasePageContent() {
             isCreating={isCreatingFolder}
             isCollection={createFolderContext?.type === 'collection'}
             parentFolderName={createFolderContext?.parentName}
+            validateName={validateCreateName}
           />
 
           {/* Upload Data Sidebar */}
           <UploadDataSidebar
             open={isUploadSidebarOpen}
             onOpenChange={setIsUploadSidebarOpen}
-            onSave={handleUploadSave}
+            onSave={handleUploadSubmit}
             isSaving={isUploading}
             remainingFolderLevels={remainingFolderLevels}
             maxFolderDepth={maxFolderDepth}

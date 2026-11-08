@@ -186,9 +186,47 @@ class StoredContentHeal(ConnectorSweep):
                     exc.status, app_key, org_id,
                 )
                 return PageResult(deferred=True)
+        try:
+            await self._drop_replaced(candidates, app, doc_of, missing_docs)
+        except MissingDocumentsRouteUnavailable as exc:
+            self.logger.warning(
+                "stored_content_heal: storage has no missing-documents route (HTTP %d) | "
+                "connector=%s; retrying later, nothing marked done", exc.status, app_key,
+            )
+            return PageResult(deferred=True)
         return await self._heal(
             app_key, sorted(docs_by_org), rows, candidates, doc_of, missing_docs, capacity,
         )
+
+    async def _drop_replaced(
+        self,
+        candidates: list[tuple[dict[str, Any], str]],
+        app: dict[str, Any],
+        doc_of: dict[str, str],
+        missing_docs: set[str],
+    ) -> None:
+        """A document found missing may have been replaced by a write since the
+        mapping was read. Read the mapping again for those ids: a new document
+        that exists is not lost content, and a forced re-index would only redo it."""
+        lost = sorted({v for v in doc_of if doc_of[v] in missing_docs})
+        if not lost:
+            return
+        again = await self.blob_store.get_document_ids_by_virtual_record_ids(lost, raise_on_error=True)
+        org_of = {vrid: str(row.get("orgId") or app.get("orgId")) for row, vrid in candidates}
+        changed = {
+            v: str(d) for v in lost
+            if (d := (again.get(v) or {}).get("record_doc_id")) and str(d) != doc_of[v]
+        }
+        by_org: dict[str, set[str]] = {}
+        for vrid, doc_id in changed.items():
+            by_org.setdefault(org_of[vrid], set()).add(doc_id)
+        still_missing: set[str] = set()
+        for org_id, doc_ids in by_org.items():
+            still_missing.update(await self.storage.find_missing_documents(org_id, sorted(doc_ids)))
+        for vrid, doc_id in changed.items():
+            doc_of[vrid] = doc_id
+            if doc_id in still_missing:
+                missing_docs.add(doc_id)
 
     async def _heal(
         self,

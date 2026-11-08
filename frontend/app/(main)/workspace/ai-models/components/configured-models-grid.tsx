@@ -10,7 +10,11 @@ import { ThemeableAssetIcon } from '@/app/components/ui/themeable-asset-icon';
 import { aiModelsCapabilityLabel } from '../capability-i18n';
 import type { AIModelProvider, ConfiguredModel } from '../types';
 import type { CapabilitySection } from '../types';
-import { modelTypesForSection, registryCapabilityForModelType } from '../types';
+import {
+  modelTypesForSection,
+  registryCapabilityForModelType,
+  supportsIdentityForwarding,
+} from '../types';
 import { MODEL_ROW_ICON_CONTAINER_STYLE, modelRowCardStyle } from './model-row-layout';
 
 const EMBEDDING_BUILTIN_PLACEHOLDER_MODEL_KEY = 'builtin-default' as const;
@@ -50,6 +54,7 @@ interface ConfiguredModelsGridProps {
   onSetDefault: (modelType: string, modelKey: string) => Promise<void>;
   onDelete: (modelType: string, modelKey: string, modelName: string) => void;
   onRotate?: (model: ConfiguredModel) => void;
+  onIdentityForwarding?: (model: ConfiguredModel) => void;
   isLoading?: boolean;
   /** When true (default), empty embedding shows the system built-in row. Disable on onboarding. */
   showEmbeddingBuiltinPlaceholder?: boolean;
@@ -64,6 +69,7 @@ export function ConfiguredModelsGrid({
   onSetDefault,
   onDelete,
   onRotate,
+  onIdentityForwarding,
   isLoading = false,
   showEmbeddingBuiltinPlaceholder = true,
 }: ConfiguredModelsGridProps) {
@@ -150,6 +156,7 @@ export function ConfiguredModelsGrid({
           onSetDefault={onSetDefault}
           onDelete={onDelete}
           onRotate={onRotate}
+          onIdentityForwarding={onIdentityForwarding}
         />
       ))}
     </Flex>
@@ -163,6 +170,7 @@ function ConfiguredModelRow({
   onSetDefault,
   onDelete,
   onRotate,
+  onIdentityForwarding,
 }: {
   model: ConfiguredModel;
   provider: AIModelProvider | undefined;
@@ -170,6 +178,7 @@ function ConfiguredModelRow({
   onSetDefault: (modelType: string, modelKey: string) => Promise<void>;
   onDelete: (modelType: string, modelKey: string, modelName: string) => void;
   onRotate?: (model: ConfiguredModel) => void;
+  onIdentityForwarding?: (model: ConfiguredModel) => void;
 }) {
   const { t } = useTranslation();
   const [hover, setHover] = useState(false);
@@ -310,6 +319,17 @@ function ConfiguredModelRow({
                   onClick={() => {
                     setPopoverOpen(false);
                     onRotate(model);
+                  }}
+                />
+              ) : null}
+              {model.connectionId && onIdentityForwarding && supportsIdentityForwarding(model.provider) ? (
+                <PopoverMenuItem
+                  icon="badge"
+                  label={t('workspace.aiModels.identity.menuItem')}
+                  disabled={settingDefault}
+                  onClick={() => {
+                    setPopoverOpen(false);
+                    onIdentityForwarding(model);
                   }}
                 />
               ) : null}

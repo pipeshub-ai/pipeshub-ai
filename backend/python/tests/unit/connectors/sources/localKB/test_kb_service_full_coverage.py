@@ -750,6 +750,7 @@ class TestUpdateRecord:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.get_document = AsyncMock(side_effect=[
+            {},  # the KB, read to see that it is not being deleted
             {"recordName": "old"},
             {"isFile": True, "mimeType": "text/plain"},
         ])
@@ -1738,6 +1739,7 @@ class TestMoveRecord:
         service.graph_provider.get_record_parent_info = AsyncMock(return_value={"id": "old_parent"})
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
         service.graph_provider.get_document = AsyncMock(side_effect=[
+            {},  # the KB, read to see that it is not being deleted
             {"recordName": "myfile.pdf"},  # For moving_record
             {"isFile": True, "mimeType": "application/pdf"}  # For file_doc
         ])
@@ -1758,6 +1760,7 @@ class TestMoveRecord:
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_record_parent_info = AsyncMock(return_value={"id": "old_parent"})
         service.graph_provider.get_document = AsyncMock(side_effect=[
+            {},  # the KB, read to see that it is not being deleted
             {"recordName": "myfile.pdf"},
             {"isFile": True, "mimeType": "application/pdf"}
         ])
@@ -1778,6 +1781,7 @@ class TestMoveRecord:
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_record_parent_info = AsyncMock(return_value={"id": "old_parent"})
         service.graph_provider.get_document = AsyncMock(side_effect=[
+            {},  # the KB, read to see that it is not being deleted
             {"recordName": "myfile.pdf"},
             {"isFile": True, "mimeType": "application/pdf"}
         ])
@@ -1981,6 +1985,7 @@ class TestMoveRecord:
         service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
         service.graph_provider.get_document = AsyncMock(side_effect=[
+            {},  # the KB, read to see that it is not being deleted
             {"recordName": "myfile.pdf"},
             {"isFile": True, "mimeType": "application/pdf"}
         ])
@@ -2077,6 +2082,7 @@ class TestDuplicateNameValidation:
         
         # First call for current record, second for file doc
         service.graph_provider.get_document = AsyncMock(side_effect=[
+            {},  # the KB, read to see that it is not being deleted
             {"recordName": "old.pdf"},
             {"isFile": True, "mimeType": "application/pdf"}
         ])
@@ -2172,6 +2178,7 @@ class TestDuplicateNameValidation:
         
         # First call for record, second for file doc
         service.graph_provider.get_document = AsyncMock(side_effect=[
+            {},  # the KB, read to see that it is not being deleted
             {"recordName": "report.pdf"},
             {"isFile": True, "mimeType": "application/pdf"}
         ])

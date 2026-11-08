@@ -26,13 +26,16 @@ has to write ``@pytest.mark.parametrize("make_provider", PROVIDERS)`` (or
 """
 from __future__ import annotations
 
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import fakeredis.aioredis
 import pytest
 
 from tests.support.fake_cluster_redis import FakeClusterRedis
 from tests.support.fake_redis_connection_provider import FakeRedisConnectionProvider
+
+if TYPE_CHECKING:
+    from app.services.redis.inprocess_provider import InProcessRedisProvider
 
 __all__ = [
     "PROVIDERS",
@@ -59,10 +62,20 @@ def _make_cluster_client() -> FakeClusterRedis:
     return FakeClusterRedis()
 
 
+def _make_inprocess_provider() -> InProcessRedisProvider:
+    from fakeredis import FakeServer
+
+    from app.services.redis.config import RedisConnectionConfig
+    from app.services.redis.inprocess_provider import InProcessRedisProvider
+
+    return InProcessRedisProvider(RedisConnectionConfig(), server=FakeServer())   # its own server: no state shared between cases
+
+
 def _default_providers() -> list:
     return [
         pytest.param(_make_standalone_provider, id="standalone"),
         pytest.param(_make_cluster_provider, id="cluster"),
+        pytest.param(_make_inprocess_provider, id="inprocess"),
     ]
 
 

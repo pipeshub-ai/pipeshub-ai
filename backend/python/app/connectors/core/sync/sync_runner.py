@@ -18,7 +18,13 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from app.config.constants.arangodb import AppStatus, CollectionNames
-from app.connectors.core.base.connector.connector_service import ConnectorSyncSkippedError
+from app.services.permissions.structure_generation import note_structure_change
+from app.connectors.core.base.connector.connector_service import (
+    ConnectorSyncSkippedError,
+    IncompleteSyncError,
+    connector_sync_lock,
+    dispose_connector,
+)
 from app.connectors.core.constants import ConnectorStateKeys, SyncRunOutcome
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage, FullSyncSeen
 from app.connectors.core.sync.run_context import reset_run_sync_id, set_run_sync_id
@@ -27,7 +33,10 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
-    from app.connectors.core.base.connector.connector_service import BaseConnector
+    from app.connectors.core.base.connector.connector_service import (
+        ActionItem,
+        BaseConnector,
+    )
     from app.connectors.core.sync.sync_dispatcher import SyncEventDispatcher, SyncSpec
 
 # Strong refs to detached cleanup tasks; the loop holds only weak ones.
@@ -64,6 +73,7 @@ async def write_app_status(
     *,
     is_locked: bool | None = None,
     full_sync_owed: bool = False,
+    full_sync_started: bool = False,
     run_started: bool = False,
 ) -> bool:
     """Best-effort status write; a DB blip must never fail the sync itself.
@@ -73,6 +83,9 @@ async def write_app_status(
 
     ``full_sync_owed`` sets pendingFullSync in the same write, for a caller
     clearing a full sync that never finished (see ``_finalize``).
+    ``full_sync_started`` clears it in the same write: the full sync it asked
+    for is now running. A separate write to the app doc at the same moment
+    fails one of the two in ArangoDB (write-write conflict, or a lock timeout).
     ``run_started`` stamps lastSyncStartedAtTimestamp, for the write that starts a run.
     """
     payload: dict[str, Any] = {
@@ -84,6 +97,8 @@ async def write_app_status(
         payload["isLocked"] = is_locked
     if full_sync_owed:
         payload[ConnectorStateKeys.PENDING_FULL_SYNC] = True
+    elif full_sync_started:
+        payload[ConnectorStateKeys.PENDING_FULL_SYNC] = False
     if run_started:
         payload[ConnectorStateKeys.LAST_SYNC_STARTED_AT] = payload["updatedAtTimestamp"]
     try:
@@ -96,6 +111,12 @@ async def write_app_status(
     return True
 
 
+async def _run_sync_alone(connector: "BaseConnector", connector_id: str) -> None:
+    """run_sync, after any user-link pass on this connector has finished (see link_new_users)."""
+    async with connector_sync_lock(connector_id):
+        await connector.run_sync()
+
+
 async def _run_until_aborted(connector: "BaseConnector", lease: SyncLease) -> None:
     """Run the sync, cutting it short if the lease is lost or a stop arrives.
 
@@ -104,7 +125,7 @@ async def _run_until_aborted(connector: "BaseConnector", lease: SyncLease) -> No
     call in a worker thread will take as long as that call takes, exactly as
     task.cancel() does today.
     """
-    sync = asyncio.ensure_future(connector.run_sync())
+    sync = asyncio.ensure_future(_run_sync_alone(connector, lease.connector_id))
     abort = asyncio.ensure_future(lease.wait_aborted())
     try:
         await asyncio.wait({sync, abort}, return_when=asyncio.FIRST_COMPLETED)
@@ -181,6 +202,7 @@ async def _finalize(
     stamp_scopes: bool = False,
     outcome: SyncRunOutcome | None = None,
     summary: dict[str, object] | None = None,
+    action_items: "list[ActionItem] | None" = None,
 ) -> None:
     """Write IDLE, then release — in that order, in one detached task.
 
@@ -229,9 +251,14 @@ async def _finalize(
         }
         if outcome is not None else {}
     )
+    if isinstance(action_items, list):
+        # Text, as the summary is; None when nothing is left to do, which clears the card's badge.
+        ended[ConnectorStateKeys.ACTION_ITEMS] = (
+            json.dumps([item.model_dump(by_alias=True) for item in action_items]) if action_items else None
+        )
     if full_sync_cut_short:
         logger.warning(
-            f"Full sync for connector {connector_id} did not finish; the next sync "
+            f"Full sync for connector {connector_id} did not finish or skipped part of the source; the next sync "
             "will run in full"
         )
     if lease is None or not lease.lost.is_set():
@@ -264,9 +291,9 @@ async def _finalize(
     if lease is not None and coordinator is not None:
         await coordinator.end(lease)
     if connector is not None:
-        # Built for this run only, so its HTTP sessions die with it.
+        # Built for this run only, so its HTTP sessions and producer die with it.
         try:
-            await connector.cleanup()
+            await dispose_connector(connector)
         except Exception as e:
             logger.warning(f"Connector cleanup failed for {connector_id}: {e}")
 
@@ -613,6 +640,33 @@ def _begin_full_sync_run(
     return (processor, run) if isinstance(run, FullSyncSeen) else (None, None)
 
 
+# Connectors whose next full sync is the retry owed by one that skipped part of the source.
+# shortcut: in memory, so a restart or another sync process may owe one more retry; persist it if that matters.
+_INCOMPLETE_FULL_SYNC_RETRYING: set[str] = set()
+
+
+async def _finish_full_sync_memberships(
+    connector: "BaseConnector",
+    connector_id: str,
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    seen: FullSyncSeen,
+) -> bool:
+    """Give groups whose members came one at a time the full list, in one write
+    each; only now is that list known to be complete. False when that failed
+    and another full sync is owed."""
+    finish = getattr(getattr(connector, "data_entities_processor", None), "finish_full_sync_memberships", None)
+    if not callable(finish):
+        return True
+    try:
+        await finish(connector_id, seen)
+    except Exception as e:
+        logger.error(f"Could not give the groups the members the full sync of {connector_id} read: {e}")
+        await note_structure_change(graph_provider, connector_id, logger)  # part of it may have run
+        return False
+    return True
+
+
 async def _unlink_what_full_sync_missed(
     connector: "BaseConnector",
     connector_id: str,
@@ -624,29 +678,39 @@ async def _unlink_what_full_sync_missed(
 
     This is the removal the full sync used to do before it started: stale links
     and revoked access go, but only once the sync has seen everything it is
-    going to see. Returns False when the removal failed, so another full sync
-    is owed.
+    going to see. Returns False when another full sync is owed: the removal
+    failed, or the sync skipped part of the source (one retry, not a chain of them).
     """
     coverage = getattr(connector, "full_sync_coverage", None)
     coverage = coverage() if callable(coverage) else None
     if not isinstance(coverage, FullSyncCoverage):
         coverage = FullSyncCoverage()
+    if not coverage.lists_everything:
+        logger.debug(f"Full sync of {connector_id}: the source lists only part of itself; nothing is unlinked")
+        if not coverage.complete:
+            return True
+        # The groups' members were still read in full, so a member removed at the source goes.
+        return await _finish_full_sync_memberships(connector, connector_id, graph_provider, logger, seen)
     if not coverage.complete:
         logger.warning(
             f"Full sync of {connector_id} skipped part of the source after an error; "
             "nothing it did not see is unlinked this time"
         )
-        return True
+        # Owe one retry, not one per retry: a source that always fails part of the
+        # way (a quota, one unreadable item) would otherwise run in full forever.
+        if connector_id in _INCOMPLETE_FULL_SYNC_RETRYING:
+            _INCOMPLETE_FULL_SYNC_RETRYING.discard(connector_id)
+            return True
+        _INCOMPLETE_FULL_SYNC_RETRYING.add(connector_id)
+        return False
+    _INCOMPLETE_FULL_SYNC_RETRYING.discard(connector_id)
     if seen.count() == 0:
         # A sync that wrote nothing at all most likely failed without saying so.
         logger.warning(f"Full sync of {connector_id} wrote nothing; leaving every link in place")
         return True
+    if not await _finish_full_sync_memberships(connector, connector_id, graph_provider, logger, seen):
+        return False
     try:
-        # Groups whose members came one at a time get the full list now, in one
-        # write each; only now is that list known to be complete.
-        finish = getattr(getattr(connector, "data_entities_processor", None), "finish_full_sync_memberships", None)
-        if callable(finish):
-            await finish(connector_id, seen)
         deleted, ok = await graph_provider.unlink_nodes_missed_by_full_sync(
             connector_id,
             seen.by_collection,
@@ -655,7 +719,11 @@ async def _unlink_what_full_sync_missed(
         )
     except Exception as e:
         logger.error(f"Could not unlink what the full sync of {connector_id} missed: {e}")
+        await note_structure_change(graph_provider, connector_id, logger)  # part of it may have run
         return False
+    if deleted or not ok:
+        # a structural write made outside the transaction store (it removes hierarchy, group, inherit and grant edges)
+        await note_structure_change(graph_provider, connector_id, logger)
     if ok:
         logger.info(f"Full sync of {connector_id}: removed {deleted} edge(s) of nodes it did not see")
     return bool(ok)
@@ -705,9 +773,13 @@ async def run_sync_task(
         # A cached connector still holds the last run's summary until run_sync starts;
         # a stop before then must not file it under this run.
         connector.last_sync_summary = None
+        connector.last_action_items = None
         if full_sync:
             processor, seen = _begin_full_sync_run(connector, connector_id)
-        await write_app_status(graph_provider, logger, connector_id, start_status, run_started=True)
+        await write_app_status(
+            graph_provider, logger, connector_id, start_status,
+            full_sync_started=full_sync, run_started=True,
+        )
         # A resync asked for before this run began is served by it. Left set, the
         # flag handed the finalizer a request that was already satisfied, and
         # the connector synced twice back to back. Except a full sync owed to an
@@ -729,10 +801,16 @@ async def run_sync_task(
                 )
         except Exception as e:
             logger.warning(f"Could not clear pendingResync for {connector_id}: {e}")
-        if lease is None:
-            await connector.run_sync()
-        else:
-            await _run_until_aborted(connector, lease)
+        incomplete: IncompleteSyncError | None = None
+        try:
+            if lease is None:
+                await _run_sync_alone(connector, connector_id)
+            else:
+                await _run_until_aborted(connector, lease)
+        except IncompleteSyncError as exc:
+            # It ran to the end and kept what it could not read as stored, so the removal below is still safe;
+            # the run fails after it.
+            incomplete = exc
         finished = True
         # Only for a sync that ran to the end: one cut off partway saw only part
         # of the source, and everything it had not reached keeps its links.
@@ -742,6 +820,8 @@ async def run_sync_task(
             unlink_failed = not await _unlink_what_full_sync_missed(
                 connector, connector_id, graph_provider, logger, seen
             )
+        if incomplete is not None:
+            raise incomplete
     except asyncio.CancelledError:
         stopped = True
         raise
@@ -801,6 +881,7 @@ async def run_sync_task(
                 ),
                 outcome=_run_outcome(stopped=stopped, failed=failed, skipped=skipped_code is not None, finished=finished),
                 summary=getattr(connector, "last_sync_summary", None),
+                action_items=getattr(connector, "last_action_items", None),
                 # A stop or a lost lease returns from _run_until_aborted without
                 # raising, so `finished` alone would call that run complete.
                 # A failed unlink owes one too: what the sync did not see is

@@ -37,3 +37,81 @@ class GraphLockUnavailableError(GraphDBError):
     Says nothing about the records involved: a caller that counts failures per
     record must not count this one.
     """
+
+
+# The server-wide transaction memory pool ran out, or one transaction hit its own
+# limit. Neither clears by sending the same statement again.
+MEMORY_LIMIT_CODES = frozenset({
+    "Neo.TransientError.General.MemoryPoolOutOfMemoryError",
+    "Neo.TransientError.General.TransactionMemoryLimit",
+})
+
+
+class GraphMemoryLimitError(GraphDBError):
+    """A bulk write was larger than the graph server's transaction memory pool.
+
+    Sending it again fails the same way, so it is not a transient error and no
+    retry loop runs it twice. Not a ``TransientError`` subclass on purpose, and
+    raised outside the handler of the driver's error so that nothing in its
+    ``__cause__`` / ``__context__`` chain looks transient either. The statement
+    rolled back whole: whatever it was rewriting is as it was.
+
+    ``groups`` names the groups an aggregated error left unwritten.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        operation: str | None = None,
+        size: int | None = None,
+        groups: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.operation = operation
+        self.size = size
+        self.groups = groups or []
+
+
+class KnowledgeHubListingTooLarge(GraphDBError):
+    """The database gave up on a listing for want of memory.
+
+    Raised for the whole-connector walk, so the caller can ask the user to open
+    a folder or search instead. No partial page is ever returned for it: a cut-off
+    candidate set would drop rows without saying so.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "This view has too many records to list at once. Open a folder, or narrow by search."
+        )
+
+
+class KnowledgeHubListingBusy(GraphDBError):
+    """The listing could not get what it needs right now: a walk waited too long for a turn, or the database ran
+    out of transaction memory because other requests held it. Nothing is wrong with the request; retry."""
+
+    def __init__(self, *, out_of_memory: bool = False) -> None:
+        self.out_of_memory = out_of_memory
+        super().__init__("The listing is busy right now. Please try again in a few seconds.")
+
+
+def is_out_of_memory(error: BaseException) -> bool:
+    """Whether the database gave up on a statement for want of memory, however it was wrapped on the way up
+    (an ``ExceptionGroup``, or another error raised ``from`` it)."""
+    if isinstance(error, BaseExceptionGroup):
+        return any(is_out_of_memory(e) for e in error.exceptions)
+    seen: set[int] = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if "OutOfMemoryError" in str(getattr(error, "code", "")) or getattr(error, "out_of_memory", False):
+            return True
+        error = getattr(error, "__cause__", None)
+    return False
+
+
+def is_graph_memory_refusal(exc: BaseException) -> bool:
+    """The graph server's memory pool refused a write: a ``GraphMemoryLimitError``, or a driver
+    error that carries one of the pool's status codes (a statement not marked as bulk keeps the
+    driver's error)."""
+    return isinstance(exc, GraphMemoryLimitError) or getattr(exc, "code", None) in MEMORY_LIMIT_CODES

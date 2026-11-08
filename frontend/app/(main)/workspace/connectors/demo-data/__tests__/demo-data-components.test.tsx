@@ -6,6 +6,7 @@ import { Theme } from '@radix-ui/themes';
 import en from '@/lib/i18n/locales/en-US.json';
 import type { Connector } from '../../types';
 import { useDemoDataStore } from '../store';
+import { clearSessionCache } from '@/lib/api/session-cache';
 import { useToastStore } from '@/lib/store/toast-store';
 import { DemoSourceBadge } from '../components/demo-source-badge';
 import { DemoDataRemovalNotice } from '../components/demo-data-removal-notice';
@@ -73,7 +74,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  useDemoDataStore.getState().reset();
+  // Also resets the demo store, which registers for session end.
+  clearSessionCache();
 });
 
 describe('DemoSourceBadge', () => {

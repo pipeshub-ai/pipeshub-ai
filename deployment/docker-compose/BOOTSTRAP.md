@@ -33,8 +33,12 @@ PAT scopes the script mints (valid on the stock `MCP_SCOPES` list):
 conversation:chat
 semantic:write
 kb:read
+kb:write
+kb:upload
 user:read
 connector:read
+connector:write
+connector:sync
 code:read
 ```
 

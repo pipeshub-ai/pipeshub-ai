@@ -48,7 +48,7 @@ COPY --from=builder /build/dist/indexing_main ./
 COPY --from=builder /build/dist/connectors_main ./
 COPY --from=builder /build/dist/query_main ./
 
-ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
+ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC LANG=C.UTF-8
 
 # Install necessary runtime libraries
 # libreoffice-nogui: headless LibreOffice for PPT/PPTX to PDF conversion without

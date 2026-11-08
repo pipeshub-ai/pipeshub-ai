@@ -24,7 +24,7 @@ Return ONLY the extracted and converted text. No preamble, no explanations, no c
 
 prompt_for_document_extraction = """
 # Task:
-You are processing a document of an individual or an enterprise. Your task is to classify the document departments, categories, subcategories, languages, and topics, and to write a summary that a retrieval system will use to decide whether this document is relevant to a user's query.
+You are processing a document of an individual or an enterprise. Your task is to classify the document departments, categories, subcategories, languages, and topics, to list the organizations it names, and to write a summary that a retrieval system will use to decide whether this document is relevant to a user's query.
 Instructions must be strictly followed.
 
 # File Metadata:
@@ -32,7 +32,10 @@ The file name and type are given with the document content. Use the file metadat
 
 # Analysis Guidelines:
 1. **Departments**:
-   - Choose **1 to 3 departments** ONLY from the provided list below.
+   - List first the department that **owns** the document: the team that wrote it, maintains it or runs the work it records. A company policy belongs to the team that issues it, even when it governs another department's spending; a market study or an event report belongs to the team that produced it, not the one that will read it.
+   - Add a **second** when the document is also directly another department's work: the department it governs, serves or reports to. Do not add a department only because the document mentions its subject, or as a fallback. Use the names in the list. **At most 2.**
+   - Judge from this organization's own side: a contract or order where it sells is its sales work, one where it buys is its purchasing work; the other party's departments do not count.
+   - Choose ONLY from the provided list below.
    - Each department MUST **exactly match one** of the values in the list.
    - Any unlisted or paraphrased value is INVALID.
    - Use the following list:
@@ -59,11 +62,19 @@ The file name and type are given with the document content. Use the file metadat
    - Use full ISO language names (e.g., "English", "French", "German").
 
 4. **Topics**:
-   - Extract the main themes and subjects discussed.
-   - Be concise and avoid duplicates or near-duplicates.
-   - Provide **3 to 6** unique, highly relevant topics.
+   - A topic is a **reusable subject** a reader would look for across many documents ("payment terms", "access reviews", "data retention", "GDPR", "SLA"): a short noun phrase, lowercase except acronyms.
+   - **Never** a person, company or other organization, document title, date, amount, or ticket, invoice or contract number: names belong in the summary. Standards, regulations, technologies and methods are fine.
+   - Prefer the general term over a phrase only this document uses, and avoid duplicates or near-duplicates.
+   - Provide **2 to 5** topics: as few as cover the document, usually 2 or 3.
 
-5. **Summary**:
+5. **Organizations**:
+   - List the organizations the document names: companies, customers, vendors, partners, employers, investors, regulators, government bodies, universities, non-profits.
+   - Copy each name as written ("Acme Corp", "University of Oxford"). List each organization once, even if it appears under several spellings; prefer its fullest name.
+   - Do NOT list people, products or services (a product named after its maker counts as the product, e.g. "Jira" is not "Atlassian"), teams or departments, locations, generic words ("the client", "the vendor"), or the application the document came from (a Slack message is not about "Slack").
+   - Include the author's own organization only if the document names it explicitly.
+   - At most 10. Leave the list empty if the document names none.
+
+6. **Summary**:
    - This is the single most important field. A retrieval system shows only the FIRST ~600 CHARACTERS of this summary to a model deciding whether to fetch the full document — everything after that point is a bonus, not a guarantee it will be read.
    - **Sentence 1 is load-bearing.** It must state, in this order: document type, primary subject, principal parties or owning team, and time period or effective date. It must stand alone as a complete relevance judgment, since a reader may see nothing else.
    - **Length is tiered to document depth, not fixed:**

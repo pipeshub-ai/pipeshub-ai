@@ -11,9 +11,15 @@ export interface SettingsRowProps {
 
 export function SettingsRow({ label, description, children }: SettingsRowProps) {
   return (
-    <Flex align="center" justify="between" style={{ width: '100%' }}>
+    <Flex
+      direction={{ initial: 'column', sm: 'row' }}
+      align={{ initial: 'stretch', sm: 'center' }}
+      justify="between"
+      gap={{ initial: '2', sm: '0' }}
+      style={{ width: '100%' }}
+    >
       {/* Left: label + description */}
-      <Box style={{ flex: 1 }}>
+      <Box style={{ flex: 1, minWidth: 0 }}>
         <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', display: 'block' }}>
           {label}
         </Text>
@@ -33,7 +39,9 @@ export function SettingsRow({ label, description, children }: SettingsRowProps) 
         )}
       </Box>
       {/* Right: input — proportional width matching Figma */}
-      <Box style={{ flex: '0 0 38%', minWidth: 200 }}>{children}</Box>
+      <Box width={{ initial: '100%', sm: '38%' }} minWidth={{ initial: '0', sm: '200px' }} style={{ flexShrink: 0 }}>
+        {children}
+      </Box>
     </Flex>
   );
 }

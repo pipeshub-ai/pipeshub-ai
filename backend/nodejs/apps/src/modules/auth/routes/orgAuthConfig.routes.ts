@@ -1,17 +1,21 @@
 import { Router, Response, NextFunction } from 'express';
 import { Container } from 'inversify';
-import {
-  adminValidator,
-  userValidator,
-} from '../middlewares/userAuthentication.middleware';
+import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
+import { requireSessionAuth } from '../../../libs/middlewares/require-session-auth.middleware';
+import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { z } from 'zod';
-import { AuthMethodType } from '../schema/orgAuthConfiguration.schema';
+import { AuthMethodType } from '../types/auth-method';
 import { AuthSessionRequest } from '../middlewares/types';
 import { attachContainerMiddleware } from '../middlewares/attachContainer.middleware';
 import { UserAccountController } from '../controller/userAccount.controller';
+import {
+  REMOVED_SIGN_IN_METHODS,
+  RENAMED_SIGN_IN_METHODS,
+} from '../../../edition';
+import { findSignInRemovalNotice } from '../services/signInRemoval.service';
 const authMethodSchema = z.object({
-  type: z.nativeEnum(AuthMethodType),
+  type: z.enum(AuthMethodType),
 });
 const authStepSchema = z.object({
   order: z.number(),
@@ -32,6 +36,10 @@ const authStepSchema = z.object({
     }),
 });
 
+export const signInMethodRemoved = (type: string): string =>
+  `"${type}" sign-in was removed in PipesHub 1.0. Use password, email OTP, Google or Microsoft sign-in instead.`;
+export const signInMethodRenamed = (type: string, now: string): string =>
+  `"${type}" sign-in is now "${now}". Use "${now}" instead.`;
 export const SAML_IN_MULTI_STEP_POLICY =
   "SAML single sign-on can't be combined with other sign-in steps yet. Use SAML on its own as a one-step sign-in, or remove it from the policy.";
 
@@ -56,6 +64,19 @@ const authStepsSchema = z
 
       // Ensure unique authentication methods across all steps
       for (const method of step.allowedMethods) {
+        if (REMOVED_SIGN_IN_METHODS.includes(method.type)) {
+          ctx.addIssue({
+            code: 'custom',
+            message: signInMethodRemoved(method.type),
+          });
+        }
+        const renamed = RENAMED_SIGN_IN_METHODS[method.type];
+        if (renamed) {
+          ctx.addIssue({
+            code: 'custom',
+            message: signInMethodRenamed(method.type, renamed),
+          });
+        }
         if (globalMethodSet.has(method.type)) {
           ctx.addIssue({
             code: 'custom',
@@ -88,13 +109,18 @@ const authMethodValidationSchema = z.object({
 export function createOrgAuthConfigRouter(container: Container) {
   const router = Router();
   router.use(attachContainerMiddleware(container));
+  // These settings decide how everyone signs in, so only an admin's interactive session may read or change them.
+  const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
+  router.use(
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireSessionAuth,
+    userAdminCheck,
+  );
   const userAccountController = container.get<UserAccountController>(
     'UserAccountController',
   );
   router.get(
     '/authMethods',
-    userValidator,
-    adminValidator,
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         await userAccountController.getAuthMethod(req, res, next);
@@ -103,10 +129,20 @@ export function createOrgAuthConfigRouter(container: Container) {
       }
     },
   );
+  router.get(
+    '/signInRemoval',
+    async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
+      try {
+        res
+          .status(200)
+          .json(await findSignInRemovalNotice(String(req.user?.orgId)));
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
   router.post(
     '/',
-    userValidator,
-    adminValidator,
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         await userAccountController.setUpAuthConfig(req, res);
@@ -117,8 +153,6 @@ export function createOrgAuthConfigRouter(container: Container) {
   );
   router.post(
     '/updateAuthMethod',
-    userValidator,
-    adminValidator,
     ValidationMiddleware.validate(authMethodValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {

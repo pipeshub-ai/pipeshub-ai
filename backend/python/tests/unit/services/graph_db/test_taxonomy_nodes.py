@@ -10,6 +10,7 @@ from app.connectors.core.base.data_store.graph_data_store import GraphTransactio
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.services.graph_db.taxonomy import TAXONOMY_COLLECTIONS, subcategory_level
+from tests.unit.services.graph_db.test_neo4j_write_conflict_retry import _client, _ran
 
 TOPICS = CollectionNames.TOPICS.value
 SUB2 = CollectionNames.SUBCATEGORIES2.value
@@ -191,6 +192,11 @@ class TestArango:
             by_fields.setdefault(tuple(call.args[1]), set()).add(call.args[0])
         assert by_fields[("orgId", "normalizedName")] == set(TAXONOMY_COLLECTIONS)
         assert by_fields[("orgId", "normalizedAliases[*]")] == set(TAXONOMY_COLLECTIONS)
+        # Redirect lookups (consolidation's flatten, the stray-edge sweep)
+        # seek merged nodes by mergedInto; sparse, since few nodes have it.
+        merged = [c for c in p.http_client.ensure_persistent_index.await_args_list if c.args[1] == ["mergedInto"]]
+        assert {c.args[0] for c in merged} == set(TAXONOMY_COLLECTIONS)
+        assert all(c.kwargs.get("sparse") is True for c in merged)
 
 
 class TestNeo4j:
@@ -287,6 +293,8 @@ class TestNeo4j:
         assert any("FOR (n:Topics) ON (n.orgId, n.normalizedName)" in s for s in statements)
         assert any("FOR (n:Subcategories3) ON (n.orgId, n.normalizedName)" in s for s in statements)
         assert any("FOR (n:Topics) ON (n.orgId)" in s for s in statements)
+        for label in ("Topics", "Categories", "Languages", "Subcategories1", "Subcategories2", "Subcategories3"):
+            assert any(f"FOR (n:{label}) ON (n.mergedInto)" in s for s in statements), label
 
     def test_alias_nodes_have_a_composite_uniqueness_constraint(self) -> None:
         p = _neo4j()
@@ -405,13 +413,12 @@ def _neo4j_error(code: str) -> Exception:
 
 
 async def test_neo4j_hierarchy_edge_retries_a_deadlock(monkeypatch) -> None:
-    monkeypatch.setattr("app.services.graph_db.neo4j.neo4j_provider.asyncio.sleep", AsyncMock())
+    """The client sends the MERGE again; nothing of the deadlocked one landed."""
+    monkeypatch.setattr("app.services.graph_db.neo4j.neo4j_client.asyncio.sleep", AsyncMock())
     p = _neo4j()
-    p.client.execute_query = AsyncMock(
-        side_effect=[_neo4j_error("Neo.TransientError.Transaction.DeadlockDetected"), []],
-    )
+    p.client, sessions = _client([_neo4j_error("Neo.TransientError.Transaction.DeadlockDetected")])
     await p.ensure_taxonomy_hierarchy_edge(CollectionNames.SUBCATEGORIES1.value, "s1", "c1")
-    assert p.client.execute_query.await_count == 2
+    assert _ran(sessions) == 2
 
 
 async def test_neo4j_hierarchy_edge_does_not_retry_other_transient_errors() -> None:

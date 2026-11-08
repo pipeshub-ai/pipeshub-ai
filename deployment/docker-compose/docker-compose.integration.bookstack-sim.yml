@@ -1,0 +1,23 @@
+# BookStack simulator for the bookstack_sim suite (integration-tests/connectors/bookstack/bookstack_sim_*_test.py).
+# An override, used after the stack's own file:
+#
+#   docker compose -f docker-compose.integration.neo4j.yml -f docker-compose.integration.bookstack-sim.yml up -d
+#
+# BookStack is self-hosted: the connector is configured with a base URL, so it reaches the simulator by its
+# service name (http://bookstack-sim) with no host aliases or certificates. That name resolves to a private
+# address, which PipesHub accepts for a source an admin configures unless PIPESHUB_BLOCK_PRIVATE_ADDRESSES is
+# on. The test process drives the simulator's control API on the published port
+# (integration-tests/connectors/bookstack_sim.env).
+services:
+  bookstack-sim:
+    image: ${BOOKSTACK_SIM_IMAGE:-pipeshub/connectors-simulator:it}
+    restart: always
+    command: ["bookstack"]
+    environment:
+      CONNSIM_SOURCES: bookstack
+      # The instance lives in one process's memory.
+      CONNSIM_WORKERS: "1"
+    # Not 8101-8103, 8106 or 8107: the Atlassian, Notion, Gmail and SharePoint simulators publish those.
+    ports:
+      - "127.0.0.1:8110:80"
+    mem_limit: 512m

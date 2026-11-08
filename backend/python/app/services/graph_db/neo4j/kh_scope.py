@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import logging
+    from collections.abc import Collection
 
     from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
 
@@ -261,10 +262,33 @@ async def _still_current(client: Neo4jClient, connector_id: str, generation: int
     return bool(rows)
 
 
-async def reset_syncing(client: Neo4jClient) -> None:
-    """At startup, before any sync of this process starts, no sync is running: a flag left by a crash would block
-    stamping for ever. It must not run once syncs have started, or it clears their flags too."""
-    await _q(client, "MATCH (m:KhScopeMeta) WHERE m.syncing SET m.syncing = false")
+async def reset_syncing(client: Neo4jClient, keep: Collection[str] | None = None) -> None:
+    """At startup, before any sync of this process starts, a flag left by a crash would block stamping for ever.
+    ``keep`` names connectors whose flag must stay. Called with no list, the running build decides which of the
+    syncing connectors those are. It must not run once syncs of this process have started, or it clears their
+    flags too.
+
+    The ids are read before that decision, and a sync can start in the gap. ``mark_stale`` sets ``syncing`` and
+    bumps ``generation``. Clearing by id would drop that flag. Only the pairs this read saw are cleared, and a
+    row whose generation moved is left alone.
+    """
+    rows = await _q(client, """
+        MATCH (m:KhScopeMeta) WHERE coalesce(m.syncing, false)
+        RETURN m.connectorId AS id, m.generation AS generation
+    """)
+    seen = [{"id": r["id"], "generation": r.get("generation")} for r in rows if r.get("id")]
+    if keep is None:
+        from app.edition_services import bootstrap_leased_ids
+
+        keep = await bootstrap_leased_ids([row["id"] for row in seen])
+    await _q(client, """
+        UNWIND $seen AS row
+        MATCH (m:KhScopeMeta {connectorId: row.id})
+        WHERE coalesce(m.syncing, false) AND NOT row.id IN $keep
+          AND (m.generation = row.generation
+               OR (m.generation IS NULL AND row.generation IS NULL))
+        SET m.syncing = false
+    """, {"seen": seen, "keep": list(keep or ())})
 
 
 async def stale_connectors(client: Neo4jClient) -> list[str]:

@@ -17,7 +17,11 @@ from app.agents.mcp.errors import (
     is_http_unauthorized,
 )
 from app.agents.mcp.oauth_client import MCPOAuthError
-from app.agents.mcp.token_refresh import MCPTokenRefreshError
+from app.agents.mcp.token_refresh import (
+    MCPRefreshLockTimeoutError,
+    MCPTokenRefreshError,
+)
+from app.utils.oauth_errors import is_transient_status
 
 
 class MCPFailureReason(str, Enum):
@@ -31,9 +35,16 @@ class MCPFailureReason(str, Enum):
     """This deployment's URL guard or local-command policy refused it: an administrator's fix."""
     TIMEOUT = "timeout"
     UNREACHABLE = "unreachable"
-    """The connection failed or the server answered with an error."""
+    """The connection failed or the server answered with an error, or the sign-in couldn't be renewed
+    because its provider is down, rate-limiting or busy with another refresh."""
     ERROR = "error"
 
+
+SIGN_IN_FAILURES = frozenset({
+    MCPFailureReason.AUTH_EXPIRED, MCPFailureReason.UNAUTHORIZED, MCPFailureReason.NEEDS_PERMISSION,
+})
+"""The server wants a (new) sign-in: a person can fix these by signing in, unless the instance
+has no authentication to sign in with."""
 
 _POLICY_ERRORS = (MCPUrlBlockedError, MCPLaunchRefusedError)
 _SIGN_IN_ERRORS = (MCPTokenRefreshError, MCPOAuthError)
@@ -43,6 +54,12 @@ def classify_mcp_failure(exc: BaseException) -> MCPFailureReason:
     # The SDK can wrap the real error in its task group's ExceptionGroup.
     leaf = first_leaf(exc)
     candidates = (exc, leaf)
+    # A refresh the provider or another process's refresh stopped says nothing about the sign-in.
+    if any(
+        isinstance(e, MCPRefreshLockTimeoutError) or (isinstance(e, MCPOAuthError) and is_transient_status(e.status))
+        for e in candidates
+    ):
+        return MCPFailureReason.UNREACHABLE
     if any(isinstance(e, _SIGN_IN_ERRORS) for e in candidates):
         return MCPFailureReason.AUTH_EXPIRED
     if is_http_unauthorized(exc):

@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { touchTarget } from '@/app/components/ui/responsive';
 import { Box, Button, Checkbox, Flex, IconButton, Text, TextField } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import type { CheckedState } from '@radix-ui/react-checkbox';
@@ -16,6 +18,7 @@ import { useToastStore } from '@/lib/store/toast-store';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { PatApi } from '../api';
 import type { PatExpiryOption, PatScopeItem } from '../types';
+import { defaultPatScopes } from '../default-scopes';
 
 // ========================================
 // Constants
@@ -59,6 +62,7 @@ export interface CreatePatPanelProps {
 
 export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanelProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const addToast = useToastStore((s) => s.addToast);
 
   const [name, setName] = useState('');
@@ -110,9 +114,7 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
     try {
       const data = await PatApi.getScopes();
       setScopes(data.scopes ?? []);
-      // Default to the full MCP scope set, matching the backend default
-      // when no scopes are supplied.
-      setSelectedScopes(new Set((data.scopes ?? []).map((s) => s.name)));
+      setSelectedScopes(defaultPatScopes((data.scopes ?? []).map((s) => s.name)));
     } catch {
       setScopesErrorKey('workspace.personalAccessTokens.create.scopesLoadError');
     } finally {
@@ -354,6 +356,7 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
                     whiteSpace: 'pre-wrap',
                     wordBreak: 'break-all',
                     fontSize: 12,
+                    paddingRight: 44,
                     ...CREDENTIAL_MONO,
                     color: 'var(--slate-12)',
                   }}
@@ -367,7 +370,7 @@ export function CreatePatPanel({ open, onOpenChange, onCreated }: CreatePatPanel
                   size="1"
                   aria-label={t('workspace.personalAccessTokens.create.copyPasteBlockAria')}
                   onClick={() => void copyToClipboard(createdToken.pasteBlock)}
-                  style={{ position: 'absolute', top: 8, right: 8, cursor: 'pointer' }}
+                  style={{ position: 'absolute', top: 8, right: 8, cursor: 'pointer', ...touchTarget(isMobile) }}
                 >
                   <MaterialIcon name="content_copy" size={16} color="var(--slate-11)" />
                 </IconButton>

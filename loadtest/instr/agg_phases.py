@@ -17,8 +17,8 @@ LINE = re.compile(
 )
 TERMINAL = ("finalize", "llm_stream")
 ORDER = [
-    "llm_config", "user_context", "connector_probe", "attachments", "chat_state",
-    "connector_prefetch", "agent_create", "retrieval_wait", "llm_stream", "finalize",
+    "llm_config", "user_context", "connector_probe", "attachments", "connector_prefetch",
+    "chat_state", "agent_create", "retrieval_wait", "llm_stream", "finalize",
 ]
 
 

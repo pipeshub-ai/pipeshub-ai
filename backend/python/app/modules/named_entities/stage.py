@@ -9,21 +9,22 @@ from __future__ import annotations
 
 import logging
 import time
-from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from app.modules.entity_resolution.models import ResolutionMode
+from app.modules.named_entities.coref import link_short_forms
 from app.modules.named_entities.domain.config import load_named_entity_config
-from app.modules.named_entities.domain.models import NamedEntityExtraction
+from app.modules.named_entities.domain.models import NamedEntityExtraction, model_failed
 from app.modules.named_entities.extractor import (
     NamedEntityExtractor,
     NamedEntityRequest,
-    indexing_llm,
+    indexing_llm_or_none,
 )
 from app.modules.named_entities.graph_writer import (
     NamedEntityGraphWriter,
     PersistRetrySupersededError,
 )
+from app.modules.named_entities.merge import anchor_year_less_dates
 from app.modules.named_entities.normalizers.dates import NormalizationContext
 from app.modules.named_entities.resolution import NamedEntityResolver
 from app.telemetry.modules.named_entity_metrics import observe_stage, record_run
@@ -31,8 +32,6 @@ from app.telemetry.modules.named_entity_metrics import observe_stage, record_run
 _MODEL_GAVE_UP = frozenset({"no_progress", "budget_turns", "budget_tokens", "timeout"})
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
-
     from langchain_core.language_models.chat_models import BaseChatModel
 
     from app.config.configuration_service import ConfigurationService
@@ -58,14 +57,14 @@ REEXTRACT_MAX_WINDOWS = 50
 
 def needs_reextract(extraction: NamedEntityExtraction) -> bool:
     """A written extraction that left text unread: the call budget ran out, or
-    the agent stopped with blocks it had not read. Failed calls are not a reason:
-    a re-extraction would fail the same way, and the last good entities stay."""
+    the agent stopped with blocks it had not read. A failed call is not one of
+    these: the entities stage retries the whole record (``model_failed``)."""
     stats = extraction.stats
-    if extraction.status != "PARTIAL" or stats.windows_run >= REEXTRACT_MAX_WINDOWS:
+    if extraction.status != "PARTIAL" or stats.windows_run >= REEXTRACT_MAX_WINDOWS or model_failed(extraction):
         return False
     if stats.windows_total > stats.windows_run:
         return True
-    return extraction.strategy == "agent" and extraction.termination_reason != "llm_error"
+    return extraction.strategy == "agent"
 
 
 async def extract_named_entities(
@@ -100,14 +99,9 @@ async def extract_named_entities(
             enabled_kinds=[kind.value for kind in config.enabled()],
             budgets=budgets.model_dump(),
         )
-    llm = transport = None
-    provider = model = "indexing"
-    try:
-        llm, transport, provider, model = await indexing_llm(
-            config_service, org_id=record.org_id, shard_key=record.record_name or "",
-        )
-    except Exception:
-        logger.warning("Named-entity model unavailable; keeping deterministic spans")
+    llm, transport, provider, model, kinds = await indexing_llm_or_none(
+        config_service, config.enabled(), org_id=record.org_id, shard_key=record.record_name or "",
+    )
     request = NamedEntityRequest(
         blocks=blocks,
         org_id=record.org_id,
@@ -115,7 +109,7 @@ async def extract_named_entities(
         record_type=getattr(record.record_type, "value", "") or "",
         reference_time_ms=_reference_ms(record),
         tz=config.tz,
-        enabled=config.enabled(),
+        enabled=kinds,
         budgets=budgets,
         llm=llm,
         transport=transport,
@@ -125,36 +119,6 @@ async def extract_named_entities(
         supports_tools=False if reextract else None,
     )
     return await NamedEntityExtractor().extract(request)
-
-
-@contextmanager
-def extraction_blob_holder(record: object, extraction: NamedEntityExtraction | None) -> Iterator[bool]:
-    """While the blob is written, carry the extraction even if classification gave
-    no semantic metadata: the blob is the copy the graph and vectors are rebuilt
-    from. The holder is removed again because no metadata means a failed
-    classification to the graph writer. Yields whether a holder was set."""
-    holds = (
-        isinstance(extraction, NamedEntityExtraction)
-        and getattr(record, "semantic_metadata", None) is None
-        and (bool(extraction.entities) or extraction.status != "SKIPPED")
-    )
-    if not holds:
-        yield False
-        return
-    from app.models.blocks import SemanticMetadata
-
-    record.semantic_metadata = SemanticMetadata(named_entities=extraction.model_dump(mode="json"))
-    try:
-        yield True
-    finally:
-        record.semantic_metadata = None
-
-
-def attach_named_entities(record: Record, extraction: NamedEntityExtraction) -> None:
-    metadata = getattr(record, "semantic_metadata", None)
-    if metadata is None:
-        return
-    metadata.named_entities = extraction.model_dump(mode="json")
 
 
 def _model_gave_nothing(extraction: NamedEntityExtraction) -> bool:
@@ -204,7 +168,19 @@ async def persist_named_entities(
             outcome = "failed"
             return "kept"
         resolver = NamedEntityResolver(graph_provider, llm=llm, mode=ResolutionMode.SHADOW)
-        resolved = await resolver.resolve(record.org_id, extraction.entities)
+        # A kept extraction from before a fold rule folds now, so writing it again
+        # (a reprojection, a persist retry) learns the short forms as aliases.
+        entities = link_short_forms([entity.model_copy(deep=True) for entity in extraction.entities])
+        anchoring = _year_anchor(record, extraction)
+        if anchoring is not None:
+            year_less = sum(1 for e in entities if getattr(e.value, "ambiguous", False))
+            entities = anchor_year_less_dates(entities, anchoring)
+            if year_less:
+                logger.info(
+                    "named_entities record=%s year_less_dates=%d still_year_less=%d", getattr(record, "id", ""),
+                    year_less, sum(1 for e in entities if getattr(e.value, "ambiguous", False)),
+                )
+        resolved = await resolver.resolve(record.org_id, entities)
         embeddable = await writer.write(record.org_id, record.id, resolved, retry_due=retry_due)
         if entity_vector_store and embeddable:
             await entity_vector_store.upsert_entities_batch(embeddable)
@@ -253,6 +229,20 @@ def log_run(record: Record, extraction: NamedEntityExtraction, *, outcome: str, 
         stats.extract_ms,
         seconds,
     )
+
+
+def _year_anchor(record: Record, extraction: NamedEntityExtraction) -> NormalizationContext | None:
+    """How to give dates written without a year a year: the one nearest the record's
+    creation (when such text is written). Only times an edit never moves: the source's
+    creation, else when the record was first stored. Its last update would move an
+    unchanged "Sep 10" to the next year on a later edit. None for an upload: its
+    creation time is when it was uploaded, not when its text was written."""
+    from app.models.source_dates import is_kb_upload
+
+    reference = getattr(record, "source_created_at", None) or getattr(record, "created_at", None)
+    if not reference or is_kb_upload(getattr(record, "connector_name", None), getattr(record, "origin", None)):
+        return None
+    return NormalizationContext(reference_time_ms=reference, tz=extraction.tz or "UTC", anchor_years=True)
 
 
 def normalization_context(record: Record, tz: str) -> NormalizationContext:

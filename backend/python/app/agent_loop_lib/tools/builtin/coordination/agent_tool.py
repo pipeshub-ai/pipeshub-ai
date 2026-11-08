@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextvars
 from typing import TYPE_CHECKING
 
+from app.agent_loop_lib.context.protection import current_request_text
 from app.agent_loop_lib.core.exceptions import ToolError
 from app.agent_loop_lib.core.types import Goal, ToolCall
 from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
@@ -276,6 +277,7 @@ class AgentTool(Tool):
                     goal,
                     ctx.run_ctx,
                     session_id=ctx.session_id,
+                    user_request=current_request_text(ctx.messages),
                 )
         except Exception as e:
             return CoreToolResult(tool_call_id=call.id, name=call.name, content=str(e), is_error=True)

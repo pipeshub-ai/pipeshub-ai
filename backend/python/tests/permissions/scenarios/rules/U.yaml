@@ -1,0 +1,107 @@
+- id: RULE-U01
+  title: Chat attachment (no app) granted to the user
+  source: rule cases R1-R13 (spec)
+  rule: chat-upload
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: upload, kind: record, connector: no-such-app, rule: OPEN, origin: UPLOAD}
+    grants:
+      - [u, upload]
+  expect:
+    verdicts:
+      u: {upload: admit}
+  tags: [rules, chat-upload]
+- id: RULE-U02
+  title: Chat attachment granted to the org typed ORGANIZATION
+  source: rule cases R1-R13 (spec)
+  rule: chat-upload
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: upload, kind: record, connector: no-such-app, rule: OPEN, origin: UPLOAD}
+    grants:
+      - [org, upload, ORGANIZATION]
+  expect:
+    verdicts:
+      u: {upload: admit}
+  tags: [rules, chat-upload]
+- id: RULE-U03
+  title: Chat attachment with no grant
+  source: rule cases R1-R13 (spec)
+  rule: chat-upload
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: upload, kind: record, connector: no-such-app, rule: OPEN, origin: UPLOAD}
+  expect:
+    verdicts:
+      u: {upload: deny}
+  tags: [rules, chat-upload]
+- id: RULE-U04
+  title: Chat attachment granted to a group the user is in
+  source: rule cases R1-R13 (spec)
+  rule: chat-upload
+  world:
+    principals:
+      - {id: g, kind: group, org_member: false}
+      - {id: u}
+    nodes:
+      - {id: upload, kind: record, connector: no-such-app, rule: OPEN, origin: UPLOAD}
+    grants:
+      - [g, upload]
+    memberships:
+      - [u, g]
+  expect:
+    verdicts:
+      u: {upload: admit}
+  tags: [rules, chat-upload]
+- id: RULE-U05
+  title: origin=CONNECTOR record whose app does not exist
+  source: rule cases R1-R13 (spec)
+  rule: orphan
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: orphan, kind: record, connector: no-such-app, rule: OPEN}
+    grants:
+      - [u, orphan]
+  expect:
+    verdicts:
+      u: {orphan: deny}
+  tags: [rules, orphan]
+- id: RULE-U06
+  title: Upload whose connectorId names an existing app the user is not gated into
+  source: rule cases R1-R13 (spec)
+  rule: chat-upload
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: upload, kind: record, connector: A, rule: OPEN, origin: UPLOAD}
+    grants:
+      - [u, upload]
+  expect:
+    verdicts:
+      u: {upload: deny}
+  tags: [rules, chat-upload]
+- id: RULE-U07
+  title: Upload granted to the org typed DOMAIN
+  source: rule cases R1-R13 (spec)
+  rule: chat-upload
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: upload, kind: record, connector: no-such-app, rule: OPEN, origin: UPLOAD}
+    grants:
+      - [org, upload, DOMAIN]
+  expect:
+    verdicts:
+      u: {upload: deny}
+  tags: [rules, chat-upload]

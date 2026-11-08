@@ -73,12 +73,44 @@ def _identity(part: ImagePart) -> tuple[str, str | None, str]:
     return (part.source.type, part.source.media_type, part.source.data)
 
 
+def _images_newest_first(messages: list[Message]) -> list[ImagePart]:
+    return [
+        part
+        for message in reversed(messages)
+        if isinstance(message.content, list)
+        for part in reversed(message.content)
+        if isinstance(part, ImagePart)
+    ]
+
+
+def _images_to_keep(
+    messages: list[Message], max_images: int,
+) -> set[tuple[str, str | None, str]]:
+    """The distinct images that keep their pixels: the ones the person
+    attached first, then the newest of the rest.
+
+    By position alone the person's own attachment lost first: it sits on their
+    request, ahead of every image the run fetched after it.
+    """
+    attached: list[tuple[str, str | None, str]] = []
+    others: list[tuple[str, str | None, str]] = []
+    for part in _images_newest_first(messages):
+        identity = _identity(part)
+        if part.user_attached and identity not in attached:
+            attached.append(identity)
+        elif identity not in others:
+            others.append(identity)
+    ranked = attached + [identity for identity in others if identity not in attached]
+    return set(ranked[:max_images])
+
+
 def cap_images(messages: list[Message], max_images: int) -> list[Message]:
     """Return `messages` with at most `max_images` image parts.
 
-    Keeps the LAST `max_images` DISTINCT images: in an agent loop the most
-    recent are the ones the current step is reasoning about, while the oldest
-    have usually been summarized into text already.
+    Keeps the images the person attached to their request first, then the
+    LAST distinct images: in an agent loop the most recent are the ones the
+    current step is reasoning about, while the oldest have usually been
+    summarized into text already.
 
     Repeats of a picture already kept do not spend a slot. One request can
     materialize the same image several times over -- a figure that arrives as
@@ -97,11 +129,10 @@ def cap_images(messages: list[Message], max_images: int) -> list[Message]:
     if max_images < 0 or total <= max_images:
         return messages
 
-    # Walk backwards keeping the newest distinct images; everything earlier is
-    # cut. `kept` are the ones whose pixels survive, so an earlier copy can
-    # point at them; `seen` also holds images that lost, whose earlier copies
-    # must say "not shown" rather than point at pixels that are not there.
-    keep_from_end = max_images
+    keep = _images_to_keep(messages, max_images)
+    # Walking backwards, the newest copy of a kept image holds its pixels and
+    # every earlier copy points at it; `seen` also holds images that lost,
+    # whose copies say "not shown" rather than point at pixels that are not there.
     kept: set[tuple[str, str | None, str]] = set()
     seen: set[tuple[str, str | None, str]] = set()
     duplicates = 0
@@ -120,12 +151,8 @@ def cap_images(messages: list[Message], max_images: int) -> list[Message]:
                 duplicates += 1
                 new_content.append(TextPart(text=_DUPLICATE_NOTE))
                 continue
-            if identity in seen:
-                new_content.append(TextPart(text=_DROPPED_NOTE))
-                continue
             seen.add(identity)
-            if keep_from_end > 0:
-                keep_from_end -= 1
+            if identity in keep:
                 kept.add(identity)
                 new_content.append(part)
             else:

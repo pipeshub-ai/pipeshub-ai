@@ -59,6 +59,7 @@ class Pipeline(Generic[TCtx]):
         *,
         is_terminal: Callable[[TCtx], bool],
         fail_closed: bool = True,
+        propagate: tuple[type[Exception], ...] = (),
     ) -> None:
         """
         Args:
@@ -73,10 +74,14 @@ class Pipeline(Generic[TCtx]):
                 and the chain continues — appropriate for post-execution
                 middleware where the tool has already run and a broken
                 formatter/logger shouldn't destroy a valid result.
+            propagate: exception types that always leave `dispatch` instead of
+                being recorded, whatever `fail_closed` says: errors that make
+                continuing pointless (e.g. a context that cannot fit the model).
         """
         self._stack: list[tuple[Matcher, "Middleware[TCtx]"]] = []
         self._is_terminal = is_terminal
         self._fail_closed = fail_closed
+        self._propagate = propagate
 
     def use(
         self,
@@ -137,6 +142,8 @@ class Pipeline(Generic[TCtx]):
                 return
             try:
                 await matched[idx](ctx, next_fn)
+            except self._propagate:
+                raise
             except Exception as exc:
                 self._handle_middleware_error(ctx, exc)
                 if not self._is_terminal(ctx):

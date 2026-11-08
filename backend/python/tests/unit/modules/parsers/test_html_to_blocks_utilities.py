@@ -334,3 +334,29 @@ class TestHtmlToBlocksConverterEdgeCases:
         normalized = normalize_html_table(node)
         assert normalized.has_header
         assert normalized.body_rows == [["v"]]
+
+
+class TestHtmlImagePayloadsLeftInText:
+    """A payload in ``<pre>`` or plain text never becomes an IMAGE block; it is
+    replaced so the validator does not fail the whole record over it."""
+
+    @staticmethod
+    def _png_b64() -> str:
+        import base64
+
+        return base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 8).decode()
+
+    def test_payloads_in_code_and_paragraphs_are_replaced(self) -> None:
+        from app.modules.transformers.block_container_validator import (
+            BlockContainerValidator,
+        )
+
+        png = self._png_b64()
+        container = HtmlToBlocksConverter().convert(
+            f"<pre><code>.icon{{background:url(data:image/png;base64,{png})}}</code></pre>"
+            f"<p>Fixture: {png}</p>"
+        )
+        BlockContainerValidator().validate(container)
+        texts = [b.data for b in container.blocks if b.type == BlockType.TEXT]
+        assert ".icon{background:url(data:image/png;base64,[image data omitted])}" in texts
+        assert any("Fixture: [image data omitted]" in t for t in texts)

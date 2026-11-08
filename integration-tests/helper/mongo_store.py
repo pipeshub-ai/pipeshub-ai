@@ -130,6 +130,40 @@ class MongoStoreProbe:
         )
         return paths[0]
 
+    async def stored_record_documents(
+        self,
+        org_id: str,
+        *,
+        virtual_record_id: str | None = None,
+        under: str | None = None,
+        include_deleted: bool = False,
+    ) -> list[dict[str, Any]]:
+        """The ``record_<vrid>`` / ``metadata_<vrid>`` documents indexing stored.
+
+        Narrowed to one virtual record id, to a folder (*under*, matched as
+        ``_under`` does), or both. Soft-deleted rows are left out unless asked
+        for: their files may still be on disk, but nothing reads them.
+        """
+        names: Any
+        if virtual_record_id:
+            names = {"$in": [f"record_{virtual_record_id}", f"metadata_{virtual_record_id}"]}
+        else:
+            names = {"$regex": "^(record|metadata)_"}
+        query: dict[str, Any] = {"orgId": {"$in": _id_forms(org_id)}, "documentName": names}
+        if under:
+            query["documentPath"] = {"$regex": _under(under)}
+        if not include_deleted:
+            query["isDeleted"] = {"$ne": True}
+
+        def _find() -> list[dict[str, Any]]:
+            return list(
+                self._documents().find(
+                    query, {"documentName": 1, "documentPath": 1, "isDeleted": 1, "storageVendor": 1}
+                )
+            )
+
+        return await asyncio.to_thread(_find)
+
     async def count_documents_for_org(self, org_id: str) -> int:
         def _count() -> int:
             return self._documents().count_documents(

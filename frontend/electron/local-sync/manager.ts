@@ -18,15 +18,62 @@ import {
   type SyncMode,
 } from './pull-responder-types';
 import {
+  carryForwardUnreadable,
   connectorFileSegment,
+  emptyUnreadable,
   scanSyncRoot,
   type FileSnapshotMap,
 } from './persistence/watcher-state-store';
 import { IGNORED_PATTERNS } from './watcher/ignored-patterns';
 import { mimeTypeForPathOrUndefined } from './mime';
 
+/**
+ * Bumped when a build stops leaving the server's records wrong in a way only a
+ * full sync can repair. 2: older builds left subfolder records behind on folder
+ * moves, lost changes made just before quit, and reported unreadable folders as
+ * deleted.
+ */
+const STATE_VERSION = 2;
+
 /** Bounded history so a straggler from an abandoned run gets STALE_RUN, not a restart. */
 const MAX_REMEMBERED_SUPERSEDED_RUNS = 8;
+/**
+ * How long before the server's own deadline a page that is not ready is
+ * answered with an empty keepalive instead. Node waits timeoutMs plus its
+ * grace, so this leaves room for the answer to travel.
+ */
+const KEEPALIVE_MARGIN_MS = 5_000;
+const MIN_KEEPALIVE_WAIT_MS = 250;
+
+/** A disk walk in progress, which a newer full run of the same folder can take over. */
+interface WalkInFlight {
+  promise: Promise<WatchEvent[]>;
+  handoffBatchId: string | null;
+  signature: string;
+}
+
+const NOT_READY = Symbol('not-ready');
+
+/**
+ * Most bytes of events one page carries. The page goes back to Node as a
+ * socket.io ack, and Node's socket.io drops any message over its 1 MB
+ * maxHttpBufferSize, closing the socket: a bigger page would never arrive, and
+ * every run would fail on it again. Kept well under, for the ack's envelope and
+ * the MIME types stamped on afterwards.
+ */
+const MAX_PAGE_EVENT_BYTES = 512 * 1024;
+
+function eventBytes(event: WatchEvent): number {
+  return Buffer.byteLength(JSON.stringify(event), 'utf8');
+}
+
+function waitAtMost<T>(promise: Promise<T>, ms: number): Promise<T | typeof NOT_READY> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<typeof NOT_READY>((resolve) => {
+    timer = setTimeout(() => resolve(NOT_READY), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 export interface BootstrapResult {
   connectorId: string;
@@ -81,6 +128,8 @@ interface RunState {
   fullHandoffBatchId: string | null;
   /** Byte-identical answer to a repeated (runId, batchIndex). */
   lastPage: { batchIndex: number; response: ServePullPage } | null;
+  /** FULL: the walk this run is waiting on, until it resolves into fullWalk. */
+  walk: WalkInFlight | null;
 }
 
 export interface ConnectorStatus {
@@ -202,6 +251,8 @@ export class LocalSyncManager {
   private supersededRuns: Map<string, string[]>;
   /** Serialises pulls per connector so a slow FULL walk can't race the next page. */
   private pullChain: Map<string, Promise<unknown>>;
+  /** Per connector: the full walk still being built, whichever run started it. */
+  private walksInFlight: Map<string, WalkInFlight>;
 
   constructor({ app, onStatusChange }: LocalSyncManagerOptions) {
     this.app = app;
@@ -213,6 +264,7 @@ export class LocalSyncManager {
     this.runs = new Map();
     this.supersededRuns = new Map();
     this.pullChain = new Map();
+    this.walksInFlight = new Map();
   }
 
   getRootPath(connectorId: string): string | null {
@@ -320,11 +372,19 @@ export class LocalSyncManager {
     await this.stop(connectorId);
 
     const strategy: 'MANUAL' | 'SCHEDULED' = syncStrategy || 'MANUAL';
-    this.journal.setMeta(connectorId, {
+    const previousMeta = this.journal.getMeta(connectorId);
+    // History means the server may hold records this machine reported before.
+    const hadHistory = this.journal.listBatches(connectorId).length > 0
+      || Boolean(this.journal.readCursor(connectorId).lastRecordedBatchId);
+    const meta: ConnectorMeta = {
       connectorName, rootPath, apiBaseUrl,
       includeSubfolders,
       connectorDisplayType, syncStrategy: strategy,
-    });
+      fullSyncRequired: previousMeta?.fullSyncRequired === true
+        || (hadHistory && (previousMeta?.stateVersion ?? 1) < STATE_VERSION),
+      stateVersion: STATE_VERSION,
+    };
+    this.journal.setMeta(connectorId, meta);
 
     const runtime: RuntimeState = {
       connectorId, connectorName, rootPath, normalizedRootPath, apiBaseUrl,
@@ -385,6 +445,9 @@ export class LocalSyncManager {
       throw error;
     }
     runtime.watcherState = 'watching';
+    if (runtime.watcher.seededWithoutSnapshot && hadHistory && !meta.fullSyncRequired) {
+      this.journal.setMeta(connectorId, { ...meta, fullSyncRequired: true });
+    }
 
     this.emitStatus(connectorId);
     return this.getStatus(connectorId) as ConnectorStatus;
@@ -429,6 +492,7 @@ export class LocalSyncManager {
     this.runs.delete(connectorId);
     this.supersededRuns.delete(connectorId);
     this.pullChain.delete(connectorId);
+    this.walksInFlight.delete(connectorId);
   }
 
   /**
@@ -511,6 +575,7 @@ export class LocalSyncManager {
         fullWalkIndex: null,
         fullHandoffBatchId: null,
         lastPage: null,
+        walk: null,
       };
       this.runs.set(connectorId, run);
     }
@@ -544,9 +609,16 @@ export class LocalSyncManager {
       if (!page.hasMore) {
         run.fullWalk = null;
         run.fullWalkIndex = null;
+        if (mode === 'FULL') this.clearFullSyncRequired(connectorId);
       }
     }
     return page;
+  }
+
+  /** The last page of a full run is out: what the server holds is about to match the disk again. */
+  private clearFullSyncRequired(connectorId: string): void {
+    const meta = this.journal.getMeta(connectorId);
+    if (meta?.fullSyncRequired) this.journal.setMeta(connectorId, { ...meta, fullSyncRequired: false });
   }
 
   private markSuperseded(connectorId: string, runId: string): void {
@@ -567,54 +639,97 @@ export class LocalSyncManager {
     // buffer has to reach the journal before we page over it, or an edit made
     // just before the pull slips to the next run.
     if (watcher) await watcher.drainLiveEvents();
+    // Read after ensureWatcher: mounting the watcher is what can set it.
+    if (this.journal.getMeta(connectorId)?.fullSyncRequired) {
+      return pullFailure(
+        request,
+        'CURSOR_UNKNOWN',
+        'the folder snapshot was rebuilt without history; a full sync is needed',
+        false,
+      );
+    }
 
     const batches = this.journal.listBatches(connectorId);
     let startIndex = 0;
+    let startOffset = 0;
     if (request.cursor) {
       const token = decodeCursor(request.cursor, 'INCREMENTAL');
       if (!token || token.mode !== 'INCREMENTAL') {
         return pullFailure(request, 'CURSOR_UNKNOWN', 'cursor is not an incremental token', false);
       }
-      const idx = batches.findIndex((b) => b.batchId === token.afterBatchId);
-      if (idx < 0) {
-        return pullFailure(
-          request,
-          'CURSOR_UNKNOWN',
-          `journal no longer holds batch ${token.afterBatchId}`,
-          false,
-        );
+      if (token.afterBatchId) {
+        const idx = batches.findIndex((b) => b.batchId === token.afterBatchId);
+        if (idx < 0) {
+          return pullFailure(
+            request,
+            'CURSOR_UNKNOWN',
+            `journal no longer holds batch ${token.afterBatchId}`,
+            false,
+          );
+        }
+        startIndex = idx + 1;
+        // The cursor being past these batches *is* the server's ack for them.
+        this.commitThrough(connectorId, batches, idx);
       }
-      startIndex = idx + 1;
-      // The cursor being past these batches *is* the server's ack for them.
-      this.commitThrough(connectorId, batches, idx);
+      if (token.inBatch) {
+        if (batches[startIndex]?.batchId !== token.inBatch.batchId) {
+          return pullFailure(
+            request,
+            'CURSOR_UNKNOWN',
+            `journal no longer holds the partly served batch ${token.inBatch.batchId}`,
+            false,
+          );
+        }
+        startOffset = token.inBatch.offset;
+      }
     }
 
     const events: WatchEvent[] = [];
+    let bytes = 0;
     let consumedUpTo = startIndex - 1;
+    let partial: { batchId: string; offset: number } | null = null;
     for (let i = startIndex; i < batches.length; i += 1) {
       const batch = batches[i];
-      const batchEvents = await this.resolveBatchEvents(connectorId, batch, meta.rootPath);
-      // A single batch wider than maxEvents is still served whole: paging
-      // inside a batch would need a sub-batch cursor, and stalling would wedge
-      // the run.
-      if (batchEvents.length > 0 && events.length > 0 && events.length + batchEvents.length > maxEvents) {
+      const from = i === startIndex ? startOffset : 0;
+      const rest = (await this.resolveBatchEvents(connectorId, batch, meta.rootPath)).slice(from);
+      // Whole batches while they fit. A batch is split only when it alone is
+      // bigger than a page (a folder move, a reconcile after the app was
+      // closed): served whole it would never reach Node.
+      if (rest.length > 0 && events.length > 0
+        && (events.length + rest.length > maxEvents
+          || bytes + rest.reduce((n, e) => n + eventBytes(e), 0) > MAX_PAGE_EVENT_BYTES)) {
         break;
       }
-      events.push(...batchEvents);
+      let taken = 0;
+      for (const event of rest) {
+        const size = eventBytes(event);
+        if (taken > 0 && (taken >= maxEvents || bytes + size > MAX_PAGE_EVENT_BYTES)) break;
+        events.push(event);
+        bytes += size;
+        taken += 1;
+      }
+      if (taken < rest.length) {
+        partial = { batchId: batch.batchId, offset: from + taken };
+        break;
+      }
       consumedUpTo = i;
       if (events.length >= maxEvents) break;
     }
-    
-    const hasMore = consumedUpTo < batches.length - 1;
-    const cursorBatchId = consumedUpTo >= 0 ? batches[consumedUpTo].batchId : null;
+
+    const hasMore = partial !== null || consumedUpTo < batches.length - 1;
+    const afterBatchId = consumedUpTo >= 0 ? batches[consumedUpTo].batchId : null;
+    let cursor: string | null = null;
+    if (partial) {
+      cursor = encodeCursor({ v: 1, mode: 'INCREMENTAL', afterBatchId: afterBatchId ?? '', inBatch: partial });
+    } else if (afterBatchId) {
+      cursor = encodeCursor({ v: 1, mode: 'INCREMENTAL', afterBatchId });
+    }
     return {
       ok: true,
       connectorId,
       runId,
       batchIndex,
-      cursor: cursorBatchId
-        ? encodeCursor({ v: 1, mode: 'INCREMENTAL', afterBatchId: cursorBatchId })
-        : null,
+      cursor,
       hasMore,
       events: withMimeTypes(events),
       rootPath: meta.rootPath || null,
@@ -639,12 +754,27 @@ export class LocalSyncManager {
           false,
         );
       }
-      const watcher = await this.ensureWatcher(connectorId, meta);
-      if (watcher) await watcher.drainLiveEvents();
-      const batches = this.journal.listBatches(connectorId);
-      run.fullHandoffBatchId = batches.length ? batches[batches.length - 1].batchId : null;
-      run.fullWalk = await this.buildFullWalk(meta);
+      if (!run.walk) run.walk = await this.startOrAdoptWalk(connectorId, meta);
+      // Hashing a large folder takes longer than the server waits for a page.
+      // Answer an empty page in time instead, and keep walking: the next pull
+      // of this run (or of a newer run) picks up the same walk. A page that
+      // simply blocked would time out, and every retry and every later run
+      // would start the walk again from nothing.
+      const walk = await waitAtMost(
+        run.walk.promise,
+        Math.max(MIN_KEEPALIVE_WAIT_MS, Number(request.timeoutMs || 60_000) - KEEPALIVE_MARGIN_MS),
+      );
+      if (walk === NOT_READY) {
+        return {
+          ok: true, connectorId, runId, batchIndex, cursor: null, hasMore: true, events: [],
+          rootPath: meta.rootPath || null, preparing: true,
+        };
+      }
+      if (this.walksInFlight.get(connectorId) === run.walk) this.walksInFlight.delete(connectorId);
+      run.fullHandoffBatchId = run.walk.handoffBatchId;
+      run.fullWalk = walk;
       run.fullWalkIndex = new Map(run.fullWalk.map((event, index) => [event.path, index]));
+      run.walk = null;
     }
 
     let start = 0;
@@ -665,7 +795,14 @@ export class LocalSyncManager {
       start = idx + 1;
     }
 
-    const slice = run.fullWalk.slice(start, start + Math.max(1, maxEvents));
+    const slice: WatchEvent[] = [];
+    let sliceBytes = 0;
+    for (let i = start; i < run.fullWalk.length && slice.length < Math.max(1, maxEvents); i += 1) {
+      const size = eventBytes(run.fullWalk[i]);
+      if (slice.length > 0 && sliceBytes + size > MAX_PAGE_EVENT_BYTES) break;
+      slice.push(run.fullWalk[i]);
+      sliceBytes += size;
+    }
     const hasMore = start + slice.length < run.fullWalk.length;
     // The last FULL page hands off to an incremental position rather than
     // another walk token: the run is complete, and the connector persists this
@@ -691,18 +828,53 @@ export class LocalSyncManager {
   }
 
   /**
+   * The walk a full run reads from: one still in progress for this folder if
+   * there is one, else a new one. Taking over a walk another run started is
+   * safe because its handoff point was taken before it began: anything that
+   * changed since is in the journal after that point and comes back on the
+   * next incremental run.
+   */
+  private async startOrAdoptWalk(connectorId: string, meta: ConnectorMeta): Promise<WalkInFlight> {
+    const signature = JSON.stringify([path.resolve(String(meta.rootPath || '')), meta.includeSubfolders !== false]);
+    const existing = this.walksInFlight.get(connectorId);
+    if (existing && existing.signature === signature) return existing;
+    const watcher = await this.ensureWatcher(connectorId, meta);
+    if (watcher) await watcher.drainLiveEvents();
+    const batches = this.journal.listBatches(connectorId);
+    const promise = this.buildFullWalk(connectorId, meta);
+    const walk: WalkInFlight = {
+      promise,
+      handoffBatchId: batches.length ? batches[batches.length - 1].batchId : null,
+      signature,
+    };
+    // Rejections are read by whichever pull awaits it; until then, unhandled.
+    promise.catch(() => {
+      if (this.walksInFlight.get(connectorId) === walk) this.walksInFlight.delete(connectorId);
+    });
+    this.walksInFlight.set(connectorId, walk);
+    return walk;
+  }
+
+  /**
    * Whole-disk snapshot in sorted relative-path order, so `afterPath` is a
    * stable resume key for the life of the run.
    */
-  private async buildFullWalk(meta: ConnectorMeta): Promise<WatchEvent[]> {
+  private async buildFullWalk(connectorId: string, meta: ConnectorMeta): Promise<WatchEvent[]> {
     const rootPath = path.resolve(String(meta.rootPath || ''));
     if (!fs.existsSync(rootPath)) {
       throw new LocalSyncRootMissingError(rootPath);
     }
-    const scan = await scanSyncRoot(rootPath, {
+    const unreadable = emptyUnreadable();
+    const walked = await scanSyncRoot(rootPath, {
       includeSubfolders: meta.includeSubfolders !== false,
       ignoredPatterns: IGNORED_PATTERNS,
+      unreadable,
     });
+    // A full run removes every record it does not see, so what could not be
+    // read is reported as last known rather than left out.
+    const snapshot = this.runtimes.get(connectorId)?.watcher?.stateStore.getSnapshot().files
+      ?? loadWatcherStateFiles(this.baseDir, connectorId);
+    const scan = carryForwardUnreadable(walked, unreadable, snapshot);
     const relPaths = Array.from(scan.keys()).sort();
     return relPaths.map((relPath) => {
       const entry = scan.get(relPath)!;

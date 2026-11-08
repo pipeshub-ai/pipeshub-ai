@@ -40,7 +40,7 @@ class GoalBuilder:
 
     async def build(self, intent: Intent) -> Goal:
         if self._runtime is None or self._model_spec is None:
-            return Goal(description=intent.parsed_intent)
+            return Goal(description=intent.parsed_intent, user_message=intent.raw_message)
 
         prompt = f"Intent: {intent.parsed_intent}\nContext: {intent.context}"
         try:
@@ -53,11 +53,12 @@ class GoalBuilder:
                 output_schema_hint=_GOAL_SCHEMA_HINT,
             )
         except StructuredSingleShotError:
-            return Goal(description=intent.parsed_intent)
+            return Goal(description=intent.parsed_intent, user_message=intent.raw_message)
 
         description = str(result.get("description") or intent.parsed_intent).strip() or intent.parsed_intent
         return Goal(
             description=description,
+            user_message=intent.raw_message,
             requirements=[str(x) for x in coerce_list(result.get("requirements"))],
             success_criteria=[str(x) for x in coerce_list(result.get("success_criteria"))],
             constraints=[str(x) for x in coerce_list(result.get("constraints"))],

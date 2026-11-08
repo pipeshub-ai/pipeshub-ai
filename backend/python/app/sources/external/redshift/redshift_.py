@@ -709,13 +709,20 @@ class RedshiftDataSource:
             )
 
     async def execute_query(
-        self, query: str, params: Optional[tuple] = None
+        self,
+        query: str,
+        params: Optional[tuple] = None,
+        *,
+        timeout_s: int | None = None,
+        max_rows: int | None = None,
     ) -> RedshiftResponse:
         """Execute a custom SQL query.
 
         Args:
             query: SQL query to execute
             params: Optional query parameters
+            timeout_s: Server-side statement timeout
+            max_rows: Read at most this many rows
 
         Returns:
             RedshiftResponse with query results
@@ -724,7 +731,7 @@ class RedshiftDataSource:
 
         try:
             results = await asyncio.to_thread(
-                self._client.execute_query, query, params
+                self._client.execute_query, query, params, timeout_s=timeout_s, max_rows=max_rows
             )
             logger.debug(
                 f"🔧 [RedshiftDataSource] Query returned {len(results)} rows"

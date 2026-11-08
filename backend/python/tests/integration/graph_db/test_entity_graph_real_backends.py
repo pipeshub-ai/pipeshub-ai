@@ -499,9 +499,11 @@ async def _write_in_flight(
 
 class _WriteDuringWrite:
     """Sends the record's writes to the topic while another writer holds it,
-    and releases that writer once one of them fails (ArangoDB refuses a locked
-    key at once) or ``HOLD_SECONDS`` after the first was sent (Neo4j queues
-    them behind the lock)."""
+    and releases that writer once one of them fails or ``HOLD_SECONDS`` after
+    the first was sent. Neo4j queues the writes behind the lock; ArangoDB
+    refuses the locked key with errorNum 1200, and its client retries the
+    refusal for up to about 1.5 s, so the write is either still retrying when
+    the holder is released or fails with the 1200 first."""
 
     def __init__(self, release: Callable[[], Awaitable[None]]) -> None:
         self._release = release
@@ -613,9 +615,10 @@ class TestConcurrentEnrichmentOfOneNewTopic:
             await overlap.release()
         first = await enrich(0)
 
-        # The second record's write really ran into the first one's.
+        # The second record's write really ran into the first one's: it was still
+        # waiting when the holder let go, or (ArangoDB, retries spent) refused with 1200.
         if isinstance(provider, ArangoHTTPProvider):
-            assert "1200" in str(overlap.first_error), overlap.first_error
+            assert overlap.queued_behind_lock or "1200" in str(overlap.first_error), overlap.first_error
         else:
             assert overlap.first_error is None and overlap.queued_behind_lock
         assert not isinstance(second, BaseException), second
@@ -760,7 +763,7 @@ class TestPendingDuplicateReconcile:
         )
         rows = await provider.get_records_pending_duplicate_reconcile(due_before_ms=5000, limit=100)
         mine = [r for r in rows if r["_key"].startswith(org_id)]
-        assert mine == [{"_key": f"{org_id}-old", "duplicateReconcileAttempts": None,
+        assert mine == [{"_key": f"{org_id}-old", "orgId": org_id, "duplicateReconcileAttempts": None,
                          "duplicateReconcileDueAt": 1000}]
         await _assert_fenced_clear(provider, f"{org_id}-old")
 
@@ -787,7 +790,7 @@ class TestPendingDuplicateReconcile:
         )
         rows = await provider.get_records_pending_duplicate_reconcile(due_before_ms=5000, limit=100)
         mine = [r for r in rows if r["_key"].startswith(org_id)]
-        assert mine == [{"_key": f"{org_id}-old", "duplicateReconcileAttempts": None,
+        assert mine == [{"_key": f"{org_id}-old", "orgId": org_id, "duplicateReconcileAttempts": None,
                          "duplicateReconcileDueAt": 1000}]
         await _assert_fenced_clear(provider, f"{org_id}-old")
 
@@ -1006,3 +1009,43 @@ class TestBatchedFieldsIfMatch:
             ]},
         )
         await _assert_batched_fields_if_match(provider, keys)
+
+
+class TestRecordPeopleEdges:
+    """KG-13: the new person edge types pass the ArangoDB collection schema
+    (strict, enum of edge types) and are written once per type on both."""
+
+    async def test_neo4j(self, neo4j) -> None:
+        provider, org_id = neo4j
+        await provider.client.execute_query(
+            "CREATE (:Record {id: $rec, orgId: $org}) CREATE (:User {id: $user, orgId: $org})",
+            parameters={"rec": f"{org_id}-rec", "user": f"{org_id}-user", "org": org_id},
+        )
+        edges = [
+            {"_from": f"records/{org_id}-rec", "_to": f"users/{org_id}-user", "edgeType": t, "createdAtTimestamp": 1}
+            for t in ("AUTHORED_BY", "ADDRESSED_TO", "AUTHORED_BY")
+        ]
+        await provider.batch_create_entity_relations(edges)
+        rows = await provider.client.execute_query(
+            "MATCH (:Record {id: $rec})-[r]->(:User {id: $user}) RETURN r.edgeType AS t ORDER BY t",
+            parameters={"rec": f"{org_id}-rec", "user": f"{org_id}-user"},
+        )
+        assert [r["t"] for r in rows] == ["ADDRESSED_TO", "AUTHORED_BY"]
+
+    async def test_arango(self, arango) -> None:
+        provider, org_id = arango
+        edges = [
+            {"_from": f"records/{org_id}-rec", "_to": f"users/{org_id}-user", "edgeType": t,
+             "createdAtTimestamp": 1, "itOrg": org_id}
+            for t in ("AUTHORED_BY", "ADDRESSED_TO", "REVIEWED_BY", "OWNED_BY", "AUTHORED_BY")
+        ]
+        try:
+            await provider.batch_create_entity_relations(edges)
+            rows = await provider.http_client.execute_aql(
+                "FOR e IN entityRelations FILTER e.itOrg == @org SORT e.edgeType RETURN e.edgeType", {"org": org_id},
+            )
+            assert rows == ["ADDRESSED_TO", "AUTHORED_BY", "OWNED_BY", "REVIEWED_BY"]
+        finally:
+            await provider.http_client.execute_aql(
+                "FOR e IN entityRelations FILTER e.itOrg == @org REMOVE e IN entityRelations", {"org": org_id},
+            )

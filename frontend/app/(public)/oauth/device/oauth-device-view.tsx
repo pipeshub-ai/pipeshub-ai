@@ -1,5 +1,6 @@
 'use client';
 
+import { asArray } from '@/lib/utils/safe';
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import axios from 'axios';
@@ -237,7 +238,7 @@ export function OAuthDeviceView() {
           {t('oauthConsent.requestHeading')}
         </Text>
         <Box mt="3">
-          {consentData.scopes.map((scope) => (
+          {asArray(consentData.scopes).map((scope) => (
             <Text as="p" size="2" key={scope.name}>
               {scope.name}
               {scope.description ? ` — ${scope.description}` : ''}

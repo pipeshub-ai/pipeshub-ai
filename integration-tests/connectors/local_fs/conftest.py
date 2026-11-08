@@ -24,6 +24,9 @@ from connector_lifecycle import (
     source_unavailable,
 )
 from connectors.local_fs.local_fs_seed import SEED_FILES, SEED_FOLDERS
+from connectors.local_fs.local_fs_sim_world import (  # noqa: F401 - fixture of the local_fs_sim suite
+    local_fs_world,
+)
 from connectors.local_fs.local_fs_source_helper import (
     DEFAULT_CONTAINER_ROOT,
     DEFAULT_HOST_ROOT,

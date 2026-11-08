@@ -5,11 +5,8 @@
 export type AuthMethod =
   | 'password'
   | 'otp'
-  | 'samlSso'
   | 'google'
-  | 'microsoft'
-  | 'azureAd'
-  | 'oauth';
+  | 'microsoft';
 
 export interface SignInResponse {
   status?: string;

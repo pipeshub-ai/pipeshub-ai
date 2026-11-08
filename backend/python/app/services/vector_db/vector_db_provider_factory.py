@@ -10,6 +10,7 @@ Supported providers (VECTOR_DB_TYPE values)
 ``qdrant``     – Qdrant (default) — sparse + dense, native RRF
 ``opensearch`` – OpenSearch >= 2.19 — dense KNN + BM25, RRF pipeline
 ``redis``      – Redis >= 8.4 — dense KNN + BM25, native FT.HYBRID RRF
+``pgvector``   – PostgreSQL with pgvector >= 0.7 — dense + sparse, RRF in Python
 """
 
 import os
@@ -17,6 +18,7 @@ from logging import Logger
 
 from app.config.configuration_service import ConfigurationService
 from app.services.vector_db.interface.vector_db import IVectorDBService
+from app.telemetry.modules.db_metrics import instrument_store
 
 
 class VectorDBProviderFactory:
@@ -51,15 +53,17 @@ class VectorDBProviderFactory:
         )
 
         if provider_type == "qdrant":
-            return await VectorDBProviderFactory._create_qdrant(logger, config_service)
+            return instrument_store(await VectorDBProviderFactory._create_qdrant(logger, config_service), "vector")
         elif provider_type == "opensearch":
-            return await VectorDBProviderFactory._create_opensearch(logger, config_service)
+            return instrument_store(await VectorDBProviderFactory._create_opensearch(logger, config_service), "vector")
         elif provider_type == "redis":
-            return await VectorDBProviderFactory._create_redis(logger, config_service)
+            return instrument_store(await VectorDBProviderFactory._create_redis(logger, config_service), "vector")
+        elif provider_type == "pgvector":
+            return instrument_store(await VectorDBProviderFactory._create_pgvector(logger, config_service), "vector")
         else:
             raise ValueError(
                 f"Unsupported VECTOR_DB_TYPE='{provider_type}'. "
-                "Supported values: qdrant, opensearch, redis"
+                "Supported values: qdrant, opensearch, redis, pgvector"
             )
 
     # ------------------------------------------------------------------
@@ -133,6 +137,22 @@ class VectorDBProviderFactory:
             return provider
         except Exception as e:
             logger.error(f"❌ Failed to create Redis vector provider: {e}")
+            raise
+
+    @staticmethod
+    async def _create_pgvector(
+        logger: Logger,
+        config_service: ConfigurationService,
+    ) -> IVectorDBService:
+        from app.services.vector_db.pgvector.pgvector import PgVectorService
+
+        try:
+            logger.debug("Creating pgvector provider…")
+            provider = await PgVectorService.create(config_service)
+            logger.info("✅ pgvector provider created and connected")
+            return provider
+        except Exception as e:
+            logger.error(f"❌ Failed to create pgvector provider: {e}")
             raise
 
 

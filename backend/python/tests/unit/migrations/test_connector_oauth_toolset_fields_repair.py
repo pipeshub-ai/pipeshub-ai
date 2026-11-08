@@ -4,10 +4,14 @@ startup repair gives them the connector's own, once per deployment."""
 import copy
 import importlib
 import logging
+from unittest.mock import AsyncMock
+
+import pytest
 
 # The connector router and factory import each other through a cycle; load the router first.
 import app.connectors.api.router  # noqa: F401
 from app.connectors.core.registry.oauth_config_registry import get_oauth_config_registry
+from app.core import org_context
 from app.migrations.connector_oauth_toolset_fields_migration import (
     MIGRATION_FLAG_KEY,
     run_connector_oauth_toolset_fields_repair,
@@ -29,6 +33,7 @@ class _MemoryConfigService:
         self.store = store
         self.failing_reads = failing_reads
         self.writes: list[str] = []
+        self.read_in: list[tuple[str, str]] = []
 
     async def get_config(
         self,
@@ -38,6 +43,8 @@ class _MemoryConfigService:
         *,
         raise_on_error: bool = False,
     ) -> list | dict | None:
+        if path.startswith("/services/oauth/"):
+            self.read_in.append((path, org_context.current_org_id()))
         # Like ConfigurationService: a failed read answers the default unless asked to raise.
         if path in self.failing_reads:
             if raise_on_error:
@@ -104,8 +111,16 @@ def _correct_salesforce_app() -> dict:
     return app
 
 
-async def _repair(config_service: _MemoryConfigService) -> dict:
-    return await run_connector_oauth_toolset_fields_repair(config_service, get_oauth_config_registry(), LOGGER)
+def _graph(*org_ids: str) -> AsyncMock:
+    graph = AsyncMock()
+    graph.get_all_orgs = AsyncMock(return_value=[{"_key": org_id} for org_id in org_ids])
+    return graph
+
+
+async def _repair(config_service: _MemoryConfigService, graph: AsyncMock | None = None) -> dict:
+    return await run_connector_oauth_toolset_fields_repair(
+        config_service, get_oauth_config_registry(), LOGGER, graph or _graph("org-1"),
+    )
 
 
 class TestRepair:
@@ -207,4 +222,25 @@ class TestFailures:
 
         assert result["success"] is False
         assert config_service.store[SLACK_PATH][0]["redirectUri"] == f"{BASE_URL}/connectors/oauth/callback/Slack"
+        assert MIGRATION_FLAG_KEY not in config_service.store
+
+
+class TestOrgContext:
+    async def test_the_saved_apps_are_read_inside_each_org(self) -> None:
+        config_service = _MemoryConfigService({SALESFORCE_PATH: [_broken_salesforce_app()]})
+
+        result = await _repair(config_service, _graph("org-1", "org-2"))
+
+        assert result["apps_repaired"] == 1
+        assert (SALESFORCE_PATH, "org-1") in config_service.read_in
+        assert (SALESFORCE_PATH, "org-2") in config_service.read_in
+
+    async def test_orgs_that_cannot_be_listed_leave_the_flag_unset(self) -> None:
+        config_service = _MemoryConfigService({SALESFORCE_PATH: [_broken_salesforce_app()]})
+        graph = _graph()
+        graph.get_all_orgs.side_effect = ConnectionError("graph down")
+
+        with pytest.raises(ConnectionError):
+            await _repair(config_service, graph)
+
         assert MIGRATION_FLAG_KEY not in config_service.store

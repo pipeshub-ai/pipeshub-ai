@@ -1,5 +1,7 @@
 'use client';
 
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { sidePanelFrame } from '@/app/components/ui/responsive';
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Dialog, Flex, Box, Text, Button, IconButton, VisuallyHidden } from '@radix-ui/themes';
 import { LoadingButton } from '@/app/components/ui/loading-button';
@@ -52,6 +54,7 @@ export function ReplaceFileDialog({
   onReplace,
   isReplacing = false,
 }: ReplaceFileDialogProps) {
+  const isMobile = useIsMobile();
   const [replacementFile, setReplacementFile] = useState<File | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [isCurrentFileHovered, setIsCurrentFileHovered] = useState(false);
@@ -153,20 +156,14 @@ export function ReplaceFileDialog({
     <Dialog.Root open={open} onOpenChange={handleOpenChange}>
       <Dialog.Content
         style={{
-          position: 'fixed',
-          top: 10,
-          right: 10,
-          bottom: 10,
-          width: '37.5rem',
-          maxWidth: '100vw',
-          maxHeight: 'calc(100vh - 20px)',
+          ...sidePanelFrame(isMobile),
           padding: 0,
           margin: 0,
           // background: 'var(--effects-translucent)',
           border: '1px solid var(--olive-3)',
-          borderRadius: 'var(--radius-2)',
+          borderRadius: isMobile ? 0 : 'var(--radius-2)',
           boxShadow: '0 20px 48px 0 rgba(0, 0, 0, 0.25)',
-          // backdropFilter: 'blur(25px)',
+          // backdropFilter: 'var(--frost-filter)',
           overflow: 'hidden',
           display: 'flex',
           flexDirection: 'column',
@@ -186,7 +183,7 @@ export function ReplaceFileDialog({
             padding: 'var(--space-2) var(--space-2) var(--space-2) var(--space-4)',
             borderBottom: '1px solid var(--olive-3)',
             background: 'var(--effects-translucent)',
-            backdropFilter: 'blur(8px)',
+            backdropFilter: 'var(--frost-filter-subtle)',
           }}
         >
           <Flex align="center" gap="2">
@@ -213,8 +210,8 @@ export function ReplaceFileDialog({
             display: 'flex',
             flexDirection: 'column',
             padding: 'var(--space-4)',
-            background: 'var(--effects-translucent)',
-            backdropFilter: 'blur(25px)',
+            background: 'var(--frost-bg-strong)',
+            backdropFilter: 'var(--frost-filter)',
           }}
         >
           <Flex direction="column" gap="5" style={{ flex: 1 }}>
@@ -403,7 +400,7 @@ export function ReplaceFileDialog({
                     borderRadius: 'var(--radius-1)',
                     background: 'var(--olive-2)',
                     border: '1px solid var(--olive-3)',
-                    backdropFilter: 'blur(25px)',
+                    backdropFilter: 'var(--frost-filter)',
                     flex: 1,
                   }}
                 >
@@ -461,7 +458,7 @@ export function ReplaceFileDialog({
             padding: 'var(--space-2)',
             borderTop: '1px solid var(--olive-3)',
             background: 'var(--effects-translucent)',
-            backdropFilter: 'blur(8px)',
+            backdropFilter: 'var(--frost-filter-subtle)',
           }}
         >
           <Button

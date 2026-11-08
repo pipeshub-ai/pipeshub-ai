@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Literal, Optional, Union
 from urllib.parse import quote
 from xml.sax.saxutils import escape
 
+import httpx
+
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.nextcloud.nextcloud import NextcloudClient
@@ -49,6 +51,15 @@ class NextcloudDataSource:
         # Note: OCS URLs require the ID in the path
         rel_path = f'/ocs/v1.php/cloud/users/{user_id}'
         return await self._ocs_request('GET', rel_path, headers=headers)
+
+    async def get_current_user(self, headers: dict[str, Any] | None = None) -> HTTPResponse:
+        """
+        Get the authenticated user, whose ``id`` names their WebDAV and OCS paths.
+        The login name can differ from it (an email or an LDAP name).
+        Ref:
+        API: GET /ocs/v1.php/cloud/user
+        """
+        return await self._ocs_request('GET', '/ocs/v1.php/cloud/user', headers=headers)
 
     async def get_users(
         self,
@@ -1047,12 +1058,7 @@ class NextcloudDataSource:
             token: The specific App Token (or device token) to check.
         Ref: POST /index.php/core/wipe/check
         """
-        return await self._ocs_request(
-            'POST',
-            '/index.php/core/wipe/check',
-            body={'token': token},
-            headers=headers
-        )
+        return await self._remote_wipe_request('/index.php/core/wipe/check', token, headers)
 
     async def signal_remote_wipe_success(
         self,
@@ -1066,12 +1072,29 @@ class NextcloudDataSource:
             token: The App Token (or device token) that was wiped.
         Ref: POST /index.php/core/wipe/success
         """
-        return await self._ocs_request(
+        return await self._remote_wipe_request('/index.php/core/wipe/success', token, headers)
+
+    async def _remote_wipe_request(
+        self, rel_path: str, token: str, headers: dict[str, Any] | None = None
+    ) -> HTTPResponse:
+        """POST a remote wipe call without the client's credentials.
+
+        The wipe calls are public pages keyed by the token in the body. Nextcloud signs in
+        with any credentials a request carries before the page runs, so sending the rejected
+        app password would answer 401 instead of the wipe status and count as one more failed
+        sign-in against PipesHub's address.
+        """
+        _headers = {'OCS-APIRequest': 'true', **(headers or {})}
+        client = await self._client._ensure_client()
+        request = client.build_request(
             'POST',
-            '/index.php/core/wipe/success',
-            body={'token': token},
-            headers=headers
+            f"{self.base_url}{rel_path}",
+            params={'format': 'json'},
+            data={'token': token},
+            headers=self._as_str_dict(_headers),
         )
+        request.headers.pop('Authorization', None)
+        return HTTPResponse(await client.send(request))
 
     # Internal OCS API helpers
     def _as_str_dict(self, data: Dict[str, Any]) -> Dict[str, str]:
@@ -1198,6 +1221,15 @@ class NextcloudDataSource:
             body=None
         )
         return await self._client.execute(req)
+
+    async def open_download(self, user_id: str, path: str) -> httpx.Response:
+        """Start a GET of a file and return the response with its body not yet read.
+
+        The caller reads it with ``aiter_bytes()`` and must ``aclose()`` it.
+        """
+        client = await self._client._ensure_client()
+        request = client.build_request('GET', self._build_webdav_url(user_id, path))
+        return await client.send(request, stream=True)
 
     async def upload_file(
         self,

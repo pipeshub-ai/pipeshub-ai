@@ -6,14 +6,25 @@ handling connection pooling, transaction management, and query execution.
 """
 
 import asyncio
+import math
+import random
+import re
 import threading
 import time
+from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
 from logging import Logger
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from neo4j import AsyncGraphDatabase, Query
-from neo4j.exceptions import ClientError, ServiceUnavailable, SessionExpired
+from neo4j.exceptions import (
+    ClientError,
+    ServiceUnavailable,
+    SessionExpired,
+    TransientError,
+)
 
+from app.exceptions.graph_db_exceptions import MEMORY_LIMIT_CODES, GraphMemoryLimitError
 from app.services.resource_governor.feedback import get_default_downstream_feedback
 
 if TYPE_CHECKING:
@@ -25,7 +36,10 @@ DEFAULT_MAX_CONNECTION_POOL_SIZE = 100
 # for a minute before failing, which is how one leaked session per record
 # turned into 1800s record timeouts instead of retryable errors.
 DEFAULT_CONNECTION_ACQUISITION_TIMEOUT = 30.0
-DEFAULT_MAX_CONNECTION_LIFETIME = 30 * 60.0
+# Under the idle timeouts between us and a hosted or clustered server (a cloud
+# NAT gateway drops idle flows at 350s). Those answer the next packet on a
+# dropped connection with a reset, so the pool has to retire it first.
+DEFAULT_MAX_CONNECTION_LIFETIME = 5 * 60.0
 DEFAULT_LIVENESS_CHECK_TIMEOUT = 30.0
 # Longer than any record is allowed to process (RECORD_PROCESSING_TIMEOUT,
 # 1800s by default) plus a margin: a session older than this belongs to a
@@ -40,6 +54,53 @@ DEFAULT_TRANSACTION_TIMEOUT = 120.0
 # pooled connection checked out. A ClientError, not ServiceUnavailable: the
 # server is fine, this process has too many queries in flight for its pool.
 _POOL_EXHAUSTED_MARKER = "failed to obtain a connection from the pool"
+# A statement that lost one of these to a concurrent writer was rolled back whole.
+WRITE_CONFLICT_CODES = frozenset({
+    "Neo.TransientError.Transaction.DeadlockDetected",
+    "Neo.TransientError.Transaction.LockAcquisitionTimeout",
+})
+WRITE_CONFLICT_ATTEMPTS = 6
+# CALL { ... } IN TRANSACTIONS commits batch by batch, so a later batch's
+# conflict leaves the earlier ones written: such a statement is not sent again.
+COMMITS_IN_BATCHES = re.compile(r"\}\s*IN\s+(?:\S+\s+)?(?:CONCURRENT\s+)?TRANSACTIONS\b", re.IGNORECASE)
+
+_T = TypeVar("_T")
+
+
+def is_write_conflict(error: BaseException) -> bool:
+    """A deadlock or lock timeout against a concurrent writer."""
+    return isinstance(error, TransientError) and error.code in WRITE_CONFLICT_CODES
+
+
+async def _until_no_conflict(run: Callable[[], Awaitable[_T]]) -> _T:
+    """Run a statement that commits on its own, sending it again while it loses
+    a conflict: nothing of it landed. In an explicit transaction the conflict
+    ended the transaction, and only its owner can run it again."""
+    for attempt in range(1, WRITE_CONFLICT_ATTEMPTS):
+        try:
+            return await run()
+        except TransientError as e:
+            if not is_write_conflict(e):
+                raise
+            await asyncio.sleep(random.uniform(0.02, 0.1) * attempt)
+    return await run()
+
+
+def is_memory_limit(error: BaseException) -> bool:
+    """The server gave up on a statement for want of transaction memory."""
+    return isinstance(error, TransientError) and error.code in MEMORY_LIMIT_CODES
+
+
+def _memory_limit_error(operation: str, size: int, logger: Logger) -> GraphMemoryLimitError:
+    """The error for a bulk statement the memory pool refused. Logged here, once, so a
+    caller that logs and goes on cannot hide it."""
+    message = (
+        f"{operation} of {size:,} rows exceeded the graph server's transaction memory pool; "
+        "it was rolled back and is not retried. Raise NEO4J_HEAP_MAX (with NEO4J_MEMORY_LIMIT) "
+        "or write fewer rows at once"
+    )
+    logger.error("Neo4j memory limit: %s", message)
+    return GraphMemoryLimitError(message, operation=operation, size=size)
 
 
 def _report_neo4j_failure(error: BaseException) -> None:
@@ -48,6 +109,20 @@ def _report_neo4j_failure(error: BaseException) -> None:
         feedback.report_pool_exhausted("neo4j")
     elif isinstance(error, (ServiceUnavailable, SessionExpired)):
         feedback.report_unavailable("neo4j")
+
+
+def _driver_seconds(
+    logger: Logger, name: str, value: float, default: float, *, allow_zero: bool,
+) -> float:
+    """``value`` as a finite, non-negative driver duration, else ``default``."""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        seconds = math.nan
+    if math.isfinite(seconds) and (seconds > 0 or (allow_zero and seconds == 0)):
+        return seconds
+    logger.warning("Ignoring Neo4j %s=%r; falling back to %r", name, value, default)
+    return default
 
 
 class Neo4jClient:
@@ -67,7 +142,7 @@ class Neo4jClient:
         liveness_check_timeout: float = DEFAULT_LIVENESS_CHECK_TIMEOUT,
         stale_session_max_age: float = DEFAULT_STALE_SESSION_MAX_AGE,
         rebuild_cooldown: float = DEFAULT_REBUILD_COOLDOWN,
-        explicit_transactions: bool = False,
+        explicit_transactions: bool = True,
         honour_explicit_requests: bool = True,
         transaction_timeout: float = DEFAULT_TRANSACTION_TIMEOUT,
     ) -> None:
@@ -94,10 +169,11 @@ class Neo4jClient:
                 loop's driver
             explicit_transactions: open a real Neo4j transaction per
                 ``begin_transaction`` so ``abort_transaction`` rolls back.
-                Off by default: each query in a "transaction" is then its own
-                auto-commit, as it has always been, and an abort only closes
-                the session. Explicit transactions hold node locks until
-                commit, which changes contention on shared nodes.
+                On by default. Off, each query in a "transaction" is its own
+                auto-commit and an abort only closes the session. Explicit
+                transactions hold node locks until commit, so concurrent
+                writers on shared nodes can deadlock (the transaction helpers
+                re-run the block).
             honour_explicit_requests: let a caller ask for a real transaction
                 with ``begin_transaction(explicit=True)`` while
                 ``explicit_transactions`` is off. False is the kill switch:
@@ -112,8 +188,17 @@ class Neo4jClient:
         self.database = database
         self._max_connection_pool_size = max(1, int(max_connection_pool_size))
         self._connection_acquisition_timeout = float(connection_acquisition_timeout)
-        self._max_connection_lifetime = float(max_connection_lifetime)
-        self._liveness_check_timeout = float(liveness_check_timeout)
+        # Zero retires every connection before reuse, so each query would pay
+        # a fresh connect and TLS handshake; infinity never retires one.
+        self._max_connection_lifetime = _driver_seconds(
+            logger, "max_connection_lifetime", max_connection_lifetime,
+            DEFAULT_MAX_CONNECTION_LIFETIME, allow_zero=False,
+        )
+        # Zero is the driver's "check every time"; it rejects a negative value.
+        self._liveness_check_timeout = _driver_seconds(
+            logger, "liveness_check_timeout", liveness_check_timeout,
+            DEFAULT_LIVENESS_CHECK_TIMEOUT, allow_zero=True,
+        )
         self._stale_session_max_age = float(stale_session_max_age)
         self._rebuild_cooldown = float(rebuild_cooldown)
         self._explicit_transactions = bool(explicit_transactions)
@@ -138,6 +223,8 @@ class Neo4jClient:
         self._active_sessions: dict[str, Any] = {}  # Track active transaction sessions
         self._session_locks: dict[str, asyncio.Lock] = {}  # Lock per transaction to prevent concurrent access
         self._session_loops: dict[str, Any] = {}  # Loop each session was opened on
+        # A transaction that ran a bulk statement: (operation, rows), so a commit the memory pool refuses is named
+        self._bulk_in_txn: dict[str, tuple[str, int]] = {}
         self._session_started: dict[str, float] = {}  # monotonic start, for the stale reaper
         self._active_txs: dict[str, Any] = {}  # explicit transactions, when enabled
 
@@ -451,6 +538,7 @@ class Neo4jClient:
         self._session_locks.pop(txn_id, None)
         self._session_loops.pop(txn_id, None)
         self._session_started.pop(txn_id, None)
+        self._bulk_in_txn.pop(txn_id, None)
         self._active_txs.pop(txn_id, None)
 
     @property
@@ -511,15 +599,42 @@ class Neo4jClient:
 
         session = self._active_sessions[txn_id]
         tx = self._active_txs.get(txn_id)
-        try:
+        bulk = self._bulk_in_txn.get(txn_id)
+
+        async def commit() -> None:
             if tx is not None:
                 await tx.commit()
+
+        try:
+            await self._refusing_memory(commit, bulk)
             self.logger.debug(f"✅ Committed Neo4j transaction: {txn_id}")
         finally:
             try:
                 await session.close()
             finally:
                 self._forget_session(txn_id)
+
+    async def _refusing_memory(
+        self, run: Callable[[], Awaitable[_T]], bulk: tuple[str, int] | None,
+    ) -> _T:
+        """Run a statement; a bulk one the memory pool refuses fails as ``GraphMemoryLimitError``.
+
+        The error is raised after the handler has ended, so the driver's error is neither its
+        ``__cause__`` nor its ``__context__``: a retry loop that walks the chain (the push's
+        ``is_attempt_lost``) would take it for a transient failure and run it again.
+        Any other statement keeps the driver's error, and the retries around it.
+        """
+        try:
+            return await run()
+        except TransientError as e:
+            if not is_memory_limit(e):
+                raise
+            if bulk is None:
+                self.logger.warning(
+                    "Neo4j server transaction memory exhausted, possibly by a concurrent large write: %s", e
+                )
+                raise
+        raise _memory_limit_error(bulk[0], bulk[1], self.logger) from None
 
     async def abort_transaction(self, txn_id: str) -> None:
         """
@@ -556,6 +671,8 @@ class Neo4jClient:
         *,
         plain: bool = False,
         timeout: float | None = None,
+        bulk: str | None = None,
+        size: int = 0,
     ) -> list[dict[str, Any]]:
         """
         Execute a Cypher query with automatic reconnection on transient failures.
@@ -572,6 +689,11 @@ class Neo4jClient:
                 including one run on a transaction's session when explicit
                 transactions are off. Ignored inside an explicit transaction,
                 which has its own limit.
+            bulk: Names the operation of a statement that writes ``size`` rows at
+                once. If the server's transaction memory pool refuses it, it fails
+                as ``GraphMemoryLimitError`` and is not retried by anything above.
+                Leave it out for a statement a retry can help: the pool is shared,
+                and a small statement that lost it to a big one succeeds once that ends.
 
         Returns:
             List[Dict]: Query results as list of dictionaries
@@ -582,6 +704,7 @@ class Neo4jClient:
                 raise RuntimeError("Neo4j driver not connected")
 
         parameters = parameters or {}
+        marked = (bulk, size) if bulk else None
 
         if txn_id:
             # Use existing transaction session with lock to prevent concurrent access
@@ -598,15 +721,18 @@ class Neo4jClient:
             runner = tx if tx is not None else session
             statement = Query(query, timeout=timeout) if tx is None and timeout is not None else query
 
+            async def run() -> list[dict[str, Any]]:
+                # Serialize access to the session to prevent concurrent operations
+                async with lock or nullcontext():
+                    result = await runner.run(statement, parameters)
+                    return await self._rows(result, plain=plain)
+
+            if marked:
+                self._bulk_in_txn[txn_id] = marked
             try:
-                if lock:
-                    # Serialize access to the session to prevent concurrent operations
-                    async with lock:
-                        result = await runner.run(statement, parameters)
-                        return await self._rows(result, plain=plain)
-                # Fallback if lock doesn't exist (shouldn't happen)
-                result = await runner.run(statement, parameters)
-                return await self._rows(result, plain=plain)
+                # In an open transaction a conflict ended it: its owner runs it again.
+                once = tx is not None or COMMITS_IN_BATCHES.search(query)
+                return await self._refusing_memory(run if once else (lambda: _until_no_conflict(run)), marked)
             except (ClientError, ServiceUnavailable, SessionExpired) as e:
                 _report_neo4j_failure(e)
                 raise
@@ -615,7 +741,9 @@ class Neo4jClient:
             # catches most stale connections, but a race (connection dies
             # between check and use) can still occur.
             try:
-                return await self._run_autocommit(query, parameters, plain=plain, timeout=timeout)
+                return await self._run_autocommit(
+                    query, parameters, plain=plain, timeout=timeout, bulk=marked
+                )
             except (ServiceUnavailable, SessionExpired) as first:
                 # One dead connection is not a dead driver: the pool opens a
                 # fresh connection for the retry, so try that before doing
@@ -624,10 +752,14 @@ class Neo4jClient:
                     "Neo4j connection lost during query — retrying on the pool: %s", first
                 )
                 try:
-                    return await self._run_autocommit(query, parameters, plain=plain, timeout=timeout)
+                    return await self._run_autocommit(
+                        query, parameters, plain=plain, timeout=timeout, bulk=marked
+                    )
                 except (ServiceUnavailable, SessionExpired) as second:
                     await self._rebuild_driver_if_unreachable(second)
-                    return await self._run_autocommit(query, parameters, plain=plain, timeout=timeout)
+                    return await self._run_autocommit(
+                        query, parameters, plain=plain, timeout=timeout, bulk=marked
+                    )
 
     @staticmethod
     async def _rows(result: "AsyncResult", *, plain: bool) -> list[dict[str, Any]]:
@@ -638,12 +770,17 @@ class Neo4jClient:
 
     async def _run_autocommit(
         self, query: str, parameters: dict[str, Any], *, plain: bool = False, timeout: float | None = None,
+        bulk: tuple[str, int] | None = None,
     ) -> list[dict[str, Any]]:
-        try:
+        async def run() -> list[dict[str, Any]]:
             async with self.driver.session(database=self.database) as session:
                 statement = Query(query, timeout=timeout) if timeout is not None else query
                 result = await session.run(statement, parameters)
                 return await self._rows(result, plain=plain)
+
+        try:
+            once = COMMITS_IN_BATCHES.search(query)
+            return await self._refusing_memory(run if once else (lambda: _until_no_conflict(run)), bulk)
         except (ClientError, ServiceUnavailable, SessionExpired) as e:
             _report_neo4j_failure(e)
             raise

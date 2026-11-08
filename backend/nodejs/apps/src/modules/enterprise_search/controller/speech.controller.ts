@@ -204,7 +204,9 @@ export const synthesizeSpeech =
     try {
       const url = `${appConfig.aiBackend}/api/v1/chat/speak`;
       const requestConfig: AxiosRequestConfig = {
-        headers: buildForwardHeaders(req, { 'Content-Type': 'application/json' }),
+        headers: buildForwardHeaders(req, {
+          'Content-Type': 'application/json',
+        }),
         // Providers like OpenAI can take 10-30s for longer passages. Match
         // the 120s timeout the frontend hook uses so we don't pre-empt it.
         timeout: 120_000,
@@ -241,7 +243,10 @@ export const synthesizeSpeech =
       res.setHeader('Content-Type', contentType);
       res.setHeader('Cache-Control', 'no-store');
       if (response.headers['x-tts-provider']) {
-        res.setHeader('X-TTS-Provider', String(response.headers['x-tts-provider']));
+        res.setHeader(
+          'X-TTS-Provider',
+          String(response.headers['x-tts-provider']),
+        );
       }
       if (response.headers['x-tts-model']) {
         res.setHeader('X-TTS-Model', String(response.headers['x-tts-model']));
@@ -268,7 +273,9 @@ export const transcribeAudio =
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const file = (req as AuthenticatedUserRequest & { file?: Express.Multer.File }).file;
+      const file = (
+        req as AuthenticatedUserRequest & { file?: Express.Multer.File }
+      ).file;
       if (!file) {
         res.status(400).json({
           status: 'error',
@@ -282,7 +289,8 @@ export const transcribeAudio =
         filename: file.originalname || 'audio',
         contentType: file.mimetype || 'application/octet-stream',
       });
-      const language = typeof req.body?.language === 'string' ? req.body.language : undefined;
+      const language =
+        typeof req.body?.language === 'string' ? req.body.language : undefined;
       if (language) {
         form.append('language', language);
       }

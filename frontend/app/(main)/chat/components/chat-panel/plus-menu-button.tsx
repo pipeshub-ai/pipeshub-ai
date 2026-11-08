@@ -10,12 +10,10 @@ import { DEFAULT_AGENT_CAPABILITIES } from '@/chat/types';
 export function hasNonDefaultSearchCapabilities(
   internalSearch: boolean,
   webSearch: boolean,
-  deepResearch = false,
 ): boolean {
   return (
     internalSearch !== DEFAULT_AGENT_CAPABILITIES.internalSearch ||
-    webSearch !== DEFAULT_AGENT_CAPABILITIES.webSearch ||
-    (deepResearch && webSearch)
+    webSearch !== DEFAULT_AGENT_CAPABILITIES.webSearch
   );
 }
 
@@ -55,9 +53,6 @@ export interface PlusMenuCapabilities {
   webSearch: boolean;
   onToggleInternalSearch: (enabled: boolean) => void;
   onToggleWebSearch: (enabled: boolean) => void;
-  /** Research thoroughly on the web before answering; needs web search. Off when the toggle is absent. */
-  deepResearch?: boolean;
-  onToggleDeepResearch?: (enabled: boolean) => void;
   /**
    * `false` = the agent wasn't configured with this capability, so the toggle
    * is disabled. `undefined` = universal mode, capability always available.
@@ -159,8 +154,6 @@ export function PlusMenuContent({
   onToggleWebSearch,
   agentHasInternalSearch,
   agentHasWebSearch,
-  deepResearch = false,
-  onToggleDeepResearch,
 }: PlusMenuContentProps) {
   const { t } = useTranslation();
   const notConfiguredLabel = t('chat.agentCapabilities.notConfiguredOnAgent', {
@@ -181,30 +174,19 @@ export function PlusMenuContent({
       <Separator size="4" style={{ margin: 'var(--space-1) 0' }} />
 
       <PlusMenuToggleRow
-        label={t('chat.agentCapabilities.internalSearch', { defaultValue: 'Internal Search' })}
+        label={t('chat.agentCapabilities.internalSearch', { defaultValue: 'Internal search' })}
         checked={internalSearch}
         disabled={agentHasInternalSearch === false}
         disabledTooltip={notConfiguredLabel}
         onCheckedChange={onToggleInternalSearch}
       />
       <PlusMenuToggleRow
-        label={t('chat.agentCapabilities.webSearch', { defaultValue: 'Web Search' })}
+        label={t('chat.agentCapabilities.webSearch', { defaultValue: 'Web search' })}
         checked={webSearch}
         disabled={agentHasWebSearch === false}
         disabledTooltip={notConfiguredLabel}
         onCheckedChange={onToggleWebSearch}
       />
-      {onToggleDeepResearch && (
-        <PlusMenuToggleRow
-          label={t('chat.agentCapabilities.deepResearch', { defaultValue: 'Deep research' })}
-          checked={deepResearch}
-          disabled={!webSearch || agentHasWebSearch === false}
-          disabledTooltip={t('chat.agentCapabilities.deepResearchNeedsWebSearch', {
-            defaultValue: 'Turn on web search to use deep research',
-          })}
-          onCheckedChange={onToggleDeepResearch}
-        />
-      )}
     </Flex>
   );
 }
@@ -234,7 +216,6 @@ export function PlusMenuButton({
   const showFilterBadge = hasNonDefaultSearchCapabilities(
     capabilities.internalSearch,
     capabilities.webSearch,
-    capabilities.onToggleDeepResearch ? capabilities.deepResearch : false,
   );
   return (
     <Popover.Root open={open} onOpenChange={onOpenChange}>
@@ -243,6 +224,7 @@ export function PlusMenuButton({
           variant="ghost"
           color="gray"
           size="2"
+          className="touch-size"
           disabled={disabled}
           aria-label={
             showFilterBadge
@@ -278,9 +260,13 @@ export function PlusMenuButton({
         style={{
           width: 216,
           padding: 6,
-          backgroundColor: 'var(--color-panel-solid)',
-          borderRadius: 'var(--radius-3)',
-          boxShadow: 'var(--shadow-4)',
+          // Same surface as the settings row menus: frosted, one olive-3 border, no ring shadow
+          backgroundColor: 'var(--frost-bg-strong)',
+          backdropFilter: 'var(--frost-filter)',
+          WebkitBackdropFilter: 'var(--frost-filter)',
+          border: '1px solid var(--olive-3)',
+          borderRadius: 'var(--radius-1)',
+          boxShadow: 'none',
         }}
       >
         <PlusMenuContent

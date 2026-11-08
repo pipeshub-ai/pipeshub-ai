@@ -48,6 +48,8 @@ _ERROR_CODE_STATUS: dict[str, int] = {
     "mcp_server_config_missing": 424,
     "rate_limit": 429,
     "quota_exceeded": 429,
+    "budget_exceeded": 429,
+    "model_access_denied": 403,
     "server_error": 502,
     "timeout": 504,
     "client_disconnected": 499,

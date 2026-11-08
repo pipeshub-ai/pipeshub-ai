@@ -247,8 +247,8 @@ class TestFlattenedResultsBlockKinds:
         assert len(multimodal) == 2
         text_only, _ = await flatten(store, [hit("v1", 0, content=PNG)], vmap)
         assert text_only == []
-        placeholders, _ = await flatten(store, [hit("v1", 0), hit("v1", 1)], vmap, from_retrieval_service=True)
-        assert [r["content"] for r in placeholders] == ["image_0", "image_1"]
+        searched, _ = await flatten(store, [hit("v1", 0), hit("v1", 1)], vmap, from_retrieval_service=True)
+        assert [r["content"] for r in searched] == ["a bar chart", "logo"]
 
     def _table_record(self, num_cells: int | None) -> dict:
         rows = [{"index": i, "type": "table_row", "parent_index": 0,

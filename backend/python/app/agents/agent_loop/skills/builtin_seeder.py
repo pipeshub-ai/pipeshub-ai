@@ -90,7 +90,7 @@ class BuiltinSkillSeeder:
             for skill in self._packs
         }
 
-    async def sync(self, store: "GraphSkillStore") -> None:
+    async def sync(self, store: "GraphSkillStore") -> bool:
         """Idempotent by construction: `create_skill`/`update_skill` are
         upserts keyed by `{org_id}_{name}` (`graph_store.py`'s org-isolation
         tests already cover this), so concurrent seed attempts from
@@ -99,25 +99,31 @@ class BuiltinSkillSeeder:
         snapshot in `agentSkillVersions`, and is audit-logged by
         `AuditGovernor` when it's layered on top — builtin skills are
         first-class citizens of the versioning/governance machinery
-        already built, not a special case."""
+        already built, not a special case.
+
+        Returns whether every pack is settled: written at its current
+        version, or left alone because the org edited it. A write that
+        failed is logged and returns False, so a caller can retry."""
         existing = {
             m.name: m
             for m in await store.list_skills(SkillFilter(source=SkillSource.BUILTIN))
         }
+        settled = True
         for skill in self._packs:
             current = existing.get(skill.metadata.name)
             if current is None:
-                await self._create(store, skill)
+                settled = await self._create(store, skill) and settled
             elif current.pack_version != skill.metadata.pack_version:
-                await self._maybe_upgrade(store, skill, current)
+                settled = await self._maybe_upgrade(store, skill, current) and settled
             # else: already at the current pack version — nothing to do.
+        return settled
 
     def _pack_resources(self, skill: Skill) -> dict[str, str]:
         """Pack file contents loaded once in `__init__` — `sync` must not
         re-read the tree on the event loop."""
         return dict(self._resources.get(skill.metadata.name, {}))
 
-    async def _create(self, store: "GraphSkillStore", skill: Skill) -> None:
+    async def _create(self, store: "GraphSkillStore", skill: Skill) -> bool:
         try:
             await store.create_skill(
                 skill.metadata.name, render_skill_md(skill),
@@ -125,16 +131,18 @@ class BuiltinSkillSeeder:
                 resources=self._pack_resources(skill),
             )
             logger.info("builtin_seeder: seeded %r (pack v%s)", skill.metadata.name, skill.metadata.pack_version)
+            return True
         except Exception:
             logger.exception("builtin_seeder: failed to seed builtin skill %r", skill.metadata.name)
+            return False
 
-    async def _maybe_upgrade(self, store: "GraphSkillStore", skill: Skill, current: SkillMetadata) -> None:
+    async def _maybe_upgrade(self, store: "GraphSkillStore", skill: Skill, current: SkillMetadata) -> bool:
         if not await self._is_unmodified(store, skill.metadata.name):
             logger.info(
                 "builtin_seeder: %r has org edits (pack v%s -> v%s available) — skipping auto-upgrade",
                 skill.metadata.name, current.pack_version, skill.metadata.pack_version,
             )
-            return
+            return True
         try:
             expected = int(current.updated_at) if current.updated_at is not None else None
             await store.update_skill(
@@ -148,6 +156,7 @@ class BuiltinSkillSeeder:
                 "builtin_seeder: upgraded %r from pack v%s to v%s",
                 skill.metadata.name, current.pack_version, skill.metadata.pack_version,
             )
+            return True
         except SkillConflictError:
             logger.info(
                 "builtin_seeder: %r changed during upgrade (pack v%s -> v%s) — skipping",
@@ -155,6 +164,7 @@ class BuiltinSkillSeeder:
             )
         except Exception:
             logger.exception("builtin_seeder: failed to upgrade builtin skill %r", skill.metadata.name)
+        return False
 
     async def _is_unmodified(self, store: "GraphSkillStore", name: str) -> bool:
         provenance = await store.get_provenance(name)

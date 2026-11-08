@@ -3,18 +3,24 @@ import {
   IMessageConsumer,
   StreamMessage,
 } from '../../../libs/types/messaging.types';
+import {
+  getCurrentOrgId,
+  makeOrgContext,
+  runWithOrgContext,
+} from '../../../libs/context/orgContext';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   NotificationProducer,
   EventType as NotificationEventType,
 } from '../../notification/service/notification.producer';
-import { INotification } from '../../notification/schema/notification.schema';
+import type { NotificationEventPayload } from '../../notification/service/notification.producer';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { newAccountPasswordLink } from '../../../libs/utils/createJwt';
-import { MailBody } from '../middlewares/types';
+import { MailBody, SmtpConfig } from '../middlewares/types';
 import {
   MailSenderService,
   SMTP_SEND_DEADLINE_MS,
+  SmtpSettingsUnreadableError,
 } from './mail.sender.service';
 import {
   MAIL_MESSAGE_BUDGET_MS,
@@ -115,12 +121,49 @@ export class MailConsumer {
     });
   }
 
-  private async deliver(payload: MailEventPayload): Promise<void> {
-    const smtpConfig = await this.sender.getSmtpConfig(payload.orgId);
-    if (!smtpConfig) {
-      // Not retryable until an admin configures SMTP.
-      this.logger.error('Mail event dropped: SMTP configuration not set');
-      await this.notifyFailure(payload, 'SMTP configuration not set');
+  /**
+   * Runs the delivery inside the event's org. A signed envelope already bound it; an unsigned job carries only the
+   * `orgId` the producer took from the inviting user's verified request, so that is bound here (the audit write needs it).
+   */
+  private deliver(payload: MailEventPayload): Promise<void> {
+    const orgId = payload.orgId;
+    if (getCurrentOrgId() !== undefined || orgId === undefined || orgId === '')
+      return this.deliverInOrg(payload);
+    return runWithOrgContext(
+      makeOrgContext({
+        orgId,
+        userId: null,
+        kind: 'service',
+        source: 'legacy-payload',
+      }),
+      () => this.deliverInOrg(payload),
+    );
+  }
+
+  /** `undefined` when the stored settings could not be read: retried, unlike `null`. */
+  private async resolveSmtpConfig(
+    orgId: string | undefined,
+  ): Promise<SmtpConfig | null | undefined> {
+    try {
+      return await this.sender.getSmtpConfig(orgId);
+    } catch (error) {
+      if (error instanceof SmtpSettingsUnreadableError) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  private async dropUnconfigured(payload: MailEventPayload): Promise<void> {
+    // Not retryable until an admin configures SMTP.
+    this.logger.error('Mail event dropped: SMTP configuration not set');
+    await this.notifyFailure(payload, 'SMTP configuration not set');
+  }
+
+  private async deliverInOrg(payload: MailEventPayload): Promise<void> {
+    let smtpConfig = await this.resolveSmtpConfig(payload.orgId);
+    if (smtpConfig === null) {
+      await this.dropUnconfigured(payload);
       return;
     }
 
@@ -141,11 +184,21 @@ export class MailConsumer {
 
     while (attempt < MAX_ATTEMPTS) {
       attempt += 1;
-      const result: MailSendResult = await this.sender.send(
-        mail,
-        smtpConfig,
-        Math.min(SMTP_SEND_DEADLINE_MS, giveUpAt - Date.now()),
-      );
+      if (smtpConfig === undefined) {
+        smtpConfig = await this.resolveSmtpConfig(payload.orgId);
+        if (smtpConfig === null) {
+          await this.dropUnconfigured(payload);
+          return;
+        }
+      }
+      const result: MailSendResult =
+        smtpConfig === undefined
+          ? { status: 'transient', error: 'Could not read the SMTP settings' }
+          : await this.sender.send(
+              mail,
+              smtpConfig,
+              Math.min(SMTP_SEND_DEADLINE_MS, giveUpAt - Date.now()),
+            );
 
       if (result.status === 'sent') {
         this.logger.info('Mail sent', {
@@ -334,7 +387,7 @@ export class MailConsumer {
             error: details.error,
             suppressedFailures: details.suppressedFailures,
           },
-        } as unknown as INotification,
+        } as unknown as NotificationEventPayload,
       });
     } catch (publishError) {
       this.logger.error('Failed to publish mail failure notification', {

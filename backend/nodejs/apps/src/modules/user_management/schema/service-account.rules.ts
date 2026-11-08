@@ -156,24 +156,19 @@ async function refuseReservedEmailDomainOnPeople(
 export function applyServiceAccountRules<T extends ServiceAccountRuleFields>(
   schema: Schema<T>,
 ): void {
-  schema.pre<Document & ServiceAccountRuleFields>('save', function (next) {
-    try {
-      assertServiceAccountRole(this.kind, this.role);
-      // Only when this save is what puts the address there. Judging the
-      // document's current state instead would refuse every later write to a
-      // person who already holds a reserved address — and one can, because
-      // nothing stopped it before this rule existed. `deleteUser` pulls group
-      // memberships, revokes OAuth apps and knowledge-base permissions, removes
-      // project access and unsets the password before it saves `isDeleted`, so a
-      // throw at that save would leave the account stripped of everything and
-      // still active, with no way back: changing an address is owner-only, and
-      // deleting is the documented repair for a bad invite.
-      if (this.isNew || this.isModified('email') || this.isModified('kind')) {
-        assertReservedEmailDomainBelongsToServiceAccount(this.kind, this.email);
-      }
-      next();
-    } catch (error) {
-      next(error as Error);
+  schema.pre<Document & ServiceAccountRuleFields>('save', function () {
+    assertServiceAccountRole(this.kind, this.role);
+    // Only when this save is what puts the address there. Judging the
+    // document's current state instead would refuse every later write to a
+    // person who already holds a reserved address — and one can, because
+    // nothing stopped it before this rule existed. `deleteUser` pulls group
+    // memberships, revokes OAuth apps and knowledge-base permissions, removes
+    // project access and unsets the password before it saves `isDeleted`, so a
+    // throw at that save would leave the account stripped of everything and
+    // still active, with no way back: changing an address is owner-only, and
+    // deleting is the documented repair for a bad invite.
+    if (this.isNew || this.isModified('email') || this.isModified('kind')) {
+      assertReservedEmailDomainBelongsToServiceAccount(this.kind, this.email);
     }
   });
   schema.pre('findOneAndUpdate', refuseAdminRoleOnServiceAccount);

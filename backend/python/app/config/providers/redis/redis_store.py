@@ -7,12 +7,16 @@ import uuid
 from typing import TYPE_CHECKING, Callable, Generic, List, Optional, TypeVar
 
 from app.config.key_value_store import KeyValueStore
+from app.core.org_context import spawn_detached
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
-    from app.services.redis.connection_provider import IRedisConnectionProvider, RedisClient
+    from app.services.redis.connection_provider import (
+        IRedisConnectionProvider,
+        RedisClient,
+    )
 
 logger = create_logger("redis_store")
 
@@ -623,7 +627,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
             logger.debug("Pub/Sub listener loop exited")
 
-        task = asyncio.create_task(_listen_with_retry())
+        task = spawn_detached(_listen_with_retry())
         self._pubsub_task = task
         return task
 

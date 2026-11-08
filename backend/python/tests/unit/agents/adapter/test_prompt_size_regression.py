@@ -119,8 +119,10 @@ _MID_CHAR_CEILINGS: dict[str, int] = {
     # Code knowledge graph fixtures: these carry the gated "Navigating Code"
     # section, which only renders when a codegraph tool is callable, so they
     # sit above the rest. Measured 16,891 / 14,488 on main → ~7% / ~5% headroom.
-    "lazy_with_bound_codegraph":      18_100,
-    "lazy_with_pinned_and_codegraph": 15_200,
+    # The find_records_by_person routing line (+153 chars) took them to
+    # 18,026 / 15,205; the other knowledge fixtures still fit their ceilings.
+    "lazy_with_bound_codegraph":      18_600,
+    "lazy_with_pinned_and_codegraph": 15_700,
     "kb_with_calculator":   14_550,
     "lazy_with_calculator": 16_700,
 }
@@ -146,9 +148,14 @@ _MID_CHAR_CEILINGS: dict[str, int] = {
 #   kb_with_full_record:  11,133 → 12,250
 #   kb_with_calculator:   10,644 → 11,700
 #   lazy_with_calculator: 12,571 → 13,850
+#
+# The context-note rule (stable band) and the verbatim current-request anchor
+# (turn band) add ~140 chars to every prompt; the two tightest ceilings moved:
+#   no_sources:            5,063 →  5,200
+#   service_only:          6,003 →  6,150
 # ---------------------------------------------------------------------------
 _FRONTIER_CHAR_CEILINGS: dict[str, int] = {
-    "no_sources":            5_050,
+    "no_sources":            5_200,
     "kb_only":              11_050,
     "kb_plus_3_apps":       11_250,
     "duplicate_apps":       11_300,
@@ -156,12 +163,13 @@ _FRONTIER_CHAR_CEILINGS: dict[str, int] = {
     "kb_plus_service_tools": 11_750,
     "run_code_no_web":       6_350,
     "composed_agents":      12_050,
-    "service_only":          5_900,
+    "service_only":          6_150,
     "lazy_with_pinned":     13_100,
     "kb_with_full_record":  12_250,
-    # Both measured 11,894 on main (no worked traces, same gated section) → ~4%.
-    "lazy_with_bound_codegraph":      12_350,
-    "lazy_with_pinned_and_codegraph": 12_350,
+    # Both measured 11,894 on main (no worked traces, same gated section) → ~4%;
+    # 12,467 with the find_records_by_person routing line → ~3%.
+    "lazy_with_bound_codegraph":      12_850,
+    "lazy_with_pinned_and_codegraph": 12_850,
     "kb_with_calculator":   11_700,
     "lazy_with_calculator": 13_850,
 }

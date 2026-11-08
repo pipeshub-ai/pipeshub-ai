@@ -1,6 +1,7 @@
 import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from enum import Enum
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, JsonValue
 
@@ -15,6 +16,7 @@ class MessageBrokerType(str, Enum):
 
     KAFKA = "kafka"
     REDIS = "redis"
+    POSTGRES = "postgres"
 
 
 class ConsumerType(str, Enum):
@@ -28,6 +30,9 @@ class Topic(str, Enum):
     """Well-known messaging topics."""
 
     RECORD_EVENTS = "record-events"
+    # Record names, published by connectors so a record is findable by name before it is indexed.
+    RECORD_TITLE_EVENTS = "record-title-events"
+    RECORD_EVENTS_PRIORITY = "record-events-priority"
     CODE_GRAPH_EVENTS = "code-graph-events"
     ENTITY_EVENTS = "entity-events"
     AI_CONFIG_EVENTS = "ai-config-events"
@@ -48,6 +53,9 @@ _LEGACY_DEFAULT_MAX_CONCURRENT_INDEXING = 7
 class IndexingEvent(str, Enum):
     """Events emitted during the indexing pipeline."""
 
+    # Handler is about to download a record of known size; its memory is
+    # reserved first, so a record waiting for memory holds no content.
+    START_DOWNLOAD = "start_download"
     # Handler has written IN_PROGRESS and needs the nested parse slot.
     START_PARSING = "start_parsing"
     PARSING_COMPLETE = "parsing_complete"
@@ -68,6 +76,10 @@ class StreamMessage(BaseModel):
     timestamp: int | None = None
     # Trace id propagated from the producer; optional so legacy messages parse.
     requestId: str | None = None
+    # Org propagated from the producer for log attribution only (unsigned; never an authority).
+    orgId: str | None = None
+    # Verified (or fallback) org of the message; set by the consumer's envelope wrapper, never serialised.
+    org_ctx: Any = Field(default=None, exclude=True)
     is_final_failure: bool | None = None  # Set by consumer: True = will commit/dead-letter, False = will retry
 
 
@@ -122,6 +134,10 @@ class MessagingEnvConfig:
             raise ValueError(  # noqa: B904
                 f"Unsupported MESSAGE_BROKER type: {raw}. Must be one of {valid}."
             )
+
+    @property
+    def redis_streams_retention_mode(self) -> str:
+        return os.getenv("REDIS_STREAMS_RETENTION_MODE", "after_ack").strip().lower()
 
     @property
     def redis_streams_maxlen(self) -> int:
@@ -194,13 +210,11 @@ class MessagingEnvConfig:
     def record_lease_wait_seconds(self) -> float:
         """Bounded wait for the per-record lease before giving up.
 
-        This lease is only contended by *duplicate* in-flight deliveries of
-        the same record (a different, unrelated record never competes for
-        it), and the task already holds an outer indexing slot/semaphore
-        while waiting. An unbounded wait here convoys the whole pipeline if
-        several duplicates of one record arrive together; a short bounded
-        wait is enough since whoever already holds the lease is actively
-        processing that same record.
+        Only work on the same record competes for this lease (a duplicate
+        delivery, a pipeline stage, a retention sweep), and the task already
+        holds an outer indexing slot/semaphore while waiting. An unbounded wait
+        here convoys the whole pipeline if several events of one record arrive
+        together, so a delivery that waits this long is handed back instead.
         """
         return _env_seconds("INDEXING_RECORD_LEASE_WAIT_SECONDS", 10.0)
 
@@ -288,6 +302,18 @@ class MessagingEnvConfig:
         same ceiling faster.
         """
         return int(os.getenv("MESSAGE_BATCH_SIZE_INDEXING", "10"))
+
+    @property
+    def record_title_batch_size(self) -> int:
+        """Record names written per entity-index write by the title consumer."""
+        size = _env_int("RECORD_TITLE_BATCH_SIZE", 100)
+        return size if size >= 1 else 100
+
+    @property
+    def record_title_flush_seconds(self) -> float:
+        """How long a partial batch of record names waits for more before it is written."""
+        seconds = _env_seconds("RECORD_TITLE_FLUSH_SECONDS", 2.0)
+        return seconds if seconds >= 0.1 else 2.0
 
     @property
     def message_timeout_ms(self) -> int:
@@ -396,6 +422,27 @@ class MessagingEnvConfig:
         return _env_seconds("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", 3600.0)
 
     @property
+    def revision_retention_grace_seconds(self) -> float:
+        """How old an artifact-set revision or a revision's stage states must be before the
+        retention sweep may remove them, once nothing points at or is on that revision.
+
+        Covers a revision being written or flipped to while the sweep reads, and a
+        record moving back to earlier content. Zero turns the sweep off (see
+        ``app/modules/artifacts/retention.py``).
+        """
+        return _env_seconds("REVISION_RETENTION_GRACE_SECONDS", 24 * 3600.0)
+
+    @property
+    def revision_retention_tick_budget_seconds(self) -> float:
+        """Wall-clock time one recovery pass may spend retiring revisions.
+
+        The pass runs inline in the recovery loop (60 s interval), so slow storage
+        must not hold up stale-record recovery behind it; the walk resumes where
+        the budget stopped it. 0 or less is unbounded.
+        """
+        return _env_seconds("REVISION_RETENTION_TICK_BUDGET_SECONDS", 20.0)
+
+    @property
     def rate_limit_defer_max_seconds(self) -> float:
         """How long a record may wait in total on its source's rate limit.
 
@@ -403,7 +450,9 @@ class MessagingEnvConfig:
         back in line until then, and the stranded sweep re-sends it (see
         ``app/modules/indexing/rate_limit_deferral.py``). Counted from the first
         such wait; a limit that would carry the record past this ends it FAILED
-        instead. Zero turns deferral off, as does a disabled stranded sweep,
+        instead, unless the connector's other records were indexed meanwhile,
+        which means the record is only waiting its turn and its count starts
+        again. Zero turns deferral off, as does a disabled stranded sweep,
         which is what re-sends the record.
         """
         return _env_seconds("INDEXING_RATE_LIMIT_MAX_DEFER_SECONDS", 24 * 3600.0)
@@ -426,17 +475,15 @@ class MessagingEnvConfig:
 
     @property
     def redis_max_deliveries(self) -> int:
-        """Delivery-count ceiling for the Redis dead-letter backstop.
+        """How many times a message may be handed back without an attempt
+        (``RequeueWithoutAttempt``), and stale recovery may hand a record back.
 
         Distinct from ``max_delivery_attempts``, which counts *processing
-        failures*. Redis's ``times_delivered`` counts every delivery: the
-        first read, a claim after a restart, an idle-drain recovery pass. A
-        record delivered three times may have failed zero times, so sharing
-        one threshold dead-letters healthy work — especially with fair
-        scheduling, where an entry legitimately sits un-ACKed while it waits
-        its turn. The backstop only needs to bound a true poison loop that
-        kills the process before the failure counter can be written (#2992),
-        so it is deliberately slack.
+        failures*. Without a retry tracker it is also the Redis dead-letter
+        backstop on ``times_delivered`` (#2992). With one, a record that kills
+        the process is bounded by its unfinished attempts instead
+        (``consumer_concurrency.MAX_UNFINISHED_ATTEMPTS``): ``times_delivered``
+        also counts every claim after a restart, of entries that never ran.
         """
         return max(
             self.max_delivery_attempts + 1,
@@ -537,7 +584,25 @@ class MessagingEnvConfig:
         Redis Streams this is the actual number of ``record-events.N``
         streams and must match on producers and consumers.
         """
+        if os.getenv("MESSAGE_BROKER", "").strip().lower() == MessageBrokerType.POSTGRES.value:
+            # The PostgreSQL queue orders deliveries of one message key. A lane key (the connector) as that key made every record of a
+            # connector wait for the one before it; with no lanes the key is the record, and records index side by side.
+            return 1
         return max(1, _env_int("FAIR_SCHEDULING_LANE_COUNT", 8))
+
+    @property
+    def indexing_consume_lanes(self) -> frozenset[int] | None:
+        """The ``record-events`` lanes this indexing replica reads, from
+        ``INDEXING_CONSUME_LANES`` (e.g. ``0-5`` or ``6,7``); None, the
+        default, means every lane.
+
+        Redis Streams only. Run replicas with disjoint sets to give the
+        connectors placed on some lanes indexing capacity of their own; every
+        lane must be read by some replica. A malformed value stops startup
+        rather than quietly reading every lane.
+        """
+        raw = os.getenv("INDEXING_CONSUME_LANES", "").strip()
+        return parse_lane_set(raw) if raw else None
 
     @property
     def fair_scheduling_lane_assignment(self) -> str:
@@ -632,8 +697,43 @@ class MessagingEnvConfig:
         handler one by one, as before. ``0`` turns read-time settling off."""
         return _env_seconds("INDEXING_CONNECTOR_STATE_REFRESH_SECONDS", 15.0)
 
+    @property
+    def priority_lane_heavy_limit(self) -> int:
+        """Heavy-tier records the priority consumer (``record-events-priority``) runs at once,
+        per worker process. Small next to the normal pools: the lane exists to read a record
+        now, not to index faster. It also bounds the lane's heavy parses."""
+        return max(1, _env_int("PRIORITY_LANE_HEAVY_LIMIT", 1))
+
+    @property
+    def priority_lane_light_limit(self) -> int:
+        """Light-tier records the priority consumer runs at once, per worker process."""
+        return max(1, _env_int("PRIORITY_LANE_LIGHT_LIMIT", 3))
+
 
 messaging_env = MessagingEnvConfig()
+
+
+# Far above any lane count in use; it only stops a typo such as "0-1000000000"
+# from expanding into a set that exhausts memory before the range check.
+MAX_LANE = 4095
+
+
+def parse_lane_set(raw: str) -> frozenset[int]:
+    """``"0-5,7"`` -> {0, 1, 2, 3, 4, 5, 7}. Raises ValueError on anything else."""
+    lanes: set[int] = set()
+    for part in raw.split(","):
+        first, sep, last = part.strip().partition("-")
+        try:
+            low = int(first)
+            high = int(last) if sep else low
+        except ValueError:
+            raise ValueError(f"Not a lane or lane range: {part.strip()!r} in {raw!r}") from None
+        if low < 0 or high < low:
+            raise ValueError(f"Not a lane or lane range: {part.strip()!r} in {raw!r}")
+        if high > MAX_LANE:
+            raise ValueError(f"Lane {high} in {raw!r} is outside 0..{MAX_LANE}")
+        lanes.update(range(low, high + 1))
+    return frozenset(lanes)
 
 
 def get_message_broker_type() -> MessageBrokerType:
@@ -681,7 +781,15 @@ class RedisConfig(BaseModel):
 class RedisStreamsConfig(RedisConfig):
     """Redis Streams configuration (extends RedisConfig)."""
 
-    max_len: int = Field(default=500000, description="Max stream length for XADD")
+    retention_mode: Literal["after_ack", "maxlen"] = Field(
+        default="after_ack",
+        description=(
+            "after_ack: streams are only trimmed below what every consumer group has "
+            "finished with (see redis_streams/retention.py). maxlen: legacy producer-side "
+            "XADD MAXLEN, which drops unconsumed events once a stream exceeds max_len."
+        ),
+    )
+    max_len: int = Field(default=500000, description="Max stream length: caps streams with no consumer group; with retention_mode maxlen it caps every stream via XADD and drops unconsumed events")
     block_ms: int = Field(default=2000, description="XREADGROUP block timeout in ms")
     batch_size: int = Field(
         default=1,

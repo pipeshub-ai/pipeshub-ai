@@ -1,4 +1,6 @@
 import mongoose, { Document, Schema, Model, Types } from 'mongoose'
+import { KnowledgeLimit } from '../types/oauth.types';
+import { knowledgeLimitField } from './knowledge_limit.schema';
 
 export interface IOAuthRefreshToken extends Document {
   tokenHash: string
@@ -13,6 +15,10 @@ export interface IOAuthRefreshToken extends Document {
   revokedReason?: string
   rotationCount: number
   previousTokenHash?: string
+  /** The limit the user agreed to, which each refresh carries forward.
+   * `null` is no limit; absent marks a token issued before this was stored,
+   * which a refresh gives the app's current limit. */
+  knowledgeLimit?: KnowledgeLimit | null;
   createdAt: Date
 }
 
@@ -51,6 +57,7 @@ const OAuthRefreshTokenSchema = new Schema<IOAuthRefreshToken>(
     revokedReason: { type: String },
     rotationCount: { type: Number, default: 0 },
     previousTokenHash: { type: String },
+    knowledgeLimit: knowledgeLimitField,
   },
   { timestamps: true },
 )

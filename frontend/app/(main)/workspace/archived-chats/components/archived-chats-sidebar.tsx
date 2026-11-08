@@ -3,6 +3,7 @@
 import React, { useMemo, useState } from 'react';
 import { Flex, Box, Text, DropdownMenu } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
+import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SidebarItem } from '@/chat/sidebar/sidebar-item';
 import {
@@ -42,6 +43,8 @@ interface ArchivedChatsSidebarProps {
   onLoadMoreAgentGroups: () => void;
   // Post-action callbacks (called after successful API response)
   onRestored: (conversationId: string, agentKey: string | null) => void;
+  /** Fill the container instead of the fixed sidebar width (phone list view). */
+  fullWidth?: boolean;
   onDeleted: (conversationId: string, agentKey: string | null) => void;
 }
 
@@ -65,7 +68,8 @@ function ArchivedChatItemMenu({
   const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const [isMeatballHovered, setIsMeatballHovered] = useState(false);
-  const visible = isParentHovered || isOpen;
+  const canHover = useCanHover();
+  const visible = isParentHovered || isOpen || !canHover;
 
   const handleOpenChange = (open: boolean) => {
     setIsOpen(open);
@@ -79,6 +83,7 @@ function ArchivedChatItemMenu({
       <DropdownMenu.Trigger>
         <button
           type="button"
+          className="touch-hit"
           onMouseEnter={() => setIsMeatballHovered(true)}
           onMouseLeave={() => setIsMeatballHovered(false)}
           onClick={(e) => {
@@ -375,9 +380,11 @@ export function ArchivedChatsSidebar({
   onLoadMoreAgentGroups,
   onRestored,
   onDeleted,
+  fullWidth,
 }: ArchivedChatsSidebarProps) {
   const { t } = useTranslation();
   const modKey = useMemo(() => getModifierSymbol(), []);
+  const canHover = useCanHover();
   const addToast = useToastStore((s) => s.addToast);
 
   const hasNormal = conversations.length > 0;
@@ -446,7 +453,7 @@ export function ArchivedChatsSidebar({
     <Flex
       direction="column"
       style={{
-        width: `${SIDEBAR_WIDTH}px`,
+        width: fullWidth ? '100%' : `${SIDEBAR_WIDTH}px`,
         flexShrink: 0,
         height: '100%',
         borderRight: '1px solid var(--olive-3)',
@@ -463,6 +470,8 @@ export function ArchivedChatsSidebar({
           display: 'flex',
           alignItems: 'center',
           padding: '0 var(--space-4)',
+          // Full width means phone, where the floating menu button sits at the top left.
+          paddingInlineStart: fullWidth ? 56 : undefined,
           backgroundColor: 'var(--olive-1)',
         }}
       >
@@ -477,7 +486,7 @@ export function ArchivedChatsSidebar({
           icon={<MaterialIcon name="search" size={ICON_SIZE_DEFAULT} />}
           label={t('nav.searchChats')}
           onClick={onSearchClick}
-          rightSlot={<KbdBadge>{modKey}+K</KbdBadge>}
+          rightSlot={canHover ? <KbdBadge>{modKey}+K</KbdBadge> : undefined}
         />
       </Box>
 

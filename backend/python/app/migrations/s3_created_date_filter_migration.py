@@ -13,6 +13,8 @@ from typing import Any
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_context import for_org, system
+from app.services.graph_db.common.utils import org_id_from_app_edge
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 MIGRATION_FLAG_KEY = "/migrations/s3_created_date_filter_v1"
@@ -90,9 +92,10 @@ async def run_s3_created_date_filter_migration(
     migrated = failures = 0
     for connector_type in CONNECTOR_TYPES:
         try:
-            apps = await graph_provider.get_nodes_by_filters(
-                CollectionNames.APPS.value, {"type": connector_type}, raise_on_error=True
-            )
+            with system("s3_created_date_filter_migration"):
+                apps = await graph_provider.get_nodes_by_filters(
+                    CollectionNames.APPS.value, {"type": connector_type}, raise_on_error=True
+                )
         except Exception as e:
             logger.error(f"S3 created date filter migration: could not list the {connector_type} connectors: {e}")
             failures += 1
@@ -100,7 +103,17 @@ async def run_s3_created_date_filter_migration(
         for app in apps:
             connector_id = app.get("_key") or app.get("id")
             try:
-                migrated += await _migrate_connector(config_service, connector_id, logger)
+                # Apps saved before they stored ``orgId`` have their org only on the org-app edge.
+                with system("s3_created_date_filter_migration"):
+                    org_id = app.get("orgId") or await org_id_from_app_edge(
+                        graph_provider, connector_id, raise_on_error=True
+                    )
+                if not org_id:
+                    # No org owns it, so no org's settings can be read for it; it does not hold the flag back.
+                    logger.warning(f"S3 created date filter migration: connector {connector_id} has no org; skipped")
+                    continue
+                with for_org(org_id, job="s3_created_date_filter_migration"):
+                    migrated += await _migrate_connector(config_service, connector_id, logger)
             except Exception as e:
                 failures += 1
                 logger.error(f"S3 created date filter migration: connector {connector_id} failed: {e}")

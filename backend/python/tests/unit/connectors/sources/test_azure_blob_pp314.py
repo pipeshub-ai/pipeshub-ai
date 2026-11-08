@@ -15,6 +15,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -33,6 +34,12 @@ PUBLIC = f"DefaultEndpointsProtocol=https;AccountName=acct;AccountKey={KEY};Endp
 CHINA = f"DefaultEndpointsProtocol=https;AccountName=acct;AccountKey={KEY};EndpointSuffix=core.chinacloudapi.cn"
 AZURITE = f"DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey={KEY};BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
 SAS_ONLY = "BlobEndpoint=https://acct.blob.core.windows.net/;SharedAccessSignature=sv=2022-11-02&ss=b&srt=co&sp=rl&sig=abc"
+
+
+@pytest.fixture(autouse=True)
+def _address_check_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The address check has its own tests (test_connector_address_rule.py); these hosts are made up.
+    monkeypatch.setattr("app.sources.client.azure.azure_blob.check_url_allowed", lambda *_a, **_k: None)
 
 
 def data_source(connection_string: str) -> AzureBlobDataSource:
@@ -268,12 +275,14 @@ class TestConnectionTest:
     @pytest.mark.asyncio
     async def test_it_fails_when_no_download_link_can_be_made(self) -> None:
         c = self.wired(sign_ok=False)
-        assert not await c.test_connection_and_access()
+        with pytest.raises(ConnectorInitError, match="download links"):
+            await c.test_connection_and_access()
         assert "download links" in c.notify.await_args.kwargs["message"]
 
     @pytest.mark.asyncio
     async def test_it_fails_when_blobs_cannot_be_listed(self) -> None:
-        assert not await self.wired(list_ok=False).test_connection_and_access()
+        with pytest.raises(ConnectorInitError, match="Cannot list blobs in docs"):
+            await self.wired(list_ok=False).test_connection_and_access()
 
     @pytest.mark.asyncio
     async def test_a_deleted_named_container_does_not_fail_it(self) -> None:

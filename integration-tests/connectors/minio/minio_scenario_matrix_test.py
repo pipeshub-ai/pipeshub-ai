@@ -51,4 +51,5 @@ async def scenario_adapter(
 @pytest.mark.minio
 class TestMinioScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "MinIO"
+    TREE_MOVES = True
     UNSUPPORTED = {Action.CHANGE_PERMISSION.value: APP_LEVEL_PERMISSIONS}

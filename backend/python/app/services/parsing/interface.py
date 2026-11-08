@@ -99,6 +99,9 @@ class ParseErrorCode(str, Enum):
     # here, this is retryable and must never be treated as a content
     # failure or count against a circuit breaker.
     PARSE_BACKPRESSURE = "PARSE_BACKPRESSURE"
+    # The file is encrypted and needs a password to open. A fact about the
+    # file: answered with a 422 and never retried.
+    PASSWORD_REQUIRED = "PASSWORD_REQUIRED"
 
 
 class ParseError(Exception):

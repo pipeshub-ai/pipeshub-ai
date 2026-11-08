@@ -1,6 +1,7 @@
 import React from 'react';
 import { InlineCitationBadge } from './response-tabs/citations';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
+import { LINK_TARGET } from '../../utils/process-markdown-content';
 
 /**
  * Parse CSV text into a 2-D array of strings.
@@ -80,7 +81,7 @@ export function parseCsvCellContent(
   citationMaps?: CitationMaps,
   citationCallbacks?: CitationCallbacks,
 ): React.ReactNode[] {
-  const tokenRegex = /\[(\d+)\](?:\([^)]*\))?/g;
+  const tokenRegex = new RegExp(String.raw`\[(\d+)\](?:` + LINK_TARGET + ')?', 'g');
   const parts: React.ReactNode[] = [];
   let last = 0;
   let hasMarkers = false;

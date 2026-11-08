@@ -206,7 +206,7 @@ class TestIndexingConsumerLaneBacklog:
 
         (probe,) = broker.consumers
         assert probe.kwargs["group_id"] == GROUP
-        assert probe.kwargs["client_id"] == "indexing-1-backlog"
+        assert probe.kwargs["client_id"] == "indexing-1/sp3-backlog"
         assert probe.kwargs["security_protocol"] == "SASL_SSL"
         assert probe.kwargs["sasl_plain_username"] == "svc"
         assert probe.kwargs["enable_auto_commit"] is False

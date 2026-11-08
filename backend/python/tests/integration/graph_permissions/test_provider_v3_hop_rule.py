@@ -35,6 +35,8 @@ import pytest
 from .fixture_graph import DRIVE, ORG, USER_U, _principals, app, ip, nr, perm, rec
 from .loaders import arango_shape, load_into_arango, load_into_neo4j
 
+pytestmark = pytest.mark.integration
+
 APP = "hop-app"
 ITEM = {"record_type": "FILE", "connector_id": APP}
 

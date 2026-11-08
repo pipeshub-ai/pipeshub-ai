@@ -20,6 +20,8 @@ import { AlertSquareIcon, EmptyIcon, NotFoundIcon } from '@/app/components/ui';
 import { resolveRootKbIdFromContext } from '../utils/resolve-root-kb-id';
 import { TableHeaderCell } from './kb-list-view';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { PAGE_PADDING_X } from '@/app/components/ui/responsive';
+import { kbCol, kbColMin, useKbColumnWidths } from './kb-column-widths';
 
 // Union type for items that can be displayed
 type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
@@ -36,6 +38,8 @@ interface KbDataTableProps {
   isLoading?: boolean;
   isRefreshing?: boolean;
   error?: string | null;
+  /** False when repeating the request cannot help (the view is too large to list), so no retry button. */
+  errorRetryable?: boolean;
   pagination?: {
     limit: number;
     totalItems: number;
@@ -53,6 +57,8 @@ interface KbDataTableProps {
   showCheckbox?: boolean;
   hasActiveFilters?: boolean;
   hasSearchQuery?: boolean;
+  /** Clears the search; shown as a button on the no-results state. */
+  onClearSearch?: () => void;
   hasCollections?: boolean;
   extrasRefreshKey?: number;
   onRefresh?: () => void;
@@ -80,6 +86,7 @@ export function KbDataTable({
   isLoading = false,
   isRefreshing = false,
   error = null,
+  errorRetryable = true,
   pagination,
   permissions,
   currentNodeName,
@@ -88,6 +95,7 @@ export function KbDataTable({
   showCheckbox = true,
   hasActiveFilters = false,
   hasSearchQuery = false,
+  onClearSearch,
   hasCollections = false,
   extrasRefreshKey = 0,
   onRefresh,
@@ -157,40 +165,41 @@ export function KbDataTable({
     setDeleteDialogOpen(true);
   };
 
-  const handleDeleteConfirm = async () => {
-    if (!itemToDelete) return;
-
+  /** Collection, folder or file, and the collection it sits in, as the delete API needs them. */
+  const resolveDeleteTarget = (item: TableItem) => {
     const storeState = useKnowledgeBaseStore.getState();
     const kbId = resolveRootKbIdFromContext({
       breadcrumbs: storeState.tableData?.breadcrumbs,
       categorizedNodes: storeState.categorizedNodes,
       parentId:
-        isKnowledgeHubNode(itemToDelete) && 'parentId' in itemToDelete
-          ? itemToDelete.parentId
+        isKnowledgeHubNode(item) && 'parentId' in item
+          ? item.parentId
           : undefined,
-      nodeId: itemToDelete.id,
+      nodeId: item.id,
     });
 
-    const isFolder = isKnowledgeHubNode(itemToDelete)
-      ? ['kb', 'app', 'folder', 'recordGroup'].includes(itemToDelete.nodeType)
-      : itemToDelete.type === 'folder';
-
     const isRootCollection =
-      isKnowledgeHubNode(itemToDelete) &&
-      itemToDelete.nodeType === 'recordGroup' &&
-      kbId === itemToDelete.id;
+      isKnowledgeHubNode(item) &&
+      item.nodeType === 'recordGroup' &&
+      kbId === item.id;
 
-    const nodeType = isKnowledgeHubNode(itemToDelete)
-      ? itemToDelete.nodeType === 'record'
+    const nodeType: 'app' | 'folder' | 'record' = isKnowledgeHubNode(item)
+      ? item.nodeType === 'record'
         ? 'record'
-        : itemToDelete.nodeType === 'app' || itemToDelete.nodeType === 'kb' || isRootCollection
+        : item.nodeType === 'app' || item.nodeType === 'kb' || isRootCollection
         ? 'app'
-        : ['folder', 'recordGroup'].includes(itemToDelete.nodeType)
+        : ['folder', 'recordGroup'].includes(item.nodeType)
         ? 'folder'
         : 'record'
-      : itemToDelete.type === 'folder'
+      : item.type === 'folder'
       ? 'folder'
       : 'record';
+    return { kbId, nodeType };
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!itemToDelete) return;
+    const { kbId, nodeType } = resolveDeleteTarget(itemToDelete);
 
     try {
       await deleteNode(itemToDelete.id, nodeType, kbId || undefined, refreshData);
@@ -233,10 +242,16 @@ export function KbDataTable({
   // Show error state
   if (error && !showSkeleton) {
     return (
-      <Flex align="center" justify="center" direction="column" gap="3" style={{ flex: 1 }}>
+      <Flex
+        align="center"
+        justify="center"
+        direction="column"
+        gap="3"
+        style={{ flex: 1, padding: '0 var(--space-4)', textAlign: 'center' }}
+      >
         <AlertSquareIcon size={56} color="var(--red-11)" />
-        <Text size="2" color="red">{error}</Text>
-        {onRefresh && (
+        <Text size="2" color="red" role="alert">{error}</Text>
+        {onRefresh && errorRetryable && (
           <Button onClick={onRefresh} variant="soft" size="2">
             <MaterialIcon name="refresh" size={16} />
             {t('action.tryAgain')}
@@ -337,7 +352,7 @@ export function KbDataTable({
                     : t('kb.folderEmpty')
               }
             </Text>
-            <Text size="2" style={{ color: 'var(--slate-10)' }}>
+            <Text size="2" style={{ color: 'var(--slate-10)', textAlign: 'center', maxWidth: 420, padding: `0 ${PAGE_PADDING_X}` }}>
               {hasSearchQuery
                 ? t('kb.searchEmptyHint')
                 : hasActiveFilters
@@ -350,6 +365,13 @@ export function KbDataTable({
               }
             </Text>
           </Flex>
+
+          {hasSearchQuery && onClearSearch && (
+            <Button variant="outline" color="gray" size="2" onClick={onClearSearch}>
+              <MaterialIcon name="close" size={16} />
+              {t('kb.clearSearch')}
+            </Button>
+          )}
 
           {/* Action buttons - only show in collections mode when not filtered */}
           {pageViewMode === 'collections' && hasBreadcrumbs && !hasActiveFilters && !hasSearchQuery && (
@@ -409,6 +431,8 @@ export function KbDataTable({
         <KbGridView
           items={items}
           selectedItems={activeSelectedItems}
+          allSelected={allSelected}
+          onSelectAll={handleSelectAll}
           showCheckbox={showCheckbox}
           pagination={pagination}
           onCursorChange={onCursorChange}
@@ -416,6 +440,7 @@ export function KbDataTable({
           onSelectItem={activeToggleSelection}
           onItemClick={onItemClick}
           onPreview={onPreview}
+          onGoToParent={hasSearchQuery || hasActiveFilters ? onGoToParent : undefined}
           onRename={onRename}
           onReindex={onReindex}
           onReplace={onReplace}
@@ -460,17 +485,10 @@ export function KbDataTable({
           onOpenChange={setDeleteDialogOpen}
           onConfirm={handleDeleteConfirm}
           itemName={itemToDelete.name}
-          itemType={
-            isKnowledgeHubNode(itemToDelete)
-              ? itemToDelete.nodeType === 'kb'
-                ? 'KB'
-                : ['kb', 'app', 'folder', 'recordGroup'].includes(itemToDelete.nodeType)
-                ? 'folder'
-                : 'record'
-              : itemToDelete.type === 'folder'
-              ? 'folder'
-              : 'record'
-          }
+          itemType={(() => {
+            const { nodeType } = resolveDeleteTarget(itemToDelete);
+            return nodeType === 'app' ? 'KB' : nodeType;
+          })()}
           warningMessage={getWarningMessage(itemToDelete)}
           isDeleting={deletingNodeIds.has(itemToDelete.id)}
         />
@@ -488,13 +506,14 @@ function RecordsLoadingTable({
   showSourceColumn: boolean;
   isMobile: boolean;
 }) {
+  const { style: columnWidthStyle } = useKbColumnWidths();
   return (
     <Flex
       direction="column"
       role="status"
       aria-busy="true"
       aria-label={label}
-      style={{ flex: 1, minHeight: 0, backgroundColor: 'var(--olive-1)' }}
+      style={{ flex: 1, minHeight: 0, backgroundColor: 'var(--olive-1)', ...columnWidthStyle }}
     >
       <Flex
         align="center"
@@ -507,11 +526,11 @@ function RecordsLoadingTable({
       >
         <Box style={{ width: 36, flexShrink: 0 }} />
         <TableHeaderCell label="File Name" flex={1} />
-        <TableHeaderCell label="Status" width="60px" />
-        {showSourceColumn && <TableHeaderCell label="Source" width="60px" />}
-        {!isMobile && <TableHeaderCell label="Size" width="89px" />}
-        {!isMobile && <TableHeaderCell label="Created" width="147px" />}
-        {!isMobile && <TableHeaderCell label="Updated" width="146px" />}
+        <TableHeaderCell label="Status" width={kbCol('status')} minWidth={kbColMin('status')} align="center" />
+        {showSourceColumn && <TableHeaderCell label="Source" width={kbCol('source')} minWidth={kbColMin('source')} align="center" />}
+        {!isMobile && <TableHeaderCell label="Size" width={kbCol('size')} minWidth={kbColMin('size')} align="center" />}
+        {!isMobile && <TableHeaderCell label="Created" width={kbCol('created')} minWidth={kbColMin('created')} align="center" />}
+        {!isMobile && <TableHeaderCell label="Updated" width={kbCol('updated')} minWidth={kbColMin('updated')} align="center" />}
         <Box style={{ width: 104, flexShrink: 0 }} />
       </Flex>
       <Box style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
@@ -521,13 +540,13 @@ function RecordsLoadingTable({
           actionsWidth={104}
           columns={[
             { barWidth: 0.62 },
-            { width: '60px', barWidth: 0.45 },
-            ...(showSourceColumn ? [{ width: '60px', barWidth: 0.45 }] : []),
+            { width: kbCol('status'), minWidth: kbColMin('status'), barWidth: 0.45 },
+            ...(showSourceColumn ? [{ width: kbCol('source'), minWidth: kbColMin('source'), barWidth: 0.45 }] : []),
             ...(!isMobile
               ? [
-                  { width: '89px', barWidth: 0.55 },
-                  { width: '147px', barWidth: 0.7 },
-                  { width: '146px', barWidth: 0.7 },
+                  { width: kbCol('size'), minWidth: kbColMin('size'), barWidth: 0.55 },
+                  { width: kbCol('created'), minWidth: kbColMin('created'), barWidth: 0.7 },
+                  { width: kbCol('updated'), minWidth: kbColMin('updated'), barWidth: 0.7 },
                 ]
               : []),
           ]}

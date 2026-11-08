@@ -11,7 +11,9 @@ import logging
 from typing import Any
 
 from app.config.constants.arangodb import FOLDER_MIME_TYPES, RecordRelations
+from app.connectors.sources.localKB.api.knowledge_hub_models import OriginType
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+    MAX_PAGE_WALK,
     KnowledgeHubService,
 )
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
@@ -21,6 +23,15 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from .models import NavigationView, NodeRef, NodeRow, PaginationInfo
 
 logger = logging.getLogger(__name__)
+
+
+class ListingFailedError(RuntimeError):
+    """The listing under a node did not complete. Rendered as an empty listing, it read as "(no children)"."""
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 # All RecordRelations that represent containment (excluded from "Related" section)
 _CONTAINMENT_RELATIONS = frozenset({
@@ -93,6 +104,7 @@ def _node_item_to_row(item: Any) -> NodeRow:
         indexing_status=status,
         source_created_at=created_at,
         source_modified_at=updated_at,
+        upload_dated=getattr(item, "origin", None) == OriginType.COLLECTION.value and node_type == "record",
     )
 
 
@@ -241,8 +253,9 @@ class GraphNavigator:
         """Build a NavigationView for the given node.
 
         node_id=None → root (list of connected apps).
-        depth > 1 (record/folder parents) fetches descendants up to
-        `depth` levels via get_nodes(flattened=True, depth=...).
+        depth == 1 lists the direct children (browse mode, cursor paged);
+        depth > 1 fetches descendants up to `depth` levels via
+        get_nodes(flattened=True, depth=...).
 
         `created_at`/`updated_at` are optional `{"gte": epoch_ms|None,
         "lte": epoch_ms|None}` filters on the child's source timestamps.
@@ -250,6 +263,14 @@ class GraphNavigator:
         limit = min(max(_MIN_LIMIT, limit), _MAX_LIMIT)
         page = max(1, page)
         depth = min(max(1, depth), _MAX_DEPTH)
+        if page > MAX_PAGE_WALK:
+            # The listing's own refusal names a cursor, which navigate neither takes nor returns.
+            raise ListingFailedError(
+                f"Page {page} is past the last page a listing reaches ({MAX_PAGE_WALK}). A larger limit "
+                f"(up to {_MAX_LIMIT}) reaches the same children in fewer pages, and a created or modified "
+                "date range narrows them.",
+                400,
+            )
 
         current: NodeRef | None = None
         breadcrumbs: list[NodeRef] = []
@@ -326,7 +347,7 @@ class GraphNavigator:
             record_group_ids=record_group_ids,
             created_at=created_at,
             updated_at=updated_at,
-            flattened=True,
+            flattened=depth > 1,
             depth=depth,
             include_typed_records=True,
             node_types=node_types,
@@ -337,6 +358,8 @@ class GraphNavigator:
             response, context_block = await asyncio.gather(nodes, self._context_block(node_id))
         else:
             response = await nodes
+        if not response.success:
+            raise ListingFailedError(response.error or "The listing did not complete.", response.errorCode)
         if crumbs_wanted:
             breadcrumbs = [
                 _node_ref(crumb.id, crumb.name, crumb.nodeType, crumb.subType)

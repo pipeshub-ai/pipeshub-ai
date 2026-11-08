@@ -7,5 +7,5 @@ metadata:
     {{- include "pipeshub-ai.labels" . | nindent 4 }}
 data:
   force-sigv4.js: |
-    require("/app/backend/dist/node_modules/aws-sdk").config.update({ signatureVersion: "v4" });
+    // AWS SDK v3 signs with Signature Version 4. Nothing to preload.
 {{- end }}

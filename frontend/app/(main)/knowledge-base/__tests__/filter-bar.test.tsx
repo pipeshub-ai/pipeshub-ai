@@ -97,7 +97,7 @@ describe('FilterBar', () => {
     useKnowledgeBaseStore.setState({ allRecordsFilter: { indexingStatus: ['QUEUED'] } });
     renderInTheme(<FilterBar pageViewMode="all-records" />);
 
-    fireEvent.click(screen.getByText('Clear Filter'));
+    fireEvent.click(screen.getByText('Clear filter'));
 
     expect(useKnowledgeBaseStore.getState().allRecordsFilter).toEqual({});
     expect(screen.queryByText('Clear Filter')).toBeNull();

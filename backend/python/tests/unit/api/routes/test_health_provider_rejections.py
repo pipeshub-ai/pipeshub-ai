@@ -39,12 +39,14 @@ def _llm_config() -> dict:
     }
 
 
-async def _check_llm(error: Exception, *, egress: bool = True) -> tuple[JSONResponse, dict]:
+async def _check_llm(
+    error: Exception, *, egress: bool = True, config: dict | None = None,
+) -> tuple[JSONResponse, dict]:
     model = MagicMock()
     model.ainvoke = AsyncMock(side_effect=error)
     with patch(f"{MODULE}.get_generator_model", return_value=model), \
          patch(f"{MODULE}._probe_outbound_connectivity", new_callable=AsyncMock, return_value=egress):
-        resp = await perform_llm_health_check(_llm_config(), MagicMock())
+        resp = await perform_llm_health_check(config or _llm_config(), MagicMock())
     return resp, json.loads(resp.body)
 
 
@@ -59,6 +61,43 @@ async def test_a_rejected_key_is_a_400_that_names_the_model_and_provider() -> No
         "The API key for Team GPT was rejected by Azure OpenAI. "
         "Check the key in Workspace > AI Models, then try again."
     )
+    assert body["details"]["error_code"] == "auth_error"
+
+
+@pytest.mark.asyncio
+async def test_a_key_used_on_the_wrong_openai_region_names_the_base_url() -> None:
+    error = _status_error(openai.AuthenticationError, 401, {
+        "message": "Attempted to access resource with incorrect regional hostname. "
+                   "Please make your request to api.openai.com",
+        "type": "invalid_request_error", "param": None, "code": "incorrect_hostname",
+    })
+
+    resp, body = await _check_llm(error)
+
+    assert resp.status_code == 400
+    assert "https://api.openai.com/v1" in body["message"]
+    assert "was rejected" not in body["message"]
+    assert body["details"]["error_code"] == "auth_error"
+
+
+@pytest.mark.asyncio
+async def test_a_gateway_passing_on_a_wrong_openai_region_keeps_its_base_url() -> None:
+    error = _status_error(openai.AuthenticationError, 401, {
+        "message": "Attempted to access resource with incorrect regional hostname. "
+                   "Please make your request to us.api.openai.com",
+        "type": "invalid_request_error", "param": None, "code": "incorrect_hostname",
+    })
+    config = {
+        "provider": "litellmProxy",
+        "configuration": {"model": "gpt-5.6-luna", "apiKey": "sk-proxy",
+                          "endpoint": "https://litellm.internal:4000/v1", "modelFriendlyName": "Team GPT"},
+    }
+
+    resp, body = await _check_llm(error, config=config)
+
+    assert resp.status_code == 400
+    assert "Change the Base URL" not in body["message"]
+    assert "https://us.api.openai.com/v1" in body["message"]
     assert body["details"]["error_code"] == "auth_error"
 
 
@@ -187,7 +226,7 @@ async def test_set_default_embedding_other_failures_stay_a_500_without_their_tex
     request, embeddings = _embedding_request(RuntimeError("boom at secret-host"))
 
     with patch(f"{MODULE}.get_embedding_model", return_value=embeddings):
-        resp = await embedding_health_check(request, [{"provider": "openAI", "configuration": {"model": "m"}}])
+        resp = await embedding_health_check(request, [{"provider": "openAI", "configuration": {"model": "m", "apiKey": "k"}}])
 
     assert resp.status_code == 500
     assert "secret-host" not in resp.body.decode()

@@ -89,3 +89,55 @@ async def test_a_run_resumes_after_a_key_and_stops_at_its_limit() -> None:
 
     assert (tally.checked, tally.after_key) == (2, "c")
     assert json.loads(out.getvalue().splitlines()[-1])["after_key"] == "c"
+
+
+async def test_a_revision_with_a_stage_state_is_judged_by_the_kept_output() -> None:
+    """The entities stage keeps its extraction in its state; the stored section is only a
+    record's from before the stage, and must not decide for a revision the stage ran on."""
+    records = [
+        _record("p", "v-complete", contentRev="r1"),  # stage kept a PARTIAL run: queue
+        _record("q", "v-partial", contentRev="r2"),  # stage kept nothing (skipped): not queued
+    ]
+    states = {
+        "v-complete:r1:entities": {"status": "COMPLETED", "output": json.dumps(_extraction("PARTIAL", 9, 3))},
+        "v-partial:r2:entities": {"status": "SKIPPED", "output": None},
+    }
+    graph = _graph(records)
+    graph.stage_state_get = AsyncMock(side_effect=lambda key: states.get(key))
+
+    tally = await queue_reextractions(graph, _blobs(), org_id="o1", everything=False, apply=True, out=io.StringIO())
+
+    graph.schedule_named_entity_reextract.assert_awaited_once_with("o1", "p")
+    assert (tally.queued, tally.without_extraction, tally.unreadable) == (1, 1, 0)
+
+
+async def test_reproject_writes_every_stored_extraction_again_with_no_model_call() -> None:
+    graph = _graph(RECORDS)
+    graph.schedule_named_entity_reproject = AsyncMock()
+
+    tally = await queue_reextractions(
+        graph, _blobs(), org_id="o1", everything=False, apply=True, reproject=True, out=io.StringIO(),
+    )
+
+    assert tally.queued == 2
+    assert [c.args for c in graph.schedule_named_entity_reproject.await_args_list] == [("o1", "a"), ("o1", "b")]
+    graph.schedule_named_entity_reextract.assert_not_awaited()
+
+
+async def test_a_reproject_dry_run_queues_nothing() -> None:
+    graph = _graph(RECORDS)
+    graph.schedule_named_entity_reproject = AsyncMock()
+
+    await queue_reextractions(graph, _blobs(), org_id="o1", everything=False, apply=False, reproject=True, out=io.StringIO())
+
+    graph.schedule_named_entity_reproject.assert_not_awaited()
+
+
+async def test_reproject_is_refused_while_extraction_is_off(monkeypatch) -> None:
+    from app.scripts import named_entity_reextract as script
+    from app.services.featureflag import platform_settings
+
+    monkeypatch.setattr(platform_settings, "is_named_entity_extraction_enabled", AsyncMock(return_value=False))
+    assert await script.reproject_allowed(object()) is False
+    monkeypatch.setattr(platform_settings, "is_named_entity_extraction_enabled", AsyncMock(return_value=True))
+    assert await script.reproject_allowed(object()) is True

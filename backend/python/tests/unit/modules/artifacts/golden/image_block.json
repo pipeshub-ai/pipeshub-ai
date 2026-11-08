@@ -1,0 +1,48 @@
+{
+  "multimodal": true,
+  "record": {
+    "virtual_record_id": "vr-image",
+    "record_name": "deck.pptx",
+    "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "block_containers": {
+      "blocks": [
+        {
+          "index": 0,
+          "type": "text",
+          "data": "Revenue grew in every quarter."
+        },
+        {
+          "index": 1,
+          "type": "image",
+          "data": {
+            "uri": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+          },
+          "image_metadata": {
+            "description": "Bar chart of quarterly revenue"
+          }
+        }
+      ],
+      "block_groups": []
+    }
+  },
+  "hits": [
+    {
+      "metadata": {
+        "virtualRecordId": "vr-image",
+        "isBlockGroup": false,
+        "blockIndex": 0
+      },
+      "score": 0.8,
+      "content": "Revenue grew in every quarter."
+    },
+    {
+      "metadata": {
+        "virtualRecordId": "vr-image",
+        "isBlockGroup": false,
+        "blockIndex": 1
+      },
+      "score": 0.77,
+      "content": "Bar chart of quarterly revenue"
+    }
+  ]
+}

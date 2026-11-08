@@ -21,7 +21,9 @@ from app.models.blocks import (
     GroupSubType,
     GroupType,
 )
+from app.modules.parsers.code_parser.lang_config import detect_language
 from app.modules.parsers.code_parser.secret_scan import redact_secrets
+from app.utils.markdown_code import fenced_code
 from app.utils.time_conversion import string_to_datetime
 
 from .common.utils import parse_item_id_from_url
@@ -30,6 +32,11 @@ from .models import GitlabLiterals, RecordUpdate
 
 if TYPE_CHECKING:
     from app.connectors.sources.gitlab.connector import GitLabConnector
+
+
+def is_internal_note(note: object) -> bool:
+    """Internal notes are for Planner and up. GitLab before 15.0 calls the flag ``confidential``."""
+    return getattr(note, "internal", False) is True or getattr(note, "confidential", False) is True
 
 
 class CommentsHelper:
@@ -71,6 +78,9 @@ class CommentsHelper:
         base_project_url = f"{c._gitlab_base_url}/api/v4/projects/{project_id}"
 
         for comment in comments:
+            # The issue's readers include Guests; an internal note is not theirs to read.
+            if is_internal_note(comment):
+                continue
             raw_markdown_content: str = getattr(comment, "body", "") or ""
             child_records, remaining_records = await c.attachments.make_child_records_of_attachments(
                 markdown_raw=raw_markdown_content, record=record
@@ -313,9 +323,16 @@ class CommentsHelper:
                     f"{MR_FILE_INLINE_CONTENT_MAX_BYTES}-byte limit)"
                 )
             elif file_content:
-                data_parts.append(f"Full file content:\n\n{file_content}")
-            if diff_content or not nothing_to_show:
-                data_parts.append(f"Diff content\n\n{diff_content}")
+                # Fenced, like the diff, so the file is read as code, not markdown.
+                data_parts.append(
+                    f"Full file content:\n\n{fenced_code(file_content, detect_language(file_path) or '')}"
+                )
+            if diff_content:
+                # Bare, a diff is read as markdown: removed lines become list
+                # items, and indented context lines code blocks or headings.
+                data_parts.append(f"Diff content\n\n{fenced_code(diff_content, 'diff')}")
+            elif not nothing_to_show:
+                data_parts.append("Diff content\n\n")
             data = "\n\n".join(data_parts)
             if is_truncated_diff:
                 data = data + "\n\n[TRUNCATED] Diff"

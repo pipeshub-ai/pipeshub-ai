@@ -123,6 +123,20 @@ class SalesforceAttachmentUploader:
         except Exception as exc:
             logger.warning("SalesforceAttachmentUploader: failed to resolve ContentDocumentId: %s", exc)
 
+        if link_to_id and not content_document_id:
+            # The file exists in Salesforce but could not be attached as asked: saying it
+            # was would leave the record without it and nobody told.
+            return AttachmentUploadResult(
+                record_id=attachment.record_id,
+                filename=attachment.filename,
+                success=False,
+                platform_id=None,
+                error=(
+                    f"ContentVersion created (Id={content_version_id}) but its ContentDocumentId "
+                    f"could not be read, so it was not linked to {link_to_id}"
+                ),
+            )
+
         # Link to Salesforce record if requested.
         if link_to_id and content_document_id:
             link_payload: dict[str, str] = {

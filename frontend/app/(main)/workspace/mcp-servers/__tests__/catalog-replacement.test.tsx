@@ -103,12 +103,12 @@ describe('replaced catalog entries', () => {
     expect(screen.getByText('Slack (community)')).toBeTruthy();
     expect(screen.getByText('No longer maintained. Add Slack instead.')).toBeTruthy();
     // The official entry is unused, so its card offers Setup rather than "+"; the replaced one offers neither.
-    expect(screen.queryByRole('button', { name: 'Add Another Instance' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Add another instance' })).toBeNull();
   });
 
   it('leave "+" on an entry still offered', () => {
     renderCatalog([template(), OFFICIAL], [instance('slack'), instance('slack_official')]);
-    expect(screen.getAllByRole('button', { name: 'Add Another Instance' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Add another instance' })).toHaveLength(1);
   });
 
   it('are left out of the personal "add server" list', () => {

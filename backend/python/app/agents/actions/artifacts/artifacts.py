@@ -211,7 +211,7 @@ class ArtifactManager:
             metadata, version = await registry.register_output(
                 actor=self._actor(),
                 name=name,
-                artifact_type=infer_artifact_type(mime_type),
+                artifact_type=infer_artifact_type(mime_type, name),
                 mime_type=mime_type,
                 content=raw,
                 conversation_id=conversation_id,

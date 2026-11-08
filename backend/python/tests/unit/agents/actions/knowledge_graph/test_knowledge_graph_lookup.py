@@ -175,10 +175,12 @@ class TestChatbotModeScoping:
 
     @pytest.mark.asyncio
     async def test_chatbot_mode_empty_catalog_returns_not_found(self):
-        """Empty catalog → not found (not an error about missing config)."""
+        """Empty catalog → the lookup still runs and misses (not an error about
+        missing config). A KB-only user has no connector in the catalog."""
         gp = AsyncMock()
         gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk"})
         gp.get_knowledge_hub_filter_options = AsyncMock(return_value={"apps": []})
+        gp.get_record_by_weburl = AsyncMock(return_value=None)
 
         state = {
             "org_id": "org-1",
@@ -188,7 +190,9 @@ class TestChatbotModeScoping:
         }
         tool = KnowledgeGraph(state=state)
         success, text = await tool.lookup_record(identifiers=["PA-1787"])
-        assert not success
+        assert success
+        assert "Not found" in text
+        gp.get_record_by_weburl.assert_awaited()
 
 
 # ---------------------------------------------------------------------------

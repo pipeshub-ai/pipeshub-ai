@@ -6,7 +6,10 @@ import { ScopeValidatorService } from '../services/scope.validator.service'
 import { CreatePatRequest } from '../types/oauth.types'
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types'
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer'
-import { domainFromEmail } from '../../../libs/services/telemetry/identity'
+import {
+  clientTags,
+  domainFromEmail,
+} from '../../../libs/services/telemetry/identity'
 import { recordServiceActivity } from '../../../libs/services/telemetry/modules/activity-metrics'
 
 @injectable()
@@ -58,6 +61,7 @@ export class PatController {
         scope_count: token.scopes.length,
         // The lifetime the token was actually minted with ('never' stays 'never').
         expiry_days: data.expiryDays ?? DEFAULT_EXPIRY_DAYS,
+        ...clientTags(req.headers),
       })
       recordServiceActivity('pat_created', {
         org: orgId,

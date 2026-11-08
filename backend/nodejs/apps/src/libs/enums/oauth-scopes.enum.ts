@@ -48,6 +48,11 @@ export const OAuthScopeNames = Object.freeze({
   MCP_WRITE: 'mcp:write',
   MCP_DELETE: 'mcp:delete',
 
+  // Toolsets
+  TOOLSET_READ: 'toolset:read',
+  TOOLSET_WRITE: 'toolset:write',
+  TOOLSET_DELETE: 'toolset:delete',
+
   // Projects
   PROJECT_READ: 'project:read',
   PROJECT_WRITE: 'project:write',

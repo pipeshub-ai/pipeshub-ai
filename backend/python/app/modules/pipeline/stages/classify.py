@@ -44,7 +44,8 @@ from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
 
 # Bump when the classification prompt or its output mapping changes. 2: cacheable instructions
 # with the record's name and type, natural languages only, and entity resolution.
-CLASSIFY_PROMPT_VERSION = 2
+# 3: at most 2 departments (main first), reusable topics that are never names.
+CLASSIFY_PROMPT_VERSION = 3
 
 
 class ClassifyIO(StageIO, Protocol):
@@ -129,7 +130,7 @@ class ClassifyStage:
     async def restore_output(
         self, job: StageJob, io: ClassifyIO, output: str, *, still_current: Callable[[], Awaitable[bool]] | None = None
     ) -> bool:
-        """Put a kept classification back without a model call; False when it cannot be, or when
+        """Put a kept classification, and its summary point, back without a model call; False when it cannot be, or when
         ``still_current`` (checked under the record lease) says the kept output was superseded."""
         try:
             await io.restore_stored_metadata(

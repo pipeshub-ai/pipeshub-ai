@@ -4,6 +4,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -301,6 +302,7 @@ class TestPerformFullSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 record = MagicMock()
                 perms = []
                 yield record, perms, update
@@ -326,6 +328,7 @@ class TestPerformFullSync:
             update_del = MagicMock()
             update_del.is_deleted = True
             update_del.is_updated = False
+            update_del.content_changed = False
             yield MagicMock(), [], update_del
 
             update_upd = MagicMock()
@@ -379,6 +382,7 @@ class TestPerformFullSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -408,6 +412,7 @@ class TestPerformFullSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -460,6 +465,7 @@ class TestPerformIncrementalSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 record = MagicMock()
                 yield record, [], update
 
@@ -516,6 +522,7 @@ class TestPerformIncrementalSync:
             upd = MagicMock()
             upd.is_deleted = True
             upd.is_updated = False
+            upd.content_changed = False
             upd.record = MagicMock()
             yield upd.record, [], upd
 
@@ -548,6 +555,7 @@ class TestPerformIncrementalSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -602,6 +610,7 @@ class TestPerformIncrementalSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -807,7 +816,7 @@ class TestConvertToPdf:
                 await connector._convert_to_pdf("/tmp/test.docx", "/tmp")
 
     @pytest.mark.asyncio
-    async def test_convert_output_file_not_found(self, connector):
+    async def test_convert_output_file_not_found(self, connector, tmp_path: Path):
         with patch("asyncio.create_subprocess_exec") as mock_exec, \
              patch("os.path.exists", return_value=False):
             mock_proc = AsyncMock()
@@ -816,7 +825,7 @@ class TestConvertToPdf:
             mock_exec.return_value = mock_proc
 
             with pytest.raises(HTTPException) as exc_info:
-                await connector._convert_to_pdf("/tmp/test.docx", "/tmp")
+                await connector._convert_to_pdf("/tmp/test.docx", str(tmp_path))
             assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
@@ -1331,6 +1340,7 @@ class TestCheckAndFetchUpdatedRecord:
         update = MagicMock()
         update.is_deleted = True
         update.is_updated = False
+        update.content_changed = False
         connector._process_drive_item = AsyncMock(return_value=update)
         result = await connector._check_and_fetch_updated_record("org1", record, "u1", "u@t.com")
         assert result is None
@@ -1345,6 +1355,7 @@ class TestCheckAndFetchUpdatedRecord:
         update = MagicMock()
         update.is_deleted = False
         update.is_updated = False
+        update.content_changed = False
         connector._process_drive_item = AsyncMock(return_value=update)
         result = await connector._check_and_fetch_updated_record("org1", record, "u1", "u@t.com")
         assert result is None
@@ -1950,6 +1961,7 @@ class TestPerformFullSyncFullCoverage:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 record = MagicMock()
                 perms = []
                 yield record, perms, update
@@ -1975,6 +1987,7 @@ class TestPerformFullSyncFullCoverage:
             update_del = MagicMock()
             update_del.is_deleted = True
             update_del.is_updated = False
+            update_del.content_changed = False
             yield MagicMock(), [], update_del
 
             update_upd = MagicMock()
@@ -2028,6 +2041,7 @@ class TestPerformFullSyncFullCoverage:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -2057,6 +2071,7 @@ class TestPerformFullSyncFullCoverage:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -2109,6 +2124,7 @@ class TestPerformIncrementalSyncFullCoverage:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 record = MagicMock()
                 yield record, [], update
 
@@ -2165,6 +2181,7 @@ class TestPerformIncrementalSyncFullCoverage:
             upd = MagicMock()
             upd.is_deleted = True
             upd.is_updated = False
+            upd.content_changed = False
             upd.record = MagicMock()
             yield upd.record, [], upd
 
@@ -2197,6 +2214,7 @@ class TestPerformIncrementalSyncFullCoverage:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -2251,6 +2269,7 @@ class TestPerformIncrementalSyncFullCoverage:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -2456,7 +2475,7 @@ class TestConvertToPdfFullCoverage:
                 await connector._convert_to_pdf("/tmp/test.docx", "/tmp")
 
     @pytest.mark.asyncio
-    async def test_convert_output_file_not_found(self, connector):
+    async def test_convert_output_file_not_found(self, connector, tmp_path: Path):
         with patch("asyncio.create_subprocess_exec") as mock_exec, \
              patch("os.path.exists", return_value=False):
             mock_proc = AsyncMock()
@@ -2465,7 +2484,7 @@ class TestConvertToPdfFullCoverage:
             mock_exec.return_value = mock_proc
 
             with pytest.raises(HTTPException) as exc_info:
-                await connector._convert_to_pdf("/tmp/test.docx", "/tmp")
+                await connector._convert_to_pdf("/tmp/test.docx", str(tmp_path))
             assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
@@ -2975,6 +2994,7 @@ class TestCheckAndFetchUpdatedRecordFullCoverage:
         update = MagicMock()
         update.is_deleted = True
         update.is_updated = False
+        update.content_changed = False
         connector._process_drive_item = AsyncMock(return_value=update)
         result = await connector._check_and_fetch_updated_record("org1", record, "u1", "u@t.com")
         assert result is None
@@ -2989,6 +3009,7 @@ class TestCheckAndFetchUpdatedRecordFullCoverage:
         update = MagicMock()
         update.is_deleted = False
         update.is_updated = False
+        update.content_changed = False
         connector._process_drive_item = AsyncMock(return_value=update)
         result = await connector._check_and_fetch_updated_record("org1", record, "u1", "u@t.com")
         assert result is None

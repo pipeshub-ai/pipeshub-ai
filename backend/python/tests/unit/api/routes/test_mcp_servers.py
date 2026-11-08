@@ -257,6 +257,76 @@ class TestBuildInstanceRecord:
         assert record["requiredEnv"] == ["API_KEY"]
         assert record["isCustom"] is False
 
+    def test_okta_catalog_stores_the_url_the_admin_typed(self) -> None:
+        from app.agents.mcp.registry import MCPRegistry
+
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        payload = MCPServerInstanceConfig(
+            name="Okta",
+            type_id="okta",
+            transport=MCPTransport.STREAMABLE_HTTP,
+            auth_mode=MCPAuthMode.OAUTH,
+            url="https://acme.okta.com/mcp",
+        )
+        _validate_instance_config(payload, registry)
+        record = _build_instance_record(payload, "inst-okta", "org-1", "user-1", registry)
+        assert record["url"] == "https://acme.okta.com/mcp"
+        assert record["scopes"] == ["okta.users.read", "okta.groups.read"]
+        assert record["isCustom"] is False
+        assert record["transport"] == "streamable_http"
+        from app.agents.mcp.service import instance_config_from_dict
+
+        assert instance_config_from_dict(record).url == "https://acme.okta.com/mcp"
+
+    def test_okta_catalog_requires_a_url(self) -> None:
+        from app.agents.mcp.registry import MCPRegistry
+
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        payload = MCPServerInstanceConfig(
+            name="Okta",
+            type_id="okta",
+            transport=MCPTransport.STREAMABLE_HTTP,
+            auth_mode=MCPAuthMode.OAUTH,
+        )
+        with pytest.raises(HTTPException) as exc:
+            _validate_instance_config(payload, registry)
+        assert exc.value.status_code == 400
+
+    def test_github_catalog_keeps_its_own_url(self) -> None:
+        from app.agents.mcp.registry import MCPRegistry
+
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        payload = MCPServerInstanceConfig(
+            name="GitHub",
+            type_id="github",
+            transport=MCPTransport.STREAMABLE_HTTP,
+            auth_mode=MCPAuthMode.OAUTH,
+            url="https://evil.example/mcp",
+        )
+        _validate_instance_config(payload, registry)
+        record = _build_instance_record(payload, "inst-gh", "org-1", "user-1", registry)
+        assert record["url"] == "https://api.githubcopilot.com/mcp/"
+
+    def test_docusign_catalog_keeps_its_production_url(self) -> None:
+        from app.agents.mcp.registry import MCPRegistry
+
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        payload = MCPServerInstanceConfig(
+            name="DocuSign",
+            type_id="docusign",
+            transport=MCPTransport.STREAMABLE_HTTP,
+            auth_mode=MCPAuthMode.OAUTH,
+            url="https://mcp-d.docusign.com/mcp",
+        )
+        _validate_instance_config(payload, registry)
+        record = _build_instance_record(payload, "inst-ds", "org-1", "user-1", registry)
+        assert record["url"] == "https://mcp.docusign.com/mcp"
+        assert "signature" in record["scopes"]
+
     def test_update_preserves_created_by_and_created_at(self) -> None:
         registry = MagicMock()
         registry.get_template.return_value = None

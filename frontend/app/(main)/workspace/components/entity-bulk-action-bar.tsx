@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { Flex, Text, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useTranslation } from 'react-i18next';
 import { Spinner } from '@/app/components/ui/spinner';
 
 // ========================================
@@ -55,6 +56,7 @@ export function EntityBulkActionBar({
   actions,
   visible,
 }: EntityBulkActionBarProps) {
+  const { t } = useTranslation();
   const [loadingKey, setLoadingKey] = useState<string | null>(null);
 
   if (!visible) return null;
@@ -73,7 +75,9 @@ export function EntityBulkActionBar({
     <Flex
       align="center"
       gap="3"
+      wrap="wrap"
       style={{
+        maxWidth: 'calc(100% - 16px)',
         position: 'absolute',
         bottom: 'var(--space-2)',
         left: '50%',
@@ -90,7 +94,7 @@ export function EntityBulkActionBar({
       <Flex align="center" gap="2">
         <MaterialIcon name="check" size={16} color="var(--slate-11)" />
         <Text size="2" weight="medium" style={{ color: 'var(--slate-11)', whiteSpace: 'nowrap' }}>
-          {selectedCount} {itemLabel} Selected
+          {t('workspace.bulk.selected', { count: selectedCount, label: itemLabel })}
         </Text>
       </Flex>
 

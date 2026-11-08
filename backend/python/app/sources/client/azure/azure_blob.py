@@ -1,3 +1,4 @@
+import asyncio
 import json
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
@@ -12,6 +13,7 @@ except ImportError:
     raise ImportError("azure-storage-blob is not installed. Please install it with `pip install azure-storage-blob`")
 
 from app.config.configuration_service import ConfigurationService
+from app.sources.client.http.address_guard import check_url_allowed
 from app.sources.client.iclient import IClient
 
 
@@ -174,7 +176,10 @@ class AzureBlobRESTClient:
         """Get or create the AsyncBlobServiceClient"""
         if self._async_blob_service_client is None:
             try:
-                self._async_blob_service_client = await self.config.create_async_blob_service_client()
+                client = await self.config.create_async_blob_service_client()
+                # Only the async client sends requests; the sync one only names endpoints.
+                await asyncio.to_thread(check_url_allowed, client.url)
+                self._async_blob_service_client = client
             except Exception as e:
                 raise AzureBlobConfigurationError(
                     f"Failed to create AsyncBlobServiceClient: {str(e)}",

@@ -58,9 +58,14 @@ def test_item_json_object_string() -> None:
 
 
 def test_insufficient_pipe_options_still_raises() -> None:
-    raw = {"user_intent": "test", "questions": ["Only two opts|A|B"]}
+    raw = {"user_intent": "test", "questions": ["Only one opt|A"]}
     with pytest.raises(ValidationError):
         AskUserQuestionInput.model_validate(raw)
+
+
+def test_two_pipe_options_are_enough() -> None:
+    model = AskUserQuestionInput.model_validate({"user_intent": "test", "questions": ["Close which?|PROJ-42|PROJ-57"]})
+    assert [o.label for o in model.questions[0].options] == ["PROJ-42", "PROJ-57"]
 
 
 def test_plain_string_question_without_pipe_raises() -> None:

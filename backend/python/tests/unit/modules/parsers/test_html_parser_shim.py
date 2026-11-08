@@ -71,7 +71,7 @@ class TestHTMLParserBackendSelection:
     def test_html_parser_can_select_docling_backend(self):
         with patch.dict("os.environ", {"PARSER_BACKEND": "docling"}, clear=False):
             with patch(
-                "app.modules.parsers.html_parser.docling_html_parser.DocumentConverter"
+                "docling.document_converter.DocumentConverter"
             ):
                 import app.modules.parsers.html_parser.html_parser as html_parser_module
 

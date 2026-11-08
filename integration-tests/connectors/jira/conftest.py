@@ -34,6 +34,7 @@ from helper.assertions import ConnectorAssertions  # type: ignore[import-not-fou
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
 from helper.graph_provider_utils import wait_for_sync_completion  # type: ignore[import-not-found]
 from connectors.jira.constants import (  # type: ignore[import-not-found]
+    connector_base_url,
     JIRA_BLOCKS_ISSUE_KEY,
     JIRA_IT_RUN_ID,
     JIRA_LINK_SOURCE_ISSUE_KEY,
@@ -125,7 +126,6 @@ async def jira_connector(
     keys, pinned constant keys (validated), and ``expected_*`` snapshot counts. Setup is
     read-only against Jira; teardown removes the connector + graph only (never the project).
     """
-    base_url = os.getenv("JIRA_TEST_BASE_URL")
     email = os.getenv("JIRA_TEST_EMAIL")
     api_token = os.getenv("JIRA_TEST_API_TOKEN")
 
@@ -156,7 +156,7 @@ async def jira_connector(
         "blocks_issue_key": None,
         "link_source_issue_key": None,
         "epic_key": None, "epic_id": None,
-        "epic_child_key": None, "epic_child_id": None,
+        "epic_child_key": None, "epic_child_id": None, "epic_child_filed_under_epic": None,
         "subtask_parent_key": None, "subtask_parent_id": None,
         "subtask_key": None, "subtask_id": None,
         "attachment_issue_key": None, "attachment_issue_id": None,
@@ -246,7 +246,8 @@ async def jira_connector(
 
     epic = await discover_epic_and_child(jira_datasource, primary_key)
     if epic:
-        state["epic_key"], state["epic_id"], state["epic_child_key"], state["epic_child_id"] = epic
+        (state["epic_key"], state["epic_id"], state["epic_child_key"], state["epic_child_id"],
+         state["epic_child_filed_under_epic"]) = epic
     subtask = await discover_task_and_subtask(jira_datasource, primary_key)
     if subtask:
         (state["subtask_parent_key"], state["subtask_parent_id"],
@@ -277,7 +278,7 @@ async def jira_connector(
     config: dict[str, Any] = {
         "auth": {
             "authType": "API_TOKEN",
-            "baseUrl": base_url,
+            "baseUrl": connector_base_url(),
             "email": email,
             "apiToken": api_token,
         },
@@ -320,6 +321,8 @@ async def jira_connector(
     state["expected_ticket_count"] = scope["ticket"]
     state["expected_file_count"] = scope["file"]
     state["expected_parent_child_edges"] = scope["parent_child"]
+    state["parent_child_by_level_pairs"] = scope["parent_child_by_level_pairs"]
+    state["expected_parent_child_pairs"] = scope["parent_child_pairs"]
     state["expected_attachment_edges"] = scope["file"]  # one ATTACHMENT edge per attachment/FILE
     state["expected_record_groups"] = 1  # only the primary project is in scope
 

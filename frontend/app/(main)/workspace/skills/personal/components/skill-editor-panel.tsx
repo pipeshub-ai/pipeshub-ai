@@ -1,5 +1,6 @@
 'use client';
 
+import { asRecord } from '@/lib/utils/safe';
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge, Box, Button, Flex, Select, Switch, Tabs, Text, TextArea, TextField } from '@radix-ui/themes';
@@ -682,7 +683,7 @@ function ResourcesTab({
   const [newPath, setNewPath] = useState('');
   const [newContent, setNewContent] = useState('');
   const [busy, setBusy] = useState(false);
-  const allPaths = Object.values(resources).flat();
+  const allPaths = Object.values(asRecord(resources)).flat();
 
   const handleAdd = useCallback(async () => {
     if (!newPath.trim() || busy) return;

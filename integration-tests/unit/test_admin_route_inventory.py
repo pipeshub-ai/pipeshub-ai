@@ -37,6 +37,7 @@ from helper.admin_routes import (
     admin_routes_in_file,
     discover_admin_routes,
     discover_python_admin_handlers,
+    router_mounts,
 )
 from helper.admin_route_conditional_table import (
     ADMIN,
@@ -169,6 +170,63 @@ def test_the_reader_finds_inline_and_router_wide_admin_checks(tmp_path: Path) ->
     assert got[("POST", "/api/v1/sample/gated/:id")] == (
         "authMiddleware.authenticate", "ValidationMiddleware.validate",
     )
+
+
+def test_the_reader_finds_admin_checks_in_a_spread_list(tmp_path: Path) -> None:
+    source = _write(tmp_path, "spread.routes.ts", """
+        export function createSpreadRouter(container: Container) {
+          const router = Router();
+          const guard = [authMiddleware.authenticate, userAdminCheck];
+          const open = [authMiddleware.authenticate];
+          router.get('/gated', ...guard, handler);
+          router.post('/checked/:id', ...guard, ValidationMiddleware.validate(schema), handler);
+          router.get('/open', ...open, handler);
+          return router;
+        }
+    """)
+    routes = {(r.method, r.path): r for r in admin_routes_in_file(source, "/api/v1/spread")}
+    assert set(routes) == {("GET", "/api/v1/spread/gated"), ("POST", "/api/v1/spread/checked/:id")}
+    assert routes[("POST", "/api/v1/spread/checked/:id")].after_admin == ("ValidationMiddleware.validate",)
+
+
+@pytest.mark.parametrize("guard", [
+    "router.use(authMiddleware.authenticate, ValidationMiddleware.validate(schema), userAdminCheck);",
+    "const adminGuard = [authMiddleware.authenticate, ValidationMiddleware.validate(schema), userAdminCheck];\n"
+    "          router.use(...adminGuard);",
+], ids=["inline", "spread"])
+def test_middleware_ahead_of_a_router_wide_admin_check_runs_before_it(tmp_path: Path, guard: str) -> None:
+    source = _write(tmp_path, "use.routes.ts", f"""
+        export function createUseRouter(container: Container) {{
+          const router = Router();
+          {guard}
+          router.get('/after', handler);
+          return router;
+        }}
+    """)
+    routes = admin_routes_in_file(source, "/api/v1/use")
+    assert [(r.method, r.path, r.before_admin) for r in routes] == [
+        ("GET", "/api/v1/use/after", ("authMiddleware.authenticate", "ValidationMiddleware.validate")),
+    ]
+
+
+def test_a_router_mounted_outside_app_ts_is_found(tmp_path: Path) -> None:
+    _write(tmp_path, "app.ts", """
+        // Routers come from `./modules/*` through the barrel.
+        this.app.use('/api/v1/main', createMainRouter(container));
+    """)
+    (tmp_path / "feature").mkdir()
+    _write(tmp_path, "feature/boot.ts", """
+        /**
+         *   app.use('/api/v1/quoted', createFeatureRouter(container))
+         */
+        export function mountRoutes(app) {
+          app.use('/api/v1/feature', createFeatureRouter(container));
+        }
+    """)
+    assert router_mounts(tmp_path) == {
+        "createMainRouter": {"/api/v1/main"},
+        "createFeatureRouter": {"/api/v1/feature"},
+    }
 
 
 def _conditional_rows() -> dict[str, ConditionalRoute]:
@@ -318,3 +376,56 @@ def test_placeholders_are_found_and_filled_at_any_depth() -> None:
     value = {"a": "{one}/x", "b": [{"c": ("{two}", 3)}], "d": None}
     assert placeholders(value) == {"one", "two"}
     assert fill(value, str.upper) == {"a": "ONE/x", "b": [{"c": ("TWO", 3)}], "d": None}
+
+
+def test_each_router_in_a_file_gets_its_own_prefix(tmp_path: Path) -> None:
+    _write(tmp_path, "app.ts", """
+        export const OTHER_PATH = '/api/v1/other';
+        app.use('/api/v1/first', createFirstRouter(container));
+        app.use(OTHER_PATH, createSecondRouter(container));
+    """)
+    _write(tmp_path, "two.routes.ts", """
+        export function createFirstRouter(container: Container) {
+          const router = Router();
+          router.get('/:id', userAdminCheck, handler);
+          return router;
+        }
+
+        export function createSecondRouter(container: Container) {
+          const router = Router();
+          router.put('/:id', userAdminCheck, handler);
+          return router;
+        }
+    """)
+    assert {(r.method, r.path) for r in discover_admin_routes(tmp_path)} == {
+        ("GET", "/api/v1/first/:id"), ("PUT", "/api/v1/other/:id"),
+    }
+
+
+@pytest.mark.parametrize("mount", [
+    "app.use(somePath(), createGatedRouter(container));",  # not a literal or a constant
+    "app.use(TWO_VALUES, createGatedRouter(container));",  # a constant with two values
+], ids=["call", "ambiguous-constant"])
+def test_an_admin_router_whose_prefix_cannot_be_read_is_named(tmp_path: Path, mount: str) -> None:
+    _write(tmp_path, "app.ts", f"""
+        app.use('/api/v1/open', createOpenRouter(container));
+        {mount}
+    """)
+    _write(tmp_path, "a.ts", "export const TWO_VALUES = '/api/v1/a';\n")
+    _write(tmp_path, "b.ts", "export const TWO_VALUES = '/api/v1/b';\n")
+    # The router with no admin check needs no prefix; only the gated one is reported.
+    _write(tmp_path, "mixed.routes.ts", """
+        export function createOpenRouter(container: Container) {
+          const router = Router();
+          router.get('/', handler);
+          return router;
+        }
+
+        export function createGatedRouter(container: Container) {
+          const router = Router();
+          router.delete('/:id', userAdminCheck, handler);
+          return router;
+        }
+    """)
+    with pytest.raises(AssertionError, match=r"mixed\.routes\.ts \(createGatedRouter\)"):
+        discover_admin_routes(tmp_path)

@@ -4,7 +4,7 @@ import {
   ForbiddenError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
-import { Users } from '../schema/users.schema';
+import { getUserRepository } from '../../../libs/repositories/user';
 
 export const SERVICE_ACCOUNT_CANNOT_MINT_MESSAGE =
   'A service account cannot create credentials. Ask an administrator.';
@@ -42,10 +42,7 @@ export const refuseServiceAccountCaller = async (
       throw new NotFoundError('Account not found');
     }
 
-    const caller = await Users.findOne({ _id: userId, isDeleted: false })
-      .select('kind')
-      .lean()
-      .exec();
+    const caller = await getUserRepository().getAccountState(userId);
 
     if (!caller) {
       throw new NotFoundError('Account not found');

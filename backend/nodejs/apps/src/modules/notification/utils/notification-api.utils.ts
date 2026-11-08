@@ -1,4 +1,4 @@
-import mongoose from 'mongoose';
+import { isValidId } from '../../../libs/repositories/ids';
 
 export const NOTIFICATION_RETENTION_DAYS = 30;
 export const DEFAULT_PAGE_SIZE = 20;
@@ -8,7 +8,7 @@ const RETENTION_SECONDS = NOTIFICATION_RETENTION_DAYS * 24 * 60 * 60;
 
 export interface NotificationCursor {
   createdAt: Date;
-  _id: mongoose.Types.ObjectId;
+  _id: string;
 }
 
 export interface PaginatedNotificationResult<T> {
@@ -29,38 +29,21 @@ export function retentionCutoff(now: Date = new Date()): Date {
 }
 
 export interface NotificationAuthContext {
-  userOid: mongoose.Types.ObjectId;
-  orgOid: mongoose.Types.ObjectId;
+  userId: string;
+  orgId: string;
 }
 
-// Narrows the untyped (Record<string, any>) req.user into validated ObjectIds
-// so callers never pass unchecked values into Mongo queries.
+// Narrows the untyped (Record<string, any>) req.user into validated ids so
+// callers never pass unchecked values into a query.
 export function resolveNotificationAuthContext(
   user: Record<string, unknown> | undefined,
 ): NotificationAuthContext | null {
-  const userOid = toObjectId(user?.userId);
-  const orgOid = toObjectId(user?.orgId);
-  if (!userOid || !orgOid) {
+  const userId = toIdString(user?.userId);
+  const orgId = toIdString(user?.orgId);
+  if (!userId || !orgId) {
     return null;
   }
-  return { userOid, orgOid };
-}
-
-export function buildRetentionFilter(
-  orgOid: mongoose.Types.ObjectId,
-  userOid: mongoose.Types.ObjectId,
-  notificationStatus: string | null,
-  includeArchived = false,
-): Record<string, unknown> {
-  return {
-    orgId: orgOid,
-    assignedTo: userOid,
-    isDeleted: false,
-    createdAt: { $gte: retentionCutoff() },
-    ...(notificationStatus
-      ? { status: notificationStatus }
-      : includeArchived ? {} : { status: { $ne: 'archived' } }),
-  };
+  return { userId, orgId };
 }
 
 export function clampPageSize(raw: unknown): number {
@@ -74,7 +57,7 @@ export function clampPageSize(raw: unknown): number {
 export function encodeCursor(cursor: NotificationCursor): string {
   const payload = {
     c: cursor.createdAt.toISOString(),
-    i: cursor._id.toString(),
+    i: cursor._id,
   };
   return Buffer.from(JSON.stringify(payload)).toString('base64url');
 }
@@ -86,17 +69,14 @@ export function decodeCursor(raw: string): NotificationCursor {
   try {
     const decoded = Buffer.from(raw, 'base64url').toString('utf8');
     const payload = JSON.parse(decoded) as { c?: string; i?: string };
-    if (!payload.c || !payload.i || !mongoose.isValidObjectId(payload.i)) {
+    if (!payload.c || !payload.i || !isValidId(payload.i)) {
       throw new InvalidNotificationCursorError();
     }
     const createdAt = new Date(payload.c);
     if (Number.isNaN(createdAt.getTime())) {
       throw new InvalidNotificationCursorError();
     }
-    return {
-      createdAt,
-      _id: new mongoose.Types.ObjectId(payload.i),
-    };
+    return { createdAt, _id: payload.i };
   } catch (err) {
     if (err instanceof InvalidNotificationCursorError) {
       throw err;
@@ -105,29 +85,12 @@ export function decodeCursor(raw: string): NotificationCursor {
   }
 }
 
-export function buildCursorFilter(cursor: NotificationCursor): Record<string, unknown> {
-  return {
-    $or: [
-      { createdAt: { $lt: cursor.createdAt } },
-      { createdAt: cursor.createdAt, _id: { $lt: cursor._id } },
-    ],
-  };
-}
-
-export function toObjectId(value: unknown): mongoose.Types.ObjectId | null {
-  if (value instanceof mongoose.Types.ObjectId) {
-    return value;
+export function toIdString(value: unknown): string | null {
+  if (value == null || typeof (value as { toString?: () => string }).toString !== 'function') {
+    return null;
   }
-  if (typeof value === 'string' && mongoose.isValidObjectId(value)) {
-    return new mongoose.Types.ObjectId(value);
-  }
-  if (value != null && typeof (value as { toString?: () => string }).toString === 'function') {
-    const asString = String(value);
-    if (mongoose.isValidObjectId(asString)) {
-      return new mongoose.Types.ObjectId(asString);
-    }
-  }
-  return null;
+  const asString = String(value);
+  return isValidId(asString) ? asString : null;
 }
 
 function toDate(value: unknown): Date | null {
@@ -153,7 +116,7 @@ export function paginateResults<T>(
     | { createdAt?: unknown; _id?: unknown }
     | undefined;
   const createdAt = last ? toDate(last.createdAt) : null;
-  const objectId = last ? toObjectId(last._id) : null;
+  const objectId = last ? toIdString(last._id) : null;
   const cursor =
     hasMore && createdAt && objectId
       ? encodeCursor({ createdAt, _id: objectId })

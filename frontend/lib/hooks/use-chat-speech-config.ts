@@ -3,6 +3,7 @@
 import useSWR from 'swr';
 
 import { apiClient } from '@/lib/api';
+import { SWR_NS, SWR_POLICY } from '@/lib/api/swr-cache';
 
 interface SpeechCapabilitySummary {
   provider: string;
@@ -50,14 +51,15 @@ const CAPABILITIES_ENDPOINT = '/api/v1/chat/speech/capabilities';
 // Local fetcher so capability probes don't fire the global error toast on
 // transient backend failures — a missing capability simply means the UI
 // should fall back to the browser's Web Speech API.
-async function silentCapabilitiesFetcher(
-  url: string
-): Promise<SpeechCapabilitiesResponse> {
-  const { data } = await apiClient.get<SpeechCapabilitiesResponse>(url, {
+async function silentCapabilitiesFetcher(): Promise<SpeechCapabilitiesResponse> {
+  const { data } = await apiClient.get<SpeechCapabilitiesResponse>(CAPABILITIES_ENDPOINT, {
     suppressErrorToast: true,
   });
   return data;
 }
+
+// Under the model-config namespace: adding or removing a TTS/STT model refreshes it.
+const CAPABILITIES_KEY = [SWR_NS.aiModelConfig, 'speech'] as const;
 
 /**
  * Fetches the server's configured TTS/STT providers so the chat UI can pick
@@ -69,13 +71,9 @@ async function silentCapabilitiesFetcher(
  */
 export function useChatSpeechConfig(): ChatSpeechConfig {
   const { data, error, isLoading } = useSWR<SpeechCapabilitiesResponse>(
-    CAPABILITIES_ENDPOINT,
+    CAPABILITIES_KEY,
     silentCapabilitiesFetcher,
-    {
-      revalidateOnFocus: false,
-      shouldRetryOnError: false,
-      dedupingInterval: 60_000,
-    }
+    SWR_POLICY.sessionStable,
   );
 
   const tts = data?.tts ?? null;

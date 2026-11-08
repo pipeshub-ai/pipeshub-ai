@@ -102,6 +102,9 @@ class TestConsumerSubscription:
         assert lane_topics_for("entity-events", MessageBrokerType.REDIS) == [
             "entity-events"
         ]
+        assert lane_topics_for("record-title-events", MessageBrokerType.REDIS) == [
+            "record-title-events"
+        ]
 
 
 class TestSegregatedBacklogIsSpreadAcrossLanes:

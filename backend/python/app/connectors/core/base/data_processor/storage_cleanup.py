@@ -29,6 +29,7 @@ from app.config.constants.service import (
 from app.services.messaging.config import Topic
 from app.utils.jwt import mint_service_token
 from app.utils.request_context import inject_request_headers
+from app.utils.storage_move import post_move_tree
 from app.utils.storage_path import (
     build_hierarchical_storage_path,
     build_record_group_prefix_from_chain,
@@ -361,6 +362,72 @@ class StorageCleanupHelper:
             failed += len(batch) - done
         return moved, failed
 
+    async def hand_over_after_record_delete(
+        self,
+        org_id: str,
+        connector_id: str,
+        virtual_record_id: str,
+        deleted_record_id: str | None = None,
+    ) -> bool:
+        """After a record holding ``virtual_record_id`` left the graph, move the
+        shared copy under a record that still holds it. True when it moved.
+
+        The copy is filed under whichever holder indexed it first. Once that
+        holder is deleted, the copy still sits under its folder and is tagged
+        with its connector, where the survivors' connector scope (grep, their
+        knowledge base's delete) does not look. A copy already under a remaining
+        holder's path stays put, and so does one in the flat layout, which the
+        flat-storage migration moves. Raises when the copy should move and
+        could not, or when a holder's path cannot be read: that holder may be
+        where the copy already is.
+        """
+        holders = [
+            h for h in (
+                await self.graph_provider.get_virtual_record_holders([virtual_record_id], org_id)
+            ).get(virtual_record_id) or []
+            # A lagging read can still list the deleted record, whose path is
+            # where the copy sits; counting it would leave the copy unmoved.
+            if h.get("id") and h.get("connectorId") and h.get("id") != deleted_record_id
+        ]
+        if not holders:
+            return False
+        current = await self.current_content_path(org_id, virtual_record_id)
+        if not current or current == f"records/{virtual_record_id}":
+            return False
+        owner = choose_storage_owner(holders)
+        # The owner first: it is where the copy usually already is.
+        owner_path = ""
+        for holder in [owner, *(h for h in holders if h is not owner)]:
+            path = await self._owner_storage_path(holder)
+            if path == current:
+                return False
+            if not path:
+                raise StorageHandoverError(
+                    f"no storage path for holder {holder.get('id')} of VRID {virtual_record_id}"
+                )
+            if holder is owner:
+                owner_path = path
+        # Storage moves only what the named connector's delete would take; the
+        # copy sits under its filing connector, which is not always this one.
+        parts = current.split("/")
+        from_connector = parts[1] if parts[0] == "records" and len(parts) > 2 else connector_id
+        move = {
+            "virtualRecordId": virtual_record_id,
+            "newPath": owner_path,
+            "connectorId": owner["connectorId"],
+        }
+        if owner.get("recordGroupId"):
+            move["recordGroupId"] = owner["recordGroupId"]
+        if not await self._relocate(org_id, from_connector, [move]):
+            raise StorageHandoverError(
+                f"storage did not move VRID {virtual_record_id} to {owner_path}"
+            )
+        self.logger.info(
+            "Shared copy of VRID %s handed over after a record delete: %s -> %s (holder %s)",
+            virtual_record_id, current, owner_path, owner.get("id"),
+        )
+        return True
+
     async def _owner_storage_path(self, owner: dict) -> str | None:
         # No flat fallback: a failed path lookup is retried rather than filing
         # the copy where the owner's connector scope cannot find it.
@@ -503,6 +570,16 @@ class StorageCleanupHelper:
             missing.extend(str(d) for d in answer)
         return missing
 
+    async def current_content_path(self, org_id: str, virtual_record_id: str) -> str | None:
+        """Where a record's content document is stored now (relative to the org),
+        or None when that is unknown."""
+        # Here, not at module level: connector core does not otherwise depend on
+        # the indexing transformers.
+        from app.modules.transformers.blob_storage import BlobStorage
+
+        blob_storage = BlobStorage(self.logger, self.config_service, self.graph_provider)
+        return await blob_storage.get_actual_content_path(org_id, virtual_record_id)
+
     async def delete_connector_storage(
         self, org_id: str, connector_id: str
     ) -> int:
@@ -572,20 +649,9 @@ class StorageCleanupHelper:
             return {"moved": 0}
 
         headers, nodejs_endpoint = await self._get_auth_headers_and_endpoint(org_id)
-        move_url = f"{nodejs_endpoint}{Routes.STORAGE_MOVE_TREE.value}"
-        body: dict = {"oldPath": old_path, "newPath": new_path}
-        if virtual_record_id:
-            body["virtualRecordId"] = virtual_record_id
-        elif virtual_record_ids is not None:
-            body["virtualRecordIds"] = virtual_record_ids
-
-        session = await self._get_session()
-        async with session.post(move_url, json=body, headers=headers) as resp:
-            if resp.status != HttpStatusCode.SUCCESS.value:
-                error_text = await resp.text()
-                raise Exception(
-                    f"move-tree failed: {resp.status} {error_text[:200]}"
-                )
-            result = await resp.json()
+        result = await post_move_tree(
+            await self._get_session(), nodejs_endpoint, headers, old_path, new_path,
+            virtual_record_id=virtual_record_id, virtual_record_ids=virtual_record_ids,
+        )
         self.logger.info("✅ Moved storage tree %s -> %s", old_path, new_path)
-        return result if isinstance(result, dict) else {"moved": 0}
+        return result

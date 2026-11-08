@@ -14,14 +14,18 @@ from app.connectors.core.registry.oauth_config_registry import (
     get_oauth_config_registry,
 )
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
-# Which indexing lane a connector is given on Redis Streams, and whether an
-# administrator may move it. An edition can replace either: pin a connector to
-# a lane of its own, weight lanes, or allow admin moves.
+# Which indexing lane a connector is given on Redis Streams, whether an
+# administrator may move it, and which pool of lanes an org belongs in. An
+# edition can replace any of them: pin a connector to a lane of its own, weight
+# lanes, allow admin moves, or keep a group of orgs on lanes of their own.
 from app.services.messaging.lanes.assignment_policy import (
     admin_lane_move_allowed as admin_lane_move_allowed,
 )
 from app.services.messaging.lanes.assignment_policy import (
     choose_connector_lane as choose_connector_lane,
+)
+from app.services.messaging.lanes.assignment_policy import (
+    lane_pool_for_org as lane_pool_for_org,
 )
 
 
@@ -84,6 +88,8 @@ if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
 
     from app.agents.registry.toolset_registry import ToolsetRegistry
+    from app.services.model_identity.forwarders.registry import ForwarderRegistry
+    from app.services.model_identity.groups import GroupMembershipResolver
     from app.web.ports import WebAccessGate
 
 
@@ -105,6 +111,21 @@ def decorate_chat_model(model: "BaseChatModel", provider: str, model_name: str, 
 def decorate_embeddings(embeddings: "Embeddings", provider: str, model_name: str, config: dict) -> "Embeddings":
     """Wrap an embeddings client with edition extras. OSS: none."""
     return embeddings
+
+
+def get_group_membership_resolver(container: Any) -> "GroupMembershipResolver":  # noqa: ANN401 - an untyped dependency-injection object
+    """Resolves a person's IdP group ids for identity forwarding to a model gateway.
+
+    OSS knows no groups: the gateway receives the user id only.
+    """
+    from app.services.model_identity.groups import NoopGroupResolver
+
+    return NoopGroupResolver()
+
+
+def register_identity_forwarders(registry: "ForwarderRegistry") -> None:
+    """Add edition-specific wire formats (for example signed JWT) to the forwarder registry. OSS: none."""
+    pass
 
 
 def get_web_access_gate() -> "WebAccessGate":
@@ -141,6 +162,11 @@ def bootstrap_guard(logger, config_service, **kwargs):
         yield True
 
     return _single_process()
+
+
+async def bootstrap_leased_ids(connector_ids: list[str]) -> set[str]:
+    """One process, so a restart has no live peer whose flag must stay."""
+    return set()
 
 
 def build_sync_dispatcher(logger, producer):

@@ -2,11 +2,9 @@ import mongoose, { Document, Schema, Model, Types } from 'mongoose'
 import { KnowledgeLimit } from '../types/oauth.types';
 import { knowledgeLimitField } from './knowledge_limit.schema';
 
-export enum OAuthDeviceCodeStatus {
-  PENDING = 'pending',
-  APPROVED = 'approved',
-  DENIED = 'denied',
-}
+import { OAuthDeviceCodeStatus } from '../../../libs/repositories/oauth-token/types';
+
+export { OAuthDeviceCodeStatus };
 
 export interface IOAuthDeviceCode extends Document {
   deviceCodeHash: string

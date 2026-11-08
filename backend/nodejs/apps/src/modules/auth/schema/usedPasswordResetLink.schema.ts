@@ -1,4 +1,3 @@
-import { createHash } from 'crypto';
 import mongoose, { Schema, Model } from 'mongoose';
 
 /**
@@ -35,8 +34,3 @@ export const UsedPasswordResetLink: Model<IUsedPasswordResetLink> =
     usedPasswordResetLinkSchema,
     'usedPasswordResetLinks',
   );
-
-/** Stored instead of the link itself, which would still work until it expires. */
-export function hashResetLink(token: string): string {
-  return createHash('sha256').update(token).digest('hex');
-}

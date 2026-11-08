@@ -2,13 +2,7 @@
 // Authentication Settings — Types
 // ============================================================
 
-export type AuthMethodType =
-  | 'password'
-  | 'otp'
-  | 'google'
-  | 'microsoft'
-  | 'samlSso'
-  | 'oauth';
+export type AuthMethodType = 'password' | 'otp' | 'google' | 'microsoft';
 
 // ── API response shapes ──────────────────────────────────────
 
@@ -51,46 +45,34 @@ export interface MicrosoftConfig {
   enableJit: boolean;
 }
 
-export interface SamlConfig {
-  entryPoint: string;
-  certificate: string;
-  emailKey: string;
-  logoutUrl?: string;
-  entityId?: string;
-  enableJit: boolean;
-  samlPlatform?: string;
-  /** SP Entity ID (issuer) — set via SAML_SP_ENTITY_ID env var, defaults to 'pipeshub' */
-  spEntityId?: string;
-}
-
-export interface OAuthConfig {
-  clientId: string;
-  clientSecret: string;
-  providerName: string;
-  authorizationUrl: string;
-  tokenEndpoint: string;
-  userInfoEndpoint: string;
-  scope?: string;
-  redirectUri?: string;
-  enableJit: boolean;
-}
-
 // ── Config status (which providers are fully configured) ─────
 
 export interface ConfigStatus {
   google: boolean;
   microsoft: boolean;
-  samlSso: boolean;
-  oauth: boolean;
+}
+
+// ── Sign-in methods removed in 1.0 ───────────────────────────
+
+/** Sign-in methods the 1.0 upgrade turned off. */
+export type RemovedSignInMethod = 'samlSso' | 'oauth';
+
+export interface PersonWithoutPassword {
+  userId: string;
+  fullName?: string;
+  email: string;
+}
+
+/** Shape returned by GET /api/v1/orgAuthConfig/signInRemoval */
+export interface SignInRemovalStatus {
+  removedMethods: RemovedSignInMethod[];
+  peopleWithoutPassword: PersonWithoutPassword[];
 }
 
 // ── Panel state ──────────────────────────────────────────────
 
 /** Which method's configure panel is open */
-export type ConfigurableMethod = Extract<
-  AuthMethodType,
-  'google' | 'microsoft' | 'samlSso' | 'oauth'
->;
+export type ConfigurableMethod = Extract<AuthMethodType, 'google' | 'microsoft'>;
 
 export interface ConfigurePanelState {
   open: boolean;
@@ -147,30 +129,7 @@ export const AUTH_METHOD_META: AuthMethodMeta[] = [
     configurable: true,
     requiresSmtp: false,
   },
-  {
-    type: 'samlSso',
-    label: 'SAML SSO',
-    description: 'Single Sign-On with SAML protocol',
-    icon: 'security',
-    configurable: true,
-    requiresSmtp: false,
-  },
-  {
-    type: 'oauth',
-    label: 'OAuth',
-    description: 'Generic OAuth 2.0 provider authentication',
-    icon: 'vpn_key',
-    configurable: true,
-    requiresSmtp: false,
-  },
 ];
 
 /** All method types (used to build full toggleable list from API response) */
-export const ALL_AUTH_METHOD_TYPES: AuthMethodType[] = [
-  'password',
-  'otp',
-  'google',
-  'microsoft',
-  'samlSso',
-  'oauth',
-];
+export const ALL_AUTH_METHOD_TYPES: AuthMethodType[] = ['password', 'otp', 'google', 'microsoft'];

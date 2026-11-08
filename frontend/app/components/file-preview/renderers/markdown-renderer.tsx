@@ -7,6 +7,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
+import { SafeMarkdownImage } from '@/app/components/ui/safe-markdown-image';
+import { markdownUrlTransform } from '@/lib/utils/image-url-policy';
 import type { PreviewCitation } from '../types';
 import { useTextHighlighter } from '../use-text-highlighter';
 
@@ -17,6 +19,10 @@ import { useTextHighlighter } from '../use-text-highlighter';
  */
 const sanitizeSchema = {
   ...defaultSchema,
+  protocols: {
+    ...defaultSchema.protocols,
+    src: [...(defaultSchema.protocols?.src ?? []), 'data', 'blob'],
+  },
   attributes: {
     ...defaultSchema.attributes,
     '*': [...(defaultSchema.attributes?.['*'] ?? []), 'className', 'align', 'id'],
@@ -236,6 +242,7 @@ export function MarkdownRenderer({ fileUrl, fileName: _fileName, citations, acti
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           rehypePlugins={[rehypeRaw, [rehypeSanitize, sanitizeSchema]]}
+          urlTransform={markdownUrlTransform}
           components={{
             h1: ({ node: _node, ...props }) => (
               <h1 style={{ fontSize: '32px', fontWeight: 700, marginBottom: 'var(--space-4)', color: 'var(--slate-12)' }} {...props} />
@@ -284,12 +291,13 @@ export function MarkdownRenderer({ fileUrl, fileName: _fileName, citations, acti
             td: ({ node: _node, ...props }) => (
               <td style={{ padding: 'var(--space-2)', border: '1px solid var(--slate-6)' }} {...props} />
             ),
-            img: ({ node: _node, alt, ...props }) => (
-              <img
-                {...props}
-                alt={alt ?? ''}
+            img: ({ node: _node, src, alt, width, height }) => (
+              <SafeMarkdownImage
+                src={src}
+                alt={alt}
+                width={width}
+                height={height}
                 style={{ maxWidth: '100%', height: 'auto', display: 'block', margin: '1em auto', borderRadius: 'var(--radius-2)' }}
-                loading="lazy"
               />
             ),
             pre: ({ node: _node, ...props }) => (

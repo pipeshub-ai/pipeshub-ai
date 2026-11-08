@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import random
 import re
@@ -18,6 +19,7 @@ import time
 import traceback
 import unicodedata
 import uuid
+from collections.abc import Collection, Sequence
 from datetime import datetime, timezone
 from functools import lru_cache
 from logging import Logger
@@ -38,6 +40,7 @@ from app.config.constants.arangodb import (
     ConnectorScopes,
     DeleteSource,
     DepartmentNames,
+    EntityOrigin,
     MimeTypes,
     OriginTypes,
     PermissionModel,
@@ -49,7 +52,7 @@ from app.config.constants.arangodb import (
 from app.services.graph_db.common.utils import record_status_field
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Collection, Mapping
+    from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 
     from app.services.cache.interface import IAccessibleRecordsCache
 from app.config.constants.neo4j import (
@@ -64,10 +67,15 @@ from app.config.constants.neo4j import (
     parse_node_id,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.config.constants.service_accounts import cypher_not_a_service_account
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
+    GraphMemoryLimitError,
     GraphQueryError,
+    KnowledgeHubListingBusy,
+    KnowledgeHubListingTooLarge,
     PermissionVerificationUnavailableError,
+    is_out_of_memory,
 )
 from app.models.entities import (
     AppRole,
@@ -88,6 +96,7 @@ from app.models.entities import (
     PullRequestRecord,
     Record,
     RecordGroup,
+    SQLColumnRecord,
     SQLTableRecord,
     SQLViewRecord,
     TicketRecord,
@@ -100,6 +109,11 @@ from app.models.permission import (
     ORG_SHARE_PERMISSION_TYPES,
     RETIRED_ROLES,
     read_role,
+)
+from app.models.source_dates import (
+    DATED_ONLY_TIME_RANGE_KEY,
+    SOURCE_TIMESTAMP_ORIGIN_FIELD,
+    upload_times_undated,
 )
 from app.modules.code_graph.build_state import (
     SYNC_POINT_SUFFIX as CODE_EDGE_BUILD_SUFFIX,
@@ -114,13 +128,17 @@ from app.schema.node_schema_registry import (
     NODE_SCHEMA_REGISTRY,
     get_required_fields,
 )
-from app.schema.node_validator import NodeSchemaValidator
+from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
 from app.services.featureflag.platform_settings import is_kh_scope_listing_enabled
+from app.services.graph_db import edge_effects
+from app.services.graph_db.common.cascade_retry import CASCADE_ATTEMPTS
+from app.services.graph_db.common.cascade_retry import backoff as cascade_backoff
 from app.services.graph_db.common.full_sync_unlink import (
     FULL_SYNC_EDGE_COLLECTIONS,
     split_unseen_by_window,
     unseen_node_keys,
 )
+from app.services.graph_db.common.name_match import cypher_name_key, name_query_params
 from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
     RecordVisibility,
@@ -130,12 +148,17 @@ from app.services.graph_db.common.record_visibility import (
     indexed_copy_fields,
     is_live_record,
 )
+from app.services.graph_db.common.team_grant_role import (
+    TEAM_GRANT_ROLES,
+    cypher_team_grant_role,
+)
 from app.services.graph_db.common.utils import (
     CANONICAL_PARENT_RELATION_TYPES,
     CONTAINER_INHERIT_MAX_DEPTH,
     CONTAINMENT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
     PATH_MAX_CANDIDATES,
+    PERSON_ENTITY_TYPE,
     TRASH_LIST_OTHER_ROOT_NAMES,
     TRASH_STATE_FIELDS,
     TRASHED_EXTERNAL_ID_PREFIX,
@@ -147,6 +170,7 @@ from app.services.graph_db.common.utils import (
     deleted_record_taxonomy_refs,
     empty_soft_delete_result,
     jira_issue_browse_url_regex,
+    person_query_ref,
     record_taxonomy_refs,
     restore_items,
     select_canonical_chain_names,
@@ -154,6 +178,20 @@ from app.services.graph_db.common.utils import (
     soft_delete_result,
     trash_purge_row,
     uploaded_document_id,
+    within_param,
+)
+from app.services.graph_db.conditions import (
+    EQ,
+    IS_NULL,
+    NULL_OR_EQ,
+    Cond,
+    check_conditions,
+)
+from app.services.graph_db.dated_scope import (
+    DatedRow,
+    frozen_filters,
+    read_within,
+    scope_for,
 )
 from app.services.graph_db.entity_index_queries import (
     APP_STATUS_DELETING,
@@ -170,6 +208,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_GRACE_MS,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     KH_LISTING_STATE_FLAG,
+    REF_LINKS_PER_DOC,
     STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
     CodeFileInfo,
@@ -182,8 +221,22 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 from app.services.graph_db.neo4j import kh_scope
 from app.services.graph_db.neo4j.neo4j_client import (
+    COMMITS_IN_BATCHES,
+    DEFAULT_LIVENESS_CHECK_TIMEOUT,
+    DEFAULT_MAX_CONNECTION_LIFETIME,
     DEFAULT_MAX_CONNECTION_POOL_SIZE,
+    DEFAULT_TRANSACTION_TIMEOUT,
+    WRITE_CONFLICT_ATTEMPTS,
     Neo4jClient,
+    is_write_conflict,
+)
+from app.services.graph_db.neo4j.permission_scopes import Neo4jHierarchyView
+from app.services.graph_db.neo4j.permission_stamps import Neo4jStampGraph
+from app.services.graph_db.push_claim import (
+    KB_DELETING_STATUS,
+    PushClaim,
+    PushExpect,
+    PushSet,
 )
 from app.services.graph_db.taxonomy import (
     CATEGORY_HIERARCHY_PARENTS,
@@ -218,7 +271,7 @@ from app.services.graph_db.vector_membership_queries import (
     build_page_records_for_vector_membership_backfill_cypher,
     can_use_membership_cleanup,
 )
-from app.utils.env_config import env_int
+from app.utils.env_config import env_int, env_seconds
 from app.utils.env_utils import env_bool
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed, folder_in_trash
@@ -240,16 +293,28 @@ TAXONOMY_ALIAS_REL = "ALIAS_OF"
 TAXONOMY_ALIAS_HEAL_MARKER = "taxonomy_alias_nodes_v1"
 SCHEMA_MIGRATION_LABEL = "SchemaMigration"
 _ALIAS_HEAL_BATCH = 1000
+# Ids a connector delete must report, kept while its batches run; see
+# _stash_connector_delete_handles. Deleted with the connector node.
+_CONNECTOR_DELETE_HANDLE_LABEL = "ConnectorDeleteHandle"
+_CONNECTOR_DELETE_HANDLE_CHUNK = 5000
 
 # Quantified path pattern walking child -> canonical parent. The step predicate
 # sits inside the pattern so expansion stops at the first non-canonical edge
 # instead of enumerating every NODE_RELATION path and filtering afterwards.
 # The parent is a record: NODE_RELATION also runs from record groups and Apps.
 # Needs $relation_types bound to CANONICAL_PARENT_RELATION_TYPES.
+# Of several canonical edges between the same parent and child only the one
+# with the lowest element id is followed: each parallel edge would otherwise
+# double the paths enumerated at its level (2^depth for a chain of them).
 CANONICAL_ANCESTOR_STEPS = """((child)<-[rel:NODE_RELATION]-(parent:Record)
                 WHERE rel.relationshipType IN $relation_types
                   AND (child.externalParentId = parent.externalRecordId
-                       OR child.externalParentId = parent.id)){0,100}"""
+                       OR child.externalParentId = parent.id)
+                  AND NOT EXISTS {
+                      MATCH (child)<-[twin:NODE_RELATION]-(parent)
+                      WHERE twin.relationshipType IN $relation_types
+                        AND elementId(twin) < elementId(rel)
+                  }){0,100}"""
 
 # Cypher's default match mode only keeps relationships distinct; Arango's
 # path traversals use uniqueVertices: "path", so drop paths that revisit a node.
@@ -259,6 +324,15 @@ NO_REPEATED_PATH_NODES = (
 )
 
 # Search metadata filters: (filter key, relationship, target label, name property, query parameter).
+_LABEL_TO_COLLECTION = {label: collection for collection, label in COLLECTION_TO_LABEL.items()}
+
+
+def collection_of_labels(labels: list[str] | None) -> str:
+    """The collection a node belongs to, from its labels: the known collection label, whatever other labels it carries and in
+    whatever order the store lists them (`labels()` has no order). Several known ones: the smallest, so the answer is stable."""
+    known = sorted(_LABEL_TO_COLLECTION[label] for label in labels or [] if label in _LABEL_TO_COLLECTION)
+    return known[0] if known else ""
+
 # The labels must be the ones the indexing writer stores (see COLLECTION_TO_LABEL).
 _METADATA_FILTERS: tuple[tuple[str, str, str, str, str], ...] = (
     ("departments", "BELONGS_TO_DEPARTMENT", Neo4jLabel.DEPARTMENTS.value, "departmentName", "departmentNames"),
@@ -273,6 +347,38 @@ _METADATA_FILTERS: tuple[tuple[str, str, str, str, str], ...] = (
 
 # Retired roles read as READER, inside Cypher too.
 _RETIRED_ROLES_CYPHER = "[" + ", ".join(f"'{r}'" for r in sorted(RETIRED_ROLES)) + "]"
+
+# What a member gets from a team's grant; the matches name the edges team_grant and team_member.
+_TEAM_GRANT_ROLE_CYPHER = cypher_team_grant_role("team_grant", "team_member")
+
+# The roles a knowledge base grant can carry; any other direct role is no access.
+_KB_ROLES_CYPHER = "[" + ", ".join(f"'{r}'" for r in TEAM_GRANT_ROLES) + "]"
+
+
+def _kb_edge_role_ok(edge: str) -> str:
+    """Cypher predicate: the direct grant ``edge`` on a knowledge base carries a KB role."""
+    return f"(CASE WHEN {edge}.role IN {_RETIRED_ROLES_CYPHER} THEN 'READER' ELSE {edge}.role END) IN {_KB_ROLES_CYPHER}"
+
+# The dates a time range bounds, read beside each record of a shared timeline
+# walk (``dated_scope``): as columns, as fields of a collected pair, and back
+# out of the pair.
+_DATED_COLUMNS = (
+    ", r.sourceCreatedAtTimestamp AS created, r.sourceLastModifiedTimestamp AS updated,"
+    f" r.{SOURCE_TIMESTAMP_ORIGIN_FIELD} AS origin"
+)
+_DATED_PAIR_FIELDS = (
+    ", created: r.sourceCreatedAtTimestamp, updated: r.sourceLastModifiedTimestamp,"
+    f" origin: r.{SOURCE_TIMESTAMP_ORIGIN_FIELD}"
+)
+_DATED_PAIR_COLUMNS = ", pair.created AS created, pair.updated AS updated, pair.origin AS origin"
+
+
+def _dated_rows(results: list[dict] | None) -> list[DatedRow]:
+    return [
+        DatedRow(r.get("virtualId"), r.get("recordId"), r.get("created"), r.get("updated"), r.get("origin"))
+        for r in results or []
+    ]
+
 
 # Only an org-wide share's edge types grant access through the organization: a
 # domain or "anyone" edge left by an older version grants nothing.
@@ -309,17 +415,64 @@ def _cypher_kh_date(v: str, source: str, ingest: str) -> str:
             f"ELSE coalesce({v}.{source}, {v}.{ingest}, 0) END")
 
 
-def _cypher_kh_has_children(v: str) -> str:
-    """Whether a knowledge hub node has a live child: one below it in the
-    hierarchy, or a record filed in it. Collection items often belong to the
-    folder instead of hanging off it by NODE_RELATION."""
-    return (
-        f"(EXISTS {{ ({v})-[kh_hr:NODE_RELATION]->(kh_ch) "
-        "WHERE kh_hr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
-        "AND NOT coalesce(kh_ch.isDeleted, false) } "
-        f"OR EXISTS {{ (kh_bc)-[:BELONGS_TO]->({v}) "
-        "WHERE NOT coalesce(kh_bc.isDeleted, false) })"
+# Whether the App opens everything to whoever is gated in; `app` must be in scope.
+_CYPHER_APP_OPENS = "(coalesce(app.permissionModel, '') = 'APP_LEVEL' OR app.type = 'KB')"
+
+
+def _cypher_read_by_app(v: str) -> str:
+    """Whether ``v`` is read by this App's rules; ``app`` must be in scope. A record of another connector
+    that a group edge, a hierarchy edge or an app-level filing joins to this App is read by its own
+    connector's rules, so every listing arm ends in this test, once."""
+    return f"(NOT {v}:Record OR {v}.connectorId = app.id)"
+
+
+def _cypher_kh_has_children(
+    v: str, rule: str, filed: str, stub: Callable[[str], str], container: str, *, exact: bool = False,
+) -> str:
+    """Whether expanding ``v`` would list a child: a hierarchy child that passes
+    the browse's own ``rule`` (``_kh_v3_child_rule``), or, where ``filed`` says
+    everything is open, a record filed in it. A container (``container``: a group
+    or folder) always answers yes: finding out means reading every hidden child,
+    which cost 3x a large folder's page, and a constant says nothing about what the
+    viewer cannot read. Its expansion may also list chain-tops.
+
+    ``exact`` (a browse of a page) answers every container from the candidates its expansion draws
+    on, each held to the same tests, so that an arrow is on exactly when the expansion lists
+    something: a group that hides its children lists none; a hierarchy child must pass ``rule`` (a
+    declared group also lists the groups below it, as the rule reads a scope the app-level row does
+    not carry); a record that belongs to the container counts when the App opens everything or, as a chain-top,
+    when the viewer is granted it (a member of a declared group with no hierarchy edge is not listed by its
+    browse, so it lights no arrow);
+    and ``stub(node)`` hides a placeholder with nothing readable below it, wherever it comes from."""
+    declared = (f"({v}:RecordGroup AND coalesce({v}.permissionModel, '') = 'RECORD_GROUP_LEVEL'"
+                f" AND coalesce({v}.connectorId, '') = app.id)") if exact else "false"
+    hides = f"coalesce({v}.hideChildren, false)"
+
+    def held(var: str, cond: str = "true") -> str:
+        """Some record belonging to ``v`` that the expansion would list, under ``cond``."""
+        return (f"EXISTS {{ ({var}:Record)-[:BELONGS_TO]->({v}) WHERE NOT coalesce({var}.isDeleted, false)"
+                f" AND {var}.orgId = $org_id AND {_cypher_read_by_app(var)} {stub(var) if exact else ''}"
+                f" AND ({cond}) }}")
+
+    holds = (f"(coalesce({container}, false) AND {held('kh_bg', 'kh_bg.id IN $grantedIds')})") if exact else "false"
+    # A declared group on the page was admitted by the listing, so it is its own scope: the groups below it and
+    # the records that belong to it are what the rule reads from the scope an expansion carries.
+    in_scope = (f"({declared} AND NOT coalesce(kh_ch.isDeleted, false) AND (kh_ch:RecordGroup"
+                f" OR EXISTS {{ (kh_ch)-[:BELONGS_TO]->({v}) }}))")
+    body = (
+        f"({holds} OR "
+        f"EXISTS {{ ({v})-[kh_hr:NODE_RELATION]->(kh_ch) "
+        f"WHERE kh_hr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
+        # Cheap reject first: a child no arm of the rule can open is skipped before the full rule.
+        f"AND ({filed} OR size($declaredScope) > 0 OR kh_ch.id IN $grantedIds OR {declared} "
+        f"OR EXISTS {{ (kh_ch)-[:INHERIT_PERMISSIONS]->({v}) }}) "
+        f"AND (kh_ch:Record OR kh_ch:RecordGroup) AND kh_ch.orgId = $org_id AND kh_ch.id IS NOT NULL "
+        f"{stub('kh_ch')} AND ({rule} OR {in_scope}) }} "
+        f"OR ({filed} AND {'NOT coalesce(' + container + ', false)' if exact else 'true'} AND {held('kh_bc')}))"
     )
+    if exact:
+        return f"(CASE WHEN {hides} THEN false ELSE {body} END)"
+    return f"(CASE WHEN {container} THEN true ELSE {body} END)"
 
 
 # Listing state: what the knowledge hub listing would otherwise re-derive for
@@ -403,15 +556,39 @@ def _cypher_kh_tree_refresh(rel_types: str, *node_vars: str) -> str:
     return "\n            ".join(_cypher_kh_tree_state(v) for v in node_vars)
 
 
+def _in_lock_order(rows: list[dict], key: Callable[[dict], tuple[str, ...]]) -> list[dict]:
+    """*rows* sorted by the ids they lock, so concurrent batches over the same
+    nodes take their locks in one order instead of deadlocking each other.
+    Edges between nodes of one kind can still cross; the client resends those.
+    Stable: a node written twice in one batch keeps its last write last."""
+    return sorted(rows, key=key)
+
+
+def _by_id(node: dict) -> tuple[str, ...]:
+    return (str(node.get("id")),)
+
+
+def _by_ends(edge: dict) -> tuple[str, ...]:
+    return (str(edge.get("from_key", edge.get("from_id"))), str(edge.get("to_key", edge.get("to_id"))))
+
+
+# The timestamps of an edge: the only keys a diffed replace does not compare. Any other key counts as a
+# semantic property, so a key a caller adds later errs toward a rewrite.
+_EDGE_TIME_KEYS = ("createdAtTimestamp", "updatedAtTimestamp")
+
+
+def _semantic_props(props: dict) -> dict:
+    """*props* without the timestamps and without nulls (``SET r = map`` stores no null)."""
+    return {k: v for k, v in props.items() if k not in _EDGE_TIME_KEYS and v is not None}
+
+
 # Edges one statement moves; a hub node's millions go in batches.
 _EDGE_MOVE_BATCH = 5000
-# Idempotent shared writes retried on a deadlock or lock timeout.
-_TRANSIENT_WRITE_ATTEMPTS = 6
-_WRITE_CONFLICT_CODES = frozenset({
-    "Neo.TransientError.Transaction.DeadlockDetected",
-    "Neo.TransientError.Transaction.LockAcquisitionTimeout",
-    "Neo.TransientError.Transaction.LockClientStopped",
-})
+
+
+def _record_cap(cap: int | None) -> int:
+    # LIMIT needs a number; uncapped counts every record.
+    return max(1, int(cap)) if cap is not None else 2**31 - 1
 
 
 # Promotions to these statuses leave the primary with taxonomy to copy to its
@@ -419,12 +596,33 @@ _WRITE_CONFLICT_CODES = frozenset({
 _RECONCILED_STATUSES = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
 
 
+def _created_ends(rows: list[dict] | None) -> list[str]:
+    """The node ids at both ends of the edges a statement reported as created (`made`: a list of `[from, to]` pairs)."""
+    made = (rows[0].get("made") if rows and isinstance(rows[0], dict) else None) or []
+    return [i for pair in made for i in pair]
+
+
+# From this many rows an edge write or replace fails for good when the server's transaction memory pool refuses it
+# (GraphMemoryLimitError). A smaller one is likely the victim of a big statement holding the shared pool, and
+# keeps the bounded retry, which usually outlasts it.
+BULK_EDGE_ROWS = 10_000
+
+
+def _bulk_rows(operation: str, rows: int) -> dict[str, Any]:
+    """execute_query's ``bulk`` keywords for a batch edge write of this many rows, none for a small one."""
+    return {"bulk": operation, "size": rows} if rows >= BULK_EDGE_ROWS else {}
+
+
+# Set on an edge by the MERGE that creates it and read in the same statement: tells a created edge from a found one.
+_EDGE_NEW = "edgeNew"
 # Written, then removed or deleted, inside one purge statement to take a node's write lock.
 _PURGE_LOCK = "purgeLock"
 # Written and removed at the start of a move statement to take its new parent's write lock.
 _MOVE_LOCK = "moveLock"
 # Written and removed before a conditional write reads its expectation, to take the node's write lock.
 _MATCH_LOCK = "matchLock"
+# Set by a create-if-absent statement on the node it created, and removed again in the same statement.
+_CREATED_MARK = "createdMark"
 # A record with any of these children waits for them to be purged first.
 _CONTAINMENT_RELATIONS = ("PARENT_CHILD", "ATTACHMENT")
 # The roots of a connector's delete batches: records in the trash whose parent is
@@ -515,6 +713,29 @@ def _trash_list_page_query(*, hinted: bool) -> str:
 _PURGE_WALK_INDEX = "record_org_deleted_at"
 _PURGE_WALK_HINT = "USING INDEX r:Record(orgId, deletedAtTimestamp, id)"
 _INDEX_NOT_FOUND = "Neo.ClientError.Schema.IndexNotFound"
+# The record-people backfill's paging index, created by ensure_schema. By its
+# statistics the planner can prefer (orgId, recordType) and then sort every page.
+_RECORD_ORG_ID_INDEX = "record_org_id_key"
+_RECORD_ORG_ID_HINT = "USING INDEX record:Record(orgId, id)"
+_RECORD_ORG_ID_HINT_WARNING = (
+    "The record-people backfill's index %s is not ready; paging records without it until it is: %s"
+)
+
+
+def _record_ids_by_type_page(hint: str) -> str:
+    """One page of an org's records of some types, after a key, in (orgId, id)
+    index order: every page, the first too (after ""), seeks an id range, so
+    the index gives the order and the page stops at the limit."""
+    return f"""
+            MATCH (record:Record)
+            {hint}
+            WHERE record.orgId = $org_id AND record.id > $after_key
+              AND record.recordType IN $types
+              AND coalesce(record.isDeleted, false) = false
+            RETURN record.id AS id
+            ORDER BY record.orgId, record.id
+            LIMIT $limit
+            """
 # A write that waited for a node's lock while another transaction deleted it.
 _ENTITY_NOT_FOUND = "Neo.ClientError.Statement.EntityNotFound"
 
@@ -556,17 +777,26 @@ def _purge_walk_query(hint: str) -> str:
     """
 
 
+def _directory_group_row(row: Any) -> dict[str, str]:  # noqa: ANN401 - a driver record or a dict
+    return {
+        key: str(row[key]) if row[key] is not None else ""
+        for key in ("id", "externalId", "name", "connectorId", "appName")
+    }
 # Stage states removed per statement, as records are: a connector can hold millions.
 _STAGE_STATE_DELETE_BATCH = 5000
 # Virtual records whose stage states one statement removes.
 _STAGE_STATE_VRID_BATCH = 1000
 
 # The sweeper scans stage states by status and age; the coordinator reads one revision;
-# a connector's delete removes its stage states by connectorId.
+# a connector's delete removes its stage states by connectorId; the stored-content cleanup
+# looks up a virtual record's org without a revision.
 _STAGE_STATE_INDEXES = (
     "CREATE INDEX stage_state_status_updated IF NOT EXISTS FOR (n:StageState) ON (n.status, n.updatedAtMs)",
     "CREATE INDEX stage_state_revision IF NOT EXISTS FOR (n:StageState) ON (n.virtualRecordId, n.rev)",
     "CREATE INDEX stage_state_connector IF NOT EXISTS FOR (n:StageState) ON (n.connectorId)",
+    "CREATE INDEX stage_state_virtual_record IF NOT EXISTS FOR (n:StageState) ON (n.virtualRecordId)",
+    # A stage retry pages a connector's states in one status by id, off this index alone.
+    "CREATE INDEX stage_state_page IF NOT EXISTS FOR (n:StageState) ON (n.connectorId, n.stage, n.status, n.id)",
 )
 
 
@@ -574,6 +804,8 @@ def _unique_id_constraint(label: str) -> str:
     name = f"{label.lower()}_id_unique".replace(".", "_")
     return f"CREATE CONSTRAINT {name} IF NOT EXISTS FOR (n:{label}) REQUIRE n.id IS UNIQUE"
 
+
+_EXISTING_KEYS_CHUNK = 20000
 
 class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     """
@@ -615,6 +847,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self._kh_scope_untrusted: set[str] = set()
         # The hinted indexes being read without, so each is logged once.
         self._hint_indexes_missing: set[str] = set()
+        self._unique_id_verified: set[str] = set()
 
 
     # ==================== Connection Management ====================
@@ -644,20 +877,34 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 password=password,
                 database=database,
                 logger=self.logger,
-                # The one driver knob that has to match the server (its bolt
-                # thread pool); the timeouts around it are constants.
+                # Has to match the server's bolt thread pool.
                 max_connection_pool_size=env_int(
                     "NEO4J_MAX_CONNECTION_POOL_SIZE", DEFAULT_MAX_CONNECTION_POOL_SIZE
                 ),
-                # Real transactions (abort rolls back) instead of one
-                # auto-commit per query. Off for one release: they hold node
-                # locks until commit, so shared-node writes can deadlock and
-                # retry where they used to interleave.
-                explicit_transactions=env_bool("NEO4J_EXPLICIT_TRANSACTIONS", False),
-                # The short creates (agents, teams, knowledge bases) ask for a
-                # real transaction while the flag above is off; false makes
-                # them follow that flag again if their locks ever get in the way.
+                # These two have to fit the network path to the server: a
+                # pooled connection idle past a proxy or NAT timeout is reset
+                # on its next use.
+                max_connection_lifetime=env_seconds(
+                    "NEO4J_MAX_CONNECTION_LIFETIME", DEFAULT_MAX_CONNECTION_LIFETIME
+                ),
+                liveness_check_timeout=env_seconds(
+                    "NEO4J_LIVENESS_CHECK_TIMEOUT", DEFAULT_LIVENESS_CHECK_TIMEOUT
+                ),
+                # Real transactions: a failed block rolls back instead of
+                # leaving the statements before it committed. They hold node
+                # locks until commit, so shared-node writes can deadlock; the
+                # transaction helpers re-run such a block. Set to false to go
+                # back to one auto-commit per query.
+                explicit_transactions=env_bool("NEO4J_EXPLICIT_TRANSACTIONS", True),
+                # Callers that ask for a real transaction (explicit=True) keep
+                # it when the flag above is false; false here makes them follow
+                # that flag too, if their locks ever get in the way.
                 honour_explicit_requests=env_bool("NEO4J_CREATE_TRANSACTIONS", True),
+                # Server-side bound on one transaction, in seconds. A block that
+                # runs longer (a whole-connector delete) rolls back in full.
+                transaction_timeout=env_seconds(
+                    "NEO4J_TRANSACTION_TIMEOUT", DEFAULT_TRANSACTION_TIMEOUT
+                ),
             )
 
             # Connect
@@ -805,8 +1052,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             read: Collections to read from (for compatibility)
             write: Collections to write to (for compatibility)
             explicit: True for a real transaction even with
-                NEO4J_EXPLICIT_TRANSACTIONS off (unless NEO4J_CREATE_TRANSACTIONS
-                is false); None follows NEO4J_EXPLICIT_TRANSACTIONS
+                NEO4J_EXPLICIT_TRANSACTIONS false (unless NEO4J_CREATE_TRANSACTIONS
+                is false); False auto-commits each statement; None follows NEO4J_EXPLICIT_TRANSACTIONS
 
         Returns:
             str: Transaction ID
@@ -815,6 +1062,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             raise RuntimeError("Neo4j client not connected")
 
         return await self.client.begin_transaction(read, write, explicit=explicit)
+
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:  # noqa: FBT001
+        return self.client is not None and self.client.opens_explicit_transaction(explicit)
 
     async def commit_transaction(self, transaction: str) -> None:
         """
@@ -836,13 +1086,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         failed block passed to ``begin_transaction``."""
         if self.client is None or not self.client.opens_explicit_transaction(explicit):
             return False
+        if isinstance(error, GraphMemoryLimitError):
+            return False  # the memory pool refused it; the same statement is refused again
         return isinstance(error, TransientError)
 
     def is_write_conflict(self, error: BaseException) -> bool:
         """A deadlock or lock timeout, in either transaction mode. Other
         transient errors (memory limits, a terminated transaction, an
         unavailable database) are not collisions and are not retried here."""
-        return isinstance(error, TransientError) and getattr(error, "code", None) in _WRITE_CONFLICT_CODES
+        return is_write_conflict(error)
 
     async def rollback_transaction(self, transaction: str) -> None:
         """
@@ -920,6 +1172,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return [
             "CREATE CONSTRAINT person_org_email_unique IF NOT EXISTS "
             f"FOR (n:{Neo4jLabel.PEOPLE.value}) REQUIRE (n.orgId, n.email) IS UNIQUE",
+            # A person a source names without an email (see Person.source_key).
+            "CREATE CONSTRAINT person_org_source_key_unique IF NOT EXISTS "
+            f"FOR (n:{Neo4jLabel.PEOPLE.value}) REQUIRE (n.orgId, n.sourceKey) IS UNIQUE",
             # A sync point key names one sync point: connectors embed their org and
             # connector id, code-graph build state its record group's id. Without it
             # two first upserts both created one, and reads returned either (B3).
@@ -957,6 +1212,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 f"CREATE INDEX {taxonomy_label.lower()}_org_id IF NOT EXISTS "
                 f"FOR (n:{taxonomy_label}) ON (n.orgId)"
             )
+            # Consolidation seeks the nodes redirecting to a node.
+            indexes.append(
+                f"CREATE INDEX {taxonomy_label.lower()}_merged_into IF NOT EXISTS "
+                f"FOR (n:{taxonomy_label}) ON (n.mergedInto)"
+            )
+
+        # An organisation a document names is looked up by its org and key
+        # once per record (find_organizations).
+        indexes.append(
+            "CREATE INDEX organization_parent_normalized_name IF NOT EXISTS "
+            f"FOR (n:{collection_to_label(CollectionNames.ORGS.value)}) ON (n.parentOrgId, n.normalizedName)"
+        )
 
         # ==================== ENTITY INDEX SOURCES ====================
         # The entity index rebuild pages each source by scope, then keyset on
@@ -981,6 +1248,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_external_id IF NOT EXISTS "
             "FOR (n:Record) ON (n.externalRecordId, n.connectorId)"
+        )
+
+        # COMPOSITE: externalParentId + connectorId (get_records_by_parent, run per
+        # synced record). Neo4j uses a composite only when every property is in the
+        # predicate, and both are. Unindexed, each call scanned the connector's
+        # records, so sync rate decayed with graph size.
+        indexes.append(
+            "CREATE INDEX record_external_parent_id IF NOT EXISTS "
+            "FOR (n:Record) ON (n.externalParentId, n.connectorId)"
+        )
+
+        # SINGLE: externalRecordId alone (the push's storage-reference lookup). The composite above is used only
+        # when every property is in the predicate, so an id-only lookup would scan the records.
+        indexes.append(
+            "CREATE INDEX record_external_record_id IF NOT EXISTS "
+            "FOR (n:Record) ON (n.externalRecordId)"
         )
 
         # SINGLE: File.path (get_records_by_file_path: a delete reported by path only)
@@ -1038,6 +1321,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "FOR (n:Record) ON (n.connectorId, n.id)"
         )
 
+        # COMPOSITE: the record-people backfill pages an org's records by id;
+        # with only orgId indexed every page sorted the whole org.
+        indexes.append(
+            "CREATE INDEX record_org_id_key IF NOT EXISTS "
+            "FOR (n:Record) ON (n.orgId, n.id)"
+        )
+
         # SINGLE: duplicateReconcilePending. The reconcile retry sweep looks for
         # the few records with it set; unindexed that is a label scan per tick.
         indexes.append(
@@ -1061,6 +1351,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_parked_while_off IF NOT EXISTS "
             "FOR (n:Record) ON (n.connectorId, n.indexingStatus, n.reason, n.id)"
+        )
+
+        # COMPOSITE: "did this connector index anything since?", asked for a
+        # record about to fail on its rate-limit wait. The timestamp trails so
+        # a hit and a miss are both a range seek, not a read of the connector.
+        indexes.append(
+            "CREATE INDEX record_connector_status_indexed_at IF NOT EXISTS "
+            "FOR (n:Record) ON (n.connectorId, n.indexingStatus, n.lastIndexTimestamp)"
         )
 
         # COMPOSITE: "is every record of this repo indexed yet?", asked once per
@@ -1245,6 +1543,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "FOR (n:Record) ON (n.recordType, n.externalGroupId)"
         )
 
+        # COMPOSITE: SqlColumn tableFqn + orgId
+        # Pattern: a table's column records, or many tables' at once
+        indexes.append(
+            "CREATE INDEX sql_column_table_fqn IF NOT EXISTS "
+            "FOR (n:SqlColumn) ON (n.tableFqn, n.orgId)"
+        )
+
         # ==================== BLOCK INDEXES (code knowledge graph) ====================
         # Blocks are the largest label by far (100k+ on a mid-size repo) and only
         # carried the id uniqueness constraint, so every code-graph query was a
@@ -1369,26 +1674,40 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         return constraints
 
+    async def _apply_schema(
+        self, statements: list[str], what: str, *, failure_level: int = logging.WARNING,
+    ) -> None:
+        """Run each schema statement on its own, so one refusal does not stop the
+        rest, and log how many of them are in place."""
+        applied = 0
+        for statement in statements:
+            try:
+                await self.client.execute_query(statement)
+                applied += 1
+            except Exception as e:
+                self.logger.log(failure_level, "%s: %s failed: %s", what, statement, e)
+        self.logger.info("✅ %d of %d %s in place", applied, len(statements), what)
+
+    async def _supports_existence_constraints(self) -> bool:
+        """False on Neo4j Community Edition. When the edition can't be read the
+        constraints are tried, as they always were."""
+        try:
+            rows = await self.client.execute_query("CALL dbms.components() YIELD edition RETURN edition")
+        except Exception as e:
+            self.logger.debug("Could not read the Neo4j edition: %s", e)
+            return True
+        return not any(str(row.get("edition", "")).lower() == "community" for row in rows or [])
+
     async def ensure_schema(self) -> bool:
         """Ensure Neo4j schema (constraints, indexes, and departments seed)."""
         try:
             self.logger.info("🔧 Ensuring Neo4j schema...")
 
-            # Create unique constraints on 'id' property for all collections
-            # Auto-generated from schema registry to ensure complete coverage
-            unique_constraints = self._generate_unique_id_constraints()
-
-            for constraint_query in unique_constraints:
-                try:
-                    await self.client.execute_query(constraint_query)
-                except Exception as e:
-                    # IF NOT EXISTS makes "already exists" impossible here, so
-                    # a failure is real: duplicates already present, or an
-                    # unsupported constraint. Writes that rely on it (MERGE
-                    # convergence, index seeks) degrade silently otherwise.
-                    self.logger.warning(f"Unique constraint creation failed: {constraint_query} -> {str(e)}")
-
-            self.logger.info(f"✅ Created {len(unique_constraints)} unique id constraints")
+            # Unique constraints on 'id' for every collection, from the schema registry.
+            # IF NOT EXISTS makes "already exists" impossible, so a failure is real:
+            # duplicates already present, or an unsupported constraint, and writes
+            # that rely on it (MERGE convergence, index seeks) degrade silently.
+            await self._apply_schema(self._generate_unique_id_constraints(), "unique id constraints")
 
             # Business-key uniqueness (e.g. Person.(orgId, email)). Creation fails on a
             # label that already holds duplicates, hence the same tolerant handling as above.
@@ -1409,49 +1728,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "syncPointKey; they are not deleted automatically")
                 business_key_constraints = [
                     q for q in business_key_constraints if "syncpoint_key_unique" not in q]
+            await self._apply_schema(business_key_constraints, "business key constraints")
 
-            for constraint_query in business_key_constraints:
-                try:
-                    await self.client.execute_query(constraint_query)
-                except Exception as e:
-                    self.logger.warning(f"Business key constraint creation (may already exist): {str(e)}")
+            # Property existence constraints need Enterprise Edition. On Community each
+            # one is refused, and Neo4j logs every refusal as an error on every start.
+            if await self._supports_existence_constraints():
+                await self._apply_schema(
+                    self._generate_required_field_constraints(),
+                    "property existence constraints",
+                    failure_level=logging.DEBUG,
+                )
+            else:
+                self.logger.info(
+                    "Neo4j Community Edition: property existence constraints are not supported, skipped")
 
-            self.logger.info(
-                f"✅ Created {len(business_key_constraints)} business key constraints"
-            )
-
-            # Create property existence constraints for required fields from schemas
-            property_constraints = self._generate_required_field_constraints()
-
-            for constraint_query in property_constraints:
-                try:
-                    await self.client.execute_query(constraint_query)
-                except Exception as e:
-                    # Some Neo4j versions/editions may not support property existence constraints
-                    self.logger.debug(f"Property constraint creation (may already exist or not supported): {str(e)}")
-
-            self.logger.info(f"✅ Created {len(property_constraints)} property existence constraints")
-
-            # Create indexes for common queries
             # Indexes are strategically placed based on query pattern analysis
-            indexes = self._generate_performance_indexes()
-
-            for index_query in indexes:
-                try:
-                    await self.client.execute_query(index_query)
-                except Exception as e:
-                    self.logger.warning(f"Index creation failed: {str(e)}")
-
-            self.logger.info(f"✅ Created {len(indexes)} performance indexes")
-
-            fulltext_indexes = self._generate_fulltext_indexes()
-            for index_query in fulltext_indexes:
-                try:
-                    await self.client.execute_query(index_query)
-                except Exception as e:
-                    self.logger.debug(f"Full-text index creation (may already exist): {str(e)}")
-
-            self.logger.info(f"✅ Created {len(fulltext_indexes)} full-text indexes")
+            await self._apply_schema(self._generate_performance_indexes(), "performance indexes")
+            await self._apply_schema(
+                self._generate_fulltext_indexes(), "full-text indexes", failure_level=logging.DEBUG,
+            )
             self.logger.info("✅ Neo4j schema initialized (constraints and indexes)")
 
             try:
@@ -1829,6 +2124,23 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             label = collection_to_label(collection)
 
+            # The whole batch is checked before any statement. A payload that lacks required fields
+            # is only legal for a node that already exists, which one query for the batch decides.
+            incomplete: dict[str, list[str]] = {}
+            neo4j_nodes = self._nodes_for_upsert(nodes, collection, incomplete)
+            if incomplete:
+                found = await self.client.execute_query(
+                    f"UNWIND $ids AS id MATCH (n:{label} {{id: id}}) RETURN n.id AS id",
+                    parameters={"ids": list(incomplete)},
+                    txn_id=transaction,
+                )
+                existing = {row["id"] for row in found or []}
+                for node_id, missing in incomplete.items():
+                    if node_id not in existing:
+                        raise SchemaValidationError(
+                            collection, f"node '{node_id}' does not exist and is missing required fields: {missing}"
+                        )
+
             # Use UNWIND for batch upsert
             query = f"""
             UNWIND $nodes AS node
@@ -1840,7 +2152,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             await self.client.execute_query(
                 query,
-                parameters={"nodes": self._nodes_for_upsert(nodes, collection)},
+                parameters={"nodes": _in_lock_order(neo4j_nodes, _by_id)},
                 txn_id=transaction
             )
 
@@ -1850,20 +2162,37 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Batch upsert nodes failed: {str(e)}")
             raise
 
-    def _nodes_for_upsert(self, nodes: list[dict], collection: str) -> list[dict]:
-        """*nodes* in Neo4j form, each with an ``id``, validated for *collection*."""
+    def _nodes_for_upsert(
+        self, nodes: list[dict], collection: str, incomplete: dict[str, list[str]] | None = None
+    ) -> list[dict]:
+        """*nodes* in Neo4j form, each with an ``id``, validated for *collection*.
+
+        A node lacking required fields is recorded in *incomplete* (id -> missing names) for the caller to
+        check against the graph; without *incomplete* it is refused, as a create would be. Payloads that share an
+        id are written together (``SET n += node``), so the id lacks only what every one of them lacks.
+        """
         neo4j_nodes = []
+        still_missing: dict[str, set[str]] = {}
         for node in nodes:
             # Before conversion, which JSON-serializes nested values the schema
             # expects as objects or arrays.
-            self.validator.validate_node_update(collection, node)
+            missing = self.validator.validate_node_upsert(collection, node)
             neo4j_node = self._arango_to_neo4j_node(node, collection)
             if "id" not in neo4j_node:
                 if "_key" in neo4j_node:
                     neo4j_node["id"] = neo4j_node.pop("_key")
                 else:
                     neo4j_node["id"] = str(uuid.uuid4())
+            node_id = neo4j_node["id"]
+            still_missing[node_id] = still_missing[node_id].intersection(missing) if node_id in still_missing else set(missing)
             neo4j_nodes.append(neo4j_node)
+        for node_id, lacking in still_missing.items():
+            if not lacking:
+                continue
+            names = sorted(lacking)
+            if incomplete is None:
+                raise SchemaValidationError(collection, f"missing required fields: {names}")
+            incomplete[node_id] = names
         return neo4j_nodes
 
     def _upsert_record_with_type_cypher(
@@ -1878,7 +2207,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         types = (self._nodes_for_upsert([r.to_arango_record() for r in records], collection)
                  if collection else [None] * len(records))
         parameters: dict[str, Any] = {
-            "rows": [{"node": b, "type_node": t} for b, t in zip(bases, types)],
+            "rows": _in_lock_order(
+                [{"node": b, "type_node": t} for b, t in zip(bases, types)], lambda row: _by_id(row["node"])
+            ),
             "trashed_prefix": TRASHED_EXTERNAL_ID_PREFIX,
         }
         # Each record releases only holders other than itself, as when records were written one at a time.
@@ -1943,6 +2274,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if self.client is None:
             raise RuntimeError("Neo4j provider is not connected")
         label = collection_to_label(collection)
+        # The whole batch, before the conversion encodes nested values and before any statement.
+        for node in nodes:
+            self.validator.validate_node(collection, node)
         neo4j_nodes: list[dict[str, Any]] = []
         for node in nodes:
             neo4j_node: dict[str, Any] = self._arango_to_neo4j_node(node, collection)
@@ -1950,7 +2284,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if "_key" not in neo4j_node:
                     raise ValueError("ensure_nodes requires every node to carry an id")
                 neo4j_node["id"] = neo4j_node.pop("_key")
-            self.validator.validate_node_update(collection, neo4j_node)
             neo4j_nodes.append(neo4j_node)
         # MERGE on the id-uniqueness constraint; ON CREATE leaves an existing node untouched.
         # Records and record groups also carry derived listing state, as upsert_nodes writes it.
@@ -2066,8 +2399,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             label = collection_to_label(collection)
             # Before conversion, which JSON-serializes nested values the schema
-            # expects as objects or arrays.
-            self.validator.validate_node_update(collection, node)
+            # expects as objects or arrays. `SET n = $node` replaces the node, so it is checked in full.
+            self.validator.validate_node(collection, node)
             neo4j_node = self._arango_to_neo4j_node(node, collection)
             if "id" not in neo4j_node:
                 neo4j_node["id"] = key
@@ -2119,11 +2452,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             label = collection_to_label(collection)
             
-            neo4j_nodes = []
             for node in nodes:
                 self.validator.validate_node_update(collection, node)
-                neo4j_node = self._arango_to_neo4j_node(node, collection)
-                neo4j_nodes.append(neo4j_node)
+            neo4j_nodes = [self._arango_to_neo4j_node(node, collection) for node in nodes]
 
             # Use UNWIND to batch update multiple nodes
             # MATCH ensures we only update existing nodes (no CREATE)
@@ -2137,7 +2468,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             results = await self.client.execute_query(
                 query,
-                parameters={"nodes": neo4j_nodes},
+                parameters={"nodes": _in_lock_order(neo4j_nodes, _by_id)},
                 txn_id=transaction
             )
 
@@ -2158,6 +2489,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             raise
 
     # ==================== Edge Operations ====================
+
+    def _validate_edges(self, collection: str, edges: list[dict]) -> None:
+        """Check every edge against the schema of *collection* before any statement is issued."""
+        for edge in edges:
+            self.validator.validate_edge(collection, edge)
 
     def _edges_by_labels(self, edges: list[dict]) -> dict[tuple[str, str], list[dict]]:
         """*edges* as {from_key, to_key, props} rows, grouped by (from label, to label)."""
@@ -2188,27 +2524,65 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             key = (collection_to_label(from_collection), collection_to_label(to_collection))
             grouped.setdefault(key, []).append({"from_key": from_key, "to_key": to_key, "props": props})
-        return grouped
+        return {labels: _in_lock_order(rows, _by_ends) for labels, rows in grouped.items()}
 
     def _replace_edges_to_cypher(
         self, to_id: str, to_collection: str, edges: list[dict], collection: str
     ) -> tuple[str, dict[str, Any]]:
-        """The statement of ``replace_edges_to`` up to its RETURN, so a caller can add to the same write."""
+        """The statement of ``replace_edges_to`` up to its RETURN, so a caller can add to the same write.
+
+        It moves only the difference between the stored edges and *edges*: the old
+        edges whose source is not in the new set are deleted, the new ones are merged,
+        and a kept edge is rewritten only when a property other than the two
+        timestamps changed. The statement ends with exactly one row, so a caller can
+        append writes that must run once. The member keys travel whole in ``$keep``:
+        a Python-side read of the old edges would be a separate transaction when
+        NEO4J_EXPLICIT_TRANSACTIONS is false, and would lose a member to a concurrent
+        replace of the same group.
+        """
+        self._validate_edges(collection, edges)
         relationship_type = edge_collection_to_relationship(collection)
-        parameters: dict[str, Any] = {"to_id": to_id}
+        to_node_label = collection_to_label(to_collection)
+        parameters: dict[str, Any] = {"to_id": to_id, "time_keys": list(_EDGE_TIME_KEYS)}
+        keep: list[str] = []
         creates = []
         for i, ((from_label, to_label), rows) in enumerate(self._edges_by_labels(edges).items()):
-            parameters[f"edges_{i}"] = rows
+            # Duplicate members: the last row wins (the rows keep the order of the input per key).
+            members = list(
+                {(row["from_key"], row["to_key"]): {**row, "sem": _semantic_props(row["props"])} for row in rows}.values()
+            )
+            parameters[f"edges_{i}"] = members
+            if to_label == to_node_label:
+                # Only an edge into *to_id* keeps its source's old edge; one into another node of the label does not.
+                keep.extend(f"{from_label}|{member['from_key']}" for member in members if member["to_key"] == to_id)
             creates.append(f"""
             CALL {{
                 UNWIND $edges_{i} AS edge
                 MATCH (from:{from_label} {{id: edge.from_key}})
                 MATCH (to:{to_label} {{id: edge.to_key}})
+                CALL {{
+                    WITH from, to
+                    MATCH (from)-[parallel:{relationship_type}]->(to)
+                    WITH parallel ORDER BY id(parallel) SKIP 1
+                    DELETE parallel
+                }}
                 MERGE (from)-[r:{relationship_type}]->(to)
-                SET r = edge.props
+                ON CREATE SET r = edge.props
+                WITH r, edge, r.createdAtTimestamp AS created
+                WHERE size([k IN keys(r) WHERE NOT k IN $time_keys]) <> size(keys(edge.sem))
+                    OR any(k IN keys(edge.sem) WHERE r[k] IS NULL OR r[k] <> edge.sem[k])
+                SET r = edge.sem,
+                    r.createdAtTimestamp = coalesce(created, edge.props.createdAtTimestamp),
+                    r.updatedAtTimestamp = edge.props.updatedAtTimestamp
             }}""")
+        parameters["keep"] = keep
         return f"""
-            OPTIONAL MATCH ()-[old:{relationship_type}]->(:{collection_to_label(to_collection)} {{id: $to_id}})
+            OPTIONAL MATCH (target:{to_node_label} {{id: $to_id}})
+            SET target.{_MATCH_LOCK} = true
+            REMOVE target.{_MATCH_LOCK}
+            WITH count(*) AS _
+            OPTIONAL MATCH (source)-[old:{relationship_type}]->(:{to_node_label} {{id: $to_id}})
+            WHERE NOT any(l IN labels(source) WHERE (l + '|' + source.id) IN $keep)
             DELETE old
             WITH count(*) AS _
             {"".join(creates)}""", parameters
@@ -2221,12 +2595,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         collection: str,
         transaction: str | None = None,
     ) -> None:
-        # One statement, so a failure deletes nothing: with NEO4J_EXPLICIT_TRANSACTIONS
-        # off (the default) a separate delete committed before the new edges were
-        # written, and a group whose rewrite failed was left with no members.
+        """Replace the *collection* edges into *to_id*: every old one is gone unless *edges* has it again."""
+        # One statement, so a failure deletes nothing: the code default of
+        # NEO4J_EXPLICIT_TRANSACTIONS is true, but false is a supported mode in
+        # which a separate delete would commit before the new edges were written,
+        # and a group whose rewrite failed was left with no members.
         statement, parameters = self._replace_edges_to_cypher(to_id, to_collection, edges, collection)
         await self.client.execute_query(
-            f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction
+            f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction,
+            **_bulk_rows("group replace", len(edges)),
         )
 
     @staticmethod
@@ -2295,7 +2672,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (n:{collection_to_label(CollectionNames.RECORDS.value)} {{id: $record_id}})
             {_cypher_kh_tree_refresh(edge_collection_to_relationship(CollectionNames.INHERIT_PERMISSIONS.value), "n")}"""
         await self.client.execute_query(
-            f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction
+            f"{statement}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction,
+            **_bulk_rows("record permission replace", len(edges)),
         )
 
     async def link_record_to_group(
@@ -2384,8 +2762,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         edges: list[dict],
         collection: str,
-        transaction: str | None = None
-    ) -> bool:
+        transaction: str | None = None,
+        *,
+        count_created: bool = False,
+    ) -> bool | int:
         """
         Batch create edges/relationships.
 
@@ -2393,13 +2773,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             edges: List of edges with _from and _to fields
             collection: Edge collection name
             transaction: Optional transaction ID
+            count_created: return how many edges this call created (an existing one that was only rewritten is not counted)
+                instead of True. Whatever the flag, `edge_effects.note_created` gets the ids at the ends of the created edges.
 
         Returns:
-            bool: True if successful
+            bool: True if successful (the created count with ``count_created``)
         """
+        created_total = 0
+        report = count_created or edge_effects.tracking()  # only then does the statement say which edges it created
         try:
+            self._validate_edges(collection, edges)
             if not edges:
-                return True
+                return 0 if count_created else True
 
             relationship_type = edge_collection_to_relationship(collection)
 
@@ -2419,8 +2804,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     grouped_edges.setdefault((from_label, to_label, is_link), []).append(edge)
 
             if not grouped_edges:
-                return True
-            # Process each group separately
+                return 0 if count_created else True
+            # Process each group separately, in the lock order _edges_by_labels gave it
             for (from_label, to_label, is_link), group_edges in grouped_edges.items():
                 merge = (
                     f"MERGE (from)-[r:{Neo4jRelationshipType.RECORD_LINK.value} "
@@ -2432,20 +2817,29 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 UNWIND $edges AS edge
                 MATCH (from:{from_label} {{id: edge.from_key}})
                 MATCH (to:{to_label} {{id: edge.to_key}})
+                // Cypher keeps no row order unless asked; this is the lock order.
+                WITH edge, from, to ORDER BY edge.from_key, edge.to_key
                 {merge}
+                {f"ON CREATE SET r.{_EDGE_NEW} = true" if report else ""}
+                {f"WITH edge, from, to, r, coalesce(r.{_EDGE_NEW}, false) AS isNew" if report else ""}
                 SET r = edge.props
-                {"WITH from, to, r" if refresh else ""}
+                {("WITH edge, from, to, r, isNew" if report else "WITH from, to, r") if refresh else ""}
                 {refresh}
-                RETURN count(r) AS created
+                {"RETURN collect(CASE WHEN isNew THEN [edge.from_key, edge.to_key] END) AS made" if report else "RETURN count(r) AS created"}
                 """
 
-                await self.client.execute_query(
+                rows = await self.client.execute_query(
                     query,
                     parameters={"edges": group_edges},
-                    txn_id=transaction
+                    txn_id=transaction,
+                    **_bulk_rows("batch edge create", len(group_edges)),
                 )
+                if report:
+                    made = _created_ends(rows)
+                    edge_effects.note_created(made, collection)
+                    created_total += len(made) // 2
 
-            return True
+            return created_total if count_created else True
 
         except Exception as e:
             self.logger.error(f"❌ Batch create edges failed: {str(e)}")
@@ -2455,16 +2849,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         edges: list[dict],
         collection: str,
-        transaction: str | None = None
-    ) -> None:
+        transaction: str | None = None,
+        *,
+        count_created: bool = False,
+    ) -> int | None:
         """Create the edges that are not there; an existing edge keeps its properties.
 
         Not batch_create_edges: that does ``SET r = edge.props``, which would reset
         a live edge (a sync state, a role) when a repair re-runs over it.
+        With ``count_created`` it returns how many edges this call created.
         """
+        created_total = 0
+        report = count_created or edge_effects.tracking()
         try:
+            self._validate_edges(collection, edges)
             if not edges:
-                return
+                return 0 if count_created else None
 
             relationship_type = edge_collection_to_relationship(collection)
 
@@ -2474,14 +2874,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 MATCH (from:{from_label} {{id: edge.from_key}})
                 MATCH (to:{to_label} {{id: edge.to_key}})
                 MERGE (from)-[r:{relationship_type}]->(to)
-                ON CREATE SET r = edge.props
-                RETURN count(r) AS matched
+                ON CREATE SET r = edge.props{f", r.{_EDGE_NEW} = true" if report else ""}
+                {f"WITH edge, r, coalesce(r.{_EDGE_NEW}, false) AS isNew" if report else ""}
+                {f"REMOVE r.{_EDGE_NEW}" if report else ""}
+                {"RETURN collect(CASE WHEN isNew THEN [edge.from_key, edge.to_key] END) AS made" if report else "RETURN count(r) AS matched"}
                 """
-                await self.client.execute_query(
+                rows = await self.client.execute_query(
                     query,
                     parameters={"edges": group_edges},
-                    txn_id=transaction
+                    txn_id=transaction,
+                    **_bulk_rows("edge create if absent", len(group_edges)),
                 )
+                if report:
+                    made = _created_ends(rows)
+                    edge_effects.note_created(made, collection)
+                    created_total += len(made) // 2
+            return created_total if count_created else None
 
         except Exception as e:
             self.logger.error(f"❌ Create edges if absent failed: {str(e)}")
@@ -2511,6 +2919,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return True
 
             self.logger.debug("🚀 Batch creating entity relation edges")
+
+            # Every edge before any is skipped or sent, as batch_create_edges does. An edge without
+            # edgeType (required) fails here; the skip below only still applies with enforcement off.
+            self._validate_edges(CollectionNames.ENTITY_RELATIONS.value, edges)
 
             relationship_type = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
 
@@ -2747,7 +3159,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
 
             total_deleted = 0
-            for (from_label, to_label), group_edges in grouped_edges.items():
+            for (from_label, to_label), unordered in grouped_edges.items():
+                group_edges = _in_lock_order(unordered, _by_ends)
                 query = f"""
                 UNWIND $edges AS edge
                 MATCH (from:{from_label} {{id: edge.from_id}})-[r:{relationship_type}]->(to:{to_label} {{id: edge.to_id}})
@@ -2897,9 +3310,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         graph_name: str = "knowledgeGraph",
         transaction: str | None = None
     ) -> None:
-        """Delete nodes and all their connected edges"""
+        """Delete nodes and all their connected edges.
+
+        Record deletes also remove type nodes (files/mails/…) by isOfType and by
+        matching id, matching ``_delete_records_with_their_types``.
+        """
         try:
             if not keys:
+                return
+
+            if collection == CollectionNames.RECORDS.value:
+                await self._delete_records_with_their_types(keys, transaction)
                 return
 
             label = collection_to_label(collection)
@@ -2931,6 +3352,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> bool:
         """Update an edge"""
         try:
+            self.validator.validate_edge_update(collection, edge_updates)
             relationship_type = edge_collection_to_relationship(collection)
             from_collection, from_id = self._parse_arango_id(from_key)
             to_collection, to_id = self._parse_arango_id(to_key)
@@ -3110,6 +3532,31 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Get documents by status failed: {str(e)}")
             return []
 
+    async def filter_linked_record_ids(
+        self,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> list[str]:
+        """See IGraphDBProvider.filter_linked_record_ids."""
+        if not record_ids:
+            return []
+        belongs = EDGE_COLLECTION_TO_RELATIONSHIP[CollectionNames.BELONGS_TO.value]
+        relations = EDGE_COLLECTION_TO_RELATIONSHIP[CollectionNames.NODE_RELATIONS.value]
+        query = f"""
+        MATCH (r:{collection_to_label(CollectionNames.RECORDS.value)})
+        WHERE r.id IN $ids
+          AND (EXISTS {{ MATCH (r)-[:{belongs}]->(:{collection_to_label(CollectionNames.RECORD_GROUPS.value)}) }}
+               OR EXISTS {{ MATCH ()-[rel:{relations}]->(r)
+                            WHERE rel.relationshipType IN $parent_types }})
+        RETURN r.id AS id
+        """
+        results = await self.client.execute_query(
+            query,
+            parameters={"ids": record_ids, "parent_types": list(CANONICAL_PARENT_RELATION_TYPES)},
+            txn_id=transaction,
+        )
+        return [row["id"] for row in results]
+
     async def get_nodes_by_field_in(
         self,
         collection: str,
@@ -3190,6 +3637,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        return_fields: list[str] | None = None,
     ) -> list[dict]:
         try:
             label = collection_to_label(collection)
@@ -3197,19 +3645,29 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             filter_conditions, parameters = self._filter_conditions(filters)
             conditions = [f"n.{neo4j_field} STARTS WITH $prefix", *filter_conditions]
             parameters.update({"prefix": prefix, "limit": limit})
+            # Arango's `_key`, `_id` and `id` are all Neo4j's `id`; `_id` gains its collection below.
+            return_expr = (", ".join(
+                f"n.{'id' if field in ('_key', '_id', 'id') else field} AS {field}" for field in return_fields
+            ) or "null AS _") if return_fields is not None else "n"
             query = f"""
             MATCH (n:{label})
             WHERE {" AND ".join(conditions)}
-            RETURN n
+            RETURN {return_expr}
             LIMIT $limit
             """
             rows = await self.client.execute_query(
                 query, parameters=parameters, txn_id=transaction
             )
-            return [
-                self._neo4j_to_arango_node(dict(row.get("n", {})), collection)
-                for row in rows or []
-            ]
+            if return_fields is not None:
+                return [
+                    self._decode_json_fields(
+                        {field: (f"{collection}/{row.get(field)}" if field == "_id" and row.get(field) is not None
+                                 else row.get(field)) for field in return_fields},
+                        collection,
+                    )
+                    for row in rows or []
+                ]
+            return [self._neo4j_to_arango_node(dict(row.get("n", {})), collection) for row in rows or []]
         except Exception as e:
             self.logger.error(f"❌ Get nodes by field prefix failed: {str(e)}")
             if raise_on_error:
@@ -3520,7 +3978,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 labels = row.get("labels") or []
                 key = row.get("key")
                 if labels and key:
-                    result.append(f"{label_to_collection(labels[0])}/{key}")
+                    result.append(f"{collection_of_labels(labels) or label_to_collection(labels[0])}/{key}")
             return result
         except Exception as e:
             self.logger.error(f"❌ Get edges by target keys failed: {str(e)}")
@@ -3821,7 +4279,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             for row in results or []:
                 labels = row.get("labels") or []
                 neighbours.append({
-                    "collection": label_to_collection(labels[0]) if labels else "",
+                    "collection": (collection_of_labels(labels) or label_to_collection(labels[0])) if labels else "",
                     "key": row.get("key"),
                     "relationshipType": row.get("relationshipType"),
                     "sourceLineNumber": row.get("sourceLineNumber"),
@@ -3845,6 +4303,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        after: str | None = None,
     ) -> list[dict[str, Any]]:
         """Walk one hop from many nodes at once.
 
@@ -3867,11 +4326,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "inbound": f"(n:{anchor_label})<-[rel:{rel_type}]-(m)",
                 "any": f"(n:{anchor_label})-[rel:{rel_type}]-(m)",
             }[direction]
+            paged = after is not None
+            # cursor = the row's sort key; ORDER BY before LIMIT makes a page the
+            # next slice of the whole ordered edge set.
+            page = (
+                # No label in the key: labels() has no order, and elementId(rel) already makes it unique.
+                "WITH n, m, rel, CASE WHEN startNode(rel).id = n.id THEN 'outbound' ELSE 'inbound' END AS dir "
+                "WITH n, m, rel, dir, n.id + '\\u0001' + dir + '\\u0001' "
+                "+ coalesce(m.id, '') + '\\u0001' + coalesce(rel.relationshipType, '') + '\\u0001' + elementId(rel) AS cursor "
+                "WHERE cursor > $after"
+            ) if paged else ""
             query = f"""
             MATCH {pattern}
             WHERE n.id IN $node_keys
               AND rel.relationshipType IN $relationship_types
-            RETURN n.id AS anchorKey,
+            {page}
+            RETURN {"cursor, " if paged else ""}n.id AS anchorKey,
                    labels(m) AS labels,
                    m.id AS key,
                    CASE WHEN startNode(rel).id = n.id
@@ -3882,6 +4352,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                    rel.provenance AS provenance,
                    rel.line AS line,
                    rel.confidence AS confidence
+            {"ORDER BY cursor" if paged else ""}
             LIMIT $limit
             """
             results = await self.client.execute_query(
@@ -3890,6 +4361,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "node_keys": node_keys,
                     "relationship_types": relationship_types,
                     "limit": limit,
+                    **({"after": after} if paged else {}),
                 },
                 txn_id=transaction
             )
@@ -3897,8 +4369,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             for row in results or []:
                 labels = row.get("labels") or []
                 neighbours.append({
+                    **({"cursor": row.get("cursor")} if paged else {}),
                     "anchorKey": row.get("anchorKey"),
-                    "collection": label_to_collection(labels[0]) if labels else "",
+                    "collection": (collection_of_labels(labels) or label_to_collection(labels[0])) if labels else "",
                     "key": row.get("key"),
                     "direction": row.get("direction"),
                     "relationshipType": row.get("relationshipType"),
@@ -3989,6 +4462,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         external_id: str,
         transaction: str | None = None,
         visibility: RecordVisibility = RecordVisibility.LIVE,
+        *,
+        raise_on_error: bool = False,
     ) -> Record | None:
         """Get a record by its external ID.
 
@@ -4025,6 +4500,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return None
         except Exception as e:
+            if raise_on_error:
+                raise
             self.logger.error(f"❌ Get record by external ID failed: {str(e)}")
             raise GraphQueryError(
                 f"Could not look up record {external_id}: {e}"
@@ -4116,7 +4593,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         WHERE r.orgId = $org_id
         RETURN vid, r.id AS id, r.connectorId AS connectorId,
                r.connectorName AS connectorName, r.recordGroupId AS recordGroupId,
-               r.recordName AS recordName, r.webUrl AS webUrl,
+               r.recordName AS recordName, r.webUrl AS webUrl, r.contentRev AS contentRev,
                coalesce(r.isDeleted, false) AS isDeleted
         """
         results = await self.client.execute_query(
@@ -4419,9 +4896,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not expected:
             raise ValueError("update_node_fields_if_match needs an expectation")
         label = collection_to_label(collection)
-        # As update_node: _key becomes id, and the schema checks the fields.
+        # As update_node: the schema checks the fields before the conversion encodes nested values.
+        self.validator.validate_node_update(collection, updates)
         neo4j_updates = self._arango_to_neo4j_node(updates, collection)
-        self.validator.validate_node_update(collection, neo4j_updates)
         parameters: dict[str, Any] = {"key": key, "updates": neo4j_updates}
         conditions = []
         for i, (field, value) in enumerate(expected.items()):
@@ -4449,6 +4926,132 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return bool(rows)
 
+    async def update_node_fields_if(
+        self,
+        key: str,
+        collection: str,
+        updates: dict[str, Any],
+        conditions: Sequence[Cond],
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.update_node_fields_if`."""
+        check_conditions(conditions)
+        label = collection_to_label(collection)
+        self.validator.validate_node_update(collection, updates)
+        neo4j_updates = self._arango_to_neo4j_node(updates, collection)
+        parameters: dict[str, Any] = {"key": key, "updates": neo4j_updates}
+        clauses = []
+        for i, cond in enumerate(conditions):
+            parameters[f"f{i}"] = cond.field
+            if cond.op == IS_NULL:
+                clauses.append(f"n[$f{i}] IS NULL")
+                continue
+            parameters[f"v{i}"] = cond.value
+            if cond.op == EQ:
+                clauses.append(f"n[$f{i}] = $v{i}")
+            elif cond.op == NULL_OR_EQ:
+                clauses.append(f"(n[$f{i}] IS NULL OR n[$f{i}] = $v{i})")
+            else:
+                clauses.append(f"(n[$f{i}] IS NULL OR n[$f{i}] <= $v{i})")
+        # The lock comes first so the conditions read a write that committed while this waited.
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (n:{label} {{id: $key}})
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n
+            WHERE {" AND ".join(clauses)}
+            SET n += $updates
+            {_cypher_kh_node_state("n") if label in _KH_STATE_LABELS else ""}
+            RETURN 1 AS n
+            """,
+            parameters=parameters,
+            txn_id=transaction,
+        )
+        return bool(rows)
+
+    async def set_record_properties(
+        self,
+        key: str,
+        *,
+        values: dict[str, Any],
+        previous_names: Collection[str],
+        controls: dict[str, Any],
+        conditions: Sequence[Cond],
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.set_record_properties`. Flat ``p_<name>`` keys on the node."""
+        # `SET n += {p_old: null}` removes the key; a name still held is overwritten by its value.
+        updates: dict[str, Any] = {f"p_{name}": None for name in previous_names if name not in values}
+        updates.update({f"p_{name}": value for name, value in values.items()})
+        updates.update(controls)
+        return await self.update_node_fields_if(
+            key, CollectionNames.RECORDS.value, updates, conditions, transaction,
+        )
+
+    async def create_node_if_absent(
+        self,
+        key: str,
+        collection: str,
+        node: dict[str, Any],
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.create_node_if_absent`."""
+        label = collection_to_label(collection)
+        self.validator.validate_node(collection, {**node, "id": key})
+        await self._require_unique_id(label)
+        props = self._arango_to_neo4j_node({**node, "id": key}, collection)
+        props.pop("_key", None)
+        # The conversion copies a `_key` in `node` into `id`; the requested key is the one created.
+        props["id"] = key
+        try:
+            rows = await self.client.execute_query(
+                f"""
+                MERGE (n:{label} {{id: $key}})
+                ON CREATE SET n += $props, n.{_CREATED_MARK} = true
+                WITH n, coalesce(n.{_CREATED_MARK}, false) AS created
+                REMOVE n.{_CREATED_MARK}
+                RETURN created
+                """,
+                parameters={"key": key, "props": props},
+                txn_id=transaction,
+            )
+        except Exception as exc:
+            # The id constraint refuses the second of two racing creates. Another unique constraint
+            # (an email, say) refuses with the same words, and that is a failure of this create, not
+            # a node that exists: "not created" is answered only once the requested key is seen.
+            if "already exists" in str(exc) or "ConstraintValidation" in str(exc):
+                try:
+                    found = await self.client.execute_query(
+                        f"MATCH (n:{label} {{id: $key}}) RETURN 1 AS found LIMIT 1",
+                        parameters={"key": key},
+                        txn_id=transaction,
+                    )
+                except Exception:
+                    found = None
+                if found:
+                    return False
+            raise
+        return bool(rows and rows[0].get("created"))
+
+    async def _require_unique_id(self, label: str) -> None:
+        """Refuse to create-if-absent on a label without its unique id constraint.
+
+        MERGE alone does not stop two concurrent creates of one key; the constraint does. ensure_schema
+        only logs a constraint it could not create, so it is checked here, once per label and process.
+        """
+        if label in self._unique_id_verified:
+            return
+        rows = await self.client.execute_query(
+            "SHOW CONSTRAINTS YIELD labelsOrTypes, properties, type "
+            "WHERE $label IN labelsOrTypes AND properties = ['id'] AND type CONTAINS 'UNIQUENESS' "
+            "RETURN count(*) AS found",
+            {"label": label},
+        )
+        if not rows or not rows[0]["found"]:
+            raise RuntimeError(f"the unique constraint on {label}.id is missing")
+        self._unique_id_verified.add(label)
+
     async def update_nodes_fields_if_match(
         self,
         collection: str,
@@ -4459,12 +5062,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not rows:
             return []
         label = collection_to_label(collection)
-        params = []
-        for key, updates, expected in rows:
+        for _key, updates, expected in rows:
             if not expected:
                 raise ValueError("update_nodes_fields_if_match needs an expectation per row")
+            self.validator.validate_node_update(collection, updates)
+        params = []
+        for key, updates, expected in rows:
             neo4j_updates = self._arango_to_neo4j_node(updates, collection)
-            self.validator.validate_node_update(collection, neo4j_updates)
             params.append({
                 "key": key,
                 "updates": neo4j_updates,
@@ -4508,6 +5112,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               AND coalesce(r.duplicateReconcileDueAt, 0) < $due_before_ms
               AND {cypher_live_record("r")}
             RETURN r.id AS _key,
+                   r.orgId AS orgId,
                    r.duplicateReconcileAttempts AS duplicateReconcileAttempts,
                    r.duplicateReconcileDueAt AS duplicateReconcileDueAt
             LIMIT $limit
@@ -4599,6 +5204,34 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return {row["vrid"] for row in results or [] if row.get("vrid")}
 
+    async def has_records_indexed_since(
+        self,
+        connector_id: str,
+        since_ms: int,
+        *,
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.has_records_indexed_since`."""
+        # A range seek on the (connectorId, indexingStatus, lastIndexTimestamp)
+        # index, for a hit and a miss alike. Asked only for a record about to
+        # fail on its wait.
+        query = """
+        MATCH (r:Record {connectorId: $connector_id, indexingStatus: $completed})
+        WHERE r.lastIndexTimestamp > $since_ms
+        RETURN 1 AS hit
+        LIMIT 1
+        """
+        results = await self.client.execute_query(
+            query,
+            parameters={
+                "connector_id": connector_id,
+                "completed": ProgressStatus.COMPLETED.value,
+                "since_ms": since_ms,
+            },
+            txn_id=transaction,
+        )
+        return bool(results)
+
     def _create_typed_record_from_neo4j(self, record_dict: dict, type_doc: dict | None) -> Record:
         """
         Factory method to create properly typed Record instances from Neo4j data.
@@ -4651,6 +5284,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return ArtifactRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.SQL_TABLES.value:
                 return SQLTableRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.SQL_COLUMNS.value:
+                return SQLColumnRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.SQL_VIEWS.value:
                 return SQLViewRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.CODE_FILES.value:
@@ -5064,8 +5699,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WHERE startRecord IS NOT NULL
                 {user_match}
 
-                // Single traversal for parent (depth 0) and all children (depth 1+)
-                OPTIONAL MATCH path = (startRecord)-[:NODE_RELATION*0..{max_depth}]->(record:Record)
+                // Single traversal for parent (depth 0) and all children (depth 1+).
+                // Not OPTIONAL: with nothing passing the filters that returns one
+                // row with a null record, which is not a record to reindex.
+                MATCH path = (startRecord)-[:NODE_RELATION*0..{max_depth}]->(record:Record)
                 WHERE (length(path) = 0 OR all(rel IN relationships(path) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']))
                 AND record.connectorId = $connector_id
                 AND (record.orgId = $org_id OR record.orgId IS NULL)
@@ -5367,6 +6004,41 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return rows[0]["vrids"] if rows else []
 
+    async def get_record_group_virtual_record_ids(
+        self,
+        record_group_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        # Level by level with a visited set: a variable-length match enumerates
+        # every path, which doubles at each group with two parent edges.
+        sub_groups_query = """
+        UNWIND $frontier AS gid
+        MATCH (sub:RecordGroup)-[:BELONGS_TO]->(:RecordGroup {id: gid})
+        RETURN collect(DISTINCT sub.id) AS ids
+        """
+        visited = {record_group_id}
+        frontier = [record_group_id]
+        for _ in range(50):  # same depth bound as get_record_group_path
+            if not frontier:
+                break
+            rows = await self.client.execute_query(
+                sub_groups_query, parameters={"frontier": frontier}, txn_id=transaction,
+            )
+            found = rows[0]["ids"] if rows else []
+            frontier = [g for g in found if g not in visited]
+            visited.update(frontier)
+        rows = await self.client.execute_query(
+            """
+            UNWIND $groups AS gid
+            MATCH (r:Record)-[:BELONGS_TO]->(:RecordGroup {id: gid})
+            WHERE r.virtualRecordId IS NOT NULL
+            RETURN collect(DISTINCT r.virtualRecordId) AS vrids
+            """,
+            parameters={"groups": list(visited)},
+            txn_id=transaction,
+        )
+        return rows[0]["vrids"] if rows else []
+
     async def get_record_group_path(
         self,
         record_group_id: str,
@@ -5376,7 +6048,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> list[str]:
         query = f"""
         MATCH path = (start:RecordGroup {{id: $record_group_id}})
-            ((:RecordGroup)-[:BELONGS_TO]->(:RecordGroup)){{0,50}}
+            ((child:RecordGroup)-[edge:BELONGS_TO]->(parent:RecordGroup)
+                WHERE NOT EXISTS {{
+                    MATCH (child)-[twin:BELONGS_TO]->(parent)
+                    WHERE elementId(twin) < elementId(edge)
+                }}){{0,50}}
             (:RecordGroup)
         WITH nodes(path) AS path_nodes
         WHERE {NO_REPEATED_PATH_NODES}
@@ -5480,25 +6156,65 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     # ==================== User Operations ====================
 
+    async def get_users_by_emails(
+        self,
+        emails: list[str],
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+        org_id: str | None = None,
+    ) -> dict[str, User]:
+        """See :meth:`IGraphDBProvider.get_users_by_emails`."""
+        wanted = list(dict.fromkeys(e.lower() for e in emails if e))
+        if not wanted:
+            return {}
+        try:
+            scoped = org_id is not None
+            org_filter = "AND u.orgId = $org_id" if scoped else ""
+            # toLower(u.email) keeps matching case-insensitive, which the
+            # user_email index cannot serve.
+            query = f"""
+            MATCH (u:User)
+            WHERE toLower(u.email) IN $emails {org_filter}
+            RETURN u
+            """
+            results = await self.client.execute_query(
+                query, parameters={"emails": wanted, **({"org_id": org_id} if scoped else {})}, txn_id=transaction,
+            )
+            found: dict[str, User] = {}
+            for row in results or []:
+                user_dict = self._neo4j_to_arango_node(dict(row["u"]), CollectionNames.USERS.value)
+                found.setdefault(user_dict["email"].lower(), User.from_arango_user(user_dict))
+            return found
+        except Exception as e:
+            self.logger.error(f"❌ Get users by emails failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return {}
+
     async def get_user_by_email(
         self,
         email: str,
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        org_id: str | None = None,
     ) -> User | None:
-        """Get user by email"""
+        """Get user by email; with ``org_id``, only a user of that organisation."""
         try:
-            query = """
+            scoped = org_id is not None
+            org_filter = "AND u.orgId = $org_id" if scoped else ""
+            parameters = {"email": email, **({"org_id": org_id} if scoped else {})}
+            query = f"""
             MATCH (u:User)
-            WHERE toLower(u.email) = toLower($email)
+            WHERE toLower(u.email) = toLower($email) {org_filter}
             RETURN u
             LIMIT 1
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"email": email},
+                parameters=parameters,
                 txn_id=transaction
             )
 
@@ -5986,6 +6702,48 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if raise_on_error:
                 raise
             return []
+
+    async def get_user_directory_groups(
+        self,
+        user_id: str,
+        org_id: str,
+        app_names: Sequence[str] | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, str]]:
+        """See :meth:`IGraphDBProvider.get_user_directory_groups`."""
+        query = """
+        MATCH (u:User {userId: $user_id})
+        WITH u LIMIT 1
+        CALL {
+            WITH u
+            MATCH (u)-[:PERMISSION {type: 'USER'}]->(g:Group {orgId: $org_id})
+            RETURN g
+            UNION
+            // A source account contributes only the groups of the connector it was
+            // linked for; its groups under other connectors are not this person's.
+            WITH u
+            MATCH (u)-[link:AUTHENTICATED_AS]->(source:User)
+            MATCH (source)-[:PERMISSION {type: 'USER'}]->(g:Group {orgId: $org_id})
+            WHERE g.connectorId = link.connectorId
+            RETURN g
+        }
+        WITH DISTINCT g
+        WHERE $app_names IS NULL OR g.connectorName IN $app_names
+        RETURN DISTINCT g.id AS id, g.externalGroupId AS externalId, g.name AS name,
+               g.connectorId AS connectorId, g.connectorName AS appName
+        ORDER BY externalId
+        LIMIT $limit
+        """
+        rows = await self.client.execute_query(
+            query,
+            parameters={
+                "user_id": user_id,
+                "org_id": org_id,
+                "app_names": list(app_names) if app_names is not None else None,
+                "limit": max(1, int(limit)),
+            },
+        )
+        return [_directory_group_row(row) for row in rows or []]
 
     async def get_app_role_by_external_id(
         self,
@@ -6728,7 +7486,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (a:AgentInstance {orgId: $org_id})-[:AGENT_HAS_KNOWLEDGE]->(ak:AgentKnowledge {connectorId: $hub_app_key})
             OPTIONAL MATCH (a)-[:AGENT_HAS_KNOWLEDGE]->(other:AgentKnowledge)
             WHERE other.connectorId IS NOT NULL
-            RETURN a.id AS agent_key, ak.id AS knowledge_key, ak.filters AS filters,
+            RETURN a.id AS agent_key, ak.id AS knowledge_key, ak.filters AS filters, a.createdBy AS agent_created_by,
                    collect(DISTINCT other.connectorId) AS existing_connector_ids
             """
             rows = await self.client.execute_query(
@@ -6775,6 +7533,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         "id": knowledge_key,
                         "connectorId": kb_app_id,
                         "filters": "{}",
+                        # The agent's own creator; "system" only for an agent that has none.
+                        "createdBy": row.get("agent_created_by") or "system",
                         "createdAtTimestamp": timestamp,
                         "updatedAtTimestamp": timestamp,
                     })
@@ -6803,6 +7563,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 agents_migrated += 1
 
             return {"agents_migrated": agents_migrated, "knowledge_nodes_created": knowledge_nodes_created}
+        except SchemaValidationError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Failed to migrate agent hub knowledge for org {org_id}: {str(e)}")
             return {"agents_migrated": 0, "knowledge_nodes_created": 0, "error": str(e)}
@@ -7220,6 +7982,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return len(queued_records)
 
+        except SchemaValidationError:
+            raise
         except Exception as e:
             self.logger.error(
                 f"❌ Failed to update queued duplicates status: {str(e)}"
@@ -7267,67 +8031,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 }
 
             for rel_type in relationship_types:
-                # Find all relationships from source document
-                query = f"""
-                MATCH (source:Record {{id: $source_key}})-[r:{rel_type}]->(target)
-                // An edge the target already has keeps its own spelling.
-                WHERE NOT EXISTS {{ MATCH (:Record {{id: $target_key}})-[:{rel_type}]->(target) }}
-                RETURN target.id as target_id, labels(target) as target_labels, r.createdAtTimestamp as timestamp,
-                       r.extractedName as extracted_name, r.extractedNames as extracted_names
-                """
-
-                results = await self.client.execute_query(
-                    query,
-                    parameters={"source_key": source_key, "target_key": target_key},
-                    txn_id=transaction
+                # Each step re-reads what the target lacks, so it is safe to
+                # repeat after a deadlock with another copy onto the same hubs.
+                await self._retry_idempotent_write(
+                    lambda rel_type=rel_type: self._copy_relationships_of_type(
+                        source_key, target_key, rel_type,
+                        label_to_collection_by_rel_type.get(rel_type, {}), transaction,
+                    ),
+                    transaction,
                 )
-
-                relationships = list(results) if results else []
-
-                if relationships:
-                    label_to_collection = label_to_collection_by_rel_type.get(rel_type, {})
-                    # Create new relationships for target document
-                    new_edges = []
-                    for rel in relationships:
-                        target_id = rel.get("target_id")
-                        if target_id:
-                            target_labels = rel.get("target_labels") or []
-                            target_collection = next(
-                                (
-                                    label_to_collection[label]
-                                    for label in target_labels
-                                    if label in label_to_collection
-                                ),
-                                None,
-                            )
-                            if target_collection is None:
-                                # Unrecognised label — fall back to the group's
-                                # first collection rather than dropping the edge.
-                                target_collection = next(
-                                    iter(label_to_collection.values()),
-                                    CollectionNames.CATEGORIES.value,
-                                )
-
-                            new_edge = {
-                                "from_id": target_key,
-                                "from_collection": CollectionNames.RECORDS.value,
-                                "to_id": target_id,
-                                "to_collection": target_collection,
-                                "createdAtTimestamp": rel.get("timestamp") or get_epoch_timestamp_in_ms()
-                            }
-                            # A copy has the same content, so it carries the same spellings.
-                            if rel.get("extracted_name"):
-                                new_edge["extractedName"] = rel["extracted_name"]
-                            if rel.get("extracted_names"):
-                                new_edge["extractedNames"] = list(rel["extracted_names"])
-                            new_edges.append(new_edge)
-
-                    # Batch create the new edges
-                    if new_edges:
-                        await self.batch_create_edges(new_edges, rel_type, transaction=transaction)
-                        self.logger.debug(
-                            f"✅ Copied {len(new_edges)} relationships of type {rel_type}"
-                        )
 
             self.logger.debug(f"✅ Successfully copied all relationships to {target_key}")
             return True
@@ -7337,6 +8049,74 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 f"❌ Error copying relationships from {source_key} to {target_key}: {str(e)}"
             )
             return False
+
+    async def _copy_relationships_of_type(
+        self,
+        source_key: str,
+        target_key: str,
+        rel_type: str,
+        label_to_collection: dict[str, str],
+        transaction: str | None,
+    ) -> None:
+        query = f"""
+        MATCH (source:Record {{id: $source_key}})-[r:{rel_type}]->(target)
+        // An edge the target already has keeps its own spelling.
+        WHERE NOT EXISTS {{ MATCH (:Record {{id: $target_key}})-[:{rel_type}]->(target) }}
+        RETURN target.id as target_id, labels(target) as target_labels, r.createdAtTimestamp as timestamp,
+               r.extractedName as extracted_name, r.extractedNames as extracted_names
+        """
+
+        results = await self.client.execute_query(
+            query,
+            parameters={"source_key": source_key, "target_key": target_key},
+            txn_id=transaction
+        )
+
+        relationships = list(results) if results else []
+
+        if relationships:
+            # Create new relationships for target document
+            new_edges = []
+            for rel in relationships:
+                target_id = rel.get("target_id")
+                if target_id:
+                    target_labels = rel.get("target_labels") or []
+                    target_collection = next(
+                        (
+                            label_to_collection[label]
+                            for label in target_labels
+                            if label in label_to_collection
+                        ),
+                        None,
+                    )
+                    if target_collection is None:
+                        # Unrecognised label — fall back to the group's
+                        # first collection rather than dropping the edge.
+                        target_collection = next(
+                            iter(label_to_collection.values()),
+                            CollectionNames.CATEGORIES.value,
+                        )
+
+                    new_edge = {
+                        "from_id": target_key,
+                        "from_collection": CollectionNames.RECORDS.value,
+                        "to_id": target_id,
+                        "to_collection": target_collection,
+                        "createdAtTimestamp": rel.get("timestamp") or get_epoch_timestamp_in_ms()
+                    }
+                    # A copy has the same content, so it carries the same spellings.
+                    if rel.get("extracted_name"):
+                        new_edge["extractedName"] = rel["extracted_name"]
+                    if rel.get("extracted_names"):
+                        new_edge["extractedNames"] = list(rel["extracted_names"])
+                    new_edges.append(new_edge)
+
+            # Batch create the new edges
+            if new_edges:
+                await self.batch_create_edges(new_edges, rel_type, transaction=transaction)
+                self.logger.debug(
+                    f"✅ Copied {len(new_edges)} relationships of type {rel_type}"
+                )
 
     async def get_user_apps(self, user_id: str, transaction: str | None = None) -> list:
         """The Apps this user (by graph key) passes the connector gate for, in
@@ -7395,19 +8175,33 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         if not time_range:
             return ""
+        dated_only = bool(time_range.get(DATED_ONLY_TIME_RANGE_KEY)) and upload_times_undated()
+        # An upload dated only by its upload was written at or before that
+        # time: an after-bound still rules it out, a before-bound cannot.
+        undated = (
+            f" OR coalesce({record_var}.{SOURCE_TIMESTAMP_ORIGIN_FIELD}, '') = 'upload'"
+            if upload_times_undated() and not dated_only
+            else ""
+        )
+
+        def before(condition: str) -> str:
+            return f"AND ({condition}{undated})" if undated else f"AND {condition}"
+
         conditions: list[str] = []
         if "source_created_after_ms" in time_range:
             parameters["sourceCreatedAfterMs"] = time_range["source_created_after_ms"]
             conditions.append(f"AND {record_var}.sourceCreatedAtTimestamp >= $sourceCreatedAfterMs")
         if "source_created_before_ms" in time_range:
             parameters["sourceCreatedBeforeMs"] = time_range["source_created_before_ms"]
-            conditions.append(f"AND {record_var}.sourceCreatedAtTimestamp <= $sourceCreatedBeforeMs")
+            conditions.append(before(f"{record_var}.sourceCreatedAtTimestamp <= $sourceCreatedBeforeMs"))
         if "source_updated_after_ms" in time_range:
             parameters["sourceUpdatedAfterMs"] = time_range["source_updated_after_ms"]
             conditions.append(f"AND {record_var}.sourceLastModifiedTimestamp >= $sourceUpdatedAfterMs")
         if "source_updated_before_ms" in time_range:
             parameters["sourceUpdatedBeforeMs"] = time_range["source_updated_before_ms"]
-            conditions.append(f"AND {record_var}.sourceLastModifiedTimestamp <= $sourceUpdatedBeforeMs")
+            conditions.append(before(f"{record_var}.sourceLastModifiedTimestamp <= $sourceUpdatedBeforeMs"))
+        if dated_only:
+            conditions.append(f"AND coalesce({record_var}.{SOURCE_TIMESTAMP_ORIGIN_FIELD}, '') <> 'upload'")
         return "\n".join(conditions)
 
     @staticmethod
@@ -7462,9 +8256,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         time_range: dict[str, int] | None = None,
         *,
         raise_on_error: bool = False,
-    ) -> dict[str, str]:
+        with_dates: bool = False,
+    ) -> dict[str, str] | list[DatedRow]:
         """
         Get a mapping of virtualRecordId -> recordId for a specific connector with all permission paths.
+
+        With ``with_dates``, every row the walk reached instead, with the dates
+        its time bounds read, for a shared timeline walk (``dated_scope``).
 
         The records that inherit, at any depth, from a record or record group granted
         to the user, or from the App when the user passes its gate. A prefilter:
@@ -7555,13 +8353,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               AND {live_record}
               AND r.virtualRecordId IS NOT NULL AND r.id IS NOT NULL
               {metadata_filter_clause}{time_range_filter_clause}
-            RETURN r.virtualRecordId AS virtualId, r.id AS recordId
+            RETURN r.virtualRecordId AS virtualId, r.id AS recordId{_DATED_COLUMNS if with_dates else ""}
             """
 
             parameters.update(metadata_parameters)
 
             # Execute query
             results = await self.client.execute_query(query, parameters=parameters)
+            if with_dates:
+                return _dated_rows(results)
 
             # Build virtualRecordId -> recordId map (first seen wins for dedup)
             virtual_id_to_record_id: dict[str, str] = {}
@@ -7593,9 +8393,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         time_range: dict[str, int] | None = None,
         *,
         raise_on_error: bool = False,
-    ) -> dict[str, str]:
+        with_dates: bool = False,
+    ) -> dict[str, str] | list[DatedRow]:
         """
         Get a mapping of virtualRecordId -> recordId from Knowledge Bases (RecordGroups).
+        With ``with_dates``, every row instead, with its dates (``dated_scope``).
 
         Args:
             user_id: The userId field value
@@ -7643,14 +8445,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             CALL {{
                 WITH userDoc
                 // Direct user-KB permissions (KB is now an App node with type="KB")
-                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(kb:App {{type: "KB"}})
+                OPTIONAL MATCH (userDoc)-[kbp:PERMISSION]->(kb:App {{type: "KB"}})
                 {kb_filter_clause}
+                // The role is read before the next match: Neo4j 5.26 cannot read it from the edge after it.
+                WITH userDoc, kb, {_kb_edge_role_ok('kbp')} AS kb_role_ok
+                WITH userDoc, kb WHERE kb_role_ok = true
                 OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
                 WHERE {cypher_searchable_record("r")}
                   AND {live_record}
                   AND r.origin = "UPLOAD"
                   {metadata_filter_clause}{time_range_filter_clause}
-                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS directKbRecords
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id{_DATED_PAIR_FIELDS if with_dates else ""}}}) AS directKbRecords
             }}
 
             CALL {{
@@ -7665,7 +8470,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                   AND {live_record}
                   AND r.origin = "UPLOAD"
                   {metadata_filter_clause}{time_range_filter_clause}
-                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS teamKbRecords
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id{_DATED_PAIR_FIELDS if with_dates else ""}}}) AS teamKbRecords
             }}
 
             // Union all pairs and filter out nulls
@@ -7673,13 +8478,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             UNWIND allPairs AS pair
             WITH pair
             WHERE pair IS NOT NULL AND pair.virtualId IS NOT NULL AND pair.recordId IS NOT NULL
-            RETURN pair.virtualId AS virtualId, pair.recordId AS recordId
+            RETURN pair.virtualId AS virtualId, pair.recordId AS recordId{_DATED_PAIR_COLUMNS if with_dates else ""}
             """
 
             parameters.update(metadata_parameters)
 
             # Execute query
             results = await self.client.execute_query(query, parameters=parameters)
+            if with_dates:
+                return _dated_rows(results)
 
             # Build virtualRecordId -> recordId map (first seen wins for dedup)
             virtual_id_to_record_id: dict[str, str] = {}
@@ -7724,8 +8531,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         CALL {
             WITH userDoc
-            OPTIONAL MATCH (userDoc)-[:PERMISSION]->(kb:App {type: "KB"})
-            WHERE $includeHidden OR coalesce(kb.isHidden, false) = false
+            OPTIONAL MATCH (userDoc)-[kbp:PERMISSION]->(kb:App {type: "KB"})
+            WHERE __KB_EDGE_OK__ AND ($includeHidden OR coalesce(kb.isHidden, false) = false)
             RETURN collect(DISTINCT kb.id) AS directIds
         }
 
@@ -7742,7 +8549,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         UNWIND ids AS kbId
         WITH kbId WHERE kbId IS NOT NULL
         RETURN DISTINCT kbId AS kbId
-        """
+        """.replace("__KB_EDGE_OK__", _kb_edge_role_ok("kbp"))
         results = await self.client.execute_query(
             query, parameters={"userId": user_id, "includeHidden": include_hidden}
         )
@@ -7790,8 +8597,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 RETURN app
                 UNION
                 WITH u
-                MATCH (u)-[:PERMISSION {type: 'USER'}]->(app:App {type: $kb_type})
-                WHERE app.orgId = $org_id
+                MATCH (u)-[kbp:PERMISSION {type: 'USER'}]->(app:App {type: $kb_type})
+                WHERE app.orgId = $org_id AND __KB_EDGE_OK__
                 RETURN app
                 UNION
                 WITH u
@@ -7897,7 +8704,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         }
 
         RETURN u.id AS user_key, apps, record_group_ids
-        """.replace("__INHERIT_DEPTH__", str(CONTAINER_INHERIT_MAX_DEPTH))
+        """.replace("__INHERIT_DEPTH__", str(CONTAINER_INHERIT_MAX_DEPTH)).replace(
+            "__KB_EDGE_OK__", _kb_edge_role_ok("kbp"))
         rows = await self.client.execute_query(
             query,
             parameters={
@@ -8101,6 +8909,71 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.warning("Could not resolve accessible connector types: %s", e)
             return []
 
+    def permission_hierarchy_view(self) -> Neo4jHierarchyView:
+        return Neo4jHierarchyView(lambda: self.client)
+
+    @override
+    async def increment_node_field(
+        self, key: str, collection: str, field: str, transaction: str | None = None
+    ) -> int | None:
+        label = collection_to_label(collection)
+        self.validator.validate_node_update(collection, {field: 1})
+        # The write lock is taken first (the same trick as the other match locks), so the value read next is the latest committed one
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (n:{label} {{id: $key}})
+            SET n.{_MATCH_LOCK} = true
+            REMOVE n.{_MATCH_LOCK}
+            WITH n
+            SET n.{field} = coalesce(n.{field}, 0) + 1
+            RETURN n.{field} AS value
+            """,
+            parameters={"key": key},
+            txn_id=transaction,
+        )
+        return int(rows[0]["value"]) if rows else None
+
+    @override
+    async def get_structure_of_nodes(
+        self, collection: str, node_ids: list[str], transaction: str | None = None, *, raise_on_error: bool = False
+    ) -> dict[str, frozenset]:
+        if not node_ids:
+            return {}
+        label = collection_to_label(collection)
+        try:
+            rows = await self.client.execute_query(
+                f"""
+                UNWIND $ids AS id
+                MATCH (n:{label} {{id: id}})
+                RETURN n.id AS id,
+                       [(n)-[:BELONGS_TO]->(g) | [g.id, labels(g)]] AS belongs,
+                       [(n)-[:INHERIT_PERMISSIONS]->(q) | [q.id, labels(q)]] AS inherits,
+                       [(p)-[h:NODE_RELATION]->(n) WHERE h.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] | [p.id, h.relationshipType, labels(p)]] AS parents,
+                       EXISTS {{ ()-[:PERMISSION]->(n) }} AS granted
+                """,
+                parameters={"ids": list(node_ids)},
+                txn_id=transaction,
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Get structure of nodes failed: {e}")
+            if raise_on_error:
+                raise
+            return {}
+        out: dict[str, frozenset] = {}
+        for r in rows or []:
+            me = r["id"]
+            # the collection of the other end is part of the edge: an app and a record group may share a key
+            edges = {(CollectionNames.BELONGS_TO.value, me, g, collection_of_labels(c)) for g, c in r["belongs"] or []}
+            edges |= {(CollectionNames.INHERIT_PERMISSIONS.value, me, q, collection_of_labels(c)) for q, c in r["inherits"] or []}
+            edges |= {(CollectionNames.NODE_RELATIONS.value, p, me, t, collection_of_labels(c)) for p, t, c in r["parents"] or []}
+            if r.get("granted"):
+                edges.add(("granted", me))
+            out[me] = frozenset(edges)
+        return out
+
+    def permission_stamp_graph(self) -> Neo4jStampGraph:
+        return Neo4jStampGraph(lambda: self.client)
+
     async def get_accessible_containers(
         self,
         user_id: str,
@@ -8286,11 +9159,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 and not time_range
             )
 
+            # A dated read inside a timeline takes its records from one walk
+            # over the timeline's span, shared by all its searches (dated_scope).
+            shared = scope_for(time_range) if not use_cache else None
+
             def connector_task(connector_id: str) -> "Awaitable[dict[str, str]]":
                 if use_cache:
                     return self._get_connector_virtual_ids_cached(
                         user_id, org_id, connector_id, app_permission_map.get(connector_id),
                         raise_on_error=raise_on_error,
+                    )
+                if shared is not None:
+                    return read_within(
+                        shared,
+                        ("connector", user_id, org_id, connector_id, frozen_filters(metadata_filters)),
+                        lambda: self._get_virtual_ids_for_connector(
+                            user_id, org_id, connector_id, metadata_filters, time_range=shared.span,
+                            raise_on_error=True, with_dates=True,
+                        ),
+                        time_range, raise_on_error=raise_on_error, logger=self.logger,
                     )
                 return self._get_virtual_ids_for_connector(
                     user_id, org_id, connector_id, metadata_filters, time_range=time_range,
@@ -8301,6 +9188,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if use_cache:
                     return self._get_kb_virtual_ids_cached(
                         user_id, org_id, kb_filter, raise_on_error=raise_on_error
+                    )
+                if shared is not None:
+                    return read_within(
+                        shared,
+                        ("kb", user_id, org_id, tuple(kb_filter or ()), frozen_filters(metadata_filters)),
+                        lambda: self._get_kb_virtual_ids(
+                            user_id, org_id, kb_filter, metadata_filters, time_range=shared.span,
+                            raise_on_error=True, with_dates=True,
+                        ),
+                        time_range, raise_on_error=raise_on_error, logger=self.logger,
                     )
                 return self._get_kb_virtual_ids(
                     user_id, org_id, kb_filter, metadata_filters, time_range=time_range,
@@ -8560,8 +9457,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def batch_upsert_node_relations(
         self,
         edges: list[dict],
-        transaction: Optional[str] = None
-    ) -> bool:
+        transaction: Optional[str] = None,
+        *,
+        count_created: bool = False,
+    ) -> bool | int:
         """
         Batch upsert record relation edges.
 
@@ -8575,12 +9474,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             transaction: Optional transaction ID
 
         Returns:
-            bool: True if successful
+            bool: True if successful (the number of edges it created with ``count_created``)
         """
+        created_total = 0
+        report = count_created or edge_effects.tracking()
         try:
             if not edges:
-                return True
+                return 0 if count_created else True
 
+            self._validate_edges(CollectionNames.NODE_RELATIONS.value, edges)
             self.logger.debug("Batch upserting record relation edges")
 
             edge_data = []
@@ -8650,20 +9552,26 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     UNWIND $edges AS edge
                     {endpoints}
                     MERGE (from)-[r:{rel_type} {{relationshipType: edge.relationshipType, constraintName: edge.constraintName}}]->(to)
-                    ON CREATE SET r += edge.props
+                    ON CREATE SET r += edge.props{f", r.{_EDGE_NEW} = true" if report else ""}
                     ON MATCH SET r += edge.updateProps
-                    {"WITH from, to, r" if refresh else ""}
+                    {f"WITH edge, from, to, r, coalesce(r.{_EDGE_NEW}, false) AS isNew" if report else ""}
+                    {f"REMOVE r.{_EDGE_NEW}" if report else ""}
+                    {("WITH edge, from, to, r, isNew" if report else "WITH from, to, r") if refresh else ""}
                     {refresh}
-                    RETURN count(r) AS upserted
+                    {"RETURN collect(CASE WHEN isNew THEN [edge.from_key, edge.to_key] END) AS made" if report else "RETURN count(r) AS upserted"}
                     """
-                    await self.client.execute_query(
+                    result = await self.client.execute_query(
                         query,
                         parameters={"edges": rows},
-                        txn_id=transaction
+                        txn_id=transaction,
                     )
+                    if report:
+                        made = _created_ends(result)
+                        edge_effects.note_created(made, CollectionNames.NODE_RELATIONS.value)
+                        created_total += len(made) // 2
 
             self.logger.debug(f"Successfully upserted {len(edge_data)} record relation edges.")
-            return True
+            return created_total if count_created else True
 
         except Exception as e:
             self.logger.error(f"Batch record relation upsert failed: {str(e)}")
@@ -8673,7 +9581,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         record_id: str,
         relation_type: str,
-        transaction: Optional[str] = None
+        transaction: Optional[str] = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get record IDs of all records that have an edge pointing TO this record
@@ -8695,11 +9604,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                    COALESCE(r.childTableName, '') AS childTable,
                    COALESCE(r.sourceColumn, '') AS sourceColumn,
                    COALESCE(r.targetColumn, '') AS targetColumn
+            LIMIT $limit
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"record_id": record_id, "relation_type": relation_type},
+                parameters={
+                    "record_id": record_id, "relation_type": relation_type,
+                    "limit": limit if limit is not None else 2**31 - 1,
+                },
                 txn_id=transaction
             )
 
@@ -8759,7 +9672,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         record_id: str,
         relation_type: str,
-        transaction: Optional[str] = None
+        transaction: Optional[str] = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get record IDs of all records that this record has an edge pointing TO
@@ -8781,11 +9695,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                    COALESCE(r.parentTableName, '') AS parentTable,
                    COALESCE(r.sourceColumn, '') AS sourceColumn,
                    COALESCE(r.targetColumn, '') AS targetColumn
+            LIMIT $limit
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={"record_id": record_id, "relation_type": relation_type},
+                parameters={
+                    "record_id": record_id, "relation_type": relation_type,
+                    "limit": limit if limit is not None else 2**31 - 1,
+                },
                 txn_id=transaction
             )
 
@@ -8811,8 +9729,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         record_ids: list[str],
         relation_types: list[str],
         transaction: Optional[str] = None,
+        limit_per_direction: int | None = None,
     ) -> dict[str, dict[str, list[dict[str, Any]]]]:
-        """Both edge directions for every record, in one query.
+        """Both edge directions for every record, in one query, at most
+        ``limit_per_direction`` edges per record and direction (all when None).
 
         The per-record methods cost one query each per relation type per
         direction; a turn enriching 30 hits over 2 relation types spent 120
@@ -8824,21 +9744,40 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not record_ids or not relation_types:
             return out
         try:
-            query = """
-            MATCH (a:Record)-[r:NODE_RELATION|RECORD_LINK]-(b:Record)
-            WHERE a.id IN $record_ids AND r.relationshipType IN $relation_types
-            RETURN a.id AS anchor_id,
-                   b.id AS record_id,
-                   startNode(r).id = a.id AS outgoing,
-                   r.relationshipType AS relationType,
-                   COALESCE(r.parentTableName, '') AS parentTable,
-                   COALESCE(r.childTableName, '') AS childTable,
-                   COALESCE(r.sourceColumn, '') AS sourceColumn,
-                   COALESCE(r.targetColumn, '') AS targetColumn
+            # One LIMIT per anchor and direction: a folder with 100k children is
+            # cut in the database, not after the rows are shipped.
+            def arm(pattern: str, outgoing: str, alias: str) -> str:
+                return f"""
+            CALL (rid) {{
+                MATCH {pattern}
+                WHERE r.relationshipType IN $relation_types
+                WITH r, b LIMIT $limit
+                RETURN collect({{
+                    record_id: b.id, outgoing: {outgoing}, relationType: r.relationshipType,
+                    parentTable: COALESCE(r.parentTableName, ''),
+                    childTable: COALESCE(r.childTableName, ''),
+                    sourceColumn: COALESCE(r.sourceColumn, ''),
+                    targetColumn: COALESCE(r.targetColumn, '')
+                }}) AS {alias}
+            }}"""
+            query = (
+                "UNWIND $record_ids AS rid"
+                + arm("(:Record {id: rid})-[r:NODE_RELATION|RECORD_LINK]->(b:Record)", "true", "outs")
+                + arm("(:Record {id: rid})<-[r:NODE_RELATION|RECORD_LINK]-(b:Record)", "false", "ins")
+                + """
+            UNWIND outs + ins AS e
+            RETURN rid AS anchor_id, e.record_id AS record_id, e.outgoing AS outgoing,
+                   e.relationType AS relationType, e.parentTable AS parentTable,
+                   e.childTable AS childTable, e.sourceColumn AS sourceColumn,
+                   e.targetColumn AS targetColumn
             """
+            )
             results = await self.client.execute_query(
                 query,
-                parameters={"record_ids": record_ids, "relation_types": relation_types},
+                parameters={
+                    "record_ids": record_ids, "relation_types": relation_types,
+                    "limit": limit_per_direction if limit_per_direction is not None else 2**31 - 1,
+                },
                 txn_id=transaction,
             )
             for record in results:
@@ -8867,7 +9806,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "Failed to batch record relations for %d records: %s", len(record_ids), str(e),
             )
             return await super().get_node_relations_batch(
-                record_ids, relation_types, transaction,
+                record_ids, relation_types, transaction, limit_per_direction,
             )
 
     async def batch_upsert_record_groups(
@@ -9353,11 +10292,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Get or create app
             app = await self.get_document(connector_id, CollectionNames.APPS.value, transaction)
             if not app:
-                # Create minimal app node
+                # Create a minimal app node that still satisfies the apps schema
+                now = get_epoch_timestamp_in_ms()
                 app_data = {
                     "id": connector_id,
                     "name": connector_id,
-                    "isActive": True
+                    "type": users[0].app_name.value,
+                    "appGroup": users[0].app_name.value,
+                    "scope": "team",
+                    "isActive": True,
+                    "createdAtTimestamp": now,
+                    "updatedAtTimestamp": now,
                 }
                 await self.batch_upsert_nodes(
                     [app_data],
@@ -9392,7 +10337,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         )
                     except Exception as migrate_err:
                         self.logger.error(
-                            f"❌ Person adoption failed for {user.email}: {migrate_err}"
+                            "Person adoption failed for user %s in org %s: %s", user.id, org_id, migrate_err
                         )
 
                     # A guest is saved so grants to them resolve, but org membership
@@ -9417,7 +10362,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     # invite makes them active, and a real org member.
                     if user_record.is_active:
                         self.logger.info(
-                            f"Guest {user.email} is active in PipesHub; keeping their organization membership"
+                            "Guest user %s is active in PipesHub; keeping their organization membership", user_record.id
                         )
                     else:
                         await self.delete_edge(
@@ -9495,19 +10440,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"📊 Found {len(users_sorted)} active users for org {org_id}")
 
             # 3. Get current team members to determine if team is empty
-            team_with_users = await self.get_team_with_users(team_id=team_id, org_id=org_id, user_key=None)
+            team_with_users = await self.get_team_with_users(
+                team_id=team_id, org_id=org_id, user_key=None,
+                # Everyone, deliberately. This count decides whether the team
+                # is empty and so whether the next account becomes its OWNER;
+                # a team whose only members are service accounts is not empty.
+                include_service_accounts=True,
+            )
             existing_member_count = len((team_with_users or {}).get("members", []))
             owner_assigned = existing_member_count > 0
 
             self.logger.debug(f"📊 All team for org {org_id}: existing_member_count={existing_member_count}, owner_assigned={owner_assigned}")
-            if team_with_users and team_with_users.get("members"):
-                self.logger.debug(
-                    "📊 Existing members: %s",
-                    [
-                        f"{m.get('userEmail') or '?'}:{m.get('role') or '?'}"
-                        for m in team_with_users.get("members", [])
-                    ],
-                )
 
             # 4. Add each user without a PERMISSION edge
             for user in users_sorted:
@@ -9540,6 +10483,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             {"createdBy": user_key, "updatedAtTimestamp": ts},
                         )
                         self.logger.debug(f"✅ Updated team createdBy to {user_key}")
+                    except SchemaValidationError:
+                        raise
                     except Exception as e:
                         self.logger.warning(f"Failed to update createdBy for team {team_id}: {e}")
 
@@ -9628,6 +10573,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         {"createdBy": user_key, "updatedAtTimestamp": ts},
                     )
                     self.logger.debug(f"Updated team createdBy to {user_key}")
+                except SchemaValidationError:
+                    raise
                 except Exception as e:
                     self.logger.warning(f"Failed to update createdBy for team {team_id}: {e}")
 
@@ -9933,17 +10880,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 except Exception as e:
                     self.logger.warning(f"kh scope: could not mark {connector_id} changed after a delete: {e}")
 
-            # Also delete from type-specific collections
-            type_labels = [
-                Neo4jLabel.FILES.value,
-                Neo4jLabel.MAILS.value,
-                Neo4jLabel.WEBPAGES.value,
-                Neo4jLabel.COMMENTS.value,
-                Neo4jLabel.TICKETS.value,
-                Neo4jLabel.ARTIFACTS.value,
-            ]
-
-            for label in type_labels:
+            # Also delete from type-specific collections, including a type node
+            # whose IS_OF_TYPE edge is already gone.
+            for label in self._record_type_labels():
                 delete_query = f"""
                 MATCH (n:{label} {{id: $record_key}})
                 DETACH DELETE n
@@ -10271,6 +11210,24 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Remove user access to record failed: {str(e)}")
             raise
 
+    async def remove_user_access_to_connector(
+        self,
+        connector_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete the user's own PERMISSION edges to the connector's records, record groups and user groups."""
+        query = """
+        MATCH (u:User {id: $user_id})-[p:PERMISSION]->(n)
+        WHERE (n:Record OR n:RecordGroup OR n:Group) AND n.connectorId = $connector_id
+        DELETE p
+        RETURN count(p) AS removed
+        """
+        results = await self.client.execute_query(
+            query, parameters={"user_id": user_id, "connector_id": connector_id}, txn_id=transaction
+        )
+        return int((results or [{}])[0].get("removed") or 0)
+
     # ==================== Connector Deletion Helper Methods ====================
 
     async def _collect_connector_entities(
@@ -10436,6 +11393,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 await self.rollback_transaction(txn_id)
             return (0, edge_collections)
 
+    def _record_type_labels(self) -> list[str]:
+        return sorted({collection_to_label(c) for c in RECORD_TYPE_COLLECTION_MAPPING.values()})
+
     async def _collect_isoftype_targets(self, transaction: str | None, connector_id: str) -> tuple[list[dict], bool]:
         """Collect isOfType target nodes using connectorId directly."""
         if not connector_id:
@@ -10472,10 +11432,164 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Failed to collect isOfType targets: {str(e)}")
             return ([], False)
 
+    async def _delete_type_docs_matching_record_keys(
+        self, transaction: str | None, keys: list[str]
+    ) -> int:
+        """Remove type nodes whose id matches a record id (edge optional)."""
+        if not keys or not self.client:
+            return 0
+        deleted = 0
+        for label in self._record_type_labels():
+            results = await self.client.execute_query(
+                f"""
+                UNWIND $keys AS rid
+                OPTIONAL MATCH (t:`{label}` {{id: rid}})
+                WITH t, rid WHERE t IS NOT NULL
+                DETACH DELETE t
+                RETURN rid
+                """,
+                parameters={"keys": keys},
+                txn_id=transaction,
+            )
+            deleted += len(results or [])
+        return deleted
+
+    async def _sweep_orphan_type_docs_for_org(
+        self, org_id: str, transaction: str | None = None
+    ) -> int:
+        """Delete type nodes in ``org_id`` whose matching Record no longer exists."""
+        if not org_id or not self.client:
+            return 0
+        deleted = 0
+        for label in self._record_type_labels():
+            results = await self.client.execute_query(
+                f"""
+                MATCH (t:`{label}` {{orgId: $org_id}})
+                WHERE NOT EXISTS {{ MATCH (:Record {{id: t.id}}) }}
+                  AND NOT EXISTS {{ MATCH (:Record)-[:IS_OF_TYPE]->(t) }}
+                WITH t, t.id AS id
+                DETACH DELETE t
+                RETURN id
+                """,
+                parameters={"org_id": org_id},
+                txn_id=transaction,
+            )
+            deleted += len(results or [])
+        # Mail, Comment and Meeting nodes are not given an orgId. A node whose
+        # Record is already gone is an orphan on every tenant.
+        for label in (
+            collection_to_label(CollectionNames.MAILS.value),
+            collection_to_label(CollectionNames.COMMENTS.value),
+            collection_to_label(CollectionNames.MEETINGS.value),
+        ):
+            results = await self.client.execute_query(
+                f"""
+                MATCH (t:`{label}`)
+                WHERE t.orgId IS NULL
+                  AND NOT EXISTS {{ MATCH (:Record {{id: t.id}}) }}
+                  AND NOT EXISTS {{ MATCH (:Record)-[:IS_OF_TYPE]->(t) }}
+                WITH t, t.id AS id
+                DETACH DELETE t
+                RETURN id
+                """,
+                txn_id=transaction,
+            )
+            deleted += len(results or [])
+        if deleted:
+            self.logger.info(
+                f"🧹 Swept {deleted} orphan type node(s) for org {org_id}"
+            )
+        return deleted
+
+    async def _collect_connector_taxonomy_targets(
+        self, connector_id: str
+    ) -> tuple[dict[str, list[str]], bool]:
+        """Ids of the taxonomy nodes this connector's records link, by collection.
+
+        Read before the records go, so the post-delete pass only considers
+        these nodes. A node another record is about to link (its relationship
+        not yet committed) looks unlinked to any read, so an org-wide sweep
+        could take it from a live record.
+        """
+        if not self.client:
+            return ({}, False)
+        targets: dict[str, list[str]] = {}
+        try:
+            for collection in sorted(TAXONOMY_COLLECTIONS):
+                label = collection_to_label(collection)
+                rel = edge_collection_to_relationship(TAXONOMY_EDGE_COLLECTIONS[collection])
+                results = await self.client.execute_query(
+                    f"""
+                    MATCH (:Record {{connectorId: $connector_id}})-[:{rel}]->(t:`{label}`)
+                    RETURN DISTINCT t.id AS id
+                    """,
+                    parameters={"connector_id": connector_id},
+                )
+                ids = [row["id"] for row in results or [] if row.get("id")]
+                if ids:
+                    targets[collection] = ids
+            return (targets, True)
+        except Exception as e:
+            self.logger.error(f"❌ Failed to collect taxonomy targets: {str(e)}")
+            return ({}, False)
+
+    async def _delete_unlinked_taxonomy_nodes(
+        self,
+        org_id: str,
+        targets: dict[str, list[str]],
+        batch_size: int = 1000,
+    ) -> int:
+        """Delete the given taxonomy nodes of ``org_id`` that no record links.
+
+        A merge loser (mergedInto set) is left for the redirect, and so is the
+        node a loser redirects to.
+        """
+        if not org_id or not self.client:
+            return 0
+        deleted = 0
+        for collection, ids in targets.items():
+            label = collection_to_label(collection)
+            rel = edge_collection_to_relationship(TAXONOMY_EDGE_COLLECTIONS[collection])
+            for i in range(0, len(ids), batch_size):
+                results = await self.client.execute_query(
+                    f"""
+                    OPTIONAL MATCH (other:`{label}` {{orgId: $org_id}})
+                    WHERE other.mergedInto IN $ids
+                    WITH collect(DISTINCT other.mergedInto) AS merge_winners
+                    MATCH (t:`{label}` {{orgId: $org_id}})
+                    WHERE t.id IN $ids
+                      AND NOT t.id IN merge_winners
+                      AND t.mergedInto IS NULL
+                      AND NOT EXISTS {{ MATCH (:Record)-[:{rel}]->(t) }}
+                    // A link written while this waited for the node's lock commits
+                    // before it gets the lock; look again so it is not detached too.
+                    SET t._LOCK_ = true
+                    REMOVE t._LOCK_
+                    WITH t
+                    WHERE NOT EXISTS {{ MATCH (:Record)-[:{rel}]->(t) }}
+                    OPTIONAL MATCH (a:{TAXONOMY_ALIAS_LABEL})-[:{TAXONOMY_ALIAS_REL}]->(t)
+                    WHERE NOT EXISTS {{
+                        MATCH (a)-[:{TAXONOMY_ALIAS_REL}]->(other) WHERE other <> t
+                    }}
+                    WITH t, t.id AS id, collect(a) AS aliases
+                    FOREACH (alias IN aliases | DETACH DELETE alias)
+                    DETACH DELETE t
+                    RETURN id
+                    """,
+                    parameters={"org_id": org_id, "ids": ids[i:i + batch_size]},
+                )
+                deleted += len(results or [])
+        if deleted:
+            self.logger.info(f"🧹 Removed {deleted} unlinked taxonomy node(s) for org {org_id}")
+        return deleted
+
     async def _delete_isoftype_targets_from_collected(
         self,
         transaction: str,
-        targets: list[dict]
+        targets: list[dict],
+        *,
+        retry_conflicts: bool = False,
+        stats: dict[str, int] | None = None,
     ) -> tuple[int, list[str]]:
         """Delete isOfType target nodes using pre-collected targets.
 
@@ -10501,25 +11615,23 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         failed_collections = []
 
         for collection, keys in targets_by_collection.items():
-            expected_count = len(keys)
-            deleted, failed_batches = await self._delete_nodes_by_keys(transaction, keys, collection)
+            deleted, failed_batches = await self._delete_nodes_by_keys(
+                transaction, keys, collection, retry_conflicts=retry_conflicts, stats=stats
+            )
             total_deleted += deleted
 
             if failed_batches > 0:
                 failed_collections.append(f"{collection} (failed batches: {failed_batches})")
-            elif deleted < expected_count:
-                failed_collections.append(f"{collection} (deleted {deleted}/{expected_count})")
+                continue
+            # Success is "none of these keys remain": a rival deleter may have removed some.
+            left = await self.get_existing_keys(collection, keys, transaction)
+            if left:
+                failed_collections.append(f"{collection} ({len(left)}/{len(keys)} remain)")
 
         if failed_collections:
             raise Exception(
                 f"CRITICAL: Failed to delete isOfType targets from {len(failed_collections)} collections: {failed_collections}. "
                 f"Expected {total_expected} but deleted {total_deleted}. Transaction will be rolled back."
-            )
-
-        if total_deleted < total_expected:
-            raise Exception(
-                f"CRITICAL: Partial deletion of isOfType targets. Expected {total_expected} but deleted {total_deleted}. "
-                f"Transaction will be rolled back."
             )
 
         self.logger.debug(f"✅ Deleted {total_deleted} isOfType target documents")
@@ -10530,9 +11642,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str,
         keys: list[str],
         collection: str,
-        batch_size: int = 5000
+        batch_size: int = 5000,
+        *,
+        retry_conflicts: bool = False,
+        stats: dict[str, int] | None = None,
     ) -> tuple[int, int]:
-        """Delete documents by their ID values using batching."""
+        """Delete documents by their ID values using batching.
+
+        With ``retry_conflicts`` (auto-committed batches only) a batch that lost to a
+        concurrent writer's lock (a deadlock) is run again: it rolled back whole.
+        """
         if not keys:
             return (0, 0)
 
@@ -10558,11 +11677,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             """
 
             try:
-                results = await self.client.execute_query(
-                    query,
-                    parameters={"keys": batch_keys},
-                    txn_id=transaction
-                )
+                for attempt in range(CASCADE_ATTEMPTS):
+                    try:
+                        results = await self.client.execute_query(
+                            query,
+                            parameters={"keys": batch_keys},
+                            txn_id=transaction
+                        )
+                        break
+                    except Exception as batch_error:
+                        if not (retry_conflicts and attempt + 1 < CASCADE_ATTEMPTS and self.is_write_conflict(batch_error)):
+                            raise
+                        if stats is not None:
+                            stats["retries"] = stats.get("retries", 0) + 1
+                        await cascade_backoff(attempt)
 
                 deleted_in_batch = results[0]["deleted_count"] if results else 0
                 total_deleted += deleted_in_batch
@@ -10791,9 +11919,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         transaction: str | None = None
     ) -> dict[str, Any]:
-        """
-        Delete a connector instance and all its related data with single-transaction atomicity.
-        Collects data first, then deletes within a single transaction for rollback capability.
+        """Delete a connector instance and all its related data.
+
+        Without a caller's transaction the nodes go in auto-committed batches, not one
+        transaction, and the connector node goes last, so a failed attempt leaves a
+        connector a retry finishes. The ids the vector cleanup needs are stashed before
+        anything is deleted, so the retry's result still names everything the connector
+        had, not only what the failed attempt left.
         """
         result = await self._delete_connector_instance(connector_id, org_id, transaction)
         if result.get("success"):
@@ -10847,20 +11979,41 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "error": "Failed to collect isOfType targets. Cannot safely delete type nodes."
                 }
 
+            # Labels are only cleanup: a failed read skips the label pass, not the delete.
+            taxonomy_targets, taxonomy_collect_success = await self._collect_connector_taxonomy_targets(
+                connector_id
+            )
+
             self.logger.debug(
                 f"📊 Collected for deletion - Records: {len(collected['record_keys'])}, "
                 f"RecordGroups: {len(collected['record_group_keys'])}, Roles: {len(collected['role_keys'])}, "
                 f"Groups: {len(collected['group_keys'])}, TypeNodes: {len(isoftype_targets)}"
             )
 
+            if transaction is None:
+                # Before the first delete: a retry re-collects only what an earlier
+                # attempt left, and the vector cleanup needs every id the connector had.
+                stashed_groups, stashed_vrids = await self._stash_connector_delete_handles(
+                    connector_id,
+                    collected["record_group_keys"],
+                    collected.get("virtual_record_ids") if needs_virtual_record_ids else None,
+                )
+                collected["record_group_keys"] = stashed_groups
+                if stashed_vrids is not None:
+                    collected["virtual_record_ids"] = stashed_vrids
+
             # Blocks are the bulk of a code connector. DETACH DELETE of the whole
             # set inside the write txn below hits dbms.memory.transaction.total.max
             # (~1.4 GiB on a 2G heap). Auto-committed batches free that memory
-            # before the rest of the delete opens; a later rollback leaves the
-            # connector intact so a retry finishes the leftover blocks.
+            # before the rest of the delete opens. The rest commits per batch too,
+            # not as one transaction: a connector this size outlasts the server's
+            # transaction timeout, and a rollback after the blocks are gone would
+            # strand the connector without them. A failure partway leaves the
+            # connector node in place (it is deleted last), so a retry re-collects
+            # and finishes what is left.
             deleted_blocks = await self.delete_blocks_by_connector_id(connector_id)
 
-            # Phase 2: Delete within a single transaction
+            # Phase 2: Delete in per-batch auto-commits (see above)
             node_collections = [
                 CollectionNames.RECORDS.value,
                 CollectionNames.RECORD_GROUPS.value,
@@ -10883,48 +12036,56 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if transaction is None:
                 transaction = await self.begin_transaction(
                     read=edge_collections + node_collections,
-                    write=edge_collections + node_collections
+                    write=edge_collections + node_collections,
+                    explicit=False,
                 )
                 created_transaction = True
 
             try:
                 # Step 1: Delete isOfType target nodes (Files, Mails, Webpages, etc.)
+                cascade_stats: dict[str, int] = {}
                 deleted_isoftype, _ = await self._delete_isoftype_targets_from_collected(
                     transaction,
-                    isoftype_targets
+                    isoftype_targets,
+                    retry_conflicts=created_transaction,
+                    stats=cascade_stats,
+                )
+                # Same-id type nodes cover records whose IS_OF_TYPE edge was already gone.
+                deleted_isoftype += await self._delete_type_docs_matching_record_keys(
+                    transaction, collected["record_keys"]
                 )
 
-                # Step 2: Delete records
-                deleted_records, failed_record_batches = await self._delete_nodes_by_keys(
-                    transaction,
-                    collected["record_keys"],
-                    CollectionNames.RECORDS.value
-                )
-                if len(collected["record_keys"]) > 0 and deleted_records == 0:
-                    raise Exception(
-                        f"CRITICAL: Failed to delete any records. Expected {len(collected['record_keys'])} but deleted 0."
+                # Steps 2-5: records, record groups, roles, groups. Each is measured as "none
+                # of the collected keys remains", so a rival deleter that removed some first
+                # does not fail this one; a batch that deadlocked with a push is run again.
+                removed_counts: dict[str, int] = {}
+                failed_batches: dict[str, int] = {}
+                for collection, keys_key in (
+                    (CollectionNames.RECORDS.value, "record_keys"),
+                    (CollectionNames.RECORD_GROUPS.value, "record_group_keys"),
+                    (CollectionNames.ROLES.value, "role_keys"),
+                    (CollectionNames.GROUPS.value, "group_keys"),
+                ):
+                    removed_counts[collection], failed_batches[collection] = await self._delete_nodes_by_keys(
+                        transaction, collected[keys_key], collection,
+                        retry_conflicts=created_transaction, stats=cascade_stats,
                     )
+                deleted_records = removed_counts[CollectionNames.RECORDS.value]
+                deleted_rg = removed_counts[CollectionNames.RECORD_GROUPS.value]
+                deleted_roles = removed_counts[CollectionNames.ROLES.value]
+                deleted_groups = removed_counts[CollectionNames.GROUPS.value]
 
-                # Step 3: Delete record groups
-                deleted_rg, _ = await self._delete_nodes_by_keys(
-                    transaction,
-                    collected["record_group_keys"],
-                    CollectionNames.RECORD_GROUPS.value
-                )
-
-                # Step 4: Delete roles
-                deleted_roles, _ = await self._delete_nodes_by_keys(
-                    transaction,
-                    collected["role_keys"],
-                    CollectionNames.ROLES.value
-                )
-
-                # Step 5: Delete groups
-                deleted_groups, _ = await self._delete_nodes_by_keys(
-                    transaction,
-                    collected["group_keys"],
-                    CollectionNames.GROUPS.value
-                )
+                # Auto-committed batches report failure by count instead of raising; the
+                # app node is deleted last so a retry can finish what is left.
+                if any(failed_batches.values()):
+                    raise Exception(f"CRITICAL: Failed to delete some node batches ({failed_batches}).")
+                for collection, keys_key in (
+                    (CollectionNames.RECORDS.value, "record_keys"),
+                    (CollectionNames.RECORD_GROUPS.value, "record_group_keys"),
+                    (CollectionNames.ROLES.value, "role_keys"),
+                    (CollectionNames.GROUPS.value, "group_keys"),
+                ):
+                    await self._assert_none_remain(transaction, collection, collected[keys_key])
 
                 # Step 6: Delete sync points
                 deleted_sync, sync_success = await self._delete_nodes_by_connector_id(
@@ -10940,28 +12101,92 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if not stages_success:
                     raise Exception("CRITICAL: Failed to delete pipeline stage states.")
 
+                # An agent names its sources by connectorId, not by a relationship, so
+                # nothing above reaches them; left behind they show as a raw id.
+                _, knowledge_success = await self._delete_nodes_by_connector_id(
+                    transaction,
+                    connector_id,
+                    CollectionNames.AGENT_KNOWLEDGE.value
+                )
+                if not knowledge_success:
+                    raise Exception("CRITICAL: Failed to remove the connector from agents.")
+
                 # User -> User link is not attached to any node deleted above
                 await self.remove_authenticated_as(connector_id, transaction=transaction)
 
                 # Step 7: Delete the app itself
-                deleted_app, _ = await self._delete_nodes_by_keys(
-                    transaction,
-                    [connector_id],
-                    CollectionNames.APPS.value
-                )
-                if deleted_app == 0:
-                    raise Exception(
-                        f"CRITICAL: Failed to delete the connector app itself. Connector {connector_id} may still exist."
+                if created_transaction:
+                    await self._delete_connector_with_its_delete_handles(connector_id)
+                else:
+                    await self._delete_nodes_by_keys(
+                        transaction,
+                        [connector_id],
+                        CollectionNames.APPS.value
                     )
+                # Gone is gone, whoever removed it.
+                await self._assert_none_remain(transaction, CollectionNames.APPS.value, [connector_id])
 
                 # Commit transaction
                 if created_transaction:
                     await self.commit_transaction(transaction)
 
+                orphan_types = 0
+                orphan_labels = 0
+                # A caller-owned transaction has not committed. Reading late
+                # records outside it would see rows this delete is removing.
+                if created_transaction:
+                    try:
+                        late = await self.client.execute_query(
+                            """
+                            MATCH (r:Record {connectorId: $connector_id})
+                            RETURN r.id AS id, r.virtualRecordId AS virtualRecordId
+                            """,
+                            parameters={"connector_id": connector_id},
+                        )
+                        late_keys = [row["id"] for row in late or [] if row.get("id")]
+                        if late_keys:
+                            self.logger.warning(
+                                f"Connector {connector_id} gained {len(late_keys)} record(s) during delete; removing them"
+                            )
+                            await self._delete_records_with_their_types(late_keys, None)
+                            deleted_records += len(late_keys)
+                            vrids = collected.get("virtual_record_ids")
+                            if needs_virtual_record_ids and isinstance(vrids, list):
+                                removed = {row["id"] for row in late or [] if row.get("id")}
+                                vrids.extend(
+                                    row["virtualRecordId"]
+                                    for row in late or []
+                                    if row.get("id") in removed
+                                    and isinstance(row.get("virtualRecordId"), str)
+                                    and row["virtualRecordId"]
+                                )
+                    except Exception as late_err:
+                        self.logger.warning(
+                            f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
+                        )
+                    try:
+                        orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
+                    except Exception as sweep_err:
+                        self.logger.warning(
+                            f"⚠️ Post-delete orphan type sweep failed for connector {connector_id} "
+                            f"in org {org_id}: {sweep_err}. Connector delete already committed."
+                        )
+                    try:
+                        if taxonomy_collect_success:
+                            orphan_labels = await self._delete_unlinked_taxonomy_nodes(
+                                org_id, taxonomy_targets
+                            )
+                    except Exception as sweep_err:
+                        self.logger.warning(
+                            f"⚠️ Post-delete orphan taxonomy sweep failed for connector {connector_id} "
+                            f"in org {org_id}: {sweep_err}. Connector delete already committed."
+                        )
+
                 self.logger.debug(
                     f"✅ Connector instance {connector_id} deleted successfully. "
                     f"Records: {deleted_records}, RecordGroups: {deleted_rg}, "
                     f"Roles: {deleted_roles}, Groups: {deleted_groups}, "
+                    f"Orphan type docs: {orphan_types}, orphan labels: {orphan_labels}, "
                     f"Blocks: {deleted_blocks}, isOfType targets: {deleted_isoftype}"
                 )
 
@@ -10972,6 +12197,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "deleted_roles_count": deleted_roles,
                     "deleted_groups_count": deleted_groups,
                     "deleted_blocks_count": deleted_blocks,
+                    "deleted_isoftype_targets_count": deleted_isoftype,
+                    "cascade_retries": cascade_stats.get("retries", 0),
+                    "deleted_orphan_type_docs_count": orphan_types,
+                    "deleted_orphan_taxonomy_count": orphan_labels,
                     "virtual_record_ids": collected["virtual_record_ids"],
                     # The connector's own record groups went with it. A point
                     # shared with a live connector survives the purge, so the
@@ -10999,6 +12228,63 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "success": False,
                 "error": f"Failed to delete connector instance: {str(e)}"
             }
+
+    async def _stash_connector_delete_handles(
+        self,
+        connector_id: str,
+        record_group_ids: list[str],
+        virtual_record_ids: list[str] | None,
+    ) -> tuple[list[str], list[str] | None]:
+        """Add the ids not yet stashed for this connector's delete and return everything
+        stashed: these ids plus those of earlier attempts, whose nodes may already be gone.
+
+        Written in chunks before anything is deleted; a failed write raises, so the delete
+        stops before it could lose ids. ``virtual_record_ids`` None: not collected.
+        """
+        label = _CONNECTOR_DELETE_HANDLE_LABEL
+        rows = await self.client.execute_query(
+            f"MATCH (h:{label} {{connectorId: $connector_id}}) RETURN h.kind AS kind, h.ids AS ids",
+            parameters={"connector_id": connector_id},
+        )
+        stashed: dict[str, list[str]] = {"recordGroup": [], "virtualRecord": []}
+        for row in rows or []:
+            stashed.setdefault(row["kind"], []).extend(row["ids"] or [])
+        kinds = [("recordGroup", record_group_ids)]
+        if virtual_record_ids is not None:
+            kinds.append(("virtualRecord", virtual_record_ids))
+        for kind, ids in kinds:
+            known = set(stashed[kind])
+            new = [i for i in dict.fromkeys(ids) if i and i not in known]
+            for start in range(0, len(new), _CONNECTOR_DELETE_HANDLE_CHUNK):
+                await self.client.execute_query(
+                    f"CREATE (:{label} {{connectorId: $connector_id, kind: $kind, ids: $ids}})",
+                    parameters={
+                        "connector_id": connector_id,
+                        "kind": kind,
+                        "ids": new[start:start + _CONNECTOR_DELETE_HANDLE_CHUNK],
+                    },
+                )
+            stashed[kind].extend(new)
+        groups = list(dict.fromkeys(stashed["recordGroup"]))
+        vrids = list(dict.fromkeys(stashed["virtualRecord"])) if virtual_record_ids is not None else None
+        return groups, vrids
+
+    async def _delete_connector_with_its_delete_handles(self, connector_id: str) -> int:
+        """Delete the connector node and its stashed delete ids in one statement, so the
+        ids never outlive the node and the node never outlives them. Returns 1 or 0."""
+        app_label = collection_to_label(CollectionNames.APPS.value)
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (a:{app_label} {{id: $connector_id}})
+            OPTIONAL MATCH (h:{_CONNECTOR_DELETE_HANDLE_LABEL} {{connectorId: $connector_id}})
+            WITH a, collect(h) AS handles
+            FOREACH (h IN handles | DELETE h)
+            DETACH DELETE a
+            RETURN count(a) AS deleted
+            """,
+            parameters={"connector_id": connector_id},
+        )
+        return int(rows[0]["deleted"]) if rows else 0
 
     async def get_key_by_external_file_id(
         self,
@@ -11535,9 +12821,36 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Failed to retrieve record for id {record_id}: {str(e)}")
             return None
 
+    async def page_record_ids_by_type(
+        self,
+        org_id: str,
+        record_types: list[str],
+        *,
+        after_key: str | None = None,
+        limit: int = 500,
+    ) -> list[str]:
+        """See :meth:`IGraphDBProvider.page_record_ids_by_type`."""
+        if limit < 0:
+            raise ValueError("limit must not be negative")
+        if not org_id or not record_types or limit == 0:
+            return []
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        rows = await self._execute_hinted(
+            _record_ids_by_type_page(_RECORD_ORG_ID_HINT),
+            _record_ids_by_type_page(""),
+            {"org_id": org_id, "types": list(record_types), "after_key": after_key or "", "limit": limit},
+            None,
+            index=_RECORD_ORG_ID_INDEX,
+            warning=_RECORD_ORG_ID_HINT_WARNING,
+        )
+        return [str(row["id"]) for row in rows or [] if row.get("id")]
+
     async def get_typed_records_batch(
         self,
         record_ids: list[str],
+        *,
+        raise_on_error: bool = False,
     ) -> dict[str, Record]:
         """
         Batch-fetch typed Record instances for the given record IDs.
@@ -11576,6 +12889,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     continue
             return typed
         except Exception as e:
+            if raise_on_error:
+                raise
             self.logger.error(f"❌ get_typed_records_batch failed: {str(e)}")
             return {}
 
@@ -11654,6 +12969,43 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"get_node_depths_batch failed: {e}")
             return {}
 
+    async def _ref_link_rows(self, doc_ids: list[str]) -> list[dict[str, Any]]:
+        # Per document, so a document with many links cannot push another document's only link out of the result.
+        # coalesce: the predicate is null for a record with no origin or connector name, and Neo4j
+        # sorts null first in a descending order, ahead of the knowledge-base upload.
+        records = await self.client.execute_query(
+            """
+            UNWIND $ids AS doc
+            CALL (doc) {
+              MATCH (r:Record {externalRecordId: doc})
+              RETURN r ORDER BY coalesce(r.origin = $upload AND r.connectorName = $kb, false) DESC, r.id LIMIT $per_doc
+            }
+            RETURN doc AS docId, r.id AS recordId, 'externalRecordId' AS kind, r.origin AS origin,
+                   r.connectorName AS connectorName, r.connectorId AS connectorId
+            """,
+            parameters={"ids": doc_ids, "per_doc": REF_LINKS_PER_DOC, "upload": OriginTypes.UPLOAD.value, "kb": Connectors.KNOWLEDGE_BASE.value},
+        )
+        files = await self.client.execute_query(
+            """
+            UNWIND $paths AS path
+            CALL (path) {
+              MATCH (f:File {path: path})
+              RETURN f ORDER BY f.id LIMIT 1
+            }
+            RETURN substring(path, 10) AS docId, f.id AS recordId, 'files.path' AS kind,
+                   null AS origin, null AS connectorName, null AS connectorId
+            """,
+            parameters={"paths": [f"storage://{d}" for d in doc_ids]},
+        )
+        return [dict(r) for r in (records or []) + (files or [])]
+
+    async def _ref_access_hint(self, user_key: str, org_id: str, connector_ids: set[str]) -> dict[str, Any] | None:
+        # The same single-connector probe the one-record check uses (``check_record_access_with_details``).
+        (connector_id,) = connector_ids
+        gate = await self.get_knowledge_hub_access_context_v2(user_key, org_id)
+        grantees = await self._kh_v3_connector_grantees(user_key, connector_id, None) if connector_id in gate["gated_app_ids"] else []
+        return {**gate, "by_connector": {}, "probe": {"connector_id": connector_id, "grantees": grantees}}
+
     async def check_record_access_with_details(
         self,
         user_id: str,
@@ -11725,9 +13077,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 ) if connector_id in user_apps_ids else []
                 access = {**gate, "by_connector": {},
                           "probe": {"connector_id": connector_id, "grantees": grantees}}
-            if record_id not in (await self.check_access(
+            checked = await self.check_access(
                 user_key, org_id, node_ids=[record_id], access=access, transaction=transaction,
-            )).node_ids:
+            )
+            # A placeholder is reachable for browsing, but it is not a readable record: it is refused here
+            # exactly like a record the user cannot read.
+            if record_id not in checked.node_ids or record_id in checked.placeholder_ids:
                 return None
 
             # Build comprehensive access query
@@ -11830,20 +13185,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             CALL (u, kh_kbs) {
                 UNWIND kh_kbs AS kb
                 MATCH (u)-[kbPerm:PERMISSION {type: "USER"}]->(kb)
+                WHERE __KB_EDGE_OK__
                 RETURN [x IN COLLECT({type: "KNOWLEDGE_BASE", source: kb, role: kbPerm.role, folder: null}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS kbDirectAccess
             }
 
             // KB Team access: Only for KB records, not connector records
             CALL (u, kh_kbs) {
                 UNWIND kh_kbs AS kb2
-                MATCH (team:Teams)-[teamKbPerm:PERMISSION {type: "TEAM"}]->(kb2)
-                WITH u, kb2, collect(DISTINCT team) AS kh_teams
-                UNWIND kh_teams AS team
-                MATCH (u)-[userTeamPerm:PERMISSION {type: "USER"}]->(team)
+                MATCH (team:Teams)-[team_grant:PERMISSION {type: "TEAM"}]->(kb2)
+                MATCH (u)-[team_member:PERMISSION {type: "USER"}]->(team)
                 RETURN [x IN COLLECT({
                      type: "KNOWLEDGE_BASE_TEAM",
                      source: kb2,
-                     role: userTeamPerm.role,
+                     role: __TEAM_GRANT_ROLE__,
                      folder: null
                  }) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS kbTeamAccess
             }
@@ -11866,7 +13220,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                  directAccess + groupAccess + recordGroupAccess + nestedRgAccess + directUserRgAccess + inheritedRgAccess + groupInheritedRgAccess + orgAccess + orgRgAccess + kbDirectAccess + kbTeamAccess AS allAccess
             WHERE size([a IN allAccess WHERE a.source IS NOT NULL]) > 0
             RETURN allAccess, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess
-            """
+            """.replace("__TEAM_GRANT_ROLE__", _TEAM_GRANT_ROLE_CYPHER).replace(
+                "__KB_EDGE_OK__", _kb_edge_role_ok("kbPerm"))
 
             access_results = await self.client.execute_query(
                 access_query,
@@ -12130,8 +13485,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               AND coalesce(r.isPlaceholder, false) = false
               AND coalesce(r.isDeleted, false) = false
               AND NOT coalesce(r.mimeType, '') IN $folder_mime_types
+            WITH DISTINCT r
+            // Named entities have no record field: their stage state on the record's revision, by id.
+            OPTIONAL MATCH (s:{collection_to_label(CollectionNames.STAGE_STATES.value)}
+                {{id: r.virtualRecordId + ':' + r.contentRev + ':entities'}})
             RETURN r.recordType AS recordType, r.indexingStatus AS indexingStatus,
-                   r.extractionStatus AS extractionStatus, count(DISTINCT r) AS cnt
+                   r.extractionStatus AS extractionStatus, s.status AS entitiesStatus, count(r) AS cnt
             """
 
             results = await self.client.execute_query(
@@ -12556,6 +13915,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """Update user's sync state for a specific service"""
         try:
             updated_timestamp = get_epoch_timestamp_in_ms()
+            self.validator.validate_edge_update(
+                CollectionNames.USER_APP_RELATION.value, {"syncState": state, "lastSyncUpdate": updated_timestamp}
+            )
 
             query = """
             MATCH (u:User {email: $user_email})-[rel:USER_APP_RELATION]->(app:App {name: $service_type})
@@ -12585,6 +13947,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return None
 
+        except SchemaValidationError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Update user sync state failed: {str(e)}")
             return None
@@ -12888,10 +14252,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (u:User {id: $user_id})
             MATCH (kb:App {id: $kb_id, type: "KB"})
             OPTIONAL MATCH (u)-[d:PERMISSION {type: "USER"}]->(kb)
-            WITH u, kb, d.role AS direct_role
-            OPTIONAL MATCH (u)-[ut:PERMISSION {type: "USER"}]->(team:Teams)-[tb:PERMISSION {type: "TEAM"}]->(kb)
-            WITH direct_role, collect(DISTINCT ut.role) AS team_roles
-            WITH CASE WHEN direct_role IS NOT NULL THEN [direct_role] ELSE [] END +
+            WITH u, kb, CASE WHEN d.role IN __RETIRED_ROLES__ THEN 'READER' ELSE d.role END AS direct_role
+            OPTIONAL MATCH (u)-[team_member:PERMISSION {type: "USER"}]->(team:Teams)-[team_grant:PERMISSION {type: "TEAM"}]->(kb)
+            WITH direct_role, collect(DISTINCT __TEAM_GRANT_ROLE__) AS team_roles
+            WITH CASE WHEN direct_role IN __KB_ROLES__ THEN [direct_role] ELSE [] END +
                  [x IN team_roles WHERE x IS NOT NULL] AS candidates
             UNWIND candidates AS cand
             WITH DISTINCT cand AS role
@@ -12907,7 +14271,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ORDER BY priority DESC
             LIMIT 1
             RETURN role AS role
-            """
+            """.replace("__TEAM_GRANT_ROLE__", _TEAM_GRANT_ROLE_CYPHER).replace(
+                "__RETIRED_ROLES__", _RETIRED_ROLES_CYPHER).replace("__KB_ROLES__", _KB_ROLES_CYPHER)
 
             results = await self.client.execute_query(
                 query,
@@ -12915,8 +14280,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction
             )
 
-            if results:
-                role = read_role(results[0].get("role"))
+            role = read_role(results[0].get("role")) if results else None
+            if role in TEAM_GRANT_ROLES:
                 self.logger.debug(f"✅ Effective KB role for user {user_id} on KB {kb_id}: '{role}'")
                 return role
 
@@ -12986,6 +14351,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 updatedAtTimestamp: kb.updatedAtTimestamp,
                 createdBy: kb.createdBy,
                 userRole: $user_role,
+                status: kb.status,
                 folders: folders
             } AS result
             LIMIT 1
@@ -13020,16 +14386,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     @staticmethod
     def _kb_best_role_rows(filters: str = "") -> str:
         """One row (kb, final_role) per KB the user holds a role on, directly or
-        through a team. The team role is the user's role in the team; a retired
-        role reads as READER; the highest role wins and a direct grant wins a tie."""
+        through a team. The team role is what the team's grant gives (see
+        team_grant_role); a retired role reads as READER; the highest role wins and
+        a direct grant wins a tie."""
         return f"""
             MATCH (u:User {{id: $user_id}})
             CALL (u) {{
                 MATCH (u)-[r:PERMISSION {{type: "USER"}}]->(kb:App)
+                WHERE CASE WHEN r.role IN {_RETIRED_ROLES_CYPHER} THEN 'READER' ELSE r.role END IN {_KB_ROLES_CYPHER}
                 RETURN kb, r.role AS stored_role, true AS is_direct
                 UNION
-                MATCH (u)-[r:PERMISSION {{type: "USER"}}]->(:Teams)-[:PERMISSION {{type: "TEAM"}}]->(kb:App)
-                RETURN kb, r.role AS stored_role, false AS is_direct
+                MATCH (u)-[team_member:PERMISSION {{type: "USER"}}]->(:Teams)-[team_grant:PERMISSION {{type: "TEAM"}}]->(kb:App)
+                RETURN kb, {_TEAM_GRANT_ROLE_CYPHER} AS stored_role, false AS is_direct
             }}
             WITH kb, is_direct,
                  CASE WHEN stored_role IN {_RETIRED_ROLES_CYPHER} THEN 'READER' ELSE stored_role END AS role
@@ -13115,6 +14483,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 updatedAtTimestamp: kb.updatedAtTimestamp,
                 createdBy: kb.createdBy,
                 userRole: final_role,
+                status: kb.status,
                 folders: folders
             }} AS result
             """
@@ -13188,6 +14557,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # Remove id from updates if present
             updates_clean = {k: v for k, v in updates.items() if k != "id" and k != "_key"}
+            self.validator.validate_node_update(CollectionNames.APPS.value, updates_clean)
 
             query = """
             MATCH (kb:App {id: $kb_id, type: "KB"})
@@ -13726,6 +15096,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """See ``IGraphDBProvider.soft_delete_records``."""
         if not record_ids:
             return empty_soft_delete_result(batch_id)
+        # Before the transaction begins, so a refusal leaves nothing open.
+        marks: dict[str, Any] = {"isDeleted": True, "deleteSource": delete_source, "deleteBatchId": batch_id}
+        if deleted_by_user_id is not None:
+            marks["deletedByUserId"] = deleted_by_user_id
+        self.validator.validate_node_update(CollectionNames.RECORDS.value, marks)
         root_check = f"""
             ($include_trashed OR {cypher_live_record("rec")}) AND rec.connectorId = $connector_id
             AND ($folder_id IS NULL OR EXISTS {{
@@ -13913,6 +15288,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not restores:
             return []
         items, reclaims = restore_items(restores, connector_id)
+        # Every item before the statement: it writes them all or none.
+        for item in items:
+            self.validator.validate_node_update(CollectionNames.RECORDS.value, item["set"])
         cleared = ", ".join(f"r.{name} = null" for name in TRASH_STATE_FIELDS)
         # Each statement commits on its own unless explicit transactions are on, so a
         # restore split over statements could stop halfway, and an external id given
@@ -14158,6 +15536,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """See ``IGraphDBProvider.record_purge_failure``."""
         if not record_ids:
             return 0
+        self.validator.validate_node_update(CollectionNames.RECORDS.value, {"purgeLastError": error})
         rows = await self.client.execute_query(
             """
             UNWIND $keys AS key
@@ -14909,6 +16288,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return
         coll = CollectionNames.RECORDS.value
         try:
+            self.validator.validate_node_update(coll, {"indexingStatus": status})
             label = collection_to_label(coll)
             query = f"""
             MATCH (n:{label})
@@ -14937,10 +16317,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 to_upsert.append({"id": rid, "indexingStatus": status})
 
             if to_upsert:
-                await self.batch_upsert_nodes(to_upsert, coll)
+                await self.batch_update_nodes(to_upsert, coll)
                 self.logger.debug(
                     "✅ Updated %s record(s) indexing status to %s", len(to_upsert), status
                 )
+        except SchemaValidationError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Failed to update records to {status}: {str(e)}")
 
@@ -14962,6 +16344,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if only_statuses is not None and not included:
             return
         try:
+            self.validator.validate_node_update(
+                CollectionNames.RECORDS.value,
+                {"indexingStatus": status, **({"reason": reason} if reason is not None else {})},
+            )
             label = collection_to_label(CollectionNames.RECORDS.value)
             exclude_clause = (
                 "AND NOT coalesce(n.indexingStatus, '') IN $exclude_statuses" if excluded else ""
@@ -15009,6 +16395,112 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             raise
 
+    @override
+    async def claim_push_record(
+        self,
+        *,
+        kb_id: str,
+        org_id: str,
+        key: str,
+        expected: PushExpect | None,
+        new: PushSet,
+        transaction: str | None = None,
+    ) -> PushClaim:
+        apps = collection_to_label(CollectionNames.APPS.value)
+        records = collection_to_label(CollectionNames.RECORDS.value)
+        if expected is None:
+            # The record upsert is a MERGE by id and cannot refuse, so creates of one key are
+            # serialised on the KB node: the second sees the first's record once it gets the lock.
+            rows = await self.client.execute_query(
+                f"""
+                MATCH (kb:{apps} {{id: $kb_id, type: 'KB'}})
+                SET kb.{_MATCH_LOCK} = true
+                REMOVE kb.{_MATCH_LOCK}
+                WITH kb
+                OPTIONAL MATCH (r:{records} {{id: $key}})
+                RETURN kb.status AS status, kb.orgId AS org, r IS NULL AS free
+                """,
+                parameters={"kb_id": kb_id, "key": key},
+                txn_id=transaction,
+            )
+            refusal = self._push_kb_refusal(rows, org_id)
+            if refusal:
+                return refusal
+            return PushClaim.CLAIMED if rows[0]["free"] else PushClaim.KEY_TAKEN
+        kb_rows = await self.client.execute_query(
+            f"MATCH (kb:{apps} {{id: $kb_id, type: 'KB'}}) RETURN kb.status AS status, kb.orgId AS org",
+            parameters={"kb_id": kb_id},
+            txn_id=transaction,
+        )
+        refusal = self._push_kb_refusal(kb_rows, org_id)
+        if refusal:
+            return refusal
+        self.validator.validate_node_update(
+            CollectionNames.RECORDS.value, {"externalRecordId": new.document_id, "version": new.version}
+        )
+        # The write on the record takes its lock, so the conditions after it read what a
+        # concurrent push or trash committed while this waited.
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (r:{records} {{id: $key}})
+            SET r.{_MATCH_LOCK} = true
+            REMOVE r.{_MATCH_LOCK}
+            WITH r
+            WHERE r.orgId = $org_id AND r.connectorId = $kb_id
+              AND coalesce(r.isDeleted, false) <> true
+              AND r.externalRecordId = $expected_doc
+              AND r.externalRevisionId = $expected_rev
+              AND r.version = $expected_version
+            SET r.externalRecordId = $new_doc, r.version = $new_version
+            RETURN r.id AS id
+            """,
+            parameters={
+                "key": key, "org_id": org_id, "kb_id": kb_id,
+                "expected_doc": expected.document_id, "expected_rev": expected.revision,
+                "expected_version": expected.version,
+                "new_doc": new.document_id, "new_version": new.version,
+            },
+            txn_id=transaction,
+        )
+        return PushClaim.CLAIMED if len(rows) == 1 else PushClaim.LOST
+
+    @staticmethod
+    def _push_kb_refusal(rows: list[dict[str, Any]], org_id: str) -> PushClaim | None:
+        if not rows or rows[0].get("org") != org_id:
+            return PushClaim.KB_MISSING
+        if rows[0].get("status") == KB_DELETING_STATUS:
+            return PushClaim.KB_DELETING
+        return None
+
+    @override
+    async def retag_push_record(
+        self,
+        *,
+        key: str,
+        kb_id: str,
+        org_id: str,
+        expected_revision: str,
+        new_revision: str,
+        transaction: str | None = None,
+    ) -> bool:
+        self.validator.validate_node_update(CollectionNames.RECORDS.value, {"externalRevisionId": new_revision})
+        records = collection_to_label(CollectionNames.RECORDS.value)
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (r:{records} {{id: $key}})
+            SET r.{_MATCH_LOCK} = true
+            REMOVE r.{_MATCH_LOCK}
+            WITH r
+            WHERE r.orgId = $org_id AND r.connectorId = $kb_id
+              AND coalesce(r.isDeleted, false) <> true AND r.externalRevisionId = $expected
+            SET r.externalRevisionId = $new
+            RETURN r.id AS id
+            """,
+            parameters={"key": key, "org_id": org_id, "kb_id": kb_id, "expected": expected_revision, "new": new_revision},
+            txn_id=transaction,
+        )
+        return len(rows) == 1
+
     async def compare_and_set_indexing_status(
         self,
         record_ids: list[str],
@@ -15025,6 +16517,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not unique_ids:
             return []
         try:
+            now = get_epoch_timestamp_in_ms()
+            written: dict[str, Any] = {"indexingStatus": new_status}
+            if new_status == ProgressStatus.QUEUED.value:
+                written["queuedAtTimestamp"] = now
+            self.validator.validate_node_update(CollectionNames.RECORDS.value, written)
             label = collection_to_label(CollectionNames.RECORDS.value)
             queued_stamp = (
                 ", n.queuedAtTimestamp = $now"
@@ -15051,7 +16548,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "keys": unique_ids,
                     "expected": expected,
                     "new_status": new_status,
-                    "now": get_epoch_timestamp_in_ms(),
+                    "now": now,
                 },
                 txn_id=transaction,
             )
@@ -15062,11 +16559,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             return updated_keys
         except Exception as e:
+            # Raised, not answered as "no row matched": that answer reads as "the record moved on", and the caller then
+            # drops the write for good (the final-attempt FAILED marking left the record in its old status).
             self.logger.error(
                 "❌ Failed compare-and-set (%s -> %s): %s",
                 expected, new_status, str(e),
             )
-            return []
+            raise
 
     # ==================== Pipeline stage states ====================
 
@@ -15091,8 +16590,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return [dict(row["doc"]) for row in rows]
 
     @override
+    async def stage_state_org_for_virtual_record(self, virtual_record_id: str) -> str | None:
+        label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        rows = await self._stage_cypher(
+            f"MATCH (n:{label}) WHERE n.virtualRecordId = $vrid AND n.orgId IS NOT NULL "
+            "RETURN n.orgId AS org LIMIT 1",
+            {"vrid": virtual_record_id},
+        )
+        return rows[0]["org"] if rows else None
+
+    @override
     async def stage_state_create(self, document: dict[str, Any]) -> bool:
         label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        self.validator.validate_node(CollectionNames.STAGE_STATES.value, document)
         # MERGE on the unique id constraint is atomic: exactly one concurrent caller creates.
         rows = await self._stage_cypher(
             f"""
@@ -15117,6 +16627,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         expected_attempt: int | None = None,
     ) -> bool:
         label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        self.validator.validate_node_update(CollectionNames.STAGE_STATES.value, {**fields, "status": new})
         # Take the node's write lock before reading status: a MATCH ... WHERE status
         # predicate is evaluated before the lock, so two writers could both pass it
         # (the same lost-update guard as update_node_fields_if_match).
@@ -15173,6 +16684,183 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return deleted
 
     @override
+    async def get_stage_states_with_records(
+        self,
+        org_id: str,
+        connector_id: str,
+        stage: str,
+        status: str,
+        *,
+        limit: int,
+        after_key: str | None = None,
+        exclude_indexing_statuses: list[str] | None = None,
+    ) -> list[tuple[str, list[str]]]:
+        if limit <= 0:
+            return []
+        label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        record_label = collection_to_label(CollectionNames.RECORDS.value)
+        after = "state.id > $after_key" if after_key is not None else "state.id IS NOT NULL"
+        # Ordered by every property of stage_state_page so the seek returns the page in index
+        # order and stops at the limit, instead of sorting every match.
+        rows = await self._stage_cypher(
+            f"""
+            MATCH (state:{label})
+            WHERE state.connectorId = $connector_id AND state.stage = $stage AND state.status = $status
+              AND {after}
+            WITH state ORDER BY state.connectorId, state.stage, state.status, state.id LIMIT $limit
+            OPTIONAL MATCH (r:{record_label} {{virtualRecordId: state.virtualRecordId}})
+            WHERE r.orgId = $org_id AND r.contentRev = state.rev AND r.connectorId = $connector_id
+              AND coalesce(r.isPlaceholder, false) <> true
+              AND {cypher_record_visibility("r", RecordVisibility.LIVE)}
+              AND NOT coalesce(r.indexingStatus, '') IN $exclude
+            WITH state, r ORDER BY r.id
+            WITH state, collect(r.id) AS records
+            RETURN state.id AS key, records ORDER BY key
+            """,
+            {
+                "connector_id": connector_id,
+                "org_id": org_id,
+                "stage": stage,
+                "status": status,
+                "after_key": after_key,
+                "exclude": exclude_indexing_statuses or [],
+                "limit": limit,
+            },
+        )
+        return [(str(row["key"]), [str(k) for k in row["records"]]) for row in rows]
+
+    @override
+    async def stage_states_unheld_revisions(
+        self, virtual_record_ids: list[str], *, updated_before_ms: int
+    ) -> list[tuple[str, str]]:
+        ids = sorted({vrid for vrid in virtual_record_ids if vrid})
+        label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        record_label = collection_to_label(CollectionNames.RECORDS.value)
+        found: list[tuple[str, str]] = []
+        for start in range(0, len(ids), _STAGE_STATE_VRID_BATCH):
+            rows = await self._stage_cypher(
+                f"""
+                UNWIND $ids AS vrid
+                MATCH (state:{label})
+                WHERE state.virtualRecordId = vrid AND state.rev IS NOT NULL
+                WITH vrid, state.rev AS rev, max(coalesce(state.updatedAtMs, 0)) AS newest
+                WHERE newest < $before
+                  AND NOT EXISTS {{
+                    MATCH (r:{record_label} {{virtualRecordId: vrid}}) WHERE r.contentRev = rev
+                  }}
+                RETURN vrid, rev ORDER BY vrid, rev
+                """,
+                {"ids": ids[start:start + _STAGE_STATE_VRID_BATCH], "before": updated_before_ms},
+            )
+            found.extend((str(row["vrid"]), str(row["rev"])) for row in rows)
+        return found
+
+    @override
+    async def stage_states_delete_unheld_revisions(
+        self, revisions: list[tuple[str, str]], *, updated_before_ms: int
+    ) -> int:
+        pairs = sorted({(v, r) for v, r in revisions if v and r})
+        label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        record_label = collection_to_label(CollectionNames.RECORDS.value)
+        deleted = 0
+        for start in range(0, len(pairs), _STAGE_STATE_VRID_BATCH):
+            # The rule is evaluated again here: a record may have moved back onto the
+            # revision, or its stage claimed again, since it was read. The states are
+            # locked before their age is read, as in stage_state_compare_and_set: a
+            # claim committed while this waited for the lock would otherwise be deleted
+            # on the age read before it.
+            rows = await self._stage_cypher(
+                f"""
+                UNWIND $pairs AS pair
+                WITH pair[0] AS vrid, pair[1] AS rev
+                MATCH (state:{label})
+                WHERE state.virtualRecordId = vrid AND state.rev = rev
+                SET state.{_MATCH_LOCK} = true
+                REMOVE state.{_MATCH_LOCK}
+                WITH vrid, rev, collect(state) AS states
+                WHERE all(s IN states WHERE coalesce(s.updatedAtMs, 0) < $before)
+                  AND NOT EXISTS {{
+                    MATCH (r:{record_label} {{virtualRecordId: vrid}}) WHERE r.contentRev = rev
+                  }}
+                UNWIND states AS state
+                DETACH DELETE state
+                RETURN count(*) AS deleted
+                """,
+                {"pairs": [list(p) for p in pairs[start:start + _STAGE_STATE_VRID_BATCH]], "before": updated_before_ms},
+            )
+            deleted += int(rows[0]["deleted"]) if rows else 0
+        return deleted
+
+    @override
+    async def get_switch_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        label = collection_to_label(CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value)
+        after = "m.id > $after_key" if after_key is not None else "m.id IS NOT NULL"
+        rows = await self._stage_cypher(
+            f"""
+            MATCH (m:{label}) WHERE {after}
+            WITH m ORDER BY m.id LIMIT $limit
+            RETURN m.id AS virtualRecordId, m.orgId AS orgId, m.documentId AS documentId,
+                   m.switchSeq AS switchSeq, m.lastSwitchAt AS lastSwitchAt, m.retired AS retired
+            """,
+            {"after_key": after_key, "limit": limit},
+        )
+        out = []
+        for row in rows:
+            item = dict(row)
+            retired = item.get("retired")
+            if isinstance(retired, str):
+                try:
+                    retired = json.loads(retired)
+                except ValueError:
+                    retired = []
+            item["retired"] = retired if isinstance(retired, list) else []
+            out.append(item)
+        return out
+
+    @override
+    async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        label = collection_to_label(CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value)
+        after = "m.id > $after_key" if after_key is not None else "m.id IS NOT NULL"
+        rows = await self._stage_cypher(
+            f"""
+            MATCH (m:{label}) WHERE {after}
+            WITH m ORDER BY m.id LIMIT $limit
+            RETURN m.id AS virtualRecordId, m.orgId AS orgId,
+                   m.currentRev AS currentRev, m.previousRev AS previousRev
+            """,
+            {"after_key": after_key, "limit": limit},
+        )
+        return [dict(row) for row in rows]
+
+    @override
+    async def get_record_content_revs(
+        self,
+        record_ids: list[str],
+        *,
+        status_field: str,
+        statuses: list[str],
+        exclude_indexing_statuses: list[str] | None = None,
+    ) -> dict[str, str | None]:
+        keys = [rid for rid in dict.fromkeys(record_ids) if rid]
+        if not keys or not statuses:
+            return {}
+        label = collection_to_label(CollectionNames.RECORDS.value)
+        rows = await self._stage_cypher(
+            f"""
+            MATCH (r:{label}) WHERE r.id IN $keys AND r[$field] IN $statuses
+              AND NOT coalesce(r.indexingStatus, '') IN $exclude
+              AND {cypher_record_visibility("r", RecordVisibility.LIVE)}
+            RETURN r.id AS key, r.contentRev AS rev
+            """,
+            {"keys": keys, "field": status_field, "statuses": statuses, "exclude": exclude_indexing_statuses or []},
+        )
+        return {str(row["key"]): (str(row["rev"]) if row.get("rev") else None) for row in rows}
+
+    @override
     async def compare_and_set_record_fields(
         self, record_ids: list[str], content_rev: str, fields: dict[str, Any]
     ) -> list[str]:
@@ -15180,6 +16868,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         keys = sorted({rid for rid in record_ids if rid})
         if not keys:
             return []
+        self.validator.validate_node_update(CollectionNames.RECORDS.value, fields)
         if "indexingStatus" in fields:
             # COMPLETED sets hasIndexedCopy and EMPTY clears it, as every indexingStatus write does.
             fields = {**indexed_copy_fields(fields["indexingStatus"]), **fields}
@@ -15201,6 +16890,34 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             {"keys": keys, "rev": content_rev, "fields": fields},
         )
         return [row["id"] for row in rows if row.get("id")]
+
+    async def get_existing_keys(
+        self,
+        collection: str,
+        keys: list[str],
+        transaction: str | None = None,
+    ) -> set[str]:
+        """The subset of ``keys`` that exist in ``collection``. Raises on a failed read:
+        a delete may only call a collection clear when the store said so."""
+        unique = [k for k in dict.fromkeys(keys) if isinstance(k, str) and k]
+        found: set[str] = set()
+        label = collection_to_label(collection)
+        for i in range(0, len(unique), _EXISTING_KEYS_CHUNK):
+            rows = await self.client.execute_query(
+                f"MATCH (n:{label}) WHERE n.id IN $keys RETURN n.id AS id",
+                parameters={"keys": unique[i:i + _EXISTING_KEYS_CHUNK]},
+                txn_id=transaction,
+            )
+            found.update(row["id"] for row in (rows or []) if row.get("id"))
+        return found
+
+    async def _assert_none_remain(self, transaction: str | None, collection: str, keys: list[str]) -> None:
+        """The success rule of a cascade step: none of the collected keys is left."""
+        if not keys:
+            return
+        left = await self.get_existing_keys(collection, keys, transaction)
+        if left:
+            raise Exception(f"CRITICAL: {len(left)}/{len(keys)} {collection} nodes remain after the delete.")
 
     async def get_existing_record_keys(
         self,
@@ -15398,6 +17115,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "details": {},
             }
 
+        except SchemaValidationError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Create KB permissions failed: {str(e)}")
             return {"success": False, "reason": str(e)}
@@ -15429,6 +17148,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 }
 
             timestamp = get_epoch_timestamp_in_ms()
+            self.validator.validate_edge_update(
+                CollectionNames.PERMISSION.value,
+                {"role": new_role, "updatedAtTimestamp": timestamp, "lastUpdatedTimestampAtSource": timestamp},
+            )
 
             # The requester is not re-checked here: the service has, and it counts
             # an OWNER role held through a team, which a direct-edge check here
@@ -15487,6 +17210,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "updates_detail": updates_by_type,
             }
 
+        except SchemaValidationError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Failed to update KB permission optimistically: {str(e)}")
             return {
@@ -16457,7 +18182,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges originating from a node.
@@ -16519,6 +18246,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get edges from node failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_edges_from_node_with_target_name(
@@ -16612,6 +18341,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not connector_keys:
                 return 0
 
+            self.validator.validate_node_update(collection, {"isActive": is_active, "isAgentActive": is_agent_active})
             label = self._get_label(collection)
             query = f"""
             UNWIND $connector_ids AS connector_id
@@ -16629,6 +18359,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction,
             )
             return results[0].get("updated_count", 0) if results else 0
+        except SchemaValidationError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Batch update connector status failed: {str(e)}")
             return 0
@@ -16641,13 +18373,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """Upsert people to PEOPLE collection (matches Arango / IGraphDBProvider)."""
         try:
             if not people:
-                return None
+                return
 
             collection = CollectionNames.PEOPLE.value
-            people_dicts = [
-                self._arango_to_neo4j_node(person.to_arango_person(), collection)
-                for person in people
-            ]
+            people_dicts = self._nodes_for_upsert([person.to_arango_person() for person in people], collection)
 
             label = collection_to_label(collection)
             query = f"""
@@ -16664,7 +18393,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"Upserted {len(people)} people records")
         except Exception as e:
             self.logger.error(f"❌ Batch upsert people failed: {str(e)}")
-            return False
+            raise
 
     async def get_person_by_email(
         self,
@@ -16722,9 +18451,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         try:
             label = collection_to_label(CollectionNames.PEOPLE.value)
-            props = self._arango_to_neo4j_node(
-                person.to_arango_person(), CollectionNames.PEOPLE.value
-            )
+            person_doc = person.to_arango_person()
+            self.validator.validate_node(CollectionNames.PEOPLE.value, person_doc)
+            props = self._arango_to_neo4j_node(person_doc, CollectionNames.PEOPLE.value)
 
             query = f"""
             MERGE (p:{label} {{email: $email, orgId: $org_id}})
@@ -16741,12 +18470,68 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 query, parameters=parameters, txn_id=transaction
             )
             return results[0]["id"] if results else None
+        except SchemaValidationError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Upsert person by email failed: {str(e)}")
             if raise_on_error:
                 raise
             return None
 
+
+    async def get_person_by_source_key(
+        self, source_key: str, org_id: str, transaction: str | None = None, *, raise_on_error: bool = False,
+    ) -> Person | None:
+        """See :meth:`IGraphDBProvider.get_person_by_source_key`."""
+        try:
+            label = collection_to_label(CollectionNames.PEOPLE.value)
+            rows = await self.client.execute_query(
+                f"MATCH (p:{label} {{sourceKey: $source_key, orgId: $org_id}}) RETURN p LIMIT 1",
+                parameters={"source_key": source_key, "org_id": org_id},
+                txn_id=transaction,
+            )
+            if not rows:
+                return None
+            return Person.from_arango_person(
+                self._neo4j_to_arango_node(dict(rows[0]["p"]), CollectionNames.PEOPLE.value)
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Get person by source key failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return None
+
+    async def upsert_person_by_source_key(
+        self,
+        person: Person,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> str | None:
+        """See :meth:`IGraphDBProvider.upsert_person_by_source_key`. Atomic
+        through the person_org_source_key_unique constraint."""
+        try:
+            label = collection_to_label(CollectionNames.PEOPLE.value)
+            person_doc = person.to_arango_person()
+            self.validator.validate_node(CollectionNames.PEOPLE.value, person_doc)
+            props = self._arango_to_neo4j_node(person_doc, CollectionNames.PEOPLE.value)
+            results = await self.client.execute_query(
+                f"""
+                MERGE (p:{label} {{sourceKey: $source_key, orgId: $org_id}})
+                ON CREATE SET p = $props
+                RETURN p.id AS id
+                """,
+                parameters={"source_key": person.source_key, "org_id": person.org_id, "props": props},
+                txn_id=transaction,
+            )
+            return results[0]["id"] if results else None
+        except SchemaValidationError:
+            raise
+        except Exception as e:
+            self.logger.error(f"❌ Upsert person by source key failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return None
     async def ensure_app_membership(
         self,
         principal_id: str,
@@ -16778,6 +18563,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
             if source_user_id is not None:
                 props["sourceUserId"] = source_user_id
+            self.validator.validate_edge(CollectionNames.USER_APP_RELATION.value, props)
 
             principal_label = collection_to_label(principal_collection)
             app_label = collection_to_label(CollectionNames.APPS.value)
@@ -16867,6 +18653,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             app_rel = edge_collection_to_relationship(
                 CollectionNames.USER_APP_RELATION.value
             )
+            entity_rel = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
 
             # The transfers are written out per relationship type rather than looped:
             # Cypher has no dynamic relationship type without APOC.
@@ -16894,6 +18681,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 ON CREATE SET moved = properties(r)
                 DELETE r
                 RETURN count(*) AS moved_app_relations
+            }}
+
+            // Records naming the person (author, editor, owner) point AT it; they follow
+            // it to the user whether or not it splits.
+            CALL {{
+                WITH p, u
+                MATCH (rec)-[r:{entity_rel}]->(p)
+                MERGE (rec)-[moved:{entity_rel} {{edgeType: r.edgeType}}]->(u)
+                ON CREATE SET moved = properties(r)
+                DELETE r
+                RETURN count(*) AS moved_entity_relations
             }}
 
             // Aggregating rather than returning the deleted node keeps this block from
@@ -16925,8 +18723,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             row = results[0]
             self.logger.info(
-                "Person %s -> user %s: %s (%s permission, %s app-relation edges moved)",
-                email,
+                "Person -> user %s: %s (%s permission, %s app-relation edges moved)",
                 user_key,
                 row.get("mode"),
                 row.get("moved_permissions"),
@@ -16935,7 +18732,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return row.get("mode")
 
         except Exception as e:
-            self.logger.error(f"❌ Migrate person to user failed for {email}: {str(e)}")
+            self.logger.error("Migrate person to user failed for user %s in org %s: %s", user_key, org_id, e)
             raise
 
     async def reap_stale_external_app_relations(
@@ -17955,8 +19752,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             conditions.append("NOT coalesce(node.isPlaceholder, false)")
 
         if search_query:
-            params["kh_search"] = search_query.lower()
-            conditions.append("toLower(node.name) CONTAINS $kh_search")
+            params.update(name_query_params(search_query))
+            conditions.append(f"{cypher_name_key('node.name')} CONTAINS $kh_search")
 
         if node_types:
             params["kh_node_types"] = node_types
@@ -18079,6 +19876,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "recordType": f"{node_var}.recordType",
             "recordGroupType": f"{node_var}.groupType",
             "indexingStatus": f"{node_var}.indexingStatus",
+            "reason": f"{node_var}.reason",
             "createdAt": _cypher_kh_date(node_var, "sourceCreatedAtTimestamp", "createdAtTimestamp"),
             "updatedAt": _cypher_kh_date(node_var, "sourceLastModifiedTimestamp", "updatedAtTimestamp"),
             "sizeInBytes": f"{node_var}.sizeInBytes",
@@ -18203,12 +20001,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if names_only:
             children_and_role = "WITH app, u, false AS has_children, null AS permission_role"
         else:
-            # Existence, not a count: a count reads every record group of a
-            # connector, and every record of a collection, to compare with zero.
+            # Existence, not a count. A connector always answers yes: whether it has groups the
+            # viewer can open is not this row's to say, and "any group exists" would tell them.
             children_and_role = f"""WITH app, u,
-             CASE WHEN app.type = 'KB' THEN EXISTS {{ (:Record)-[:BELONGS_TO]->(app) }}
+             CASE WHEN app.type = 'KB' THEN EXISTS {{ (kh_r:Record)-[:BELONGS_TO]->(app)
+                       WHERE NOT coalesce(kh_r.isDeleted, false) AND NOT coalesce(kh_r.isPlaceholder, false)
+                         AND kh_r.orgId = $org_id AND {_cypher_read_by_app("kh_r")} }}
                   WHEN app.type IS NULL THEN false
-                  ELSE EXISTS {{ MATCH (rg:RecordGroup) WHERE rg.connectorId = app.id }}
+                  ELSE true
              END AS has_children
         {permission_role}"""
         query = f"""
@@ -18295,8 +20095,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         WITH {keep}, [u.id] + viaMembership + viaOrg AS granteeIds
         UNWIND granteeIds AS granteeId
         MATCH (grantee:User|Group|Role|Teams|Organization {{id: granteeId}})
-        OPTIONAL MATCH (grantee)-[:PERMISSION|USER_APP_RELATION]->(gatedApp:App)
+        OPTIONAL MATCH (grantee)-[gateRel:PERMISSION|USER_APP_RELATION]->(gatedApp:App)
         WHERE gatedApp.orgId = {org}
+          AND (NOT (grantee:User AND type(gateRel) = 'PERMISSION' AND gatedApp.type = 'KB')
+               OR {_kb_edge_role_ok('gateRel')})
         WITH {keep}, granteeIds, collect(DISTINCT gatedApp.id) AS gatedApps
         OPTIONAL MATCH (u)-[kh_link:AUTHENTICATED_AS]->(:User)
         OPTIONAL MATCH (kh_linkedApp:App {{id: kh_link.connectorId}})
@@ -18368,6 +20170,24 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         }
 
     async def get_knowledge_hub_access_v3(
+        self,
+        user_key: str,
+        org_id: str,
+        *,
+        transaction: str | None = None,
+    ) -> dict[str, Any]:
+        """Memoized for the current chat turn (see `app.utils.turn_memo`); a
+        turn asked for the same answer about six times."""
+        if transaction is not None:
+            return await self._get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction)
+        from app.utils.turn_memo import memo
+
+        return await memo(
+            ("kh_access_v3", user_key, org_id),
+            lambda: self._get_knowledge_hub_access_v3(user_key, org_id),
+        )
+
+    async def _get_knowledge_hub_access_v3(
         self,
         user_key: str,
         org_id: str,
@@ -18654,7 +20474,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 **{k: v for k, v in parameters.items() if k not in names},
                 self._KH_LISTS: {k: parameters[k] for k in read},
             }
-        return await self.client.execute_query(query, parameters=parameters, txn_id=txn_id, plain=True)
+        try:
+            return await self.client.execute_query(query, parameters=parameters, txn_id=txn_id, plain=True)
+        except Exception as e:
+            # Transaction memory is one pool: any listing statement can be the one that finds it spent.
+            if self._kh_out_of_memory(e):
+                raise KnowledgeHubListingBusy(out_of_memory=True) from e
+            raise
 
     # The global flatten lets each connector's page read its own grants.
     kh_grants_per_connector = True
@@ -18760,8 +20586,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         group's records): the count is the stored degree, not a walk."""
         rows = await self.client.execute_query(
             """
-            MATCH (n {id: $id})
-            WHERE n:Record OR n:RecordGroup OR n:App
+            MATCH (n:Record|RecordGroup|App {id: $id})
             RETURN CASE WHEN n:App THEN n.id ELSE n.connectorId END AS connectorId,
                    COUNT { (n)<-[:BELONGS_TO]-() } AS belonging
             """,
@@ -19025,11 +20850,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     def _kh_v3_granted_hop(
         self, child: str, parent: str, *, navigation: bool = True, state: bool = False,
-        grant_once: bool = False,
+        grant_once: bool = False, opens: str = "appOpensEverything",
     ) -> str:
         """One hop of the v3 rule, over the user's granted ids.
 
-        ``appOpensEverything`` must already be in scope. A grant is ``id IN
+        ``appOpensEverything`` (or ``opens``, an expression) must be in scope. A grant is ``id IN
         $grantedIds``, not a fresh ``PERMISSION`` expansion. The stop at
         RECORD_GROUP_LEVEL groups is deliberately not here: only the global
         flatten has the declared arms that supply what is below one.
@@ -19054,18 +20879,48 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             rule = f"coalesce({child}.accessRule, 'OPEN')"
             inherits = self._kh_inherits(child, parent, state=state)
             return f"""NOT {self._kh_deleted(child, state=state)}{hide}
-              AND (appOpensEverything
+              AND ({opens}
                 OR ({inherits} AND {rule} IN ['STRICT', 'OPEN'])
                 OR ({child}.id IN $grantedIds
                     AND (({inherits} AND {rule} = 'RESTRICTED') OR {rule} IN ['STRICT', 'OPEN'])))"""
         return f"""NOT {self._kh_deleted(child, state=state)}{hide}
-              AND (appOpensEverything
+              AND ({opens}
                 OR ({self._kh_inherits(child, parent, state=state)}
                     AND (coalesce({child}.accessRule, 'OPEN') IN ['STRICT', 'OPEN']
                       OR (coalesce({child}.accessRule, 'OPEN') = 'RESTRICTED'
                           AND {child}.id IN $grantedIds)))
                 OR (coalesce({child}.accessRule, 'OPEN') IN ['STRICT', 'OPEN']
                     AND {child}.id IN $grantedIds))"""
+
+    def _kh_v3_child_rule(
+        self, c: str, p: str, *, from_app: str, opens: str, state: bool, grant_once: bool = False,
+    ) -> str:
+        """Whether child ``c`` is listed under ``p`` when browsing: the hop where the
+        walk from the App (or an open App) reaches ``p``, OPEN nodes only below a seed,
+        and the declared scope either way. Written once: the expansion and the row's
+        arrow both read it, so an arrow means the expansion lists something."""
+        deleted, hides = self._kh_deleted, self._kh_hides
+        hop = self._kh_v3_granted_hop(c, p, state=state, grant_once=grant_once, opens=opens)
+        # The check does not walk through a declared group of this App, whether or not the App opens everything:
+        # a child below one is read by its membership (the last arm) or its own grant, not by inheriting from the
+        # group. Nor does it walk on from a member of one: what hangs under a member inherits from it only below
+        # a grant.
+        walk = (f"(NOT ({p}:RecordGroup AND coalesce({p}.permissionModel, '') = 'RECORD_GROUP_LEVEL'"
+                f" AND coalesce({p}.connectorId, '') = app.id) OR {c}.id IN $grantedIds)")
+        below_member = (f"(NOT ({p}:Record AND EXISTS {{ ({p})-[:BELONGS_TO]->(kh_mg:RecordGroup) WHERE kh_mg.id IN $declaredScope }})"
+                        f" OR {p}.id IN $grantedIds OR {c}.id IN $grantedIds)")
+        return f"""{_cypher_read_by_app(c)} AND ((({from_app} OR {opens}) AND ({hop}) AND {walk} AND {below_member})
+              OR (NOT {from_app} AND NOT {opens}
+                  AND NOT {deleted(c, state=state)}
+                  AND NOT {hides(p, state=state)}
+                  AND coalesce({c}.accessRule, 'OPEN') = 'OPEN'
+                  AND ({self._kh_inherits(c, p, state=state)} OR {c}.id IN $grantedIds) AND {walk} AND {below_member})
+              OR (NOT {deleted(c, state=state)}
+                  AND NOT {hides(p, state=state)}
+                  AND ({c}.id IN $declaredScope
+                       OR ({c}:Record AND EXISTS {{
+                           ({c})-[:BELONGS_TO]->(sg:RecordGroup) WHERE sg.id IN $declaredScope
+                       }}))))"""
 
     @staticmethod
     def _kh_v3_hidden_above(v: str, tag: str, *, from_depth: int = 1) -> str:
@@ -19227,6 +21082,45 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         rows = await self._kh_query(query, parameters=parameters, txn_id=transaction)
         return (rows or [{}])[0].get("items") or []
 
+    async def _kh_v3_app_declared_scope(
+        self, app_id: str, granted_ids: list[str], *, state: bool, transaction: str | None,
+        probe: dict[str, Any] | None = None,
+    ) -> list[str]:
+        """The ids of the groups the declared groups of the App granted to the viewer reach, themselves included:
+        the scope a scoped browse carries, which the arrows of the App's own rows read as well, so that an
+        arrow follows the same rule as the expansion it opens."""
+        hierarchy = "IN ['PARENT_CHILD', 'ATTACHMENT']"
+        query = f"""
+        MATCH (app:App {{id: $app_id}})
+        // The declared groups the App's own listing admits: granted to the viewer, or reached by the listing's
+        // first hop (an App that opens everything admits all of them).
+        MATCH (dg:RecordGroup)
+        WHERE dg.connectorId = app.id AND dg.permissionModel = 'RECORD_GROUP_LEVEL'
+          AND NOT {self._kh_hides("dg", state=state)} AND NOT {self._kh_deleted("dg", state=state)}
+          // As the flatten and the check: a declaration below a group that hides its children stays hidden.
+          AND NOT {self._kh_v3_hidden_above("dg", "d")}
+          AND (dg.id IN $grantedIds OR EXISTS {{
+              (app)-[kh_ra:NODE_RELATION]->(dg)
+              WHERE kh_ra.relationshipType {hierarchy}
+                AND {self._kh_v3_granted_hop("dg", "app", state=state, opens=_CYPHER_APP_OPENS)} }})
+        WITH collect(DISTINCT dg) AS declared
+        CALL (declared) {{
+            UNWIND declared AS db
+            MATCH (db) ((pb)-[kh_rb:NODE_RELATION]->(cb:RecordGroup)
+                  WHERE kh_rb.relationshipType {hierarchy} AND NOT {self._kh_deleted("cb", state=state)}
+                    AND NOT {self._kh_hides("pb", state=state)}){{0,50}} (nb:RecordGroup)
+            RETURN collect(DISTINCT nb.id) AS ids
+        }}
+        RETURN ids
+            """
+        # In probe mode the grants are tested from the node, as everywhere else on the page.
+        parameters: dict[str, Any] = {"app_id": app_id, "grantedIds": granted_ids}
+        if probe:
+            query = self._kh_grants_by_probe(query)
+            parameters.update({"kh_conn": app_id, "kh_grantees": probe["grantees"]})
+        rows = await self._kh_query(query, parameters=parameters, txn_id=transaction)
+        return list(rows[0].get("ids") or []) if rows else []
+
     async def get_knowledge_hub_connector_page_v3(
         self,
         app_id: str,
@@ -19252,6 +21146,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         name_parents: bool = True,
         user_key: str | None = None,
         grants_out: dict[str, list[str]] | None = None,
+        max_depth: int = 50,
     ) -> dict[str, Any]:
         """One page of what is visible under one start node.
 
@@ -19388,7 +21283,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         state = await self._kh_listing_state_ready()
         lists_placeholders = self._kh_lists_placeholders(flatten=flatten, filters=filters)
         name_matches: list[str] | None = None
-        if start_is_app and flatten and filters.get("search_query"):
+        # The name-first scope walks a fixed {1,50} and counts no hops, so it gives the
+        # full walk's answer only at the default depth of 50; any other depth takes the
+        # full walk, which uses `max_depth` and applies the bound.
+        if start_is_app and flatten and filters.get("search_query") and max_depth == 50:
             search = filters["search_query"]
             # Shared: a global search runs one page per connector at once, and the
             # names are matched across the org.
@@ -19399,16 +21297,52 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
 
         def placeholder_test(v: str) -> str:
-            return "" if lists_placeholders else f"AND NOT {self._kh_placeholder(v, state=state)}"
+            if not lists_placeholders:
+                return f"AND NOT {self._kh_placeholder(v, state=state)}"
+            # A browse shows a stub only as the way to something readable below it. shortcut: the hops
+            # between the stub and that node are not each tested, only the last, so a stub whose way is
+            # cut by a node the viewer cannot read is still shown; test every hop if that matters.
+            below = self._kh_v3_child_rule(
+                "kh_xd", "kh_xq", from_app="false", opens=app_opens, state=state, grant_once=grant_once)
+            return (f"AND (NOT {self._kh_placeholder(v, state=state)} OR EXISTS {{ ({v}) "
+                    f"((kh_xp)-[kh_xr:NODE_RELATION]->(kh_xs) WHERE kh_xr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']){{0,49}} "
+                    f"(kh_xq)-[kh_xe:NODE_RELATION]->(kh_xd) WHERE kh_xe.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
+                    f"AND NOT {self._kh_placeholder('kh_xd', state=state)} AND ({below}) }})")
         deleted, hides = self._kh_deleted, self._kh_hides
         hop = self._kh_v3_granted_hop("ca", "pa", state=state, grant_once=probe is not None and listing_by_probe)
         # NODE_RELATION also holds untyped edges and links not yet split off it.
         hierarchy = "IN ['PARENT_CHILD', 'ATTACHMENT']"
-        depth = "{1,50}" if flatten else "{1}"
+        depth = f"{{1,{max_depth}}}" if flatten else "{1}"
         # The declared and seed arms exist only in the flatten from the App. A
         # folder or group start is admitted by a walk up to the app, then listed
         # from that start.
         scoped_start = not start_is_app
+        # Whether the row's own expansion starts from the App: a scoped browse inherits it from its
+        # start (carried per page item as `fa`); App rows come from the App except chain-tops; the
+        # flatten cannot tell per node, so it takes the stricter OPEN-only rule (fail-safe).
+        app_opens = _CYPHER_APP_OPENS
+        grant_once = probe is not None and listing_by_probe
+
+        def has_children(row_from_app: str) -> str:
+            rule = self._kh_v3_child_rule(
+                "kh_ch", "node", from_app=row_from_app, opens=app_opens, state=state, grant_once=grant_once)
+            container = (
+                "(node:RecordGroup OR node:KhFolder)" if state else
+                "(node:RecordGroup OR node.mimeType IN $folder_mime_types "
+                "OR toUpper(coalesce(node.recordType, '')) = 'FOLDER')"
+            )
+            expr = _cypher_kh_has_children(
+                "node", rule, app_opens, placeholder_test, container, exact=not flatten)
+            # $grantedIds holds only the App's direct children here: every grant test, the rule's and the
+            # cheap reject's alike, is read from the node.
+            return self._kh_grants_by_probe(expr) if probe is not None and not listing_by_probe else expr
+
+        if scoped_start:
+            slim_from_app, row_from_app = "fromApp", "coalesce(item.fa, false)"
+        elif flatten:
+            slim_from_app = row_from_app = "false"
+        else:
+            slim_from_app = row_from_app = "NOT node.id IN $kh_placed"
         start_admitted, admitted_ancestors, declared_scope = False, [], []
         if scoped_start:
             def start_access() -> "Awaitable[tuple[bool, list[str], list[str]]]":
@@ -19422,6 +21356,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self._kh_v3_shared(("start-access", user_key, org_id, app_id, start_id), start_access)
                 if probe is not None and transaction is None else start_access()
             )
+        if not flatten:
+            # A browse reads, beside the scope of its start, the scope of every declared group the App admits to
+            # this viewer: the members of one are listed wherever the browse meets them, and the arrows say so.
+            declared_scope = list(dict.fromkeys([*declared_scope, *await self._kh_v3_app_declared_scope(
+                app_id, granted_ids, state=state, transaction=transaction, probe=probe)]))
         placed_ids: list[str] = []
         if wants_chain_tops:
             def chain_tops() -> "Awaitable[dict[str, list[dict[str, Any]]]]":
@@ -19545,7 +21484,42 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             UNWIND declaredScope + belowDeclared + seeds + belowSeeds + collection AS kh_x
             RETURN collect(DISTINCT kh_x) AS extra
         }}
-        WITH app, regionA + [kh_x IN extra WHERE NOT kh_x IN regionA] AS allNodes
+        WITH app, [kh_x IN regionA + [kh_x IN extra WHERE NOT kh_x IN regionA]
+                   WHERE {_cypher_read_by_app("kh_x")}] AS allNodes
+            """
+            if max_depth < 50:
+                # Depth is the number of hierarchy hops from the App (App -> group
+                # is 1). The declared, seed and collection arms do not start at the
+                # App, so the bound on the walk alone does not cover them: keep what
+                # lies within `max_depth` hops. A record the hierarchy does not place
+                # (it only BELONGS_TO a group or the App) counts one below that
+                # container; a record the hierarchy does place counts by its hops, so
+                # belonging to a near group never admits a deep record. A node two
+                # arms reach is kept if either is near. Arango applies the same rule.
+                shorter = (
+                    f"""OPTIONAL MATCH (app)
+                  ((sp)-[kh_sr:NODE_RELATION]->(sc) WHERE kh_sr.relationshipType {hierarchy}){{1,{max_depth - 1}}} (sw)
+            WITH app, byHierarchy, collect(DISTINCT sw) AS shorterWalk
+            WITH byHierarchy, [app] + shorterWalk AS shorter"""
+                    if max_depth > 1 else "WITH byHierarchy, [app] AS shorter"
+                )
+                scope += f"""
+        CALL (app) {{
+            OPTIONAL MATCH (app)
+                  ((wp)-[kh_wr:NODE_RELATION]->(wc) WHERE kh_wr.relationshipType {hierarchy}){{1,{max_depth}}} (ww)
+            WITH app, collect(DISTINCT ww) AS byHierarchy
+            {shorter}
+            CALL (shorter) {{
+                UNWIND shorter AS kh_g
+                MATCH (kh_m:Record)-[:BELONGS_TO]->(kh_g)
+                WHERE NOT EXISTS {{
+                    ()-[kh_pr:NODE_RELATION]->(kh_m) WHERE kh_pr.relationshipType {hierarchy}
+                }}
+                RETURN collect(DISTINCT kh_m) AS members
+            }}
+            RETURN byHierarchy + members AS within
+        }}
+        WITH app, [kh_x IN allNodes WHERE kh_x IN within] AS allNodes
             """
         elif start_is_app:
             direct_hop = self._kh_v3_granted_hop(
@@ -19556,7 +21530,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # empty $kh_placed adds nothing): one statement, one plan, for the view.
             scope = f"""
         {"OPTIONAL MATCH" if wants_chain_tops else "MATCH"} (app)-[kh_ra:NODE_RELATION]->(ca)
-        WHERE kh_ra.relationshipType {hierarchy} AND {direct_hop}
+        WHERE kh_ra.relationshipType {hierarchy} AND {direct_hop} AND {_cypher_read_by_app("ca")}
         WITH app, collect(DISTINCT ca) AS allNodes
             """
             if wants_chain_tops:
@@ -19677,7 +21651,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # that on this map, before the page is cut. Other listings never
             # filter on it, so they skip the expand.
             "hasChildren": (
-                _cypher_kh_has_children("node") if any("node.hasChildren" in c for c in conditions) else "false"
+                has_children(slim_from_app)
+                if any("node.hasChildren" in c for c in conditions) else "false"
             ),
         }
         needed = {"id"}
@@ -19717,7 +21692,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 # Only the page is projected, so this expand is one hop per
                 # returned row. Collection items often belong to the folder
                 # instead of hanging off it by NODE_RELATION.
-                "hasChildren": _cypher_kh_has_children("node"),
+                "hasChildren": has_children(row_from_app),
             },
             include_comparator=False,
         )
@@ -19872,18 +21847,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             OPTIONAL MATCH (start)
                   ((pa)-[kh_rd:NODE_RELATION]->(ca)
                    WHERE kh_rd.relationshipType {hierarchy}
-                     AND (((fromApp OR appOpensEverything) AND ({hop}))
-                      OR (NOT fromApp AND NOT appOpensEverything
-                          AND NOT {deleted("ca", state=state)}
-                          AND NOT {hides("pa", state=state)}
-                          AND coalesce(ca.accessRule, 'OPEN') = 'OPEN'
-                          AND ({self._kh_inherits("ca", "pa", state=state)} OR ca.id IN $grantedIds))
-                      OR (NOT {deleted("ca", state=state)}
-                          AND NOT {hides("pa", state=state)}
-                          AND (ca.id IN $declaredScope
-                               OR (ca:Record AND EXISTS {{
-                                   (ca)-[:BELONGS_TO]->(sg:RecordGroup) WHERE sg.id IN $declaredScope
-                               }}))))){depth} (na)
+                     AND ({self._kh_v3_child_rule("ca", "pa", from_app="fromApp", opens="appOpensEverything", state=state, grant_once=grant_once)})
+                  ){depth} (na)
             WITH app, start, collect(DISTINCT na) AS rawNodes{placed_below_start}
             // What the seek by id enforced; the hop already drops deleted nodes.
             // Only nodes of the request's org.
@@ -19894,7 +21859,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                          AND n.id IS NOT NULL
                          {placeholder_test("n")}] AS rawNodes
             UNWIND rawNodes + [null] AS node
-            WITH app, CASE WHEN node IS NULL THEN true ELSE false END AS sentinel,
+            WITH app, fromApp, CASE WHEN node IS NULL THEN true ELSE false END AS sentinel,
                  CASE WHEN node IS NULL THEN {{
                      id: '', nodeType: '', name: '', recordType: null,
                      indexingStatus: null, createdAt: 0, updatedAt: 0,
@@ -19903,13 +21868,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                  }} ELSE {slim} END AS node
             {("WHERE sentinel OR (" + " AND ".join(conditions) + ")" ) if conditions else ""}
             {self._kh_v2_sort_cypher(
-                sort_field, sort_dir, carry=("sentinel",),
+                sort_field, sort_dir, carry=("sentinel", "fromApp"),
                 where=("sentinel OR (" + keyset + ")") if keyset else "",
                 reverse=direction == "prev", lowered=state,
             )}
             WITH collect({{id: node.id, nodeType: node.nodeType,
                            sortKey: sortKey, nullRank: nullRank,
-                           sentinel: sentinel}}) AS ordered
+                           sentinel: sentinel, fa: fromApp}}) AS ordered
             WITH [n IN ordered WHERE n.id <> ''] AS ordered
             WITH ordered, size(ordered) AS total,
                  size([n IN ordered WHERE n.nodeType = 'record' | 1]) AS nRecord,
@@ -19980,9 +21945,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "kh_placed": placed_ids,
             "kh_candidates": name_matches or [],
         })
+        if probe:
+            params.update({"kh_conn": app_id, "kh_grantees": probe["grantees"]})
         if probe and listing_by_probe:
             del params["grantedIds"]
-            params.update({"kh_conn": app_id, "kh_grantees": probe["grantees"]})
             query = self._kh_grants_by_probe(query)
         # The global listing from the App can be read from precomputed scopes (kh_scope) instead of walking the whole
         # tree, behind the ENABLE_KH_SCOPE_LISTING flag. Only where it gives exactly this query's answer: a sort
@@ -19996,6 +21962,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             reason = None
             if not state:
                 reason = "listing state not stamped yet"
+            elif max_depth < 50:
+                reason = "a depth bound (kh_scope holds the whole connector)"
             elif any(v for k, v in filters.items() if k not in ("origins", "connector_ids")):
                 reason = "a per-node filter"
             elif app_id in self._kh_scope_untrusted:
@@ -20041,9 +22009,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 use_scope = False
         if not use_scope:
             try:
-                rows = await self._kh_query(
-                    query, parameters=params, txn_id=transaction,
-                )
+                walk_started = time.monotonic()
+                rows = await self._kh_query(query, parameters=params, txn_id=transaction)
+            except KnowledgeHubListingBusy as busy:
+                if not (flatten and busy.out_of_memory):
+                    raise
+                elapsed = time.monotonic() - walk_started
+                self.logger.warning(f"kh listing for {app_id} ran out of transaction memory after {elapsed:.1f}s")
+                raise self._kh_walk_refusal(elapsed) from busy
             except Exception as e:
                 self.logger.error(
                     f"❌ get_knowledge_hub_connector_page_v3 failed: {str(e)}"
@@ -20087,11 +22060,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         MATCH (kh_c:Record|RecordGroup)
         WHERE kh_c.orgId = $org_id
           AND NOT {self._kh_deleted("kh_c", state=state)}
-          AND toLower({name}) CONTAINS $kh_search
+          AND {cypher_name_key(name)} CONTAINS $kh_search
         WITH kh_c.id AS kh_name_matches LIMIT $kh_cap
         RETURN collect(kh_name_matches) AS ids
         """, parameters={
-            "org_id": org_id, "kh_search": search.lower(), "kh_cap": self._KH_NAME_FIRST_MAX + 1,
+            "org_id": org_id, **name_query_params(search), "kh_cap": self._KH_NAME_FIRST_MAX + 1,
         }, txn_id=transaction)
         ids = (rows or [{}])[0].get("ids") or []
         return None if len(ids) > self._KH_NAME_FIRST_MAX else ids
@@ -20172,17 +22145,32 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         CALL (app, appOpensEverything, declaredScope) {{
             UNWIND $kh_candidates AS kh_cid
             MATCH (kh_n:Record|RecordGroup {{id: kh_cid}})
-            WHERE (appOpensEverything AND kh_n:Record AND NOT {deleted("kh_n", state=state)}
+            WHERE {_cypher_read_by_app("kh_n")}
+              AND ((appOpensEverything AND kh_n:Record AND NOT {deleted("kh_n", state=state)}
                    AND EXISTS {{ (kh_n)-[:BELONGS_TO]->(app) }})
                OR {from_app("kh_n", "a")}
                OR kh_n IN declaredScope
                OR {below_declared("kh_n", "b")}
                OR {seed("kh_n", "c")}
-               OR {below_seed("kh_n", "e")}
+               OR {below_seed("kh_n", "e")})
             RETURN collect(DISTINCT kh_n) AS allNodes
         }}
         WITH app, allNodes
             """
+
+    @staticmethod
+    def _kh_out_of_memory(error: Exception) -> bool:
+        """Whether Neo4j gave up on a statement for want of transaction or heap memory."""
+        return is_out_of_memory(error)
+
+    @staticmethod
+    def _kh_walk_refusal(elapsed: float) -> Exception:
+        """What a whole-connector walk that ran out of memory after ``elapsed`` seconds is told. One that ran for a
+        while before the pool was spent was itself big: too large to list (422). One that failed at once only met a
+        pool that other requests had spent: busy, retry (503)."""
+        if elapsed >= 0.5:
+            return KnowledgeHubListingTooLarge()
+        return KnowledgeHubListingBusy(out_of_memory=True)
 
     async def _kh_scope_mode(self) -> str:
         """``on``, ``verify`` (run both, log any difference, answer with the full query) or ``off``.
@@ -20699,7 +22687,28 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             edge_collection_to_relationship(CollectionNames.BELONGS_TO.value),
             (collection_to_label(CollectionNames.RECORD_GROUPS.value),),
         ),
+        KnowledgeGraphEntityType.PERSON.value: (
+            edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value),
+            (collection_to_label(CollectionNames.USERS.value),),
+        ),
+        KnowledgeGraphEntityType.ORGANIZATION.value: (
+            edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value),
+            (collection_to_label(CollectionNames.ORGS.value),),
+        ),
     }
+    # How a node ``e`` of each org-owned entity type is matched to $org_id.
+    # An external organisation (a CRM account) carries the org it belongs to as
+    # parentOrgId; the org itself is never an entity.
+    _ENTITY_ORG_SCOPE = {
+        KnowledgeGraphEntityType.RECORD_GROUP.value: "e.orgId = $org_id",
+        KnowledgeGraphEntityType.PERSON.value: "e.orgId = $org_id",
+        KnowledgeGraphEntityType.ORGANIZATION.value: "e.isExternal = true AND e.parentOrgId = $org_id",
+    }
+    # Entity types records reach over entityRelations (KG-13).
+    _LINKED_ENTITY_TYPES = frozenset({
+        KnowledgeGraphEntityType.PERSON.value, KnowledgeGraphEntityType.ORGANIZATION.value,
+    })
+    _MEMBERSHIP_ENTITY_TYPES = TAXONOMY_ENTITY_TYPES | _LINKED_ENTITY_TYPES
 
     async def _get_taxonomy_entities_for_record_via_edge(
         self,
@@ -20849,8 +22858,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     _ENTITY_CANDIDATE_RECORD_PROJECTION = (
         "rec {_key: rec.id, .recordName, .recordType, .connectorId, .virtualRecordId, "
-        ".webUrl, .hideWeburl, .sourceLastModifiedTimestamp, .updatedAtTimestamp}"
+        ".webUrl, .hideWeburl, .sourceLastModifiedTimestamp, .updatedAtTimestamp, "
+        ".connectorName, .origin, .createdAtTimestamp, .sourceCreatedAtTimestamp, "
+        f".{SOURCE_TIMESTAMP_ORIGIN_FIELD}, .indexingStatus, .{HAS_INDEXED_COPY}, .mimeType}}"
     )
+
+    @staticmethod
+    def _candidate_arrow(entity_type: str) -> str:
+        """``->`` for edges from the record to the entity; undirected for a
+        person, whom Slack links user -> record and record_people links
+        record -> user."""
+        return "-" if entity_type == KnowledgeGraphEntityType.PERSON.value else "->"
 
     def _entity_node_match(self, entity_type: str) -> tuple[str, str]:
         """The record relationship for ``entity_type`` and a clause binding
@@ -20869,14 +22887,59 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 {branches}
               }}"""
 
+    # A record found by its own name is shown whether or not its content is
+    # indexed; the filter for the other entity types keeps only readable ones.
+    _ENTITY_RECORD_TITLE_FILTER = """rec.orgId = $org_id
+                AND coalesce(rec.isDeleted, false) = false
+                AND rec.connectorId IN ref.connectorIds
+                AND ($record_types IS NULL OR rec.recordType IN $record_types)"""
     _ENTITY_CANDIDATE_RECORD_FILTER = f"""rec.orgId = $org_id
                 AND coalesce(rec.isDeleted, false) = false
                 AND {cypher_searchable_record("rec", "completed")}
                 AND rec.connectorId IN ref.connectorIds
                 AND ($record_types IS NULL OR rec.recordType IN $record_types)"""
-    _ENTITY_CANDIDATE_ORDER = (
-        "coalesce(rec.sourceLastModifiedTimestamp, rec.updatedAtTimestamp, 0) DESC, rec.id ASC"
-    )
+    # The turn's limit, as ``check_access`` rows are admitted by a selection:
+    # app selected whole, record selected (or under a selected folder), or a
+    # direct BELONGS_TO to a selected group. Narrowing before the scan cap
+    # means a much-mentioned entity walks all its edges under a tiny selection.
+    # shortcut: `rec.id IN s.records` is a list scan per candidate; fine for
+    # selections of thousands of records, revisit if selections grow to 50k.
+    _ENTITY_WITHIN_FILTER = """($within IS NULL OR all(s IN $within WHERE
+                    rec.connectorId IN s.apps OR rec.id IN s.records
+                    OR EXISTS { MATCH (rec)-[:BELONGS_TO]->(g:RecordGroup) WHERE g.id IN s.groups }))"""
+
+    @property
+    def _entity_candidate_order(self) -> str:
+        newest = "coalesce(rec.sourceLastModifiedTimestamp, rec.updatedAtTimestamp, 0)"
+        if upload_times_undated():
+            newest = f"CASE WHEN rec.{SOURCE_TIMESTAMP_ORIGIN_FIELD} = 'upload' THEN 0 ELSE {newest} END"
+        return f"{newest} DESC, rec.id ASC"
+
+    def _entity_candidate_match(self, entity_type: str) -> str:
+        """Clauses binding ``rec`` to each record linked to ``ref``, ready for
+        a ``WHERE`` on ``rec``. A person's relations run both ways, and only
+        their User end is the person (a RecordGroup is also MENTIONED_IN). The
+        person is gated on the org too: this org's record may name a user of
+        another org."""
+        if entity_type == PERSON_ENTITY_TYPE:
+            relation = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
+            return f"""CALL {{
+                WITH ref
+                MATCH (rec:Record)-[r:{relation}]->(p:User)
+                WHERE p.id IN ref.userIds AND p.orgId = $org_id AND r.edgeType IN ref.outTypes
+                RETURN rec
+                UNION
+                WITH ref
+                MATCH (p:User)-[r:{relation}]->(rec:Record)
+                WHERE p.id IN ref.userIds AND p.orgId = $org_id AND r.edgeType IN ref.inTypes
+                RETURN rec
+              }}
+              WITH *"""
+        relationship, entity_match = self._entity_node_match(entity_type)
+        if entity_type in self._ENTITY_ORG_SCOPE:
+            entity_match += f"\n              WHERE {self._ENTITY_ORG_SCOPE[entity_type]}"
+        return f"""{entity_match}
+              MATCH (rec:Record)-[:{relationship}]{self._candidate_arrow(entity_type)}(e)"""
 
     def _entity_candidate_records_cypher(self, entity_type: str) -> str:
         projection = self._ENTITY_CANDIDATE_RECORD_PROJECTION
@@ -20884,22 +22947,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return f"""
             UNWIND $refs AS ref
             OPTIONAL MATCH (rec:Record {{id: ref.id}})
-            WHERE {self._ENTITY_CANDIDATE_RECORD_FILTER}
+            WHERE {self._ENTITY_RECORD_TITLE_FILTER}
             RETURN ref.id AS id,
                    CASE WHEN rec IS NULL OR $offset > 0 THEN [] ELSE [{projection}] END AS rows
             """
-
-        relationship, entity_match = self._entity_node_match(entity_type)
-        if entity_type == KnowledgeGraphEntityType.RECORD_GROUP.value:
-            entity_match += "\n              WHERE e.orgId = $org_id"
 
         # The aggregating CALL yields one row per ref even when nothing matches.
         return f"""
             UNWIND $refs AS ref
             CALL {{
               WITH ref
-              {entity_match}
-              MATCH (rec:Record)-[:{relationship}]->(e)
+              {self._entity_candidate_match(entity_type)}
               WHERE {self._ENTITY_CANDIDATE_RECORD_FILTER}
               WITH DISTINCT rec
               LIMIT $scan_cap
@@ -20908,7 +22966,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WITH scanned
                 UNWIND scanned AS rec
                 WITH rec
-                ORDER BY {self._ENTITY_CANDIDATE_ORDER}
+                ORDER BY {self._entity_candidate_order}
                 SKIP $offset LIMIT $limit
                 RETURN collect({projection}) AS rows
               }}
@@ -20955,7 +23013,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             CALL {{
               WITH ref, u
               OPTIONAL MATCH (rec:Record {{id: ref.id}})
-              WHERE $offset = 0 AND {self._ENTITY_CANDIDATE_RECORD_FILTER}
+              WHERE $offset = 0 AND {self._ENTITY_RECORD_TITLE_FILTER}
+                AND {self._ENTITY_WITHIN_FILTER}
               WITH collect(rec) AS win, u
               {walk}
               RETURN hits, size(win) AS window_size, false AS capped
@@ -20963,9 +23022,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             RETURN ref.id AS id, hits, window_size, capped
             """
 
-        relationship, entity_match = self._entity_node_match(entity_type)
-        if entity_type == KnowledgeGraphEntityType.RECORD_GROUP.value:
-            entity_match += "\n              WHERE e.orgId = $org_id"
         # Sorting the capped scan is cheap; the permission walk is the cost,
         # and it stops at $limit permitted rows or the end of the window.
         return f"""
@@ -20973,9 +23029,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             UNWIND $refs AS ref
             CALL {{
               WITH ref, u
-              {entity_match}
-              MATCH (rec:Record)-[:{relationship}]->(e)
+              {self._entity_candidate_match(entity_type)}
               WHERE {self._ENTITY_CANDIDATE_RECORD_FILTER}
+                AND {self._ENTITY_WITHIN_FILTER}
               WITH DISTINCT rec, u
               LIMIT $scan_cap
               WITH collect(rec) AS scanned, u
@@ -20983,7 +23039,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WITH scanned
                 UNWIND scanned AS rec
                 WITH rec
-                ORDER BY {self._ENTITY_CANDIDATE_ORDER}
+                ORDER BY {self._entity_candidate_order}
                 SKIP $offset LIMIT $window
                 RETURN collect(rec) AS win
               }}
@@ -21001,7 +23057,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ref_id = ref.get("id")
             ref_type = ref.get("type")
             if not ref_id or (
-                ref_type != KnowledgeGraphEntityType.RECORD.value
+                ref_type not in (KnowledgeGraphEntityType.RECORD.value, PERSON_ENTITY_TYPE)
                 and ref_type not in self._ENTITY_CANDIDATE_TARGETS
             ):
                 continue
@@ -21009,10 +23065,92 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if (ref_type, str(ref_id)) in seen:
                 continue
             seen.add((ref_type, str(ref_id)))
-            refs_by_type.setdefault(ref_type, []).append(
-                {"id": str(ref_id), "connectorIds": list(ref.get("connectorIds") or [])}
-            )
+            refs_by_type.setdefault(ref_type, []).append({
+                "id": str(ref_id),
+                "connectorIds": list(ref.get("connectorIds") or []),
+                **(person_query_ref(ref) if ref_type == PERSON_ENTITY_TYPE else {}),
+            })
         return refs_by_type
+
+    async def get_record_people(self, record_id: str, org_id: str) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_record_people`."""
+        return await self._record_linked_entities(
+            record_id, org_id, KnowledgeGraphEntityType.PERSON.value,
+            "e.fullName AS name, e.email AS email",
+        )
+
+    async def get_record_organizations(self, record_id: str, org_id: str) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_record_organizations`."""
+        return await self._record_linked_entities(
+            record_id, org_id, KnowledgeGraphEntityType.ORGANIZATION.value, "e.name AS name",
+        )
+
+    async def _record_linked_entities(
+        self, record_id: str, org_id: str, entity_type: str, fields: str,
+    ) -> list[dict[str, Any]]:
+        if not record_id or not org_id:
+            return []
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        relationship, (label,) = self._ENTITY_CANDIDATE_TARGETS[entity_type]
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (rec:Record {{id: $record_id}})-[:{relationship}]{self._candidate_arrow(entity_type)}(e:{label})
+            WHERE rec.orgId = $org_id AND {self._ENTITY_ORG_SCOPE[entity_type]}
+            WITH DISTINCT e
+            RETURN e.id AS id, {fields}
+            ORDER BY id
+            """,
+            parameters={"record_id": record_id, "org_id": org_id},
+        )
+        return [dict(r) for r in rows or [] if r.get("id")]
+
+    async def get_record_group_organization(
+        self, record_group_id: str, org_id: str, transaction: str | None = None,
+    ) -> str | None:
+        """See :meth:`IGraphDBProvider.get_record_group_organization`."""
+        if not record_group_id or not org_id:
+            return None
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (:{collection_to_label(CollectionNames.RECORD_GROUPS.value)} {{id: $group_id}})
+                  -[:{edge_collection_to_relationship(CollectionNames.DEAL_OF.value)}]->
+                  (e:{collection_to_label(CollectionNames.ORGS.value)})
+            WHERE {self._ENTITY_ORG_SCOPE[KnowledgeGraphEntityType.ORGANIZATION.value]}
+            RETURN e.id AS id
+            ORDER BY id
+            LIMIT 1
+            """,
+            parameters={"group_id": record_group_id, "org_id": org_id},
+            txn_id=transaction,
+        )
+        return next((r["id"] for r in rows or [] if r.get("id")), None)
+
+    async def stamp_external_org_parents(self, org_id: str) -> int:
+        """See :meth:`IGraphDBProvider.stamp_external_org_parents`."""
+        if not org_id:
+            return 0
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        self.validator.validate_node_update(CollectionNames.ORGS.value, {"parentOrgId": org_id})
+        label = collection_to_label(CollectionNames.ORGS.value)
+        relationships = "|".join(
+            edge_collection_to_relationship(c)
+            for c in (CollectionNames.PROSPECT.value, CollectionNames.CUSTOMER.value)
+        )
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (:{label} {{id: $org_id}})-[:{relationships}]->(e:{label})
+            WHERE e.isExternal = true AND e.parentOrgId IS NULL
+            WITH DISTINCT e
+            SET e.parentOrgId = $org_id
+            RETURN count(e) AS stamped
+            """,
+            parameters={"org_id": org_id},
+        )
+        return int((rows or [{}])[0].get("stamped") or 0)
 
     async def get_permitted_entity_records(
         self,
@@ -21026,6 +23164,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         offset: int = 0,
         window: int = 200,
         timeout_seconds: float | None = None,
+        within: list[dict[str, list[str]]] | None = None,
     ) -> dict[tuple[str, str], PermittedEntityRows]:
         """See :meth:`IGraphDBProvider.get_permitted_entity_records`."""
         if not refs or not org_id or not user_key:
@@ -21049,6 +23188,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "limit": limit,
                     "scan_cap": ENTITY_CANDIDATE_SCAN_CAP,
                     "completed": ProgressStatus.COMPLETED.value,
+                    "within": within_param(within),
                 },
                 **({"timeout": timeout_seconds} if timeout_seconds is not None else {}),
             )
@@ -21063,6 +23203,55 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         capped=bool(row.get("capped")),
                     )
         return results
+
+    async def find_users(self, org_id: str, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.find_users`."""
+        # lower(), not casefold(): the stored side is toLower(), which keeps "ß".
+        wanted = " ".join((query or "").split()).lower()
+        if not org_id or not wanted:
+            return []
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        if "@" in wanted:
+            # An email names one person: all their nodes, no name normalising.
+            rows = await self.client.execute_query(
+                """
+                MATCH (u:User) WHERE u.orgId = $org_id AND toLower(u.email) = $q
+                RETURN u.id AS id, u.fullName AS fullName, u.email AS email
+                ORDER BY u.id
+                """,
+                parameters={"org_id": org_id, "q": wanted},
+            )
+            return [dict(row) for row in rows or [] if row.get("id")]
+        words = "[w IN split(toLower({}), ' ') WHERE w <> '']"
+        joined = "reduce(s = '', w IN {} | s + CASE WHEN s = '' THEN '' ELSE ' ' END + w)"
+        name = joined.format(words.format("coalesce(u.fullName, '')"))
+        parts = joined.format(words.format("coalesce(u.firstName, '') + ' ' + coalesce(u.lastName, '')"))
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (u:User) WHERE u.orgId = $org_id
+            WITH u, toLower(coalesce(u.email, '')) AS email, {name} AS name, {parts} AS parts
+            WITH u, email, name, email = $q OR name = $q OR parts = $q AS exact,
+                 size($q) >= 3 AND (name STARTS WITH $q
+                     OR any(w IN split(name, ' ') WHERE w STARTS WITH $q)
+                     OR split(email, '@')[0] STARTS WITH $q) AS prefix
+            WHERE exact OR prefix
+            WITH exact, CASE WHEN email <> '' THEN email ELSE 'id:' + u.id END AS person
+            ORDER BY name, u.id
+            WITH collect({{person: person, exact: exact}}) AS hits
+            WITH hits, any(h IN hits WHERE h.exact) AS has_exact
+            // The limit counts people (an email, else a node), first match first.
+            WITH reduce(seen = [], h IN hits |
+                CASE WHEN (h.exact OR NOT has_exact) AND NOT h.person IN seen
+                THEN seen + h.person ELSE seen END)[0..$limit] AS people
+            MATCH (o:User) WHERE o.orgId = $org_id
+                AND (toLower(o.email) IN people OR 'id:' + o.id IN people)
+            RETURN o.id AS id, o.fullName AS fullName, o.email AS email
+            ORDER BY toLower(coalesce(o.fullName, o.email, '')), o.id
+            """,
+            parameters={"org_id": org_id, "q": wanted, "limit": max(1, limit)},
+        )
+        return [dict(row) for row in rows or [] if row.get("id")]
 
     async def get_entity_candidate_records(
         self,
@@ -21126,7 +23315,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         ids_by_type: dict[str, list[str]] = {}
         for ref in refs:
             ref_id, ref_type = str(ref.get("id") or ""), ref.get("type")
-            if ref_id and ref_type in TAXONOMY_ENTITY_TYPES:
+            if ref_id and ref_type in self._MEMBERSHIP_ENTITY_TYPES:
                 bucket = ids_by_type.setdefault(ref_type, [])
                 if ref_id not in bucket:
                     bucket.append(ref_id)
@@ -21134,13 +23323,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         results: dict[tuple[str, str], dict[str, list[str]]] = {}
         for ref_type, ref_ids in ids_by_type.items():
             relationship, entity_match = self._entity_node_match(ref_type)
+            if ref_type in self._ENTITY_ORG_SCOPE:
+                entity_match += f"\n              WHERE {self._ENTITY_ORG_SCOPE[ref_type]}"
             # The aggregating CALL yields one row per ref even when nothing links.
             query = f"""
             UNWIND $refs AS ref
             CALL {{
               WITH ref
               {entity_match}
-              OPTIONAL MATCH (rec:Record)-[:{relationship}]->(e)
+              OPTIONAL MATCH (rec:Record)-[:{relationship}]{self._candidate_arrow(ref_type)}(e)
               WHERE rec.orgId = $org_id AND coalesce(rec.isDeleted, false) = false
               RETURN [c IN collect(DISTINCT rec.connectorId) WHERE c IS NOT NULL] AS connector_ids,
                      [g IN collect(DISTINCT rec.recordGroupId) WHERE g IS NOT NULL] AS group_ids
@@ -21383,6 +23574,163 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return [dict(row) for row in rows or []]
 
+    async def find_merged_taxonomy_nodes_with_edges(
+        self,
+        collection: str,
+        org_id: str,
+        limit: int,
+        after_key: str | None = None,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.find_merged_taxonomy_nodes_with_edges`."""
+        if not is_taxonomy_collection(collection):
+            raise ValueError(f"{collection!r} is not a taxonomy collection")
+        if not org_id:
+            return []
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        label = collection_to_label(collection)
+        rel = edge_collection_to_relationship(TAXONOMY_EDGE_COLLECTIONS[collection])
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (n:{label})
+            WHERE n.mergedInto IS NOT NULL AND n.orgId = $org_id
+              AND ($after_key IS NULL OR n.id > $after_key)
+            MATCH (r:Record)-[:{rel}]->(n)
+            WHERE r.orgId = $org_id
+            WITH n, count(DISTINCT r) AS records
+            RETURN n.id AS _key, n.name AS name, n.mergedInto AS mergedInto, records
+            ORDER BY _key
+            LIMIT $limit
+            """,
+            parameters={"org_id": org_id, "limit": max(1, int(limit)), "after_key": after_key},
+            txn_id=transaction,
+        )
+        return [dict(row) for row in rows or []]
+
+    async def find_organizations(
+        self,
+        org_id: str,
+        keys: list[str],
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.find_organizations`."""
+        wanted = sorted({k for k in keys if k})
+        if not org_id or not wanted:
+            return []
+        label = collection_to_label(CollectionNames.ORGS.value)
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (o:{label})
+            WHERE o.parentOrgId = $org_id AND o.normalizedName IN $keys AND o.isExternal = true
+            RETURN o.id AS id, o.name AS name, o.normalizedName AS normalizedName
+            ORDER BY id
+            """,
+            parameters={"org_id": org_id, "keys": wanted},
+            txn_id=transaction,
+        )
+        return [dict(row) for row in rows or []]
+
+    async def create_organization_if_absent(
+        self,
+        org_id: str,
+        node: dict[str, Any],
+        transaction: str | None = None,
+    ) -> None:
+        """See :meth:`IGraphDBProvider.create_organization_if_absent`."""
+        key = node.get("id") or node.get("_key")
+        if not org_id or not key or not node.get("name"):
+            raise ValueError("an extracted organisation needs an org, an id and a name")
+        now = get_epoch_timestamp_in_ms()
+        props = {
+            "name": node["name"], "normalizedName": node.get("normalizedName"),
+            "accountType": "enterprise", "isActive": True, "isExternal": True, "parentOrgId": org_id,
+            "createdAtTimestamp": now, "updatedAtTimestamp": now,
+        }
+        self.validator.validate_node(CollectionNames.ORGS.value, {"id": key, **props})
+        label = collection_to_label(CollectionNames.ORGS.value)
+        await self.client.execute_query(
+            f"""
+            MERGE (o:{label} {{id: $id}})
+            ON CREATE SET o += $props
+            """,
+            parameters={"id": key, "props": props},
+            txn_id=transaction,
+        )
+
+    async def delete_record_entity_relations(
+        self,
+        record_id: str,
+        to_collection: str,
+        origin: str,
+        transaction: str | None = None,
+    ) -> int:
+        """See :meth:`IGraphDBProvider.delete_record_entity_relations`."""
+        if not record_id or not to_collection or not origin:
+            raise ValueError("deleting a record's entity relations needs a record, a collection and an origin")
+        rel = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
+        to_label = collection_to_label(to_collection)
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (:Record {{id: $record_id}})-[e:{rel}]->(:{to_label})
+            WHERE coalesce(e.origin, $inferred) = $origin
+            DELETE e
+            RETURN count(e) AS deleted
+            """,
+            parameters={"record_id": record_id, "origin": origin, "inferred": EntityOrigin.INFERRED.value},
+            txn_id=transaction,
+        )
+        return int((rows or [{}])[0].get("deleted") or 0)
+
+    async def get_organization_record_reach(
+        self,
+        org_id: str,
+        keys: list[str],
+        transaction: str | None = None,
+        *,
+        record_cap: int | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_organization_record_reach`."""
+        wanted = sorted({k for k in keys if k})
+        if not org_id or not wanted:
+            return {}
+        label = collection_to_label(CollectionNames.ORGS.value)
+        rel = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
+        account_rels = "|".join(
+            edge_collection_to_relationship(c.value)
+            for c in (CollectionNames.DEAL_OF, CollectionNames.PROSPECT, CollectionNames.CUSTOMER)
+        )
+        # MENTIONS is the only EXTRACTED edge type and edges merge on
+        # edgeType, so a record has at most one: edges count records.
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (o:{label})
+            WHERE o.id IN $keys AND o.isExternal = true AND o.parentOrgId = $org_id
+            CALL {{
+                WITH o
+                MATCH (r:Record)-[e:{rel}]->(o)
+                WHERE coalesce(e.origin, $inferred) = $extracted AND r.orgId = $org_id AND {cypher_live_record("r")}
+                WITH e LIMIT $cap
+                RETURN count(e) AS records
+            }}
+            CALL {{
+                WITH o
+                OPTIONAL MATCH (r:Record)-[e:{rel}]->(o)
+                WHERE coalesce(e.origin, $inferred) <> $extracted AND r.orgId = $org_id AND {cypher_live_record("r")}
+                WITH e LIMIT 1
+                RETURN count(e) AS linked
+            }}
+            RETURN o.id AS key, records,
+                   linked > 0 OR EXISTS {{ MATCH (o)<-[:{account_rels}]-() }} AS inferred
+            """,
+            parameters={
+                "keys": wanted, "org_id": org_id, "cap": _record_cap(record_cap),
+                "inferred": EntityOrigin.INFERRED.value, "extracted": EntityOrigin.EXTRACTED.value,
+            },
+            txn_id=transaction,
+        )
+        return {row["key"]: {"records": int(row["records"]), "inferred": bool(row["inferred"])} for row in rows or []}
+
     async def create_taxonomy_node_if_absent(
         self,
         collection: str,
@@ -21394,6 +23742,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             raise ValueError(f"{collection!r} is not a taxonomy collection")
         if not self.client:
             raise RuntimeError("Neo4j client is not connected")
+        self.validator.validate_node(collection, node)
         props = self._arango_to_neo4j_node(dict(node), collection)
         node_id = props.pop("id", None)
         if not node_id:
@@ -21436,15 +23785,28 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     async def _run_idempotent_write(self, query: str, parameters: dict[str, Any]) -> list[dict[str, Any]]:
         """Run an auto-commit query that is safe to repeat, re-running it when
-        it collides with a concurrent writer."""
-        for attempt in range(_TRANSIENT_WRITE_ATTEMPTS - 1):
+        it collides with a concurrent writer. The client resends a plain
+        statement itself; one that commits in batches it leaves to this loop."""
+        def write() -> "Awaitable[list[dict[str, Any]]]":
+            return self.client.execute_query(query, parameters=parameters)
+        if not COMMITS_IN_BATCHES.search(query):
+            return await write()
+        return await self._retry_idempotent_write(write, transaction=None)
+
+    async def _retry_idempotent_write[T](
+        self, write: Callable[[], Awaitable[T]], transaction: str | None,
+    ) -> T:
+        """Run *write*, which is safe to repeat, re-running it when it collides
+        with a concurrent writer. Inside a caller's transaction the collision
+        rolled the whole transaction back, so it is raised at once."""
+        for attempt in range(WRITE_CONFLICT_ATTEMPTS - 1):
             try:
-                return await self.client.execute_query(query, parameters=parameters)
+                return await write()
             except TransientError as exc:
-                if not self.is_write_conflict(exc):
+                if transaction is not None or not self.is_write_conflict(exc):
                     raise
                 await asyncio.sleep(random.uniform(0.02, 0.1) * (attempt + 1))
-        return await self.client.execute_query(query, parameters=parameters)
+        return await write()
 
     async def heal_taxonomy_alias_nodes(self) -> int:
         """Give every stored alias its TaxonomyAlias node, once per database.
@@ -21780,8 +24142,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         and None for connector nodes.
         """
         query = """
-            MATCH (n {id: $node_id})
-            WHERE (n:Record OR n:RecordGroup OR n:App) AND n.orgId = $org_id
+            MATCH (n:Record|RecordGroup|App {id: $node_id})
+            WHERE n.orgId = $org_id
             OPTIONAL MATCH (kb:App {type: 'KB'})
             WHERE kb.id = CASE WHEN n:App THEN n.id ELSE n.connectorId END
             RETURN CASE
@@ -21803,9 +24165,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LIMIT 1
         """
         try:
-            if node_id not in (await self.check_access(
+            checked = await self.check_access(
                 user_key, org_id, node_ids=[node_id], transaction=transaction,
-            )).node_ids:
+            )
+            if node_id not in checked.node_ids:
                 return None
             rows = await self.client.execute_query(
                 query,
@@ -21816,6 +24179,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not rows or not rows[0].get("result"):
                 return None
             result = dict(rows[0]["result"])
+            # Browsing lists a placeholder; a caller that hands the node out as something to open tells it by this.
+            result["isPlaceholder"] = node_id in checked.placeholder_ids
             kb_id = rows[0].get("kbId")
             result["userRole"] = (
                 await self.get_user_kb_permission(kb_id, user_key, transaction=transaction)
@@ -21852,8 +24217,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               AND (v.orgId = $org_id)
               AND (v.isDeleted IS NULL OR v.isDeleted = false)
 
-            WITH v, e, EXISTS { (v)-[:NODE_RELATION]->(:Record) } AS hasChildren
-
             RETURN {
                 id: v.id,
                 name: v.recordName,
@@ -21861,7 +24224,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 connectorName: v.connectorName,
                 webUrl: v.webUrl,
                 relationshipType: e.relationshipType,
-                hasChildren: hasChildren,
                 indexingStatus: v.indexingStatus,
                 userRole: null
             } AS item
@@ -21882,12 +24244,34 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             allowed = (await self.check_access(
                 user_key, org_id, node_ids=[item["id"] for item in items], transaction=transaction,
             )).node_ids
-            return [item for item in items if item["id"] in allowed][:limit]
+            return await self._with_readable_children(
+                [item for item in items if item["id"] in allowed][:limit], user_key, org_id, transaction)
         except PermissionVerificationUnavailableError:
             raise
         except Exception as e:
             self.logger.error(f"❌ get_linked_records failed: {str(e)}")
             return []
+
+    async def _kh_v3_child_ids(
+        self, parent_ids: list[str], org_id: str, skip: int, limit: int, transaction: str | None,
+    ) -> dict[str, list[str]]:
+        rows = await self.client.execute_query(
+            """
+            UNWIND $ids AS pid
+            // Per parent, so the sort keeps only skip + limit ids instead of every child.
+            CALL (pid) {
+                MATCH (p:Record {id: pid})-[r:NODE_RELATION]->(c:Record)
+                WHERE r.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+                  AND NOT coalesce(c.isDeleted, false) AND c.orgId = $org_id
+                WITH c.id AS cid ORDER BY cid SKIP $skip LIMIT $limit
+                RETURN collect(cid) AS childIds
+            }
+            RETURN pid, childIds
+            """,
+            parameters={"ids": parent_ids, "org_id": org_id, "skip": skip, "limit": limit},
+            txn_id=transaction,
+        )
+        return {r["pid"]: r["childIds"] for r in rows or []}
 
     async def get_knowledge_hub_parent_node(
         self,
@@ -22212,6 +24596,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WITH principal, target
                 MATCH (principal)-[p1:PERMISSION {{type: 'USER'}}]->(target)
                 WHERE p1.role IS NOT NULL AND p1.role <> ''
+                  AND (NOT (target:App AND target.type = 'KB') OR {_kb_edge_role_ok('p1')})
                 RETURN collect(DISTINCT p1.role) AS direct_roles
             }}
 
@@ -22233,16 +24618,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 RETURN collect(DISTINCT p5.role) AS role_roles
             }}
 
-            // Path 7: User -> Team -> target
-            // Use role from User->Team permission edge (ut.role), not Team->target edge
+            // Path 7: User -> Team -> target, the role the team's grant gives
             CALL {{
                 WITH principal, target
-                MATCH (team:Teams)-[:PERMISSION {{type: 'TEAM'}}]->(target)
-                WITH principal, collect(DISTINCT team) AS teams
-                UNWIND teams AS team
-                MATCH (principal)-[ut:PERMISSION {{type: 'USER'}}]->(team)
-                WHERE ut.role IS NOT NULL AND ut.role <> ''
-                RETURN collect(DISTINCT ut.role) AS team_roles
+                MATCH (team:Teams)-[team_grant:PERMISSION {{type: 'TEAM'}}]->(target)
+                MATCH (principal)-[team_member:PERMISSION {{type: 'USER'}}]->(team)
+                WITH {_TEAM_GRANT_ROLE_CYPHER} AS team_role
+                WHERE team_role IS NOT NULL
+                RETURN collect(DISTINCT team_role) AS team_roles
             }}
 
             // Path 9: User -> Org -> target
@@ -22341,6 +24724,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WITH principal, target
                 MATCH (principal)-[p1:PERMISSION {{type: 'USER'}}]->(target)
                 WHERE p1.role IS NOT NULL AND p1.role <> ''
+                  AND (NOT (target:App AND target.type = 'KB') OR {_kb_edge_role_ok('p1')})
                 RETURN collect(DISTINCT p1.role) AS direct_roles
             }}
 
@@ -22362,16 +24746,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 RETURN collect(DISTINCT p5.role) AS role_roles
             }}
 
-            // Path 4: User -> Team -> target
-            // Use role from User->Team permission edge (ut.role), not Team->target edge
+            // Path 4: User -> Team -> target, the role the team's grant gives
             CALL {{
                 WITH principal, target
-                MATCH (team:Teams)-[:PERMISSION {{type: 'TEAM'}}]->(target)
-                WITH principal, collect(DISTINCT team) AS teams
-                UNWIND teams AS team
-                MATCH (principal)-[ut:PERMISSION {{type: 'USER'}}]->(team)
-                WHERE ut.role IS NOT NULL AND ut.role <> ''
-                RETURN collect(DISTINCT ut.role) AS team_roles
+                MATCH (team:Teams)-[team_grant:PERMISSION {{type: 'TEAM'}}]->(target)
+                MATCH (principal)-[team_member:PERMISSION {{type: 'USER'}}]->(team)
+                WITH {_TEAM_GRANT_ROLE_CYPHER} AS team_role
+                WHERE team_role IS NOT NULL
+                RETURN collect(DISTINCT team_role) AS team_roles
             }}
 
             // Path 5: User -> Org -> target
@@ -22417,8 +24799,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         - Direct PERMISSION edge (explicit role, e.g. OWNER set on KB creation
           or via sharing) wins outright, regardless of admin/creator/scope.
-        - Team KB sharing: user→team (USER, role) + team→app (PERMISSION TEAM, access only)
-          returns the user's team membership role.
+        - Team KB sharing: user→team (USER) + team→app (PERMISSION TEAM) returns
+          the role the team's grant gives (team_grant_role), never OWNER.
         - Otherwise: USER_APP_RELATION existence gates access; admin gets
           EDITOR (team apps) or OWNER (personal apps); the creator gets OWNER
           regardless of scope; team-only access (no USER_APP_RELATION) gets
@@ -22448,16 +24830,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             // Check direct PERMISSION edge (e.g. OWNER set on KB creation)
             OPTIONAL MATCH ({user_var})-[direct_perm:PERMISSION {{type: 'USER'}}]->({node_var})
 
-            // KB collection team share: user→team (USER, role) + team→app (PERMISSION TEAM, access only)
+            // KB collection team share: user→team (USER) + team→app (PERMISSION TEAM)
             // Uses a distinct variable name (kb_team) from the connector-share match above —
             // reusing `team` here would make Cypher treat it as a join constraint against
             // whatever (or nothing) the first OPTIONAL MATCH bound, silently breaking this
             // path whenever a team shares a KB via PERMISSION TEAM only (no USER_APP_RELATION).
-            OPTIONAL MATCH ({user_var})-[ut:PERMISSION {{type: 'USER'}}]->(kb_team:Teams)-[tb:PERMISSION {{type: 'TEAM'}}]->({node_var})
+            OPTIONAL MATCH ({user_var})-[team_member:PERMISSION {{type: 'USER'}}]->(kb_team:Teams)-[team_grant:PERMISSION {{type: 'TEAM'}}]->({node_var})
 
             // Collect team KB roles and find highest priority
             WITH {node_var}, {user_var}, coalesce(own_app_rel, linked_app) AS user_app_rel, team_app_rel, direct_perm,
-                collect(DISTINCT ut.role) AS team_kb_roles_list
+                collect(DISTINCT {_TEAM_GRANT_ROLE_CYPHER}) AS team_kb_roles_list
 
             WITH {node_var}, {user_var}, user_app_rel, team_app_rel, direct_perm,
                 CASE
@@ -22474,20 +24856,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             // Get app scope and check if user is creator
             // createdBy stores the graph user key, compare with user.id
             WITH {node_var}, {user_var}, user_app_rel, team_app_rel, direct_perm, team_kb_role, is_admin,
-                CASE WHEN direct_perm.role IN {_RETIRED_ROLES_CYPHER} THEN 'READER' ELSE direct_perm.role END AS direct_role,
+                CASE WHEN direct_perm.role IN {_RETIRED_ROLES_CYPHER} THEN 'READER'
+                     WHEN {node_var}.type <> 'KB' OR direct_perm.role IN {_KB_ROLES_CYPHER} THEN direct_perm.role
+                     ELSE null END AS direct_role,
                 coalesce({node_var}.scope, 'personal') AS app_scope,
                 ({node_var}.createdBy = {user_var}.id OR {node_var}.createdBy = {user_var}.userId) AS is_creator
 
             // Determine role based on conditions (highest privilege wins)
             RETURN CASE
                 // No access path at all: no access
-                WHEN user_app_rel IS NULL AND team_app_rel IS NULL AND direct_perm IS NULL AND team_kb_role IS NULL THEN null
+                WHEN user_app_rel IS NULL AND team_app_rel IS NULL AND (direct_role IS NULL AND (direct_perm IS NULL OR {node_var}.type = 'KB')) AND team_kb_role IS NULL THEN null
                 // An explicit role (direct grant or team share) wins; the higher of the two
                 WHEN direct_role IS NOT NULL AND team_kb_role IS NOT NULL
                     AND coalesce({role_priority_map}[team_kb_role], 0) > coalesce({role_priority_map}[direct_role], 0)
                     THEN team_kb_role
                 WHEN direct_role IS NOT NULL THEN direct_role
-                // Team KB share: return user's team membership role
+                // Team KB share: the role the team's grant gives
                 WHEN team_kb_role IS NOT NULL THEN team_kb_role
                 // Access only via team->app: READER; admin gets EDITOR
                 WHEN user_app_rel IS NULL AND team_app_rel IS NOT NULL THEN (CASE WHEN is_admin THEN 'EDITOR' ELSE 'READER' END)
@@ -22565,12 +24949,23 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         team_id: str,
         org_id: str,
         user_key: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
+        is_org_admin: bool = False,
     ) -> dict | None:
         """
         Get a single team with its members and permissions.
         """
         try:
+            # Every account joins the organisation's All team when it is
+            # created, service accounts included, and each member row carries
+            # the `userId` that binds an agent to one. In the member match
+            # rather than around the team, so `memberCount` counts what the
+            # caller was given.
+            member_where = "" if include_service_accounts else (
+                f"AND {cypher_not_a_service_account('member_user')}"
+            )
             team_label = collection_to_label(CollectionNames.TEAMS.value)
             user_label = collection_to_label(CollectionNames.USERS.value)
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
@@ -22579,7 +24974,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (team:{team_label} {{id: $teamId, orgId: $orgId}})
             OPTIONAL MATCH (current_user:{user_label} {{id: $user_key}})-[current_permission:{permission_rel}]->(team)
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
-            WHERE member_user IS NOT NULL AND member_user.isActive = true
+            WHERE member_user IS NOT NULL AND member_user.isActive = true {member_where}
             WITH team,
                  collect(DISTINCT properties(current_permission))[0] AS current_user_permission,
                  collect(DISTINCT CASE WHEN member_user IS NULL THEN null ELSE {{
@@ -22601,9 +24996,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 updatedAtTimestamp: team.updatedAtTimestamp,
                 members: team_members,
                 memberCount: size(team_members),
-                canEdit: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END,
-                canDelete: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role = 'OWNER' AND team.id <> ('all_' + team.orgId) THEN true ELSE false END,
-                canManageMembers: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END
+                canEdit: CASE WHEN $is_org_admin OR (current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER']) THEN true ELSE false END,
+                canDelete: CASE WHEN ($is_org_admin OR (current_user_permission IS NOT NULL AND current_user_permission.role = 'OWNER')) AND team.id <> ('all_' + team.orgId) THEN true ELSE false END,
+                canManageMembers: CASE WHEN $is_org_admin OR (current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER']) THEN true ELSE false END
             }} AS result
             """
 
@@ -22612,7 +25007,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 parameters={
                     "teamId": team_id,
                     "orgId": org_id,
-                    "user_key": user_key
+                    "user_key": user_key,
+                    "is_org_admin": bool(is_org_admin),
                 },
                 txn_id=transaction
             )
@@ -22638,13 +25034,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         created_by: str | None = None,
         created_after: int | None = None,
         created_before: int | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
+        org_id: str | None = None,
+        is_org_admin: bool = False,
     ) -> tuple[list[dict], int]:
         """
-        Get all teams that a user is a member of.
+        Get all teams that a user is a member of, or every team in the
+        organisation for its administrator.
         """
         try:
             offset = (page - 1) * limit
+            # The same member list as get_team_with_users, embedded per team.
+            member_where = "" if include_service_accounts else (
+                f"AND {cypher_not_a_service_account('member_user')}"
+            )
             team_label = collection_to_label(CollectionNames.TEAMS.value)
             user_label = collection_to_label(CollectionNames.USERS.value)
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
@@ -22663,12 +25068,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if created_before is not None:
                 extra_where += " AND team.createdAtTimestamp <= $created_before"
 
-            # Query to get all teams user is a member of with pagination
-            user_teams_query = f"""
-            MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(team:{team_label})
+            list_all_org_teams = bool(is_org_admin and org_id)
+            if list_all_org_teams:
+                teams_match = f"""
+            MATCH (team:{team_label} {{orgId: $org_id}})
             WHERE 1=1 {search_where} {extra_where}
+            OPTIONAL MATCH (:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(team)"""
+            else:
+                teams_match = f"""
+            MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(team:{team_label})
+            WHERE 1=1 {search_where} {extra_where}"""
+
+            # Query to get the teams with pagination
+            user_teams_query = f"""
+            {teams_match}
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
-            WHERE member_user IS NOT NULL AND member_user.isActive = true
+            WHERE member_user IS NOT NULL AND member_user.isActive = true {member_where}
             WITH team, properties(p) AS current_user_permission,
                  collect(DISTINCT CASE WHEN member_user IS NULL THEN null ELSE {{
                      id: member_user.id,
@@ -22693,21 +25108,21 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 updatedAtTimestamp: team.updatedAtTimestamp,
                 members: team_members,
                 memberCount: member_count,
-                canEdit: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END,
-                canDelete: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role = 'OWNER' AND team.id <> ('all_' + team.orgId) THEN true ELSE false END,
-                canManageMembers: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END
+                canEdit: CASE WHEN $is_org_admin OR (current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER']) THEN true ELSE false END,
+                canDelete: CASE WHEN ($is_org_admin OR (current_user_permission IS NOT NULL AND current_user_permission.role = 'OWNER')) AND team.id <> ('all_' + team.orgId) THEN true ELSE false END,
+                canManageMembers: CASE WHEN $is_org_admin OR (current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER']) THEN true ELSE false END
             }} AS result
             """
 
             # Count query for pagination
             count_query = f"""
-            MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(team:{team_label})
-            WHERE 1=1 {search_where} {extra_where}
+            {teams_match}
             RETURN count(DISTINCT team) AS total_count
             """
 
             # Shared filter params
-            filter_params: dict = {}
+            # The org comes in as an argument; this only passes it to the query.
+            filter_params: dict = {"org_id": org_id} if list_all_org_teams else {}
             if search:
                 filter_params["search"] = search
             if created_by:
@@ -22730,6 +25145,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Get teams with pagination
             teams_params = {
                 "user_key": user_key,
+                "is_org_admin": list_all_org_teams,
                 "offset": offset,
                 "limit": limit,
                 **filter_params,
@@ -22750,6 +25166,36 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"Error in get_user_teams: {str(e)}", exc_info=True)
             return [], 0
 
+    async def find_team_by_name(
+        self,
+        org_id: str,
+        name: str,
+        exclude_team_id: str | None = None,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """
+        Find a team in an organisation by name, ignoring case and surrounding whitespace.
+        """
+        team_label = collection_to_label(CollectionNames.TEAMS.value)
+        query = f"""
+        MATCH (team:{team_label} {{orgId: $org_id}})
+        WHERE team.name IS NOT NULL
+          AND toLower(trim(toString(team.name))) = $name
+          AND team.id <> $exclude_team_id
+        RETURN {{id: team.id, name: team.name}} AS result
+        LIMIT 1
+        """
+        results = await self.client.execute_query(
+            query,
+            parameters={
+                "org_id": org_id,
+                "name": name.strip().lower(),
+                "exclude_team_id": exclude_team_id or "",
+            },
+            txn_id=transaction,
+        )
+        return results[0].get("result") if results else None
+
     async def get_team_users(
         self,
         team_id: str,
@@ -22758,7 +25204,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> dict | None:
         """
         Get all users in a specific team.
@@ -22773,11 +25221,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if search:
                 search_where = "AND (toLower(member_user.fullName) CONTAINS toLower($search) OR toLower(member_user.email) CONTAINS toLower($search))"
 
+            # Before the page is cut and before the count is taken, so the two
+            # agree and neither says how many rows were withheld.
+            member_where = "" if include_service_accounts else (
+                f"AND {cypher_not_a_service_account('member_user')}"
+            )
+
             team_users_query = f"""
             MATCH (team:{team_label} {{id: $teamId, orgId: $orgId}})
             OPTIONAL MATCH (current_user:{user_label} {{id: $user_key}})-[current_permission:{permission_rel}]->(team)
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
-            WHERE member_user IS NOT NULL AND member_user.isActive = true {search_where}
+            WHERE member_user IS NOT NULL AND member_user.isActive = true {member_where} {search_where}
             WITH team,
                  collect(DISTINCT properties(current_permission))[0] AS current_user_permission,
                  collect(DISTINCT CASE WHEN member_user IS NULL THEN null ELSE {{
@@ -22894,6 +25348,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         Batch update user roles in a team.
         """
         try:
+            for user_role in user_roles:
+                self.validator.validate_edge_update(
+                    CollectionNames.PERMISSION.value, {"role": user_role.get("role"), "updatedAtTimestamp": timestamp}
+                )
             team_label = collection_to_label(CollectionNames.TEAMS.value)
             user_label = collection_to_label(CollectionNames.USERS.value)
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
@@ -22930,6 +25388,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             return updated_permissions if updated_permissions else []
 
+        except SchemaValidationError:
+            raise
         except Exception as e:
             self.logger.error(f"Error in batch_update_team_member_roles: {str(e)}", exc_info=True)
             return []
@@ -23090,7 +25550,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> tuple[list[dict], int]:
         """
         Get users in an organization with pagination and search.
@@ -23106,10 +25568,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if search:
                 search_where = "AND (toLower(u.fullName) CONTAINS toLower($search) OR toLower(u.email) CONTAINS toLower($search))"
 
+            # The row carries `userId`, which is the id an agent stores when
+            # it is bound to a service account, so this listing decides who
+            # learns that a machine identity exists.
+            kind_where = "" if include_service_accounts else (
+                f"AND {cypher_not_a_service_account('u')}"
+            )
+
             # Query to get users with their team memberships
             users_query = f"""
             MATCH (u:{user_label})-[b:{belongs_to_rel}]->(org:{org_label} {{id: $orgId}})
-            WHERE b.entityType = 'ORGANIZATION' AND u.isActive = true {search_where}
+            WHERE b.entityType = 'ORGANIZATION' AND u.isActive = true {kind_where} {search_where}
             ORDER BY u.fullName ASC
             SKIP $offset
             LIMIT $limit
@@ -23127,7 +25596,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Count total users for pagination
             count_query = f"""
             MATCH (u:{user_label})-[b:{belongs_to_rel}]->(org:{org_label} {{id: $orgId}})
-            WHERE b.entityType = 'ORGANIZATION' AND u.isActive = true {search_where}
+            WHERE b.entityType = 'ORGANIZATION' AND u.isActive = true {kind_where} {search_where}
             RETURN count(DISTINCT u) AS total_count
             """
 
@@ -23275,6 +25744,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"Failed to check toolset instance usage: {str(e)}")
             raise
+
+    async def check_api_toolset_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
+        """Names of the non-deleted agents with an operation of this API toolset attached."""
+        agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+        query = f"""
+        MATCH (agent:{agent_label})
+        WHERE (agent.isDeleted IS NULL OR agent.isDeleted = false)
+          AND any(entry IN coalesce(agent.apiToolsetTools, []) WHERE entry STARTS WITH $prefix)
+        RETURN DISTINCT elementId(agent) AS agentId, agent.name AS agentName
+        """
+        results = await self.client.execute_query(query, parameters={"prefix": f"{instance_id}:"}, txn_id=transaction)
+        return dedupe_agents_by_id(results)
 
     async def check_mcp_instance_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
         """Names of the non-deleted agents with this MCP server instance attached."""
@@ -24040,7 +26521,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
 
             # Add only schema-allowed fields
-            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tags", "isActive", "instructions", "isServiceAccount", "sendUserContext", "webSearch", "defaultReasoningEffort"]
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tags", "isActive", "instructions", "isServiceAccount", "serviceAccountUserId", "sendUserContext", "webSearch", "defaultReasoningEffort", "apiToolsetTools"]
             for field in allowed_fields:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]
@@ -24092,6 +26573,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"Successfully updated agent {agent_id}")
             return True
 
+        except SchemaValidationError:
+            raise
         except Exception as e:
             self.logger.error(f"Failed to update agent: {str(e)}")
             return False
@@ -24567,6 +27050,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             team_label = collection_to_label(CollectionNames.TEAMS.value)
             agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
             timestamp = get_epoch_timestamp_in_ms()
+            self.validator.validate_edge_update(
+                CollectionNames.PERMISSION.value, {"role": role, "updatedAtTimestamp": timestamp}
+            )
 
             updated_count = 0
             updated_users = 0
@@ -24633,6 +27119,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "updated_teams": updated_teams
             }
 
+        except SchemaValidationError:
+            raise
         except Exception as e:
             self.logger.error(f"Failed to update agent permission: {str(e)}")
             return {"success": False, "reason": f"Internal error: {str(e)}"}
@@ -24879,6 +27367,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not result:
                 return None
             return template_key
+        except SchemaValidationError:
+            raise
         except Exception as e:
             self.logger.error("❌ Failed to clone agent template: %s", str(e))
             return None
@@ -24990,6 +27480,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"Successfully updated template {template_id}")
             return True
 
+        except SchemaValidationError:
+            raise
         except Exception as e:
             self.logger.error("❌ Failed to update agent template: %s", str(e))
             return False

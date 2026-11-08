@@ -30,8 +30,14 @@ vi.mock('@/lib/api', () => ({
   withToast: vi.fn(),
 }));
 
-const { bareToolFullName, buildCatalogToolGroups, buildCatalogMcpGroups, restrictGroupsToBareNames } =
-  await import('../tool-groups');
+const {
+  apiActionToolKey,
+  bareToolFullName,
+  buildApiActionGroups,
+  buildCatalogToolGroups,
+  buildCatalogMcpGroups,
+  restrictGroupsToBareNames,
+} = await import('../tool-groups');
 const { buildProjectChatScope } = await import('../hooks/use-project-scope-hydration');
 
 describe('bareToolFullName', () => {
@@ -53,6 +59,55 @@ describe('buildCatalogToolGroups', () => {
     expect(groups.map((g) => g.fullNames)).toEqual([['i1:slack.send'], ['local-1:jira.create']]);
     expect(groups[0]!.toolDescriptions).toEqual({ 'i1:slack.send': 'Send' });
     expect(groups[1]!.toolDescriptions).toBeUndefined();
+  });
+});
+
+describe('buildApiActionGroups', () => {
+  const ID = 'a'.repeat(32);
+  const orders = {
+    id: ID,
+    name: 'Orders API',
+    isConnected: true,
+    operations: [
+      { toolName: 'listOrders', method: 'get', path: '/orders', summary: 'List orders', kind: 'read' },
+      { toolName: 'deleteOrder', method: 'delete', path: '/orders/{id}', summary: '', kind: 'destructive' },
+    ],
+  };
+
+  it('keys each operation so the bare name sent is "<instanceId>:<toolName>"', () => {
+    const key = apiActionToolKey(ID, 'listOrders');
+    expect(bareToolFullName(key)).toBe(`${ID}:listOrders`);
+  });
+
+  it('builds one group per action, its operations labelled by summary or tool name', () => {
+    const [group] = buildApiActionGroups([orders] as never);
+    expect(group).toMatchObject({
+      label: 'Orders API',
+      instanceId: ID,
+      toolsetSlug: `api_action:${ID}`,
+      isAuthenticated: true,
+      fullNames: [`${ID}:${ID}:listOrders`, `${ID}:${ID}:deleteOrder`],
+      toolLabels: { [`${ID}:${ID}:listOrders`]: 'List orders', [`${ID}:${ID}:deleteOrder`]: 'deleteOrder' },
+      toolDescriptions: { [`${ID}:${ID}:listOrders`]: 'GET /orders', [`${ID}:${ID}:deleteOrder`]: 'DELETE /orders/{id}' },
+    });
+  });
+
+  it('limits operations to the attached ones and drops actions left with none', () => {
+    const other = { ...orders, id: 'b'.repeat(32), name: 'Billing API' };
+    const groups = buildApiActionGroups([orders, other] as never, [`${ID}:deleteOrder`]);
+    expect(groups.map((g) => g.fullNames)).toEqual([[`${ID}:${ID}:deleteOrder`]]);
+  });
+
+  it('gives each action its own slug so two can be selected together', () => {
+    const other = { ...orders, id: 'b'.repeat(32) };
+    const slugs = buildApiActionGroups([orders, other] as never).map((g) => g.toolsetSlug);
+    expect(new Set(slugs).size).toBe(2);
+  });
+
+  it('restricts to bare wire names like any other group', () => {
+    const groups = buildApiActionGroups([orders] as never);
+    const [restricted] = restrictGroupsToBareNames(groups, new Set([`${ID}:listOrders`]));
+    expect(restricted!.fullNames).toEqual([`${ID}:${ID}:listOrders`]);
   });
 });
 

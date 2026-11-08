@@ -2,17 +2,17 @@
  * External Store Runtime bridge for assistant-ui.
  *
  * Provides:
- * 1. `buildExternalStoreConfig(activeSlotId)` â€” returns the config object
+ * 1. `buildExternalStoreConfig(activeSlotId)` — returns the config object
  *    consumed by `useExternalStoreRuntime`. Reads `messages` and `isRunning`
  *    from the active slot; wires `onNew` and `onCancel` to streaming.ts.
  *
- * 2. `loadHistoricalMessages()` â€” transforms backend ConversationMessage[]
+ * 2. `loadHistoricalMessages()` — transforms backend ConversationMessage[]
  *    into ThreadMessageLike[] (used when initializing a slot).
  */
 
 import type { ExternalStoreAdapter } from '@assistant-ui/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
-import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort } from './store';
+import { useChatStore, ctxKeyFromAgent, getEffectiveModel, getRequestReasoningEffort, projectAgentCapabilities } from './store';
 import { streamMessageForSlot, cancelStreamForSlot } from './streaming';
 import { showNoModelToast } from './utils/no-model-toast';
 import { showRemoteRunInProgressToast } from './utils/remote-run-toast';
@@ -48,6 +48,8 @@ import {
 } from './components/message-area/ask-user-question-card';
 import { appendResumeParts } from './utils/tool-display';
 import { isToolApprovalResumeQuery } from './tool-approval';
+import { applyCompareToRequest, onPrimarySettled, settleBeforeSend } from './compare/compare-controller';
+import { compareModelForSlot } from './compare/compare-store';
 
 /** Non-empty query required by the chat API when the user sends attachments only (matches Slack bot). */
 const ATTACHMENT_ONLY_STREAM_QUERY = 'See below attached file(s).';
@@ -162,7 +164,7 @@ function resolveAssistantFiltersFromSlot(
 }
 
 /**
- * Resolve KB/app filters for a chat POST â€” either from the outgoing composer message
+ * Resolve KB/app filters for a chat POST — either from the outgoing composer message
  * (normal send) or from the latest prior user turn that carried attachments (questionnaire submit).
  */
 export function resolveAssistantFiltersForChatSubmit(
@@ -235,6 +237,9 @@ export function buildStreamChatRequestForSlot(
   // Project context is hydrated from the URL/workspace (`useProjectScopeHydration`), the same
   // way `agentId` is read from the URL above. The server re-applies the allow-list regardless.
   const projectScope = effectiveAgentId ? null : currentState.projectScope;
+  const projectIdForCaps = effectiveAgentId
+    ? null
+    : currentSlot.projectId ?? projectScope?.projectId ?? null;
 
   const toolsSel = effectiveAgentId
     ? currentState.agentStreamTools
@@ -256,18 +261,13 @@ export function buildStreamChatRequestForSlot(
       : [];
 
   const modelCtxKey = ctxKeyFromAgent(effectiveAgentId ?? null);
-  const rawModel = getEffectiveModel(modelCtxKey);
+  // A compared slot keeps its own model for card and approval follow-ups, whatever the composer shows.
+  const rawModel = compareModelForSlot(slotId) ?? getEffectiveModel(modelCtxKey);
   if (!rawModel) {
     showNoModelToast();
   }
   const effectiveModel = rawModel ?? { modelKey: '', modelName: '', modelFriendlyName: '' };
-  // Neither the user nor the agent chose an effort → leave it off the request
-  // so the backend applies the model's own default, then "high".
-  const reasoningEffortOverride = currentState.settings.reasoningEffort[modelCtxKey] ?? null;
-  const agentDefault = getAgentDefaultReasoningEffort(modelCtxKey);
-  const reasoningEffort =
-    reasoningEffortOverride ??
-    (isModelReasoningCapable(modelCtxKey, effectiveModel) ? agentDefault : null);
+  const reasoningEffort = getRequestReasoningEffort(modelCtxKey, effectiveModel);
 
   const isAgent = Boolean(effectiveAgentId);
   const knowledgeScope = currentState.agentKnowledgeScope;
@@ -378,7 +378,9 @@ export function buildStreamChatRequestForSlot(
       : isUniversalAgentMode
         ? {
             ...(toolsSel !== null ? { agentStreamTools: streamTools } : {}),
-            agentCapabilities: currentState.settings.agentCapabilities,
+            agentCapabilities: projectIdForCaps
+              ? projectAgentCapabilities(currentState.scopedAgentCapabilities, projectIdForCaps)
+              : currentState.settings.agentCapabilities,
           }
         : {}),
     ...(toolApproval ? { toolApproval } : {}),
@@ -392,7 +394,7 @@ export interface LoadHistoricalResult {
   unansweredAskUserQuestion: PendingAskUserQuestion | null;
 }
 
-function isAskUserQuestionResumeQuery(text: string | undefined | null): boolean {
+export function isAskUserQuestionResumeQuery(text: string | undefined | null): boolean {
   return typeof text === 'string' && text.trimStart().startsWith('User selections:');
 }
 
@@ -575,6 +577,8 @@ export function loadHistoricalMessages(
   let lastUnansweredPayload: AskUserQuestionPayload | null = null;
   let lastUnansweredAnswers: Record<string, AskUserQuestionAnswer> = {};
   let mergeNextBotIntoId: string | null = null;
+  // A second answer to a card that already had its reply (another tab): the server ran nothing.
+  let skipStaleResumeReply = false;
   const closedCardRowIds = new Set<string>();
 
   for (let i = 0; i < messages.length; i++) {
@@ -662,6 +666,12 @@ export function loadHistoricalMessages(
       continue;
     }
 
+    if (msg.messageType === 'bot_response' && skipStaleResumeReply) {
+      skipStaleResumeReply = false;
+      toolPayload = null;
+      continue;
+    }
+
     if (msg.messageType === 'bot_response') {
       const capturedPayload =
         toolPayload ?? askPayloadFromParts(msg.parts) ?? askPayloadFromToolCall(msg);
@@ -693,7 +703,9 @@ export function loadHistoricalMessages(
         lastUnansweredAnswers = {};
       }
 
-      const feedbackEntry = (msg.feedback as Array<{ isHelpful?: boolean }> | undefined)?.[0];
+      // Each rating is appended to `feedback`, so the last entry is the one the user chose.
+      const feedbackHistory = (msg.feedback as Array<{ isHelpful?: boolean }> | undefined) ?? [];
+      const feedbackEntry = feedbackHistory[feedbackHistory.length - 1];
       const feedbackInfo = feedbackEntry?.isHelpful === true
         ? { value: 'like' as const }
         : feedbackEntry?.isHelpful === false
@@ -790,12 +802,28 @@ export function loadHistoricalMessages(
     if (isAskUserQuestionResumeQuery(msg.content)) {
       const last = findQuestionAssistantRow(result, lastUnansweredAssistantId);
       if (last?.role === 'assistant' && typeof last.id === 'string') {
-        const followUpComplete = hasFollowUpAfterResume(messages, i);
-        mergeNextBotIntoId = nextResumeFollowUpIsBot(messages, i) ? last.id : null;
         const prevCustom = (last.metadata?.custom ?? {}) as Record<string, unknown>;
         const payload = (
           prevCustom.persistedAskUserQuestion ?? lastUnansweredPayload
         ) as AskUserQuestionPayload | undefined;
+        const settled = prevCustom.persistedAskUserQuestionAnswers as
+          | Record<string, AskUserQuestionAnswer>
+          | undefined;
+        // A reply that was stopped did not finish, so answering again is a retry, not a repeat.
+        if (
+          !lastUnansweredAssistantId &&
+          payload &&
+          settled &&
+          Object.keys(settled).length > 0 &&
+          !hasUnansweredQuestions(payload, settled) &&
+          prevCustom.status !== 'stopped'
+        ) {
+          skipStaleResumeReply = nextResumeFollowUpIsBot(messages, i);
+          toolPayload = null;
+          continue;
+        }
+        const followUpComplete = hasFollowUpAfterResume(messages, i);
+        mergeNextBotIntoId = nextResumeFollowUpIsBot(messages, i) ? last.id : null;
         const parsed = payload ? parseAnswerMessage(msg.content, payload) : {};
         const prevAnswers = (
           (prevCustom.persistedAskUserQuestionAnswers as Record<string, AskUserQuestionAnswer> | undefined)
@@ -807,7 +835,10 @@ export function loadHistoricalMessages(
             ...last.metadata,
             custom: {
               ...prevCustom,
-              ...(payload ? { persistedAskUserQuestion: payload } : {}),
+              // Older threads could still answer a card after chatting past it; the answer wins.
+              ...(payload
+                ? { persistedAskUserQuestion: payload.repliedInChat ? { ...payload, repliedInChat: undefined } : payload }
+                : {}),
               ...(followUpComplete && Object.keys(answers).length
                 ? { persistedAskUserQuestionAnswers: answers }
                 : {}),
@@ -830,6 +861,31 @@ export function loadHistoricalMessages(
 
     mergeNextBotIntoId = null;
     toolPayload = null;
+    // Typed while a card was open, the message answered it (the server treats it so): the card closes.
+    if (lastUnansweredAssistantId && lastUnansweredPayload) {
+      const cardRowId = lastUnansweredAssistantId;
+      const row = result.find((m) => m.role === 'assistant' && m.id === cardRowId);
+      if (row) {
+        const prevCustom = (row.metadata?.custom ?? {}) as Record<string, unknown>;
+        const payload = (prevCustom.persistedAskUserQuestion as AskUserQuestionPayload | undefined)
+          ?? lastUnansweredPayload;
+        Object.assign(row, {
+          metadata: {
+            ...row.metadata,
+            custom: {
+              ...prevCustom,
+              persistedAskUserQuestion: { ...payload, repliedInChat: true },
+              ...(Object.keys(lastUnansweredAnswers).length > 0
+                ? { persistedAskUserQuestionAnswers: lastUnansweredAnswers }
+                : {}),
+            },
+          },
+        });
+      }
+      lastUnansweredAssistantId = null;
+      lastUnansweredPayload = null;
+      lastUnansweredAnswers = {};
+    }
     // A real question: the reply after it is its own row, whatever came before.
     mergeNextBotIntoId = null;
     result.push({
@@ -954,7 +1010,7 @@ export function reconcilePendingAfterPrepend(
  * It reads the active slot's messages + streaming state and provides
  * `onNew` / `onCancel` callbacks routed to slot-scoped streaming.
  *
- * @param activeSlotId â€” current active slot key (or null for new chat screen)
+ * @param activeSlotId — current active slot key (or null for new chat screen)
  */
 export function buildExternalStoreConfig(
   activeSlotId: string | null
@@ -966,11 +1022,11 @@ export function buildExternalStoreConfig(
     messages: slot?.messages ?? [],
     isRunning: slot?.isStreaming ?? false,
 
-    // Required when T = ThreadMessageLike (identity â€” our messages are already ThreadMessageLike)
+    // Required when T = ThreadMessageLike (identity — our messages are already ThreadMessageLike)
     convertMessage: (msg: ThreadMessageLike) => msg,
 
     onNew: async (message) => {
-      // Read activeSlotId from store at invocation time â€” NOT from the
+      // Read activeSlotId from store at invocation time — NOT from the
       // closure. ChatInputWrapper.handleSend creates a slot and sets
       // activeSlotId synchronously in Zustand before calling
       // threadRuntime.append(), but React hasn't re-rendered yet, so
@@ -992,6 +1048,10 @@ export function buildExternalStoreConfig(
         showRemoteRunInProgressToast();
         return;
       }
+
+      // Sending on without choosing keeps the primary answer and drops the branch.
+      const settling = settleBeforeSend(targetSlotId);
+      if (settling) await settling;
 
       const msgAttachments = msgAttachmentsEarly;
 
@@ -1018,9 +1078,12 @@ export function buildExternalStoreConfig(
         request.attachments = msgAttachments;
       }
 
-      // Fire-and-forget â€” streaming.ts handles all state updates.
+      const compared = applyCompareToRequest(targetSlotId, request, displayQuery);
+
+      // Fire-and-forget — streaming.ts handles all state updates.
       // Keep `displayQuery` for the slot user row + streamingQuestion so attachment-only turns still match an empty text bubble.
-      streamMessageForSlot(targetSlotId, displayQuery, request);
+      const run = streamMessageForSlot(targetSlotId, displayQuery, request);
+      if (compared) void run.finally(() => onPrimarySettled(targetSlotId));
     },
 
     onCancel: async () => {

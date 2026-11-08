@@ -271,3 +271,31 @@ class TestExtractDependencyResults:
         assert len(merged) == 2
         assert merged[0].tool_name == "dependency:fetch_jira"
         assert merged[1].tool_name == "local_tool"
+
+    def test_reads_the_current_request_not_the_first_question(self) -> None:
+        """D12: on a root agent in a chat, the first UserMessage is the
+        conversation's first question; the dependency block of a run is in its
+        current request."""
+        earlier = (
+            "## Results from prerequisite tasks\n\n"
+            "### Result from prerequisite task 'stale_task'\n"
+            "stale data from an earlier turn\n\n"
+            "## Your task\n\nOld question."
+        )
+        current = (
+            "## Results from prerequisite tasks\n\n"
+            "### Result from prerequisite task 'fresh_task'\n"
+            "fresh data\n\n"
+            "## Your task\n\nNew question."
+        )
+        messages: list[Message] = [
+            UserMessage(content=earlier),
+            AssistantMessage(content="old answer"),
+            UserMessage(content=current),
+            UserMessage(content="Loop note: keep going.", injected=True),
+        ]
+
+        results = extract_dependency_results(messages)
+
+        assert [r.tool_name for r in results] == ["dependency:fresh_task"]
+        assert results[0].content == "fresh data"

@@ -16,6 +16,8 @@ import { ServiceTokenService } from '../services/service-token.service';
 import { DelegationService } from '../services/delegation.service';
 import { TokenExchangeService } from '../services/token-exchange.service';
 import { OAuthDcrService } from '../services/oauth.dcr.service';
+import { AgentRegistrationService } from '../services/agent-registration.service';
+import { AgentRegistrationController } from '../controller/agent-registration.controller';
 import { OAuthDeviceService } from '../services/oauth.device.service';
 import { FirstPartyDeviceAppService } from '../services/oauth.first_party_device.service';
 import { OAuthAppController } from '../controller/oauth.app.controller';
@@ -242,6 +244,23 @@ export class OAuthProviderContainer {
         .bind<OAuthDeviceService>('OAuthDeviceService')
         .toConstantValue(oauthDeviceService);
 
+      const agentRegistrationService = new AgentRegistrationService(
+        logger,
+        oauthAppService,
+        oauthTokenService,
+        scopeValidatorService,
+        firstPartyDeviceAppService,
+        appConfig,
+      );
+      container
+        .bind<AgentRegistrationService>('AgentRegistrationService')
+        .toConstantValue(agentRegistrationService);
+      container
+        .bind<AgentRegistrationController>('AgentRegistrationController')
+        .toConstantValue(
+          new AgentRegistrationController(agentRegistrationService),
+        );
+
       // Initialize Controllers
       container
         .bind<OAuthAppController>('OAuthAppController')
@@ -270,6 +289,7 @@ export class OAuthProviderContainer {
             oauthDcrService,
             oauthDeviceService,
             tokenExchangeService,
+            agentRegistrationService,
           );
         });
 

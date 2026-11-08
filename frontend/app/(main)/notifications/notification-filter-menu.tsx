@@ -55,6 +55,7 @@ export function NotificationFilterMenu({ value, onChange }: NotificationFilterMe
           <DropdownMenu.Trigger>
             <IconButton
               variant="ghost"
+              className="touch-hit"
               size="1"
               color="gray"
               aria-label={t('notifications.filter')}

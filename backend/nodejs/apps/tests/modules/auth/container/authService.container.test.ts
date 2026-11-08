@@ -1,7 +1,11 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
-import { AuthServiceContainer } from '../../../../src/modules/auth/container/authService.container';
+import {
+  AUTH_APP_CONFIG_RELOADER,
+  AuthAppConfigReloader,
+  AuthServiceContainer,
+} from '../../../../src/modules/auth/container/authService.container';
 import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
 import * as messageBrokerFactory from '../../../../src/libs/services/message-broker.factory'
 import { Container } from 'inversify'
@@ -354,8 +358,18 @@ describe('AuthServiceContainer - coverage', () => {
       expect(container.isBound('ConfigurationManagerService')).to.be.true
       expect(container.isBound('EntitiesEventProducer')).to.be.true
       expect(container.isBound('JitProvisioningService')).to.be.true
-      expect(container.isBound('SamlController')).to.be.true
       expect(container.isBound('UserAccountController')).to.be.true
+      expect(container.isBound(AUTH_APP_CONFIG_RELOADER)).to.be.true
+
+      // A settings reload swaps in the new AppConfig and a controller built from it.
+      const before = container.get<any>('UserAccountController')
+      const reloaded = { ...appConfig, jwtSecret: 'reloaded-secret' }
+      container.get<AuthAppConfigReloader>(AUTH_APP_CONFIG_RELOADER)(reloaded)
+      expect(container.get('AppConfig')).to.equal(reloaded)
+      const after = container.get<any>('UserAccountController')
+      expect(after).to.not.equal(before)
+      expect(after.config).to.equal(reloaded)
+      expect(container.get('UserAccountController')).to.equal(after)
 
       // Verify getInstance works after initialization
       const instance = AuthServiceContainer.getInstance()

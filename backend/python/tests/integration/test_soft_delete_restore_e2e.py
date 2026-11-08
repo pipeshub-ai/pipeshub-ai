@@ -19,8 +19,9 @@ provider, with the KB's ``DataSourceEntitiesProcessor`` on a real
   refused, unchanged, while a live record holds it.
 - A sync that sees again an item the connector deleted restores it, and ends
   on the indexing status it always did. The restore's own write puts it in
-  line for indexing, so a sync that fails after it on Neo4j, where that write
-  has already committed, leaves a record the stranded sweep picks up.
+  line for indexing. A failure inside the write rolls the restore back; one
+  after it has committed, such as an event the broker refuses, leaves a record
+  the stranded sweep picks up.
 - ``restore_records`` touches only records still in the trash under the batch
   named, and brings back all of the items it is given or none of them, also
   when the graph refuses one of the writes.
@@ -228,7 +229,7 @@ async def _remove(graph: IGraphDBProvider, w: _World) -> None:
 
 @pytest.fixture(params=["neo4j", "arango"])
 async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_World]:
-    # The default, where each Neo4j statement commits on its own and a rollback undoes nothing.
+    # The default: a Neo4j write block is one transaction, as on Arango.
     monkeypatch.delenv("NEO4J_EXPLICIT_TRANSACTIONS", raising=False)
     async with contextlib.AsyncExitStack() as cleanup:
         try:
@@ -561,14 +562,12 @@ async def test_a_batch_restore_that_fails_after_its_write_stays_in_the_trash(
     ]
 
 
-# Neo4j only, and on the single-record path: its statements commit one by one there.
-# Arango runs it in one stream transaction, so the failure rolls the restore back
-# with it, and the graph jobs fail on any skip.
+# Neo4j only: the graph jobs run Arango and fail on any skip.
 @pytest.mark.parametrize("world", ["neo4j"], indirect=True)
-async def test_a_sync_restore_that_fails_after_its_write_leaves_the_item_for_the_stranded_sweep(
+async def test_a_sync_restore_that_fails_inside_its_write_stays_in_the_trash(
     world: _World, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The restore's write commits on its own; it used to leave the item live and COMPLETED with no vectors."""
+    """The single-record path is one transaction too: a failure inside it takes the restore with it."""
     await world.processor.on_record_deleted(world.ids["drive_file"])
     world.producer.events.clear()
     original = world.processor._handle_parent_record
@@ -580,6 +579,36 @@ async def test_a_sync_restore_that_fails_after_its_write_leaves_the_item_for_the
     with pytest.raises(RuntimeError, match="parent lookup failed"):
         await _content_update_sees_drive_file_again(world)
     monkeypatch.setattr(world.processor, "_handle_parent_record", original)
+
+    doc = await world.stored("drive_file")
+    assert (doc["isDeleted"], doc["indexingStatus"]) == (True, ProgressStatus.COMPLETED.value)
+    assert world.producer.events == []
+
+    await _sync_sees_drive_file_again(world, indexing_status=ProgressStatus.QUEUED.value)
+    assert (await world.stored("drive_file"))["isDeleted"] is False
+
+
+async def _content_update_whose_event_is_not_sent(world: _World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The restore's write commits, then the broker refuses the event that should follow it."""
+
+    async def broker_down(*_args: object, **_kwargs: object) -> bool:
+        raise RuntimeError("broker down")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(world.producer, "send_message", broker_down)
+        with pytest.raises(RuntimeError, match="broker down"):
+            await _content_update_sees_drive_file_again(world)
+
+
+# Neo4j only, as above.
+@pytest.mark.parametrize("world", ["neo4j"], indirect=True)
+async def test_a_sync_restore_that_fails_after_its_write_leaves_the_item_for_the_stranded_sweep(
+    world: _World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The restore's write has committed; it used to leave the item live and COMPLETED with no vectors."""
+    await world.processor.on_record_deleted(world.ids["drive_file"])
+    world.producer.events.clear()
+    await _content_update_whose_event_is_not_sent(world, monkeypatch)
 
     doc = await world.stored("drive_file")
     assert (doc["isDeleted"], doc["indexingStatus"]) == (False, ProgressStatus.NOT_STARTED.value)
@@ -610,7 +639,7 @@ class _SweepProducer:
         return True
 
 
-async def _run_stranded_sweep_an_hour_later(monkeypatch: pytest.MonkeyPatch, graph: IGraphDBProvider) -> list:
+async def _run_stranded_sweep_an_hour_later(monkeypatch: pytest.MonkeyPatch, graph: IGraphDBProvider, org_id: str) -> list:
     """The indexing service's own sweep, with its clock moved past the republish threshold."""
     monkeypatch.setenv("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", "3600")
     later = get_epoch_timestamp_in_ms() + 2 * 3600 * 1000
@@ -622,12 +651,12 @@ async def _run_stranded_sweep_an_hour_later(monkeypatch: pytest.MonkeyPatch, gra
 
     await indexing_main._republish_stranded_records(
         graph_provider=graph, logger=logger, producer=producer,
-        run_coordination=run_coordination, concurrency_manager=None, page_size=500,
+        run_coordination=run_coordination, concurrency_manager=None, page_size=500, org_id=org_id,
     )
     return producer.sent
 
 
-# Neo4j only, for the same reason as the test above.
+# Neo4j only, as above.
 @pytest.mark.parametrize("world", ["neo4j"], indirect=True)
 async def test_the_stranded_sweep_republishes_a_restore_that_failed_after_its_write(
     world: _World, monkeypatch: pytest.MonkeyPatch,
@@ -638,15 +667,9 @@ async def test_the_stranded_sweep_republishes_a_restore_that_failed_after_its_wr
         world.ids["drive_file"], CollectionNames.RECORDS.value, {"md5Checksum": "md5-indexed-before"}
     )
     await world.processor.on_record_deleted(world.ids["drive_file"])
+    await _content_update_whose_event_is_not_sent(world, monkeypatch)
 
-    async def parent_lookup_fails(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("parent lookup failed")
-
-    monkeypatch.setattr(world.processor, "_handle_parent_record", parent_lookup_fails)
-    with pytest.raises(RuntimeError, match="parent lookup failed"):
-        await _content_update_sees_drive_file_again(world)
-
-    sent = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph)
+    sent = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph, world.org_id)
 
     assert [(event, payload["virtualRecordId"]) for event, payload in sent
             if payload["recordId"] == world.ids["drive_file"]] == [
@@ -674,7 +697,7 @@ async def test_the_stranded_sweep_republishes_a_restore_whose_index_event_was_lo
     monkeypatch.setattr(world.producer, "send_messages", never_acked)
     await _sync_sees_drive_file_again(world, md5_hash="md5-from-source")
 
-    sent = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph)
+    sent = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph, world.org_id)
 
     assert [event for event, payload in sent if payload["recordId"] == world.ids["drive_file"]] == [
         EventTypes.REINDEX_RECORD.value
@@ -725,8 +748,8 @@ async def test_the_stranded_sweep_reindexes_a_restored_file_whose_reindex_was_lo
     with the checksum and content id it was indexed with."""
     await _restore_whose_reindex_is_lost(world, monkeypatch)
 
-    sent = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph)
-    sent_again = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph)
+    sent = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph, world.org_id)
+    sent_again = await _run_stranded_sweep_an_hour_later(monkeypatch, world.graph, world.org_id)
 
     assert [(event, payload["virtualRecordId"]) for event, payload in sent
             if payload["recordId"] == world.ids["solo"]] == [

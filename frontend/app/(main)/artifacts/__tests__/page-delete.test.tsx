@@ -105,7 +105,15 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.useRealTimers();
 });
+
+/** Past the 300 ms search debounce, the last thing that could start another list. */
+async function passSearchDebounce() {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(400);
+  });
+}
 
 async function renderPage() {
   render(
@@ -249,6 +257,27 @@ describe('finding artifacts', () => {
     expect(useArtifactsStore.getState().artifactTypes).toEqual([]);
   });
 
+  it('lists artifacts once per visit, the first visit and a revisit alike', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    await renderPage();
+    await passSearchDebounce();
+    expect(api.list).toHaveBeenCalledTimes(1);
+
+    cleanup();
+    await renderPage();
+    await passSearchDebounce();
+    expect(api.list).toHaveBeenCalledTimes(2);
+  });
+
+  it('lists once more when a filter changes', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    await renderPage();
+    await passSearchDebounce();
+    act(() => useArtifactsStore.getState().setArtifactTypes(['DATA_FILE']));
+    await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
+    expect(api.list).toHaveBeenLastCalledWith(expect.objectContaining({ artifactTypes: ['DATA_FILE'] }));
+  });
+
   it('keeps the search and page of a link it was opened from', async () => {
     search.params = new URLSearchParams('q=report&page=3');
     api.list.mockImplementation(async (params: { page: number }) => ({
@@ -259,10 +288,9 @@ describe('finding artifacts', () => {
     await screen.findByRole('button', { name: OWNED.name });
     await new Promise((r) => setTimeout(r, 400));
 
-    // The first load runs before the URL is read (its answer is discarded);
-    // every load after that must keep the linked search.
-    const calls = api.list.mock.calls.map(([params]) => params).slice(1);
-    expect(calls.length).toBeGreaterThan(0);
+    // The page waits for the URL, so every load keeps the linked search.
+    const calls = api.list.mock.calls.map(([params]) => params);
+    expect(calls).toHaveLength(1);
     expect(calls.filter((p) => p.search !== 'report')).toEqual([]);
     expect(calls.at(-1)).toMatchObject({ search: 'report', page: 3 });
     for (const [url] of router.replace.mock.calls) expect(String(url)).toContain('q=report');
@@ -277,7 +305,7 @@ describe('finding artifacts', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
 
     await waitFor(() => expect(screen.queryByRole('button', { name: OWNED.name })).toBeNull());
-    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('All Artifacts'));
+    await waitFor(() => expect(document.activeElement?.getAttribute('aria-label')).toBe('All artifacts'));
   });
 
   it('retries a failed load', async () => {

@@ -9,6 +9,7 @@ import { useToastStore } from '@/lib/store/toast-store';
 import { runConnectorResync, stopConnectorSync } from '../../utils/connector-sync-actions';
 import { localFsDesktopToast } from '../../utils/local-fs-helpers';
 import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 /**
  * A sync the backend is running right now, as opposed to the optimistic
@@ -31,14 +32,15 @@ export function isSyncRunning(status?: string | null): boolean {
 
 /** Simple label-value info row */
 export function InfoRow({ label, value }: { label: string; value: string }) {
+  const isMobile = useIsMobile();
   return (
-    <Flex align="center" gap="4">
+    <Flex direction={isMobile ? 'column' : 'row'} align={isMobile ? 'start' : 'center'} gap={isMobile ? '1' : '4'}>
       <Text
         size="1"
         weight="medium"
         style={{
           color: 'var(--slate-10)',
-          width: 164,
+          width: isMobile ? 'auto' : 164,
           flexShrink: 0,
           textTransform: 'uppercase',
           letterSpacing: '0.04px',

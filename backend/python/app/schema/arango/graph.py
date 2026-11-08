@@ -86,6 +86,7 @@ EDGE_DEFINITIONS = [
             CollectionNames.MEETINGS.value,
             CollectionNames.ARTIFACTS.value,
             CollectionNames.SQL_TABLES.value,
+            CollectionNames.SQL_COLUMNS.value,
             CollectionNames.SQL_VIEWS.value,
         ],
     },
@@ -148,7 +149,7 @@ EDGE_DEFINITIONS = [
     {
         "edge_collection": CollectionNames.ENTITY_RELATIONS.value,
         "from_vertex_collections": [CollectionNames.RECORDS.value],
-        "to_vertex_collections": [CollectionNames.USERS.value],
+        "to_vertex_collections": [CollectionNames.USERS.value, CollectionNames.ORGS.value, CollectionNames.PEOPLE.value],
     },
     # Agent Builder Graph Edges
     {

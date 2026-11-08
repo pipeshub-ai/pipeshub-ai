@@ -63,4 +63,5 @@ async def scenario_adapter(
 @pytest.mark.gcs
 class TestGcsScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "GCS"
+    TREE_MOVES = True
     UNSUPPORTED = {Action.CHANGE_PERMISSION.value: APP_LEVEL_PERMISSIONS}

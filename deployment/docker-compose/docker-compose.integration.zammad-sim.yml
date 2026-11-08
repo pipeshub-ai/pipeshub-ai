@@ -1,0 +1,25 @@
+# Zammad simulator for the zammad_sim suite (integration-tests/connectors/zammad/zammad_sim_*_test.py).
+# An override, used after the stack's own file:
+#
+#   docker compose -f docker-compose.integration.neo4j.yml -f docker-compose.integration.zammad-sim.yml up -d
+#
+# Zammad is self-hosted: the connector is configured with a base URL and an API token, so it reaches the simulator by
+# its service name (http://zammad-sim) with no host aliases or certificates. That name resolves to a private address,
+# which PipesHub accepts for a source an admin configures unless PIPESHUB_BLOCK_PRIVATE_ADDRESSES is on. The image is
+# pipeshub-ai/connectors-simulator (connsim/sources/zammad); it holds no data until a test loads its installation
+# (PUT /_sim/zammad/scenario), so it needs no content pack and no secret. The test process drives its control API on
+# the published port (integration-tests/connectors/zammad_sim.env). The live zammad suite's zammad-source profile is
+# a separate, real Zammad; this file does not touch it.
+services:
+  zammad-sim:
+    image: ${ZAMMAD_SIM_IMAGE:-pipeshub/connectors-simulator:it}
+    restart: always
+    command: ["zammad"]
+    environment:
+      CONNSIM_SOURCES: zammad
+      # The installation lives in one process's memory.
+      CONNSIM_WORKERS: "1"
+    # 8112, the simulator's own port: 8089-8098, 8101-8103, 8106-8110 and 8118 are the stack's other services'.
+    ports:
+      - "127.0.0.1:8112:80"
+    mem_limit: 512m

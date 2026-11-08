@@ -291,6 +291,36 @@ class TestRebalanceRetentionAndRestart:
         assert len(seen_before_reassign) == 55, "nothing fetched back after the revoke"
         assert {*handler.seen} == {f"a-{i:05d}" for i in range(500)} | {f"b-{i}" for i in range(5)}
 
+    async def test_a_delivery_that_ends_after_its_partition_was_revoked_commits_nothing(
+        self, harness: Harness
+    ) -> None:
+        """conn-b's records finish only after the revocation and a later poll. Their completion belongs to the
+        assignment that was revoked: it must not commit, or the commit passes the read-past backlog its new owner
+        still has to read, and those records are never processed."""
+        harness.produce_backlog(a=500)
+        release = asyncio.Event()
+        real_fetch = remembered_module.OffsetFetcher.fetch
+
+        async def held_fetch(self, wanted):  # noqa: ANN202
+            await release.wait()
+            return await real_fetch(self, wanted)
+
+        handler = Handler(slow="conn-b", delay=1.0)
+        with patch.object(remembered_module.OffsetFetcher, "fetch", held_fetch):
+            consumer = await harness.start(handler)
+            await _until(lambda: len(handler.seen) == 55)
+            main = harness.broker.consumers[0]
+            main.assigned_by_hand = []
+            await consumer._on_partitions_revoked([TP])
+            release.set()
+            await asyncio.sleep(1.5)        # conn-b's records end here, after the revocation and later polls
+            assert harness.committed() <= 50, "a delivery of the revoked assignment committed past the backlog"
+            main.assigned_by_hand = None
+            main.position.pop(TP, None)
+            await _until(lambda: harness.committed() == 505)
+
+        assert {f"a-{i:05d}" for i in range(500)} <= {*handler.seen}
+
     async def test_an_offset_deleted_by_retention_is_resolved_and_the_rest_fetched_back(
         self, harness: Harness, caplog: pytest.LogCaptureFixture
     ) -> None:

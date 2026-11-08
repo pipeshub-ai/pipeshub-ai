@@ -69,7 +69,7 @@ export function ChatDefaultsCard() {
             <Dialog.Title>{t('chat.aiModelsTooltip', { defaultValue: 'AI model' })}</Dialog.Title>
           </VisuallyHidden>
           <Flex direction="column" style={{ height: '60vh' }}>
-            <ModelSelectorPanel selectedModel={displayModel} onModelSelect={handleModelSelect} />
+            <ModelSelectorPanel selectedModel={displayModel} onModelSelect={handleModelSelect} allowExtraOptions={false} />
           </Flex>
         </Dialog.Content>
       </Dialog.Root>

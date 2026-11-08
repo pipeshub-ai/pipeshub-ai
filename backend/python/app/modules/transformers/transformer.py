@@ -15,9 +15,26 @@ class ReconciliationContext(BaseModel):
 #: indexed with an extractionStatus that looks final, and a duplicate would copy it.
 ENRICHMENT_FOLLOWS = "enrichment_follows"
 
+#: ``TransformContext.settings`` key, set by the indexed write in place of
+#: ``ENRICHMENT_FOLLOWS`` when classification waits for the record's first use:
+#: extraction is marked NOT_STARTED and the classify stage is not dispatched.
+ENRICHMENT_DEFERRED = "enrichment_deferred"
+
+#: Record field written with that NOT_STARTED, so a hand-off lost to a crash is
+#: told apart from a cut-short enrichment or an older record, which are final.
+EXTRACTION_DEFERRED_FIELD = "extractionDeferred"
+
 #: ``TransformContext.settings`` key: seconds the image-description pass may
 #: take before the remaining images are stored undescribed. Unset means no limit.
 IMAGE_DESCRIPTION_BUDGET_S = "image_description_budget_s"
+
+#: ``TransformContext.settings`` key: the run is a parse-now run, so once the content is stored the record is marked
+#: ``parseNowStatus=STORED`` (see ``app.modules.indexing.parse_now_marker``).
+PARSE_NOW = "parse_now"
+
+#: ``TransformContext.settings`` key: store the content and mark it, nothing else. No vectors, no entity points, no
+#: reconciliation metadata, no status on the record, no hand-off to the pipeline stages.
+STORE_ONLY = "store_only"
 
 
 class TransformContext(BaseModel):

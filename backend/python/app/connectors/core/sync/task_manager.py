@@ -217,6 +217,10 @@ class SyncTaskManager:
         """
         return [key for key, task in self._tasks.items() if not task.done()]
 
+    def tasks_with_prefix(self, prefix: str) -> list[asyncio.Task]:
+        """The still-running tasks whose key starts with `prefix`."""
+        return [task for key, task in self._tasks.items() if key.startswith(prefix) and not task.done()]
+
     def _on_task_done(self, key: str, task: asyncio.Task) -> None:
         """
         Callback invoked automatically when a task finishes (completed, cancelled,

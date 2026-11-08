@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Awaitable, Callable, Collection, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
+from app.config.constants.arangodb import MimeTypes
 from app.models.entities import RecordType
 from app.sources.external.confluence.confluence import (
     ConfluenceDataSource,  # type: ignore[import-not-found]
@@ -179,7 +180,7 @@ async def assert_api_content_matches_graph(
             external_record_id=page_item.id,
             record_type=RecordType.CONFLUENCE_PAGE.value,
             record_name=page_item.title,
-            mime_type="text/html",
+            mime_type=MimeTypes.BLOCKS.value,
             external_record_group_id=page_item.space_id,
             external_revision_id=str(page_item.version_number),
         )
@@ -193,7 +194,7 @@ async def assert_api_content_matches_graph(
             external_record_id=blogpost_item.id,
             record_type=RecordType.CONFLUENCE_BLOGPOST.value,
             record_name=blogpost_item.title,
-            mime_type="text/html",
+            mime_type=MimeTypes.BLOCKS.value,
             external_record_group_id=blogpost_item.space_id,
             external_revision_id=str(blogpost_item.version_number),
         )

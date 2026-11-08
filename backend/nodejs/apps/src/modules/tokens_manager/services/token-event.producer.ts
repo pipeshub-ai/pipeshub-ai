@@ -1,6 +1,6 @@
 import { injectable, inject } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
-import { ITokenEvent } from '../schema/token-reference.schema';
+import { ITokenEvent } from '../types/token-event.types';
 import { IMessageProducer, StreamMessage } from '../../../libs/types/messaging.types';
 
 @injectable()

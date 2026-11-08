@@ -46,6 +46,20 @@ def backoff_sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     return slept
 
 
+@pytest.fixture(autouse=True)
+def policy_sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """The Gmail call policy's waits (rate limits, outages) are recorded instead of slept."""
+    from app.connectors.sources.google.common import gmail_call_policy
+
+    slept: list[float] = []
+
+    async def record(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr(gmail_call_policy, "_sleep", record)
+    return slept
+
+
 @pytest.fixture
 def records() -> FakeEntitiesProcessor:
     return FakeEntitiesProcessor()

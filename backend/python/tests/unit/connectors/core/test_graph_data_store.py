@@ -6,7 +6,7 @@ import logging
 import random
 from collections.abc import Callable
 from typing import Never
-from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
+from unittest.mock import AsyncMock, MagicMock, call, create_autospec, patch
 
 import pytest
 
@@ -19,6 +19,7 @@ from app.connectors.core.base.data_store.graph_data_store import (
     GraphTransactionStore,
     _is_deadlock_error,
     retry_on_deadlock,
+    will_retry,
 )
 from app.models.entities import Person
 from app.services.graph_db.common.record_visibility import RecordVisibility
@@ -470,6 +471,31 @@ class TestGraphTransactionStore:
         )
 
     @pytest.mark.asyncio
+    async def test_get_users_by_emails_asks_once_and_remembers_the_members(self, tx_store, mock_graph_provider) -> None:
+        ann = MagicMock(id="u1")
+        mock_graph_provider.get_users_by_emails = AsyncMock(return_value={"ann@x.io": ann})
+        assert await tx_store.get_users_by_emails(["Ann@x.io", "bob@x.io"], org_id="org-1") == {"ann@x.io": ann}
+        assert await tx_store.get_users_by_emails(["ann@x.io", "bob@x.io", "cat@x.io"], org_id="org-1") == {"ann@x.io": ann}
+        assert mock_graph_provider.get_users_by_emails.await_args_list == [
+            call(["ann@x.io", "bob@x.io"], transaction="txn-123", raise_on_error=False, org_id="org-1"),
+            call(["bob@x.io", "cat@x.io"], transaction="txn-123", raise_on_error=False, org_id="org-1"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_get_user_by_email_in_an_org_is_scoped_and_memoised_per_org(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        mock_graph_provider.get_user_by_email = AsyncMock(return_value=MagicMock(id="u1"))
+        await tx_store.get_user_by_email("test@example.com", org_id="org-1")
+        await tx_store.get_user_by_email("test@example.com", org_id="org-1")
+        await tx_store.get_user_by_email("test@example.com", org_id="org-2")
+
+        assert mock_graph_provider.get_user_by_email.await_args_list == [
+            call("test@example.com", transaction="txn-123", raise_on_error=False, org_id="org-1"),
+            call("test@example.com", transaction="txn-123", raise_on_error=False, org_id="org-2"),
+        ]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("method", "args"),
         [
@@ -897,6 +923,13 @@ class TestGraphTransactionStore:
         mock_graph_provider.get_all_orgs.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_get_all_orgs_passes_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.get_all_orgs(is_external=True, raise_on_error=True)
+        mock_graph_provider.get_all_orgs.assert_awaited_once_with(
+            active=True, is_external=True, transaction="txn-123", raise_on_error=True
+        )
+
+    @pytest.mark.asyncio
     async def test_create_user_groups(self, tx_store, mock_graph_provider) -> None:
         group = MagicMock()
         group.to_arango_base_user_group.return_value = {"_key": "g1"}
@@ -968,7 +1001,14 @@ class TestGraphTransactionStore:
     async def test_get_edges_from_node(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_edges_from_node("node1", "edge_coll")
         mock_graph_provider.get_edges_from_node.assert_awaited_once_with(
-            "node1", "edge_coll", transaction="txn-123"
+            "node1", "edge_coll", transaction="txn-123", raise_on_error=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_edges_from_node_passes_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.get_edges_from_node("node1", "edge_coll", raise_on_error=True)
+        mock_graph_provider.get_edges_from_node.assert_awaited_once_with(
+            "node1", "edge_coll", transaction="txn-123", raise_on_error=True
         )
 
     @pytest.mark.asyncio
@@ -1214,11 +1254,21 @@ class TestGraphDataStore:
     @pytest.mark.asyncio
     async def test_the_store_says_whether_its_transaction_was_asked_to_be_explicit(self, mock_graph_provider) -> None:
         store = GraphDataStore(logging.getLogger("test"), mock_graph_provider)
+        mock_graph_provider.opens_explicit_transaction = MagicMock(side_effect=lambda e: e is True)
 
         async with store.transaction() as by_default:
             assert by_default.explicit is False
         async with store.transaction(explicit=True) as asked:
             assert asked.explicit is True
+
+    @pytest.mark.asyncio
+    async def test_the_store_follows_the_provider_when_the_caller_does_not_ask(self, mock_graph_provider) -> None:
+        store = GraphDataStore(logging.getLogger("test"), mock_graph_provider)
+        mock_graph_provider.opens_explicit_transaction = MagicMock(return_value=True)
+
+        async with store.transaction() as by_default:
+            assert by_default.explicit is True
+        mock_graph_provider.opens_explicit_transaction.assert_called_once_with(None)
 
     @pytest.mark.asyncio
     async def test_transaction_rolls_back_on_exception(self, mock_graph_provider) -> Never:
@@ -1322,6 +1372,76 @@ class TestRetryOnDeadlockDecorator:
         result = await my_func()
         assert result == "success"
         assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_will_retry_until_the_last_attempt(self) -> None:
+        """A handler inside the call can tell a failure the decorator runs again
+        from the one it raises, and outside any retried call nothing retries."""
+        seen = []
+
+        @retry_on_deadlock(max_retries=3)
+        async def my_func() -> Never:
+            error = create_deadlock_error()
+            seen.append(will_retry(None, error))
+            raise error
+
+        with pytest.raises(Exception, match="DeadlockDetected"):
+            await my_func()
+        assert seen == [True, True, False]
+        assert will_retry(None, create_deadlock_error()) is False
+
+    @pytest.mark.asyncio
+    async def test_will_retry_is_false_for_a_failure_the_decorator_raises_at_once(self) -> None:
+        seen = []
+
+        @retry_on_deadlock()
+        async def my_func() -> Never:
+            error = ValueError("bad edge")
+            seen.append(will_retry(None, error))
+            raise error
+
+        with pytest.raises(ValueError):
+            await my_func()
+        assert seen == [False]
+
+    @pytest.mark.asyncio
+    async def test_a_nested_retried_call_leaves_the_outer_attempt_as_it_was(self) -> None:
+        seen = []
+
+        @retry_on_deadlock(max_retries=1)
+        async def inner() -> None:
+            return None
+
+        @retry_on_deadlock(max_retries=2)
+        async def outer() -> Never:
+            await inner()
+            error = create_deadlock_error()
+            seen.append(will_retry(None, error))
+            raise error
+
+        with pytest.raises(Exception, match="DeadlockDetected"):
+            await outer()
+        assert seen == [True, False]
+
+    @pytest.mark.asyncio
+    async def test_a_nested_retried_call_that_fails_leaves_the_outer_attempt_as_it_was(self) -> None:
+        seen = []
+
+        @retry_on_deadlock(max_retries=1)
+        async def inner() -> Never:
+            raise create_deadlock_error()
+
+        @retry_on_deadlock(max_retries=2)
+        async def outer() -> Never:
+            with contextlib.suppress(Exception):
+                await inner()
+            error = create_deadlock_error()
+            seen.append(will_retry(None, error))
+            raise error
+
+        with pytest.raises(Exception, match="DeadlockDetected"):
+            await outer()
+        assert seen == [True, False]
 
     @pytest.mark.asyncio
     async def test_retries_on_single_deadlock(self) -> None:

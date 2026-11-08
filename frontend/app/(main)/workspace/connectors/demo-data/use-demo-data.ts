@@ -1,22 +1,31 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import useSWR from 'swr';
+import { SWR_NS, SWR_POLICY } from '@/lib/api/swr-cache';
+import { ACTIVE_TEAM_CONNECTORS_KEY, fetchActiveTeamConnectors } from '../cache-keys';
 import { useDemoDataStore } from './store';
 import type { DemoDataStatus } from './api';
 import { hasActiveDemo, isRemovalNoticeSnoozed, snoozeRemovalNotice } from './demo-data';
 
+// SWR only decides when to read the switch again; the answer lives in the store,
+// next to the guard that drops a read overtaken by a change, so the cached data
+// is just `true`. It follows the connectors, so connector writes refresh it.
+const DEMO_STATUS_KEY = [SWR_NS.teamConnectorLists, 'demo-status'] as const;
+
 /**
  * True when the org has an enabled Demo connector (the Acme Corp sample
- * company). Looks it up on mount; call it once per page, not per item.
+ * company). Looks it up at most once a minute; call it once per page, not per item.
  */
 export function useDemoDataActive(): boolean {
   const active = useDemoDataStore((s) => hasActiveDemo(s.demoConnectors));
-  const load = useDemoDataStore((s) => s.loadDemoConnectors);
-
+  const setTeamConnectors = useDemoDataStore((s) => s.setTeamConnectors);
+  // Read from `data`, not onSuccess: the connectors page may be the reader that
+  // fetched the list, and onSuccess runs only in that reader.
+  const { data } = useSWR(ACTIVE_TEAM_CONNECTORS_KEY, fetchActiveTeamConnectors, SWR_POLICY.list60s);
   useEffect(() => {
-    void load();
-  }, [load]);
-
+    if (data) setTeamConnectors(data.connectors ?? []);
+  }, [data, setTeamConnectors]);
   return active;
 }
 
@@ -65,16 +74,12 @@ export function useDemoRemovalNotice(isAdmin: boolean | null) {
 }
 
 /**
- * This person's demo data switch, read once per page. `null` until known;
+ * This person's demo data switch, read at most once a minute. `null` until known;
  * treat that as "as before" (shown) rather than guessing.
  */
 export function useDemoDataStatus(): DemoDataStatus | null {
   const status = useDemoDataStore((s) => s.status);
   const load = useDemoDataStore((s) => s.loadStatus);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
+  useSWR(DEMO_STATUS_KEY, () => load().then(() => true), SWR_POLICY.list60s);
   return status;
 }

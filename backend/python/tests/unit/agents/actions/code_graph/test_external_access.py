@@ -18,8 +18,12 @@ from app.agents.actions.code_graph.repos import (
     repo_for_record,
     resolve_code_repo,
 )
+from app.api import connection_limit
 from app.api.routes import code_graph as routes
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import RecordType
+from app.modules.retrieval.selection_scope import SelectionTooLargeError
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 from .conftest import CONN, ORG, USER
 from .test_repo_identity import BLOBS, MAIN, TwoRepos
@@ -291,6 +295,52 @@ async def test_an_unreadable_record_is_a_404_that_names_it(blobs) -> None:
     assert res.json()["error"] == "record_id 'rec-shop' is not an indexed code file you can read."
 
 
+LIMITED = {"orgId": ORG, "userId": USER,
+           "knowledgeLimit": {"apps": [], "recordGroups": ["g-shop-code"], "records": []}}
+
+
+def _limit_admits(monkeypatch, *inside: str) -> None:
+    """The graph's answer for a connected app's limit: only ``inside`` is in it."""
+    async def outside(graph, user_id, org_id, ids, limit) -> set[str]:
+        return set() if limit is None else {i for i in ids if i not in inside}
+
+    async def groups_outside(graph, user_id, org_id, groups, limit) -> set[str]:
+        return set() if limit is None else {i for i in groups if i not in inside}
+
+    monkeypatch.setattr(connection_limit, "outside_connection", outside)
+    monkeypatch.setattr(connection_limit, "groups_outside_connection", groups_outside)
+
+
+async def test_a_connected_apps_limit_hides_every_repo_outside_it(monkeypatch, blobs) -> None:
+    """A PAT or OAuth app limited to some sources reads no repo past them (H3)."""
+    _limit_admits(monkeypatch, "g-shop-code")
+    client = _client(Repos(), user=LIMITED)
+    assert [r["repo"] for r in client.get("/api/v1/code-graph/repos").json()["repos"]] == ["acme/shop"]
+    by_name = client.post("/api/v1/code-graph/read", json={"repo": "acme/admin", "file_path": MAIN})
+    assert by_name.status_code == 404
+    assert by_name.json()["error"].startswith("No indexed repository you can read")
+    by_record = client.post("/api/v1/code-graph/read", json={"record_id": "rec-admin"})
+    assert by_record.status_code == 404
+    assert by_record.json()["error"] == "record_id 'rec-admin' is not an indexed code file you can read."
+    # A tool reads the record's own repo, whatever `repo` names.
+    mixed = client.post("/api/v1/code-graph/read", json={"repo": "acme/shop", "record_id": "rec-admin"})
+    assert mixed.status_code == 404
+    assert mixed.json()["error"] == "record_id 'rec-admin' is not an indexed code file you can read."
+    inside = client.post("/api/v1/code-graph/read", json={"repo": "acme/shop", "file_path": MAIN})
+    assert inside.status_code == 200, inside.text
+
+
+async def test_a_limit_too_large_to_check_is_a_422_not_an_outage(monkeypatch) -> None:
+    async def too_large(*_: object) -> set[str]:
+        raise SelectionTooLargeError
+
+    monkeypatch.setattr(connection_limit, "outside_connection", too_large)
+    monkeypatch.setattr(connection_limit, "groups_outside_connection", too_large)
+    client = _client(Repos(), user=LIMITED)
+    assert client.get("/api/v1/code-graph/repos").status_code == 422
+    assert client.post("/api/v1/code-graph/read", json={"repo": "acme/shop", "file_path": MAIN}).status_code == 422
+
+
 def test_a_large_result_is_cut_to_the_budget_and_says_so() -> None:
     rows = [{"file_path": f"src/f{i}.py", "qualifiedName": f"function:f{i}"} for i in range(5000)]
     out = routes.fit_to_budget({"neighbors": rows, "truncated": False}, max_chars=4000)
@@ -305,3 +355,53 @@ def test_a_small_result_is_untouched() -> None:
     small = {"neighbors": [{"a": 1}], "truncated": False}
     assert routes.fit_to_budget(small) is small
 
+
+
+WHOLE_CONNECTOR = {"orgId": ORG, "userId": USER,
+                   "knowledgeLimit": {"apps": [CONN], "recordGroups": [], "records": []}}
+
+
+class RecordGrantsOnly(Repos):
+    """A user who may read the repos' files but holds no permission on the record
+    group nodes, on a store that can go down (a Neo4j or ArangoDB read that fails)."""
+
+    down = False
+
+    async def get_user_by_user_id(self, user_id, *, raise_on_error=False) -> dict | None:
+        if self.down:
+            if raise_on_error:
+                raise ConnectionError("store down")
+            return None
+        return {"_key": "ukey", "userId": user_id}
+
+    async def check_access(self, user_key, org_id, *, node_ids=(), scopes=(), **_) -> AccessCheck:
+        if self.down:
+            raise PermissionVerificationUnavailableError("store down")
+        return AccessCheck()  # no group node is readable
+
+
+async def test_a_repo_read_through_its_files_is_inside_a_limit_that_names_its_connector(blobs) -> None:
+    client = _client(RecordGrantsOnly(), user=WHOLE_CONNECTOR)
+    assert [r["repo"] for r in client.get("/api/v1/code-graph/repos").json()["repos"]] == ["acme/admin", "acme/shop"]
+    assert client.post("/api/v1/code-graph/read", json={"repo": "acme/shop", "file_path": MAIN}).status_code == 200
+
+
+async def test_a_limit_naming_another_connector_still_hides_the_repos(blobs) -> None:
+    other = {**WHOLE_CONNECTOR, "knowledgeLimit": {"apps": ["conn-other"], "recordGroups": [], "records": []}}
+    assert _client(RecordGrantsOnly(), user=other).get("/api/v1/code-graph/repos").json()["repos"] == []
+
+
+async def test_a_store_outage_is_a_503_not_a_hidden_repo_and_the_repos_return_with_it(blobs) -> None:
+    graph = RecordGrantsOnly()
+    client = _client(graph, user=WHOLE_CONNECTOR)
+    graph.down = True
+    assert client.get("/api/v1/code-graph/repos").status_code == 503
+    assert client.post("/api/v1/code-graph/read", json={"repo": "acme/shop", "file_path": MAIN}).status_code == 503
+    graph.down = False
+    assert len(client.get("/api/v1/code-graph/repos").json()["repos"]) == 2
+
+
+async def test_a_repo_with_no_readable_file_stays_out_though_the_limit_names_its_connector(blobs) -> None:
+    """Readable repos are found first, then the limit is applied: a limit never makes a repo readable."""
+    client = _client(RecordGrantsOnly(deny={"rec-shop"}), user=WHOLE_CONNECTOR)
+    assert [r["repo"] for r in client.get("/api/v1/code-graph/repos").json()["repos"]] == ["acme/admin"]

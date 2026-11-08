@@ -6,12 +6,13 @@ import { useReactFlow } from '@xyflow/react';
 import { Box, Flex, Text, IconButton, Separator, Badge, Popover, Switch } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { FlowNodeData } from '../types';
-import { normalizeDisplayName } from '../display-utils';
+import { mcpNodeServer, normalizeDisplayName } from '../display-utils';
 import type { McpFlowTool } from '../sidebar-mcp-utils';
 import { NodeHandles } from './node-handles';
 import { FLOW_NODE_CARD, FLOW_NODE_PANEL_BG, FLOW_NODE_WELL, getFlowNodeChrome } from '../flow-theme';
 import { McpLiveServersContext, mcpLiveView, toolsMissingFromServer } from '../mcp-live-servers';
 import { McpStatusBadge } from '../../../workspace/mcp-servers/connection-state';
+import { McpServerIcon } from '../../../workspace/mcp-servers/components';
 import { McpAgentApprovalsNotice } from '@/config';
 
 /**
@@ -146,7 +147,7 @@ export function McpFlowNode({
           <Flex align="center" justify="between" gap="2" px="3" py="2">
             <Flex align="center" gap="2" style={{ minWidth: 0 }}>
               <Flex align="center" justify="center" style={{ flexShrink: 0, lineHeight: 0 }} aria-hidden>
-                <MaterialIcon name="hub" size={22} color={chrome.iconColor} />
+                <McpServerIcon {...mcpNodeServer(data)} size={22} color={chrome.iconColor} />
               </Flex>
               <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
                 <Text weight="medium" style={{ color: 'var(--agent-flow-text)', lineHeight: '20px', fontSize: 14 }}>

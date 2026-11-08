@@ -279,7 +279,7 @@ add `protocol: "agui"` on top.
 | Field | Assistant | Agent | Source |
 | --- | --- | --- | --- |
 | `query`, `filters`, `attachments` | ✓ | ✓ | body (defaults `{}` / `[]`) |
-| `previousConversations` | ✓ | ✓ | body on create; stored history on follow-ups |
+| `previousConversations` | ✓ | ✓ | `[]` on create (a non-empty list in the body is refused with 400); stored history on follow-ups |
 | `recordIds` | create only | create only | body |
 | `conversationId` | ✓ | ✓ | the conversation phase 1 wrote |
 | `modelKey`, `modelName`, `modelFriendlyName`, `reasoningEffort`, `timezone`, `currentTime`, `runId` | ✓ | ✓ | body, `null` when absent |

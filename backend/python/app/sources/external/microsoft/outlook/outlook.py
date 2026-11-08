@@ -13,6 +13,15 @@ from kiota_abstractions.base_request_configuration import (  # type: ignore
     RequestConfiguration,
 )
 from kiota_abstractions.headers_collection import HeadersCollection
+from msgraph.generated.groups.item.threads.item.posts.item.post_item_request_builder import (  # type: ignore
+    PostItemRequestBuilder,
+)
+from msgraph.generated.groups.item.threads.threads_request_builder import (  # type: ignore
+    ThreadsRequestBuilder,
+)
+from msgraph.generated.users.item.mail_folders.item.child_folders.child_folders_request_builder import (  # type: ignore
+    ChildFoldersRequestBuilder,
+)
 from msgraph.generated.models.attachment import Attachment  # type: ignore
 from msgraph.generated.models.file_attachment import FileAttachment  # type: ignore
 from msgraph.generated.models.attendee import Attendee  # type: ignore
@@ -10047,7 +10056,7 @@ class OutlookCalendarContactsDataSource:
         # Build query parameters including OData for Outlook
         try:
             # Use typed query parameters
-            query_params = RequestConfiguration()
+            query_params = ChildFoldersRequestBuilder.ChildFoldersRequestBuilderGetQueryParameters()
 
             # Set query parameters using typed object properties
             if select:
@@ -10066,7 +10075,7 @@ class OutlookCalendarContactsDataSource:
                 query_params.skip = skip
 
             # Create proper typed request configuration
-            config = RequestConfiguration()
+            config = ChildFoldersRequestBuilder.ChildFoldersRequestBuilderGetRequestConfiguration()
             config.query_parameters = query_params
 
             if headers:
@@ -50797,6 +50806,8 @@ class OutlookCalendarContactsDataSource:
                 error=f"Outlook API call failed: {str(e)}",
             )
 
+    # groups_list_threads, groups_threads_list_posts and groups_threads_get_post carry hand-added
+    # next_url / expand parameters the Outlook connector pages with: keep them if this file is regenerated.
     async def groups_list_threads(
         self,
         group_id: str,
@@ -50804,6 +50815,7 @@ class OutlookCalendarContactsDataSource:
         filter: Optional[str] = None,
         top: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
+        next_url: str | None = None,
         **kwargs
     ) -> OutlookCalendarContactsResponse:
         """List all threads in a group (across all conversations).
@@ -50819,8 +50831,8 @@ class OutlookCalendarContactsDataSource:
             OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         try:
-            # Build query parameters
-            query_params = RequestConfiguration()
+            # Typed parameters: an untyped RequestConfiguration bag sends no query string.
+            query_params = ThreadsRequestBuilder.ThreadsRequestBuilderGetQueryParameters()
 
             if select:
                 query_params.select = select if isinstance(select, list) else [select]
@@ -50835,7 +50847,11 @@ class OutlookCalendarContactsDataSource:
             if headers:
                 config.headers = headers
 
-            response = await self.client.groups.by_group_id(group_id).threads.get(request_configuration=config)
+            threads = self.client.groups.by_group_id(group_id).threads
+            if next_url:
+                response = await threads.with_url(next_url).get()
+            else:
+                response = await threads.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
             return OutlookCalendarContactsResponse(
@@ -50849,6 +50865,7 @@ class OutlookCalendarContactsDataSource:
         thread_id: str,
         select: Optional[List[str]] = None,
         headers: Optional[Dict[str, str]] = None,
+        next_url: str | None = None,
         **kwargs
     ) -> OutlookCalendarContactsResponse:
         """List all posts in a thread.
@@ -50868,7 +50885,11 @@ class OutlookCalendarContactsDataSource:
             if headers:
                 config.headers = headers
 
-            response = await self.client.groups.by_group_id(group_id).threads.by_conversation_thread_id(thread_id).posts.get(request_configuration=config)
+            posts = self.client.groups.by_group_id(group_id).threads.by_conversation_thread_id(thread_id).posts
+            if next_url:
+                response = await posts.with_url(next_url).get()
+            else:
+                response = await posts.get(request_configuration=config)
             return self._handle_outlook_response(response)
         except Exception as e:
             return OutlookCalendarContactsResponse(
@@ -50883,6 +50904,7 @@ class OutlookCalendarContactsDataSource:
         post_id: str,
         select: Optional[List[str]] = None,
         headers: Optional[Dict[str, str]] = None,
+        expand: list[str] | None = None,
         **kwargs
     ) -> OutlookCalendarContactsResponse:
         """Get a single post from a thread.
@@ -50893,12 +50915,20 @@ class OutlookCalendarContactsDataSource:
             post_id (str, required): Post identifier
             select (optional): Select specific properties to return
             headers (optional): Additional headers for the request
+            expand (optional): Expand related entities (``attachments`` is the only way to
+                read a post's attachments app-only: the attachments endpoint answers 403)
             **kwargs: Additional query parameters
         Returns:
             OutlookCalendarContactsResponse: Outlook response wrapper with success/data/error
         """
         try:
             config = RequestConfiguration()
+            query_params = PostItemRequestBuilder.PostItemRequestBuilderGetQueryParameters()
+            if select:
+                query_params.select = select if isinstance(select, list) else [select]
+            if expand:
+                query_params.expand = expand if isinstance(expand, list) else [expand]
+            config.query_parameters = query_params
 
 
             if headers:

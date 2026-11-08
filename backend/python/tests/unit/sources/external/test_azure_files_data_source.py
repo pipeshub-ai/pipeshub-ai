@@ -15,11 +15,27 @@ def _listing(items):
     def list_directories_and_files(**kwargs):
         captured.update(kwargs)
 
-        async def gen():
+        async def page():
             for item in items:
                 yield item
 
-        return gen()
+        class OnePage:
+            continuation_token = None
+
+            def __init__(self) -> None:
+                self.pages = [page()]
+
+            def __aiter__(self) -> "OnePage":
+                return self
+
+            async def __anext__(self) -> object:
+                if not self.pages:
+                    raise StopAsyncIteration
+                return self.pages.pop()
+
+        paged = MagicMock()
+        paged.by_page = lambda continuation_token=None: OnePage()
+        return paged
 
     directory_client = MagicMock()
     directory_client.list_directories_and_files = list_directories_and_files

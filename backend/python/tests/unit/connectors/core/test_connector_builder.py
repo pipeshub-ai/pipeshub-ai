@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.config.constants.arangodb import EXCLUDABLE_FILE_EXTENSIONS, ExtensionTypes
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -501,6 +502,30 @@ class TestCommonFields:
         assert field.display_name == "File Extensions"
         # Should have options from ExtensionTypes enum
         assert len(field.options) > 0
+
+    def test_file_extension_filter_offers_excludable_types_after_indexable_ones(self) -> None:
+        ids = [opt.id for opt in CommonFields.file_extension_filter().options]
+        indexable = [e.value for e in ExtensionTypes]
+        # Indexable types keep their order and come first; the extras follow.
+        assert ids == indexable + list(EXCLUDABLE_FILE_EXTENSIONS)
+        assert len(ids) == len(set(ids))
+        for ext in ("zip", "7z", "db", "sqlite", "exe", "dll", "iso", "tmp", "bak", "lock", "log", "mp4", "mov", "mkv", "mp3", "wav", "flac", "ogg"):
+            assert ext in ids
+        # ExtensionTypes keeps meaning "indexable".
+        assert not set(EXCLUDABLE_FILE_EXTENSIONS) & set(indexable)
+        labels = {opt.id: opt.label for opt in CommonFields.file_extension_filter().options}
+        assert labels["zip"] == ".zip"
+        assert labels["pdf"] == ".pdf"
+
+    def test_file_extension_filter_with_extensions_keeps_exactly_that_list(self) -> None:
+        field = CommonFields.file_extension_filter(
+            extensions=[ExtensionTypes.PDF, ExtensionTypes.DOCX],
+            labels={"pdf": "Portable (.pdf)"},
+        )
+        assert [(o.id, o.label) for o in field.options] == [
+            ("pdf", "Portable (.pdf)"),
+            ("docx", ".docx"),
+        ]
 
     def test_batch_size_field(self):
         field = CommonFields.batch_size_field()

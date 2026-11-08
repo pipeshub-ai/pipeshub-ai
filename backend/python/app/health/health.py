@@ -1,10 +1,9 @@
 import asyncio
 import os
 import ssl
+from typing import TYPE_CHECKING
 
 import aiohttp  # type: ignore
-from aiokafka import AIOKafkaConsumer  #type: ignore
-from redis.exceptions import RedisError  #type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
@@ -15,6 +14,18 @@ from app.config.constants.service import (
 )
 from app.services.redis.config import RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
+
+if TYPE_CHECKING:
+    from app.containers.container import BaseAppContainer
+
+
+def _redis_error() -> type[Exception]:
+    """redis-py's base error, or a stand-in nothing raises when the Redis client is not installed."""
+    try:
+        from redis.exceptions import RedisError  # type: ignore
+    except ImportError:
+        return type("RedisError", (Exception,), {})
+    return RedisError
 
 
 class Health:
@@ -103,11 +114,25 @@ class Health:
         kv_store_type = os.getenv("KV_STORE_TYPE", "redis").lower()
         logger.info(f"🔍 Starting KV store health check (type: {kv_store_type})...")
 
-        if kv_store_type == "redis":
+        if kv_store_type == "postgres":
+            await Health._health_check_postgres_kv_store(container)
+        elif kv_store_type == "redis":
             await Health._health_check_redis_kv_store(container)
         else:
             # TODO: Remove health_check_etcd when all deployments migrate to Redis KV store
             await Health.health_check_etcd(container)
+
+    @staticmethod
+    async def _health_check_postgres_kv_store(container: "BaseAppContainer") -> None:
+        """Waits for the PostgreSQL runtime tables (``platform.kv_entries``) to answer."""
+        from app.config.providers.postgres_store import PostgresKeyValueStore
+
+        logger = container.logger()
+        store = PostgresKeyValueStore(lambda v: b"", lambda b: None)
+        timeout = HealthCheckConfig.CONNECTOR_HEALTH_CHECK_MAX_RETRIES.value * 2.0
+        if not await store.wait_for_connection(timeout=timeout):
+            raise Exception("PostgreSQL KV store health check failed: platform.kv_entries is not reachable")
+        logger.info("✅ PostgreSQL KV store is healthy")
 
     @staticmethod
     async def _health_check_redis_kv_store(container) -> None:
@@ -146,11 +171,11 @@ class Health:
                 # every failure here read as the same useless message instead
                 # of the connection error an operator needs.
                 if not await provider.get_client().ping():
-                    raise RedisError("Redis PING returned a falsy reply")
+                    raise _redis_error()("Redis PING returned a falsy reply")
                 logger.info("✅ Redis KV store health check passed")
                 return
 
-            except RedisError as re:
+            except _redis_error() as re:
                 last_error_msg = f"Failed to connect to Redis KV store: {str(re)}"
                 logger.warning(f"⚠️ {last_error_msg}")
             except Exception as e:
@@ -276,8 +301,30 @@ class Health:
 
         if broker_type == MessageBrokerType.REDIS:
             await Health._health_check_redis_streams(container)
+        elif broker_type == MessageBrokerType.POSTGRES:
+            await Health._health_check_postgres_broker(container)
         else:
             await Health._health_check_kafka(container)
+
+    @staticmethod
+    async def _health_check_postgres_broker(container: "BaseAppContainer") -> None:
+        """Waits for the work queue tables (``platform.queue_*``) to answer with this process's own login."""
+        from app.services.pg_runtime import RuntimeDb
+
+        logger = container.logger()
+        deadline = asyncio.get_running_loop().time() + HealthCheckConfig.CONNECTOR_HEALTH_CHECK_MAX_RETRIES.value * 2.0
+        rt = RuntimeDb()
+        while True:
+            try:
+                db = await rt.db()
+                async with db.runtime_uow() as tx:
+                    await tx.fetchval("/* pipeshub:health.broker */ SELECT count(*) FROM (SELECT 1 FROM platform.queue_deliveries LIMIT 1) q")
+                logger.info("✅ PostgreSQL message broker is healthy")
+                return
+            except Exception as e:
+                if asyncio.get_running_loop().time() > deadline:
+                    raise Exception(f"PostgreSQL message broker health check failed: {e}") from e
+                await asyncio.sleep(1)
 
     @staticmethod
     async def _health_check_redis_streams(container) -> None:
@@ -297,7 +344,7 @@ class Health:
                 )
             )
             if not await provider.get_client().ping():
-                raise RedisError("Redis PING returned a falsy reply")
+                raise _redis_error()("Redis PING returned a falsy reply")
             logger.info("✅ Redis Streams message broker health check passed")
         except Exception as e:
             error_msg = f"Redis Streams health check failed: {str(e)}"
@@ -335,6 +382,10 @@ class Health:
                     else:
                         config["security_protocol"] = "SSL"
 
+                from aiokafka import (
+                    AIOKafkaConsumer,  # type: ignore   # only when Kafka is the broker
+                )
+
                 consumer = AIOKafkaConsumer(**config)
                 await consumer.start()
 
@@ -369,6 +420,11 @@ class Health:
     async def health_check_redis(container) -> None:
         """Health check method that verifies redis service health with retry logic."""
         logger = container.logger()
+        from app.services.redis.connection_provider_factory import default_redis_mode
+
+        if default_redis_mode() in ("postgres", "inprocess"):
+            logger.info("⏭️ Skipping Redis health check (REDIS_MODE=%s: no Redis server)", default_redis_mode())
+            return
         logger.info("🔍 Starting Redis health check...")
 
         max_retries = HealthCheckConfig.CONNECTOR_HEALTH_CHECK_MAX_RETRIES.value
@@ -393,11 +449,11 @@ class Health:
                     )
                 )
                 if not await provider.get_client().ping():
-                    raise RedisError("Redis PING returned a falsy reply")
+                    raise _redis_error()("Redis PING returned a falsy reply")
                 logger.info("✅ Redis health check passed")
                 return
 
-            except RedisError as re:
+            except _redis_error() as re:
                 last_error_msg = f"Failed to connect to Redis: {str(re)}"
                 logger.warning(f"⚠️ {last_error_msg}")
             except Exception as e:

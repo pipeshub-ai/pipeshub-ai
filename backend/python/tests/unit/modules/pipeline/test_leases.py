@@ -217,3 +217,25 @@ async def test_a_body_that_swallows_the_cancellation_still_ends_in_a_lost_lease(
     current = asyncio.current_task()
     assert current is not None and current.cancelling() == 0
     manager.release.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_claim_takes_a_free_lease_and_none_when_it_is_held() -> None:
+    manager = AsyncMock()
+    manager.try_acquire = AsyncMock(side_effect=[True, False])
+    leases = RecordLeases()
+    leases.bind(manager)
+
+    holder = await leases.claim("r1")
+    assert holder is not None
+    pool, held_by, limit, _lease = manager.try_acquire.await_args.args
+    assert (pool, held_by, limit) == ("record:r1", holder, 1)
+    await leases.release("r1", holder)
+    manager.release.assert_awaited_once_with("record:r1", holder)
+
+    assert await leases.claim("r1") is None
+
+
+@pytest.mark.asyncio
+async def test_claim_without_a_lease_manager_is_none() -> None:
+    assert await RecordLeases().claim("r1") is None

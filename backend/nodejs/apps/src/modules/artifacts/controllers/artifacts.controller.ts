@@ -20,6 +20,9 @@ const logger = Logger.getInstance({
 type ArtifactListItem = {
   conversationId?: string | null;
   conversationTitle?: string;
+  agentKey?: string;
+  projectId?: string;
+  conversationArchived?: true;
   [key: string]: unknown;
 };
 
@@ -98,8 +101,12 @@ async function enrichConversationTitles(
     if (!item.conversationId) {
       return item;
     }
-    const title = titles.get(item.conversationId);
-    return title ? { ...item, conversationTitle: title } : item;
+    const conversation = titles.get(item.conversationId);
+    if (!conversation) {
+      return item;
+    }
+    const { title, ...links } = conversation;
+    return { ...item, conversationTitle: title, ...links };
   });
 }
 

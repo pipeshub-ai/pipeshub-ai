@@ -23,6 +23,7 @@ from app.api.routes.agent import create_agent
 from app.api.routes.entity import create_team
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+from app.core.org_context import OrgContext, bind
 from app.exceptions.graph_db_exceptions import GraphWriteError
 from app.services.graph_db.neo4j import neo4j_provider as provider_module
 from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
@@ -171,8 +172,47 @@ class TestTheOptIn:
             assert await Neo4jProvider(MagicMock(), MagicMock()).connect()
 
         kwargs = client_cls.call_args.kwargs
-        assert kwargs["explicit_transactions"] is False
+        assert kwargs["explicit_transactions"] is True
         assert kwargs["honour_explicit_requests"] is honour
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("value", "expected"), [(None, True), ("true", True), ("false", False)])
+    async def test_the_explicit_transactions_flag_defaults_on_and_false_is_honoured(
+        self, monkeypatch: pytest.MonkeyPatch, value: str | None, expected: bool,
+    ) -> None:
+        monkeypatch.setenv("NEO4J_PASSWORD", "pw")
+        monkeypatch.delenv("NEO4J_CREATE_TRANSACTIONS", raising=False)
+        if value is None:
+            monkeypatch.delenv("NEO4J_EXPLICIT_TRANSACTIONS", raising=False)
+        else:
+            monkeypatch.setenv("NEO4J_EXPLICIT_TRANSACTIONS", value)
+        client_cls = MagicMock()
+        client_cls.return_value.connect = AsyncMock(return_value=True)
+        with patch.object(provider_module, "Neo4jClient", client_cls):
+            assert await Neo4jProvider(MagicMock(), MagicMock()).connect()
+
+        assert client_cls.call_args.kwargs["explicit_transactions"] is expected
+
+    @pytest.mark.asyncio
+    async def test_a_plain_block_that_fails_midway_lands_nothing_by_default(self) -> None:
+        server = _Server(fail_at=2, error=RuntimeError("boom"))
+        store = GraphDataStore(MagicMock(), _provider(server, explicit_transactions=True))
+
+        with pytest.raises(RuntimeError, match="boom"):
+            async with store.transaction() as tx_store:
+                assert tx_store.explicit
+                await tx_store.batch_upsert_nodes([{"id": "t1", "name": "T"}], "teams")
+                await tx_store.batch_upsert_nodes([{"id": "t2", "name": "U"}], "teams")
+
+        (tx,) = server.transactions
+        assert tx.rolled_back and not tx.committed
+        assert not server.landed
+
+    @pytest.mark.asyncio
+    async def test_with_the_flag_off_a_plain_block_is_not_marked_explicit(self) -> None:
+        store = GraphDataStore(MagicMock(), _provider(_Server()))
+        async with store.transaction() as tx_store:
+            assert not tx_store.explicit
 
     @pytest.mark.asyncio
     async def test_a_deadlock_in_an_explicit_block_is_rerun_from_a_clean_slate(self) -> None:
@@ -216,6 +256,8 @@ async def _create_team(provider: Neo4jProvider) -> None:
     provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
     provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(return_value={"user-2": "uk2"})
     provider.get_team_with_users = AsyncMock(return_value={"id": "team"})
+    # The duplicate-name read is not part of the create transaction these tests count.
+    provider.find_team_by_name = AsyncMock(return_value=None)
     request = MagicMock()
     request.state.user = {"userId": "user-1", "orgId": "org-1"}
     request.app.state.graph_provider = provider
@@ -223,7 +265,9 @@ async def _create_team(provider: Neo4jProvider) -> None:
     request.body = AsyncMock(return_value=json.dumps({
         "name": "Team", "userRoles": [{"userId": "user-2", "role": "READER"}],
     }).encode())
-    await create_team(request)
+    # The auth middleware binds the caller's org; this calls the route directly.
+    with bind(OrgContext("org-1", "user-1", "user", "jwt", "req-test")):
+        await create_team(request)
 
 
 async def _create_kb(provider: Neo4jProvider) -> None:

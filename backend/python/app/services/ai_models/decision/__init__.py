@@ -7,6 +7,7 @@ from app.services.ai_models.decision.clients import (
     AzureOpenAIDecisionModel,
     DecisionModel,
     OpenAIDecisionModel,
+    OpenRouterDecisionModel,
     TypeSafeDecisionModel,
 )
 from app.services.ai_models.decision.factory import get_decision_model
@@ -36,6 +37,7 @@ __all__ = [
     "DecisionResult",
     "DecisionUsage",
     "OpenAIDecisionModel",
+    "OpenRouterDecisionModel",
     "PredicateQuestion",
     "ScoreLevel",
     "ScoreQuestion",

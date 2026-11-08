@@ -1,4 +1,6 @@
 import { apiClient } from '@/lib/api';
+import { refreshSwrKey, revalidateSwrNamespace, SWR_NS, writeSwrKey } from '@/lib/api/swr-cache';
+import { onSessionEnd } from '@/lib/api/session-cache';
 import { mapApiConversationToConversation, type ForkConversationResult } from '@/chat/api';
 import type { ConversationApiResponse, ConversationsListResponse, Conversation } from '@/chat/types';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from '@/chat/constants';
@@ -175,6 +177,8 @@ export interface AgentChatToolGroupRow {
   /** Stable id for UI keys — same toolset type may appear multiple times as instances. */
   instanceId?: string;
   iconPath?: string;
+  /** An MCP server's catalog type, which picks its logo. */
+  typeId?: string;
   fullNames: string[];
   toolDescriptions?: Record<string, string>;
 }
@@ -251,6 +255,7 @@ export function buildAgentChatMcpGroups(agent: AgentDetail | null | undefined): 
       label: (server.displayName || server.name || 'MCP Server').trim(),
       toolsetSlug: 'mcp',
       ...(instanceId ? { instanceId } : {}),
+      typeId: server.typeId?.trim() || undefined,
       fullNames,
       toolDescriptions: Object.keys(toolDescriptions).length ? toolDescriptions : undefined,
     });
@@ -465,8 +470,42 @@ function emptyPagination(): AgentsListPagination {
   };
 }
 
+/** SWR key of one agent's detail (`GET /agents/:agentKey`). */
+export const agentDetailKey = (agentKey: string) => [SWR_NS.agentDetails, agentKey] as const;
+
+// The chat page, the agent sidebar and the model loader ask for the same agent at once on open.
+const pendingAgentRequests = new Map<string, Promise<GetAgentResult>>();
+// A request from the previous session may never settle; the next user must not wait on it.
+onSessionEnd(() => pendingAgentRequests.clear());
+
+const pendingAgentId = (agentKey: string, quiet: boolean) => `${agentKey}|${quiet}`;
+
+/** A request that started before this agent was written must not answer a later read. */
+function forgetPendingAgent(agentKey: string): void {
+  pendingAgentRequests.delete(pendingAgentId(agentKey, true));
+  pendingAgentRequests.delete(pendingAgentId(agentKey, false));
+}
+
+async function requestAgent(agentKey: string, quiet: boolean): Promise<GetAgentResult> {
+  const { data } = await apiClient.get<GetAgentApiResponse>(
+    `${AGENTS_BASE_URL}/${agentKey}`,
+    quiet ? { suppressErrorToast: true } : undefined,
+  );
+  const agent = data?.agent;
+  if (!agent || typeof agent !== 'object') {
+    return { agent: null, toolFullNames: [] };
+  }
+  return {
+    agent,
+    toolFullNames: extractAgentToolFullNames(agent),
+  };
+}
+
 export const AgentsApi = {
-  async getAgents(params?: AgentsListParams): Promise<AgentsListResult> {
+  async getAgents(
+    params?: AgentsListParams,
+    options?: { suppressErrorToast?: boolean },
+  ): Promise<AgentsListResult> {
     const query: Record<string, string | number> = {};
     if (params?.page != null) query.page = params.page;
     if (params?.limit != null) query.limit = params.limit;
@@ -474,23 +513,30 @@ export const AgentsApi = {
     if (params?.sort) query.sort_by = params.sort;
     if (params?.order) query.sort_order = params.order;
 
-    const { data } = await apiClient.get<AgentsListApiResponse>(AGENTS_BASE_URL, { params: query });
+    const { data } = await apiClient.get<AgentsListApiResponse>(AGENTS_BASE_URL, {
+      params: query,
+      suppressErrorToast: options?.suppressErrorToast,
+    });
     return {
       agents: data?.agents ?? [],
       pagination: data?.pagination ?? emptyPagination(),
     };
   },
 
-  async getAgent(agentKey: string): Promise<GetAgentResult> {
-    const { data } = await apiClient.get<GetAgentApiResponse>(`${AGENTS_BASE_URL}/${agentKey}`);
-    const agent = data?.agent;
-    if (!agent || typeof agent !== 'object') {
-      return { agent: null, toolFullNames: [] };
-    }
-    return {
-      agent,
-      toolFullNames: extractAgentToolFullNames(agent),
-    };
+  /**
+   * `quiet` keeps a failed lookup from raising the global error toast, for callers that already cope
+   * with it: someone a chat was shared with may not be allowed to open the agent it belongs to.
+   */
+  async getAgent(agentKey: string, options?: { quiet?: boolean }): Promise<GetAgentResult> {
+    const quiet = Boolean(options?.quiet);
+    const id = pendingAgentId(agentKey, quiet);
+    const pending = pendingAgentRequests.get(id);
+    if (pending) return pending;
+    const request = requestAgent(agentKey, quiet).finally(() => {
+      if (pendingAgentRequests.get(id) === request) pendingAgentRequests.delete(id);
+    });
+    pendingAgentRequests.set(id, request);
+    return request;
   },
 
   /**
@@ -704,6 +750,8 @@ export const AgentsApi = {
   /** POST /api/v1/agents/create */
   async createAgent(payload: AgentFormPayload): Promise<AgentDetail> {
     const { data } = await apiClient.post<CreateAgentApiResponse>(`${AGENTS_BASE_URL}/create`, payload);
+    // The request succeeded, so the agent may exist even if the body lacks it.
+    revalidateSwrNamespace(SWR_NS.agentLists);
     if (!data?.agent) throw new Error('Create agent failed');
     return data.agent;
   },
@@ -715,6 +763,11 @@ export const AgentsApi = {
   async updateAgent(agentKey: string, payload: Partial<AgentFormPayload>): Promise<AgentDetail> {
     const { data } = await apiClient.put<UpdateAgentApiResponse>(`${AGENTS_BASE_URL}/${agentKey}`, payload);
 
+    revalidateSwrNamespace(SWR_NS.agentLists);
+    forgetPendingAgent(agentKey);
+    // Not the PUT answer: only GET stamps tools removed from the server as deprecated.
+    // The next reader waits for the saved agent rather than flashing the old one.
+    refreshSwrKey(agentDetailKey(agentKey));
     if (data?.agent && typeof data.agent === 'object') {
       return data.agent;
     }
@@ -731,6 +784,10 @@ export const AgentsApi = {
   /** DELETE /api/v1/agents/:agentKey */
   async deleteAgent(agentKey: string): Promise<void> {
     await apiClient.delete(`${AGENTS_BASE_URL}/${agentKey}`);
+    revalidateSwrNamespace(SWR_NS.agentLists);
+    forgetPendingAgent(agentKey);
+    // Gone, without asking: a refetch while its chat is still open would only bring back a 404 and its toast.
+    writeSwrKey<GetAgentResult>(agentDetailKey(agentKey), { agent: null, toolFullNames: [] });
   },
 
   /** GET /api/v1/knowledgeBase/ — collections for agent builder (limit 1–100 per request). */

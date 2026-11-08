@@ -1,5 +1,6 @@
 'use client';
 
+import { overlayWidth } from '@/app/components/ui/responsive';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -63,9 +64,7 @@ export function ChangeEmailDialog({
   // ── Shared dialog content style ──────────────────────────────────────────
 
   const contentStyle: React.CSSProperties = {
-    width: 480,
-    maxWidth: 480,
-    minWidth: 480,
+    width: overlayWidth(480),
     padding: 'var(--space-5)',
     backgroundColor: 'var(--color-panel-solid)',
     borderRadius: 'var(--radius-5)',

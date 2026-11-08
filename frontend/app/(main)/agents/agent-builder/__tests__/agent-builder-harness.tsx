@@ -16,7 +16,7 @@ export function installBrowserShims() {
   class ImmediateResizeObserver {
     constructor(private readonly callback: ResizeObserverCallback) {}
     observe(target: Element) {
-      this.callback([{ target } as ResizeObserverEntry], this as unknown as ResizeObserver);
+      this.callback([{ target, contentRect: { width: 100, height: 100 } } as ResizeObserverEntry], this as unknown as ResizeObserver);
     }
     unobserve() {}
     disconnect() {}
@@ -108,6 +108,9 @@ export function toolset(overrides: Partial<BuilderSidebarToolset> = {}): Builder
   };
 }
 
+/** A well-formed user id: the creator lookup skips ids the server would refuse. */
+export const OWNER_USER_ID = '507f1f77bcf86cd799439011';
+
 export function agentDetail(overrides: Partial<AgentDetail> = {}): AgentDetail {
   return {
     models: [],
@@ -120,7 +123,7 @@ export function agentDetail(overrides: Partial<AgentDetail> = {}): AgentDetail {
     systemPrompt: 'You are a helpful sales assistant.',
     createdAtTimestamp: 0,
     isDeleted: false,
-    createdBy: 'user-owner',
+    createdBy: OWNER_USER_ID,
     name: 'Sales helper',
     id: 'agent-1',
     _key: 'agent-1',

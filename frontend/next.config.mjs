@@ -6,12 +6,32 @@ const electronStaticExport =
 const nextConfig = {
     ...(electronStaticExport ? { output: 'export' } : {}),
     trailingSlash: true,
+    // app/global-not-found.tsx: the app has two root layouts, so unmatched URLs
+    // would otherwise get Next's unbranded default 404.
+    experimental: { globalNotFound: true },
     /**
      * Static export does not emit per-slug callback HTML. Rewrites map
      * `/toolsets/oauth/callback/:slug` and `/connectors/oauth/callback/:slug` → the
      * corresponding static callback page so `next dev` matches Netlify `_redirects`.
      * (Rewrites are not applied to `next export` output; production static hosts still need host rules.)
      */
+    // The Express server sets the same headers on these paths; this covers `next dev` and
+    // `next start`. Static export cannot send headers, so its host needs its own rule.
+    ...(electronStaticExport
+        ? {}
+        : {
+              async headers() {
+                  return [
+                      {
+                          source: '/(login|sign-up|oauth)(/.*)?',
+                          headers: [
+                              { key: 'X-Frame-Options', value: 'DENY' },
+                              { key: 'Content-Security-Policy', value: "frame-ancestors 'none'" },
+                          ],
+                      },
+                  ];
+              },
+          }),
     async rewrites() {
         return [
             { source: '/toolsets/oauth/callback/:slug', destination: '/toolsets/oauth/callback/' },

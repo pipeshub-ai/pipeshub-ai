@@ -79,25 +79,20 @@ class MergeRequestsSync:
         updated_before = filter_before
         created_after, created_before = c.datetime_range_from_sync_filter("created")
 
-        prs_res = await c.runtime.ds_call(
+        prs_res = await c.listing.list(
             c.data_source.list_merge_requests,
             project_id=project_id,
             updated_after=since_dt,
             updated_before=updated_before,
             created_after=created_after,
             created_before=created_before,
-            order_by=GitlabLiterals.UPDATED_AT.value,
-            sort="asc",
-            get_all=True,
         )
         if not prs_res.success:
             self.logger.error("Error fetching merge requests for project %s: %s", project_id, prs_res.error)
-            return
-        if not prs_res.data:
-            self.logger.debug("No merge requests found for project %s", project_id)
+            c.note_failed_read(f"merge requests of project {project_id}", prs_res)
             return
 
-        all_prs = prs_res.data
+        all_prs = prs_res.data or []
         self.logger.info("Fetched %s merge requests for project %s; processing in batches", len(all_prs), project_id)
 
         # Checkpoint advancement is deferred to the end of the sweep — see
@@ -112,6 +107,7 @@ class MergeRequestsSync:
                     "checkpoint stays behind the failure instead of skipping past it.",
                     project_id, i,
                 )
+                c.note_sync_problem(f"merge requests of project {project_id}: a batch could not be stored")
                 return
         if failed.count:
             self.logger.warning(
@@ -119,8 +115,14 @@ class MergeRequestsSync:
                 "stays before the earliest one so the next sync retries them.",
                 failed.count, project_id,
             )
+            c.note_sync_problem(f"{failed.count} merge request(s) of project {project_id} could not be synced")
         for group_id, last_sync_time in watermarks.items():
             await c.issues._update_sync_checkpoint(group_id, failed.checkpoint(last_sync_time))
+        await c.deleted_merge_requests.reconcile(
+            project_id, listed=all_prs,
+            listed_everything=since_dt is None and updated_before is None,
+            created_after=created_after, created_before=created_before,
+        )
 
     # ------------------------------------------------------------------
     # Record building

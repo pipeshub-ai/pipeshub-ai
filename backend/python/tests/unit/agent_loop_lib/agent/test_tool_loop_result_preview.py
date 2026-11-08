@@ -9,7 +9,12 @@ from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.agent.tool_loop import RESULT_PREVIEW_CHARS, _result_preview
 from app.agent_loop_lib.core.messages import ImagePart, ImageSource, TextPart, ToolCall
 from app.agent_loop_lib.core.types import Goal
-from app.agent_loop_lib.events.base import AgentEvent, EventEmitter, EventType
+from app.agent_loop_lib.events.base import (
+    AgentEvent,
+    EventEmitter,
+    EventType,
+    ToolCallStatus,
+)
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.base import Tool, ToolOutput, ToolParameter
 from app.agent_loop_lib.tools.builtin.planning.task_complete import TaskCompleteTool
@@ -155,3 +160,30 @@ async def test_no_view_or_a_failing_one_leaves_the_event_as_it_was() -> None:
         result = await _dict_tool_result(tool)
         assert "result_view" not in result
         assert result["content"] == '{"events": [{"id": 1, "active": true}]}'
+
+
+class _FailedRunTool(_DictTool):
+    """Returns normally but reports the run as failed, as `run_code` does for a non-zero exit."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self._fail = fail
+
+    def result_failed(self, args: dict[str, Any], result: Any) -> bool:  # noqa: ANN401
+        if self._fail:
+            raise RuntimeError("failure check bug")
+        return True
+
+
+async def test_a_run_the_tool_reports_as_failed_ends_the_step_as_failed() -> None:
+    result = await _dict_tool_result(_FailedRunTool())
+
+    assert result["is_error"] is True
+    assert result["status"] == ToolCallStatus.ERROR
+    assert result["content"] == '{"events": [{"id": 1, "active": true}]}'
+
+
+async def test_a_tool_with_no_failure_opinion_or_a_broken_one_ends_the_step_as_completed() -> None:
+    for tool in (_DictTool(), _FailedRunTool(fail=True)):
+        result = await _dict_tool_result(tool)
+        assert result["is_error"] is False
+        assert result["status"] == ToolCallStatus.SUCCESS

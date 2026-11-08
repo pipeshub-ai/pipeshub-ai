@@ -72,9 +72,11 @@ from app.modules.named_entities.domain.models import Mention, NamedEntity
 from app.modules.named_entities.graph_writer import NamedEntityGraphWriter
 from app.modules.named_entities.keys import named_entity_key
 from app.modules.named_entities.resolution import ResolvedEntity
+from app.modules.pipeline.models import Priority, StageJob, StageState
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from app.services.resource_governor.models import ParseTier
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -476,6 +478,8 @@ PARAM_PROBES = {
 # LIVE registry methods this file calls against the real graphs, by the test that does.
 # tests/unit/services/graph_db/test_record_visibility_registry.py requires every one.
 EXERCISED_HERE: dict[str, str] = {
+    "get_stage_states_with_records": "test_records_selected_by_their_stage_state",
+    "get_record_content_revs": "test_record_content_revisions",
     "check_access": "test_access_check",
     "check_record_access_with_details": "test_access_check",
     "get_accessible_virtual_record_ids": "test_public_search_permission_map",
@@ -500,11 +504,13 @@ EXERCISED_HERE: dict[str, str] = {
     "get_entity_candidate_records": "test_entity_candidate_records",
     "get_records_pending_duplicate_reconcile": "test_duplicate_reconcile_sweep",
     "get_permitted_entity_records": "test_permitted_entity_records",
+    "page_record_ids_by_type": "test_record_ids_by_type",
     "get_records_for_named_entities": "test_named_entity_records",
     "get_knowledge_hub_connector_page_v3": "test_knowledge_hub_listing",
     "get_record_by_id": "test_point_reads_return_the_trash_with_its_state",
     "get_file_record_by_id": "test_point_reads_return_the_trash_with_its_state",
     "filter_nodes_with_permission_role": "test_location_trail_stops_at_a_trashed_folder",
+    "get_organization_record_reach": "test_organization_record_reach",
 }
 
 
@@ -615,6 +621,76 @@ async def test_queued_duplicate_status_is_not_copied_onto_the_trash(world: _Worl
     assert stored["indexingStatus"] == ProgressStatus.QUEUED.value
 
 
+
+async def test_records_selected_by_their_stage_state(world: _World) -> None:
+    """A stage retry by stage state takes the live record on its current revision only, never
+    a trashed one or one the indexer is working on; states page by key."""
+    g = world.graph
+    states = {"live_failed": "rev-1", "trashed_failed": "rev-1", "live": "rev-old", "live_shared": "rev-1"}
+    for name in states:
+        await g.update_node(world.ids[name], CollectionNames.RECORDS.value, {"contentRev": "rev-1"})
+    await g.update_node(
+        world.ids["live_shared"], CollectionNames.RECORDS.value, {"indexingStatus": ProgressStatus.IN_PROGRESS.value}
+    )
+    vrids = sorted({world.vrids[name] for name in states})
+    try:
+        for name, rev in states.items():
+            job = StageJob(
+                stage="entities", stage_version=1, org_id=world.org_id, virtual_record_id=world.vrids[name],
+                rev=rev, record_ids=(world.ids[name],), connector_id=world.connector_id, tier=ParseTier.LIGHT,
+                priority=Priority.BULK, trigger="embed", text_digest="t", blocks_digest="b", text_chars=1,
+                has_tables=False, has_images=False,
+            )
+            document = StageState.from_job(job, ProgressStatus.FAILED, 1).model_dump(mode="json", by_alias=True)
+            document["id"] = document.pop("key")
+            assert await g.stage_state_create(document)
+
+        def page(**kwargs: object) -> object:
+            return g.get_stage_states_with_records(
+                world.org_id, world.connector_id, "entities", ProgressStatus.FAILED.value,
+                exclude_indexing_statuses=[ProgressStatus.IN_PROGRESS.value], **kwargs,
+            )
+
+        got = await page(limit=50)
+        # Keys come back in the engine's own string order (ArangoDB collates), which is what
+        # the cursor is compared in, so paging is checked against the engine, not Python's sort.
+        selected = {record for _, records in got for record in records}
+        assert selected == {world.ids["live_failed"]}
+
+        assert len(got) == 4
+        first, rest = await page(limit=1), await page(limit=50, after_key=got[0][0])
+        assert first == got[:1] and rest == got[1:]
+        second = await page(limit=2, after_key=got[0][0])
+        assert second == got[1:3]
+        assert await g.get_stage_states_with_records(
+            world.org_id, world.connector_id, "classify", ProgressStatus.FAILED.value, limit=50
+        ) == []
+    finally:
+        await g.stage_states_delete_for_virtual_records(vrids)
+
+async def test_record_content_revisions(world: _World) -> None:
+    """A classify retry re-checks its selection while it reads each record's revision: a record
+    trashed, being indexed or no longer failed since is left out; one with no revision has None."""
+    g = world.graph
+    fields = {
+        "live": {"extractionStatus": "FAILED", "contentRev": "rev-7"},
+        "live_failed": {"extractionStatus": "FAILED", "contentRev": None},
+        "trashed_failed": {"extractionStatus": "FAILED", "contentRev": "rev-1"},
+        "live_shared": {"extractionStatus": "FAILED", "contentRev": "rev-1", "indexingStatus": "IN_PROGRESS"},
+        "queued_live": {"extractionStatus": "COMPLETED", "contentRev": "rev-1"},
+    }
+    for name, values in fields.items():
+        await g.update_node(world.ids[name], CollectionNames.RECORDS.value, values)
+
+    got = await g.get_record_content_revs(
+        [*(world.ids[name] for name in fields), world.ids["live"], "no-such-id"],
+        status_field="extractionStatus", statuses=["FAILED"], exclude_indexing_statuses=["IN_PROGRESS"],
+    )
+
+    assert got == {world.ids["live"]: "rev-7", world.ids["live_failed"]: None}
+    assert await g.get_record_content_revs([], status_field="extractionStatus", statuses=["FAILED"]) == {}
+
+
 async def test_failed_records(world: _World) -> None:
     g = world.graph
     assert _ids(await g.get_failed_records_by_org(world.org_id, world.connector_id)) == {world.ids["live_failed"]}
@@ -683,6 +759,11 @@ async def test_entity_candidate_records(world: _World) -> None:
     got = await world.graph.get_entity_candidate_records(refs, world.org_id)
     assert [row["_key"] for row in got[("record", world.ids["live"])]] == [world.ids["live"]]
     assert got[("record", world.ids["trashed"])] == []
+
+
+async def test_record_ids_by_type(world: _World) -> None:
+    got = await world.graph.page_record_ids_by_type(world.org_id, [RecordType.FILE.value], limit=1000)
+    assert set(got) & {world.ids["live"], world.ids["trashed"]} == {world.ids["live"]}
 
 
 async def test_permitted_entity_records(world: _World) -> None:
@@ -817,6 +898,22 @@ async def test_linked_records(world: _World) -> None:
     assert world.ids["live_shared"] in got and world.ids["trashed_shared"] not in got
 
 
+async def test_organization_record_reach(world: _World) -> None:
+    orgs = CollectionNames.ORGS.value
+    key = f"named-{world.connector_id}"
+    await world.graph.create_organization_if_absent(world.org_id, {"id": key, "name": "Named", "normalizedName": "named"})
+    try:
+        await world.graph.batch_create_entity_relations([
+            {"_from": f"{CollectionNames.RECORDS.value}/{world.ids[name]}", "_to": f"{orgs}/{key}",
+             "edgeType": "MENTIONS", "origin": "EXTRACTED", "createdAtTimestamp": 1}
+            for name in ("live", "trashed")
+        ])
+        reach = await world.graph.get_organization_record_reach(world.org_id, [key])
+        assert reach[key]["records"] == 1
+    finally:
+        await world.graph.delete_nodes_and_edges([key], orgs)
+
+
 async def test_kb_listings(world: _World) -> None:
     g = world.graph
     kb_records, _, _ = await g.list_kb_records(
@@ -840,6 +937,34 @@ async def test_connector_stats(world: _World) -> None:
     assert stats["success"] is True, stats
     assert stats["data"]["stats"]["total"] == 2, stats
 
+
+
+async def test_connector_stats_count_the_entities_stage_on_the_current_revision(world: _World) -> None:
+    """Named entities have no record field; the stats read their stage state on the record's revision."""
+    g = world.graph
+    states = {"kb_live": ("rev-1", ProgressStatus.FAILED), "kb_child_live": ("rev-old", ProgressStatus.COMPLETED)}
+    for name in states:
+        await g.update_node(world.ids[name], CollectionNames.RECORDS.value, {"contentRev": "rev-1"})
+    try:
+        for name, (rev, status) in states.items():
+            job = StageJob(
+                stage="entities", stage_version=1, org_id=world.org_id, virtual_record_id=world.vrids[name],
+                rev=rev, record_ids=(world.ids[name],), connector_id=world.kb_id, tier=ParseTier.LIGHT,
+                priority=Priority.BULK, trigger="embed", text_digest="t", blocks_digest="b", text_chars=1,
+                has_tables=False, has_images=False,
+            )
+            document = StageState.from_job(job, status, 1).model_dump(mode="json", by_alias=True)
+            document["id"] = document.pop("key")
+            assert await g.stage_state_create(document)
+
+        stats = await g.get_connector_stats(world.org_id, world.kb_id)
+        assert stats["success"] is True, stats
+        entities = stats["data"]["stats"]["entitiesStatus"]
+        assert entities[ProgressStatus.FAILED.value] == 1, entities
+        assert sum(entities.values()) == 1, entities
+        assert stats["data"]["stats"]["total"] == 2, stats
+    finally:
+        await g.stage_states_delete_for_virtual_records([world.vrids[name] for name in states])
 
 # ---------------------------------------------------------------------------
 # ALL methods: still find the trashed record

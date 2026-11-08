@@ -84,14 +84,14 @@ class TestRateLimit:
             _api_error("ratelimited", status_code=429, headers={"retry-after": "42"})
         )
         assert err.status_code == 429
-        assert err.headers == {"Retry-After": "42"}
+        assert err.headers["Retry-After"] == "42"
 
     @pytest.mark.asyncio
     async def test_transport_429_without_a_known_code(self) -> None:
         """A proxy in front of Slack can 429 with no Slack code at all."""
         err = await _mapped(_api_error(None, status_code=429, headers={"Retry-After": "7"}))
         assert err.status_code == 429
-        assert err.headers == {"Retry-After": "7"}
+        assert err.headers["Retry-After"] == "7"
 
     @pytest.mark.asyncio
     async def test_non_numeric_retry_after_is_dropped(self) -> None:
@@ -102,7 +102,7 @@ class TestRateLimit:
             )
         )
         assert err.status_code == 429
-        assert not err.headers
+        assert "Retry-After" not in (err.headers or {})
 
 
 class TestHandlerContractUnchanged:

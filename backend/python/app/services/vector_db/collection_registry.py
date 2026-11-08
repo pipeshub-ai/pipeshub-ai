@@ -25,6 +25,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 
 from app.exceptions.indexing_exceptions import VectorStoreError
+from app.services.permissions.mode import scope_fields_enabled
 from app.services.vector_db.collection_manifest import (
     CollectionManifestStore,
     ManagedCollection,
@@ -33,6 +34,8 @@ from app.services.vector_db.collections import CollectionType, sanitize_collecti
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     PAYLOAD_KEYWORD_INDEXES,
+    SCOPE_INTEGER_INDEXES,
+    SCOPE_KEYWORD_INDEXES,
 )
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.models import CollectionConfig
@@ -371,7 +374,8 @@ class CollectionRegistry:
         return info.dense_dimension if info.exists else None
 
     async def _ensure_payload_indexes(self, name: str) -> None:
-        for field_name, schema in PAYLOAD_KEYWORD_INDEXES:
+        indexes = PAYLOAD_KEYWORD_INDEXES + ((*SCOPE_KEYWORD_INDEXES, *SCOPE_INTEGER_INDEXES) if scope_fields_enabled() else ())
+        for field_name, schema in indexes:
             try:
                 await self._vector_db_service.create_index(
                     collection_name=name, field_name=field_name, field_schema=schema

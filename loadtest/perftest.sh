@@ -71,10 +71,10 @@ say() { echo "$@" | tee -a "$REPORT"; }
 # --- guard: an expired token turns every request into a 401, which looks
 # --- exactly like a throughput collapse. Fail fast instead.
 if [ "$USERS" -gt 0 ]; then
-  probe=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HOST/api/v1/conversations/stream" \
-    -H "Authorization: Bearer ${TOKENS[0]}" -H "Content-Type: application/json" \
-    -H "Accept: text/event-stream" -d "{\"query\":\"ping\",\"chatMode\":\"internal_search\"}" \
-    --max-time 60 2>/dev/null) || true
+  # A read, not a chat turn: a probe turn outlives curl's timeout and completes
+  # inside the measured window, adding one phantom turn to every trial.
+  probe=$(curl -s -o /dev/null -w '%{http_code}' "$HOST/api/v1/conversations/" \
+    -H "Authorization: Bearer ${TOKENS[0]}" --max-time 30 2>/dev/null) || true
   # curl already prints 000 when it never got a response; appending a fallback
   # to the same capture produced "HTTP 000000".
   [ -n "$probe" ] || probe=000
@@ -114,22 +114,69 @@ for line in sys.stdin.read().splitlines():
     print(json.dumps(body))
 ')
 
+# How long a single turn may take before curl gives up. The default matches the
+# old hard-coded value. Raise it when a config is slow enough that turns outlast
+# it — a truncated SSE stream still reports HTTP 200 (the status line is sent
+# before the body), so the only symptom is curl_exit=28 and a turn that never
+# reaches the server's completion marker.
+# PIPESHUB_MAX_TIME is the older spelling; existing run scripts still pass it,
+# and ignoring it would silently cap turns at 300s and record saturation as
+# errors.
+TURN_MAX_SECONDS=${PIPESHUB_TURN_MAX_SECONDS:-${PIPESHUB_MAX_TIME:-300}}
+
+# --- warm-up, outside the measured window. A freshly started query service
+# spends its first turns importing modules and filling caches: in one restarted
+# run a third of all CPU samples were importlib. PIPESHUB_WARMUP=1 sends every
+# query once, one at a time; the log and the server counters only start after.
+if [ "${PIPESHUB_WARMUP:-0}" != 0 ] && [ "${PIPESHUB_QUERY_ORDER:-random}" = unique ]; then
+  say "== warm-up skipped: PIPESHUB_QUERY_ORDER=unique (it would make every measured question a repeat)"
+elif [ "${PIPESHUB_WARMUP:-0}" != 0 ] && [ "$USERS" -gt 0 ]; then
+  say "== warm-up: ${#BODIES[@]} sequential turns (not measured)"
+  for qi in "${!BODIES[@]}"; do
+    w=$(curl -s -N -o /dev/null -w '%{http_code} %{time_total}' \
+      -X POST "$HOST/api/v1/conversations/stream" \
+      -H "Authorization: Bearer ${TOKENS[0]}" -H "Content-Type: application/json" \
+      -H "Accept: text/event-stream" -d "${BODIES[$qi]}" \
+      --max-time "$TURN_MAX_SECONDS" 2>/dev/null)
+    say "   query $qi: HTTP ${w% *}, ${w#* }s"
+  done
+fi
+
 say "== $LABEL: $USERS users, ${SECS}s, ${#QUERIES[@]} quer$([ ${#QUERIES[@]} -eq 1 ] && echo y || echo ies), host $HOST, mode $PIPESHUB_MODE"
 say "== started $(date -u +%H:%M:%SZ)"
+FLAME=${PIPESHUB_FLAME:-cpu}
+case "$FLAME" in
+  cpu)  PYSPY_MODE=(--gil) ;;
+  wall) PYSPY_MODE=(--idle) ;;
+  off)  ;;
+  *) say "ABORT: PIPESHUB_FLAME must be cpu, wall or off, got '$FLAME'."; exit 1 ;;
+esac
 START=$(log_mark)
+if [ "$PIPESHUB_MODE" = "docker" ]; then
+  export PIPESHUB_LOG_CAPTURE="$OUTDIR/server.log"
+  $DOCKER logs --follow --timestamps --since "$START" "$CONTAINER" > "$PIPESHUB_LOG_CAPTURE" 2>&1 &
+  LOGCAP_PID=$!
+  trap '[ -n "${LOGCAP_PID:-}" ] && kill "$LOGCAP_PID" 2>/dev/null' EXIT
+fi
 WALL_START=$(date -u +%s)
 
-# --- CPU profile (py-spy attaches to the live process; --gil samples only
-# --- while Python is actually executing, so idle threads never appear)
-if command -v py-spy >/dev/null 2>&1 || [ -x "$HOME/.local/bin/py-spy" ]; then
+# --- profile (py-spy attaches to the live process)
+#   cpu  --gil: samples only while Python is executing, so idle threads never appear
+#   wall --idle: every thread all the time, including threads blocked in sync I/O.
+#        Awaits still show as the event loop's select(), not as the coroutine.
+# Two recorders: the SVG is py-spy's interactive one; speedscope keeps the timeline
+# and per-thread split, and cpu.raw for top_functions.py is folded from it.
+if [ "$FLAME" = off ]; then
+  :
+elif command -v py-spy >/dev/null 2>&1 || [ -x "$HOME/.local/bin/py-spy" ]; then
   PYSPY=$(command -v py-spy || echo "$HOME/.local/bin/py-spy")
   QPID=$(query_pid 2>/dev/null || true)
   if [ -n "$QPID" ]; then
     detect_sudo
-    $SUDO "$PYSPY" record --pid "$QPID" --subprocesses --gil --nonblocking \
-      -d "$SECS" -r 100 -f flamegraph -o "$OUTDIR/cpu.svg" >/dev/null 2>&1 &
-    $SUDO "$PYSPY" record --pid "$QPID" --subprocesses --gil --nonblocking \
-      -d "$SECS" -r 100 -f raw -o "$OUTDIR/cpu.raw" >/dev/null 2>&1 &
+    $SUDO "$PYSPY" record --pid "$QPID" --subprocesses "${PYSPY_MODE[@]}" --nonblocking \
+      -d "$SECS" -r 100 -f flamegraph -o "$OUTDIR/$FLAME.svg" >/dev/null 2>&1 &
+    $SUDO "$PYSPY" record --pid "$QPID" --subprocesses "${PYSPY_MODE[@]}" --nonblocking \
+      -d "$SECS" -r 100 -f speedscope -o "$OUTDIR/$FLAME.speedscope.json" >/dev/null 2>&1 &
   else
     say "   (py-spy: no query process found — skipping CPU profile)"
   fi
@@ -141,8 +188,10 @@ fi
 # One-off readings of `docker stats` disagreed by 20x within a single run,
 # so this samples kernel counters for the whole window and the report shows
 # the distribution rather than a spot value.
-if [ -x "$HERE/resource_sampler.sh" ]; then
-    "$HERE/resource_sampler.sh" "$OUTDIR" "$(( SECS + 10 ))" 2 >/dev/null 2>&1 &
+# Run through bash, not by exec bit: a copy that lost +x was skipped silently and
+# the report said only "no data".
+if [ -f "$HERE/resource_sampler.sh" ]; then
+    bash "$HERE/resource_sampler.sh" "$OUTDIR" "$(( SECS + 10 ))" 2 >/dev/null 2>&1 &
     RES_PID=$!
 fi
 
@@ -154,31 +203,34 @@ fi
   done ) &
 MEM_PID=$!
 
-# How long a single turn may take before curl gives up. The default matches the
-# old hard-coded value. Raise it when a config is slow enough that turns outlast
-# it — a truncated SSE stream still reports HTTP 200 (the status line is sent
-# before the body), so the only symptom is curl_exit=28 and a turn that never
-# reaches the server's completion marker.
-# PIPESHUB_MAX_TIME is the older spelling; existing run scripts still pass it,
-# and ignoring it would silently cap turns at 300s and record saturation as
-# errors.
-TURN_MAX_SECONDS=${PIPESHUB_TURN_MAX_SECONDS:-${PIPESHUB_MAX_TIME:-300}}
-
-# Query order per user, drawn from a PRNG seeded on (label, user index): random
+# Query order per user, drawn from a PRNG seeded on (seed, user index): random
 # across users but reproducible, so two arms of an A/B see the SAME sequence
-# rather than merely the same distribution.
+# rather than merely the same distribution. The seed defaults to the label, so
+# arms with different labels need PIPESHUB_SEED set alike (qprof.sh does this).
+# PIPESHUB_QUERY_ORDER=unique instead deals one shuffled deck in order (user u's
+# turn i gets card i*users+u), so no question repeats until users x turns
+# exceeds the file: a run that repeats questions measures cache hits, not the
+# cost of a new question.
 mapfile -t USER_SEQ < <("$PYTHON" -c '
 import random, sys
-label, users, nq, turns = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
-for u in range(1, users + 1):
-    rng = random.Random(f"{label}:{u}")
-    print(" ".join(str(rng.randrange(nq)) for _ in range(turns)))
-' "$LABEL" "$USERS" "${#BODIES[@]}" 500)
+label, users, nq, turns, order = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
+if order == "unique":
+    deck = list(range(nq))
+    random.Random(label).shuffle(deck)
+    for u in range(users):
+        print(" ".join(str(deck[(i * users + u) % nq]) for i in range(turns)))
+else:
+    for u in range(1, users + 1):
+        rng = random.Random(f"{label}:{u}")
+        print(" ".join(str(rng.randrange(nq)) for _ in range(turns)))
+' "${PIPESHUB_SEED:-$LABEL}" "$USERS" "${#BODIES[@]}" 500 "${PIPESHUB_QUERY_ORDER:-random}")
 
 # --- load: each user asks, reads the whole answer, thinks, repeats
 THINK=${PIPESHUB_THINK_TIME:-3}
 END=$(( $(date +%s) + SECS ))
-echo "user,turn,query_index,http_code,time_total,curl_exit" > "$OUTDIR/requests.csv"
+# ts_start/ts_end are epoch seconds; the resource graph uses them to plot how
+# many turns were in flight against CPU at the same moment.
+echo "user,turn,query_index,http_code,time_total,curl_exit,ts_start,ts_end" > "$OUTDIR/requests.csv"
 LOAD_PIDS=()
 for u in $(seq 1 "$USERS"); do
   # Simulated users cycle through the real identities; with one token this is
@@ -191,6 +243,7 @@ for u in $(seq 1 "$USERS"); do
       # Record the outcome of every request. Previously this was `-o /dev/null
       # || true`, so a run where every request 500'd was indistinguishable from
       # one that was merely slow.
+      t0=$(date +%s.%N)
       res=$(curl -s -N -o /dev/null -w '%{http_code} %{time_total}' \
         -X POST "$HOST/api/v1/conversations/stream" \
         -H "Authorization: Bearer $user_token" -H "Content-Type: application/json" \
@@ -202,7 +255,7 @@ for u in $(seq 1 "$USERS"); do
       # exactly the timeouts (28) this column exists to surface. Safe without a
       # guard because the script does not run under `set -e`.
       rc=$?
-      echo "$u,$turn,$qi,${res:-000 0} $rc" | tr ' ' ',' >> "$OUTDIR/requests.csv"
+      echo "$u,$turn,$qi,${res:-000 0} $rc ${t0%??????} $(date +%s.%3N)" | tr ' ' ',' >> "$OUTDIR/requests.csv"
       turn=$((turn + 1))
       sleep "$THINK"
     done ) &
@@ -221,6 +274,7 @@ WALL_SECS=$(( $(date -u +%s) - WALL_START ))
 LOAD_CUTOFF=$(( WALL_START + SECS ))
 kill "$MEM_PID" 2>/dev/null || true
 sleep 3
+[ -n "${LOGCAP_PID:-}" ] && kill "$LOGCAP_PID" 2>/dev/null
 
 say ""
 say "==================== THROUGHPUT ===================="
@@ -230,13 +284,20 @@ PIPESHUB_WINDOW_SECONDS=$WALL_SECS bash "$HERE/throughput.sh" "$START" "$FINISH"
 # turns run long reports a lower rate for the same work. When the two disagree,
 # the drain is doing the talking.
 if [ "$PIPESHUB_MODE" = "docker" ]; then
-  SS_TURNS=$(log_read "$START" "$LOAD_CUTOFF" | grep -ac 'AnswerFinalizer:' || true)
+  # Error answers excluded, as in throughput.sh.
+  SS_TURNS=$(log_read "$START" "$LOAD_CUTOFF" | grep -aEc "$TURN_DONE_OK_RE" || true)
   say "  steady-state    : $SS_TURNS turns in the ${SECS}s load window  ($("$PYTHON" -c "print(f'{$SS_TURNS*60/$SECS:.1f}')") req/min)"
 fi
 
 say ""
 say "==================== REQUESTS (client-side) ===================="
 "$PYTHON" "$HERE/instr/agg_requests.py" "$OUTDIR/requests.csv" | tee -a "$REPORT"
+"$PYTHON" -c '
+import csv, sys
+rows = list(csv.DictReader(open(sys.argv[1])))
+qs = [r["query_index"] for r in rows]
+print(f"  distinct questions: {len(set(qs))} of {len(qs)} requests ({len(qs) - len(set(qs))} repeats)")
+' "$OUTDIR/requests.csv" | tee -a "$REPORT"
 
 say ""
 say "==================== TURN LATENCY (per phase, ms) ===================="
@@ -249,11 +310,24 @@ fi
 
 say ""
 say "==================== CPU (top functions, real work only) ===================="
-if [ -s "$OUTDIR/cpu.raw" ]; then
-  "$PYTHON" "$HERE/instr/top_functions.py" "$OUTDIR/cpu.raw" | tee -a "$REPORT"
-  say "   flame graph: $OUTDIR/cpu.svg"
-else
+# py-spy writes when its duration ends, which can trail the load loop by a beat.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ "$FLAME" = off ] || [ -s "$OUTDIR/$FLAME.speedscope.json" ] && break
+  sleep 2
+done
+if [ "$FLAME" = off ]; then
+  say "   (profiling off)"
+elif [ ! -s "$OUTDIR/$FLAME.speedscope.json" ]; then
   say "   (no profile captured)"
+else
+  if [ "$FLAME" = cpu ]; then
+    "$PYTHON" "$HERE/instr/speedscope_to_raw.py" "$OUTDIR/cpu.speedscope.json" "$OUTDIR/cpu.raw" 100 \
+      && "$PYTHON" "$HERE/instr/top_functions.py" "$OUTDIR/cpu.raw" | tee -a "$REPORT"
+  else
+    say "   wall-clock profile: time is split across threads, waiting included — read the flame graph"
+  fi
+  say "   flame graph: $OUTDIR/$FLAME.svg"
+  say "   speedscope : $OUTDIR/$FLAME.speedscope.json  (drop it on https://www.speedscope.app)"
 fi
 
 say ""
@@ -266,7 +340,12 @@ fi
 
 say "==================== RESOURCES (CPU %, RAM MB) ===================="
 if [ -s "$OUTDIR/resources.csv" ]; then
-    "$PYTHON" "$HERE/instr/agg_resources.py" "$OUTDIR/resources.csv" "$(nproc)" 2>/dev/null | tee -a "$REPORT"
+    "$PYTHON" "$HERE/instr/agg_resources.py" "$OUTDIR/resources.csv" "$(nproc)" \
+      --json "$OUTDIR/resources.json" 2>/dev/null | tee -a "$REPORT"
+    grep -a '^skipped' "$OUTDIR/resources.log" 2>/dev/null | sed 's/^/  /' | tee -a "$REPORT"
+    "$PYTHON" "$HERE/instr/plot_resources.py" "$OUTDIR/resources.csv" "$OUTDIR/resources.svg" \
+      "$LABEL — $USERS users, ${WORKERS:-${PIPESHUB_WORKERS:-?}} workers" "$OUTDIR/requests.csv" "$(nproc)" \
+      && say "   timeline graph (in-flight turns, host/container/service CPU and memory): $OUTDIR/resources.svg"
 else
     say "  (resource sampler produced no data)"
 fi
@@ -289,24 +368,37 @@ fi
 say ""
 say "==================== BACKEND CALLS (caller-side) ===================="
 if log_available; then
-  log_read "$START" "$FINISH" | grep -a BACKENDAGG \
-    | "$PYTHON" "$HERE/instr/agg_backends.py" 2>/dev/null | tee -a "$REPORT" \
+  FIN_TURNS=$(log_read "$START" "$FINISH" | grep -ac 'step=finalize' || true)
+  log_read "$START" "$FINISH" | grep -a 'BACKENDAGG\|BACKENDOP' \
+    | "$PYTHON" "$HERE/instr/agg_backends.py" "$FIN_TURNS" 2>/dev/null | tee -a "$REPORT" \
     || say "   (no backend data - run ./instrument.sh on to enable)"
 else
   say "   (no log source - set PIPESHUB_QUERY_LOG in .env; see .env.example)"
 fi
 
+say ""
+say "==================== TOOL WORK PER TURN (log markers) ===================="
+if log_available; then
+  log_read "$START" "$FINISH" | "$PYTHON" "$HERE/instr/agg_tools.py" --json "$OUTDIR/tools.json" | tee -a "$REPORT"
+fi
+
+# Extra report sections, when present: loadtest/ee/report_*.sh.
+for ext in "$HERE"/ee/report_*.sh; do
+  if [ -f "$ext" ]; then . "$ext"; fi
+done
+
 # Machine-readable, so `aggregate.py` can roll many runs into one table without
 # re-parsing the human report. PIPESHUB_ARM/TRIAL are set by the matrix driver.
 "$PYTHON" "$HERE/instr/make_summary.py" \
   --outdir "$OUTDIR" --label "$LABEL" --users "$USERS" --secs "$SECS" \
-  --workers "${WORKERS:-}" --arm "${PIPESHUB_ARM:-}" --trial "${PIPESHUB_TRIAL:-}" \
+  --workers "${WORKERS:-${PIPESHUB_WORKERS:-}}" --arm "${PIPESHUB_ARM:-}" --trial "${PIPESHUB_TRIAL:-}" \
   --wall "$WALL_SECS" --queries "${#QUERIES[@]}" 2>/dev/null \
   && say "   summary: $OUTDIR/summary.json"
 
 # ~19MB of the ~23MB a run writes. Kept (not deleted) so a profile can be
 # re-analysed later, but not at full size 54 times over.
 [ -s "$OUTDIR/cpu.raw" ] && gzip -f "$OUTDIR/cpu.raw" 2>/dev/null || true
+[ -s "$OUTDIR/server.log" ] && gzip -f "$OUTDIR/server.log" 2>/dev/null || true
 
 say ""
 say "== done. full report: $REPORT"

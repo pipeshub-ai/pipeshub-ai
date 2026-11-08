@@ -21,6 +21,7 @@ from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     ENTITY_ID_FILTER_KEY_CACHE_KEY,
     RECORD_SCOPED_ENTITY_CACHE_KEY,
+    load_entity_access_context,
     merge_filter_groups,
 )
 from app.agents.actions.knowledge_graph.ops.entity_records import (
@@ -45,7 +46,11 @@ from app.agents.actions.knowledge_graph.ops.results import (
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, search_scope
 from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
 from app.agents.agent_loop.protocol.run_usage import grep_generation_usage_reporter
-from app.modules.agents.qna.chat_state import remember_shown_results
+from app.core.org_context import spawn_in_request
+from app.modules.agents.qna.chat_state import (
+    remember_record_ids,
+    remember_shown_results,
+)
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
 from app.modules.retrieval.context.ordering import relevance_ordered_context
 from app.modules.retrieval.context.renderer import KnowledgeRenderer, Selection
@@ -62,6 +67,7 @@ from app.modules.retrieval.context.targeted import (
 )
 from app.modules.retrieval.context.units import unit_children
 from app.modules.retrieval.entity_permissions import (
+    SEARCH_DEADLINE_SECONDS,
     SEARCH_SCOPE_MAX_ENTITIES,
     EntityAccessError,
 )
@@ -71,13 +77,22 @@ from app.modules.retrieval.result_merging import (
     ReciprocalRankFusionMerger,
     search_hit_identity,
 )
+from app.modules.retrieval.selection_scope import connection_sources_of
+from app.modules.retrieval.title_hits import (
+    UnindexedMatch,
+    find_unindexed_matches,
+    render_title_block,
+)
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 from app.utils.chat_helpers import (
     CitationRefMapper,
     ImageBudget,
+    attach_connector_instance_names,
     get_record_id_shortener_if_enabled,
     is_base64_image,
+    keep_graph_docs_inside_connection,
+    keep_record_text_inside_connection,
     merge_into_records_map,
 )
 from app.utils.image_admission import admission_from_state
@@ -92,6 +107,7 @@ from app.utils.pattern_match import (
     render_pattern_match_coverage_note,
     render_pattern_match_hint,
     run_pattern_match_with_llm_grep,
+    split_hint_entries,
 )
 
 if TYPE_CHECKING:
@@ -150,6 +166,11 @@ _MAX_FIT_PASSES = 3
 # Naming grep hits on records the fit dropped may take 1/8 of the result:
 # bounded, so dropping more records cannot grow the hint past what they freed.
 _DROPPED_GREP_HINT_SHARE = 8
+# Records only grep found may take 1/4: the best few with full metadata, the
+# rest named on one line. A large store's keyword index returns up to 50, and
+# as full blocks sized ahead of the records they displaced the ranked passages.
+_GREP_ONLY_HINT_SHARE = 4
+_MAX_FULL_GREP_ONLY_HINTS = 10
 
 
 def _ranked_header(blocks: int, records: int, omitted: int, *, by_relevance: bool) -> str:
@@ -353,7 +374,7 @@ def resolve_record_scoped_entities(
     state: "ChatState", entity_ids: list[str] | None,
 ) -> list[tuple[str, str]]:
     """``(entity_id, entity_type)`` for the ``entity_ids`` that are record
-    groups or subcategories returned by ``search_entities`` in this request.
+    groups, subcategories, people or organisations returned by ``search_entities`` in this request.
     They have no name-based graph filter, so they become a permission-checked
     ``virtualRecordId`` allow-list (``resolve_entity_virtual_ids``) passed to
     the retrieval service as ``virtual_record_ids_from_tool``.
@@ -393,7 +414,7 @@ def _entity_notes(
         )
     if filter_dropped:
         scope_left = (
-            " The record group/subcategory scope still applies." if record_scope_applied else ""
+            " The record group/subcategory/person/organization scope still applies." if record_scope_applied else ""
         )
         notes.append(
             "Note: nothing matched inside the requested department/category/topic/"
@@ -401,22 +422,51 @@ def _entity_notes(
         )
     if scope_truncated:
         notes.append(
-            "Note: the requested record group/subcategory has more records than one "
+            "Note: the requested record group/subcategory/person/organization has more records than one "
             "search can cover, so only part of its accessible records were searched."
         )
     if entities_skipped:
         notes.append(
-            f"Note: only the first {SEARCH_SCOPE_MAX_ENTITIES} record group/subcategory "
-            f"entity_ids scoped this search; {entities_skipped} more record group/subcategory "
+            f"Note: only the first {SEARCH_SCOPE_MAX_ENTITIES} record group/subcategory/person/organization "
+            f"entity_ids scoped this search; {entities_skipped} more record group/subcategory/person/organization "
             "entity_ids were not applied. Search them separately. Department, category, "
             "topic and language entity_ids are not limited."
         )
     return "".join(f"{note}\n\n" for note in notes)
 
 
-def _search_gap_notes(*, failed_sources: int, search_incomplete: str | None) -> str:
+TITLE_LOOKUP_GAP_NOTE = (
+    "Note: the lookup of records by name did not finish, so a record whose content is not "
+    "indexed yet may exist even though none is listed here."
+)
+# The entity search keeps its own 4 s deadline; this only stops a lookup that hangs past it.
+_TITLE_LOOKUP_TIMEOUT_SECONDS = SEARCH_DEADLINE_SECONDS + 2.0
+
+
+async def _unindexed_title_matches(
+    state: "ChatState", query: str, source_ids: list[str] | None, log: logging.Logger,
+) -> list[UnindexedMatch] | None:
+    """Records matching ``query`` by name whose content is not indexed yet, found
+    with the access context and scope the entity tools use. None when the lookup
+    failed or timed out: the content answer stands without it."""
+    try:
+        context = await load_entity_access_context(state, source_ids)
+        return await asyncio.wait_for(
+            find_unindexed_matches(state["entity_vector_store"], state["graph_provider"], context, query),
+            timeout=_TITLE_LOOKUP_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        log.warning("knowledgegraph__search: the lookup of records by name failed", exc_info=True)
+        return None
+
+
+def _search_gap_notes(
+    *, failed_sources: int, search_incomplete: str | None, titles_failed: bool = False,
+) -> str:
     """Notes for a search that returned results but did not cover everything."""
     notes: list[str] = []
+    if titles_failed:
+        notes.append(TITLE_LOOKUP_GAP_NOTE)
     if failed_sources:
         notes.append(
             f"Note: {failed_sources} of the sources you named could not be searched; "
@@ -496,8 +546,21 @@ async def execute_search(
 
     With dates, the same search also runs once without them, and its best
     matches written outside the dates are listed after the results
-    (``ops/outside_dates``).
+    (``ops/outside_dates``). An upper bound that is a calendar date of the
+    agent's own today or later is not applied
+    (``ops/time_range.upper_bounds_before_today``).
     """
+    if state:
+        from app.agents.actions.knowledge_graph.ops.time_range import (
+            agent_today_start,
+            upper_bounds_before_today,
+        )
+
+        created_before, modified_before = upper_bounds_before_today(
+            agent_today_start(state),
+            created_after=created_after, created_before=created_before,
+            modified_after=modified_after, modified_before=modified_before,
+        )
     if scope_virtual_record_ids is None:
         from app.agents.actions.knowledge_graph.ops.timeline import (
             automatic_timeline_search,
@@ -597,6 +660,8 @@ async def _execute_search(
     pattern_match_task: asyncio.Task[list[dict[str, Any]]] | None = None
     # The same search without its date bounds (``ops/outside_dates``).
     outside_dates_task: asyncio.Task[Any] | None = None
+    # Records matching by name whose content is not indexed yet (None: failed).
+    title_task: asyncio.Task[list[UnindexedMatch] | None] | None = None
     grep_coverage = PatternMatchCoverage()
     try:
         logger_instance = state.get("logger", logger)
@@ -703,6 +768,8 @@ async def _execute_search(
             virtual_record_ids_from_tool = scoped
 
         outside_dates: list[OutsideDatesRecord] = []
+        unindexed: list[UnindexedMatch] = []
+        title_lookup_failed = False
 
         def _outside_dates_text() -> str:
             """The records the date bounds left out, listed for the model."""
@@ -745,6 +812,8 @@ async def _execute_search(
                 scope_truncated=entity_scope_truncated,
                 entities_skipped=entities_skipped,
             )
+            if title_lookup_failed:
+                notes += f"{TITLE_LOOKUP_GAP_NOTE}\n\n"
             if notes:
                 message = f"{message}\n\n{notes.strip()}"
             coverage_note = render_pattern_match_coverage_note(grep_coverage)
@@ -757,6 +826,31 @@ async def _execute_search(
                 "results": [],
                 "result_count": 0,
             })
+
+        def _remember_by_name(shown: list[UnindexedMatch]) -> None:
+            """A record shown by name only is one the model may now pass to fetch."""
+            remember_record_ids(state, [m.record_id for m in shown], names={m.record_id: m.name for m in shown})
+            note_retrieved_by(state, "entity", [(m.virtual_record_id, m.record_id, m.name) for m in shown])
+
+        def _no_content_result() -> str:
+            """``_empty_result``, unless records matched by name: those are an answer too."""
+            if not unindexed:
+                return _empty_result()
+            max_chars = search_max_chars() if targeted_retrieval_enabled() else DEFAULT_MAX_RESULT_CHARS
+            head = (
+                preamble
+                + _search_gap_notes(failed_sources=failed_sources, search_incomplete=search_incomplete)
+                + "No content blocks matched, but "
+                + (f"{len(unindexed)} records match" if len(unindexed) != 1 else "1 record matches")
+                + " by name.\n\n"
+            )
+            block, shown = render_title_block(
+                unindexed, max_chars - len(head), get_record_id_shortener_if_enabled(state),
+            )
+            if not shown:
+                return _empty_result()
+            _remember_by_name(shown)
+            return head + block
 
         # Retrieval treats this key as a control flag, not a filter: with it, an
         # empty scope searches nothing instead of everything the user can reach.
@@ -795,6 +889,15 @@ async def _execute_search(
                     retrieval_service=retrieval_service,
                 )
             )
+
+        # Titles are not scoped by entity or date, so a search that is would show
+        # records outside it. Runs beside the content search, so it adds no wait.
+        if state.get("entity_vector_store") is not None and not entity_scoped and not time_range:
+            title_task = spawn_in_request(_unindexed_title_matches(
+                state, query,
+                [*narrowed_scope.app_ids, *narrowed_scope.kb_ids] if narrowed_scope is not None else None,
+                logger_instance,
+            ))
 
         is_service_account = bool(state.get("is_service_account", False))
         fan_out_sources = explicit_ids and (len(resolved_apps) > 1 or len(resolved_kbs) > 1)
@@ -1009,8 +1112,13 @@ async def _execute_search(
                 log=logger_instance,
             )
 
+        if title_task is not None:
+            found_by_name = await title_task
+            title_lookup_failed = found_by_name is None
+            unindexed = found_by_name or []
+
         if not search_results and not raw_pattern_records:
-            return _empty_result()
+            return _no_content_result()
 
         blob_store = BlobStorage(
             logger=logger_instance,
@@ -1025,6 +1133,7 @@ async def _execute_search(
             org_id=org_id,
             user_id=user_id,
             config_service=config_service,
+            connection_sources=connection_sources_of(agent_filters),
         ).build(
             search_results,
             virtual_to_record_map,
@@ -1057,6 +1166,20 @@ async def _execute_search(
                     logger_instance.info(
                         "Pattern match: %d record(s) found via grep", len(pm_record_entries),
                     )
+                    # A grep hit is rendered from its loaded record's text, or
+                    # from its graph document when only that was read.
+                    grep_records = [
+                        virtual_record_id_to_result.get(entry.get("virtual_record_id", ""))
+                        for entry in pm_record_entries
+                    ]
+                    limit_sources = connection_sources_of(agent_filters)
+                    await keep_record_text_inside_connection(
+                        [r for r in grep_records if isinstance(r, dict) and "block_containers" in r],
+                        graph_provider, user_id, org_id, limit_sources,
+                    )
+                    graph_docs = [r for r in grep_records if isinstance(r, dict) and "block_containers" not in r]
+                    await keep_graph_docs_inside_connection(graph_docs, graph_provider, user_id, org_id, limit_sources)
+                    await attach_connector_instance_names(graph_provider, graph_docs, limit_sources)
             except Exception as exc:
                 logger_instance.warning(
                     "Pattern match merge failed, continuing with semantic results only: %s", exc,
@@ -1065,7 +1188,7 @@ async def _execute_search(
         # Grep hits can all be dropped by the merge (permissions, time range);
         # that is still an empty search and must answer like one.
         if not knowledge.ranked and not pm_record_entries:
-            return _empty_result()
+            return _no_content_result()
 
         # TARGETED_RETRIEVAL: a smaller result, a few passages per record, and
         # what an earlier search of this request showed giving way to new text.
@@ -1082,6 +1205,14 @@ async def _execute_search(
             knowledge.ranked = passage_cap.units
 
         has_semantic_blocks = bool(knowledge.ranked)
+        grep_only_full, grep_only_brief, grep_only_unlisted = pm_record_entries, [], 0
+        # With no passages to make room for, every grep-only record keeps its metadata.
+        if has_semantic_blocks:
+            grep_only_full, grep_only_brief, grep_only_unlisted = split_hint_entries(
+                pm_record_entries, virtual_record_id_to_result,
+                result_max_chars // _GREP_ONLY_HINT_SHARE,
+                max_full=_MAX_FULL_GREP_ONLY_HINTS,
+            )
 
         def keyword_hint(selection: Selection) -> tuple[list[dict[str, Any]], str]:
             """The grep records named for ``selection``, and the hint naming them.
@@ -1093,7 +1224,7 @@ async def _execute_search(
             shown = {unit.get("virtual_record_id") for unit in selection.ranked}
             dropped = [hit for hit in loaded_grep_hits if hit["virtual_record_id"] not in shown]
             entries = [
-                *pm_record_entries,
+                *grep_only_full,
                 *grep_hits_within(
                     dropped, virtual_record_id_to_result,
                     result_max_chars // _DROPPED_GREP_HINT_SHARE,
@@ -1104,18 +1235,21 @@ async def _execute_search(
                     entries, virtual_record_id_to_result,
                     has_semantic_blocks=has_semantic_blocks,
                     max_records=max(len(entries), 1),
+                    brief_records=grep_only_brief,
+                    unlisted=grep_only_unlisted,
                 )
             except Exception as exc:
                 # The semantic answer above is complete without the hint.
                 logger_instance.warning("Pattern match hint failed, omitting it: %s", exc)
                 return [], coverage_note
-            return (entries if hint else []), hint + coverage_note
+            return ([*entries, *grep_only_brief] if hint else []), hint + coverage_note
 
         pm_shown, pm_hint = keyword_hint(Selection(ranked=knowledge.ranked))
         if not has_semantic_blocks and not pm_shown:
-            return _empty_result()
+            return _no_content_result()
         entity_notes = _search_gap_notes(
             failed_sources=failed_sources, search_incomplete=search_incomplete,
+            titles_failed=title_lookup_failed,
         ) + _entity_notes(
             unknown_entity_ids=unknown_entity_ids,
             filter_dropped=entity_filter_dropped,
@@ -1234,9 +1368,19 @@ async def _execute_search(
             + rendered.text
             + compose_result_tail(shown_records, candidate_suffix)
             + pm_hint
-            + outside_dates_text
         )
-        return tool_output(text, rendered.images, state)
+        if unindexed:
+            # After the content, in what the content leaves of the result size, and
+            # not for a record the content already shows.
+            _, content_record_ids = shown_ids(final_results, shown_records)
+            by_name_only = [m for m in unindexed if m.record_id not in content_record_ids]
+            block, shown_by_name = render_title_block(
+                by_name_only, result_max_chars - len(text) - len(outside_dates_text), record_id_shortener,
+            )
+            if shown_by_name:
+                text += block
+                _remember_by_name(shown_by_name)
+        return tool_output(text + outside_dates_text, rendered.images, state)
 
     except Exception as exc:
         logger_instance = state.get("logger", logger) if state else logger
@@ -1246,3 +1390,4 @@ async def _execute_search(
         # No-op once awaited; stops the grep + LLM call when semantic search fails.
         await cancel_task_if_running(pattern_match_task)
         await cancel_task_if_running(outside_dates_task)
+        await cancel_task_if_running(title_task)

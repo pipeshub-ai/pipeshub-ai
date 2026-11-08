@@ -2,7 +2,7 @@ import json
 from collections.abc import Awaitable, Callable
 from enum import Enum
 from inspect import isawaitable, isclass
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from app.config.constants.arangodb import (
@@ -43,6 +43,19 @@ def _parsed_summary(raw: object) -> dict[str, Any] | None:
     except ValueError:
         return None
     return value if isinstance(value, dict) else None
+
+def _parsed_action_items(raw: object) -> list[dict[str, Any]]:
+    """What the admin has to do, stored as JSON text on the app doc; [] when nothing or unreadable."""
+    if not isinstance(raw, str) or not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return []
+    if not isinstance(value, list):
+        return []
+    return [cast(dict[str, Any], item) for item in cast(list[object], value) if isinstance(item, dict)]
+
 
 class Origin(str, Enum):
     """Data origin types."""
@@ -867,6 +880,7 @@ class ConnectorRegistry:
                 'lastSyncFinishedAtTimestamp': instance_data.get('lastSyncFinishedAtTimestamp'),
                 'lastSyncOutcome': instance_data.get('lastSyncOutcome'),
                 'lastSyncSummary': _parsed_summary(instance_data.get('lastSyncSummary')),
+                'actionItems': _parsed_action_items(instance_data.get('actionItems')),
                 '_key': instance_data.get('_key') or instance_data.get('id'),
                 'name': instance_data.get('name'),
                 'scope': instance_data.get('scope', ConnectorScope.PERSONAL.value),
@@ -1622,9 +1636,10 @@ class ConnectorRegistry:
                 'updatedAtTimestamp': get_epoch_timestamp_in_ms()
             }
 
-            # Execute update via update_node (only the changed fields)
+            # Execute update via update_node (only the changed fields: replaying the whole stored
+            # document would send legacy keys the schema no longer accepts)
             node_updates = {
-                k: v for k, v in updated_document.items()
+                k: v for k, v in {**updates, 'updatedAtTimestamp': updated_document['updatedAtTimestamp']}.items()
                 if k not in ('_key', '_id', '_rev', 'id')
             }
 

@@ -5,7 +5,9 @@ import '@/lib/__tests__/test-i18n';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { useToastStore } from '@/lib/store/toast-store';
 import type { AgentFormPayload } from '../types';
+import { clearSessionCache } from '@/lib/api/session-cache';
 import {
+  OWNER_USER_ID,
   agentDetail,
   apiFailure,
   dragPaletteItemToCanvas,
@@ -57,8 +59,11 @@ vi.mock('../../api', async (importOriginal) => ({
   AgentsApi: agentsApi,
 }));
 
-const fetchAvailableLlms = vi.hoisted(() => vi.fn());
-vi.mock('@/chat/api', () => ({ ChatApi: { fetchAvailableLlms } }));
+const fetchOrgModels = vi.hoisted(() => vi.fn());
+vi.mock('@/chat/utils/fetch-models-for-context', () => ({
+  fetchModelsForContext: fetchOrgModels,
+  invalidateModelsForContext: vi.fn(),
+}));
 
 const toolsetsApi = vi.hoisted(() => ({
   getAllMyToolsets: vi.fn(),
@@ -86,6 +91,7 @@ vi.mock('@/app/(main)/workspace/web-search/api', () => ({
 }));
 const getUsersByIds = vi.hoisted(() => vi.fn());
 vi.mock('@/app/(main)/workspace/users/api', () => ({ UsersApi: { getUsersByIds } }));
+vi.mock('@/app/components/ui/lottie-loader', () => ({ LottieLoader: () => null }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 
 import { AgentBuilder } from '../agent-builder';
@@ -123,6 +129,7 @@ function toastMessages() {
 
 beforeEach(() => {
   installBrowserShims();
+  clearSessionCache();
   permissions.denied.clear();
   useFeatureFlagsStore.setState({ flags: { ENABLE_ACTIONS: true, ENABLE_MCP: false, ENABLE_SKILLS: false } });
   useToastStore.setState({ toasts: [] });
@@ -140,10 +147,10 @@ beforeEach(() => {
   agentsApi.createAgent.mockImplementation(async (payload: AgentFormPayload) => savedAgent('new-agent', payload));
   agentsApi.updateAgent.mockImplementation(async (key: string, payload: AgentFormPayload) => savedAgent(key, payload));
   agentsApi.deleteAgent.mockResolvedValue(undefined);
-  fetchAvailableLlms.mockResolvedValue([model()]);
+  fetchOrgModels.mockResolvedValue([model()]);
   toolsetsApi.getAllMyToolsets.mockResolvedValue({ toolsets: [toolset()] });
   toolsetsApi.getAllAgentToolsets.mockResolvedValue([]);
-  getUsersByIds.mockResolvedValue([{ name: 'Priya Owner', email: 'priya@example.com' }]);
+  getUsersByIds.mockResolvedValue([{ userId: OWNER_USER_ID, name: 'Priya Owner', email: 'priya@example.com' }]);
 });
 
 afterEach(() => {
@@ -176,12 +183,12 @@ function openSection(title: string) {
 
 async function editAgentPrompts(fields: { instructions?: string; systemPrompt?: string }) {
   fireEvent.click(canvas().getByRole('button', { name: 'Edit prompts' }));
-  const dialog = await screen.findByRole('dialog', { name: 'Configure Agent Prompts' });
+  const dialog = await screen.findByRole('dialog', { name: 'Configure agent prompts' });
   const [systemPrompt, instructions] = within(dialog).getAllByRole('textbox');
   if (fields.systemPrompt !== undefined) fireEvent.change(systemPrompt, { target: { value: fields.systemPrompt } });
   if (fields.instructions !== undefined) fireEvent.change(instructions, { target: { value: fields.instructions } });
   fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
-  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Configure Agent Prompts' })).toBeNull());
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Configure agent prompts' })).toBeNull());
 }
 
 describe('building a new agent', () => {
@@ -309,7 +316,7 @@ describe('building a new agent', () => {
 
   it('keeps the palette in its loading state until the builder data arrives', async () => {
     let finishLoading: (models: unknown[]) => void = () => {};
-    fetchAvailableLlms.mockReturnValue(new Promise((resolve) => { finishLoading = resolve; }));
+    fetchOrgModels.mockReturnValue(new Promise((resolve) => { finishLoading = resolve; }));
     renderInTheme(<AgentBuilder agentKey={null} />);
 
     expect(screen.queryByText('Sales playbook')).toBeNull();
@@ -321,7 +328,7 @@ describe('building a new agent', () => {
   });
 
   it('tells the person when the builder could not load', async () => {
-    fetchAvailableLlms.mockRejectedValue(apiFailure(503));
+    fetchOrgModels.mockRejectedValue(apiFailure(503));
     renderInTheme(<AgentBuilder agentKey={null} />);
 
     expect(await screen.findByText('Failed to load builder resources')).toBeTruthy();
@@ -364,11 +371,16 @@ describe('service agents', () => {
     fireEvent.click(confirm);
 
     await waitFor(() => expect(agentsApi.createAgent).toHaveBeenCalledTimes(1));
-    expect(lastSavedPayload(agentsApi.createAgent)).toMatchObject({
+    const saPayload = lastSavedPayload(agentsApi.createAgent);
+    expect(saPayload).toMatchObject({
       name: 'Ops bot',
       isServiceAccount: true,
       shareWithOrg: true,
     });
+    // This is the call that sent null and was refused: create takes a string,
+    // not a nullable one. toMatchObject alone stays green with null present,
+    // so the field has to be checked for absence explicitly.
+    expect('serviceAccountUserId' in saPayload).toBe(false);
     expect(router.replace).toHaveBeenCalledWith('/agents/edit?agentKey=new-agent&sa=1');
   });
 
@@ -399,6 +411,42 @@ describe('service agents', () => {
 });
 
 describe('editing an agent', () => {
+  it('says the agent could not be loaded, and never offers to save an empty graph over it', async () => {
+    agentsApi.getAgent.mockRejectedValue(apiFailure(500));
+    renderInTheme(<AgentBuilder agentKey="agent-1" />);
+
+    const alert = await screen.findByRole('alert');
+    expect(within(alert).getByText("Couldn't load this agent")).toBeTruthy();
+    // The panel says it once; the global error toast stays quiet.
+    expect(agentsApi.getAgent).toHaveBeenCalledWith('agent-1', { quiet: true });
+    expect(saveButton(/save changes/i)).toHaveProperty('disabled', true);
+    expect(screen.queryByRole('button', { name: /create agent/i })).toBeNull();
+    fireEvent.click(within(alert).getByRole('button', { name: 'Back to chat' }));
+    expect(router.push).toHaveBeenCalledWith('/chat');
+  });
+
+  it('loads the agent when the person retries after a failed load', async () => {
+    const agent = agentDetail();
+    agentsApi.getAgent.mockRejectedValueOnce(apiFailure(500)).mockResolvedValue({ agent });
+    renderInTheme(<AgentBuilder agentKey={agent._key} />);
+
+    fireEvent.click(within(await screen.findByRole('alert')).getByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => expect(nameField()).toHaveProperty('value', agent.name));
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(canvas().getAllByText('Chat input').length).toBeGreaterThan(0);
+  });
+
+  it('shows a loader, not the create-agent header, while the agent loads', async () => {
+    agentsApi.getAgent.mockReturnValue(new Promise(() => {}));
+    renderInTheme(<AgentBuilder agentKey="agent-1" />);
+
+    expect(await screen.findByRole('status', { name: 'Loading agent…' })).toBeTruthy();
+    expect(saveButton(/save changes/i)).toHaveProperty('disabled', true);
+    expect(screen.queryByRole('button', { name: /create agent/i })).toBeNull();
+    expect(nameField()).toHaveProperty('disabled', true);
+  });
+
   it('shows what the agent already has and who created it', async () => {
     await renderExistingAgent({
       models: [{ ...model(), modelFriendlyName: 'GPT-4o' }],
@@ -407,6 +455,25 @@ describe('editing an agent', () => {
     expect(await screen.findByText('Priya Owner')).toBeTruthy();
     expect(canvas().queryByText('Using organization default model')).toBeNull();
     expect(canvas().getAllByText('GPT-4o').length).toBeGreaterThan(0);
+  });
+
+  it('leaves an untouched binding off an ordinary edit', async () => {
+    // The server re-resolves any id it is sent and refuses one whose account
+    // has been switched off, so re-sending an unchanged binding would make a
+    // rename fail — and fail saying the account was not found.
+    await renderExistingAgent({
+      isServiceAccount: true,
+      shareWithOrg: true,
+      serviceAccountUserId: 'sa-live',
+    });
+
+    fireEvent.change(nameField(), { target: { value: 'Ops bot v2' } });
+    fireEvent.click(saveButton(/save changes/i));
+
+    await waitFor(() => expect(agentsApi.updateAgent).toHaveBeenCalledTimes(1));
+    const payload = lastSavedPayload(agentsApi.updateAgent);
+    expect(payload.name).toBe('Ops bot v2');
+    expect('serviceAccountUserId' in payload).toBe(false);
   });
 
   it('only allows saving once something has changed, then confirms the update', async () => {
@@ -485,7 +552,7 @@ describe('editing an agent', () => {
     expect(await screen.findByText(/old_search \(Team Jira\)/)).toBeTruthy();
     expect(saveButton(/save changes/i)).toHaveProperty('disabled', true);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Remove Deprecated Tools' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove deprecated tools' }));
 
     await waitFor(() => expect(screen.queryByText(/old_search \(Team Jira\)/)).toBeNull());
     expect(saveButton(/save changes/i)).toHaveProperty('disabled', false);

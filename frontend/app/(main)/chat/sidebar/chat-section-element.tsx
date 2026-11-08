@@ -4,7 +4,8 @@ import { useState, useRef, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
-import { Box, Flex } from '@radix-ui/themes';
+import { Box, Flex, Tooltip } from '@radix-ui/themes';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useTranslation } from 'react-i18next';
 import { Conversation } from '@/chat/types';
 import { useChatStore, isConversationStreamingInScope } from '@/chat/store';
@@ -111,11 +112,13 @@ export function ChatSectionElement({
   conversation,
   isActive,
   onClick,
-  agentId,
+  agentId: sectionAgentId,
   projectId,
   onPinnedChange,
 }: ChatSectionElementProps) {
   const { t } = useTranslation();
+  // A shared agent chat in the global list carries its own agent; the agent sidebar passes it per section.
+  const agentId = sectionAgentId ?? conversation.agentKey;
 
   const [isHovered, setIsHovered] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -352,10 +355,27 @@ export function ChatSectionElement({
   };
 
   const sharedByName = conversation.sharedBy?.name?.trim();
+  const sharedByText =
+    conversation.isOwner === false && sharedByName ? t('chat.sharedBy', { name: sharedByName }) : undefined;
+  // In the global list an agent chat looks like any other shared chat, so the agent symbol follows the sharer's name.
+  const isAgentChatInGlobalList = Boolean(conversation.agentKey) && !sectionAgentId;
   const sharedBySubtitle =
-    conversation.isOwner === false && sharedByName
-      ? t('chat.sharedBy', { name: sharedByName })
-      : undefined;
+    sharedByText && isAgentChatInGlobalList ? (
+      <>
+        {sharedByText}
+        <Tooltip content={t('chat.agentChat')}>
+          <span
+            aria-label={t('chat.agentChat')}
+            role="img"
+            style={{ display: 'inline-flex', verticalAlign: 'middle', marginLeft: 4 }}
+          >
+            <MaterialIcon name="smart_toy" size={13} color="var(--accent-9)" />
+          </span>
+        </Tooltip>
+      </>
+    ) : (
+      sharedByText
+    );
 
 
   // Inline rename mode — render a plain input instead of SidebarItem

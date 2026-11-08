@@ -6,7 +6,10 @@ from app.models.blocks import Block, BlockContainerIndex, BlockGroup, BlockGroup
 from app.modules.parsers.html_parser.html_parser import HTMLParser
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
+from app.modules.parsers.lightweight_group_parsers import lightweight_group_parsers
+from app.modules.parsers.push_origin import assert_images_inline, content_is_push_origin
 from app.services.parsing.interface import ParseErrorCode, ParseError, ParseResult
+from app.utils.cpu_offload import offload_if_large
 from app.utils.table_enrichment import enhance_tables_with_llm
 
 
@@ -236,7 +239,7 @@ class BlocksParser:
         return block_groups_with_index, block_groups_without_index
     
     async def _process_blockgroup_images(
-        self, markdown_data: str
+        self, markdown_data: str, *, allow_remote_fetch: bool
     ) -> Tuple[str, dict[str, str]]:
         """
         Extract images from markdown and convert URLs to base64.
@@ -251,17 +254,21 @@ class BlocksParser:
         modified_markdown = markdown_data
 
         image_parser = ImageParser(self.logger)
-        md_parser = MarkdownParser(logger=self.logger, config_service=self.config_service)
+        md_parser, _ = self._group_parsers(allow_remote_fetch=allow_remote_fetch)
 
         if md_parser and image_parser:
-            modified_markdown, images = md_parser.extract_and_replace_images(markdown_data)
+            modified_markdown, images = await offload_if_large(
+                md_parser.extract_and_replace_images, markdown_data
+            )
 
             if images:
                 # Collect all image URLs
                 urls_to_convert = [image["url"] for image in images]
 
                 # Convert URLs to base64
-                base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+                base64_urls = await image_parser.urls_to_base64(
+                    urls_to_convert, allow_remote_fetch=allow_remote_fetch
+                )
 
                 # Create caption map with base64 URLs
                 for image, base64_url in zip(images, base64_urls):
@@ -270,11 +277,22 @@ class BlocksParser:
 
         return modified_markdown, caption_map
 
+    def _group_parsers(self, *, allow_remote_fetch: bool) -> tuple[Any, Any]:
+        """Pushed content takes the lightweight parsers, whatever ``PARSER_BACKEND`` says."""
+        if allow_remote_fetch:
+            return (
+                MarkdownParser(logger=self.logger, config_service=self.config_service),
+                HTMLParser(logger=self.logger, config_service=self.config_service),
+            )
+        return lightweight_group_parsers(logger=self.logger, config_service=self.config_service)
+
     async def _process_single_blockgroup(
         self,
         block_group: BlockGroup,
         record_name: str,
         md_parser: MarkdownParser,
+        *,
+        allow_remote_fetch: bool,
     ) -> Tuple[List[BlockGroup], List[Block]]:
         """
         Process a single block group's markdown into blocks.
@@ -299,7 +317,7 @@ class BlocksParser:
 
         # Extract and replace images from markdown, then convert URLs to base64
         modified_markdown, caption_map = await self._process_blockgroup_images(
-            markdown_data
+            markdown_data, allow_remote_fetch=allow_remote_fetch
         )
 
         processed_blocks_container = await md_parser.parse_to_blocks(
@@ -315,6 +333,8 @@ class BlocksParser:
         block_group: BlockGroup,
         record_name: str,
         html_parser: HTMLParser,
+        *,
+        allow_remote_fetch: bool,
     ) -> Tuple[List[BlockGroup], List[Block]]:
         """
         Process a single block group's HTML data into blocks.
@@ -332,12 +352,16 @@ class BlocksParser:
         html_content = html_parser.clean_html(html_data)
 
         caption_map: dict[str, str] = {}
-        modified_html, images = html_parser.extract_and_replace_images(html_content)
+        modified_html, images = await offload_if_large(
+            html_parser.extract_and_replace_images, html_content
+        )
 
         if images:
             image_parser = ImageParser(self.logger)
             urls_to_convert = [image["url"] for image in images]
-            base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+            base64_urls = await image_parser.urls_to_base64(
+                urls_to_convert, allow_remote_fetch=allow_remote_fetch
+            )
             for image, base64_url in zip(images, base64_urls):
                 if base64_url:
                     caption_map[image["new_alt_text"]] = base64_url
@@ -384,7 +408,7 @@ class BlocksParser:
 
 
     async def _process_blockgroups(
-        self, block_containers: BlocksContainer, record_name: str
+        self, block_containers: BlocksContainer, record_name: str, *, allow_remote_fetch: bool
     ) -> BlocksContainer:
         """
         Process BlockGroups with requires_processing=True via markdown or HTML parser.
@@ -422,18 +446,17 @@ class BlocksParser:
         # Map: parent_index -> (new_block_groups, new_blocks)
         processing_results: dict[int, Tuple[List[BlockGroup], List[Block]]] = {}
 
-        md_parser = MarkdownParser(logger=self.logger, config_service=self.config_service)
-        html_parser = HTMLParser(logger=self.logger, config_service=self.config_service)
+        md_parser, html_parser = self._group_parsers(allow_remote_fetch=allow_remote_fetch)
 
         for block_group in block_groups_to_process:
             try:
                 if block_group.format == DataFormat.HTML:
                     new_block_groups, new_blocks = await self._process_single_blockgroup_html(
-                        block_group, record_name, html_parser
+                        block_group, record_name, html_parser, allow_remote_fetch=allow_remote_fetch
                     )
                 else:
                     new_block_groups, new_blocks = await self._process_single_blockgroup(
-                        block_group, record_name, md_parser
+                        block_group, record_name, md_parser, allow_remote_fetch=allow_remote_fetch
                     )
 
                 # Store results for later merging
@@ -477,9 +500,12 @@ class BlocksParser:
         block_containers = BlocksContainer(**blocks_dict)
 
         # Process BlockGroups with requires_processing=True via markdown/HTML parser
+        push_origin = content_is_push_origin(blocks_dict)
         block_containers = await self._process_blockgroups(
-            block_containers, record_name
+            block_containers, record_name, allow_remote_fetch=not push_origin
         )
+        if push_origin:
+            assert_images_inline(block_containers)
 
         # Enhance TABLE BlockGroups with LLM summaries and row descriptions
         await enhance_tables_with_llm(block_containers, self.config_service, self.logger)

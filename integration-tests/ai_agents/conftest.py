@@ -24,6 +24,7 @@ from ai_models_setup import llm_configuration
 from pipeshub_client import PipeshubClient
 
 from ai_agents.support import (
+    API_TOOLSETS,
     MCP_SERVERS,
     PATS,
     PLATFORM_SETTINGS,
@@ -36,9 +37,11 @@ from ai_agents.support import (
 )
 from helper.clients.agents_client import AgentsClient
 from helper.clients.kb_client import KBClient
+from helper.feature_flags import feature_flag
 from helper.indexing_progress import wait_until_finished
 from helper.local_auth import obtain_user_session_token
 from helper.mcp_fixture import ORDER_TOOL, McpFixture
+from helper.openapi_fixture import DEMO_API_KEY, OpenApiFixture
 from helper.source_credentials import secrets_required, source_unavailable
 from helper.stored_names import stored_name
 
@@ -171,6 +174,13 @@ def mcp_feature_enabled(pipeshub_client: PipeshubClient) -> Iterator[None]:
 
 
 @pytest.fixture(scope="session")
+def api_toolsets_enabled(pipeshub_client: PipeshubClient) -> Iterator[None]:
+    """API actions are behind the ENABLE_API_TOOLSETS Labs flag, off by default."""
+    with feature_flag(pipeshub_client, "ENABLE_API_TOOLSETS", True):
+        yield
+
+
+@pytest.fixture(scope="session")
 def mcp_instance(
     pipeshub_client: PipeshubClient, mcp_fixture: McpFixture, mcp_feature_enabled
 ) -> Iterator[dict[str, Any]]:
@@ -236,6 +246,87 @@ def kb_mcp_agent(
             "name": mcp_instance["name"],
             "tools": [{"name": ORDER_TOOL, "fullName": mcp_instance["orderTool"]}],
         }],
+    }
+    resp = agents_client.create_agent(**payload)
+    assert resp.status_code in (200, 201), f"creating the agent: {resp.status_code} {resp.text[:500]}"
+    agent_key = (json_body(resp).get("agent") or {}).get("_key")
+    assert agent_key, f"agent create returned no agent._key: {resp.text[:500]}"
+    try:
+        yield {"agent_key": agent_key, "payload": payload}
+    finally:
+        deleted = agents_client.delete_agent(agent_key)
+        if deleted.status_code >= 300 and deleted.status_code != 404:
+            logger.warning("could not delete agent %s: %s", agent_key, deleted.text[:300])
+
+
+@pytest.fixture(scope="session")
+def openapi_fixture() -> OpenApiFixture:
+    fixture = OpenApiFixture.from_env()
+    if not fixture.healthy():
+        source_unavailable(
+            f"the openapi-fixture service is not reachable at {fixture.test_url}; start the "
+            "integration compose stack, which runs it",
+            secrets=["OPENAPI_FIXTURE_TEST_URL"],
+            required=secrets_required(),
+        )
+    return fixture
+
+
+@pytest.fixture(scope="session")
+def api_toolset(
+    pipeshub_client: PipeshubClient, openapi_fixture: OpenApiFixture, api_toolsets_enabled: None
+) -> Iterator[dict[str, Any]]:
+    """The Acme Helpdesk API added as an API Toolset from its own spec, with one shared API key,
+    the way an admin adds it. Its connection is tested through PipesHub before anything uses it."""
+    del api_toolsets_enabled
+    resp = pipeshub_client.request("POST", f"{API_TOOLSETS}/instances", json={
+        "name": f"it-acme-{uuid.uuid4().hex[:6]}",
+        "spec": openapi_fixture.spec().decode(),
+        "baseUrl": openapi_fixture.connector_url,
+        "authSchemeName": "apiKeyAuth",
+        "operations": ["list_tickets", "get_ticket"],
+        "useSharedCredential": True,
+    })
+    assert resp.status_code == 200, f"adding the API toolset: {resp.status_code} {resp.text[:500]}"
+    toolset = json_body(resp)
+    toolset_id = toolset.get("id")
+    assert toolset_id, f"API toolset create returned no id: {resp.text[:500]}"
+    try:
+        key = pipeshub_client.request("PUT", f"{API_TOOLSETS}/instances/{toolset_id}/shared-credentials",
+                                      json={"apiKey": DEMO_API_KEY})
+        assert key.status_code == 200, f"storing the shared API key: {key.status_code} {key.text[:300]}"
+        openapi_fixture.reset()
+        test = pipeshub_client.request("POST", f"{API_TOOLSETS}/instances/{toolset_id}/test", json={})
+        assert test.status_code == 200 and json_body(test).get("ok") is True, (
+            f"PipesHub could not call {openapi_fixture.connector_url}: {test.status_code} {test.text[:500]}"
+        )
+        yield toolset
+    finally:
+        deleted = pipeshub_client.request("DELETE", f"{API_TOOLSETS}/instances/{toolset_id}")
+        if deleted.status_code >= 300 and deleted.status_code != 404:
+            logger.warning("could not delete API toolset %s: %s", toolset_id, deleted.text[:300])
+
+
+@pytest.fixture(scope="session")
+def api_toolset_agent(
+    agents_client: AgentsClient, it_model: ItModel, api_toolset: dict[str, Any],
+) -> Iterator[dict[str, Any]]:
+    """An Agent Builder agent that may read Acme Helpdesk tickets and nothing else."""
+    require_reasoning(it_model)
+    payload = {
+        "name": f"it-api-toolset-agent-{uuid.uuid4().hex[:6]}",
+        "description": "Answers questions about helpdesk tickets.",
+        "systemPrompt": (
+            "You help the support team. For any question about a helpdesk ticket, look it up "
+            "with the Acme Helpdesk tools instead of guessing."
+        ),
+        "models": [{
+            "modelKey": it_model.model_key,
+            "modelName": it_model.model_name,
+            "provider": it_model.provider,
+            "isReasoning": True,
+        }],
+        "apiToolsetTools": [f"{api_toolset['id']}:get_ticket", f"{api_toolset['id']}:list_tickets"],
     }
     resp = agents_client.create_agent(**payload)
     assert resp.status_code in (200, 201), f"creating the agent: {resp.status_code} {resp.text[:500]}"

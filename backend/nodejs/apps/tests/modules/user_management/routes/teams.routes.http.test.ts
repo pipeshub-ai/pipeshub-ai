@@ -12,6 +12,7 @@ import { UserDisplayPicture } from '../../../../src/modules/user_management/sche
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AuthTokenService } from '../../../../src/libs/services/authtoken.service'
 import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware'
+import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../../src/libs/errors/backend-error'
 import { INVALID_PATH_SEGMENT_MESSAGE } from '../../../../src/libs/middlewares/safe-path-params.middleware'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
@@ -84,6 +85,7 @@ describe('Teams over HTTP', () => {
   const pictureLookups: Array<Record<string, unknown>> = []
   let server: http.Server
   let origin = ''
+  let config: AppConfig
 
   const session = (user: FakeUser): string =>
     tokens.generateToken({
@@ -138,7 +140,7 @@ describe('Teams over HTTP', () => {
 
   before(async () => {
     await backend.start()
-    const config: AppConfig = buildConfig(backend.url)
+    config = buildConfig(backend.url)
     const oauthService = {
       verifyAccessToken: async (token: string) => {
         const grant = oauthGrants.get(token)
@@ -453,6 +455,24 @@ describe('Teams over HTTP', () => {
       expect(res.status).to.equal(503)
       expect(res.headers.get('retry-after')).to.equal('5')
       expect(await res.text()).to.contain(detail)
+    })
+
+    // While the connectors service is starting, calls to it fail before any answer.
+    it('answers 503 when the team service is not listening, not 500', async () => {
+      // Holds the port and drops every connection, so no other process can answer on it.
+      const dropping = http.createServer()
+      dropping.on('connection', (socket) => socket.destroy())
+      await new Promise<void>((resolve) => dropping.listen(0, '127.0.0.1', resolve))
+      const live = config.connectorBackend
+      config.connectorBackend = `http://127.0.0.1:${(dropping.address() as AddressInfo).port}`
+      try {
+        const res = await send('GET', '/user/teams', session(READER))
+        expect(res.status).to.equal(503)
+        expect(errorMessage(res)).to.equal(SERVICE_UNAVAILABLE_MESSAGE)
+      } finally {
+        config.connectorBackend = live
+        await new Promise<void>((resolve) => dropping.close(() => resolve()))
+      }
     })
   })
 

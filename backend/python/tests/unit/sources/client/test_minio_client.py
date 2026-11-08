@@ -1,7 +1,7 @@
 """Unit tests for MinIO client module."""
 
 import logging
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -15,6 +15,12 @@ from app.sources.client.minio.minio import (
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _address_check_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The address check has its own tests (test_connector_address_rule.py); these hosts are made up.
+    monkeypatch.setattr("app.sources.client.minio.minio.check_url_allowed", lambda *_a, **_k: None)
 
 
 @pytest.fixture
@@ -93,7 +99,7 @@ class TestMinIORESTClientViaAccessKey:
         client = MinIORESTClientViaAccessKey("A", "S", "http://localhost:9000", verify_ssl=False)
         result = await client.get_s3_client()
         mock_session.create_client.assert_called_once_with(
-            "s3", endpoint_url="http://localhost:9000", verify=False
+            "s3", endpoint_url="http://localhost:9000", verify=False, config=ANY
         )
 
     def test_get_bucket_name(self, rest_client):
@@ -321,7 +327,7 @@ class TestMinIOClient:
         client = MinIOClient(rest_client)
         result = await client.get_s3_client()
         mock_session.create_client.assert_called_once_with(
-            "s3", endpoint_url="http://localhost:9000", verify=False
+            "s3", endpoint_url="http://localhost:9000", verify=False, config=ANY
         )
 
     @pytest.mark.asyncio

@@ -1,14 +1,15 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Avatar, Badge, Flex, IconButton, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { apiClient } from '@/lib/api';
+import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
 import { isMcpInstanceReadOnly, McpInheritedBadge } from '@/config';
 import type { McpMyServerEntry, McpToolInfo } from '../../types';
 import { MCP_AUTH_MODE_LABELS, MCP_TRANSPORT_LABELS } from '../../types';
 import { McpStatusBadge, mcpConnectionState, usesSharedCredential } from '../../connection-state';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 // ========================================
 // Props
@@ -42,6 +43,7 @@ export function McpInstanceRow({
   onDiscoverTools,
 }: McpInstanceRowProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const [toolsExpanded, setToolsExpanded] = useState(false);
 
   const managedByAdmin = instance.useAdminAuth;
@@ -53,38 +55,8 @@ export function McpInstanceRow({
   const hasDiscoveredTools = Boolean(toolsResult && !toolsResult.loading && !toolsResult.error && toolsResult.tools.length > 0);
 
   const isReadOnly = isMcpInstanceReadOnly(instance);
-  const [createdByName, setCreatedByName] = useState<string | null>(null);
-  const [createdByAvatar, setCreatedByAvatar] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!instance.createdBy || isReadOnly) return;
-    let cancelled = false;
-
-    async function fetchCreatedByUser() {
-      try {
-        const { data } = await apiClient.post('/api/v1/users/by-ids', {
-          userIds: [instance.createdBy],
-        });
-        if (cancelled) return;
-
-        const users = Array.isArray(data) ? data : data.users ?? [];
-        if (users.length > 0) {
-          const user = users[0] as Record<string, unknown>;
-          const fullName = (user.name as string) ?? (user.fullName as string) ?? '';
-          const userId = (user.id as string) ?? (user._id as string) ?? instance.createdBy;
-          setCreatedByName(fullName.trim() || instance.createdBy);
-          if (userId) setCreatedByAvatar(`/api/v1/users/${userId}/dp`);
-        }
-      } catch {
-        /* ignore — fall back to the raw id */
-      }
-    }
-
-    void fetchCreatedByUser();
-    return () => {
-      cancelled = true;
-    };
-  }, [instance.createdBy, isReadOnly]);
+  const createdBy = useUserDirectoryEntry(isReadOnly ? null : instance.createdBy);
+  const createdByName = createdBy?.name?.trim() || null;
 
   return (
     <Flex
@@ -96,7 +68,7 @@ export function McpInstanceRow({
         overflow: 'hidden',
       }}
     >
-      <Flex direction="column" gap="4" style={{ padding: 16, minWidth: 325 }}>
+      <Flex direction="column" gap="4" style={{ padding: 16 }}>
         {/* Header row */}
         <Flex align="center" gap="2" style={{ width: '100%' }}>
           <Flex
@@ -126,7 +98,7 @@ export function McpInstanceRow({
 
           <McpInheritedBadge instance={instance} />
 
-          <IconButton
+          <IconButton className="touch-hit"
             variant="outline"
             color="red"
             size="1"
@@ -139,7 +111,7 @@ export function McpInstanceRow({
             <MaterialIcon name="delete" size={16} color="var(--red-11)" />
           </IconButton>
 
-          <IconButton
+          <IconButton className="touch-hit"
             variant="outline"
             color="gray"
             size="1"
@@ -182,7 +154,7 @@ export function McpInstanceRow({
           <InfoRow label={t('workspace.mcpServers.details.createdBy', { defaultValue: 'Created by' })}>
             <Avatar
               size="1"
-              src={createdByAvatar ?? undefined}
+              src={createdBy?.profilePicture}
               fallback={createdByName?.[0] ?? '?'}
               radius="full"
             />
@@ -244,7 +216,8 @@ export function McpInstanceRow({
             direction="column"
             gap="2"
             style={{
-              marginLeft: 164,
+              // Phones stack InfoRow labels above values, so there is no label column to clear.
+              marginLeft: isMobile ? 0 : 164,
               padding: 'var(--space-3)',
               backgroundColor: 'var(--gray-a2)',
               borderRadius: 'var(--radius-3)',
@@ -269,16 +242,19 @@ export function McpInstanceRow({
       </Flex>
 
       {needsAuth && (
+        // Wraps on narrow screens so the buttons drop under the text instead of off the edge.
         <Flex
           align="center"
           justify="between"
+          wrap="wrap"
+          gap="3"
           style={{
             padding: 'var(--space-3) var(--space-4)',
             borderTop: '1px solid var(--gray-a4)',
             backgroundColor: 'var(--gray-a2)',
           }}
         >
-          <Flex direction="column" gap="1">
+          <Flex direction="column" gap="1" style={{ flex: '1 1 240px', minWidth: 0 }}>
             <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
               {reconnectNeeded
                 ? t('workspace.mcpServers.status.reconnectNeeded')
@@ -295,7 +271,7 @@ export function McpInstanceRow({
             </Text>
           </Flex>
 
-          <Flex align="center" gap="2">
+          <Flex align="center" gap="2" wrap="wrap">
             {instance.isAuthenticated ? (
               <>
                 <ActionButton
@@ -332,14 +308,15 @@ export function McpInstanceRow({
 // ========================================
 
 function InfoRow({ label, children }: { label: string; children: ReactNode }) {
+  const isMobile = useIsMobile();
   return (
-    <Flex align="center" gap="4">
+    <Flex direction={isMobile ? 'column' : 'row'} align={isMobile ? 'start' : 'center'} gap={isMobile ? '1' : '4'}>
       <Text
         size="1"
         weight="medium"
         style={{
           color: 'var(--gray-10)',
-          width: 164,
+          width: isMobile ? 'auto' : 164,
           flexShrink: 0,
           textTransform: 'uppercase',
           letterSpacing: '0.04px',

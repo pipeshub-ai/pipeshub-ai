@@ -83,10 +83,10 @@ describe('LoginPage', () => {
     expect(screen.queryByText('single:password')).toBeNull();
 
     getOrgExists.mockResolvedValueOnce({ exists: true });
-    initAuth.mockResolvedValueOnce({ allowedMethods: ['samlSso'], authProviders: {} });
+    initAuth.mockResolvedValueOnce({ allowedMethods: ['google'], authProviders: {} });
     fireEvent.click(screen.getByRole('button', { name: en.auth.login.retry }));
 
-    await waitFor(() => expect(screen.getByText('single:samlSso')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('single:google')).toBeTruthy());
     expect(invalidateOrgExistsCache).toHaveBeenCalledTimes(1);
   });
 });

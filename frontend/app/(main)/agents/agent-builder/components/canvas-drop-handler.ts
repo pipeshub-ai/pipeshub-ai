@@ -74,25 +74,30 @@ function rejectIfDuplicateToolsetType(
   return false;
 }
 
+type DropContext = {
+  /** Drop point in flow coordinates (from `screenToFlowPosition`). */
+  flowPointer: { x: number; y: number };
+  nodes: Node<FlowNodeData>[];
+  setNodes: SetNodes;
+  setEdges: SetEdges;
+  nodeTemplates: NodeTemplate[];
+  configuredConnectors: Connector[];
+  activeAgentConnectors: Connector[];
+  readOnly: boolean;
+  t: TFunction;
+  onError?: (message: string) => void;
+  /** Set while the agent's MCP servers couldn't be read: a save leaves them out, so an MCP
+   * server dropped now would be lost without a word. */
+  mcpDropBlockedMessage?: string;
+};
+
+/** The part of a drop event the handler reads, so a tap can stand in for a drag. */
+type DropEventLike = { preventDefault: () => void; dataTransfer: { getData: (key: string) => string } };
+
 /** Call from onDrop with event + deps */
 export function handleFlowCanvasDrop(
-  event: React.DragEvent,
-  ctx: {
-    /** Drop point in flow coordinates (from `screenToFlowPosition`). */
-    flowPointer: { x: number; y: number };
-    nodes: Node<FlowNodeData>[];
-    setNodes: SetNodes;
-    setEdges: SetEdges;
-    nodeTemplates: NodeTemplate[];
-    configuredConnectors: Connector[];
-    activeAgentConnectors: Connector[];
-    readOnly: boolean;
-    t: TFunction;
-    onError?: (message: string) => void;
-    /** Set while the agent's MCP servers couldn't be read: a save leaves them out, so an MCP
-     * server dropped now would be lost without a word. */
-    mcpDropBlockedMessage?: string;
-  }
+  event: DropEventLike,
+  ctx: DropContext
 ): void {
   if (ctx.readOnly) return;
   event.preventDefault();
@@ -780,4 +785,38 @@ export function handleFlowCanvasDrop(
           : false,
     },
   });
+}
+
+/** A palette row's drag payload, read back the way a drop reads `dataTransfer`. */
+export function buildTapDropPayload(data: Record<string, string>): { getData: (key: string) => string } {
+  return { getData: (key) => data[key] ?? '' };
+}
+
+/** Tap-to-add: drop a palette row's payload at the centre of the visible canvas. */
+export function addNodeAtViewportCenter(args: {
+  data: Record<string, string>;
+  reactFlow: { screenToFlowPosition: (p: { x: number; y: number }) => { x: number; y: number } };
+  canvas: Element;
+  nodes: Node<FlowNodeData>[];
+  edges: Edge[];
+  drop: Omit<DropContext, 'flowPointer' | 'nodes' | 'setNodes' | 'setEdges'>;
+}): { nodes: Node<FlowNodeData>[]; edges: Edge[] } {
+  let nodes = args.nodes;
+  let edges = args.edges;
+  const r = args.canvas.getBoundingClientRect();
+  handleFlowCanvasDrop(
+    { preventDefault: () => {}, dataTransfer: buildTapDropPayload(args.data) },
+    {
+      ...args.drop,
+      flowPointer: args.reactFlow.screenToFlowPosition({ x: r.left + r.width / 2, y: r.top + r.height / 2 }),
+      nodes,
+      setNodes: (u) => {
+        nodes = typeof u === 'function' ? u(nodes) : u;
+      },
+      setEdges: (u) => {
+        edges = typeof u === 'function' ? u(edges) : u;
+      },
+    }
+  );
+  return { nodes, edges };
 }
