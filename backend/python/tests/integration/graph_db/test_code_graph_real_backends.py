@@ -12,6 +12,7 @@ NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import uuid
@@ -433,6 +434,61 @@ async def test_deleting_a_files_blocks(repo: _Repo) -> None:
     rid = repo.record_ids["src/shop/a.py"]
     assert await repo.graph.delete_blocks_for_records([rid]) >= 1
     assert not await repo.graph.has_nodes_by_filters(BLOCKS, filters={"recordId": rid})
+
+
+# c.py calls into a.py only, so its edge shares the build's write with a.py's edge into b.py but not b.py's fate.
+RACE_FILES = {**FILES, "src/shop/c.py": "from shop.a import caller\n\n\ndef run():\n    return caller()\n"}
+
+
+# Neo4j only: ArangoDB writes an edge without taking its endpoints' locks, so there is no wait to lose.
+@pytest.fixture(params=["neo4j"])
+async def race_repo(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
+                    ) -> AsyncIterator[_Repo]:
+    async with _connected_repo(request, monkeypatch, RACE_FILES) as built:
+        yield built
+
+
+async def test_a_build_writing_into_a_file_deleted_under_it_skips_that_file(race_repo: _Repo) -> None:
+    """B3: a branch reset deletes files while the build they asked for runs. The build
+    read b.py; its write matched it, waited on the delete's lock, and lost it (EntityNotFound).
+    The rerun writes every other edge of that statement."""
+    repo = race_repo
+    rid = repo.record_ids["src/shop/b.py"]
+    # As the connector deletes a file (GraphDataStore.delete_record_by_key): the record, then its blocks.
+    delete = await repo.graph.begin_transaction([], [RECORDS, BLOCKS], explicit=True)
+    await repo.graph.delete_nodes_and_edges([rid], RECORDS, transaction=delete)
+    await repo.graph.delete_blocks_for_records([rid], transaction=delete)
+    writing = asyncio.Event()
+
+    async def fence() -> None:
+        writing.set()
+
+    build = asyncio.create_task(build_code_graph_edges(
+        graph_provider=repo.graph, org_id=repo.org_id, record_group_id=repo.group_id,
+        facts_source=repo.blobs, fence=fence,
+    ))
+    try:
+        await asyncio.wait_for(writing.wait(), timeout=60)
+        for _ in range(200):   # until the write waits on the delete's lock
+            rows = await repo.graph.client.execute_query(  # this build's write: an edge into this test's b.py
+                "SHOW TRANSACTIONS YIELD status, currentQuery, parameters "
+                "WHERE status STARTS WITH 'Blocked' AND currentQuery CONTAINS 'MERGE (from)' "
+                "AND any(e IN coalesce(parameters.edges, []) WHERE e.to_key IN $into_b) "
+                "RETURN count(*) AS blocked",
+                parameters={"into_b": [rid, repo.block("src/shop/b.py", "function:target")]})
+            if rows and rows[0]["blocked"]:
+                break
+            await asyncio.sleep(0.05)
+        else:
+            pytest.fail("the build's write never waited on the delete")
+    finally:
+        await repo.graph.commit_transaction(delete)
+
+    await asyncio.wait_for(build, timeout=60)
+    into_b = [f"{RECORDS}/{rid}", repo.block_id("src/shop/b.py", "function:target")]
+    assert await repo.graph.get_edges_by_target_keys(into_b, RELATIONS, raise_on_error=True) == []
+    assert repo.block("src/shop/a.py", "function:caller") in await _outbound(
+        repo, "src/shop/c.py", "function:run", RecordRelations.CALLS)
 
 
 async def test_a_deleted_files_names_are_kept_and_served_once(repo: _Repo) -> None:

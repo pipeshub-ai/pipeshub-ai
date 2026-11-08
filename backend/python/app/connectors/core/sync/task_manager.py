@@ -5,14 +5,15 @@ Ensures at most one task per key is active at any time.
 """
 
 import asyncio
+import contextvars
 import logging
 from typing import Coroutine, Dict, Optional
 
 from app.utils.request_context import (
+    RequestContext,
+    bind_context,
     get_context,
     new_system_root,
-    reset_context,
-    set_context,
 )
 
 
@@ -77,25 +78,22 @@ class SyncTaskManager:
         return self._spawn(key, coro)
 
     def _spawn(self, key: str, coro: Coroutine) -> asyncio.Task:
-        # Inherit the triggering request's context (create_task copies it); only
-        # a pure background trigger with no context mints a fresh root.
-        async def _traced() -> None:
-            if get_context() is not None:
-                await coro
-                return
-            token = set_context(new_system_root())
-            try:
-                await coro
-            finally:
-                reset_context(token)
+        # Inherit the triggering request's or message's root. A background trigger, with
+        # no root or a detached task's shared one, mints a fresh root per sync, keeping
+        # the org a job scope set. The start line, the task and its done callback all run
+        # in this one context, so they share the sync's root.
+        context = contextvars.copy_context()
+        ctx = get_context()
+        if ctx is None or ctx.detached:
+            context.run(bind_context, RequestContext(new_system_root(), org_id=ctx.org_id if ctx else None))
 
-        task = asyncio.create_task(_traced(), name=f"{self._label.lower()}_{key}")
+        task = asyncio.create_task(coro, name=f"{self._label.lower()}_{key}", context=context)
         self._tasks[key] = task
 
         # Auto-remove the task from the registry once it finishes
-        task.add_done_callback(lambda t: self._on_task_done(key, t))
+        task.add_done_callback(lambda t: self._on_task_done(key, t), context=context)
 
-        self.logger.info(f"{self._label} task started for {key}")
+        context.run(self.logger.info, f"{self._label} task started for {key}")
         return task
 
     def request_stop(self, key: str) -> bool:

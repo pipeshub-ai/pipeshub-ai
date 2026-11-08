@@ -78,6 +78,8 @@ class BlockRow:
     # The file-summary block's `macroTable`: C/C++ function-like macro -> [line, names its body calls].
     macro_table: dict[str, list] = field(default_factory=dict)
     type_param_count: int = 0
+    # Where the definition starts: a top-level one after an import of the same name rebinds that name.
+    start_line: int | None = None
 
     @staticmethod
     def from_doc(doc: dict[str, Any], paths: dict[str, str]) -> "BlockRow":
@@ -104,6 +106,7 @@ class BlockRow:
             modifiers=_ensure_str_list(doc.get("modifiers")),
             macro_table=_ensure_dict(doc.get("macroTable")),
             type_param_count=doc.get("typeParamCount") or 0,
+            start_line=doc.get("startLine") if isinstance(doc.get("startLine"), int) else None,
         )
 
 

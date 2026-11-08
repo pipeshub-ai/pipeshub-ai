@@ -105,6 +105,39 @@ async def test_a_statement_that_lost_a_conflict_runs_again(conflict) -> None:
     assert _ran(sessions) == 2
 
 
+def lost_node(message: str = "Unable to load NODE 4:db:6904.") -> Exception:
+    return ClientError._hydrate_neo4j(code="Neo.ClientError.Statement.EntityNotFound", message=message)
+
+
+@pytest.mark.asyncio
+async def test_a_write_that_lost_its_endpoint_to_a_concurrent_delete_runs_again() -> None:
+    """B3: an edge MERGE matched a block, waited on the lock of the delete removing it, then
+    found it gone. Rolled back whole; run again, the MATCH skips the deleted block."""
+    client, sessions = _client([lost_node()])
+
+    assert await client.execute_query("MATCH (a {id: 1}) MATCH (b {id: 2}) MERGE (a)-[:R]->(b)") == [{"ok": True}]
+    assert _ran(sessions) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_node_the_statement_deleted_itself_is_not_run_again() -> None:
+    client, sessions = _client([lost_node("Node with id 4:db:1 has been deleted in this transaction")])
+
+    with pytest.raises(ClientError, match="deleted in this transaction"):
+        await client.execute_query("MATCH (a) DETACH DELETE a RETURN a.id")
+    assert _ran(sessions) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_lost_endpoint_in_an_explicit_transaction_is_left_to_its_owner() -> None:
+    client, sessions = _client([lost_node()], explicit_transactions=True)
+    txn = await client.begin_transaction([], [])
+
+    with pytest.raises(ClientError, match="EntityNotFound"):
+        await client.execute_query("MERGE (a)-[:R]->(b)", txn_id=txn)
+    assert _ran(sessions) == 1
+
+
 @pytest.mark.asyncio
 async def test_a_conflict_that_persists_is_raised() -> None:
     client, sessions = _client([deadlock() for _ in range(WRITE_CONFLICT_ATTEMPTS)])

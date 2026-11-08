@@ -18,12 +18,27 @@ from datetime import datetime, timezone
 
 from httpx import URL
 
+from app.core import org_context
+from app.core.org_context import OrgContext
+from app.services.model_identity.call_context import ModelCallContext, peek_call_context
 from app.utils.log_redaction import (
     REDACTED,
     redact_secrets_in_text,
     refresh_env_secrets,
 )
-from app.utils.request_context import NO_CONTEXT, current_display_id, get_context
+from app.utils.logging_fields import (
+    CONTEXT_FIELDS,
+    RESERVED_RECORD_ATTRS,
+    current_log_fields,
+    log_once,
+)
+from app.utils.request_context import (
+    NO_CONTEXT,
+    RequestContext,
+    current_display_id,
+    get_context,
+    sanitize_root_id,
+)
 from app.utils.sensitive_names import is_credential_name
 from app.utils.structured_logging import StructuredLoggingProvider, get_provider
 from app.utils.url_redaction import redact_sensitive_query_params, redact_url
@@ -36,6 +51,82 @@ TEXT_FORMAT = (
 )
 
 
+_CALL_CONTEXT_IDS = ("conversation_id", "agent_id", "record_id", "connector_id")
+# Runs on every line with an org; the org ids in one process are few.
+_sanitized_org = functools.lru_cache(maxsize=256)(sanitize_root_id)
+
+
+def _identity(rc: RequestContext | None) -> tuple[OrgContext | None, ModelCallContext | None, str | None, str | None]:
+    """The bound OrgContext and call context, and the org and user of the work in flight.
+
+    Org and user come from one source, so they never mix two scopes: OrgContext when bound
+    (a system one has neither), else the model call's principal, else the request context
+    (org only).
+    """
+    oc = org_context.peek()
+    call = peek_call_context()
+    if oc is not None:
+        return oc, call, oc.org_id, oc.user_id
+    if call is not None:
+        principal = call.principal
+        return oc, call, principal.org_id or None, principal.subject_id if principal.is_user else None
+    return oc, call, (rc.org_id if rc else None), None
+
+
+def _stamp_context(record: logging.LogRecord, rc: RequestContext | None) -> None:
+    """Identity as the provider's ``log_identity`` shows it, then the OrgContext kind and
+    source (not for users), the call context's ids and the bound fields, in ``record._log_ctx``;
+    and the provider's ``hash_org_id`` as ``record.organization_id_hash``.
+
+    Must not raise: makeRecord runs outside any handler's error handling, often in an except
+    block. Each hook is guarded on its own, so a failing one drops only what it makes.
+    """
+    try:
+        oc, call, org, user = _identity(rc)
+    except Exception as exc:
+        _note_context_failure(exc)
+        oc, call, org, user = None, None, None, None
+    bound = current_log_fields()
+    if oc is None and call is None and not org and not bound:
+        return
+    try:
+        provider = get_provider()
+        fields: dict[str, object] = {}
+        if org:
+            try:
+                org_hash = provider.hash_org_id(_sanitized_org(org) or org)
+                if org_hash:
+                    record.organization_id_hash = org_hash  # an attribute, as the EE formatter reads it
+            except Exception as exc:
+                _note_context_failure(exc)
+        ids = {k: v for k, v in (("org_id", org), ("user_id", user)) if v}
+        if ids:
+            try:
+                fields.update(provider.log_identity(ids))  # type: ignore[arg-type]
+            except Exception as exc:
+                _note_context_failure(exc)
+        if oc is not None and oc.kind != "user":
+            fields["ctx_kind"] = oc.kind
+            fields["ctx_source"] = oc.source
+        if call is not None:
+            for key in _CALL_CONTEXT_IDS:
+                value = getattr(call, key)
+                if value:
+                    fields[key] = value
+            fields["workload"] = call.workload.value
+    except Exception as exc:
+        _note_context_failure(exc)
+        fields = {}
+    fields.update(bound)
+    if fields:
+        record._log_ctx = fields  # underscored: an extra= key of the same name must not collide
+
+
+def _note_context_failure(exc: Exception) -> None:
+    if log_once("logger:context_fields_failed"):
+        sys.stderr.write(f"app.utils.logger: log context not added ({type(exc).__name__})\n")
+
+
 def _make_record_factory(
     base_factory: Callable[..., logging.LogRecord],
 ) -> Callable[..., logging.LogRecord]:
@@ -45,6 +136,7 @@ def _make_record_factory(
         record = base_factory(*args, **kwargs)  # type: ignore[arg-type]
 
         ctx = get_context()
+        _stamp_context(record, ctx)
         if ctx is None:
             record.request_id = ""
             record.task = NO_CONTEXT
@@ -61,11 +153,6 @@ def _make_record_factory(
         record.request_id = display_id
         record.task = task_name
         record.trace = f"[req:{display_id} thr:{record.threadName} task:{task_name}] "
-
-        if ctx.org_id:
-            org_hash = get_provider().hash_org_id(ctx.org_id)
-            if org_hash:
-                record.organization_id_hash = org_hash
         return record
 
     _record_factory._pipeshub_trace = True  # type: ignore[attr-defined]
@@ -129,23 +216,24 @@ def _redact_all_handlers() -> None:
                 handler.setFormatter(_RedactingWrapper(handler.formatter or logging.Formatter()))
 
 
-# Attributes every record has, plus the ones the record factory and uvicorn
-# add; anything else on a record came from ``extra=`` and is a field.
-_RESERVED = frozenset(vars(logging.LogRecord("", 0, "", 0, "", (), None))) | {
-    "message", "asctime", "request_id", "task", "trace", "color_message",
-    "stack",  # JSON's traceback key: a field of that name would show in text and vanish in JSON
-}
 _UNREDACTED_TYPES = (int, float, bool, type(None))
 _is_credential_key = functools.lru_cache(maxsize=1024)(is_credential_name)
 
 
-def _record_fields(record: logging.LogRecord) -> dict[str, object]:
-    """The record's ``extra=`` fields in the order passed. Numbers, booleans and
-    None keep their type; anything else becomes a string, and a string under a
-    credential name (``token``, ``apiKey``) is masked."""
-    fields: dict[str, object] = {}
+def log_record_fields(record: logging.LogRecord) -> dict[str, object]:
+    """The record's fields: the bound context's (identity first, then the call context's
+    ids, then bound ids), then its ``extra=`` fields in the order passed. An ``extra=``
+    value replaces a bound one in place; it never sets or replaces org_id, user_id,
+    ctx_kind or ctx_source. Numbers, booleans and None keep their type; anything else
+    becomes a string, and a string under a credential name (``token``, ``apiKey``) is masked."""
+    merged: dict[str, object] = dict(getattr(record, "_log_ctx", None) or {})
     for key, value in record.__dict__.items():
-        if key in _RESERVED or key.startswith("_"):
+        if key in RESERVED_RECORD_ATTRS or key.startswith("_") or key in CONTEXT_FIELDS:
+            continue
+        merged[key] = value
+    fields: dict[str, object] = {}
+    for key, value in merged.items():
+        if key in RESERVED_RECORD_ATTRS:
             continue
         if isinstance(value, _UNREDACTED_TYPES):
             fields[key] = value
@@ -187,7 +275,7 @@ class TextFormatter(RedactingFormatter):
     def formatMessage(self, record: logging.LogRecord) -> str:
         # Here rather than in format(): the fields then come before the traceback.
         line = super().formatMessage(record)
-        pairs = [f"{k}={_text_value(v)}" for k, v in _record_fields(record).items() if v is not None]
+        pairs = [f"{k}={_text_value(v)}" for k, v in log_record_fields(record).items() if v is not None]
         return f"{line} | {' '.join(pairs)}" if pairs else line
 
     def format(self, record: logging.LogRecord) -> str:
@@ -222,7 +310,7 @@ class JsonFormatter(logging.Formatter):
             "message": redact_secrets_in_text(record.getMessage()),
             "request_id": getattr(record, "request_id", "") or None,
         }
-        for key, value in _record_fields(record).items():
+        for key, value in log_record_fields(record).items():
             out.setdefault(key, _json_value(value))
         stack = self._stack(record)
         if stack:
