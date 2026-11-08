@@ -9,7 +9,7 @@ import {
   assertReservedEmailDomainBelongsToServiceAccount,
   assertServiceAccountRole,
 } from '../../../modules/user_management/constants/service-account.constants';
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import { ValidationError } from '../../errors/validation.error';
 import {
   Params,

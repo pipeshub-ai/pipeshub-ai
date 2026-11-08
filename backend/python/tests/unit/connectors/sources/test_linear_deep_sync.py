@@ -1380,9 +1380,43 @@ class TestSyncProjectsForTeams:
 
         # One listing for all teams, not one per team.
         ds.projects.assert_awaited_once_with(
-            first=10, after=None,
+            first=10, after=None, includeArchived=True,
             filter={"accessibleTeams": {"some": {"id": {"in": ["t1", "t2"]}}}})
         connector._project_to_records.assert_awaited_once_with("p-shared", {"t1", "t2"})
+
+    @pytest.mark.asyncio
+    async def test_the_listing_includes_archived_projects_and_skips_trashed_ones(self) -> None:
+        connector = _make_connector()
+        connector.sync_filters = None
+        ds = MagicMock()
+        ds.projects = AsyncMock(return_value=_mock_gql_response({"projects": {"nodes": [
+            {"id": "live"}, {"id": "archived", "archivedAt": "2024-02-01T00:00:00.000Z"},
+            {"id": "trashed", "trashed": True, "archivedAt": "2024-02-01T00:00:00.000Z"},
+        ], "pageInfo": {"hasNextPage": False}}}))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        connector._project_to_records = AsyncMock(return_value=[])
+
+        await connector._sync_projects_for_teams([(_team_rg(), [])])
+
+        assert ds.projects.await_args.kwargs["includeArchived"] is True
+        assert [c.args[0] for c in connector._project_to_records.await_args_list] == ["live", "archived"]
+
+    @pytest.mark.asyncio
+    async def test_a_checkpoint_from_before_archived_projects_were_listed_is_not_used(self) -> None:
+        connector = _make_connector()
+        connector.sync_filters = None
+        # What an earlier version stored under its own key.
+        connector.projects_sync_point.store["projects-by-lead-team"] = {"last_sync_time": 1700000000000}
+        ds = MagicMock()
+        ds.projects = AsyncMock(return_value=_mock_gql_response({
+            "projects": {"nodes": [], "pageInfo": {"hasNextPage": False}}}))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        await connector._sync_projects_for_teams([(_team_rg(), [])])
+
+        # Listed in full: no updatedAt filter, so a project archived long ago is found once.
+        assert "updatedAt" not in ds.projects.await_args.kwargs["filter"]
+        assert connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY]["last_sync_time"]
 
     @pytest.mark.asyncio
     async def test_unreadable_project_keeps_the_checkpoint_and_the_rest_is_synced(self) -> None:

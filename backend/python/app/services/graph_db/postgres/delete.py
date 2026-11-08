@@ -98,15 +98,20 @@ async def _delete_connector(tx: Tx, org: str, connector_id: str) -> dict[str, An
     vrids = list(held["records"]["vrids"] or []) if needs_vrids and "records" in held else []
     taxonomy: dict[str, list[str]] = {}      # read before the records go: only these nodes are looked at afterwards
     for coll, edge in TAXONOMY_EDGE_COLLECTIONS.items():
-        found = [r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.connector_delete_taxonomy */ SELECT DISTINCT to_id FROM graph.edges WHERE org_id = $1 AND coll = $2
-            AND from_coll = 'records' AND from_id = ANY($3::text[]) AND to_coll = $4""", org, edge, ids["records"], coll)] if ids["records"] else []
+        found = [r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.connector_delete_taxonomy */ SELECT DISTINCT e.to_id FROM graph.edges e
+            JOIN graph.nodes r ON r.org_id = e.org_id AND r.coll = 'records' AND r.id = e.from_id AND r.doc->>'connectorId' = $3
+            WHERE e.org_id = $1 AND e.coll = $2 AND e.from_coll = 'records' AND e.to_coll = $4""", org, edge, connector_id, coll)] if ids["records"] else []
         if found:
             taxonomy[coll] = found
+    # The connector's records are joined in the database, not bound as a list: a connector can hold millions (one distinct count over all of them).
     typed = await tx.fetchval("""/* pipeshub:graph.connector_delete_type_count */ SELECT count(DISTINCT t.id) FROM (
-          SELECT e.to_id AS id FROM graph.edges e WHERE e.org_id = $1 AND e.coll = 'isOfType' AND e.from_id = ANY($2::text[]) AND e.to_coll = ANY($3::text[])
-          UNION SELECT n.id FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = ANY($3::text[]) AND n.id = ANY($2::text[])) t""", org, ids["records"], _TYPE_COLLS) if ids["records"] else 0
-    blocks = await tx.fetchval("/* pipeshub:graph.connector_delete_block_count */ SELECT count(*) FROM graph.nodes WHERE org_id = $1 AND coll = 'blocks' AND doc->>'recordId' = ANY($2::text[])",
-                               org, ids["records"]) if ids["records"] else 0
+          SELECT e.to_id AS id FROM graph.edges e JOIN graph.nodes r ON r.org_id = e.org_id AND r.coll = 'records' AND r.id = e.from_id AND r.doc->>'connectorId' = $2
+            WHERE e.org_id = $1 AND e.coll = 'isOfType' AND e.to_coll = ANY($3::text[])
+          UNION SELECT n.id FROM graph.nodes n JOIN graph.nodes r ON r.org_id = n.org_id AND r.coll = 'records' AND r.id = n.id AND r.doc->>'connectorId' = $2
+            WHERE n.org_id = $1 AND n.coll = ANY($3::text[])) t""", org, connector_id, _TYPE_COLLS) if ids["records"] else 0
+    blocks = await tx.fetchval("""/* pipeshub:graph.connector_delete_block_count */ SELECT count(*) FROM graph.nodes b
+        JOIN graph.nodes r ON r.org_id = b.org_id AND r.coll = 'records' AND r.id = b.doc->>'recordId' AND r.doc->>'connectorId' = $2
+        WHERE b.org_id = $1 AND b.coll = 'blocks'""", org, connector_id) if ids["records"] else 0
     removed_records = 0
     for pass_ in range(3):      # a record written while this ran is taken in the same unit, then the unit is checked
         if pass_ == 0:
@@ -145,6 +150,15 @@ async def _delete_connector(tx: Tx, org: str, connector_id: str) -> dict[str, An
             "deleted_orphan_type_docs_count": 0, "deleted_orphan_taxonomy_count": labels, "virtual_record_ids": vrids, "record_group_ids": ids["recordGroups"],
             "vector_membership_backfilled": bool(app.get("vectorMembershipBackfilled", False)),
             "vector_membership_backfill_exhausted": bool(app.get("vectorMembershipBackfillExhausted", False)), "connector_id": connector_id, "connector_name": app.get("type")}
+
+
+async def _delete_connector_atomically(tx: Tx, org: str, connector_id: str, *, savepoint: bool) -> dict[str, Any]:
+    """``_delete_connector`` as one unit inside a caller's transaction: a failure part way rolls back to the savepoint, so the caller's later commit
+    keeps none of it. Without a caller's transaction the unit itself rolls back on the error."""
+    if not savepoint:
+        return await _delete_connector(tx, org, connector_id)
+    async with tx.savepoint("connector_delete"):
+        return await _delete_connector(tx, org, connector_id)
 
 
 class DeleteMixin(PgBase):
@@ -496,7 +510,7 @@ class DeleteMixin(PgBase):
         if org_id != org:
             return {"success": False, "error": f"Connector instance {connector_id} not found"}
         try:
-            result = await self._q(lambda tx: _delete_connector(tx, org, connector_id), transaction, write=True)
+            result = await self._q(lambda tx: _delete_connector_atomically(tx, org, connector_id, savepoint=transaction is not None), transaction, write=True)
         except Exception as e:
             self.logger.error("Failed to delete connector instance %s: %s", connector_id, e, exc_info=True)
             return {"success": False, "error": f"Failed to delete connector instance: {e}"}

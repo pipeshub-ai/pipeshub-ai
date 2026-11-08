@@ -858,6 +858,8 @@ block_schema = {
             "parserVersion": {"type": ["string", "null"]},
             "kind": {"type": ["string", "null"]},
             "subType": {"type": ["string", "null"]},
+            "modifiers": {"type": ["array", "null"], "items": {"type": "string"}},
+            "typeParamCount": {"type": ["number", "null"]},
             "isBlockGroup": {"type": "boolean"},
             "isExternal": {"type": "boolean"},
             "index": {"type": ["number", "null"]},
@@ -868,6 +870,8 @@ block_schema = {
             "parentBlockId": {"type": ["string", "null"]},
             "pendingEdges": {"type": ["array", "null"], "items": {"type": "object"}},
             "typeTable": {"type": ["object", "null"]},
+            # C/C++ function-like macro -> [line, names its body calls], on the file-summary block.
+            "macroTable": {"type": ["object", "null"]},
             "referencedNames": {"type": ["array", "null"], "items": {"type": "string"}},
             "createdAtTimestamp": {"type": ["number", "null"]},
             "updatedAtTimestamp": {"type": ["number", "null"]},

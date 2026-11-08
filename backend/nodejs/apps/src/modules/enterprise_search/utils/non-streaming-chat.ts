@@ -153,7 +153,7 @@ const rejectionFor = (statusCode: number, failReason: string): HttpError =>
  * (504 on a timeout); anything else carries only the user-facing reason.
  */
 const clientErrorFor = (error: unknown, failReason: string): HttpError => {
-  const unanswered = unansweredCallError(error, 'chat');
+  const unanswered = unansweredCallError(error);
   if (unanswered) {
     return unanswered;
   }

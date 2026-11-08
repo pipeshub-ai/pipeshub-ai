@@ -48,6 +48,7 @@ from app.connectors.core.sync.full_sync_coverage import (
 from app.connectors.core.sync.run_context import get_run_sync_id
 from app.connectors.core.sql.graph_links import move_incoming_relations
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
+from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, is_graph_memory_refusal
 from app.models.entities import (
     AppMetadata,
     AppRole,
@@ -5579,81 +5580,150 @@ class DataSourceEntitiesProcessor:
                 self.logger.warning("on_new_user_groups received an empty list; skipping processing.")
                 return
 
-            async with self._sync_transaction() as tx_store:
-                for user_group, members in user_groups:
-                    # Set the org_id on the object, as it's needed for the doc
-                    user_group.org_id = self.org_id
-
-                    self.logger.debug(f"Processing user group: {user_group.name} with id {user_group.id}")
-
-                    # Check if the user group already exists in the DB
-                    # Raising: None below means "create", with the fresh id already
-                    # on the object, so a lookup that failed would write a second
-                    # group for the same external id -- and split its members and
-                    # permission edges across the two. Pseudo-groups for users
-                    # without an email come through here too.
-                    existing_user_group = await tx_store.get_user_group_by_external_id(
-                        connector_id=user_group.connector_id,
-                        external_id=user_group.source_user_group_id,
-                        raise_on_error=True,
-                    )
-
-                    if existing_user_group is None:
-                        # The ID is already set by default_factory, but we log
-                        self.logger.debug(f"Creating new user group with id: {user_group.id}")
-                    else:
-                        # Overwrite the new UUID with the existing one
-                        user_group.id = existing_user_group.id
-                        self.logger.debug(f"Updating existing user group with id: {user_group.id}")
-                        user_group.updated_at = get_epoch_timestamp_in_ms()
-
-                    # 1. Upsert the user group document
-                    # (This uses batch_upsert_user_groups and the to_arango... method)
-                    await tx_store.batch_upsert_user_groups([user_group])
-
-
-                    user_group_permissions = []
-                    # Set the 'to' side of the edge to be this user group
-                    to_id = user_group.id
-                    to_collection = CollectionNames.GROUPS.value
-
-                    for member in members:
-                        resolved = None
-                        if member.email:
-                            resolved = await self._resolve_principal(member.email, tx_store)
-
-                        if not resolved:
-                            self.logger.warning(f"Could not resolve principal for email {member.email} for UserGroup permission.")
-                            continue
-
-                        permission = Permission(
-                            external_id=member.id,
-                            email=member.email,
-                            type=PermissionType.READ,
-                            entity_type=EntityType.USER
-                        )
-                        from_id, from_collection = resolved
-
-                        user_group_permissions.append(
-                            permission.to_arango_permission(from_id, from_collection, to_id, to_collection)
-                        )
-
-                    # Batch create (upsert) all permission edges for this user group
-                    if user_group_permissions:
-                        self.logger.debug(f"Creating/updating {len(user_group_permissions)} PERMISSION edges for UserGroup {user_group.id}")
-                    await self._write_permission_edges(
-                        tx_store, to_id, to_collection, user_group_permissions,
-                        replace=replace_members and existing_user_group is not None,
-                    )
-                    self._note_full_sync_seen(user_group.connector_id, CollectionNames.GROUPS.value, user_group.id)
-                    if existing_user_group is not None:
-                        rewritten.add(user_group.connector_id)
-
-            await self._access_changed(rewritten)
+            refused = False
+            try:
+                async with self._sync_transaction() as tx_store:
+                    for user_group, members in user_groups:
+                        if await self._write_user_group(tx_store, user_group, members, replace_members=replace_members):
+                            rewritten.add(user_group.connector_id)
+            except Exception as e:
+                # A refusal of the combined write: a marked one, or the pool's own error from groups that
+                # are each small and add up. Either way the groups are written apart.
+                if len(user_groups) == 1 or not is_graph_memory_refusal(e):
+                    raise
+                refused = True
+            skipped: list[str] = []
+            if refused:
+                # With explicit transactions the combined write rolled back whole; without them each
+                # statement committed on its own, so groups written before the refusal stand. Either
+                # way, a group the server's memory pool refused must not take the others with it: write
+                # them apart, each group's upsert and its replace in one transaction of their own. The
+                # connectors collected by the combined attempt stay in ``rewritten``: dropping access
+                # for a superset is harmless, missing one leaves a stale access list. Done after the
+                # handler has ended, so the aggregated error below carries no earlier error as its context.
+                try:
+                    skipped = await self._write_user_groups_apart(user_groups, rewritten, replace_members=replace_members)
+                finally:
+                    # The groups written before another error stay committed, so their access
+                    # lists must drop whatever happens to the rest.
+                    await self._access_changed(rewritten)
+            else:
+                await self._access_changed(rewritten)
+            if skipped:
+                raise GraphMemoryLimitError(
+                    f"{len(skipped)} of {len(user_groups)} user groups were not written because the graph "
+                    "server's transaction memory pool refused their member list (the others are written and "
+                    f"not retried): {', '.join(skipped[:20])}. Raise NEO4J_HEAP_MAX (with NEO4J_MEMORY_LIMIT)",
+                    operation="group replace",
+                    groups=skipped,
+                )
 
         except Exception as e:
             self._log_failure(f"Transaction on_new_user_groups failed: {str(e)}", e)
             raise e
+
+    async def _write_user_groups_apart(
+        self,
+        user_groups: list[tuple[AppUserGroup, list[AppUser]]],
+        rewritten: set[str],
+        *,
+        replace_members: bool,
+    ) -> list[str]:
+        """Write each group in a transaction of its own. A group the memory pool refuses is skipped
+        and named in the result; the others commit, and the connectors of those that replaced existing
+        members are added to *rewritten*."""
+        skipped: list[str] = []
+        for user_group, members in user_groups:
+            refused = False
+            try:
+                async with self._sync_transaction() as tx_store:
+                    if await self._write_user_group(tx_store, user_group, members, replace_members=replace_members):
+                        rewritten.add(user_group.connector_id)
+            except GraphMemoryLimitError:
+                refused = True
+            # Any other error, the pool's own unmarked one included, propagates: a group under the bulk
+            # size is refused for want of room a neighbour holds, which the caller's bounded retry outlasts.
+            if refused:
+                # Its transaction rolled back whole, so its previous members stand.
+                skipped.append(user_group.source_user_group_id or user_group.id)
+        return skipped
+
+    async def _write_user_group(
+        self,
+        tx_store: TransactionStore,
+        user_group: AppUserGroup,
+        members: list[AppUser],
+        *,
+        replace_members: bool,
+    ) -> bool:
+        """Upsert one user group and write its member edges in *tx_store*. True when the group existed
+        before, so its members were rewritten."""
+        # Set the org_id on the object, as it's needed for the doc
+        user_group.org_id = self.org_id
+
+        self.logger.debug(f"Processing user group: {user_group.name} with id {user_group.id}")
+
+        # Check if the user group already exists in the DB
+        # Raising: None below means "create", with the fresh id already
+        # on the object, so a lookup that failed would write a second
+        # group for the same external id -- and split its members and
+        # permission edges across the two. Pseudo-groups for users
+        # without an email come through here too.
+        existing_user_group = await tx_store.get_user_group_by_external_id(
+            connector_id=user_group.connector_id,
+            external_id=user_group.source_user_group_id,
+            raise_on_error=True,
+        )
+
+        if existing_user_group is None:
+            # The ID is already set by default_factory, but we log
+            self.logger.debug(f"Creating new user group with id: {user_group.id}")
+        else:
+            # Overwrite the new UUID with the existing one
+            user_group.id = existing_user_group.id
+            self.logger.debug(f"Updating existing user group with id: {user_group.id}")
+            user_group.updated_at = get_epoch_timestamp_in_ms()
+
+        # 1. Upsert the user group document
+        # (This uses batch_upsert_user_groups and the to_arango... method)
+        await tx_store.batch_upsert_user_groups([user_group])
+
+
+        user_group_permissions = []
+        # Set the 'to' side of the edge to be this user group
+        to_id = user_group.id
+        to_collection = CollectionNames.GROUPS.value
+
+        for member in members:
+            resolved = None
+            if member.email:
+                resolved = await self._resolve_principal(member.email, tx_store)
+
+            if not resolved:
+                self.logger.warning(f"Could not resolve principal for email {member.email} for UserGroup permission.")
+                continue
+
+            permission = Permission(
+                external_id=member.id,
+                email=member.email,
+                type=PermissionType.READ,
+                entity_type=EntityType.USER
+            )
+            from_id, from_collection = resolved
+
+            user_group_permissions.append(
+                permission.to_arango_permission(from_id, from_collection, to_id, to_collection)
+            )
+
+        # Batch create (upsert) all permission edges for this user group
+        if user_group_permissions:
+            self.logger.debug(f"Creating/updating {len(user_group_permissions)} PERMISSION edges for UserGroup {user_group.id}")
+        await self._write_permission_edges(
+            tx_store, to_id, to_collection, user_group_permissions,
+            replace=replace_members and existing_user_group is not None,
+        )
+        self._note_full_sync_seen(user_group.connector_id, CollectionNames.GROUPS.value, user_group.id)
+        return existing_user_group is not None
 
     @retry_on_deadlock()
     async def on_new_app_roles(self, roles: list[tuple[AppRole, list[AppUser]]]) -> None:

@@ -23,6 +23,7 @@ from app.services.resource_governor import (
 )
 from app.services.resource_governor.lanes import LaneWaitTimeout
 from app.services.resource_governor.memory_domain import parse_admission_cap
+from app.utils.lazy_heavy import ensure_docling
 from app.utils.logger import create_logger
 from app.utils.memory_release import release_freed_memory
 
@@ -65,6 +66,10 @@ class DoclingService:
             # skip initialization and let the caller wire it later.
             if not self.config_service:
                 raise ValueError("Config service not provided")
+
+            # This service exists to run Docling, so load it now rather than on the first
+            # request (the processor itself imports it lazily).
+            await ensure_docling()
 
             # Initialize DoclingProcessor
             self.processor = DoclingProcessor(

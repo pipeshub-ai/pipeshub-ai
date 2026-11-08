@@ -52,7 +52,8 @@ def test_catalog_is_clean_and_covers_every_kind(org_db):
         assert rows == {"kt.docs": "org", "kt.events": "org", "kt.cfg": "lineage", "kt.apps": "org", "kt.tokens": "global",
                 "platform.consumer_inbox": "org", "platform.deployment_profile": "internal", "platform.jobs": "internal",
                 "platform.store_epoch": "internal", **conversation, **retrieval, **stored,
-                **{f"platform.{t}": "internal" for t in ("kv_entries", "queue_messages", "queue_groups", "queue_deliveries", "sched_jobs", "sched_repeats")}}
+                **{f"platform.{t}": "internal" for t in ("kv_entries", "queue_messages", "queue_groups", "queue_deliveries", "sched_jobs", "sched_repeats",
+                                                       "cache_entries")}}
         # every relation of every tree has RLS enabled and forced (root + 5 docs leaves, root + 3 events leaves, ...)
         assert c.execute("SELECT count(*) FROM pg_class WHERE relname LIKE 'docs%' AND relnamespace = 'kt'::regnamespace "
                          "AND relkind IN ('r','p') AND relrowsecurity AND relforcerowsecurity").fetchone()[0] == 6

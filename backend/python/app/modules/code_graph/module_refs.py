@@ -15,11 +15,15 @@ from __future__ import annotations
 
 import posixpath
 
-__all__ = ["MODULE_PREFIX", "module_ref", "module_refs_of_path"]
+__all__ = ["INCLUDES_CHANGED_PREFIX", "MODULE_PREFIX", "includes_changed_ref", "module_ref", "module_refs_of_path"]
 
 MODULE_PREFIX = "module:"
+# A changed name saying a file's own include list changed: every file including it, transitively, sees other
+# files through it now (C/C++).
+INCLUDES_CHANGED_PREFIX = "includes-changed:"
 
-_CODE_EXTENSIONS = frozenset({"py", "pyi", "js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts"})
+_C_FAMILY_EXTENSIONS = frozenset({"c", "h", "cc", "hh", "cpp", "hpp", "cxx", "hxx"})
+_CODE_EXTENSIONS = frozenset({"py", "pyi", "js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts", "cs", "php"}) | _C_FAMILY_EXTENSIONS
 # A file named like this is imported by its directory (`./utils` is
 # utils/index.ts, `pkg` is pkg/__init__.py).
 _DIRECTORY_MODULE_STEMS = frozenset({"index", "__init__", "mod"})
@@ -37,6 +41,9 @@ def _strip_extension(path: str) -> str:
 def module_ref(specifier: str, file_path: str | None = None) -> str | None:
     """``module:<path>`` for an import specifier, or None when it names nothing."""
     spec = specifier.replace("\\", "/").strip()
+    c_family = bool(file_path) and file_path.rpartition(".")[2] in _C_FAMILY_EXTENSIONS
+    if c_family and spec.startswith("<") and spec.endswith(">"):
+        spec = spec[1:-1].strip()  # `#include <a/x.h>` names the file a/x.h
     if not spec:
         return None
     base = posixpath.dirname(file_path.replace("\\", "/")) if file_path else None
@@ -60,6 +67,8 @@ def module_ref(specifier: str, file_path: str | None = None) -> str | None:
             if path.startswith(prefix):
                 path = path[len(prefix):]
                 break
+    elif c_family:
+        path = spec  # `#include "util.h"` names a file, not the dotted module `util/h`
     else:
         path = spec.replace(".", "/")
     path = _strip_extension(posixpath.normpath(path).lstrip("/"))
@@ -78,3 +87,8 @@ def module_refs_of_path(file_path: str) -> set[str]:
         MODULE_PREFIX + "/".join(p[i:])
         for p in paths for i in range(len(p)) if p[i:]
     }
+
+
+def includes_changed_ref(file_path: str) -> str:
+    """The changed name that re-selects every file including *file_path*, transitively."""
+    return INCLUDES_CHANGED_PREFIX + file_path

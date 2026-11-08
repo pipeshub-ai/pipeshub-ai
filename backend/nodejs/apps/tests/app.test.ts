@@ -747,12 +747,16 @@ describe('Application', () => {
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }
 
-      const accessLines = (Logger.prototype.info as sinon.SinonStub).getCalls()
-        .map((call) => String(call.args[0]))
-        .filter((line) => line.includes('access-log-probe'));
-      expect(accessLines.some((line) => line.includes('GET /api/v1/access-log-probe '))).to.equal(true);
-      expect(accessLines.some((line) => line.includes('GET /API/v1/access-log-probe-upper '))).to.equal(true);
-      expect(accessLines.some((line) => line.includes('/access-log-probe-page'))).to.equal(false);
+      const accessLines = (mockLogger.info as sinon.SinonStub).getCalls()
+        .filter((call) => call.args[0] === 'http.request.end')
+        .map((call) => call.args[1])
+      // Two API requests (any case), none for the page; the raw path is never on the line.
+      expect(accessLines).to.have.length(2)
+      for (const fields of accessLines) {
+        // The app's catch-all API 404 route answers them.
+        expect(fields).to.include({ method: 'GET', route: '*', status: 404, error_class: 'not_found' })
+        expect(JSON.stringify(fields)).to.not.include('access-log-probe')
+      }
     });
 
     it('writes an access-log line for an API request a mounted router answers', async () => {
@@ -784,11 +788,14 @@ describe('Application', () => {
       }
 
       expect(status).to.equal(200);
-      const accessLines = (Logger.prototype.info as sinon.SinonStub).getCalls()
-        .map((call) => String(call.args[0]))
-        .filter((line) => line.includes('probe=mounted-router'));
+      // A health poll is a debug line, with the mount kept and the query left out.
+      const accessLines = (mockLogger.debug as sinon.SinonStub).getCalls()
+        .filter((call) => call.args[0] === 'http.request.end')
+        .map((call) => call.args[1])
       expect(accessLines).to.have.length(1);
-      expect(accessLines[0]).to.include('"GET /api/v1/health?probe=mounted-router HTTP/1.1" 200');
+      expect(accessLines[0]).to.include({ method: 'GET', route: '/api/v1/health/', status: 200, outcome: 'success' });
+      expect(JSON.stringify(accessLines[0])).to.not.include('mounted-router');
+      expect((mockLogger.info as sinon.SinonStub).getCalls().some((call) => call.args[0] === 'http.request.end')).to.equal(false);
     });
   });
 

@@ -406,7 +406,7 @@ class TestCreateRecordMessageHandler:
         container._event_processor = mock_event_processor
         container.config_service.return_value = AsyncMock()
 
-        with patch("app.services.messaging.kafka.utils.utils.RecordEventHandler") as MockHandler:
+        with patch("app.edition_services.RecordEventHandler") as MockHandler:
             mock_handler = AsyncMock()
 
             async def mock_process(event_type, payload):
@@ -431,7 +431,7 @@ class TestCreateRecordMessageHandler:
         container._event_processor = AsyncMock()
         container.config_service.return_value = AsyncMock()
 
-        with patch("app.services.messaging.kafka.utils.utils.RecordEventHandler"):
+        with patch("app.edition_services.RecordEventHandler"):
             handler = await KafkaUtils.create_record_message_handler(container)
             with pytest.raises((TypeError, AttributeError)):
                 async for _ in handler(None):
@@ -443,7 +443,7 @@ class TestCreateRecordMessageHandler:
         container._event_processor = AsyncMock()
         container.config_service.return_value = AsyncMock()
 
-        with patch("app.services.messaging.kafka.utils.utils.RecordEventHandler"):
+        with patch("app.edition_services.RecordEventHandler"):
             handler = await KafkaUtils.create_record_message_handler(container)
             events = []
             async for event in handler(StreamMessage(eventType="", payload={"id": "r1"})):
@@ -456,7 +456,7 @@ class TestCreateRecordMessageHandler:
         container._event_processor = AsyncMock()
         container.config_service.return_value = AsyncMock()
 
-        with patch("app.services.messaging.kafka.utils.utils.RecordEventHandler"):
+        with patch("app.edition_services.RecordEventHandler"):
             handler = await KafkaUtils.create_record_message_handler(container)
             events = []
             async for event in handler(StreamMessage(eventType="recordCreated", payload={})):
@@ -469,7 +469,7 @@ class TestCreateRecordMessageHandler:
         container._event_processor = AsyncMock()
         container.config_service.return_value = AsyncMock()
 
-        with patch("app.services.messaging.kafka.utils.utils.RecordEventHandler") as MockHandler:
+        with patch("app.edition_services.RecordEventHandler") as MockHandler:
             mock_handler = AsyncMock()
 
             async def mock_process(event_type, payload):
@@ -490,7 +490,7 @@ class TestCreateRecordMessageHandler:
         container._event_processor = AsyncMock()
         container.config_service.return_value = AsyncMock()
 
-        with patch("app.services.messaging.kafka.utils.utils.RecordEventHandler") as MockHandler:
+        with patch("app.edition_services.RecordEventHandler") as MockHandler:
             mock_handler = AsyncMock()
 
             async def mock_process(event_type, payload) -> AsyncGenerator[PipelineEvent, None]:
@@ -513,7 +513,7 @@ class TestCreateRecordMessageHandler:
         container._event_processor = cached_processor
         container.config_service.return_value = AsyncMock()
 
-        with patch("app.services.messaging.kafka.utils.utils.RecordEventHandler") as MockHandler:
+        with patch("app.edition_services.RecordEventHandler") as MockHandler:
             MockHandler.return_value = AsyncMock()
             await KafkaUtils.create_record_message_handler(container)
             MockHandler.assert_called_once()
@@ -530,7 +530,7 @@ class TestCreateRecordMessageHandler:
         container.event_processor = AsyncMock(return_value=resolved_processor)
         container.config_service.return_value = AsyncMock()
 
-        with patch("app.services.messaging.kafka.utils.utils.RecordEventHandler") as MockHandler:
+        with patch("app.edition_services.RecordEventHandler") as MockHandler:
             MockHandler.return_value = AsyncMock()
             await KafkaUtils.create_record_message_handler(container)
             container.event_processor.assert_awaited_once()

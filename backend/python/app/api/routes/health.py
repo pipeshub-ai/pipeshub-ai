@@ -747,7 +747,7 @@ async def initialize_embedding_model(request: Request, embedding_configs: list[d
     app = request.app
     logger = app.container.logger()
 
-    logger.info("Starting embedding health check", extra={"embedding_configs": embedding_configs})
+    logger.info("Starting embedding health check", extra={"count": len(embedding_configs)})
 
     retrieval_service = await app.container.retrieval_service()
     logger.info("Retrieved retrieval service")
