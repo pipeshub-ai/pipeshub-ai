@@ -25,8 +25,9 @@ def _server() -> FastMCP:
         return ToolResult(content="totalRecords: 1, best first\n\n1. runbook\n   recordId: r1", structured_content=_RECORDS)
 
     @server.tool
-    def sources() -> dict:
-        return {"sources": []}
+    def sources() -> ToolResult:
+        # JSON as text and nothing structured: a dict return would be given structured content too.
+        return ToolResult(content='{"sources": []}')
 
     return server
 
@@ -45,7 +46,10 @@ def test_a_result_written_as_text_reads_as_its_structured_content() -> None:
 
 
 def test_a_result_with_json_text_reads_the_same() -> None:
-    assert asyncio.run(_call("sources")).json() == {"sources": []}
+    result = asyncio.run(_call("sources"))
+
+    assert result.structured is None
+    assert result.json() == {"sources": []}
 
 
 def test_text_that_is_not_json_and_no_structured_content_says_what_came_back() -> None:
