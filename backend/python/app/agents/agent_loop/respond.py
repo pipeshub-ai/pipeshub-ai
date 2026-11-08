@@ -196,7 +196,8 @@ class AnswerFinalizer:
 
         if not agent_success:
             error_msg = agent_error or "An error occurred"
-            log.error(
+            # The turn's `agent_turn.end` (and `llm_call.failed`) already say why, once.
+            log.debug(
                 "AnswerFinalizer: agent run failed, answering with an error message "
                 "(error_code=%s org_id=%s conversation_id=%s run_id=%s): %s",
                 classify_error(error_msg)[0], self._context.org_id,
@@ -472,7 +473,7 @@ class AnswerFinalizer:
         await self._emit_ask_user_question_fallback(state, event_sink)
         for evt in self._context.formatter.answer_final(self._context, completion_data=completion_data):
             await event_sink.write(evt)
-        log.info(
+        log.debug(
             "AnswerFinalizer: finalized response (%d chars, %d citations)",
             len(normalized), len(citations),
         )
@@ -557,7 +558,7 @@ class AnswerFinalizer:
         await self._emit_ask_user_question_fallback(state, event_sink)
         for evt in self._context.formatter.answer_final(self._context, completion_data=completion_data):
             await event_sink.write(evt)
-        log.info(
+        log.debug(
             "AnswerFinalizer: finalized STOPPED response (%d chars, %d citations)",
             len(normalized), len(citations),
         )

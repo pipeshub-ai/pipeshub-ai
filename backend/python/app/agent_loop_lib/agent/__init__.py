@@ -58,6 +58,8 @@ from app.agent_loop_lib.events.base import AgentEvent, EventType
 from app.agent_loop_lib.hooks.middleware.builtin.turn_guards import install_turn_guards
 from app.agent_loop_lib.tools.executor import ToolExecutor
 from app.agent_loop_lib.tools.tags import TAG_LIFECYCLE_TERMINAL, TAG_SPAWN_BATCH
+from app.agent_loop_lib.transport.base import llm_error_class
+from app.utils.error_class import log_failure
 from pydantic import BaseModel as _PydanticBaseModel
 
 if TYPE_CHECKING:
@@ -517,6 +519,7 @@ class Agent:
             goal=goal, output=output, artifacts=artifacts or [], turns=list(turns),
             success=True, usage=self._usage,
             confidence=confidence, record_ids=record_ids or [], needs_input=needs_input,
+            end_event=event,
         )
         await self.emit(EventType.AGENT_COMPLETE, {"output": output if not isinstance(output, str) else output[:200]})
         await obs.write_state(self, goal, "completed", turn_index=len(turns), started_at=self.started_at or _now())
@@ -535,6 +538,7 @@ class Agent:
         summary: str | None = None,
         detail: dict | None = None,
         status: str = "failed",
+        error_class: str | None = None,
     ) -> AgentResult:
         """Build and persist a failed `AgentResult` — the shared tail for
         every "run stopped without succeeding" exit (blocked hooks,
@@ -542,7 +546,7 @@ class Agent:
         turns = self._scope.turns if self._scope is not None else []
         result = AgentResult(
             goal=goal, turns=list(turns), success=False, error=error, usage=self._usage,
-            cancelled=(status == "cancelled"),
+            cancelled=(status == "cancelled"), end_event=event, error_class=error_class,
         )
         await self.emit(
             EventType.CANCELLATION if status == "cancelled" else EventType.ERROR,
@@ -644,7 +648,9 @@ class Agent:
                 try:
                     await hooks.dispatch_pre_agent(self._hooks, goal, scope=self._scope)
                 except HookBlocked as e:
-                    result = AgentResult(goal=goal, turns=[], success=False, error=f"Blocked before start: {e}")
+                    result = AgentResult(
+                        goal=goal, turns=[], success=False, error=f"Blocked before start: {e}", end_event="agent_blocked",
+                    )
                     await obs.write_state(self, goal, "failed", turn_index=0, started_at=self.started_at)
                     await obs.append_timeline(self, "agent_blocked", f"pre_agent hook blocked run: {e}", "failed", {"error": str(e)})
                     await self._post_agent(result)
@@ -934,6 +940,8 @@ class Agent:
                 summary=f"Input guardrail blocked turn {turn_index}: {e}",
             ))
         except Exception as e:
+            cls = llm_error_class(e)
+            log_failure(logger, "llm_call.failed", e, error_class=cls, turn=turn_index)
             if final_answer_only:
                 await obs.append_timeline(
                     self, "final_answer_turn_failed", f"Final-answer LLM call failed: {e}",
@@ -942,6 +950,7 @@ class Agent:
                 return StepOutcome("continue")
             return StepOutcome("stop", result=await self.fail(
                 goal, f"LLM call failed: {e}", event="llm_call_failed", summary=f"LLM call failed: {e}",
+                error_class=cls,
             ))
 
         response_msg = response.message
@@ -1051,7 +1060,8 @@ class Agent:
             terminal_turn = AgentTurn(messages=[response_msg], tool_calls=[], tool_results=[])
             result = await self.succeed(
                 goal, output, [],
-                event="agent_complete",
+                # The wrap-up answer after max_turns: the run still hit its cap.
+                event="agent_complete_after_max_turns" if final_answer_only else "agent_complete",
                 summary=f"Agent completed after {turn_index + 1} turn(s)",
                 detail={"output": output[:200] if output else ""},
             )
