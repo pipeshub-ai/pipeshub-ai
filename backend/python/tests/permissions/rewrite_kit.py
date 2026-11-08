@@ -433,7 +433,7 @@ async def held_up_writer(env: Env, layer: str, monkeypatch: Any) -> None:
 
     await env.change((M("moved", "page:Handbook", "space:ALL", "space:ALL"),))
     b = ScopeRewriteJob(env.graph, env.vdb, env.loaded.locator, settle_seconds=0.5)
-    seen, held, stale_writes = Log(), {"done": False}, []
+    seen, held, stale_writes, violations = Log(), {"done": False}, [], []      # (a failed assert inside a request would be taken for a failed root)
     if layer == "store_fence":
         async def no_check(*a: Any, **k: Any) -> None:
             return None
@@ -455,17 +455,17 @@ async def held_up_writer(env: Env, layer: str, monkeypatch: Any) -> None:
         assert not await env.problems()
 
     async def at_the_door(name: str) -> str | None:
-        if name == "update_payloads_by_ids" and held["done"] and not stale_writes:
-            stale_writes.append(name)      # A's first request after B finished
         if layer == "generation_check" and name == "retrieve_points":
             await hold()
         return None
 
     async def after(name: str) -> None:
-        if name == "update_payloads_by_ids" and stale_writes:
+        # from the moment the second move is in and the second writer has finished, the store never holds fields older than the graph's, however
+        # this writer's requests land: the request that was held (`store_fence`) is the one this is about
+        if name == "update_payloads_by_ids" and held["done"]:
+            stale_writes.append(name)
             await env.audit(seen)
-            stored_wrong = [x for x in await env.problems() if not x.startswith("not settled")]      # (roots are still pending: that is not the point here)
-            assert not stored_wrong, ("a held-up writer's older fields are in the store", stored_wrong[:3])
+            violations.extend(x for x in await env.problems() if not x.startswith("not settled"))      # (roots are still pending: that is not the point here)
 
     if layer == "store_fence":
         env.before_write = hold
@@ -473,7 +473,8 @@ async def held_up_writer(env: Env, layer: str, monkeypatch: Any) -> None:
     with contextlib.suppress(RewriteIncomplete):      # (a writer that is refused ends incomplete: fine)
         await env.job.run_connector(ORG, PREFIX + "app")
     env.before_write = None
-    assert held["done"] and not seen.leaks and not seen.pending_admits
+    assert not violations, ("a held-up writer's older fields are in the store", violations[:3])
+    assert held["done"] and (stale_writes or layer != "store_fence") and not seen.leaks and not seen.pending_admits      # (the held request did reach the store)
     await env.settle()
     assert not await env.problems()
 

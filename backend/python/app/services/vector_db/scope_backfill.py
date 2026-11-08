@@ -24,9 +24,10 @@ the live writers use, so a back-filled point carries what a newly indexed one wo
 - **Membership.** A `container` stamp is read through the point's `recordGroupIds`, and a change that only a full pass covers (a change of the
   whole connector, more roots than the list holds) can leave them old, so the pass also brings `connectorIds`, `recordGroupIds` and
   `rootRecordGroupIds` to what the graph says, page by page (`ScopeRewriteJob.refresh_membership`). Those writes are by id, checked against the
-  connector's structure generation right before each request, fenced by the generation (or pgvector's `computed_at`) so a held-up writer cannot
-  write older membership over a newer one, and read back from the graph, the store and a search. A membership the graph cannot resolve, or a
-  write the store did not apply, ends the pass `failed` with the old membership alone: the connector is not current and its roots stay.
+  connector's structure generation right before each request, fenced by a time taken before the graph was read (or pgvector's `computed_at`) so a
+  held-up writer cannot write older membership over a newer one, and read back from the graph, the store and a search. A write the store did
+  not apply ends the pass `failed`. A virtual record whose membership the graph cannot resolve is left on the stale marker and counted, as the
+  scope fields of one that cannot be projected are, so one such record does not hold the whole connector for good.
 """
 
 from __future__ import annotations
@@ -241,7 +242,7 @@ class ScopeBackfill:
                     vrids = sorted({n.vrid for n in nodes.values() if n.vrid and not n.deleted})
                     for vrid in vrids:
                         page_stale += await self._stamp(org_id, vrid) == "stale"
-                    await self._membership.refresh_membership(org_id, app_id, vrids)      # raises when any could not be brought right: the page is not done
+                    page_stale += await self._membership.refresh_membership(org_id, app_id, vrids)      # raises only for a write the store did not apply
                     # counted with the page, so a page written again after a failure is not counted twice
                     moved = replace(p, after=ids[-1], records=p.records + len(ids), stale=p.stale + page_stale)
                     await self._checkpoints.save(app_id, moved)  # only after the page is written

@@ -13,7 +13,8 @@ from app.services.permissions.rules import RULE_BY_CONNECTOR
 
 from . import gen, mutations
 from .model import Mutation
-from .rewrite_kit import Env, Log, play, random_change, registration
+from .rewrite_kit import PREFIX, Env, Log, play, random_change, registration
+from .stamp_world import ORG
 from .test_scope_projector import retyped
 
 
@@ -69,9 +70,11 @@ async def _changes_the_shared_stamp(world, record: str) -> Mutation | None:
     return None
 
 
-async def test_a_cross_connector_virtual_record_is_rewritten_by_each_connector() -> None:
+@pytest.mark.parametrize("order", ["both_changed_b_rewritten_first", "a_rewritten_then_b_changes"])
+async def test_a_cross_connector_virtual_record_is_rewritten_by_each_connector(order: str) -> None:
     """The record two connectors share is changed three times in connector A and once in connector B, and B's change is one that changes the
-    shared stamp: A's generation (3) is above B's (1), and so is the fence A's rewrite leaves on the shared point. B's rewrite must still end exact."""
+    shared stamp. A's generation (3) is above B's (1). A fence that was a generation would then refuse B's write for ever when A's rewrite came
+    first (`a_rewritten_then_b_changes`); the fence is a time, which both connectors compare."""
     for base in gen.generate("proptest", 11, 40):
         for app_type in ("CONFLUENCE", "DRIVE WORKSPACE", "SHAREPOINT"):
             world = retyped(base, app_type)
@@ -82,11 +85,17 @@ async def test_a_cross_connector_virtual_record_is_rewritten_by_each_connector()
             a, b = shared[0], shared[1]
             if (m := await _changes_the_shared_stamp(world, b)) is None:
                 continue
+            ca, cb = (PREFIX + env.world.node(x).connector for x in (a, b))
             for rule in ("RESTRICTED", "", "RESTRICTED"):
                 await env.change((Mutation("rule_set", a, value=rule),))
-            await env.change((m,))
-            assert env.pending(env.world.node(a).connector) and env.pending(env.world.node(b).connector)
             seen = Log()
+            if order == "a_rewritten_then_b_changes":
+                await env.job.run_connector(ORG, ca)      # A is rewritten and has left its fence on the shared point
+                await env.change((m,))
+            else:
+                await env.change((m,))
+                await env.job.run_connector(ORG, cb)      # B first (generation 1), then A (generation 3)
+            assert env.pending(env.world.node(b).connector) or order == "both_changed_b_rewritten_first"
             await env.audit(seen)
             await env.settle()
             await env.audit(seen)

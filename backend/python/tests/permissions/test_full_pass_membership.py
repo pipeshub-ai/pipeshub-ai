@@ -20,12 +20,15 @@ from app.services.vector_db.scope_backfill import DONE, FAILED
 
 from . import gen
 from .model import Gate, Grant, Membership, Mutation, Node, Parent, Principal, World
-from .rewrite_kit import Env, Log
+from .rewrite_kit import Env, Log, Tap
+from .scenario import WorldStore
 from .stamp_world import ORG
 from .test_scope_projector import retyped
 
 MEMBER_KEYS = ("connectorIds", "recordGroupIds", "rootRecordGroupIds")
 MOVE = Mutation("moved", "doc", "rgl", "rgl")
+HR_MOVE = Mutation("moved", "page:Handbook", "space:ALL", "space:ALL")
+HOUR = 3600 * 10**6
 
 
 @pytest.fixture(autouse=True)
@@ -90,19 +93,31 @@ async def test_a_record_moved_into_a_group_level_group_under_a_seed_the_walk_can
     assert not seen.leaks and not seen.inexact and not await env.problems(), (seen.leaks[:2], seen.inexact[:2])
 
 
-async def test_a_membership_the_graph_cannot_resolve_leaves_the_full_pass_failed_and_the_old_membership_alone(monkeypatch: pytest.MonkeyPatch) -> None:
-    env = await moved_whole()
-    before = await stored_membership(env)
+async def test_a_virtual_record_whose_membership_cannot_be_resolved_is_left_stale_and_does_not_hold_the_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One virtual record the graph cannot place must not stop the pass at its page for good (every re-run would fail in the same place): it is
+    left on the stale marker, which no stamp admits, and counted; the rest of the connector is finished; and a later pass brings it right."""
+    env = await Env.make(WorldStore().world("golden/confluence_hr"))
+    await env.change((Mutation("moved", "page:Handbook", "space:ALL", "space:ALL"),), whole=True)
+    bad = env.vrids()["page:Onboarding"]
     real = scope_rewrite.resolve_virtual_record_state
 
     async def unresolved(graph: Any, v: str, *a: Any, **k: Any) -> Any:
-        return replace(await real(graph, v, *a, **k), roots_resolved=False)
+        out = await real(graph, v, *a, **k)
+        return replace(out, roots_resolved=False) if v == bad else out
 
     monkeypatch.setattr(scope_rewrite, "resolve_virtual_record_state", unresolved)
-    assert (await env.backfill.run_connector(ORG, "w:B", restart=True)).state == FAILED
-    assert await stored_membership(env) == before and "w:B" not in await env.current()
+    done = await env.backfill.run_connector(ORG, "w:app", restart=True)
+    assert done.state == DONE and done.stale == 1, done.line()          # counted, and the pass finished
+    handbook = (await env.vdb.retrieve_points(env.loaded.collection, env.loaded.points[env.vrids()["page:Handbook"]]))[0].payload
+    assert handbook["recordGroupIds"] == ["w:space:ALL"], "the rest of the connector was not finished"
+    onboarding = (await env.vdb.retrieve_points(env.loaded.collection, env.loaded.points[bad]))[0].payload
+    assert onboarding["scopeFieldsVersion"] == 0, "the point was left with a stamp that may admit"
+    seen = Log()
+    await env.audit(seen)
+    assert not seen.leaks, seen.leaks
     monkeypatch.setattr(scope_rewrite, "resolve_virtual_record_state", real)       # the graph answers again
-    assert (await env.backfill.run_connector(ORG, "w:B", restart=True)).state == DONE
+    again = await env.backfill.run_connector(ORG, "w:app", restart=True)
+    assert again.state == DONE and again.stale == 0
     seen = Log()
     await env.audit(seen)
     assert not seen.leaks and not await env.problems()
@@ -184,3 +199,30 @@ async def test_a_move_after_the_write_is_found_by_the_recheck_of_the_membership_
     vrid = env.vrids()["doc"]
     assert hit["n"]
     assert (await stored_membership(env))[env.loaded.points[vrid][0]] == ["w:rgl"], await stored_membership(env)
+
+
+async def test_a_full_pass_follows_a_fence_above_this_hosts_time_too() -> None:
+    env = await Env.make(WorldStore().world("golden/confluence_hr"), settle_seconds=0.2)
+    for p in env.vdb._points(env.loaded.collection).values():
+        p.payload["scopeFence"] = scope_rewrite._micros(scope_rewrite._clock()) + HOUR
+    await env.change((HR_MOVE,), whole=True)
+    assert (await env.backfill.run_connector(ORG, "w:app", restart=True)).state == DONE
+    assert not await env.problems()      # the membership too: the same fence blocked it before
+
+
+async def test_the_back_fill_does_not_wedge_on_a_connector_that_never_stops_changing() -> None:
+    env = await Env.make(WorldStore().world("golden/confluence_hr"), settle_seconds=0.2)
+    await env.change((HR_MOVE,), whole=True)
+    live = {"on": True}
+
+    async def never_still(name: str) -> None:
+        if live["on"] and name == "retrieve_points":
+            await env.graph.increment_node_field("w:app", "apps", "scopeProjectionGeneration")
+
+    Tap(env, never_still)
+    done = await env.backfill.run_connector(ORG, "w:app", restart=True)
+    assert done.state == DONE            # the pass finished its pages; it ends not current, so the next pass does the work again
+    assert "w:app" not in await env.current()
+    live["on"] = False
+    again = await env.backfill.run_connector(ORG, "w:app", restart=True)
+    assert again.state == DONE and not await env.problems() and "w:app" in await env.current()

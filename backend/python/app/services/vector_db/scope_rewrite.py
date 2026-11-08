@@ -15,10 +15,14 @@ connector is read from its stamps. For one connector instance the job:
 Killed anywhere, the pending list is still on the app document, so the subtree stays hidden and the next run repeats the same steps (the fields are
 a pure function of the graph). Anything skipped, failed or unknown keeps its root pending and fails the run; one bad root does not hold the others.
 
-**Writers.** The generation is read before the graph, and again right before every request that writes (`_guard`): a request whose graph is no
-longer current is not sent. The request carries that generation as its fence where the store has one (`generation_fence`), pgvector's
-`computed_at` otherwise, so a held-up writer cannot write over a newer rewrite. **Lock order**: the app document is written only outside the
-virtual record locks (release before, compare-and-set after); under them it is only read.
+**Writers.** The generation is read before the graph, and again right before every request that writes (`_guard`): a request whose graph is
+no longer current is not sent. The request carries a time taken just before the graph was read as its fence where the store has one
+(`generation_fence`), pgvector's `computed_at` otherwise, so a held-up writer cannot write over a newer rewrite. The fence is a time, not a
+generation, because one virtual record can be shared by two connectors and their generations are separate counters. A point that carries a
+fence above this writer's time (another host's clock runs ahead, or an earlier run left it) is followed when that is a plausible time: the next
+round reads the graph again, after that write, and writes above it; a value that is no plausible time is not followed and the root stays
+pending. **Lock order**: the app document is written only outside the virtual record locks (release before, compare-and-set after); under
+them it is only read.
 """
 
 from __future__ import annotations
@@ -87,6 +91,10 @@ SCAN_ATTEMPTS = 3  # scroll-and-count rounds before a scan is called incomplete
 SCAN_RETRY_SECONDS = 0.5
 SETTLE_SECONDS = 30.0  # how long a write may take to show in a search
 MAX_ROUNDS = 3  # write + verify rounds for one page before its virtual records are marked stale
+MAX_MOVES = 20  # times the connector's generation may move under one page before it is given up (a move costs no round: the page is read again)
+#: How far above this host's clock a stored fence is still followed: the skew between two hosts that is believed. A fence further away is a value
+#: that is not a time (another scale, a corrupt payload).
+MAX_FENCE_SKEW_MICROS = 24 * 3600 * 10**6
 MEMBERSHIP_KEYS = (CONNECTOR_IDS_FIELD, RECORD_GROUP_IDS_FIELD, ROOT_RECORD_GROUP_IDS_FIELD)
 
 
@@ -104,7 +112,7 @@ class Unplaceable(Exception):
 
 @dataclass(frozen=True)
 class Epoch:
-    """What the app document said just before a graph read: the read is good to write only while it still does. The generation is the fence."""
+    """What the app document said just before a graph read: the read is good to write only while it still does."""
 
     generation: int
     unsafe: object
@@ -236,8 +244,6 @@ class ScopeRewriteJob:
             try:
                 await self._rewrite(org_id, connector_id, batch, result)
                 rewritten += batch
-            except GenerationMoved:
-                result.state = "changed"
             except Exception as exc:
                 # One bad root must not hold the healthy roots of its connector hidden: take the batch again root by root. Those that fail stay.
                 if len(batch) == 1:
@@ -255,8 +261,7 @@ class ScopeRewriteJob:
             first = next(iter(failed))
             raise RewriteIncomplete(f"{len(failed)} of {len(roots)} roots of {connector_id} were left pending, the others were rewritten. "
                                     f"First, {first}: {type(failed[first]).__name__}: {failed[first]}") from failed[first]
-        if result.state != "changed":
-            result.state = "done"
+        result.state = "done"
         return result
 
     async def _rewrite(self, org_id: str, connector_id: str, roots: list[str], result: RewriteResult) -> None:
@@ -266,35 +271,70 @@ class ScopeRewriteJob:
 
     # ---- one page -----------------------------------------------------------------------------------------
 
-    async def refresh_membership(self, org_id: str, connector_id: str, vrids: Sequence[str]) -> None:
+    async def refresh_membership(self, org_id: str, connector_id: str, vrids: Sequence[str]) -> int:
         """Bring `connectorIds`, `recordGroupIds` and `rootRecordGroupIds` of these virtual records' points to what the graph says, nothing else
         (a `container` stamp is read through them). For the full back-fill, which writes scope fields only. Runs inside the organisation, with the
-        guard, the fence and the read-backs of every other write; raises `RewriteIncomplete` when any virtual record could not be placed or
-        shown, leaving its points as they were (the pass is then not done)."""
-        ordered = sorted(set(vrids))
-        for i in range(0, len(ordered), PAGE):
-            await self._page(org_id, connector_id, ordered[i:i + PAGE], RewriteResult(org_id, connector_id), keys=MEMBERSHIP_KEYS)
+        guard, the fence and the read-backs of every other write.
 
-    async def _page(self, org_id: str, connector_id: str, vrids: list[str], result: RewriteResult, *, keys: Sequence[str] | None = None) -> None:
-        todo, failed = vrids, dict[str, str]()
+        A virtual record whose membership the graph cannot tell is left on the stale marker (its points are not admitted by any stamp), as the
+        back-fill's own `_stamp` does, and counted in the number returned: the pass goes on. A write the store did not apply raises
+        `RewriteIncomplete` (the points may hold the wrong membership under a stamp that admits). A connector that keeps changing under a page
+        leaves the page as it is: the pass then ends not current (its generation is the one it started from) and a later pass does it again."""
+        ordered, stale = sorted(set(vrids)), 0
+        for i in range(0, len(ordered), PAGE):
+            stale += await self._page(org_id, connector_id, ordered[i:i + PAGE], RewriteResult(org_id, connector_id), keys=MEMBERSHIP_KEYS)
+        return stale
+
+    async def _page(self, org_id: str, connector_id: str, vrids: list[str], result: RewriteResult, *, keys: Sequence[str] | None = None) -> int:
+        """Rewrite these virtual records. With `keys` (the back-fill's membership step) a virtual record that cannot be placed is left on the
+        stale marker and counted in the number returned, and a connector that keeps changing leaves the page as it is; a rewrite of roots raises
+        for both, so that the root stays.
+
+        shortcut: PAGE virtual records are read, written and proved under their locks in one block that must end inside
+        `MEMBERSHIP_LOCK_TIMEOUT_SECONDS` (120 s). The page size is unmeasured at scale; measure it before this is reachable."""
+        todo, failed, unplaced, floor, rounds, moves, moved = vrids, dict[str, str](), dict[str, str](), 0, 0, 0, False
         async with vrid_write_locks(vrids):
-            for _ in range(MAX_ROUNDS):
-                epoch, at = await self._epoch(connector_id), datetime.now(UTC)
+            while todo:
+                epoch, at = await self._epoch(connector_id), _clock()      # the generation and the time, both before the graph is read
+                fence = max(_micros(at), floor)
                 plans, unplaced = await self._plans(org_id, todo, keys)
-                failed.update(unplaced)
                 try:
-                    written = await self._write(org_id, connector_id, plans, epoch, at, result)
+                    written = await self._write(org_id, connector_id, plans, epoch, fence, at, result)
+                    todo, top = await self._differs(org_id, plans, written, keys)
+                    if top > fence and todo:
+                        # A point carries a fence above this writer's time: another host's clock runs ahead, or an earlier run left it. Follow it
+                        # when it is a plausible time (the next round reads the graph again, after that write, and writes above it), only while
+                        # the connector has not changed since this graph was read, and not otherwise.
+                        if top >= 2**53 - 1 or top > max(_micros(_clock()), fence) + MAX_FENCE_SKEW_MICROS:
+                            SCOPE_STAMP_FAILED.inc("fence_out_of_range")
+                            self._log.error("scope fence %d on a point of %s is not a plausible time (this host: %d): not followed; the rewrite stays "
+                                            "incomplete until the point is repaired (index the record again)", top, connector_id, _micros(_clock()))
+                            failed.update(dict.fromkeys(todo, f"a fence ({top}) that is no plausible time, not followed"))
+                            break
+                        await self._guard(connector_id, epoch)
+                        floor = top + 1
                 except GenerationMoved:
-                    continue  # the graph changed after it was read; nothing from it was sent: read it again
-                if not (todo := await self._differs(org_id, plans, written, keys)):
+                    moves += 1      # the graph changed after it was read; nothing from it was sent: read it again (a move costs no round)
+                    if moves > MAX_MOVES:
+                        moved = True
+                        break
+                    continue
+                rounds += 1
+                if todo and rounds >= MAX_ROUNDS:
+                    SCOPE_STAMP_FAILED.inc("rewrite")
+                    failed.update(dict.fromkeys(todo, "a write did not show, or the points kept changing"))
                     break
-            else:
-                await self._mark_stale(org_id, connector_id, todo, epoch, at)
-                SCOPE_STAMP_FAILED.inc("rewrite")
-                failed.update(dict.fromkeys(todo, "kept changing, or a write did not show"))
+            stale = sorted({*failed, *(unplaced if keys is not None else ())})
+            if stale and not moved:      # fail closed: no stamp of these points admits (they are on the legacy filter) until they are written again
+                await self._mark_stale(org_id, connector_id, stale, epoch, fence, at)
+        if keys is None:
+            failed |= unplaced
+            if moved:
+                failed.update(dict.fromkeys(todo, "the connector kept changing"))
         if failed:
             first = min(failed)
             raise RewriteIncomplete(f"{len(failed)} virtual record(s) left unwritten or stale. First, {first}: {failed[first]}")
+        return len(unplaced) if keys is not None else 0
 
     async def _epoch(self, connector_id: str) -> Epoch:
         app = await self._app(connector_id)
@@ -344,7 +384,7 @@ class ScopeRewriteJob:
                 self._log.warning("scope rewrite: %s: %s", v, unplaced[v])
         return plans, unplaced
 
-    async def _write(self, org_id: str, connector_id: str, plans: Mapping[str, _Plan], epoch: Epoch, at: datetime, result: RewriteResult) -> dict[tuple[str, str], str]:
+    async def _write(self, org_id: str, connector_id: str, plans: Mapping[str, _Plan], epoch: Epoch, fence: int, at: datetime, result: RewriteResult) -> dict[tuple[str, str], str]:
         """Write the points whose stored fields differ, and give the others this writer's fence. Returns (collection, point id) -> virtual record."""
         by_collection: dict[str, list[str]] = {}
         for v, plan in plans.items():
@@ -363,43 +403,52 @@ class ScopeRewriteJob:
                 written[(name, pid)] = v
                 if pid not in held or not _holds(held[pid], plans[v].payload):
                     todo[pid] = plans[v].payload
-                elif self._needs_fence(held[pid], epoch):
+                elif self._needs_fence(held[pid], fence):
                     touch[pid] = plans[v].payload  # right already, written again so a stale writer's fields are refused over it
-            await self._put(org_id, connector_id, name, todo, epoch, at)
-            await self._put(org_id, connector_id, name, touch, epoch, at)
+            await self._put(org_id, connector_id, name, todo, epoch, fence, at)
+            await self._put(org_id, connector_id, name, touch, epoch, fence, at)
             result.points_written += len(todo)
             result.points_touched += len(touch)
         return written
 
-    def _needs_fence(self, stored: Mapping[str, Any], epoch: Epoch) -> bool:
+    def _needs_fence(self, stored: Mapping[str, Any], fence: int) -> bool:
         if self._vdb.generation_fence:
-            return int(stored.get(SCOPE_FENCE_FIELD) or 0) < epoch.generation
+            return int(stored.get(SCOPE_FENCE_FIELD) or 0) < fence
         return _fenced_by_time(self._vdb)  # pgvector's fence is a time on the group row, which a read of the point does not show
 
-    async def _put(self, org_id: str, connector_id: str, name: str, updates: Mapping[str, dict[str, Any]], epoch: Epoch, at: datetime) -> None:
+    async def _put(self, org_id: str, connector_id: str, name: str, updates: Mapping[str, dict[str, Any]], epoch: Epoch, fence: int, at: datetime) -> None:
         if not updates:
             return
-        extra: dict[str, Any] = {"fence": epoch.generation} if self._vdb.generation_fence else {"computed_at": at} if _fenced_by_time(self._vdb) else {}
+        extra: dict[str, Any] = {"fence": fence} if self._vdb.generation_fence else {"computed_at": at} if _fenced_by_time(self._vdb) else {}
         ids = list(updates)
         for i in range(0, len(ids), WRITE_BATCH):
             await self._guard(connector_id, epoch)
             await self._vdb.update_payloads_by_ids(name, {p: updates[p] for p in ids[i:i + WRITE_BATCH]}, org_id=org_id, **extra)
 
-    async def _differs(self, org_id: str, plans: Mapping[str, _Plan], written: Mapping[tuple[str, str], str], keys: Sequence[str] | None = None) -> list[str]:
-        """The virtual records whose graph, stored points or search view do not show what was written: a second read of each."""
+    async def _differs(self, org_id: str, plans: Mapping[str, _Plan], written: Mapping[tuple[str, str], str],
+                       keys: Sequence[str] | None = None) -> tuple[list[str], int]:
+        """The virtual records whose graph, stored points or search view do not show what was written (a second read of each), and the highest
+        fence found on a point that kept other fields than were written (0 if none)."""
         again, _ = await self._plans(org_id, list(plans), keys)
         bad = {v for v, p in plans.items() if v not in again or not _same(again[v].payload, p.payload)}
         by_collection: dict[str, list[str]] = {}
         for name, pid in written:
             by_collection.setdefault(name, []).append(pid)
+        top = 0
         for name, ids in by_collection.items():
-            bad |= await self._not_shown(org_id, name, ids, plans, written)
-        return sorted(bad)
+            more, seen = await self._not_shown(org_id, name, ids, plans, written)
+            bad |= more
+            top = max(top, seen)
+        return sorted(bad), top
 
-    async def _not_shown(self, org_id: str, name: str, ids: list[str], plans: Mapping[str, _Plan], written: Mapping[tuple[str, str], str]) -> set[str]:
+    async def _not_shown(self, org_id: str, name: str, ids: list[str], plans: Mapping[str, _Plan],
+                         written: Mapping[tuple[str, str], str]) -> tuple[set[str], int]:
         """Stored first (a write that was refused, lost or overwritten), then searched: a store that searches an older view than it stores
-        (OpenSearch between refreshes) is asked to publish, and polled."""
-        bad = {written[(name, pid)] for pid, payload in (await self._stored(name, ids)).items() if not _holds(payload, plans[written[(name, pid)]].payload)}
+        (OpenSearch between refreshes) is asked to publish, and polled. Also the highest fence on a point that did not take the write."""
+        stored = await self._stored(name, ids)
+        refused = {pid for pid, payload in stored.items() if not _holds(payload, plans[written[(name, pid)]].payload)}
+        bad = {written[(name, pid)] for pid in refused}
+        top = max((int(stored[pid].get(SCOPE_FENCE_FIELD) or 0) for pid in refused), default=0)      # (a fence that is no number raises: the root fails)
         wanted = {pid: plans[written[(name, pid)]].payload for pid in ids if written[(name, pid)] not in bad}
         vrids = sorted({written[(name, pid)] for pid in wanted})
         deadline, delay = time.monotonic() + self._settle, 0.05
@@ -408,18 +457,18 @@ class ScopeRewriteJob:
             view = await self._scan(org_id, name, vrids, (*SCOPE_KEYS, *MEMBERSHIP_KEYS))
             lagging = {pid for pid, want in wanted.items() if pid not in view or not _holds(view[pid], want)}
             if not lagging or time.monotonic() >= deadline:
-                return bad | {written[(name, pid)] for pid in lagging}
+                return bad | {written[(name, pid)] for pid in lagging}, top
             await asyncio.sleep(delay)
             delay = min(delay * 2, 1.0)
-        return bad
+        return bad, top
 
-    async def _mark_stale(self, org_id: str, connector_id: str, vrids: Sequence[str], epoch: Epoch, at: datetime) -> None:
+    async def _mark_stale(self, org_id: str, connector_id: str, vrids: Sequence[str], epoch: Epoch, fence: int, at: datetime) -> None:
         """The legacy marker (version 0) on every point of these virtual records, written as every other write is. A connector that moved
         meanwhile is not current anyway, and a newer writer's stamps stay."""
         try:
             for name in set(await self._locator.all_collections(fresh=True, strict=True)):
                 found = await self._scan(org_id, name, list(vrids))
-                await self._put(org_id, connector_id, name, dict.fromkeys(found, STALE_SCOPE.to_payload()), epoch, at)
+                await self._put(org_id, connector_id, name, dict.fromkeys(found, STALE_SCOPE.to_payload()), epoch, fence, at)
         except GenerationMoved:
             return
 
@@ -491,6 +540,14 @@ class ScopeRewriteJob:
                             and not _holds(stored, plans[_vrid_of(found[pid])].payload)):
                         return True
         return False
+
+
+def _clock() -> datetime:
+    return datetime.now(UTC)
+
+
+def _micros(at: datetime) -> int:
+    return int(at.timestamp() * 1_000_000)
 
 
 def _vrid_of(payload: Mapping[str, Any]) -> str:

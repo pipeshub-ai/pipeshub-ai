@@ -27,7 +27,6 @@ def _writers_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ACL_SCOPE_FIELDS", "on")
 
 
-STALE: dict[str, int] = {}
 GRANTS = [s for s in load_all() if s.mutations and all(m.kind in VIEWER_ONLY for m in s.mutations)]
 
 
@@ -48,7 +47,6 @@ async def test_a_rewritten_subtree_is_hidden_meanwhile_and_exact_after(scenario)
     assert env.changed <= {env.vrids()[r] for r in env.subtree if r in env.vrids()}, "a stamp outside the subtree changed"
     written = sum(r.points_written for r in results)
     assert written >= len(env.changed), (written, sorted(env.changed))
-    STALE[scenario.id] = seen.stale_seen
 
 
 @pytest.mark.parametrize("scenario", GRANTS, ids=[s.id for s in GRANTS])
@@ -72,5 +70,12 @@ def test_the_corpus_has_what_the_gate_needs() -> None:
     assert ORG
 
 
-def test_some_scenarios_really_leave_stale_stamps_to_hide() -> None:
-    assert sum(1 for n in STALE.values() if n) >= 8, STALE
+async def test_some_scenarios_really_leave_stale_stamps_to_hide() -> None:
+    """Counted here, not read from the scenarios' tests: those may run in other workers (`-n 4`), and a module-level tally would be empty."""
+    stale = 0
+    for scenario in STRUCT:
+        env, seen = await Env.make(scenario.world), Log()
+        await env.change(scenario.mutations)
+        await env.audit(seen)
+        stale += bool(seen.stale_seen)
+    assert stale >= 8, stale
