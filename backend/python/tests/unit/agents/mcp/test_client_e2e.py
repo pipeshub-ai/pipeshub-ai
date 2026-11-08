@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import logging
 import socket
 import sys
 import textwrap
@@ -383,10 +384,12 @@ class TestLocalServer:
         manager = MCPClientManager(_config(MCPTransport.STDIO, command=sys.executable, args=[str(local_server)]))
         await manager.open()
         try:
-            with pytest.raises(MCPConnectionLostError):
+            with caplog.at_level(logging.DEBUG), pytest.raises(MCPConnectionLostError) as raised:
                 await manager.call_tool_in_session("crash", {})
             assert not manager.is_open
-            assert "about to crash" in caplog.text
+            # The stderr can hold earlier calls' arguments and the server's environment.
+            assert "about to crash" not in caplog.text
+            assert "about to crash" not in str(raised.value)
         finally:
             await manager.aclose()
 
