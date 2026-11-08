@@ -180,6 +180,7 @@ from app.sources.external.servicenow.models import (
     TableAPIResponse,
 )
 from app.sources.external.servicenow.servicenow import ServiceNowDataSource
+from app.utils.credential_refresh_log import EVENT_CHECK_FAILED, log_refresh_failure
 from app.utils.html_markdown import html_to_markdown_async
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import datetime_to_epoch_ms
@@ -940,7 +941,7 @@ class ServiceNowConnector(BaseConnector):
                 return False
             token = await refresh_service.refresh_now(self.connector_id, self.connector_name.value, held_refresh)
         except Exception as e:
-            self.logger.error(f"ServiceNow token refresh after a 401 failed: {e}")
+            log_refresh_failure(self.logger, EVENT_CHECK_FAILED, e)
             return False
         if not token or not token.access_token:
             return False
