@@ -80,6 +80,8 @@ class BlockRow:
     type_param_count: int = 0
     # Where the definition starts: a top-level one after an import of the same name rebinds that name.
     start_line: int | None = None
+    # The stored Block.externalRefs: the edge build rewrites only the lists that change.
+    external_refs: tuple[str, ...] = ()
 
     @staticmethod
     def from_doc(doc: dict[str, Any], paths: dict[str, str]) -> "BlockRow":
@@ -107,6 +109,7 @@ class BlockRow:
             macro_table=_ensure_dict(doc.get("macroTable")),
             type_param_count=doc.get("typeParamCount") or 0,
             start_line=doc.get("startLine") if isinstance(doc.get("startLine"), int) else None,
+            external_refs=_ensure_str_list(doc.get("externalRefs")),
         )
 
 
