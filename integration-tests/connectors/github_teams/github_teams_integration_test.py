@@ -681,16 +681,30 @@ class TestGitHubTeamsIssues:
                 f"expected one ASSIGNED_TO edge per assignee ({len(assignee_ids)}), "
                 f"got {assigned!r}"
             )
+            # A member's edge ends on their user, anyone else's on a person node keyed
+            # by their GitHub id, so the targets are known without another lookup.
+            non_members = {i for i in assignee_ids if not emails.get(i)}
+            assert non_members <= set(assigned), (
+                f"non-member assignees {sorted(non_members - set(assigned))} have no "
+                f"ASSIGNED_TO edge; got {assigned!r}"
+            )
+            member_targets = set(assigned) - assignee_ids
+            assert len(member_targets) == len(assignee_ids) - len(non_members), (
+                f"expected one ASSIGNED_TO edge to a user per member assignee, got {assigned!r}"
+            )
             if expected_email:
-                assert assigned, "primary assignee resolved to a user but no ASSIGNED_TO edge"
+                assert member_targets, (
+                    "primary assignee resolved to a user but no ASSIGNED_TO edge ends on a user"
+                )
 
+            # Hidden-email tickets link the author as REPORTED_BY only: CREATED_BY comes
+            # from creator_email, which GitHub never gives.
             creator = multi.get("user") or {}
             if emails.get(str(creator.get("id"))):
-                for edge_type in ("CREATED_BY", "REPORTED_BY"):
-                    related = await graph_provider.get_record_outgoing_entity_relations(
-                        connector_id, multi_external, edge_type,
-                    )
-                    assert related, f"{edge_type} edge missing on {multi_external}"
+                related = await graph_provider.get_record_outgoing_entity_relations(
+                    connector_id, multi_external, "REPORTED_BY",
+                )
+                assert related, f"REPORTED_BY edge missing on {multi_external}"
             checked += 1
         else:
             logger.info("TC-GH-ISSUE-002: no multi-assignee issue — entity relations skipped")
