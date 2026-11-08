@@ -20,7 +20,6 @@ from app.modules.retrieval.retrieval_service import (
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.services.vector_db.search_retry import VectorSearchUnavailableError
 from app.utils.chat_helpers import attach_connector_instance_names
-from app.utils.logger import log_record_fields
 
 # ---------------------------------------------------------------------------
 # Helpers to build a RetrievalService without real FastEmbedSparse / model load
@@ -2682,29 +2681,33 @@ class TestSearchWithFiltersBranches:
         assert len(result["searchResults"]) == 1
 
     @pytest.mark.asyncio
-    async def test_results_without_metadata_are_counted_once_never_dumped(
-        self, retrieval_service, mock_graph_provider, caplog
+    async def test_a_point_without_metadata_is_normalised_then_dropped_silently(
+        self, retrieval_service, mock_graph_provider, mock_vector_db_service, caplog
     ) -> None:
+        """Through the real _run_searches: the point gains metadata ({"point_id"}),
+        so no "no metadata" branch can see it; it has no record and is dropped,
+        and no WARNING reports it; its content is never logged."""
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
-        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {"_key": "rec1", "virtualRecordId": "vr1", "origin": "drive", "recordName": "Doc", "mimeType": "text/plain"}
         ]
-        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
-            {"score": 0.8, "content": "content-sentinel", "citationType": "vectordb|document"},
-            {"score": 0.7, "content": "content-sentinel", "citationType": "vectordb|document", "metadata": {}},
-            {"score": 0.9, "content": "with metadata", "citationType": "vectordb|document",
-             "metadata": {"virtualRecordId": "vr1", "orgId": "o1"}},
-        ])
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        bare = MagicMock(id="p-bare", score=0.95, payload={"page_content": "content-sentinel"})
+        good = MagicMock(id="p-good", score=0.9, payload={
+            "page_content": "with metadata", "metadata": {"virtualRecordId": "vr1", "orgId": "o1"},
+        })
+        mock_vector_db_service.query_nearest_points.return_value = [[bare, good]]
         retrieval_service.logger = logging.getLogger("tests.retrieval")
 
         with caplog.at_level(logging.DEBUG, logger="tests.retrieval"):
-            await retrieval_service.search_with_filters(queries=["test"], user_id="u1", org_id="o1")
+            result = await retrieval_service.search_with_filters(queries=["test"], user_id="u1", org_id="o1")
 
-        skipped = [r for r in caplog.records if r.getMessage() == "retrieval.results_skipped"]
-        assert [(r.levelno, log_record_fields(r)) for r in skipped] == [
-            (logging.WARNING, {"reason": "no_metadata", "count": 2}),
-        ]
+        assert result["status"] == "success"
+        assert [r["content"] for r in result["searchResults"]] == ["with metadata"]
+        warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert not [r for r in warned if "metadata" in r.getMessage() or "results_skipped" in r.getMessage()]
         assert not [r for r in caplog.records if "sentinel" in r.getMessage()]
 
     @pytest.mark.asyncio

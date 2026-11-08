@@ -199,7 +199,6 @@ One chat turn is reconstructable from these lines; each carries the bound `org_i
 | `llm_call.end` | INFO; DEBUG for a failed attempt (`llm_call.retry` or `llm_call.failed` reports it) | `source`, `provider`, `model`, `duration_ms`, `tokens_in`, `tokens_out`, `cache_read_tokens`, `finish_reason`, `tools_offered`, `tool_calls`, `attempt`, `outcome`; on failure `error_class`, `error_type`, `status` |
 | `llm_call.retry` | WARNING | `attempt`, `max_attempts`, `status`, `error_class`, `delay_ms` |
 | `llm_call.failed` | `log_failure` policy | `turn`, `error_class`, `error_type`, `error_message` |
-| `retrieval.results_skipped` | WARNING | `reason`, `count` |
 
 - `stop_reason`: `done`, `awaiting_input` (a clarifying question or an approval card), `max_turns`, `guardrail`, `cancelled`
   (the user pressed Stop), `client_disconnect` (the Node to Python connection dropped; Node keeps a run going when the browser

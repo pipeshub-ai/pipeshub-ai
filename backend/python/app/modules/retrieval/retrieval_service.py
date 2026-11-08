@@ -124,7 +124,6 @@ from app.utils.chat_helpers import (
 from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 from app.utils.embedding_retry import await_with_retry
 from app.utils.image_utils import get_extension_from_mimetype
-from app.utils.logging_fields import log_event
 from app.utils.query_instruction import instruct_query
 from app.utils.stage_timer import span, spanned
 
@@ -1177,14 +1176,12 @@ class RetrievalService:
             virtual_record_id_to_record = {}
             new_type_results = []
             final_search_results = []
-            no_metadata = 0
             for idx, result in enumerate(search_results):
                 if not result or not isinstance(result, dict):
                     continue
-                if not result.get("metadata"):
-                    no_metadata += 1
-                    continue
-                virtual_id = result["metadata"].get("virtualRecordId")
+                # Normalisation gives every hit metadata, and a payload without it cannot pass
+                # the metadata.orgId filter; a hit lacking it has no record and falls to the else.
+                virtual_id = (result.get("metadata") or {}).get("virtualRecordId")
                 if virtual_id is not None and virtual_id in virtual_to_record_map:
                     record_id = virtual_to_record_map[virtual_id].get("_key")
                     record = record_id_to_record_map.get(record_id)
@@ -1254,11 +1251,6 @@ class RetrievalService:
                     continue
 
                 final_search_results.append(result)
-            if no_metadata:
-                log_event(
-                    self.logger, "retrieval.results_skipped", level=logging.WARNING,
-                    reason="no_metadata", count=no_metadata,
-                )
 
             files_map = {}
             mails_map = {}
