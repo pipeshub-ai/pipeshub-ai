@@ -145,7 +145,7 @@ class TestQdrantRewrite(_Contract):
     store = "qdrant"
 
     @pytest.fixture
-    async def vector_service(self, qdrant_service):  # noqa: ANN201
+    async def vector_service(self, qdrant_service):
         return qdrant_service
 
 
@@ -153,7 +153,7 @@ class TestOpenSearchRewrite(_Contract):
     store = "opensearch"
 
     @pytest.fixture
-    async def vector_service(self, opensearch_service):  # noqa: ANN201
+    async def vector_service(self, opensearch_service):
         return opensearch_service
 
 
@@ -161,7 +161,7 @@ class TestRedisRewrite(_Contract):
     store = "redis"
 
     @pytest.fixture
-    async def vector_service(self, redis_service):  # noqa: ANN201
+    async def vector_service(self, redis_service):
         return redis_service
 
 
@@ -186,7 +186,7 @@ class TestPgVectorRewrite(_Contract):
             yield
 
     @pytest.fixture
-    async def vector_service(self, env) -> AsyncIterator[PgVectorService]:  # noqa: F811
+    async def vector_service(self, env) -> AsyncIterator[PgVectorService]:
         port = env.start_bouncer()
         svc = await PgVectorService.create(PgVectorConfig(dsn=env.dsn("indexing", port), jobs_dsn=env.dsn("jobs", port), pool_max=4, placement="none"))
         yield svc

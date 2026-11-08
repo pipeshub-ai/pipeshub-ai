@@ -29,7 +29,7 @@ from tests.integration.graph_permissions.write_path_support import (
 )
 from tests.integration.vector_db.helpers import make_collection_config, make_dense
 from tests.permissions.rewrite_kit import FencedMemoryVectorDB
-from tests.permissions.test_generation_paths import backend
+from tests.permissions.test_generation_paths import backend  # noqa: F401  (fixture)
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(600)]
 OTHER_ORG = "cd" * 12
