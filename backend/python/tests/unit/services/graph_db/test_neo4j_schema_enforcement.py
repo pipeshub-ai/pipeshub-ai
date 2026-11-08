@@ -232,7 +232,7 @@ CLASSIFICATION: dict[str, str] = {
     "update_queued_duplicates_status": _T, "claim_push_record": _T, "retag_push_record": _T,
     "record_purge_failure": _T, "increment_node_field": _T, "take_back_kept_record_group": _T,
     # ---- edges
-    "batch_create_edges": _E, "create_edges_if_absent": _E, "batch_create_entity_relations": _E,
+    "batch_create_edges": _E, "create_edges_if_absent": _E, "batch_create_entity_relations": _E, "replace_record_entity_relations": _E,
     "batch_upsert_node_relations": _E, "batch_create_user_app_edges": _E, "update_edge": _E,
     "upsert_authenticated_as": _E, "ensure_app_membership": _E, "ensure_taxonomy_hierarchy_edge": _E,
     "ensure_team_app_edge": _E, "create_record_relation": _E, "create_record_group_relation": _E,
@@ -1016,7 +1016,7 @@ COVERAGE_GAPS: dict[str, str] = {
           "ensure_taxonomy_hierarchy_edge", "ensure_team_app_edge", "create_record_relation",
           "create_record_group_relation", "create_record_groups_relation",
           "create_inherit_permissions_relation_record_group", "create_kb_permissions",
-          "batch_upsert_record_permissions", "replace_edges_to", "replace_record_permissions",
+          "batch_upsert_record_permissions", "replace_edges_to", "replace_record_permissions", "replace_record_entity_relations",
           "link_record_to_group", "batch_update_team_member_roles", "update_agent_permission",
           "update_kb_permission", "copy_document_relationships", "copy_named_entity_mentions",
           "add_user_to_all_team", "ensure_all_team_with_users", "move_taxonomy_edges",

@@ -3937,6 +3937,46 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH coalesce({coalesced}) AS {alias}
             WHERE {alias} IS NOT NULL"""
 
+    async def find_blocks_by_external_ref_prefix(
+        self,
+        org_id: str,
+        connector_id: str,
+        prefixes: list[str],
+        limit: int,
+        record_group_ids: list[str] | None = None,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict[str, Any]]:
+        if not prefixes:
+            return []
+        label = collection_to_label(CollectionNames.BLOCKS.value)
+        # A range index cannot serve list membership: the org + connector predicate is the indexed part, and
+        # each of the connector's blocks is then tested in place.
+        query = f"""
+        MATCH (b:{label})
+        WHERE b.orgId = $orgId AND b.connectorId = $connectorId
+          AND ($groups IS NULL OR b.recordGroupId IN $groups)
+          AND any(r IN coalesce(b.externalRefs, []) WHERE any(p IN $prefixes WHERE r STARTS WITH p))
+        RETURN b
+        ORDER BY b.id
+        LIMIT $limit
+        """
+        try:
+            rows = await self.client.execute_query(
+                query,
+                parameters={"orgId": org_id, "connectorId": connector_id, "prefixes": prefixes,
+                            "limit": limit, "groups": record_group_ids},
+                txn_id=transaction,
+            )
+            return [self._neo4j_to_arango_node(dict(row["b"]), CollectionNames.BLOCKS.value)
+                    for row in rows or []]
+        except Exception as e:
+            self.logger.error(f"Find blocks by external ref failed: {e}")
+            if raise_on_error:
+                raise
+            return []
+
     async def get_edges_by_target_keys(
         self,
         target_keys: list[str],
@@ -23727,6 +23767,51 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             txn_id=transaction,
         )
         return int((rows or [{}])[0].get("deleted") or 0)
+
+    async def replace_record_entity_relations(
+        self,
+        record_id: str,
+        to_collections: list[str],
+        origin: str,
+        edges: list[dict],
+        transaction: str | None = None,
+    ) -> None:
+        """See :meth:`IGraphDBProvider.replace_record_entity_relations`."""
+        if not record_id or not to_collections or not origin:
+            raise ValueError("replacing a record's entity relations needs a record, collections and an origin")
+        # Before any statement, like the creates: a bad edge must fail with the old links in place.
+        self._validate_edges(CollectionNames.ENTITY_RELATIONS.value, edges)
+        rel = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
+        parameters: dict[str, Any] = {
+            "record_id": record_id, "origin": origin, "inferred": EntityOrigin.INFERRED.value,
+            "labels": [collection_to_label(c) for c in to_collections],
+        }
+        grouped = self._edges_by_labels(edges)
+        if sum(len(rows) for rows in grouped.values()) != len(edges):
+            raise ValueError("an edge has no endpoints; the record's links are kept")
+        creates = []
+        for i, ((from_label, to_label), rows) in enumerate(grouped.items()):
+            parameters[f"edges_{i}"] = rows
+            creates.append(f"""
+            CALL {{
+                UNWIND $edges_{i} AS edge
+                MATCH (from:{from_label} {{id: edge.from_key}})
+                MATCH (to:{to_label} {{id: edge.to_key}})
+                MERGE (from)-[r:{rel} {{edgeType: edge.props.edgeType}}]->(to)
+                SET r = edge.props
+            }}""")
+        # One statement: a failure in the creates rolls the delete back, whatever NEO4J_EXPLICIT_TRANSACTIONS says.
+        await self.client.execute_query(
+            f"""
+            OPTIONAL MATCH (:Record {{id: $record_id}})-[old:{rel}]->(target)
+            WHERE any(l IN labels(target) WHERE l IN $labels) AND coalesce(old.origin, $inferred) = $origin
+            DELETE old
+            WITH count(*) AS _
+            {"".join(creates)}
+            RETURN count(*) AS done""",
+            parameters=parameters,
+            txn_id=transaction,
+        )
 
     async def get_organization_record_reach(
         self,

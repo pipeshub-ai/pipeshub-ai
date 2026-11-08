@@ -1179,10 +1179,9 @@ class RetrievalService:
             for idx, result in enumerate(search_results):
                 if not result or not isinstance(result, dict):
                     continue
-                if not result.get("metadata"):
-                    self.logger.warning(f"Result has no metadata: {result}")
-                    continue
-                virtual_id = result["metadata"].get("virtualRecordId")
+                # Normalisation gives every hit metadata, and a payload without it cannot pass
+                # the metadata.orgId filter; a hit lacking it has no record and falls to the else.
+                virtual_id = (result.get("metadata") or {}).get("virtualRecordId")
                 if virtual_id is not None and virtual_id in virtual_to_record_map:
                     record_id = virtual_to_record_map[virtual_id].get("_key")
                     record = record_id_to_record_map.get(record_id)

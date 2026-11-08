@@ -471,9 +471,9 @@ class PipesHubAgentFactory:
                 ),
             )
 
-        # Opt-in: every agent of this request resolves its model from this
-        # registry, so its transports are where each call's usage is counted.
-        usage_sink = context.usage_ledger.add if context.include_retrieval_context else None
+        # Every agent of this request resolves its model from this registry, so
+        # its transports are where each call's usage is counted and logged.
+        usage_sink = context.usage_ledger.add
         transport_registry = TransportRegistry()
         transport_registry.register(
             "langchain",

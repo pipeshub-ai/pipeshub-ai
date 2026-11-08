@@ -380,6 +380,8 @@ _WRITE_CONFLICT_ATTEMPTS = 6
 # Candidates per permitted-records query; see _walk_permitted_windows.
 _PERMITTED_WALK_CHUNK = 100
 _RECORDS_ORG_KEY_INDEX = "records_org_key"
+# At 1000 groups a pass, far more duplicates than a race leaves.
+_DEDUPE_MAX_PASSES = 10_000
 _WRITE_CONFLICT_RE = re.compile(r'"errorNum":\s*1200|\[1200\]')
 _LOCK_TIMEOUT_RE = re.compile(r'"errorNum":\s*18\b|\[18\]')
 _T = TypeVar("_T")
@@ -1676,6 +1678,30 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self.logger.error("Could not drop the non-sparse people (orgId, email) index; drop it by hand: %s", exc)
         await self.http_client.ensure_persistent_index(
             CollectionNames.PEOPLE.value, ["orgId", "sourceKey"], unique=True, sparse=True,
+        )
+
+        # UNIQUE: entityRelations (_from, _to, edgeType) closes the UPSERT race of
+        # _upsert_entity_relations. Not sparse: edgeType is required by the schema.
+        # A unique index on a sharded collection must contain the shard key (_key
+        # by default), so this needs a single-shard collection, which these are
+        # (no shard settings are passed at creation). Existing duplicates would
+        # fail the build, so they go first; once the index exists the scan is skipped.
+        entity_fields = ["_from", "_to", "edgeType"]
+        try:
+            indexed = any(
+                i.get("unique") and i.get("fields") == entity_fields
+                for i in await self.http_client.get_indexes(CollectionNames.ENTITY_RELATIONS.value)
+            )
+        except Exception as exc:  # unknown: clean up anyway, it is idempotent and bounded
+            self.logger.warning("Could not read the entityRelations indexes: %s", exc)
+            indexed = False
+        if not indexed:
+            try:
+                await self._dedupe_entity_relations()
+            except Exception as exc:  # the index build below then fails and logs; startup goes on
+                self.logger.error("Could not remove duplicate entityRelations edges: %s", exc)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.ENTITY_RELATIONS.value, entity_fields, unique=True,
         )
 
         # COMPOSITE: tableFqn + orgId on SQL column records
@@ -4036,6 +4062,67 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Create edges if absent failed: {str(e)}")
             raise
 
+    async def _upsert_entity_relations(self, edges: list[dict], update: str, txn: str | None) -> list:
+        """The one writer of ``entityRelations``: an UPSERT on (_from, _to, edgeType).
+
+        UPSERT is not atomic across concurrent writers, so two of them can both
+        miss and insert; the unique index then fails the second statement with
+        1210. The edge exists by then, so the statement runs once more and its
+        UPSERT takes the update branch (outside a transaction only)."""
+        query = f"""
+        FOR edge IN @edges
+            UPSERT {{ _from: edge._from, _to: edge._to, edgeType: edge.edgeType }}
+            INSERT edge
+            {update}
+            IN @@collection
+            RETURN NEW
+        """
+        bind_vars = {"edges": edges, "@collection": CollectionNames.ENTITY_RELATIONS.value}
+
+        async def write() -> list:
+            return await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=txn)
+
+        try:
+            return await self._retry_write_conflicts(write, txn)
+        except ArangoQueryError as exc:
+            # Inside a transaction a retry cannot see the other writer's edge, and
+            # the server reports that clash as a 1200 write conflict the caller reruns.
+            if exc.error_num != ARANGO_UNIQUE_CONSTRAINT_VIOLATED or txn is not None:
+                raise
+            return await self._retry_write_conflicts(write, txn)
+
+    async def _dedupe_entity_relations(self, batch: int = 1000) -> int:
+        """Delete duplicate ``entityRelations`` edges so the unique index can be built.
+
+        Per (_from, _to, edgeType) the oldest edge (createdAtTimestamp, then _key)
+        stays. The duplicates differ at most in origin/source/extractedName/
+        timestamps, which the UPSERT rewrote on every write anyway. Bounded to
+        ``batch`` groups a pass, repeated until none is left; safe to re-run."""
+        removed = 0
+        # Bounded, and ended by a pass that removes nothing, whatever the client answers.
+        for _ in range(_DEDUPE_MAX_PASSES):
+            rows = await self.http_client.execute_aql(
+                """
+                FOR e IN @@collection
+                    COLLECT f = e._from, t = e._to, ty = e.edgeType
+                        INTO g = { key: e._key, ts: e.createdAtTimestamp }
+                    FILTER LENGTH(g) > 1
+                    LIMIT @batch
+                    LET extra = SLICE((FOR x IN g SORT x.ts, x.key RETURN x.key), 1)
+                    FOR k IN extra
+                        REMOVE k IN @@collection
+                        RETURN 1
+                """,
+                {"@collection": CollectionNames.ENTITY_RELATIONS.value, "batch": batch},
+            )
+            passed = len(rows or [])
+            removed += passed
+            if not passed:
+                break
+        if removed:
+            self.logger.warning("Removed %d duplicate entityRelations edges", removed)
+        return removed
+
     async def batch_create_entity_relations(
         self,
         edges: list[dict],
@@ -4064,25 +4151,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Translate edges from generic format to ArangoDB format
             arango_edges = self._translate_edges_to_arango(edges)
 
-            # For entity relations, include edgeType in the UPSERT match condition
-            batch_query = """
-            FOR edge IN @edges
-                UPSERT { _from: edge._from, _to: edge._to, edgeType: edge.edgeType }
-                INSERT edge
-                UPDATE edge
-                IN @@collection
-                RETURN NEW
-            """
-            bind_vars = {
-                "edges": arango_edges,
-                "@collection": CollectionNames.ENTITY_RELATIONS.value
-            }
-
-            results = await self.http_client.execute_aql(
-                batch_query,
-                bind_vars,
-                txn_id=transaction
-            )
+            results = await self._upsert_entity_relations(arango_edges, "UPDATE edge", transaction)
 
             self.logger.debug(
                 f"✅ Successfully created {len(results)} entity relation edges."
@@ -4946,6 +5015,48 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if raise_on_error:
                 raise
             return {}
+
+    async def find_blocks_by_external_ref_prefix(
+        self,
+        org_id: str,
+        connector_id: str,
+        prefixes: list[str],
+        limit: int,
+        record_group_ids: list[str] | None = None,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict[str, Any]]:
+        if not prefixes:
+            return []
+        # A prefix test cannot use an array index; the (orgId, connectorId, ...) index scopes the scan.
+        query = f"""
+        FOR b IN {CollectionNames.BLOCKS.value}
+            FILTER b.orgId == @orgId AND b.connectorId == @connectorId
+            FILTER @groups == null OR b.recordGroupId IN @groups
+            FILTER LENGTH(
+                FOR r IN (b.externalRefs || [])
+                    FOR p IN @prefixes
+                        FILTER STARTS_WITH(r, p)
+                        LIMIT 1
+                        RETURN 1
+            ) > 0
+            SORT b._key
+            LIMIT @limit
+            RETURN b
+        """
+        try:
+            return await self.http_client.execute_aql(
+                query,
+                bind_vars={"orgId": org_id, "connectorId": connector_id, "prefixes": prefixes, "limit": limit,
+                           "groups": record_group_ids},
+                txn_id=transaction,
+            ) or []
+        except Exception as e:
+            self.logger.error(f"Find blocks by external ref failed: {e}")
+            if raise_on_error:
+                raise
+            return []
 
     async def get_edges_by_target_keys(
         self,
@@ -8943,12 +9054,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if f"{edge['_from']}|{edge.get('edgeType')}" not in theirs
         ]
         if to_insert:
-            await self.http_client.execute_aql(
-                "FOR e IN @edges UPSERT {_from: e._from, _to: e._to, edgeType: e.edgeType} "
-                "INSERT e UPDATE {} IN @@collection",
-                bind_vars={"edges": to_insert, "@collection": CollectionNames.ENTITY_RELATIONS.value},
-                txn_id=txn,
-            )
+            await self._upsert_entity_relations(to_insert, "UPDATE {}", txn)
         await self.http_client.execute_aql(
             "FOR e IN @@collection FILTER e._to == @person_id REMOVE e IN @@collection",
             bind_vars={"@collection": CollectionNames.ENTITY_RELATIONS.value, "person_id": person_id},
@@ -22610,6 +22716,45 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             txn_id=transaction,
         )
         return len(rows or [])
+
+    async def replace_record_entity_relations(
+        self,
+        record_id: str,
+        to_collections: list[str],
+        origin: str,
+        edges: list[dict],
+        transaction: str | None = None,
+    ) -> None:
+        """See :meth:`IGraphDBProvider.replace_record_entity_relations`."""
+        if not record_id or not to_collections or not origin:
+            raise ValueError("replacing a record's entity relations needs a record, collections and an origin")
+        relations = CollectionNames.ENTITY_RELATIONS.value
+        # Without a caller's transaction the write and the delete are still one change: readers never see both link sets.
+        txn = transaction or await self.begin_transaction([relations], [relations])
+        try:
+            # Writes first: a caller may log a failed write and commit, which must not commit a delete with it.
+            if edges:
+                await self.batch_create_entity_relations(edges, txn)
+            await self.http_client.execute_aql(
+                f"""
+                FOR e IN {relations}
+                    FILTER e._from == @from AND PARSE_IDENTIFIER(e._to).collection IN @collections
+                    FILTER NOT_NULL(e.origin, @inferred) == @origin AND [e._to, e.edgeType] NOT IN @kept
+                    REMOVE e IN {relations}
+                """,
+                bind_vars={
+                    "from": f"{CollectionNames.RECORDS.value}/{record_id}", "collections": to_collections,
+                    "origin": origin, "inferred": EntityOrigin.INFERRED.value,
+                    "kept": [[e["_to"], e["edgeType"]] for e in self._translate_edges_to_arango(edges)],
+                },
+                txn_id=txn,
+            )
+            if transaction is None:
+                await self.commit_transaction(txn)
+        except Exception:
+            if transaction is None:
+                await self.rollback_transaction(txn)
+            raise
 
     async def get_organization_record_reach(
         self,

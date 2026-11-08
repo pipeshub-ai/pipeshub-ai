@@ -13,8 +13,9 @@ Resolution order for each identifier:
    user may open and the turn may read (step 5), so a ticket denied or out of
    the turn's scope does not end the search.
 3. If the input was a URL and canonical strategies all missed, fall back to
-   ``get_record_by_weburl(normalized)`` then ``(raw)`` — so connectors with
-   no dedicated extractor still resolve via their indexed ``webUrl``.
+   ``get_records_by_weburls(normalized)`` then ``(raw)`` — so connectors with
+   no dedicated extractor still resolve via their indexed ``webUrl``. Every
+   record at the URL is a candidate: several connectors can sync one page.
 4. Bare non-URL inputs that miss every strategy fall back to a name match
    over the catalog's knowledge bases: a KB upload has no source key, so the
    ticket key or title it is about is only in its name.
@@ -69,7 +70,7 @@ class LookupStrategy:
     method:
         "external_id" — get_record_by_external_id(connector_id, value)
         "issue_key"   — get_record_by_issue_key(connector_id, value)
-        "weburl"      — get_record_by_weburl(value, org_id)
+        "weburl"      — get_records_by_weburls([value], org_id), each row read by id
         "slack_ts"    — find_slack_burst_record_by_ts(connector_id, group, ts),
                         in the reply's thread group, else the channel
 
@@ -135,6 +136,9 @@ _KB_NAME_SEARCH_LIMIT = 200
 _KB_NAME_SEARCH_PAGES = 5
 # Matches read per identifier: each costs a record read and an ACL check.
 _KB_NAME_MATCH_LIMIT = 10
+# Records read per URL, for the same reason. Past it, a URL with more copies than this
+# misses a copy the user can open only when none of the first ones is readable.
+_WEBURL_MATCH_LIMIT = 10
 
 
 def _holds_token(name: str, token: str) -> bool:
@@ -156,7 +160,7 @@ def _record_to_match(
     """Convert a record dict/object to a LookupMatch; None on bad data.
 
     Provider lookups (``get_record_by_issue_key``/``get_record_by_external_id``/
-    ``get_record_by_weburl``) return the Pydantic ``Record`` model from
+    ``get_record_by_id``) return the Pydantic ``Record`` model from
     ``app.models.entities``, which is snake_case throughout — this branches
     on ``isinstance(record, Record)`` first (rather than the previous
     duck-typed ``hasattr(record, "id")``, which matched but then read
@@ -493,7 +497,7 @@ class RecordResolver:
     async def _typed(self, rec: Record) -> Record:
         """Swap a base ``Record`` for its typed subclass when it has one.
 
-        ``get_record_by_weburl`` and ``get_record_by_external_id`` return a
+        ``get_record_by_external_id`` returns a
         base ``Record`` on both graph providers, so its ``to_llm_context()``
         carries no type-specific fields: a pull request looked up by URL showed
         no merge state, a ticket no status. ``get_record_by_id`` joins the type
@@ -550,7 +554,12 @@ class RecordResolver:
         return matches
 
     async def _by_weburl(self, weburl: str) -> list[LookupMatch]:
-        """``get_record_by_weburl``: normalized first, then raw."""
+        """Every live record stored under the URL (``get_records_by_weburls``), normalized first, then raw.
+
+        Several connectors can sync one page, each to its own record. All of them go to the
+        caller's ACL gate: one record picked for the whole org could be a copy the user cannot
+        open while another copy is readable.
+        """
         normalized = normalize_weburl(weburl)
         candidates_to_try = [normalized]
         if normalized != weburl:
@@ -558,15 +567,41 @@ class RecordResolver:
 
         for url in candidates_to_try:
             try:
-                rec = await self._graph.get_record_by_weburl(url, org_id=self._org_id)
+                rows = await self._graph.get_records_by_weburls([url], self._org_id, per_address=_WEBURL_MATCH_LIMIT)
             except Exception as exc:
                 logger.debug("_by_weburl(%r): %s", url, exc)
                 continue
-            if rec:
-                m = _record_to_match(await self._typed(rec), weburl, self._frontend_url)
-                if m and m.id:
-                    return [m]
+            found = await gather_with_concurrency(
+                GRAPH_FANOUT_CONCURRENCY,
+                *(self._weburl_match(row, weburl) for row in rows if row.get("id")),
+                return_exceptions=True,
+            )
+            # One copy that cannot be built must not hide the others: the whole URL would read as not found.
+            for failure in (f for f in found if isinstance(f, BaseException)):
+                logger.debug("_by_weburl(%r): a record could not be read: %s", url, failure)
+            matches = [m for m in found if isinstance(m, LookupMatch) and m.id]
+            if matches:
+                return matches
         return []
+
+    async def _weburl_match(self, row: dict[str, Any], weburl: str) -> LookupMatch | None:
+        """The typed record of a URL row, else its base record, else the row itself.
+
+        Only a read of the row's own id may stand in for it: the caller's ACL gate runs on that id.
+        """
+        record_id = str(row["id"])
+        typed = [m for m in await self._by_record_id(record_id, weburl) if m.id == record_id]
+        if typed:
+            return typed[0]
+        base: Record | None = None
+        try:
+            doc = await self._graph.get_document(record_id, CollectionNames.RECORDS.value)
+            base = Record.from_arango_base_record(doc) if doc else None
+        except Exception as exc:
+            logger.debug("_weburl_match(%r): %s", record_id, exc)
+        if base is not None and base.id == record_id:
+            return _record_to_match(base, weburl, self._frontend_url)
+        return _record_to_match(row, weburl, self._frontend_url)
 
     async def _by_slack_ts(
         self, ref: CanonicalRef, connectors: list[ConnectorInfo]

@@ -139,6 +139,18 @@ class FakeGraphProvider:
                       key=lambda d: d["_key"])
         return rows[skip:skip + limit]
 
+    async def find_blocks_by_external_ref_prefix(self, org_id, connector_id, prefixes, limit,
+                                                 record_group_ids=None, transaction=None, *,
+                                                 raise_on_error=False) -> list[dict]:
+        """As the providers do it: the connector's blocks (in *record_group_ids*, if given) with a ref
+        starting with any prefix, by _key."""
+        self.external_groups = [*getattr(self, "external_groups", []), record_group_ids]
+        return sorted((d for d in self.blocks.values()
+                       if d.get("orgId") == org_id and d.get("connectorId") == connector_id
+                       and (record_group_ids is None or d.get("recordGroupId") in record_group_ids)
+                       and any(r.startswith(p) for r in d.get("externalRefs") or () for p in prefixes)),
+                      key=lambda d: d["_key"])[:limit]
+
     async def search_nodes_by_field_terms(
         self, collection, field_name, terms, filters=None, limit=400,
         transaction=None, raise_on_error=False

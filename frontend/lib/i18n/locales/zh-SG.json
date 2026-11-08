@@ -5716,5 +5716,107 @@
       "onTitle": "已为所有人重新开启演示数据",
       "errorTitle": "无法为所有人更改演示数据"
     }
+  },
+  "graph": {
+    "status": {
+      "stale": "图谱正在更新，最近的更改可能尚未显示。",
+      "building": "图谱正在构建，当前显示的内容可能不完整。",
+      "retrying": "图谱构建遇到问题，正在重试。",
+      "failed": "上一次图谱构建失败，此视图可能已过时。",
+      "unknown": "无法读取此图谱的状态。"
+    },
+    "empty": {
+      "neverBuilt": "此仓库尚无代码图谱。",
+      "tooLarge": "此仓库过大，无法生成图谱。"
+    },
+    "incomplete": "部分链接可能缺失。请按边类型或方向缩小范围。",
+    "simplified": "为保证流畅移动，已简化视图。",
+    "verify": {
+      "degraded": "暂时无法验证访问权限，正在显示上次确认的内容。",
+      "blank": "已有数分钟无法验证访问权限，因此已清空图谱。正在重新连接…"
+    },
+    "error": {
+      "unavailable": "暂时无法加载，请重试。",
+      "notAvailable": "此项目不可用。",
+      "unexpected": "出了点问题。",
+      "ambiguous": "有多个仓库同名。请在搜索框中选择仓库。",
+      "full": "此视图已满。打开一个节点以开始新的视图。",
+      "revoked": "你正在查看的项目已不可用。"
+    },
+    "title": "代码图谱",
+    "ui": {
+      "back": "后退",
+      "forward": "前进",
+      "fit": "适应视图",
+      "showTable": "以表格显示",
+      "showGraph": "以图谱显示",
+      "direction": {
+        "any": "两者",
+        "inbound": "调用方",
+        "outbound": "被调用方"
+      },
+      "includeTests": "包含测试",
+      "showMore": "显示更多",
+      "expand": "展开",
+      "open": "打开",
+      "nothingSelected": "选择一个节点以查看详情。",
+      "details": "详情",
+      "links": "链接：{{n}}",
+      "table": {
+        "caption": "此视图中的节点",
+        "name": "名称",
+        "kind": "类型",
+        "file": "文件",
+        "actions": "操作",
+        "moreRows": "显示更多行",
+        "callersShown": "已显示的调用方",
+        "calleesShown": "已显示的被调用方",
+        "focus": "中心"
+      },
+      "emptyPrompt": "在上方搜索函数、方法或类，查看谁调用了它以及它调用了谁。",
+      "disclosure": "仅显示你有权访问的内容。",
+      "legendInferred": "虚线表示按名称推断的链接。",
+      "disabled": "代码图谱未启用。",
+      "search": {
+        "repo": "仓库",
+        "repoPlaceholder": "选择仓库",
+        "placeholder": "按名称查找函数、方法或类",
+        "label": "搜索代码",
+        "results": "搜索结果",
+        "noRepos": "没有你可以读取的代码仓库。",
+        "noMatches": "没有匹配项。",
+        "chooseFirst": "请先选择仓库",
+        "minChars": "请至少输入 2 个字符。",
+        "more": "仅显示前几个匹配项。请输入更多内容以缩小搜索范围。"
+      },
+      "action": {
+        "retry": "重试",
+        "restore": "使用完整画质"
+      },
+      "loading": "正在加载…",
+      "legend": {
+        "functions": "函数和方法",
+        "classes": "类和接口",
+        "focus": "此视图的中心"
+      },
+      "openHint": "打开：将其设为新视图的中心。",
+      "expandHint": "展开：在此显示其相邻项，并保留当前内容。",
+      "announce": {
+        "opened": "正在显示 {{n}} 项。",
+        "added": "已添加 {{n}} 项。"
+      },
+      "canvasHint": "图谱图像无法供屏幕阅读器使用。请使用“以表格显示”按钮来阅读和操作每个节点。",
+      "selectionGone": "你选择的项目已不可用。",
+      "viewGraph": "查看图谱",
+      "viewGraphOf": "查看图谱：{{repo}}",
+      "fillerNode": "{{file}} 中的 {{kind}}"
+    },
+    "capped": "图中只显示此视图的一部分，表格列出全部内容。",
+    "crowded": "此视图越来越拥挤。请用筛选器缩小范围。",
+    "hint": {
+      "testsOff": "测试文件已隐藏。如果该项目在测试代码中，请打开“包含测试”。"
+    },
+    "nothingNew": "此节点没有更多内容可显示。",
+    "tableOnly": "为保持流畅，仅显示表格。"
   }
 }

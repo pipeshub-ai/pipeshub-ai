@@ -32,6 +32,7 @@ from app.models.entities import (
     PullRequestRecord,
     TicketRecord,
 )
+from app.schema.node_validator import SchemaValidationError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -57,6 +58,8 @@ _NEW_EDGE_TYPES = frozenset({
     EntityRelations.REVIEWED_BY.value, EntityRelations.OWNED_BY.value,
     EntityRelations.LAST_MODIFIED_BY.value,
 })
+
+_ARANGO_SCHEMA_VIOLATION = 1620
 
 # Roles in which someone who is not a member still gets a person node.
 _PERSON_NODE_ROLES = frozenset(EntityRelations) - {EntityRelations.ADDRESSED_TO}
@@ -92,10 +95,9 @@ class PeopleStore(Protocol):
     async def get_person_by_source_key(self, source_key: str, org_id: str) -> Person | None: ...
     async def upsert_person_by_email(self, person: Person, *, raise_on_error: bool = False) -> str | None: ...
     async def upsert_person_by_source_key(self, person: Person, *, raise_on_error: bool = False) -> str | None: ...
-    async def delete_edges_between_collections(
-        self, from_id: str, from_collection: str, edge_collection: str, to_collection: str,
+    async def replace_record_entity_relations(
+        self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
     ) -> None: ...
-    async def batch_create_entity_relations(self, edges: list[dict]) -> None: ...
     def is_transient_error(self, error: BaseException) -> bool: ...
 
 
@@ -313,6 +315,11 @@ class _PersonResolver:
         return (CollectionNames.PEOPLE.value, key) if key else None
 
 
+def _rejects_edge_type(exc: Exception) -> bool:
+    """The store refused the edges by schema, as an older pod's edge-type enum does during a rolling deploy."""
+    return isinstance(exc, SchemaValidationError) or getattr(exc, "error_num", None) == _ARANGO_SCHEMA_VIOLATION or "schema" in str(exc).lower()
+
+
 def is_programming_error(exc: Exception) -> bool:
     """A store called with arguments it does not take, or missing a method:
     never an unanswered read, so it is raised rather than skipped."""
@@ -383,29 +390,28 @@ async def link_record_people(
             edge["sourceTimestamp"] = link.source_timestamp
         edges.append(edge)
 
-    # After the reads: where a store commits each statement, a failed read must leave the old edges.
-    for target in (CollectionNames.USERS.value, CollectionNames.PEOPLE.value):
-        try:
-            await store.delete_edges_between_collections(
-                record.id, CollectionNames.RECORDS.value, CollectionNames.ENTITY_RELATIONS.value, target,
-            )
-        except Exception as exc:  # stale edges are rewritten below
-            if propagate(exc) or is_programming_error(exc) or store.is_transient_error(exc) is True:
-                raise
-            logger.warning("Could not clear %s edges of record %s: %s", target, record.id, exc)
-
     if resolver.failed:
         logger.warning("Record %s: %d people could not be written", record.id, resolver.failed)
-    established = [e for e in edges if e["edgeType"] not in _NEW_EDGE_TYPES]
-    added = [e for e in edges if e["edgeType"] in _NEW_EDGE_TYPES]
-    if established:
-        await store.batch_create_entity_relations(established)
-    if added:
-        try:
-            await store.batch_create_entity_relations(added)
-        except Exception as exc:  # see _NEW_EDGE_TYPES
-            if propagate(exc) or is_programming_error(exc):
-                raise
-            logger.warning("Record %s: %d person edges not written: %s", record.id, len(added), type(exc).__name__)
-            return len(established)
+    collections = [CollectionNames.USERS.value, CollectionNames.PEOPLE.value]
+    origin = EntityOrigin.INFERRED.value
+    # After the reads, and one replace: where a store commits each statement, a
+    # failed read or write must leave the old edges.
+    try:
+        await store.replace_record_entity_relations(record.id, collections, origin, edges)
+    except Exception as exc:  # see _NEW_EDGE_TYPES
+        established = [e for e in edges if e["edgeType"] not in _NEW_EDGE_TYPES]
+        if (
+            len(established) == len(edges)
+            or propagate(exc) or is_programming_error(exc) or store.is_transient_error(exc) is True
+            or not _rejects_edge_type(exc)  # the retry drops the new types' links, so only a rejection of them may
+        ):
+            raise
+        logger.warning(
+            "Record %s: %d person edges not written: %s", record.id, len(edges) - len(established), type(exc).__name__,
+        )
+        # An empty replace would clear the links this failure is meant to keep.
+        if not established:
+            return 0
+        await store.replace_record_entity_relations(record.id, collections, origin, established)
+        return len(established)
     return len(edges)
