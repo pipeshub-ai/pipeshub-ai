@@ -45,7 +45,7 @@ Facts that shape every design choice:
 | Index | `newRecord` / `updateRecord` on `record-events`, published by the processor | The indexing service fetches content (signed URL first, else the connector's internal stream route, which calls `stream_record()`), parses, chunks and embeds. |
 | Open a citation | user clicks a result | The stream route checks the user's access, then calls `stream_record(record)`. |
 | Reindex | `<connector>.reindex` | `reindex_records()` re-sends chosen records for indexing. |
-| Disable or delete | UI | Sync stops; delete cascades the connector's nodes, vectors and config. |
+| Disable or delete | UI | Sync stops; delete cascades the connector's nodes, vectors and config. Turning sync off or on (`toggle_connector_instance`) flips `isActive` and adds one to the app's `toggleSeq` (`ConnectorStateKeys.TOGGLE_SEQ`) in one transaction, and its `appEnabled` / `appDisabled` event carries that number. `_handle_app_disabled` (`app/services/messaging/kafka/handlers/entity.py`) skips an off whose number is older than the app's while the connector is on: a quick off-then-on can have the off handled after the on was written. An `appDisabled` with no number (a refresh token gone bad, a delete) always disables. |
 
 ```mermaid
 sequenceDiagram

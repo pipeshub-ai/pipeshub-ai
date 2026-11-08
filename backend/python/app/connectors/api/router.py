@@ -8442,13 +8442,42 @@ async def toggle_connector_instance(
             # too, but every app write moves it.
             updates["enabledAtTimestamp"] = now
 
-        success = await connector_registry.update_connector_instance(
-            connector_id=connector_id,
-            updates=updates,
-            user_id=user_id,
-            org_id=org_id,
-            is_admin=is_admin
-        )
+        toggle_seq: int | None = None
+        if toggle_type == "sync":
+            # The appDisabled/appEnabled events are handled after this returns, and a quick
+            # off-then-on can see the off's event handled after the on was written. Each
+            # sync toggle numbers itself, in the same transaction as the flip, so the
+            # handler can tell a superseded event from a current one.
+            txn = await graph_provider.begin_transaction(
+                read=[CollectionNames.APPS.value], write=[CollectionNames.APPS.value], explicit=True,
+            )
+            try:
+                toggle_seq = await graph_provider.increment_node_field(
+                    connector_id, CollectionNames.APPS.value, ConnectorStateKeys.TOGGLE_SEQ, transaction=txn,
+                )
+                success = await connector_registry.update_connector_instance(
+                    connector_id=connector_id,
+                    updates=updates,
+                    user_id=user_id,
+                    org_id=org_id,
+                    is_admin=is_admin,
+                    transaction=txn,
+                )
+                if not success:
+                    await graph_provider.rollback_transaction(txn)
+                else:
+                    await graph_provider.commit_transaction(txn)
+            except BaseException:
+                await graph_provider.rollback_transaction(txn)
+                raise
+        else:
+            success = await connector_registry.update_connector_instance(
+                connector_id=connector_id,
+                updates=updates,
+                user_id=user_id,
+                org_id=org_id,
+                is_admin=is_admin
+            )
         if not success:
             logger.error(f"Failed to update {instance.get('name')} connector instance status")
             raise HTTPException(
@@ -8475,6 +8504,8 @@ async def toggle_connector_instance(
                 "fullSync": full_sync,
                 "syncedBy": user_info.get("userId", ""),
             }
+            if toggle_seq is not None:
+                payload[ConnectorStateKeys.TOGGLE_SEQ] = toggle_seq
 
             message = {
                 "eventType": event_type,

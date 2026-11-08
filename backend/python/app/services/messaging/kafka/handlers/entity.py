@@ -65,6 +65,20 @@ _PARKED_WHILE_OFF = {
 PRINCIPAL_EVENTS = frozenset({"userAdded", "userUpdated", "userDeleted", "appEnabled", "appDisabled", "orgDeleted"})
 
 
+def _superseded_by_a_newer_toggle(payload: dict, app_doc: dict) -> bool:
+    """Whether a toggle numbered after this event's turned the connector back on.
+
+    Only a sync toggle numbers its event; any other appDisabled (a refresh token gone
+    bad, a delete) carries no number and always disables. A newer toggle that left the
+    connector off is not a reason to skip: disabling again stops what the first one
+    should have, and writes the same value."""
+    sent = payload.get(ConnectorStateKeys.TOGGLE_SEQ)
+    current = app_doc.get(ConnectorStateKeys.TOGGLE_SEQ)
+    if sent is None or current is None:
+        return False
+    return int(sent) < int(current) and bool(app_doc.get(ConnectorStateKeys.IS_ACTIVE))
+
+
 class EntityEventService(BaseEventService):
     def __init__(
         self,
@@ -702,6 +716,16 @@ class EntityEventService(BaseEventService):
                 if not app_doc:
                     self.logger.error(f"App not found: {app_name}")
                     return False
+
+            if _superseded_by_a_newer_toggle(payload, app_doc):
+                # A quick off-then-on can reach here after the on was written: disabling now
+                # would turn the connector off again and skip the sync the on started.
+                self.logger.info(
+                    f"Skipping app disabled event for connector {connector_id}: a newer toggle "
+                    f"(#{app_doc.get(ConnectorStateKeys.TOGGLE_SEQ)}) turned it back on after this one "
+                    f"(#{payload.get(ConnectorStateKeys.TOGGLE_SEQ)})"
+                )
+                return True
 
             # Update apps in database. Only the two fields that change: rebuilding the
             # whole document from the stored one would write None for a field a legacy
