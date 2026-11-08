@@ -20,6 +20,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.services.permissions.errors import ViewerScopesUnavailable
 from app.services.permissions.pending import MAX_PENDING_ROOTS, parse
 from app.services.permissions.structure_generation import (
+    ScopeGenerationConflict,
     CLOSED_KEY,
     GENERATION_KEY,
     OPENED_KEY,
@@ -192,7 +193,19 @@ async def test_many_syncs_registering_roots_at_once_lose_none(backend, n) -> Non
     ids = {r.external_record_id: (await backend.provider.get_record_by_external_id(connector_id=conn, external_id=r.external_record_id)).id for r in recs}
     procs = [build_processor(backend.provider, ORG)[0] for _ in recs]
     moved = [_record(r.external_record_id, connector_id=conn, group_external=space2) for r in recs]
-    results = await asyncio.gather(*(p.on_records_moved([(m.external_record_id, m, [])]) for p, m in zip(procs, moved, strict=True)), return_exceptions=True)
+
+    async def sync(p, m) -> None:
+        # A burst can use up one batch's retries: it rolled back whole, and the sync runs it again.
+        for attempt in range(4):
+            try:
+                await p.on_records_moved([(m.external_record_id, m, [])])
+                return
+            except ScopeGenerationConflict:
+                if attempt == 3:
+                    raise
+                await asyncio.sleep(1)
+
+    results = await asyncio.gather(*(sync(p, m) for p, m in zip(procs, moved, strict=True)), return_exceptions=True)
     errors = [r for r in results if isinstance(r, BaseException)]
     _, pending = await marks(backend, conn)
     assert not errors, errors[:2]
