@@ -13,6 +13,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     UNREADABLE_ROLES,
     UNREADABLE_SCOPE,
     UNREADABLE_TRANSIENT,
+    UNREADABLE_UNCLEAR_404,
     IssueSecurityContext,
     SchemeKnowledge,
     apply_attachment_access,
@@ -542,7 +543,11 @@ class TestVisibleProjectNotFound:
     def test_a_404_with_error_messages_from_a_project_the_caller_lists_is_no_scheme(self) -> None:
         assert classify_scheme_response(404, self.BODY, project_is_visible=True) == (SchemeKnowledge.NONE, None)
 
-    @pytest.mark.parametrize("body", [None, {}, {"message": "Not Found"}, {"errorMessages": []}], ids=str)
+    @pytest.mark.parametrize("body", [
+        None, {}, {"message": "Not Found"}, {"errorMessages": []}, {"errorMessages": ["Not Found"]},
+        {"errorMessages": ["No project could be found with key 'P'."]},
+        {"errorMessages": ["The requested resource was not found"], "errors": {}},
+    ], ids=str)
     def test_a_404_without_a_message_may_be_a_route_the_server_lacks_and_stays_unknown(self, body) -> None:
         assert classify_scheme_response(404, body, project_is_visible=True) == (SchemeKnowledge.UNKNOWN, None)
 
@@ -721,3 +726,22 @@ class TestMarkers:
         assert levels_after_walk({"*": "held"}, 0) == {"*": "held"}
         assert levels_after_walk({"1": "d", "*": "retry"}, 3) == {"1": "d", "*": "retry"}
         assert levels_after_walk({"1": "d"}, 3) == {"1": "d"}
+
+
+class TestAmbiguousNotFound:
+    def test_the_cloud_message_is_no_scheme_with_or_without_the_flag(self) -> None:
+        body = {"errorMessages": ["Security level for project 10000 does not exist"]}
+        assert classify_scheme_response(404, body) == (SchemeKnowledge.NONE, None)
+        assert classify_scheme_response(404, body, project_is_visible=True) == (SchemeKnowledge.NONE, None)
+
+    def test_a_generic_not_found_is_unknown_even_for_a_visible_project(self) -> None:
+        body = {"errorMessages": ["Not Found"]}
+        assert classify_scheme_response(404, body) == (SchemeKnowledge.UNKNOWN, None)
+        assert classify_scheme_response(404, body, project_is_visible=True) == (SchemeKnowledge.UNKNOWN, None)
+
+    def test_a_deferred_unclear_not_found_has_its_own_reason_that_keeps_stored_access(self) -> None:
+        context = IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, read_status=404, defer_checkpoint=True)
+        assert unreadable_reason(context) == UNREADABLE_UNCLEAR_404
+        assert UNREADABLE_UNCLEAR_404 in UNREADABLE_KEEPS_STORED_ACCESS
+        # A 404 that was not deferred keeps its reason.
+        assert unreadable_reason(IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, read_status=404)) == UNREADABLE_OTHER

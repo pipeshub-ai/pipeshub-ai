@@ -9,6 +9,7 @@ and every issue stored before levels were applied are read again from the checkp
 
 import json
 from typing import Any, Optional
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -567,6 +568,50 @@ class TestUpgradeWhileTheLevelsCannotBeRead:
         assert readers(db, "2") == {("GROUP", "jira-software-users")}
 
 
+class TestAnUnclearNotFoundOnTheSchemeRoute:
+    """A 404 that does not say the project has no scheme (a proxy, a missing route, an HTML page) is unknown:
+    the stored state is kept, nothing is cleared, and a project never tightened hides its leveled issues."""
+
+    GENERIC = [
+        json_response({"message": "Not Found"}, status=404),
+        json_response({"errorMessages": ["Not Found"]}, status=404),
+        httpx.Response(404, content=b"<html>Not Found</html>", headers={"content-type": "text/html"}),
+    ]
+
+    @pytest.mark.parametrize("answer", GENERIC, ids=["json", "messages", "html"])
+    async def test_a_tightened_project_keeps_its_grants_and_digests(self, jira, db, store, jql_search, answer) -> None:
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [ALICE]})
+        secured = sec_issue("2", "ENG-2", level=SECRET)
+        jql_search.put(secured)
+        connector, notes = await make_connector(db, store)
+        await sync(connector, jql_search, recent=[secured])
+        digests = store.values_for("project_ENG")["security_levels"]
+        assert readers(db, "2") == {("USER", "alice@example.com")}
+
+        jira.on("GET", f"{API}/project/ENG/issuesecuritylevelscheme", answer)
+        await sync(connector, jql_search, recent=[])
+
+        assert readers(db, "2") == {("USER", "alice@example.com")} and hidden_from_project(db.records["2"])
+        assert json.loads(store.values_for("project_ENG")["security_levels"]) == {**json.loads(digests), "*": "retry"}
+        message = next(n for n in notes.sent if "issue security levels" in n["title"])["message"]
+        assert "keep the access they had" in message and "not-found" in message
+
+    @pytest.mark.parametrize("answer", GENERIC, ids=["json", "messages", "html"])
+    async def test_a_project_never_tightened_hides_its_leveled_issues(self, jira, db, store, jql_search, answer) -> None:
+        stub_site(jira, jql_search)
+        secured, plain = sec_issue("2", "ENG-2", level=SECRET, updated=ts(2)), sec_issue("1", "ENG-1", updated=ts(1))
+        jql_search.put(plain, secured)
+        connector, notes = await make_connector(db, store)
+        store_open(connector, db, store, plain, secured)
+        jira.on("GET", f"{API}/project/ENG/issuesecuritylevelscheme", answer)
+
+        await sync(connector, jql_search, recent=[])
+
+        assert hidden_from_project(db.records["2"]) and not hidden_from_project(db.records["1"])
+        assert "hidden from everyone" in next(n for n in notes.sent if "issue security levels" in n["title"])["message"]
+
+
 class TestHierarchy:
     async def test_a_sub_task_follows_its_parent_when_the_parent_gains_or_loses_a_level(
         self, jira, db, store, jql_search,
@@ -839,6 +884,21 @@ class TestReindex:
         await sync(connector, jql_search, recent=[])
         assert readers(db, "2") == {("USER", "alice@example.com")}
         assert "*" not in json.loads(store.values_for("project_ENG")["security_levels"])
+
+    async def test_a_retry_marker_that_cannot_be_saved_does_not_cost_the_close(
+        self, jira, db, store, jql_search,
+    ) -> None:
+        stub_site(jira, jql_search)
+        serve_scheme(jira, {SECRET: [ALICE]}, members=json_response({"errorMessages": ["busy"]}, status=503))
+        connector, _ = await make_connector(db, store)
+        record = self.stored(connector, db)
+        jira.on("GET", f"{API}/issue/2", sec_issue("2", "ENG-2", level=SECRET, updated=ts(2)))
+        connector._get_project_sync_checkpoint = AsyncMock(side_effect=RuntimeError("database unavailable"))
+
+        await connector.reindex_records([record])
+
+        written = {r.external_record_id: r for batch in db.record_batches for r in batch}["2"]
+        assert hidden_from_project(written) and readers(db, "2") == set()
 
     async def test_a_stored_leveled_issue_keeps_its_grants_when_the_level_cannot_be_read(
         self, jira, db, store, jql_search,

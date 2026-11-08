@@ -226,6 +226,7 @@ UNREADABLE_AUTH = "auth"
 UNREADABLE_PERMISSION = "permission"
 UNREADABLE_ROLES = "roles"
 UNREADABLE_NOT_LISTED = "not_listed"
+UNREADABLE_UNCLEAR_404 = "unclear_404"
 UNREADABLE_TRANSIENT = "transient"
 UNREADABLE_OTHER = "other"
 
@@ -242,12 +243,16 @@ UNREADABLE_REASONS = {
         "so an issue that has a level cannot be shown to anyone"
     ),
     UNREADABLE_TRANSIENT: "Jira did not answer this sync (rate limit, server or network error)",
+    UNREADABLE_UNCLEAR_404: (
+        "Jira answered the scheme read with a not-found that does not say the project has no scheme "
+        "(HTTP 404; a proxy or a missing route can answer so)"
+    ),
     UNREADABLE_OTHER: "the read failed",
 }
 
 # Reasons after which issues keep the grants they were stored with, until a sync reads the
 # levels; after any other reason an issue that carries a level is closed to everyone.
-UNREADABLE_KEEPS_STORED_ACCESS = frozenset({UNREADABLE_ROLES, UNREADABLE_TRANSIENT})
+UNREADABLE_KEEPS_STORED_ACCESS = frozenset({UNREADABLE_ROLES, UNREADABLE_TRANSIENT, UNREADABLE_UNCLEAR_404})
 
 
 def unreadable_reason(context: IssueSecurityContext) -> str | None:
@@ -263,11 +268,20 @@ def unreadable_reason(context: IssueSecurityContext) -> str | None:
         return UNREADABLE_PERMISSION
     if context.knowledge == SchemeKnowledge.PRESENT and context.read_status is None and context.members_by_level:
         return UNREADABLE_ROLES
+    if context.defer_checkpoint and context.knowledge == SchemeKnowledge.UNKNOWN and context.read_status == 404:
+        return UNREADABLE_UNCLEAR_404
     if context.defer_checkpoint:
         return UNREADABLE_TRANSIENT
     if context.knowledge == SchemeKnowledge.PRESENT and context.read_status in (404, 405, 501):
         return UNREADABLE_NOT_LISTED
     return UNREADABLE_OTHER
+
+
+def _says_no_scheme(message: object) -> bool:
+    """A not-found message that names the issue security scheme or level: a proxy's "Not Found" or a
+    missing project's message does not establish that the project has no scheme."""
+    text = message.lower() if isinstance(message, str) else ""
+    return "security" in text and ("scheme" in text or "level" in text)
 
 
 def classify_scheme_response(
@@ -298,7 +312,7 @@ def classify_scheme_response(
         and isinstance(body, dict)
     ):
         messages = body.get("errorMessages") or []
-        if project_is_visible and any(isinstance(message, str) and message for message in messages):
+        if project_is_visible and any(_says_no_scheme(message) for message in messages):
             return SchemeKnowledge.NONE, None
         if any(
             isinstance(message, str)

@@ -3252,7 +3252,9 @@ class JiraDataCenterConnector(BaseConnector):
             knowledge=knowledge,
             scheme_id=scheme_id,
             scheme_forbidden=status == HttpStatusCode.FORBIDDEN.value,
-            defer_checkpoint=http_status_is_transient(status),
+            # A not-found that does not say "no scheme" may pass: the stored state is kept, not cleared.
+            defer_checkpoint=http_status_is_transient(status)
+            or (knowledge == SchemeKnowledge.UNKNOWN and status == HttpStatusCode.NOT_FOUND.value),
             read_status=status if knowledge == SchemeKnowledge.UNKNOWN else None,
             scope_refused=knowledge == SchemeKnowledge.UNKNOWN and refuses_a_scope(body),
         )
@@ -3526,12 +3528,17 @@ class JiraDataCenterConnector(BaseConnector):
         if not project_key:
             return
         try:
-            stored = json.loads((await self._get_project_sync_checkpoint(project_key) or {}).get("security_levels"))
-        except (TypeError, ValueError):
-            stored = None
-        marker = pre_walk_marker(stored if isinstance(stored, dict) else None)
-        if marker != stored:
-            await self._update_project_sync_checkpoint(project_key, security_levels=json.dumps(marker, sort_keys=True))
+            try:
+                stored = json.loads((await self._get_project_sync_checkpoint(project_key) or {}).get("security_levels"))
+            except (TypeError, ValueError):
+                stored = None
+            marker = pre_walk_marker(stored if isinstance(stored, dict) else None)
+            if marker != stored:
+                await self._update_project_sync_checkpoint(
+                    project_key, security_levels=json.dumps(marker, sort_keys=True))
+        except Exception as e:
+            # Never let this cost the close: the holders then wait for the issue's next change at source.
+            self.logger.warning("Could not save the retry marker for project %s: %s", project_key, e)
 
     async def _record_security_levels(
         self, project_key: str, levels: dict[str, str], *, force: bool = False,
