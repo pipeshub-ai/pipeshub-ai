@@ -132,3 +132,61 @@ async def test_a_hub_with_exactly_the_limit_of_callers_and_its_files_contains_ed
                                    qualified_name="function:caller", direction="inbound", edge_types=edge_types)
     assert len(out["neighbors"]) == LIMIT and out["total"] == LIMIT
     assert not out.get("fanout_capped") and not out["truncated"]
+
+
+async def test_each_further_page_is_larger_and_what_comes_back_is_the_same() -> None:
+    """A hub of rows nobody may read is read in growing pages, and the answer does not depend on the page sizes."""
+    g, sizes = world(3, 60), []
+    read = g.get_neighbors_for_nodes_by_relationship_types
+
+    async def spy(*args, **kw) -> object:
+        sizes.append(kw["limit"])
+        return await read(*args, **kw)
+
+    g.get_neighbors_for_nodes_by_relationship_types = spy
+
+    async def rows(page: int) -> list:
+        found, _, incomplete = await ops._readable_neighbour_rows(
+            g, ORG, RecordAccess(g, ORG, USER), ["k_caller"], ["CALLS"], "outbound", page=page, budget=500, want=10,
+        )
+        assert incomplete is False
+        return [r["key"] for r in found]
+
+    assert await rows(2) == await rows(1000)
+    assert sizes[:5] == [2, 4, 8, 16, 32]
+
+
+@pytest.mark.parametrize("page", [1, 2, 3, 7, 40, 1000])
+@pytest.mark.parametrize(("edges", "expected"), [(39, False), (40, True), (41, True), (90, True)])
+async def test_the_scan_budget_trips_at_one_raw_count_whatever_the_page(page, edges, expected) -> None:
+    """`incomplete` turns true at the same raw edge count whatever the page size, and no read passes the budget."""
+    g, scanned = world(0, edges), []
+    read = g.get_neighbors_for_nodes_by_relationship_types
+
+    async def spy(*args, **kw) -> object:
+        rows = await read(*args, **kw)
+        scanned.append(len(rows))
+        return rows
+
+    g.get_neighbors_for_nodes_by_relationship_types = spy
+    _, _, incomplete = await ops._readable_neighbour_rows(
+        g, ORG, RecordAccess(g, ORG, USER), ["k_caller"], ["CALLS"], "outbound", page=page, budget=40, want=10,
+    )
+    assert incomplete is expected
+    assert sum(scanned) <= 40
+
+
+async def test_a_page_of_many_blocks_is_one_store_load() -> None:
+    """Checking a page of hundreds of blocks takes one store load, not one per block."""
+    g, loads = world(0, 300), []
+    load = g.get_nodes_by_field_in
+
+    async def spy(*args, **kw) -> object:
+        loads.append(kw.get("collection"))
+        return await load(*args, **kw)
+
+    g.get_nodes_by_field_in = spy
+    await ops._readable_neighbour_rows(
+        g, ORG, RecordAccess(g, ORG, USER), ["k_caller"], ["CALLS"], "outbound", page=1000, budget=5000, want=10,
+    )
+    assert loads.count(BLOCKS) == 1

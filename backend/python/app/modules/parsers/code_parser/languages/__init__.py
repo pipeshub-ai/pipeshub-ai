@@ -36,4 +36,4 @@ RECEIVER_TYPE_HANDLERS: dict[str, Callable] = {"rust": rust.receiver_type}
 MACRO_TABLE_HANDLERS: dict[str, Callable] = {"c_family": c_family.macro_table}
 # Keyed by language name: (definition node, source) -> the symbol's modifiers.
 MODIFIER_HANDLERS: dict[str, Callable] = {"c": c_family.modifiers, "cpp": c_family.cpp_modifiers,
-                                          "csharp": csharp.modifiers, "php": php.modifiers}
+                                          "csharp": csharp.modifiers}

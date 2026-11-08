@@ -2496,6 +2496,58 @@ components:
           type: string
           description: Human-readable explanation. Present only when `success` is false.
           example: Invalid or expired authorization state.
+    GraphExpandResponse:
+      type: object
+      additionalProperties: false
+      required: [nodes, edges, anchors, page, graphStatus]
+      properties:
+        nodes:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id]
+            properties:
+              id: { type: string, example: 'block:9f2c' }
+              kind: { type: string, example: function }
+              label: { type: string, example: parse_token }
+              recordId: { type: string, description: "The file the symbol is in." }
+              file: { type: string, example: src/auth.py }
+              line: { type: integer }
+        edges:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, from, to, type]
+            properties:
+              id: { type: string, example: 'e:51' }
+              from: { type: string }
+              to: { type: string }
+              type: { type: string, example: CALLS }
+              confidence: { type: string, example: INFERRED }
+              line: { type: integer }
+        anchors:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, total]
+            properties:
+              id: { type: string }
+              total: { type: integer, description: "Edges the read held for this anchor, counted up to the first edge after the page. Exact when `page.truncated` is false; a lower bound when it is true." }
+        page:
+          type: object
+          additionalProperties: false
+          required: [truncated, incomplete]
+          properties:
+            truncated: { type: boolean, description: "Another edge the caller can see follows this page. Hidden edges and edges outside a connected app's limit never make it true, except past the most rows one walk reads, where it is never true on an empty page." }
+            incomplete: { type: boolean, description: "The scan budget ran out before every edge was seen, so `anchors[].total` is a lower bound." }
+            nextCursor: { type: string, description: "Opaque. Present only when `truncated` is true." }
+        graphStatus:
+          type: string
+          enum: [never_built, building, ready, stale, waiting_on_indexing, retrying, failed, too_large, unknown]
+          description: The least ready state among the anchors' repositories.
     ErrorResponse:
       type: object
       additionalProperties: false
@@ -24669,6 +24721,31 @@ components:
           type: string
           description: Set when `relatedEntities` covers only the records on this page.
   responses:
+    CodeToolResult:
+      description: The code tool's result, as the matching `pipeshub_code_*` MCP tool returns it.
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
+    CodeGraphUnauthorized:
+      description: Missing, malformed or expired bearer token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    CodeGraphNotFound:
+      description: No indexed repository or file the caller can read matches. The same answer for unreadable and missing.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    CodeGraphUnavailable:
+      description: The query service could not be reached, or could not check access or read the graph. Never an empty result.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
     XssRejected:
       description: >-
         Refused before authentication because a query value, or any string in a JSON or form-encoded
@@ -72077,6 +72154,369 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
+  /code-graph/search:
+    post:
+      tags:
+        - Code Graph
+      summary: Search a repository's code
+      description: |
+        Finds symbols by identifier, or text and regex matches, in one indexed repository. Relayed from
+        the query service with the caller's own token, so only files the caller can read are searched.
+        The result is the `pipeshub_code_search` tool's result.
+      operationId: searchCodeGraph
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pattern]
+              properties:
+                repo: { type: string, maxLength: 300, description: "`owner/name`, `name` or `<connector>:owner/name`. Required unless the request names a `record_id`." }
+                include_tests: { type: boolean, default: false }
+                pattern: { type: string, minLength: 1, maxLength: 200 }
+                mode: { type: string, enum: [identifier, text, regex], default: identifier }
+                path: { type: string, maxLength: 1000, description: "Only files under this repo-relative path." }
+                limit: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          $ref: '#/components/responses/CodeToolResult'
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          $ref: '#/components/responses/CodeGraphUnauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          $ref: '#/components/responses/CodeGraphNotFound'
+        '503':
+          $ref: '#/components/responses/CodeGraphUnavailable'
+  /code-graph/semantic-search:
+    post:
+      tags:
+        - Code Graph
+      summary: Search a repository's code by meaning
+      description: |
+        Finds code by what it does, in one indexed repository. Relayed from the query service with the
+        caller's own token. The result is the `pipeshub_code_semantic_search` tool's result.
+      operationId: semanticSearchCodeGraph
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                repo: { type: string, maxLength: 300 }
+                include_tests: { type: boolean, default: false }
+                query: { type: string, minLength: 1, maxLength: 500 }
+                limit: { type: integer, minimum: 1, maximum: 50, default: 15 }
+      responses:
+        '200':
+          $ref: '#/components/responses/CodeToolResult'
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          $ref: '#/components/responses/CodeGraphUnauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          $ref: '#/components/responses/CodeGraphNotFound'
+        '503':
+          $ref: '#/components/responses/CodeGraphUnavailable'
+  /code-graph/read:
+    post:
+      tags:
+        - Code Graph
+      summary: Read source from a repository
+      description: |
+        Reads one symbol, a line range, or a whole file. Relayed from the query service with the caller's
+        own token. The result is the `pipeshub_code_read` tool's result.
+      operationId: readCodeGraph
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                repo: { type: string, maxLength: 300 }
+                include_tests: { type: boolean, default: false }
+                file_path: { type: string, maxLength: 1000 }
+                record_id: { type: string, maxLength: 200, description: "A code file's record id, instead of `file_path`." }
+                qualified_name: { type: string, maxLength: 1000 }
+                lines: { type: string, maxLength: 40, description: "A range such as `40-80`." }
+                max_lines: { type: integer, minimum: 1, maximum: 2000 }
+      responses:
+        '200':
+          $ref: '#/components/responses/CodeToolResult'
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          $ref: '#/components/responses/CodeGraphUnauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          $ref: '#/components/responses/CodeGraphNotFound'
+        '503':
+          $ref: '#/components/responses/CodeGraphUnavailable'
+  /code-graph/outline:
+    post:
+      tags:
+        - Code Graph
+      summary: Outline a file's symbols
+      description: |
+        Lists the symbols a file defines. Relayed from the query service with the caller's own token. The
+        result is the `pipeshub_code_outline` tool's result.
+      operationId: outlineCodeGraph
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                repo: { type: string, maxLength: 300 }
+                include_tests: { type: boolean, default: false }
+                file_path: { type: string, maxLength: 1000 }
+                record_id: { type: string, maxLength: 200 }
+      responses:
+        '200':
+          $ref: '#/components/responses/CodeToolResult'
+        '400':
+          $ref: '#/components/responses/XssRejected'
+        '401':
+          $ref: '#/components/responses/CodeGraphUnauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          $ref: '#/components/responses/CodeGraphNotFound'
+        '503':
+          $ref: '#/components/responses/CodeGraphUnavailable'
+  /graph/expand:
+    post:
+      tags:
+        - Code Graph
+      summary: Expand a graph node's neighbours
+      description: |
+        One hop from up to 20 anchor nodes, as nodes and edges a graph explorer can draw. Every node and edge
+        is checked against what the caller may read; hidden data changes nothing in the answer (no count, flag,
+        order or page), except `page.incomplete`.
+
+        A node id is `block:<key>` for a code symbol. An anchor the caller cannot read, one that is in test code
+        while `includeTests` is false, and one that does not exist are all dropped alike; when none remains the
+        answer is `404` with the same body every time.
+
+        `limit` caps the neighbours read, so a response holds at most 100 new nodes. `anchors[].total` counts the
+        edges the read held for each anchor, up to the first edge after the page: exact when `page.truncated` is
+        false and a lower bound when it is true. Page with
+        `page.nextCursor`: an opaque offset into the same deterministic walk, so a cursor from another request
+        is harmless; a malformed one is `400`. Paging ends about 5,100 rows into one walk: past that `page.truncated`
+        stays true with no `page.nextCursor`. `page.incomplete` is true only when the scan budget ran out before
+        every edge was seen. The scope is the source's own: `code:read` for `code`. A failed access check or store
+        read is `503`, never an empty graph. Large bodies are gzip-compressed when the client accepts it.
+        Answers are never cached (`Cache-Control: private, no-store`).
+
+        Edges run between code symbols only. An `IMPORTS_FROM` edge that ends at a whole file is not returned.
+      operationId: expandGraph
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source, nodeIds]
+              properties:
+                source: { type: string, enum: [code] }
+                nodeIds: { type: array, minItems: 1, maxItems: 20, items: { type: string, minLength: 1, maxLength: 200 } }
+                direction: { type: string, enum: [inbound, outbound, any], default: any }
+                edgeTypes:
+                  type: array
+                  maxItems: 20
+                  items: { type: string, maxLength: 40 }
+                  description: Relations to follow (`CALLS`, `IMPORTS_FROM`, `INHERITS`, `CONTAINS`, ...). Omit for all code relations; any other value is `400`.
+                includeTests: { type: boolean, default: false }
+                limit: { type: integer, minimum: 1, maximum: 100, default: 50 }
+                cursor: { type: string, maxLength: 256, description: "`page.nextCursor` of the previous response, with the same other fields." }
+      responses:
+        '200':
+          description: The neighbours the caller may see
+          headers:
+            Cache-Control:
+              schema: { type: string, example: 'private, no-store' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphExpandResponse'
+        '400':
+          description: A malformed `cursor`, an unknown edge type, or a body that fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/CodeGraphUnauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          description: No anchor is readable. The same answer for hidden and missing anchors.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: The connected app's knowledge limit is too large to check.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/CodeGraphUnavailable'
+  /graph/resolve:
+    post:
+      tags:
+        - Code Graph
+      summary: Find the graph node for a code symbol or file
+      description: |
+        Turns the address a code search hit or a record page has into a node id for `/graph/expand`. Give
+        `recordId`, or `repo` and `filePath`. With `qualifiedName` the answer is that symbol; without it, the
+        file's first definition. A hit in test code needs `includeTests: true`. Anything the caller cannot read
+        and anything that does not exist is the same `404`. A `repo` that matches more than one repository the
+        caller can read is `409`. Answers are never cached (`Cache-Control: private, no-store`).
+      operationId: resolveGraphNode
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source]
+              properties:
+                source: { type: string, enum: [code] }
+                repo: { type: string, maxLength: 300, description: 'owner/name, name, or <connector>:owner/name' }
+                recordId: { type: string, minLength: 1, maxLength: 200 }
+                filePath: { type: string, minLength: 1, maxLength: 2000 }
+                qualifiedName: { type: string, minLength: 1, maxLength: 2000 }
+                includeTests: { type: boolean, default: false }
+      responses:
+        '200':
+          description: The node id
+          headers:
+            Cache-Control:
+              schema: { type: string, example: 'private, no-store' }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nodeId]
+                properties:
+                  nodeId: { type: string }
+        '400':
+          description: The body fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/CodeGraphUnauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '404':
+          description: Nothing readable matches. The same answer for hidden and missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The `repo` matches more than one repository the caller can read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: The connected app's knowledge limit is too large to check.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/CodeGraphUnavailable'
+  /graph/revalidate:
+    post:
+      tags:
+        - Code Graph
+      summary: Check which graph nodes are still visible
+      description: |
+        Of up to 5,000 node ids a client kept from earlier responses, returns those the caller may still see,
+        in the order asked. Ids are checked in batches. Missing, malformed and hidden ids are all simply absent.
+        Pass `includeTests: true` when the client shows test code. Answers are never cached.
+      operationId: revalidateGraph
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source, nodeIds]
+              properties:
+                source: { type: string, enum: [code] }
+                nodeIds: { type: array, minItems: 1, maxItems: 5000, items: { type: string, minLength: 1, maxLength: 200 } }
+                includeTests: { type: boolean, default: false }
+      responses:
+        '200':
+          description: The ids that are still visible
+          headers:
+            Cache-Control:
+              schema: { type: string, example: 'private, no-store' }
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [visible]
+                properties:
+                  visible: { type: array, items: { type: string } }
+        '400':
+          description: The body fails validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/CodeGraphUnauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '422':
+          description: The connected app's knowledge limit is too large to check.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          $ref: '#/components/responses/CodeGraphUnavailable'
 
   # ── MCP (Model Context Protocol) ──────────────────────────────────
   # These endpoints are mounted at /mcp (root-level, NOT under /api/v1).

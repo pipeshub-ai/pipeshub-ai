@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
     from app.modules.parsers.code_parser.lang_config import LanguageConfig
 
-__all__ = ["heritage", "imports", "modifiers", "type_table"]
+__all__ = ["heritage", "imports", "type_table"]
 
 _NAMES = frozenset({"name", "qualified_name"})
 
@@ -120,9 +120,3 @@ def type_table(root: Node, src: bytes, table: dict[str, str], cfg: LanguageConfi
     for key, types in seen.items():
         if len(types) == 1:
             table.setdefault(key, next(iter(types)))
-
-
-def modifiers(_def_node: Node, _src: bytes) -> tuple[str, ...]:
-    """PHP has no words of its own; registering the handler gives an interface or abstract method its
-    DECLARATION, so a call prefers a trait's or class's body (`implements HasDescription` + `use ContainerTrait`)."""
-    return ()
