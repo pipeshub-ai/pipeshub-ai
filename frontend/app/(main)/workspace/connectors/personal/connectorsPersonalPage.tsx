@@ -148,6 +148,8 @@ function PersonalConnectorsPageContent() {
         setRegistryConnectors(
           filterConnectorsForScope(registryRes.value.connectors, 'personal')
         );
+        // Only a catalog that loaded can show a connector type is not in it.
+        setListsLoaded(true);
       }
       if (activeRes.status === 'fulfilled') {
         setActiveConnectors(filterConnectorsForScope(activeRes.value.connectors, 'personal'));
@@ -164,7 +166,6 @@ function PersonalConnectorsPageContent() {
       setError('Failed to load connectors');
     } finally {
       setIsLoading(false);
-      setListsLoaded(true);
     }
   }, [setRegistryConnectors, setActiveConnectors, setIsLoading, setError, addToast]);
 

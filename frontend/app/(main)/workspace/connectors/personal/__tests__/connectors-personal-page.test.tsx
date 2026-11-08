@@ -193,6 +193,16 @@ describe('Personal connectors page', () => {
       );
     });
 
+    it('does not redirect when the catalog did not load', async () => {
+      api.getRegistryConnectors.mockRejectedValue({ type: 'SERVER_ERROR', message: 'down' });
+      nav.params = new URLSearchParams('connectorType=Gmail');
+      renderInTheme(<PersonalConnectorsPage />);
+      await waitFor(() => expect(api.getActiveConnectors).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(nav.replace).not.toHaveBeenCalledWith('/workspace/connectors/personal/');
+    });
+
     it('stays on the page for a personal connector', async () => {
       nav.params = new URLSearchParams('connectorType=gmail');
       renderInTheme(<PersonalConnectorsPage />);
