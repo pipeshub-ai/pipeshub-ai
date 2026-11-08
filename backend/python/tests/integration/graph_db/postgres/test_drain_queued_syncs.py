@@ -60,9 +60,9 @@ def _fakes() -> tuple[MagicMock, MagicMock, list[tuple[str, str, str | None]]]:
 
     dispatcher = MagicMock()
     dispatcher.submit = AsyncMock(side_effect=submit)
-    coordinator = MagicMock(spec=["try_claim_once", "drain_budget"])
+    # No drain_budget: a shared database's other orgs may hold owed connectors that would use up any fixed budget.
+    coordinator = MagicMock(spec=["try_claim_once"])
     coordinator.try_claim_once = AsyncMock(return_value=True)
-    coordinator.drain_budget = MagicMock(return_value=8)
     return dispatcher, coordinator, published
 
 

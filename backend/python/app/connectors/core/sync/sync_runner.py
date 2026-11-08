@@ -434,10 +434,11 @@ async def _drain_once(
 
     owed: list[tuple[str, dict, dict]] = []     # (org id, queued doc, app doc)
     owners: dict[str, bool] = {}                # owed connector id -> claimed by an org visited so far
+    failed: list[str] = []                      # orgs whose read or app listing failed this pass
     try:
         await for_each_org(
             graph_provider, "drain_queued_syncs",
-            functools.partial(_read_org_queue, graph_provider, logger, owed, owners), logger, active=True,
+            functools.partial(_read_org_queue, graph_provider, logger, owed, owners, failed), logger, active=True,
         )
     except Exception as e:
         error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="drain")
@@ -456,7 +457,8 @@ async def _drain_once(
     budget = budget if isinstance(budget, int) else None
     if budget is not None and budget <= 0:
         return []
-    if lost:
+    # A failed org may own them (Arango and Neo4j show its queue to the next org): no ownership claim without every org's answer.
+    if lost and not failed:
         logger.warning(
             "Pending resync flagged on connectors that belong to no active org; leaving them alone",
             extra={"unowned": len(lost), "target_connector_ids": ",".join(lost)},
@@ -526,6 +528,7 @@ async def _read_org_queue(
     logger: logging.Logger,
     owed: list[tuple[str, dict, dict]],
     owners: dict[str, bool],
+    failed: list[str],
     org_id: str,
 ) -> None:
     """One org's part of a drain pass, run under that org: drop its inactive queued connectors, note its owed ones.
@@ -556,6 +559,7 @@ async def _read_org_queue(
     except Exception as e:
         # Under for_org: the line carries this org's org_id.
         error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="drain")
+        failed.append(org_id)
         return
 
     for doc in actionable:

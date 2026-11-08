@@ -369,10 +369,13 @@ class TestOrgByOrg:
         assert await _drain(graph, rec, coordinator=_one_process(claim=False)) == ([], None)
         assert graph.org_list_calls == [] and rec.published == []
 
-    async def test_one_orgs_failed_read_is_its_error_and_the_next_org_is_still_drained(self, caplog) -> None:
-        graph, rec = _two_orgs(PgLikeGraph, raising_orgs=frozenset({"a"})), _Recorder()
+    @pytest.mark.parametrize("graph_cls", [PgLikeGraph, ArangoLikeGraph])
+    async def test_one_orgs_failed_read_is_its_error_and_the_next_org_is_still_drained(self, graph_cls, caplog) -> None:
+        """On Arango, b's pass also sees a's queue: a's connectors are not called orgless when a could not answer."""
+        graph, rec = _two_orgs(graph_cls, raising_orgs=frozenset({"a"})), _Recorder()
         _, after = await _drain(graph, rec, bound="a")
         assert _drain_lines(caplog, logging.ERROR) == ["sync_step.failed org_id=a step=drain error_message=RuntimeError: unexpected"]
+        assert not _drain_lines(caplog, logging.WARNING)
         assert rec.published == [("qb", "b", "b")]         # positive control: b is served
         assert after.org_id == "a"                         # the failure did not leak into the caller's context
 
@@ -384,6 +387,7 @@ class TestOrgByOrg:
         assert [r for r in caplog.records if r.name == "fake-graph" and r.levelno == logging.ERROR]      # the provider's line
         assert rec.published == [("qb", "b", "b")]
         assert _dropped(graph) == [("b", "offb")]
+        assert not _drain_lines(caplog, logging.WARNING)      # a's queue, seen from b, is not called orgless
 
     async def test_an_org_list_failure_is_one_error_and_no_work(self, caplog) -> None:
         graph, rec = _two_orgs(PgLikeGraph, orgs_error=RuntimeError("orgs down")), _Recorder()
