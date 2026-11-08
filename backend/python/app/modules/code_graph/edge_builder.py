@@ -16,7 +16,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, RecordRelations, RecordTypes
-from app.modules.code_graph.family_rules import rules_for
+from app.modules.code_graph.family_rules import FamilyRules, rules_for
 from app.modules.code_graph.guards import (
     is_test_path,
     lang_family,
@@ -24,9 +24,20 @@ from app.modules.code_graph.guards import (
     prefer_non_test,
 )
 from app.modules.code_graph.import_resolution import ImportResolution
-from app.modules.code_graph.module_refs import module_refs_of_path
+from app.modules.code_graph.module_refs import (
+    INCLUDES_CHANGED_PREFIX,
+    module_refs_of_path,
+)
 from app.modules.code_graph.symbol_index import BlockRow, SymbolIndex
+from app.modules.parsers.code_parser.languages import c_family as c_family_parser
 from app.modules.parsers.code_parser.languages.rust import HELD, POINTED, PRELUDE
+from app.modules.parsers.code_parser.models import (
+    CONSTRUCT,
+    DECLARATION,
+    INITIALIZER,
+    RETURNS,
+    STATIC,
+)
 from app.utils.env_config import env_int
 
 if TYPE_CHECKING:
@@ -49,10 +60,15 @@ _WRITE_CHUNK = 500
 # text, hashes, timestamps) never reaches the symbol index.
 _BLOCK_SCAN_FIELDS = [
     "_key", "recordId", "name", "kind", "qualifiedName", "language",
-    "isBlockGroup", "parentBlockId", "pendingEdges", "typeTable", "referencedNames",
+    "isBlockGroup", "parentBlockId", "pendingEdges", "typeTable", "referencedNames", "modifiers", "macroTable",
+    "typeParamCount",
 ]
 
 _CALL_RELATIONS = {RecordRelations.CALLS.value}
+# A repeated definition's `#n` (`method:S.Copy#2`, an overload).
+_REPEAT_SUFFIX = re.compile(r"#\d+(?=\.|$)")
+# What a C++ construction constructs: a class, never an alias of one or an enum.
+_CLASS_KINDS = frozenset({"class", "struct"})
 _MODULE_RELATIONS = {
     RecordRelations.IMPORTS_FROM.value,
     RecordRelations.RE_EXPORTS.value,
@@ -83,14 +99,29 @@ RESOLUTION_QUALIFIER = "qualifier"
 RESOLUTION_MODULE = "module-import"
 RESOLUTION_TYPE = "receiver-type"
 RESOLUTION_NAME = "name-heuristic"
+RESOLUTION_EXTENSION = "extension-method"
 # `opts.onClick()`: a call through a function-typed property runs whatever was
 # assigned to it, so the property is not the code that runs. Kept for "who
 # triggers onClick", tagged so a caller can tell it from a call to a definition.
 RESOLUTION_CALLBACK = "callback-property"
+# `serverLog(...)` through `#define serverLog(...) _serverLog(...)`: the one repo function the macro expands to.
+RESOLUTION_WRAPPER = "wrapper"
+# How deep a wrapper macro's nested macros are expanded, at resolution and when selecting re-resolved files.
+_MAX_MACRO_DEPTH = 8
 
 # A local name an import binds to something outside the repo (`from requests
 # import get`). It shadows every repo definition of that name in the file.
 _EXTERNAL = ""
+
+
+def _split_arity(type_name: str, family: str | None) -> tuple[str, int]:
+    """(name, type-argument count) of a type-table name: `IHandler`1` -> ("IHandler", 1) where the family's
+    rule writes arity (C#); any other name, a TS template-literal type among them, untouched with 0."""
+    name, _, arity = type_name.partition("`")
+    if rules_for(family).disambiguate_repeats_by_arity and arity.isdigit():
+        return name, int(arity)
+    return type_name, 0
+
 
 # Above this share of re-resolved files without readable facts (and at least
 # this many), the store is presumed unavailable rather than a few blobs being
@@ -137,6 +168,8 @@ class EdgeBuildResult:
     external_refs: int = 0
     unresolved: int = 0
     ambiguous_skipped: int = 0
+    # Calls through a function-like macro that expands to no single repo function: no edge.
+    wrappers_unresolved: int = 0
     external_nodes: int = 0
     edges_written: int = 0
     edges_removed: int = 0
@@ -157,6 +190,7 @@ class EdgeBuildResult:
             "external_refs": self.external_refs,
             "unresolved": self.unresolved,
             "ambiguous_skipped": self.ambiguous_skipped,
+            "wrappers_unresolved": self.wrappers_unresolved,
             "external_nodes": self.external_nodes,
             "edges_written": self.edges_written,
             "edges_removed": self.edges_removed,
@@ -433,6 +467,8 @@ class _Builder:
         self._expr_memo: dict[tuple, str | None] = {}
         self._named_memo: dict[tuple[str, str | None], list[str]] = {}
         self._bases_memo: dict[str, list[str]] = {}
+        # file -> macro -> callees, of the macros its macro scope (its includes) defines.
+        self._scoped_macros: dict[str, dict[str, list[str]]] = {}
         # (record, name) -> blocks: the same-file and imported-module rungs look
         # up one file's definitions instead of filtering every same-named block.
         self._by_record_name: dict[tuple[str, str], list[str]] = {}
@@ -740,6 +776,8 @@ class _Builder:
     # -- steps 4/6/7: everything else ------------------------------------
 
     def resolve_rest(self, work: list[tuple[str, dict]]) -> None:
+        # Added after every written call: a caller that also calls the wrapped function directly keeps that edge.
+        wrapped: list[tuple[str, str, int | None]] = []
         for block_id, fact in work:
             self.resolving = self.index.record_by_block.get(block_id)
             relation = fact.get("relation")
@@ -766,8 +804,21 @@ class _Builder:
                     self.result.unresolved += 1
                 continue
 
+            if fact.get("context") in (CONSTRUCT, INITIALIZER):
+                qualifier = fact.get("qualifiedPrefix")
+                target = self._initialized_base(block_id, name, qualifier, record_id, family) \
+                    if fact["context"] == INITIALIZER else self._constructed_type(name, qualifier, record_id, family)
+                if target:
+                    self._add_edge(self._source_key(block_id, fact), self._block_key(target), relation,
+                                   confidence=CONFIDENCE_EXTRACTED, line=fact.get("line"), resolution=RESOLUTION_TYPE)
+                else:
+                    self.result.unresolved += 1
+                continue
+
             if fact.get("isMemberCall"):
                 target, confidence, resolution = self._resolve_member_call(block_id, fact, record_id)
+                if not target and resolution != _EXTERNAL and relation == RecordRelations.CALLS.value:
+                    target, confidence, resolution = self._extension_method(fact, record_id, family)
                 if target:
                     for one in target if isinstance(target, list) else [target]:
                         self._add_edge(
@@ -782,6 +833,14 @@ class _Builder:
                 else:
                     self.result.unresolved += 1
                 continue
+
+            if relation == RecordRelations.CALLS.value and not fact.get("qualifiedPrefix"):
+                # The preprocessor runs first: a call through a function-like macro calls what it expands to.
+                is_macro, target = self._through_wrapper(name, record_id, call_file, family, fact.get("line"))
+                if target:
+                    wrapped.append((self._source_key(block_id, fact), self._block_key(target), fact.get("line")))
+                if is_macro:
+                    continue
 
             if relation in _CALL_RELATIONS and rules_for(family).bare_call_reaches_method == "same_class":
                 # `getPet(id)` inside a Java method is `this.getPet(id)`: the class's
@@ -814,6 +873,7 @@ class _Builder:
             else:
                 target, confidence, resolution = self._resolve_direct(
                     name, call_file, family, relation, fact.get("qualifiedPrefix"),
+                    type_args=fact.get("typeArgs"),
                 )
             if not target:
                 continue
@@ -822,6 +882,9 @@ class _Builder:
                 self._heritage_relation(relation, block_id, target),
                 confidence=confidence, line=fact.get("line"), resolution=resolution,
             )
+        for source, target, line in wrapped:
+            self._add_edge(source, target, RecordRelations.CALLS.value, confidence=CONFIDENCE_INFERRED, line=line,
+                           resolution=RESOLUTION_WRAPPER)
 
     def _shadowing_trait(self, file_path: str, name: str) -> tuple[str | None, str, str | None]:
         """The repo trait a prelude name means in *file_path*: the one its import binds, else the one it
@@ -871,7 +934,7 @@ class _Builder:
 
     # -- step 7b: overrides ---------------------------------------------
 
-    def link_overrides(self) -> None:
+    def link_overrides(self, records: set[str]) -> None:
         """``C.m --OVERRIDES--> B.m`` for every resolved base that defines ``m``.
 
         The base does not have to be an interface. A call typed as the base
@@ -890,6 +953,20 @@ class _Builder:
         methods_by_owner: dict[str, list[tuple[str, str]]] = {}
         for (owner, method_name), block_id in self.index.method_index.items():
             methods_by_owner.setdefault(owner, []).append((method_name, block_id))
+        # `Task IHandler.Handle(..)` beside `Task Handle(T e)`: the explicit one implements IHandler.Handle,
+        # so the type's own same-named member does not.
+        # An explicit impl names its interface with its arity (`IHandler`0` beside an `IHandler<T>` base).
+        interfaces = {b: _split_arity(interface, self._family_of(b))
+                      for b, interface in self.index.explicit_impls.items()}
+        explicitly = {(self.index.rows[b].parent_block_id, self.index.rows[b].name, interface)
+                      for b, interface in interfaces.items()}
+
+        def name_and_arity(type_block: str | None) -> tuple[str | None, int] | None:
+            row = self.index.rows.get(type_block or "")
+            return (row.name, row.type_param_count) if row is not None else None
+
+        def declaring_type(method: str) -> tuple[str | None, int] | None:
+            return name_and_arity(self.index.rows[method].parent_block_id)
 
         for from_key, to_key, relation in list(self.edges):
             if relation not in _TYPE_RELATIONS:
@@ -901,8 +978,9 @@ class _Builder:
             for method_name, block_id in methods_by_owner.get(child, ()):
                 # Start at the base, not the child: the child's own method
                 # would otherwise match and the edge would be a self-loop.
-                base_method = self._resolve_self_method(base, method_name)
-                if not base_method or base_method == block_id:
+                base_method = self._resolve_self_method(base, method_name, prefer_body=False)
+                if not base_method or base_method == block_id \
+                        or (child, method_name, declaring_type(base_method)) in explicitly:
                     continue
                 self._add_edge(
                     self._block_key(block_id), self._block_key(base_method),
@@ -911,6 +989,19 @@ class _Builder:
                     # plus an exact name match on the base chain.
                     confidence=CONFIDENCE_EXTRACTED, line=None, resolution=RESOLUTION_TYPE,
                 )
+        for block_id, interface in interfaces.items():
+            row = self.index.rows[block_id]
+            if row.record_id not in records:
+                continue
+            self.resolving = row.record_id
+            # `Task IHandler.Handle(..)` overrides IHandler's Handle: the nearest base of its type so named,
+            # direct or reached through another interface (`class C : IDerived`, `IDerived : IA`).
+            named = next((t for t, _ in self._type_chain(row.parent_block_id or "")
+                          if t != row.parent_block_id and name_and_arity(t) == interface), None)
+            target = self._resolve_self_method(named, row.name or "", prefer_body=False) if named else None
+            if target and target != block_id:
+                self._add_edge(self._block_key(block_id), self._block_key(target), RecordRelations.OVERRIDES.value,
+                               confidence=CONFIDENCE_EXTRACTED, line=None, resolution=RESOLUTION_TYPE)
         self.resolving = None
 
     def _resolve_within_record(self, record_id: str, name: str) -> str | None:
@@ -920,8 +1011,74 @@ class _Builder:
                 return block_id
         return None
 
+    def _through_wrapper(self, name: str, record_id: str, call_file: str, family: str | None,
+                         line: int | None) -> tuple[bool, str | None]:
+        """(whether *name* is a function-like macro the call sees, the one repo function its expansion calls).
+
+        Nested macros are expanded, a name already being expanded is a function (as the preprocessor leaves
+        it), and a callee no repo file defines (a builtin, libc) is left out. Anything else -- two functions,
+        a repo name that does not resolve, nesting past the bound -- makes no edge.
+        """
+        callees = self._macro_callees(name, record_id, call_file, family, line)
+        if callees is None:
+            return False, None
+        reached: set[str] = set()
+        if self._expand(callees, record_id, call_file, family, line, frozenset({name}), 1, reached) \
+                and len(reached) == 1:
+            return True, next(iter(reached))
+        self.result.wrappers_unresolved += 1
+        return True, None
+
+    def _expand(self, callees: list[str], record_id: str, call_file: str, family: str | None, line: int | None,
+                seen: frozenset[str], depth: int, reached: set[str]) -> bool:
+        """Add the repo functions *callees* reach to *reached*; False when the expansion cannot be followed."""
+        if depth > _MAX_MACRO_DEPTH:
+            return False
+        for callee in callees:
+            inner = None if callee in seen else self._macro_callees(callee, record_id, call_file, family, line)
+            if inner is not None:
+                if not self._expand(inner, record_id, call_file, family, line, seen | {callee}, depth + 1, reached):
+                    return False
+                continue
+            # Resolved as the call itself would be, without counting it: no fact of the file names it.
+            counted, self.result = self.result, EdgeBuildResult()
+            try:
+                target, _, _ = self._resolve_direct(callee, call_file, family, RecordRelations.CALLS.value)
+            finally:
+                self.result = counted
+            if target:
+                reached.add(target)
+            elif any(cid in self.index.callable_blocks for cid in self.index.candidates(callee)):
+                return False
+        return True
+
+    def _macro_callees(self, name: str, record_id: str, call_file: str, family: str | None,
+                       line: int | None) -> list[str] | None:
+        """What the function-like macro *name* calls, as a call at *line* of *call_file* sees it: defined above
+        the call in its file or anywhere in its macro scope. None when the call sees no such macro, or its own
+        file defines a function so named (the macro is #undef'd there, or the call is written `(f)(x)`)."""
+        scope = rules_for(family).macro_scope
+        if scope is None:
+            return None
+        own = _macro_entry(self.index.macro_table_by_record.get(record_id, {}).get(name))
+        own_callees = own[1] if own and (line is None or own[0] < line) else None
+        if call_file not in self._scoped_macros:
+            seen: dict[str, list[str]] = {}
+            for path in scope(self.index, call_file):
+                for macro, raw in self.index.macro_table_by_record.get(self.index.record_by_file.get(path, ""),
+                                                                       {}).items():
+                    entry = _macro_entry(raw)
+                    if entry:  # defined in two headers: what either calls
+                        seen[macro] = list(dict.fromkeys([*seen.get(macro, ()), *entry[1]]))
+            self._scoped_macros[call_file] = seen
+        scoped = self._scoped_macros[call_file].get(name)
+        if (own_callees is None and scoped is None) \
+                or self._eligible(self._defined_in(call_file, name), family, RecordRelations.CALLS.value):
+            return None
+        return list(dict.fromkeys([*(own_callees or ()), *(scoped or ())]))
+
     def _resolve_direct(self, name: str, call_file: str, family: str | None,
-                        relation: str, qualified_prefix: str | None = None,
+                        relation: str, qualified_prefix: str | None = None, *, type_args: int | None = None,
                         ) -> tuple[str | None, str, str | None]:
         """Name -> definition, strongest evidence first.
 
@@ -959,7 +1116,7 @@ class _Builder:
             # not. A qualifier that does not leave exactly one candidate is
             # ignored, so an unresolved module path falls through below.
             pinned = self._prefix_candidates(
-                self._eligible(self.index.candidates(name), family, relation),
+                self._linkable(self._eligible(self.index.candidates(name), family, relation), call_file, family),
                 qualified_prefix, call_file, family,
             )
             if pinned:
@@ -985,8 +1142,15 @@ class _Builder:
                 [cid for module in sorted(modules) for cid in self._defined_in(module, name)],
                 family, relation,
             )
+            imported = self._nearest_scope_level(imported, call_file, rules)
+            inferred = self._linkable(self._eligible(
+                [cid for module in (rules.inferred_scope(self.index, call_file) if rules.inferred_scope else ())
+                 for cid in self._defined_in(module, name)], family, relation), call_file, family) \
+                if not imported else []
             if imported:
                 candidates, confidence, resolution = imported, CONFIDENCE_EXTRACTED, RESOLUTION_MODULE
+            elif inferred:
+                candidates, confidence, resolution = inferred, CONFIDENCE_INFERRED, RESOLUTION_MODULE
             elif rules.lexical_module_scope and relation in _CALL_RELATIONS:
                 # ES modules have no implicit cross-module scope: without an
                 # import the call cannot be reaching this definition.
@@ -997,13 +1161,14 @@ class _Builder:
                 if len(every) > _MAX_HEURISTIC_CANDIDATES:
                     self.result.ambiguous_skipped += 1
                     return None, CONFIDENCE_INFERRED, None
-                candidates = self._eligible(every, family, relation)
+                candidates = self._linkable(self._eligible(every, family, relation), call_file, family)
                 if not candidates:
                     self.result.unresolved += 1
                     return None, CONFIDENCE_INFERRED, None
                 confidence, resolution = CONFIDENCE_INFERRED, RESOLUTION_NAME
 
         candidates = prefer_non_test(candidates, self.index.file_by_block, call_file)
+        candidates = self._by_arity(candidates, type_args, family)
         candidates = path_proximity_winner(candidates, self.index.file_by_block, call_file)
         if len(candidates) != 1:
             self.result.ambiguous_skipped += 1
@@ -1053,6 +1218,18 @@ class _Builder:
             # call points in every language; a field or variable never is (P-3).
             return [cid for cid in candidates if cid in self.index.type_blocks]
         return candidates
+
+    def _linkable(self, candidates: list[str], call_file: str, family: str | None) -> list[str]:
+        """Without the internal-linkage definitions (`static` C functions) outside *call_file*'s translation unit;
+        none at all when one may be in it (unknown): the other candidates are then no safer a guess."""
+        same_unit = rules_for(family).same_unit
+        if same_unit is None:
+            return candidates
+        verdicts = {cid: same_unit(self.index, call_file, self.index.file_by_block.get(cid) or "")
+                    for cid in candidates if STATIC in self.index.rows[cid].modifiers}
+        if None in verdicts.values():
+            return []
+        return [cid for cid in candidates if verdicts.get(cid, True)]
 
     def _is_constructor(self, block_id: str) -> bool:
         """A method named for its type (Java, C#, C++, Kotlin): the call names the type."""
@@ -1127,8 +1304,31 @@ class _Builder:
             mark, receiver_type = _split_mark(receiver_type)
             if mark == HELD or name in _POINTER_METHODS:
                 return None, CONFIDENCE_INFERRED, None   # the wrapper's own method: `opt.map(..)`, `arc.clone()`
+        # C++ `auto& cfg = DBConfig::GetConfig(ctx); cfg.Set()`: a local the initializer types (`=` alone when the
+        # parser could not read it), which shadows any field so named.
+        initialized = rules.evaluated_receivers and bool(receiver_type) and receiver_type.startswith("=")
+        initializer = receiver_type[1:] if initialized else None
         if receiver_type and (receiver_type.startswith("=") or receiver_type.endswith("[]")):
             receiver_type = None
+        if initializer:
+            owner = self._expr_type(initializer, record_id, self._enclosing_type(block_id))
+            if owner:
+                return self._methods_on(owner, name) or None, CONFIDENCE_INFERRED, RESOLUTION_TYPE
+        if initialized:  # not evaluated: what the file declares the name with, if one thing (never a field)
+            declared = self._types(record_id).get(receiver or "") or ""
+            if declared.startswith("=") and declared[1:] and declared[1:] != initializer:
+                owner = self._expr_type(declared[1:], record_id, self._enclosing_type(block_id))
+                if owner:
+                    return self._methods_on(owner, name) or None, CONFIDENCE_INFERRED, RESOLUTION_TYPE
+            receiver_type = declared if declared and not declared.startswith("=") else None
+        if not receiver_type and not initialized and rules.implicit_member_receivers and receiver \
+                and fact.get("qualifiedPrefix") in (receiver, f"this->{receiver}", f"this.{receiver}"):
+            field_type = self._field_of_enclosing_type(block_id, receiver)
+            if field_type:
+                target = self._methods_on(field_type, name) or (self._through_arrow(
+                    field_type, name, self._field_of_enclosing_type(block_id, receiver, suffix="<>"))
+                    if fact.get("arrow") else None)
+                return target or None, CONFIDENCE_INFERRED, RESOLUTION_TYPE
         if not receiver_type and receiver in rules.self_receivers:
             owner = self._enclosing_type(block_id)
             if owner:
@@ -1139,7 +1339,8 @@ class _Builder:
                 return self._py_unique_method(name, fact, record_id)
         two_arg = _PY_SUPER.fullmatch(receiver or "") if family == "py" else None
         if not receiver_type and (receiver in rules.super_receivers or two_arg):
-            # `super().__init__()`, `super.save()`: the nearest base that defines it.
+            # `super().__init__()`, `super.save()`: the nearest base that defines it. A declared
+            # interface is never one (C# `base.`, Java `super.`, PHP `parent::`); a Python ABC is a class.
             # `super(C, self).m()` starts above C, which need not be the enclosing class.
             owner = self._enclosing_type(block_id)
             start = owner
@@ -1157,6 +1358,8 @@ class _Builder:
                         return target, CONFIDENCE_INFERRED, RESOLUTION_TYPE
                 return None, CONFIDENCE_INFERRED, None
             for base in self._base_types_of(start) if start else ():
+                if self._declared_interface(base):
+                    continue
                 target = self._resolve_self_method(base, name)
                 if target:
                     return target, CONFIDENCE_INFERRED, RESOLUTION_TYPE
@@ -1165,10 +1368,21 @@ class _Builder:
             bound = self._resolve_bound_receiver(receiver, name, record_id, fact.get("qualifiedPrefix"))
             if bound is not None:
                 return bound
-        if not receiver_type and fact.get("qualifiedPrefix") and family in ("js", "py"):
-            # `this._editor.getModel().getValue()`, `c.run()` with `const c = Ctl.get(e)`.
-            owner = self._expr_type(fact["qualifiedPrefix"], record_id, self._enclosing_type(block_id),
-                                    head_type=fact.get("headType"), head_type_arg=fact.get("headTypeArg"))
+        chain = fact.get("qualifiedPrefix")
+        if family not in ("js", "py"):
+            # C++ evaluates a written chain or call (`engine()->f()`); a plain `x.f()` was typed above.
+            chain = c_family_parser.dotted(chain) if rules.evaluated_receivers and chain \
+                and (chain != receiver or chain.endswith(")")) else None
+        if not receiver_type and chain:
+            # `this._editor.getModel().getValue()`, `c.run()` with `const c = Ctl.get(e)`; C++ `cfg.root()->child()`.
+            head_type = fact.get("headType")
+            if head_type == "=" and rules.evaluated_receivers:
+                # C++ `auto& i = info[k]; i.app->f()`: what the file declares the head with, if one thing.
+                head = _SEGMENT.match(chain)
+                head_type = self._types(record_id).get(head.group()) if head else None
+                head_type = None if head_type == "=" else head_type
+            owner = self._expr_type(chain, record_id, self._enclosing_type(block_id),
+                                    head_type=head_type, head_type_arg=fact.get("headTypeArg"))
             if owner:
                 target = self._methods_on(owner, name)
                 if target:
@@ -1204,6 +1418,10 @@ class _Builder:
         target = self._methods_on(type_candidates[0], name)
         if self._out_of_scope(type_candidates[0], target, record_id):
             target = None
+        if not target and fact.get("arrow") and fact.get("headTypeArg") \
+                and self._resolve_self_method(type_candidates[0], "operator->"):
+            pointee = self._type_candidates(fact["headTypeArg"], record_id, family)
+            target = self._through_arrow(type_candidates[0], name, pointee[0] if len(pointee) == 1 else None)
         return target or None, CONFIDENCE_INFERRED, RESOLUTION_TYPE
 
     def _out_of_scope(self, owner: str, method: str | list[str] | None, record_id: str) -> bool:
@@ -1229,27 +1447,118 @@ class _Builder:
         visible = set(self.symbol_bindings.get(call_file, {}).values())
         return not any(t in visible or self.index.file_by_block.get(t) == call_file for t in traits)
 
+    def _through_arrow(self, owner: str, name: str, pointee: str | None) -> str | None:
+        """`x->open()` on `optional_ptr<Conn> x` (*pointee* Conn), whose type has no `open` but an `operator->`:
+        Conn's `open`."""
+        if not pointee or pointee.startswith("[]") or not self._resolve_self_method(owner, "operator->"):
+            return None
+        target = self._methods_on(pointee, name)
+        return target if isinstance(target, str) else None
+
+    def _constructed_type(self, name: str, qualifier: str | None, record_id: str, family: str | None) -> str | None:
+        """The one class a construction names (`new ns::Conn(..)`, `Conn c(..)`): among the types the file sees,
+        narrowed by the written qualifier, else by name alone. Never an alias or an enum: an alias's constructor is
+        what it aliases (`v_atomicCounter n(0)` runs std::atomic's), and `new v_char8[n]` runs none."""
+        scope = rules_for(family).type_scope
+        call_file = self.index.file_by_record.get(record_id) or ""
+        seen = scope(self.index, call_file, name, f"{qualifier}::{name}" if qualifier else None) if scope else []
+        if not seen:
+            seen = self._type_candidates(name, record_id, family)
+        if qualifier:  # `std::string s(..)` is never a repo `class string`, however unique, nor `std::hash` one
+            seen = [t for t in seen if self._written_as(t, qualifier, name) and not c_family_parser.in_std(qualifier)]
+        return seen[0] if len(seen) == 1 and self.index.rows[seen[0]].kind in _CLASS_KINDS else None
+
+    def _initialized_base(self, block_id: str, name: str, qualifier: str | None, record_id: str,
+                          family: str | None) -> str | None:
+        """What a constructor's `: Name(..)` constructs: the enclosing class itself (a delegating constructor), else
+        its base so named (the written qualifier picks between same-named ones), else a class the file sees. A member
+        of the class so named (`: m_count(0)`) is initialized, not constructed: None."""
+        owner = self._enclosing_type(block_id)
+        if owner and any(self.index.rows[cid].parent_block_id == owner and self.index.rows[cid].kind == "field"
+                         for cid in self.index.candidates(name)):
+            return None
+        found = [t for t in ([owner, *self._base_types_of(owner)] if owner else ())
+                 if self.index.rows[t].name == name and self.index.rows[t].kind in _CLASS_KINDS]
+        found = [t for t in found if not qualifier or self._written_as(t, qualifier, name)]
+        return found[0] if found else self._constructed_type(name, qualifier, record_id, family)
+
+    def _written_as(self, block_id: str, qualifier: str, name: str) -> bool:
+        """Whether *block_id*'s qualified name ends with the path written at the call (`ns::Conn`)."""
+        path = (self.index.rows[block_id].qualified_name or "").partition(":")[2]
+        return f".{path}".endswith(f".{c_family_parser.dotted(qualifier)}.{name}")
+
+    def _field_of_enclosing_type(self, block_id: str, field_name: str, suffix: str = "") -> str | None:
+        """The type block of *field_name* on the class *block_id* is a method of (or a base declaring it); *suffix*
+        `<>` asks for its type's argument instead (`optional_ptr<Conn> m_c`: Conn)."""
+        owner = self._enclosing_type(block_id)
+        found = self._member_type(owner, field_name, 0, suffix) if owner else None
+        return found if found and not found.startswith("[]") else None
+
+    def _extension_method(self, fact: dict, record_id: str, family: str | None,
+                          ) -> tuple[str | None, str, str | None]:
+        """`services.AddCatalog()`: the extension method of that name the file sees whose `this` type is the
+        receiver's, else one whose `this` type may be (unknown on either side, generic, or a base of the
+        receiver's type); path proximity only breaks a tie among those."""
+        hook = rules_for(family).extension_methods
+        call_file = self.index.file_by_record.get(record_id) or ""
+        visible = hook(self.index, call_file, fact.get("toName") or "") if hook else []
+        if not visible:
+            return None, CONFIDENCE_INFERRED, None
+        receiver = fact.get("receiver")
+        receiver_type = fact.get("receiverType") or (
+            self.index.type_table_by_record.get(record_id, {}).get(receiver) if receiver else None)
+        if receiver_type:
+            exact = [cid for cid in visible if self._extended_type(cid) == _split_arity(receiver_type, family)[0]]
+            accepted = self._receiver_type_names(receiver_type, record_id, family)
+            if exact:
+                visible = exact
+            elif accepted is not None:  # else a type outside the repo (`List<T>`): its bases are unseen
+                visible = [cid for cid in visible if self._extended_type(cid) in (None, *accepted)
+                           or self.index.rows[cid].type_param_count]
+        found = path_proximity_winner(visible, self.index.file_by_block, call_file)
+        return (found[0], CONFIDENCE_INFERRED, RESOLUTION_EXTENSION) if len(found) == 1 \
+            else (None, CONFIDENCE_INFERRED, None)
+
+    def _extended_type(self, block_id: str) -> str | None:
+        """The `this T` type an extension method extends, from its `this:T` modifier."""
+        return next((m[5:] for m in self.index.rows[block_id].modifiers if m.startswith("this:")), None)
+
+    def _receiver_type_names(self, type_name: str, record_id: str, family: str | None) -> set[str] | None:
+        """*type_name* and the names of every base of the one repo type it means; None when it means no
+        single repo type, so its bases are unknown."""
+        candidates = self._type_candidates(type_name, record_id, family)
+        if len(candidates) != 1:
+            return None
+        return {_split_arity(type_name, family)[0]} | {
+            self.index.rows[t].name or "" for t, _ in self._type_chain(candidates[0])}
+
     def _type_candidates(self, type_name: str, record_id: str, family: str | None) -> list[str]:
-        """The types *type_name* can mean in a file: the one it imports or defines, if any."""
+        """The types *type_name* can mean in a file: the one it imports or defines, if any. A C# type-table
+        name carries its type-argument count (`IHandler`1`; none written is 0)."""
         if rules_for(family).qualified_path_separator:
             placed = self._placed_type_candidates(type_name, record_id, family)
             if placed is not None:
                 return placed
             type_name = type_name.rpartition(rules_for(family).qualified_path_separator)[2]
+        type_name, arity = _split_arity(type_name, family)
         type_candidates = [
             cid for cid in self.index.candidates(type_name)
             if cid in self.index.type_blocks
             and (family is None or self._family_of(cid) == family)
         ]
+        type_candidates = self._by_arity(type_candidates, arity, family)
         if len(type_candidates) > 1:
             call_file = self.index.file_by_record.get(record_id) or ""
             bound = self.symbol_bindings.get(call_file, {}).get(type_name)
             local = [cid for cid in type_candidates
                      if cid in self.index.rows and self.index.rows[cid].file_path == call_file]
+            scope = rules_for(family).type_scope
             if bound in type_candidates:
                 type_candidates = [bound]
             elif len(local) == 1:
                 type_candidates = local
+            elif scope:
+                type_candidates = scope(self.index, call_file, type_name, None) or type_candidates
         return type_candidates
 
     def _placed_type_candidates(self, type_name: str, record_id: str, family: str | None) -> list[str] | None:
@@ -1381,11 +1690,16 @@ class _Builder:
         return owner
 
     def _value_type(self, name: str, record_id: str, this_type: str | None, depth: int) -> str | None:
-        """A bare name: a typed variable, else a class it names (`Ctl.get()` is static)."""
+        """A bare name: a typed variable, else a field of the class the code is in (C++ `m_list`), else a class it
+        names (`Ctl.get()` is static)."""
         declared = self._types(record_id).get(name)
         if declared:
             return self._declared_type(declared, record_id, this_type, depth)
         family = lang_family(None, self.index.file_by_record.get(record_id))
+        field = self._member_type(this_type, name, depth) \
+            if this_type and rules_for(family).implicit_member_receivers else None
+        if field:
+            return field
         candidates = self._type_candidates(name, record_id, family)
         if len(candidates) == 1:
             return candidates[0]
@@ -1655,9 +1969,25 @@ class _Builder:
         if row is None or not row.name:
             return None, None
         owner = self._enclosing_type(target)
+        returned = self._returned_class(row)
+        if returned:  # C++: on the blocks themselves, so no other file's type table is needed
+            return returned, owner
         owner_row = self.index.rows.get(owner) if owner else None
         key = f"{owner_row.name}.{row.name}()" if owner_row is not None else f"{row.name}()"
         return self._types(row.record_id).get(key), owner
+
+    def _returned_class(self, row: BlockRow) -> str | None:
+        """The class a C++ function or method returns (RETURNS), when it and its same-file overloads agree on one:
+        the call's arguments are not read, so `void Copy(const S&)` beside `S Copy() const` is S, while `A* get(int)`
+        beside `B* get()` is neither."""
+        if not rules_for(self._family_of(row.key)).evaluated_receivers:
+            return None
+        path = _REPEAT_SUFFIX.sub("", row.qualified_name or "")
+        found = {w[len(RETURNS):] for cid in self.index.candidates(row.name or "")
+                 if (other := self.index.rows[cid]).record_id == row.record_id
+                 and _REPEAT_SUFFIX.sub("", other.qualified_name or "") == path
+                 for w in other.modifiers if w.startswith(RETURNS)}
+        return next(iter(found)) if len(found) == 1 else None
 
     def _return_type(self, target: str | None, depth: int) -> str | None:
         declared, owner = self._declared_return(target)
@@ -1713,7 +2043,8 @@ class _Builder:
     def _resolve_bound_receiver(self, receiver: str, name: str, record_id: str, qualifier: str | None = None,
                                 ) -> tuple[str | None, str, str | None] | None:
         """`jobs.run()`, `ns.f()`, `Order.from_dict()`: a receiver an import or a
-        same-file class names. None when the receiver is none of those."""
+        same-file class names, or a type the family's scope shows the file
+        (C++ `oatpp::base::Environment::tick()`). None when the receiver is none of those."""
         call_file = self.index.file_by_record.get(record_id) or ""
         # Where receiver chains are typed, `self.config.colors.matched()`'s `colors` is a field, never an import.
         head = not (rules_for(lang_family(None, call_file)).typed_receiver_chains and qualifier
@@ -1735,6 +2066,27 @@ class _Builder:
                      if cid in self.index.type_blocks
                      and (self.index.rows[cid].name if cid in self.index.rows else None) == receiver]
             bound = local[0] if len(local) == 1 else None
+        family = lang_family(None, call_file)
+        rules = rules_for(family)
+        if rules.qualified_callees and c_family_parser.in_std(qualifier):
+            return None  # `std::numeric_limits<T>::max()` is the library's, never a repo specialization of it
+        if not bound and rules.type_scope:
+            seen = rules.type_scope(self.index, call_file, receiver, qualifier)
+            if len(seen) == 1:
+                target = self._resolve_self_method(seen[0], name)
+                # `cfg->get_fn.get_bool(...)` calls what a function-pointer field holds, not the field.
+                target = target if target in self.index.callable_blocks else None
+                if target or not rules.qualified_callees:
+                    return target, CONFIDENCE_EXTRACTED, RESOLUTION_MODULE if target else None
+        # `a.conn.f()`: a receiver after a dot is a member of what precedes it, never a written path.
+        attribute = bool(qualifier) and qualifier != receiver and qualifier.endswith(f".{receiver}")
+        if not bound and rules.qualified_callees and not attribute:
+            found = path_proximity_winner(
+                self._linkable(rules.qualified_callees(self.index, call_file, name, qualifier or receiver),
+                               call_file, family),
+                self.index.file_by_block, call_file)
+            if len(found) == 1:
+                return found[0], CONFIDENCE_EXTRACTED, RESOLUTION_QUALIFIER
         if bound and bound in self.index.type_blocks:
             target = self._resolve_self_method(bound, name)
             return target, CONFIDENCE_EXTRACTED, RESOLUTION_IMPORT if target else None
@@ -1860,10 +2212,12 @@ class _Builder:
                 members += self._union_members(found[0], depth + 1) or found
         return members
 
-    def _resolve_self_method(self, owner: str, method_name: str) -> str | None:
+    def _resolve_self_method(self, owner: str, method_name: str, *, prefer_body: bool = True) -> str | None:
         """`m` on a known type: the owner's own `m`, else the nearest base that defines it.
 
-        Serves `self.m()` and `conn.m()` on a typed receiver alike.
+        Serves `self.m()` and `conn.m()` on a typed receiver alike. A call runs a body, so by default a
+        base's DECLARATION (a C++ pure virtual) yields to a body further along, whatever the base-list
+        order (a mixin); *prefer_body* False is the nearest declaration, which is what an override overrides.
 
         Calling a method the subclass never overrode is the common case, not an
         edge case: `BaseConnector.notify` has ~38 `await self.notify(...)` call
@@ -1877,24 +2231,19 @@ class _Builder:
             # reached another crate's same-named type.
             return next((found for _, parts in self._type_chain(owner) for part in parts
                          if (found := self.index.method_index.get((part, method_name)))), None)
-        direct = self.index.method_index.get((owner, method_name)) or self._method_by_owner_name(
-            owner, method_name)
-        if direct:
-            return direct
-
-        seen = {owner}
-        queue = list(self._base_types_of(owner))
-        while queue:
-            base = queue.pop(0)
-            if base in seen:
-                continue
-            seen.add(base)
-            inherited = self.index.method_index.get((base, method_name)) or self._method_by_owner_name(
-                base, method_name)
-            if inherited:
-                return inherited
-            queue.extend(self._base_types_of(base))
-        return None
+        declared_only = None
+        for current, parts in self._type_chain(owner):
+            for part in parts:
+                found = self.index.method_index.get((part, method_name)) or self._method_by_owner_name(
+                    part, method_name)
+                # The owner's own `m` is the target even when abstract. On a base a declaration (interface,
+                # abstract, pure virtual) only names `m`: a base further along holds the body that runs (PHP
+                # `implements HasDescription` + `use ContainerTrait`, a C++ mixin), whatever the base-list order.
+                if found and (not prefer_body or current == owner
+                              or DECLARATION not in self.index.rows[found].modifiers):
+                    return found
+                declared_only = declared_only or found
+        return declared_only
 
     def _py_mro(self, cls: str, seen: frozenset[str] = frozenset()) -> list[str]:
         """A Python class's method resolution order (C3) over the bases the graph resolved.
@@ -1921,19 +2270,26 @@ class _Builder:
         if row is None or not row.name or not row.file_path:
             return None
         wanted = f"{row.name}.{method_name}"
+        rules = rules_for(self._family_of(owner))
+        repo_wide = rules.out_of_line_methods == "repo"
+        # Under the type's namespaces too where the family says so (C/C++); there only a callable, as a
+        # function-pointer field (`cfg->get_fn.get_bool`) is no method.
+        namespaced = (f"{(row.qualified_name or '').partition(':')[2]}.{method_name}"
+                      if rules.out_of_line_under_namespaces else None)
         folder = row.file_path.rsplit("/", 1)[0] if "/" in row.file_path else ""
         named = [cid for cid in self.index.candidates(method_name)
-                 if (self.index.rows[cid].qualified_name or "").partition(":")[2] == wanted]
+                 if (path := (self.index.rows[cid].qualified_name or "").partition(":")[2]) == wanted
+                 or (path == namespaced and cid in self.index.callable_blocks)]
         hits = [cid for cid in named
                 if (self.index.file_by_block.get(cid, "").rsplit("/", 1)[0]
                     if "/" in self.index.file_by_block.get(cid, "") else "") == folder]
-        if not hits and named and rules_for(self._family_of(owner)).out_of_line_methods == "repo":
+        if not hits and named and repo_wide:
             # `Foo::bar()` in src/foo.cpp for `class Foo` in include/foo.h: the nearest one.
             hits = path_proximity_winner(named, self.index.file_by_block, row.file_path)
         return hits[0] if len(hits) == 1 else None
 
     def _base_types_of(self, type_block: str) -> list[str]:
-        """Resolved base classes of a type, from its own heritage facts.
+        """Resolved base classes of a type, from its own heritage facts and its other parts'.
 
         Read from `pending_edges` rather than `self.edges`: `resolve_rest`
         interleaves heritage and call facts, so a subclass's heritage edge may
@@ -1954,7 +2310,7 @@ class _Builder:
             return []
         family = self._family_of(block_id)
         found = (self._resolve_type_name(fact.get("toName") or "", row.file_path or "", family,
-                                         fact.get("qualifiedPrefix"))
+                                         fact.get("qualifiedPrefix"), type_args=fact.get("typeArgs"))
                  for fact in row.pending_edges if fact.get("relation") in _TYPE_RELATIONS)
         return [target for target in found if target]
 
@@ -1972,9 +2328,13 @@ class _Builder:
             queue.extend(self._base_types_of(current))
 
     def _type_parts(self, type_block: str) -> list[str]:
-        """The type's declarations: itself, and where the family's impls name their type (Rust) its impls, whose
-        methods and implemented traits (with their default methods) are its own."""
-        if not rules_for(self._family_of(type_block)).impl_blocks_name_their_type:
+        """The type's declarations: itself, then its other parts where the family has them: a C# `partial` type's
+        other declarations, or where the family's impls name their type (Rust) its impls, whose methods and
+        implemented traits (with their default methods) are its own."""
+        rules = rules_for(self._family_of(type_block))
+        if rules.type_parts:
+            return [type_block, *rules.type_parts(self.index, type_block)]
+        if not rules.impl_blocks_name_their_type:
             return [type_block]
         row = self.index.rows.get(type_block)
         if row is not None and row.kind == "impl":   # the first of a type's impls stands for a foreign type
@@ -2036,7 +2396,7 @@ class _Builder:
         return parent.name if parent else None
 
     def _resolve_type_name(self, name: str, from_file: str, family: str | None,
-                           qualified_prefix: str | None = None) -> str | None:
+                           qualified_prefix: str | None = None, *, type_args: int | None = None) -> str | None:
         """Name -> type block. Deliberately without `_resolve_direct`'s counters:
         a heritage hop taken while resolving a call is not itself a resolution
         the run should report on."""
@@ -2066,15 +2426,38 @@ class _Builder:
         if len(candidates) > 1:
             same_file = [cid for cid in candidates
                          if self.index.file_by_block.get(cid) == from_file]
-            with_evidence = same_file or [
-                cid for cid in candidates if self._has_module_evidence(cid, from_file)
-            ]
+            # The scope a heritage fact resolves in (`_resolve_direct`), so the base chain and INHERITS agree.
+            rules = rules_for(family)
+            scope = set(rules.implicit_scope(self.index, from_file)) if rules.implicit_scope else set()
+            with_evidence = same_file or self._nearest_scope_level([
+                cid for cid in candidates
+                if self._has_module_evidence(cid, from_file) or self.index.file_by_block.get(cid) in scope
+            ], from_file, rules)
             candidates = with_evidence or candidates
             candidates = prefer_non_test(candidates, self.index.file_by_block, from_file)
+            candidates = self._by_arity(candidates, type_args, family)
             candidates = path_proximity_winner(
                 candidates, self.index.file_by_block, from_file
             )
         return candidates[0] if len(candidates) == 1 else None
+
+    def _nearest_scope_level(self, candidates: list[str], from_file: str, rules: FamilyRules) -> list[str]:
+        """Among several in-scope candidates, those of the nearest level the family's lookup order has
+        (C#: innermost namespace first); unchanged without such an order."""
+        if len(candidates) > 1 and rules.scope_levels:
+            for level in rules.scope_levels(self.index, from_file):
+                nearest = [cid for cid in candidates if self.index.file_by_block.get(cid) in level]
+                if nearest:
+                    return nearest
+        return candidates
+
+    def _by_arity(self, candidates: list[str], type_args: int | None, family: str | None) -> list[str]:
+        """`IHandler<int>` beside `IHandler<T>` and a plain `IHandler`: the one taking that many type
+        parameters, where the family's rule says arity names a type; else the candidates unchanged."""
+        if type_args is None or len(candidates) < 2 or not rules_for(family).disambiguate_repeats_by_arity:
+            return candidates
+        matching = [cid for cid in candidates if self.index.rows[cid].type_param_count == type_args]
+        return matching if len(matching) == 1 else candidates
 
     # -- step 8: prune ---------------------------------------------------
 
@@ -2307,7 +2690,7 @@ def _resolve(builder: _Builder, index: SymbolIndex, reresolve: set[str]) -> list
     builder.resolve_imports(work)
     builder.resolve_rest(work)
     builder.resolving = None
-    builder.link_overrides()
+    builder.link_overrides(reresolve)
     return builder.prune_dangling()
 
 
@@ -2389,6 +2772,25 @@ async def _names_changed_by(graph_provider: IGraphDBProvider, index: SymbolIndex
     return names
 
 
+def _macro_entry(raw: object) -> tuple[int, list[str]] | None:
+    """A `macroTable` entry as (line, callee names); None for a malformed one, which then means no macro."""
+    if not isinstance(raw, list) or len(raw) != 2 or not isinstance(raw[1], list):
+        return None
+    return (raw[0] if isinstance(raw[0], int) else 0), [c for c in raw[1] if isinstance(c, str)]
+
+
+def _through_macros(index: SymbolIndex, names: set[str]) -> set[str]:
+    """*names* plus every macro whose expansion reaches one: a file calling the macro calls what changed."""
+    out = set(names)
+    for _ in range(_MAX_MACRO_DEPTH):
+        more = {macro for table in index.macro_table_by_record.values() for macro, raw in table.items()
+                if macro not in out and (entry := _macro_entry(raw)) and not out.isdisjoint(entry[1])}
+        if not more:
+            break
+        out |= more
+    return out
+
+
 def _select_reresolve_set(index: SymbolIndex, touched: set[str] | None,
                           changed_names: set[str] = frozenset()) -> set[str]:
     """Touched files plus the unchanged files whose edges they invalidate.
@@ -2405,10 +2807,27 @@ def _select_reresolve_set(index: SymbolIndex, touched: set[str] | None,
 
     # B added or removed a name -> re-resolve anything that references that name.
     if changed_names:
+        changed_names = _through_macros(index, changed_names)
         for record_id, names in index.referenced_names_by_record.items():
             if record_id not in selected and names & changed_names:
                 selected.add(record_id)
+        selected |= _transitive_includers(index, changed_names)
     return selected
+
+
+def _transitive_includers(index: SymbolIndex, changed_names: set[str]) -> set[str]:
+    """The records that see a file whose include list changed through their includes, at any depth: their
+    direct includers are selected by the file's `module:` names, the rest only here."""
+    by_family: dict[str, set[str]] = {}
+    for name in changed_names:
+        if name.startswith(INCLUDES_CHANGED_PREFIX):
+            path = name[len(INCLUDES_CHANGED_PREFIX):]
+            by_family.setdefault(lang_family(None, path) or "", set()).add(path)
+    out: set[str] = set()
+    for family, paths in by_family.items():
+        hook = rules_for(family).includers
+        out.update(index.record_by_file[p] for p in (hook(index, paths) if hook else ()) if p in index.record_by_file)
+    return out
 
 
 def _with_impl_partners(index: SymbolIndex, reresolve: set[str], touched: set[str] = frozenset(),
