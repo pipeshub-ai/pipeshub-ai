@@ -271,13 +271,14 @@ async def test_the_registered_roots_are_the_pending_scopes_of_the_viewer() -> No
     await bump_generation_in(tx, "c1", ["a", "b"])
 
     class RegistryView(InMemoryHierarchyView):
-        async def pending_scopes(self, org_id: str) -> frozenset[str]:
-            return frozenset(parse(tx.app.get(PENDING_KEY)))
+        async def pending_scopes(self, org_id: str) -> dict[str, frozenset[str]]:
+            return {"c1": frozenset(parse(tx.app.get(PENDING_KEY)))}
 
     view = RegistryView(ORG, groups_by_app={"c1": frozenset({"g"})}, facts_by_app={"c1": AppFacts(False, "CONFLUENCE")})
     who = {(ORG, "u"): Principal(frozenset(), frozenset({"c1"}))}
     resolver = ViewerScopeResolver(view, InMemoryPrincipalView(who, {(ORG, "u"): frozenset({"g"})}))
-    assert (await resolver.resolve(ORG, "u")).pending == {"a", "b"}
+    mine = await resolver.resolve(ORG, "u")
+    assert mine.pending == {"a", "b"} and mine.blocked == {"c1"}
     tx.app[PENDING_KEY] = "garbage"
     with pytest.raises(ViewerScopesUnavailable):
         # the real views refuse an unreadable list; the fake mirrors them by raising from parse
@@ -285,6 +286,37 @@ async def test_the_registered_roots_are_the_pending_scopes_of_the_viewer() -> No
             await resolver.resolve(ORG, "u")
         except PendingUnreadable as exc:
             raise ViewerScopesUnavailable("pending_unreadable") from exc
+
+
+async def test_a_connector_with_a_pending_root_does_not_admit_its_container_points_and_another_connectors_are_untouched() -> None:
+    from app.services.permissions.fakes import InMemoryPrincipalView
+    from app.services.permissions.ports import AppFacts, Principal
+    from app.services.permissions.viewer import ViewerScopeResolver
+    from app.services.vector_db import scope_expr as sx
+
+    apps = {"c1": AppGraph({GENERATION_KEY: 0}), "c2": AppGraph({GENERATION_KEY: 0})}
+    await bump_generation_in(apps["c1"], "c1", ["root"])
+
+    class RegistryView(InMemoryHierarchyView):
+        async def pending_scopes(self, org_id: str) -> dict[str, frozenset[str]]:
+            held = {c: frozenset(parse(a.app.get(PENDING_KEY))) for c, a in apps.items()}
+            return {c: roots for c, roots in held.items() if roots}
+
+    view = RegistryView(ORG, groups_by_app={"c1": frozenset({"g1"}), "c2": frozenset({"g2"})},
+                        facts_by_app={c: AppFacts(False, "CONFLUENCE") for c in apps})
+    who = {(ORG, "u"): Principal(frozenset(), frozenset(apps))}
+    resolver = ViewerScopeResolver(view, InMemoryPrincipalView(who, {(ORG, "u"): frozenset({"g1", "g2"})}))
+
+    async def admitted() -> set[str]:
+        flt = filters.ScopeFilter.of(await resolver.resolve(ORG, "u"), apps, version=5, generation=3)
+        node = sx.admits(flt)
+        points = {c: {"connectorIds": [c], "recordGroupIds": [f"g{c[-1]}"], "scopeStamp": "container", "scopeFieldsVersion": 5, "scopeGeneration": 3}
+                  for c in apps}
+        return {c for c, p in points.items() if sx.evaluate(node, p)}
+
+    assert await admitted() == {"c2"}                                   # no extra access under c1's pending root, none missing for c2
+    await clear_pending_covered(apps["c1"], "c1", 1)
+    assert await admitted() == {"c1", "c2"}                             # recovery
 
 
 # ---- what a finished full pass takes off the list (recovery) ----

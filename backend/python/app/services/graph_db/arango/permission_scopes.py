@@ -62,7 +62,7 @@ LET rgl = mine AND LENGTH(
 RETURN {{opens: mine AND (a.permissionModel == "APP_LEVEL" OR a.type == "KB"), type: mine ? (a.type || "") : "", rgl: rgl}}
 """
 # The roots registered on the org's connectors (`permissions.pending`), as stored.
-PENDING = f"FOR a IN {CollectionNames.APPS.value} FILTER a.orgId == @org AND a.scopeProjectionPendingRoots != null RETURN a.scopeProjectionPendingRoots"
+PENDING = f"FOR a IN {CollectionNames.APPS.value} FILTER a.orgId == @org AND a.scopeProjectionPendingRoots != null RETURN {{app: a._key, raw: a.scopeProjectionPendingRoots}}"
 SCOPE_QUERIES = tuple(_SCOPES.replace("{collection}", c.value) for c in (CollectionNames.RECORDS, CollectionNames.RECORD_GROUPS))
 
 
@@ -97,9 +97,10 @@ class ArangoHierarchyView:
         row = cast("dict[str, object]", (await self._rows(APP, {"app": app_id, "org": org_id}))[0])
         return AppFacts(bool(row["opens"]), str(row["type"]), bool(row["rgl"]))
 
-    async def pending_scopes(self, org_id: str) -> frozenset[str]:
+    async def pending_scopes(self, org_id: str) -> dict[str, frozenset[str]]:
         try:
-            return frozenset().union(*(parse(raw) for raw in await self._rows(PENDING, {"org": org_id})))
+            held = {str(r["app"]): frozenset(parse(r["raw"])) for r in cast("list[dict[str, object]]", await self._rows(PENDING, {"org": org_id}))}
+            return {app: roots for app, roots in held.items() if roots}
         except PendingUnreadable as exc:  # roots that cannot be read cannot be hidden: the viewer falls back to the legacy filter
             raise ViewerScopesUnavailable("pending_unreadable") from exc
 
