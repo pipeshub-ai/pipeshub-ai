@@ -453,7 +453,8 @@ export function registerCodeGraphToolDefinitions(
     {
       description:
         'Use when you know a name or exact text but not its file. `mode: "identifier"` ' +
-        '(default) lists definitions with that name (`truncated`: more exist). ' +
+        '(default) lists definitions with that bare name (`Client.fetch` finds every ' +
+        '`fetch`; `truncated`: more exist). ' +
         '`mode: "text"` or `"regex"` finds ' +
         'lines in file bodies (a string, a call site, a config key). With a repo-relative ' +
         '`path` they read at most 1000 files under it; without it, the keyword index ' +
@@ -589,7 +590,7 @@ export function registerCodeGraphToolDefinitions(
         'nothing in it calls (routes, CLIs, jobs, hooks), conventional names and files first. ' +
         'Python, JavaScript, TypeScript, Java, Go, C#, PHP, Rust, C and C++ calls are resolved ' +
         'through imports; other languages are matched by name. ' +
-        'Uncalled means no caller among the files you can read. ' +
+        'Uncalled means no indexed call from a file you can read. ' +
         `Next: pipeshub_code_outline or pipeshub_code_read an entry point. ${COVERAGE}`,
       inputSchema: {
         repo: repoRequired,

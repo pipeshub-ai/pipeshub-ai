@@ -29,7 +29,7 @@ NUMBER_WORDS = "zero one two three four five six seven eight nine ten eleven twe
 # How a description names each language whose calls resolve through imports; TSX is TypeScript.
 LANGUAGE_NAMES = {"python": "Python", "javascript": "JavaScript", "typescript": "TypeScript", "tsx": "TypeScript",
                   "java": "Java", "go": "Go", "csharp": "C#", "php": "PHP", "rust": "Rust", "c": " C ", "cpp": "C++"}
-HIDDEN_CALLERS = "ncalled means no caller among the files you can read"
+HIDDEN_CALLERS = "ncalled means no indexed call from a file you can read"
 # Upper-case words in descriptions that are not relation names.
 NOT_RELATIONS = {"FIRST", "NOT", "HTTP", "ID", "PHP"}
 MCP_TOOLS = Path(__file__).parents[6] / "nodejs" / "apps" / "src" / "modules" / "mcp" / "code-graph.tools.ts"
