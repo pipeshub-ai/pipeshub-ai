@@ -3884,9 +3884,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                  coalesce(codeFile.filePath, record.recordName) AS path,
                  codeFile.referencedNames AS referencedNames,
                  codeFile.changedNames AS changedNames,
+                 codeFile.commitSha AS commitSha,
                  codeFile IS NOT NULL AS hasCodeFile
             WHERE path IS NOT NULL
-            RETURN record.id AS recordId, path AS filePath, referencedNames, changedNames, hasCodeFile
+            RETURN record.id AS recordId, path AS filePath, referencedNames, changedNames, commitSha,
+                   hasCodeFile
             """
             rows = await self.client.execute_query(
                 query,
@@ -3899,6 +3901,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     referenced_names=tuple(row.get("referencedNames") or ()),
                     changed_names=tuple(row.get("changedNames") or ()),
                     has_code_file=bool(row.get("hasCodeFile")),
+                    commit_sha=row.get("commitSha") or None,
                 )
                 for row in rows or []
                 if row.get("recordId") and row.get("filePath")

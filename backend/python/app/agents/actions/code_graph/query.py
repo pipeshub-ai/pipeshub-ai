@@ -40,6 +40,7 @@ from .ops import (
     get_record_roles,
     repo_names,
 )
+from .results import saw_commit
 
 if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -155,7 +156,7 @@ async def files_by_pattern(
         filters={"orgId": org_id},
         limit=scan_limit,
         raise_on_error=True,
-        return_fields=["_key", "filePath"],
+        return_fields=["_key", "filePath", "commitSha"],
     )
     paths: dict[str, str] = {}
     for raw in files or []:
@@ -165,6 +166,7 @@ async def files_by_pattern(
         if not key or not path or not path_matches(path, pattern):
             continue
         paths[key] = path
+        saw_commit(path, key, row.get("commitSha"))
     return paths, len(files or []) >= scan_limit
 
 
@@ -291,6 +293,7 @@ async def _list_children(
             child = rest.split("/", 1)[0]
             dirs[child] = dirs.get(child, 0) + 1
             continue
+        saw_commit(path, row.get("_key") or row.get("id"), row.get("commitSha"))
         files.append({
             "path": path,
             "language": row.get("language"),

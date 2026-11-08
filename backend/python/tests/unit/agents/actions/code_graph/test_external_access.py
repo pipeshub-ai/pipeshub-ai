@@ -249,6 +249,32 @@ async def test_repos_route_lists_readable_repos() -> None:
     ]}
 
 
+async def test_repos_route_says_the_commit_each_repo_was_synced_at() -> None:
+    """Stamped by the git connectors on the code group; a repo not yet stamped says nothing."""
+    graph = Repos()
+    next(g for g in graph.groups if g["_key"] == "g-shop-code")["lastSyncedCommit"] = "9" * 40
+    by_repo = {r["repo"]: r for r in _client(graph).get("/api/v1/code-graph/repos").json()["repos"]}
+    assert by_repo["acme/shop"]["indexed_commit"] == "9" * 40
+    assert "indexed_commit" not in by_repo["acme/admin"]
+
+
+
+@pytest.mark.parametrize(("route", "body"), [
+    ("path", {"file_path_a": "no/such/a.py", "qualified_name_a": "function:a",
+              "file_path_b": "no/such/b.py", "qualified_name_b": "function:b"}),
+    ("search", {"pattern": "no_such_name_anywhere"}),
+])
+async def test_a_result_naming_no_file_says_the_named_repos_commit(route, body, blobs) -> None:
+    """Nothing was found, so no file or block says a commit; the one repo the call named still does."""
+    graph = Repos()
+    next(g for g in graph.groups if g["_key"] == "g-shop-code")["lastSyncedCommit"] = "9" * 40
+    client = _client(graph)
+    shop = client.post(f"/api/v1/code-graph/{route}", json={"repo": "acme/shop", **body})
+    assert shop.status_code == 200, shop.text
+    assert shop.json()["indexed_commit"] == "9" * 40
+    admin = client.post(f"/api/v1/code-graph/{route}", json={"repo": "acme/admin", **body})
+    assert admin.status_code == 200 and "indexed_commit" not in admin.json()  # never stamped
+
 async def test_repos_route_reports_each_repos_graph_status() -> None:
     """Built, pending or failed is visible per repo (O-3)."""
     class Built(Repos):
