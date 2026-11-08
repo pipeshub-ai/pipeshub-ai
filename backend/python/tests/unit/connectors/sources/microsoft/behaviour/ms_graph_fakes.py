@@ -453,6 +453,13 @@ class FakeRecordsDb:
     async def on_new_app_users(self, users: list[Any]) -> None:
         self.app_users.extend(users)
 
+    async def get_all_app_users(self, connector_id: str, **_: object) -> list[Any]:
+        return list(self.app_users)
+
+    async def withdraw_app_user_access(self, connector_id: str, users: list[Any]) -> None:
+        gone = {u.source_user_id for u in users}
+        self.app_users = [u for u in self.app_users if u.source_user_id not in gone]
+
     async def get_all_active_users(self) -> list[Any]:
         return list(self.active_users)
 
