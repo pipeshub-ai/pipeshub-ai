@@ -1947,3 +1947,11 @@ async def test_restrictions_that_cannot_be_read_fail_closed_and_keep_the_stored_
     await ws.sync()
     assert ws.incomplete is False
     assert f1_people(ws) == MEMBERS
+
+
+async def test_the_organization_drive_listing_asks_for_the_restrictions(ws: Workspace) -> None:
+    restricted_drive(ws, MEMBERS_ONLY)
+    await ws.sync()
+    admin_listings = [r for r in ws.http.calls("GET", "/drive/v3/drives") if r.query.get("useDomainAdminAccess") == "true"]
+    assert admin_listings
+    assert all("restrictions" in r.query["fields"] for r in admin_listings)
