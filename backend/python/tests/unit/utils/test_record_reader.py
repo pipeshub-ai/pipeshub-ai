@@ -406,7 +406,7 @@ class TestReadingAThread:
 
 def _comment_record(name: str | None, description: str | None = None, sub_type: str | None = "comment") -> dict:
     blocks = [
-        _text_block(0, "Compare billing extracts to the close rollup."),
+        _text_block(0, "Compare the December extracts to the close rollup."),
         {"index": 1, "type": BlockType.TEXT.value, "parent_index": 0,
          "data": "The remaining differences are within the agreed threshold."},
     ]
