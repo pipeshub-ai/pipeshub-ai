@@ -52,7 +52,11 @@ from app.services.permissions.metrics import (
     SCOPE_PREFILTER_CAPPED,
     SCOPE_PREFILTER_DROPPED,
 )
-from app.services.permissions.scope_fields import PATH_IDS_FIELD, SCOPE_FENCE_FIELD
+from app.services.permissions.scope_fields import (
+    PATH_IDS_FIELD,
+    SCOPE_FENCE_FIELD,
+    checked_fence,
+)
 from app.services.vector_db import scope_expr as sx
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
@@ -62,6 +66,7 @@ from app.services.vector_db.errors import OrgRequired, PartialResult
 from app.services.vector_db.filters import (
     ScopeFilterTooLarge,
     build_generic_conditions,
+    forbid_fence_in_payload,
     forbid_org_in_payload,
     is_missing,
     keep_org_in_overwrite,
@@ -938,11 +943,12 @@ class RedisVectorService(IVectorDBService):
     generation_fence = True
 
     # One script is one atomic step on the server: the org and the fence are read and the hash written with no other command between.
-    # A missing key and another org's point are left alone (HSET would create a bare hash); a hash without a fence counts as the oldest.
+    # A stored fence that is not a number is an error, not a skip or an overwrite. A missing key and another org's point are left alone (HSET would create a bare hash); a hash without a fence counts as the oldest.
     _FENCED_HSET = (
         "if redis.call('HGET', KEYS[1], 'metadata_orgId') ~= ARGV[2] then return 0 end "
-        "local f = tonumber(redis.call('HGET', KEYS[1], ARGV[3])) "
-        "if f and f > tonumber(ARGV[1]) then return 0 end "
+        "local f = redis.call('HGET', KEYS[1], ARGV[3]) "
+        "if f then if not tonumber(f) then return redis.error_reply('stored scopeFence is not a number') end "
+        "if tonumber(f) > tonumber(ARGV[1]) then return 0 end end "
         "redis.call('HSET', KEYS[1], ARGV[3], ARGV[1], unpack(ARGV, 4)) return 1")
 
     async def update_payloads_by_ids(self, collection_name: str, updates: Mapping[str, dict], *, org_id: str, **extra: object) -> None:
@@ -952,11 +958,13 @@ class RedisVectorService(IVectorDBService):
         if fence is None:
             await super().update_payloads_by_ids(collection_name, updates, org_id=org_id, **extra)
             return
+        fence = checked_fence(fence)
         self._assert_connected()
         if is_missing(org_id):
             raise OrgRequired("update_payload_by_ids needs the org of the points")
         for payload in updates.values():
             forbid_org_in_payload(payload)
+            forbid_fence_in_payload(payload)
         if not updates:
             return
         pipeline = self.client.pipeline(transaction=False)  # type: ignore

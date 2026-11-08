@@ -125,6 +125,26 @@ class _Fenced:
         finally:
             await store.delete_collection(col)
 
+    @pytest.mark.parametrize("fence", [True, -1, 2**53, 1.5, "7"])
+    async def test_a_bad_fence_is_an_error_and_never_an_unconditional_write(self, store: Any, fence: Any) -> None:
+        col = await _seed(store, 2)
+        try:
+            with pytest.raises(ValueError):
+                await store.update_payloads_by_ids(col, {_id(0): {"recordGroupIds": ["x"]}}, org_id=ORG, fence=fence)
+            assert _groups(await _held(store, col, 2)) == {("g0",)}
+        finally:
+            await store.delete_collection(col)
+
+    async def test_a_payload_that_names_the_fence_is_refused(self, store: Any) -> None:
+        col = await _seed(store, 2)
+        try:
+            with pytest.raises(ValueError):
+                await store.update_payloads_by_ids(col, {_id(0): {"recordGroupIds": ["x"], SCOPE_FENCE_FIELD: 0}}, org_id=ORG, fence=F(5))
+            held = await _held(store, col, 2)
+            assert _groups(held) == {("g0",)} and not any(SCOPE_FENCE_FIELD in p for p in held.values())
+        finally:
+            await store.delete_collection(col)
+
     async def test_without_a_fence_the_write_is_unconditional_and_leaves_the_label(self, store: Any) -> None:
         col = await _seed(store, 2)
         try:
@@ -175,6 +195,25 @@ class TestOpenSearch(_Fenced):
     def vector_service(self, opensearch_service: Any) -> Any:
         return opensearch_service
 
+    async def test_a_point_whose_scope_fields_cannot_be_written_does_not_take_the_fence(self, vector_service: Any) -> None:
+        store = vector_service
+        col = await _seed(store, 2)
+        try:
+            ids = [_id(0), _id(1)]
+            blocked = store.__dict__.setdefault("scope_blocked", set())
+            blocked.add(col)                                   # the index maps a scope field as something else
+            await store.update_payloads_by_ids(col, {ids[0]: {"pathIds": ["p"]}, ids[1]: {"recordGroupIds": ["plain"]}}, org_id=ORG, fence=F(10))
+            blocked.discard(col)
+            held = await _held(store, col, 2)
+            assert SCOPE_FENCE_FIELD not in held[ids[0]] and "pathIds" not in held[ids[0]]
+            assert held[ids[1]]["recordGroupIds"] == ["plain"] and _label(held[ids[1]]) == F(10)
+            # a later correct write, at a lower fence than the skipped one, still lands
+            await store.update_payloads_by_ids(col, {ids[0]: {"pathIds": ["p"]}}, org_id=ORG, fence=F(5))
+            held = await _held(store, col, 2)
+            assert held[ids[0]]["pathIds"] == ["p"] and _label(held[ids[0]]) == F(5)
+        finally:
+            await store.delete_collection(col)
+
     async def test_a_swap_is_fenced_too(self, vector_service: Any) -> None:
         store = vector_service
         col = make_collection("fenceswap")
@@ -205,3 +244,14 @@ class TestRedis(_Fenced):
     @pytest.fixture
     def vector_service(self, redis_service: Any) -> Any:
         return redis_service
+
+    async def test_a_stored_fence_that_is_not_a_number_is_an_error_and_the_point_is_left_alone(self, vector_service: Any) -> None:
+        store = vector_service
+        col = await _seed(store, 1)
+        try:
+            await store.client.hset(store._key(col, _id(0)), SCOPE_FENCE_FIELD, "garbage")
+            with pytest.raises(Exception, match="not a number"):
+                await store.update_payloads_by_ids(col, {_id(0): {"recordGroupIds": ["x"]}}, org_id=ORG, fence=F(5))
+            assert _groups(await _held(store, col, 1)) == {("g0",)}
+        finally:
+            await store.delete_collection(col)

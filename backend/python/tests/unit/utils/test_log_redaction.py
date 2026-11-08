@@ -2,6 +2,7 @@
 
 import ast
 import io
+import json
 import logging
 import logging.config
 import os
@@ -22,7 +23,9 @@ from app.utils.log_redaction import (
     redact_secrets_in_text,
 )
 from app.utils.logger import (
+    JsonFormatter,
     RedactingFormatter,
+    TextFormatter,
     create_logger,
     install_log_redaction,
 )
@@ -215,6 +218,10 @@ class TestLinearTime:
             "https://", "://", "https://h/?" + "=" * 900 + " ", "https://u:" + "p@" * 400 + " ",
             " ", "'", '"', "\\", "input_value=", "input_value=x, input_type",
             'File "', '  File "a", line 1, in f\n    token = x\n', '  File "a", line 1, in f\n', " |", "|" * 200 + "\n",
+            # Kept values (presence words, times, OAuth endpoint URLs); the URL units hold heads that would keep URLs too.
+            "token_url=https://", "tokenUrl:https://a/", "token_url:https://", "token_url='https://", "token_url='https://a' ",
+            "token_at=1 token_url=https://b ", "token_url=https://h/token_expires_at:1/", "token_url='https://a/tokenUrl:'",
+            "refresh_token=None", "has_token=true,", "token_expires_at=1:T", "exp_" * 30 + "token=1234567 ",
         ],
     )
     def test_pathological_shapes(self, unit: str) -> None:
@@ -235,6 +242,10 @@ class TestLinearTime:
             ('token\n  File "a", line 1, in ', "f", "\n    x"),
             ('  File "a", line 1, in f\n    ', "token=", ""),
             ('  File "a", line 1, in f\n    ', "a=token=", ""),
+            ("token_expires_at=", "1", ""),
+            ("token_url=https://h/", "a", ""),
+            ("token_url=https://h/?", "token=", ""),
+            ('  File "a", line 1, in f\n    token_url = \'', "https://", ""),
         ],
     )
     def test_one_long_run_after_a_trigger(self, prefix: str, fill: str, suffix: str) -> None:
@@ -427,6 +438,176 @@ class TestTracebackSourceLines:
 
         assert "    password = 'SENTINEL-local'" in text
         assert "SENTINEL-local" not in redact_secrets_in_text(text)
+
+
+_SECRET = "SENTINEL-f12"
+_OAUTH_CALLBACK = (
+    "OAuth token exchange completed for instance c-1 (connector_type: GMAIL). "
+    "Token details - has_access_token: True, has_refresh_token: True, token_type: Bearer, expires_in: 3599, "
+    "refresh_token_expires_in: 7776000, scope: openid email, has_id_token: False, uid: None, "
+    "created_at: 2026-11-08 10:00:00"
+)
+
+
+class TestNonSecretValues:
+    """Under a credential name, a value that says whether a credential exists,
+    when it expires, or where an OAuth endpoint is, is not a secret."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            _OAUTH_CALLBACK,
+            "Missing OAuth client credentials (client_id: True, client_secret: False).",
+            "delegated Graph client (tenant=common, access_token=present, refresh_token=missing, expires_at=1730000000)",
+            "refresh_token=None",
+            "access_token=MISSING",
+            "has_refresh_token=True",
+            "password_changed=False",
+            "token: undefined",
+            '"refresh_token": null',
+            '{"has_refresh_token": true}',
+            "token_expires_at=1730000000",
+            "refresh_token_expires_at=1730000000000",
+            "token_expires_at=1730000000.123",
+            "token_expires_at=2026-11-08T10:00:00+00:00",
+            "token_expires_at=2026-11-08 10:00:00",
+            "client_secret_expires_at=1762600000",
+            "refreshed_token_expires_at=1730000000",
+            "tokenIssuedAt: 1730000000",
+            "refresh_token_expires_in: 7776000",
+            "existing_token_expire_in_seconds=7776000",
+            "{'token_expires_at': '1730000000'}",
+            "token_url=https://oauth2.googleapis.com/token",
+            "token_uri: https://oauth2.googleapis.com/token",
+            "token_endpoint=https://h.example.com:8443/oauth/token",
+            "tokenEndpoint: https://h.example.com/oauth/token",
+            "authorization_url=https://accounts.google.com/o/oauth2/v2/auth",
+            "authorization_endpoint=https://h.example.com/authorize",
+            "TOKEN_URL=HTTPS://OAUTH2.GOOGLEAPIS.COM/TOKEN",
+            "{'tokenUrl': 'https://login.microsoftonline.com/common/oauth2/v2.0/token', 'clientId': 'abc'}",
+        ],
+    )
+    def test_value_that_describes_a_credential_is_kept(self, text: str) -> None:
+        assert redact_secrets_in_text(text) == text
+
+    def test_a_label_still_swallows_the_pair_after_it(self) -> None:
+        text = "Current credentials: access_token=MISSING, refresh_token=None"
+
+        assert redact_secrets_in_text(text) == f"Current credentials: {REDACTED}, refresh_token=None"
+
+    @pytest.mark.parametrize(
+        ("text", "secret"),
+        [
+            (f"refresh_token=1//0g{_SECRET}", _SECRET),
+            (f"{{'refresh_token': '1//0g{_SECRET}'}}", _SECRET),
+            (f'"refresh_token": "{_SECRET}"', _SECRET),
+            (f"has_token: Bearer {_SECRET}", _SECRET),
+            (f"client_secret: GOCSPX-{_SECRET}", _SECRET),
+            ("password=changeme", "changeme"),
+            # Presence words count only bare and whole.
+            ("refresh_token='None'", "None"),
+            ('"refresh_token": "null"', "null"),
+            ("refresh_token=b'None'", "None"),
+            (f"refresh_token=None_{_SECRET}", _SECRET),
+            (f"refresh_token=None.{_SECRET}", _SECRET),
+            (f"refresh_token=None-{_SECRET}", _SECRET),
+            (f"refresh_token=None:{_SECRET}", _SECRET),
+            (f"refresh_token=None/{_SECRET}", _SECRET),
+            (f"has_refresh_token=True{_SECRET}", _SECRET),
+            # A long number is a time only under a name that says so, after its last time word.
+            ("password=73915528", "73915528"),
+            ("token=1730000000", "1730000000"),
+            ("access_token=1730000000.5", "1730000000.5"),
+            ("token_in=12345678901", "12345678901"),
+            ("updated_password=73915528", "73915528"),
+            ("issued_token=84736251", "84736251"),
+            ("refreshed_token=1730000000", "1730000000"),
+            ("created_secret=1234-5678-9012", "1234-5678-9012"),
+            ("exp_token=73915528", "73915528"),
+            (f"token_expires_at={_SECRET}", _SECRET),
+            (f"token_expires_at=1730000000{_SECRET}", _SECRET),
+            # A URL is kept only under an OAuth endpoint name, as http(s) scheme, host and path.
+            (f"token_url=https://h.example.com/t?refresh_token={_SECRET}", _SECRET),
+            (f"token_url=https://h.example.com/t?auth={_SECRET}", _SECRET),
+            (f"token_url=https://h.example.com/t?jwt={_SECRET}", _SECRET),
+            (f"token_url=https://h.example.com/t#access_token={_SECRET}", _SECRET),
+            (f"token_url=https://app:{_SECRET}@h.example.com/t", _SECRET),
+            (f"token_url=https://h.example.com/t%3Ftoken%3D{_SECRET}", _SECRET),
+            (f"token_url='https://h.example.com/t?x={_SECRET}'", _SECRET),
+            (f"token_url=/x/{_SECRET}", _SECRET),
+            (f"token_url=redis://{_SECRET}", _SECRET),
+            (f"token_url=x://{_SECRET}", _SECRET),
+            (f"token_url={_SECRET}://h", _SECRET),
+            (f"token_url=javascript://{_SECRET}/x", _SECRET),
+            (f"secret_url=https://hooks.slack.com/services/T/B/{_SECRET}", _SECRET),
+            (f"password_reset_url=https://app.example.com/reset/{_SECRET}", _SECRET),
+            (f"api_key_url=https://h.example.com/k/{_SECRET}", _SECRET),
+            (f"webhook_secret_url=https://h.example.com/{_SECRET}", _SECRET),
+            (f"reset_token_url=https://app.example.com/reset/{_SECRET}", _SECRET),
+            (f"webhook_token_url=https://hooks.slack.com/services/T/B/{_SECRET}", _SECRET),
+            (f"slack_token_endpoint=https://h.example.com/{_SECRET}", _SECRET),
+            (f"secret_token_url=https://h.example.com/{_SECRET}", _SECRET),
+            (f"token_url_secret=https://h.example.com/{_SECRET}", _SECRET),
+            (f"oauth.tokenUrl=https://h.example.com/{_SECRET}", _SECRET),
+            (f"connection_string=postgresql://app:{_SECRET}@db/x", _SECRET),
+            # The later passes, and the pair rule itself, still apply inside a kept URL.
+            ("token_url=https://h.example.com/sk-proj-SENTINELabcdefghijklmnop/t", "sk-proj-SENTINELabcdefghijklmnop"),
+            (f"token_url=https://h.example.com/{JWT}", JWT),
+            (f"token_url=https://h.example.com/password:{_SECRET}", _SECRET),
+            (f"token_url=https://h.example.com/t,client_secret={_SECRET}", _SECRET),
+            (f"token_url=https://h.example.com/t;client_secret={_SECRET}", _SECRET),
+            (f"token_url=https://h.example.com/t,client_secret={_SECRET}&x=1", _SECRET),
+            # The characters of _PUBLIC_URL's class that a secret can hide behind, one per row: dropping one must fail its row.
+            (f"token_url=https://{_SECRET}@h/t", _SECRET),
+            (f"token_url=https://h/t#{_SECRET}", _SECRET),
+            (f"token_url=https://h/t%3Fauth%3D{_SECRET}", _SECRET),
+            (f'{{"token_url": "https://h/t?auth={_SECRET}"}}', _SECRET),
+            (f"token_url=https://h/t/auth={_SECRET}", _SECRET),
+            (f"token_url=https://h/t?{_SECRET}", _SECRET),
+            (f"token_url=https://h/t\\x3fauth\\x3d{_SECRET}", _SECRET),      # an escaped query
+            # The endpoint names are exact: a refresh or access token's own URL can hold the token.
+            (f"refresh_token_url=https://h/{_SECRET}", _SECRET),
+            (f"access_token_url=https://h/{_SECRET}", _SECRET),
+        ],
+    )
+    def test_credential_is_still_masked(self, text: str, secret: str) -> None:
+        out = redact_secrets_in_text(text)
+
+        assert secret not in out
+        assert "REDACTED" in out
+
+    @pytest.mark.parametrize(
+        "source", ['token_url = "https://oauth2.googleapis.com/token"', 'refresh_token_expires_in = "7776000"'],
+    )
+    def test_source_line_literal_is_kept(self, source: str) -> None:
+        text = f"{_TB_HEAD}    {source}\nRuntimeError: refresh failed"
+
+        assert redact_secrets_in_text(text) == text
+
+    @pytest.mark.parametrize(("source", "secret"), [('updated_password = "73915528"', "73915528"), ('password = "None"', "None")])
+    def test_source_line_literal_is_still_masked(self, source: str, secret: str) -> None:
+        out = redact_secrets_in_text(f"{_TB_HEAD}    {source}\nRuntimeError: refresh failed")
+
+        assert secret not in out
+        assert REDACTED in out
+
+    def test_text_and_json_lines_keep_the_description_and_mask_the_token(self) -> None:
+        record = _record(f"{_OAUTH_CALLBACK}, refresh_token={_SECRET}")
+
+        text = TextFormatter("%(message)s").format(record)
+        message = json.loads(JsonFormatter().format(record))["message"]
+
+        for out in (text, message):
+            assert out == f"{_OAUTH_CALLBACK}, refresh_token={REDACTED}"
+
+    def test_text_fields_keep_booleans_and_times(self) -> None:
+        record = _record("oauth.callback")
+        record.has_refresh_token = True
+        record.token_expires_at = 1730000000
+
+        out = TextFormatter("%(message)s").format(record)
+
+        assert out == "oauth.callback | has_refresh_token=true token_expires_at=1730000000"
 
 
 class TestPydanticValidationErrors:

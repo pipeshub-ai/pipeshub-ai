@@ -292,8 +292,8 @@ class IVectorDBService(ABC):
 
     async def update_payloads_by_ids(self, collection_name: str, updates: Mapping[str, dict], *, org_id: str, **extra: object) -> None:
         """``update_payload_by_ids`` with a payload of its own for each point: the points that share a payload are written together here;
-        a store that can take different payloads in one request overrides this. ``extra`` is passed on (pgvector's ``computed_at``,
-        ``fence`` where ``generation_fence``)."""
+        a store that can take different payloads in one request overrides this (the groups are separate requests: the default is not atomic
+        across them). ``extra`` is passed on (pgvector's ``computed_at``, ``fence`` where ``generation_fence``)."""
         by_payload: dict[str, list[str]] = {}
         for point_id, payload in updates.items():
             by_payload.setdefault(json.dumps(payload, sort_keys=True), []).append(point_id)

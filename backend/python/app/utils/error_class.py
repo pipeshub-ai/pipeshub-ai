@@ -155,6 +155,13 @@ def _prior_level(exc: BaseException) -> int | None:
     return max(levels) if levels else None
 
 
+def logged_level(exc: BaseException) -> int | None:
+    """The highest level :func:`log_failure` already wrote ``exc``, or an exception it was raised
+    ``from``, at; None if never. For a per-unit line that must not be demoted when several units
+    fail with one shared exception."""
+    return _prior_level(exc)
+
+
 _CAUSE_SEPARATOR = "\nThe above exception was the direct cause of the following exception:\n\n"
 _CONTEXT_SEPARATOR = "\nDuring handling of the above exception, another exception occurred:\n\n"
 

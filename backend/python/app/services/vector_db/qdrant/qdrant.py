@@ -45,10 +45,11 @@ from qdrant_client.http.models import (  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
-from app.services.permissions.scope_fields import SCOPE_FENCE_FIELD
+from app.services.permissions.scope_fields import SCOPE_FENCE_FIELD, checked_fence
 from app.services.vector_db.errors import OrgRequired
 from app.services.vector_db.filters import (
     forbid_org_in_payload,
+    forbid_fence_in_payload,
     is_missing,
     keep_org_in_overwrite,
     require_filter_org,
@@ -1008,14 +1009,17 @@ class QdrantService(IVectorDBService):
         if fence is None:
             await super().update_payloads_by_ids(collection_name, updates, org_id=org_id, **extra)
             return
+        fence = checked_fence(fence)
         self._assert_connected()
         if is_missing(org_id):
             raise OrgRequired("update_payload_by_ids needs the org of the points")
         for payload in updates.values():
             forbid_org_in_payload(payload)
+            forbid_fence_in_payload(payload)
         if not updates:
             return
-        # shortcut: Range takes a float, exact below 2**53 (a generation in microseconds is about 2**51); upgrade if fences grow past it
+        # shortcut: a stored scopeFence that is not a number passes this filter (must_not on a Range matches a string), so it is overwritten;
+        # only this path writes the field, so it is always a number. Upgrade if another writer may set it: read the points first and refuse.
         newer = QdrantFieldCondition(key=SCOPE_FENCE_FIELD, range=Range(gt=int(fence)))
         await self.client.batch_update_points(  # type: ignore
             collection_name=collection_name,
