@@ -428,12 +428,12 @@ class Apps:
         self.sharers = [{"_key": f"r-{n}", "connectorId": n} for n in names]
         self.read_error = False
 
-    async def get_nodes_by_field_in(self, collection, field, values, **kw):  # noqa: ANN001, ANN003
+    async def get_nodes_by_field_in(self, collection, field, values, **kw) -> list[dict]:
         if self.read_error:
             raise RuntimeError("graph down")
         return self.sharers
 
-    async def increment_node_field(self, key, collection, field, transaction=None):  # noqa: ANN001
+    async def increment_node_field(self, key, collection, field, transaction=None) -> int | None:
         how = self.fail.get((key, field))
         if how == "raise":
             raise RuntimeError("write failed")
@@ -442,16 +442,16 @@ class Apps:
         self.docs[key][field] = int(self.docs[key].get(field) or 0) + 1
         return self.docs[key][field]
 
-    async def get_document(self, key, collection, **kw):  # noqa: ANN001, ANN003
+    async def get_document(self, key, collection, **kw) -> dict:
         return dict(self.docs[key])
 
-    async def update_node_fields_if_match(self, key, collection, updates, expected, transaction=None):  # noqa: ANN001
+    async def update_node_fields_if_match(self, key, collection, updates, expected, transaction=None) -> bool:
         if any((self.docs[key].get(f) or None) != v for f, v in expected.items()):
             return False
         self.docs[key].update(updates)
         return True
 
-    async def get_org_apps(self, org, **kw):  # noqa: ANN001, ANN003
+    async def get_org_apps(self, org, **kw) -> list[dict]:
         if self.apps_error:
             raise RuntimeError("cannot list")
         return [{"_key": n} for n in self.docs]
