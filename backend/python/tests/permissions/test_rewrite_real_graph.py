@@ -1,4 +1,3 @@
-# ruff: noqa: F811
 """The rewrite on a real graph (Neo4j and ArangoDB): the page that moved under a restricted parent is rewritten from the real subtree query,
 the real membership read and the real projector; the roots come off by a real compare-and-set; and the result equals what a fresh back-fill
 of the same graph writes. Needs the stores of the graph-permissions harness (`KH_PERM_*`).
@@ -22,10 +21,14 @@ from app.services.vector_db.scope_backfill import DONE, ScopeBackfill
 from app.services.vector_db.scope_rewrite import PENDING_KEY, ScopeRewriteJob
 from tests.integration.graph_permissions.processor_harness import build_processor
 from tests.integration.graph_permissions.test_write_path import _group, _record
-from tests.integration.graph_permissions.write_path_support import ORG, _seed_app, _suffix
+from tests.integration.graph_permissions.write_path_support import (
+    ORG,
+    _seed_app,
+    _suffix,
+)
 from tests.integration.vector_db.helpers import make_collection_config, make_dense
 from tests.permissions.rewrite_kit import FencedMemoryVectorDB
-from tests.permissions.test_generation_paths import backend  # noqa: F401
+from tests.permissions.test_generation_paths import backend
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(600)]
 OTHER_ORG = "cd" * 12

@@ -1,4 +1,3 @@
-# ruff: noqa: ANN401
 """A structural change through the rewrite job, held to the oracle.
 
 `Env` loads a world as points (any `IVectorDBService`), stamps it with the real back-fill, then `change` moves the graph to the world after a
@@ -14,6 +13,7 @@ mutation and registers the roots the sync transaction would (the generation move
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import random
 from dataclasses import dataclass, field, replace
@@ -27,9 +27,17 @@ from app.services.permissions.scope_fields import (
     Stamp,
     current_scope_generation,
 )
-from app.services.permissions.structure_generation import GENERATION_KEY, PENDING_KEY, register_pending_roots
+from app.services.permissions.structure_generation import (
+    GENERATION_KEY,
+    PENDING_KEY,
+    register_pending_roots,
+)
 from app.services.vector_db import scope_expr as sx
-from app.services.vector_db.const.const import PAYLOAD_KEYWORD_INDEXES, SCOPE_INTEGER_INDEXES, SCOPE_KEYWORD_INDEXES
+from app.services.vector_db.const.const import (
+    PAYLOAD_KEYWORD_INDEXES,
+    SCOPE_INTEGER_INDEXES,
+    SCOPE_KEYWORD_INDEXES,
+)
 from app.services.vector_db.filters import ScopeFilter, ScopeFilterUnsupported
 from app.services.vector_db.models import (
     FieldCondition,
@@ -243,9 +251,8 @@ class Env:
             out.append(f"stored fields differ from the projection of the graph: {wrong[:5]}")
         for v, pids in self.loaded.points.items():
             groups = sorted({g for r in self.loaded.records[v] for g in self.graph.stamps.node_map[r].groups})
-            for p in await self.vdb.retrieve_points(self.loaded.collection, pids):
-                if sorted(p.payload.get("recordGroupIds") or []) != groups:
-                    out.append(f"{v}: recordGroupIds {p.payload.get('recordGroupIds')} != {groups}")
+            out += [f"{v}: recordGroupIds {p.payload.get('recordGroupIds')} != {groups}"
+                    for p in await self.vdb.retrieve_points(self.loaded.collection, pids) if sorted(p.payload.get("recordGroupIds") or []) != groups]
         return out
 
     async def audit(self, into: Log, *, exact: bool = True) -> None:
@@ -462,10 +469,8 @@ async def held_up_writer(env: Env, layer: str, monkeypatch: Any) -> None:
     if layer == "store_fence":
         env.before_write = hold
     Tap(env, at_the_door, after)
-    try:
+    with contextlib.suppress(RewriteIncomplete):      # (a writer that is refused ends incomplete: fine)
         await env.job.run_connector(ORG, PREFIX + "app")
-    except RewriteIncomplete:
-        pass          # (a writer that is refused ends incomplete: fine)
     env.before_write = None
     assert held["done"] and not seen.leaks and not seen.pending_admits
     await env.settle()

@@ -168,7 +168,9 @@ class ScopeBackfill:
         self._graph, self._vdb, self._locator, self._log = graph_provider, vector_db, locator, logger
         self._page_size = page_size
         self._checkpoints = AppDocCheckpoints(graph_provider)
-        from app.services.vector_db.scope_rewrite import ScopeRewriteJob  # (it imports this module)
+        from app.services.vector_db.scope_rewrite import (
+            ScopeRewriteJob,  # (it imports this module)
+        )
 
         self._membership = ScopeRewriteJob(graph_provider, vector_db, locator, logger=logger)
 

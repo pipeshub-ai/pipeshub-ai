@@ -12,7 +12,11 @@ from typing import Any
 import pytest
 
 from app.services.permissions.pending import parse
-from app.services.permissions.structure_generation import GENERATION_KEY, OPENED_KEY, UNSAFE_KEY
+from app.services.permissions.structure_generation import (
+    GENERATION_KEY,
+    OPENED_KEY,
+    UNSAFE_KEY,
+)
 from app.services.vector_db import membership, scope_rewrite
 from app.services.vector_db.models import VectorPoint
 from app.services.vector_db.scope_backfill import (

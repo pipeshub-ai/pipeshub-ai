@@ -1,3 +1,4 @@
+# ruff: noqa: F811, ANN201, ANN202
 """The scope rewrite against each real vector store: Qdrant, OpenSearch, Redis and pgvector. The graph is the in-memory world of the permission
 kit; the points are real. For scenarios of every combining rule:
 

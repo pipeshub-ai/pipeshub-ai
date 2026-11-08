@@ -1,3 +1,4 @@
+# ruff: noqa: ANN401, ANN201
 """A rewrite never takes a pending root off after skipping part of its work, wherever the skip is. Each case breaks one step: the run raises
 `RewriteIncomplete`, the root stays pending and hidden, nothing is admitted wrongly meanwhile, and the next run, with the step working, ends exact
 (a hidden subtree is visible again).
