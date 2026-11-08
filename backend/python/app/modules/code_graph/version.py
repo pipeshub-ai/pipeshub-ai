@@ -1,6 +1,6 @@
 """What version of the code graph a block or a build was made by (O-10).
 
-Two versions, because the two kinds of change cost differently:
+Three versions, because the kinds of change cost differently:
 
 - PARSER_VERSION: what parsing and projection put in blocks and blobs (a new
   fact, a renamed symbol, a new field). Blocks carry it as ``parserVersion``
@@ -9,13 +9,16 @@ Two versions, because the two kinds of change cost differently:
 - EDGE_RULES_VERSION: how stored facts resolve to edges. A repo whose last
   full edge build ran under another one gets a full edge rebuild from its
   stored blocks and blobs -- no re-index, no LLM.
+- EMBED_UNITS_VERSION: what a code record embeds besides its blocks. Folded
+  into code groups' content hashes, so a reconcile re-embeds only classes; the
+  class-units backfill adds the units to records indexed before them.
 
-Both were one CODE_GRAPH_VERSION up to 2026.10.19; values stored under it are
+The first two were one CODE_GRAPH_VERSION up to 2026.10.19; values stored under it are
 plain strings compared for equality, so nothing old fails to load.
 """
 from __future__ import annotations
 
-__all__ = ["EDGE_RULES_VERSION", "PARSER_VERSION"]
+__all__ = ["EDGE_RULES_VERSION", "EMBED_UNITS_VERSION", "PARSER_VERSION"]
 
 # 2026.10.17: owner-qualified Go/C++ methods, name-matched calls for more
 # languages, JSX/require/decorator/annotation facts, nameFolded.
@@ -46,3 +49,8 @@ PARSER_VERSION = "2026.11.24"
 # 2026.11.21: Python import scoping, star re-exports, function-local imports as the file's, scoped receivers.
 # 2026.11.24: blocks carry externalRefs, the library calls they make (`requests:get`).
 EDGE_RULES_VERSION = "2026.11.24"
+
+# What a code record embeds besides its blocks (class header units, the residue unit). It is folded into code
+# groups' content hashes only, so a bump re-indexes each class while unchanged blocks keep their vectors.
+# 2026.11.25: class header units and one residue unit per code file.
+EMBED_UNITS_VERSION = "2026.11.25"
