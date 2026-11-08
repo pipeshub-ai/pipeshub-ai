@@ -1277,6 +1277,7 @@ class EventProcessor:
         attached_vrid: str | None,
     ) -> None:
         """Best effort: the event is already failing, and its retry redoes the attach."""
+        restored = False
         try:
             current = await self.graph_provider.get_document(
                 record_key, CollectionNames.RECORDS.value, raise_on_error=True
@@ -1298,14 +1299,22 @@ class EventProcessor:
             if not restored:
                 raise IndexingError("record no longer exists")
         except Exception as e:
+            if not restored:
+                self.logger.error(
+                    "Could not restore the previous content identity of %s after a failed "
+                    "duplicate attach; it may still hold VRID %s until its retry: %s",
+                    record_key,
+                    attached_vrid,
+                    e,
+                )
+                return
+            # The identity is back and only the fence failed, which leaves the connector not current: the re-sync is still owed.
             self.logger.error(
-                "Could not restore the previous content identity of %s after a failed "
-                "duplicate attach; it may still hold VRID %s until its retry: %s",
+                "Restored the previous content identity of %s, but could not register the "
+                "records still sharing its VRID: %s",
                 record_key,
-                attached_vrid,
                 e,
             )
-            return
         if not attached_vrid:
             return
         try:

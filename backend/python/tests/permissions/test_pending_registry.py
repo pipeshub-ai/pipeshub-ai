@@ -620,3 +620,21 @@ async def test_restoring_the_prior_identity_after_a_failed_attach_fences_the_rec
     ep.graph_provider = g2
     await ep._restore_identity_after_failed_attach("me", {"contentRev": "x"}, None)        # no change of virtual record: nothing to fence
     assert PENDING_KEY not in g2.docs["A"] and OPENED_KEY not in g2.docs["A"]
+
+
+@pytest.mark.parametrize(("restore_lands", "resynced"), [(True, True), (False, False)])
+async def test_a_fence_that_fails_after_the_restore_still_resyncs_only_if_the_restore_landed(monkeypatch, restore_lands, resynced) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.events.events import EventProcessor
+    from app.services.permissions import structure_generation
+
+    monkeypatch.setattr(structure_generation, "register_pending_roots", AsyncMock(side_effect=RuntimeError("down")))
+    g = Apps("A")
+    g.update_ok = restore_lands
+    ep = object.__new__(EventProcessor)
+    ep.graph_provider, ep.logger, ep.sync_vector_membership = g, MagicMock(), AsyncMock()
+    await ep._restore_identity_after_failed_attach("me", {"virtualRecordId": "prior"}, "attached")
+    assert ep.sync_vector_membership.await_count == int(resynced)
+    said = ep.logger.error.call_args.args[0]
+    assert said.startswith("Restored") == restore_lands and said.startswith("Could not restore") != restore_lands
