@@ -235,7 +235,15 @@ def redact_secrets_in_text(text: str) -> str:
 URL_PATTERN = re.compile(r"https?://\S+")
 # OpenAI-style organization/project/account ids (org-abc123, proj_x9...). A digit is required and
 # `.py`/`(` must not follow, so our own names (org_context.py, org_id_hash, account_service.get) survive.
-PROVIDER_ACCOUNT_ID_PATTERN = re.compile(r"\b(?:org|proj|acct|account)[-_](?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{4,}\b(?!\.py|\()")
+# The digit is checked in `_mask_provider_account_id`: a lookahead here would rescan the rest of the
+# token at every `org-` in it, which is quadratic.
+PROVIDER_ACCOUNT_ID_PATTERN = re.compile(r"\b(?:org|proj|acct|account)[-_][A-Za-z0-9_-]{4,}\b(?!\.py|\()")
+_DIGIT_AHEAD = re.compile(r"[A-Za-z0-9_-]*\d")
+
+
+def _mask_provider_account_id(match: re.Match[str]) -> str:
+    # From the match start, as the prefix has no digit; the digit may sit past where `(?!\.py|\()` ended the match.
+    return "[redacted]" if _DIGIT_AHEAD.match(match.string, match.start()) else match.group()
 
 
 def redact_error_for_log(error_msg: str, max_len: int = 1000) -> str:
@@ -245,7 +253,7 @@ def redact_error_for_log(error_msg: str, max_len: int = 1000) -> str:
     a credential (Google's REST endpoints accept `?key=`), or a request header.
     """
     text = URL_PATTERN.sub("[url]", error_msg)
-    text = PROVIDER_ACCOUNT_ID_PATTERN.sub("[redacted]", text)
+    text = PROVIDER_ACCOUNT_ID_PATTERN.sub(_mask_provider_account_id, text)
     return redact_secrets_in_text(text)[:max_len]
 
 # `input` is the rejected value itself and `ctx` can quote it back.

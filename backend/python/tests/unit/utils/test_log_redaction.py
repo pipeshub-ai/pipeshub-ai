@@ -178,17 +178,17 @@ class TestLinearTime:
         return (unit * (size // len(unit) + 1))[:size]
 
     @staticmethod
-    def _best_of_three(text: str) -> float:
+    def _best_of_three(text: str, redact: Callable[[str], str]) -> float:
         best = float("inf")
         for _ in range(3):
             start = time.thread_time()
-            redact_secrets_in_text(text)
+            redact(text)
             best = min(best, time.thread_time() - start)
         return best
 
-    def _assert_linear(self, make: Callable[[int], str]) -> None:
-        small = self._best_of_three(make(self.SMALL))
-        large = self._best_of_three(make(self.LARGE))
+    def _assert_linear(self, make: Callable[[int], str], redact: Callable[[str], str] = redact_secrets_in_text) -> None:
+        small = self._best_of_three(make(self.SMALL), redact)
+        large = self._best_of_three(make(self.LARGE), redact)
         assert large < self.MAX_GROWTH * small + self.SLACK_SECONDS, (
             f"{self.SMALL} chars took {small:.4f}s, {self.LARGE} chars {large:.4f}s"
         )
@@ -197,6 +197,13 @@ class TestLinearTime:
         text = "a" * self.LARGE
         assert redact_secrets_in_text(text) == text
         self._assert_linear(lambda n: "a" * n)
+
+    @pytest.mark.parametrize(
+        ("prefix", "unit"),
+        [("", "org-"), ("", "org-a"), ("", "org_"), ("", "proj-a_b-"), ("", "org-aaaa-org_("), ("org-", "a")],
+    )
+    def test_account_id_shapes_in_error_text(self, prefix: str, unit: str) -> None:
+        self._assert_linear(lambda n: prefix + self._repeat(unit, n), log_redaction.redact_error_for_log)
 
     @pytest.mark.parametrize(
         "unit",
@@ -396,6 +403,11 @@ class TestRedactErrorForLog:
         "KeyError: org_id_hash",
         "org_context_missing site=x",
         "account_service.get_user failed",
+        "org-abcdef failed",
+        "org_context1.py",
+        "org-a1b2(x)",
+        "proj_" + "a" * 20,
+        "org-abcd\u0663",
     ])
     def test_our_own_names_survive(self, ours: str) -> None:
         from app.utils.log_redaction import redact_error_for_log
@@ -407,6 +419,17 @@ class TestRedactErrorForLog:
         from app.utils.log_redaction import redact_error_for_log
 
         assert redact_error_for_log(f"quota for {provider_id} exceeded") == "quota for [redacted] exceeded"
+
+    @pytest.mark.parametrize(("text", "expected"), [
+        # The digit counts even past where `(?!\.py|\()` ends the match.
+        ("org-abcd-1(", "[redacted]1("),
+        ("account-x-org-1234", "[redacted]"),
+        ("org-aaaa-org_x1 org-bbbb", "[redacted] org-bbbb"),
+    ])
+    def test_digit_anywhere_in_the_id_masks_it(self, text: str, expected: str) -> None:
+        from app.utils.log_redaction import redact_error_for_log
+
+        assert redact_error_for_log(text) == expected
 
     def test_urls_and_keys_masked_and_capped(self) -> None:
         from app.utils.log_redaction import redact_error_for_log
