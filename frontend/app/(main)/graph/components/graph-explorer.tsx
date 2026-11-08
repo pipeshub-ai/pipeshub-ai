@@ -43,6 +43,8 @@ export function GraphExplorer() {
   const [searchFocus, setSearchFocus] = useState(0);
   const [hover, setHover] = useState<{ id: NodeId; x: number; y: number } | null>(null);
   const [waiting, setWaiting] = useState(false);
+  /** Bumped when a followed Back or Forward has finished, so the address is looked at again once `following` is clear. */
+  const [followed, setFollowed] = useState(0);
   const [announcement, setAnnouncement] = useState('');
   const main = useRef<HTMLDivElement>(null);
   /** A link named where to start and it has not resolved yet: its parameters stay in the address bar until it does. */
@@ -52,6 +54,8 @@ export function GraphExplorer() {
   /** The addresses this page wrote that the router has not shown back yet. The router applies a write a moment later,
    * and that late arrival must never read as a Back or Forward. */
   const written = useRef<string[]>([]);
+  /** The browser landed on an entry and the page followed it: the entry already is the visit, so its address is corrected in place, never pushed. */
+  const fromBrowser = useRef(false);
   const repoScope = useMemo(() => parseRepoScope(params), []);
   const host = useRef<HTMLDivElement>(null);
   const canvasBox = useRef<HTMLDivElement>(null);
@@ -91,17 +95,20 @@ export function GraphExplorer() {
       else return;
     }
     // The address leads while the view is catching up with Back or Forward: a filter finishing then must not write the old node back.
-    if (!started.current || following.current || moving || next === params.toString()) return;
+    if (!started.current || following.current || moving) return;
+    const followedBrowser = fromBrowser.current;
+    fromBrowser.current = false;
+    if (next === params.toString()) return;
     const url = next ? `${pathname}?${next}` : pathname;
     written.current.push(next);
     const shown = parseGraphUrl(params).node;
     const shownAt = parseTrailPosition(params);
-    // Moving to another place on the trail is a step the browser's Back can undo; the first centre, a rewritten entry
-    // link and a filter change replace the entry instead.
+    // Moving to another place on the trail from the page is a step the browser's Back can undo; the first centre, a
+    // rewritten entry link, a filter change and the entry a Back or Forward just landed on replace the entry instead.
     const moved = store.node !== shown || (shownAt !== undefined && shownAt !== store.trailIndex);
-    if (shown && store.node && moved) router.push(url, { scroll: false });
+    if (shown && store.node && moved && !followedBrowser) router.push(url, { scroll: false });
     else router.replace(url, { scroll: false });
-  }, [store.node, store.trailIndex, store.direction, store.edgeTypes, store.includeTests, failure, moving]);
+  }, [store.node, store.trailIndex, store.direction, store.edgeTypes, store.includeTests, failure, moving, followed]);
 
   // The browser's Back and Forward change the address: follow it to the place on the trail it names.
   const search = params.toString();
@@ -116,11 +123,15 @@ export function GraphExplorer() {
       return;
     }
     if (!started.current || entryPending.current || !urlNode) return;
-    if (urlNode === now.node && (urlAt === undefined || urlAt === now.trailIndex)) return;
     const move = `${urlNode}@${urlAt}`;
+    if (following.current === move) return; // already on its way
+    // The view matching the address means nothing while an earlier move is still loading: it is about to leave it.
+    if (!following.current && urlNode === now.node && (urlAt === undefined || urlAt === now.trailIndex)) return;
     following.current = move;
+    fromBrowser.current = true;
     void controller.follow(urlNode, urlAt).finally(() => {
       if (following.current === move) following.current = null;
+      setFollowed((n) => n + 1);
     });
   }, [search]);
 

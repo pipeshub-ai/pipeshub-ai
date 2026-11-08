@@ -118,6 +118,20 @@ test.describe('paging, table and trail', () => {
     await expect.poll(() => urlParams(page).get('node')).toBe(trail[2]);
     await idle(page);
     await expect(page.getByRole('row').filter({ hasText: 'Centre' })).toBeVisible();
+    // The entry the browser landed on is the visit: its address is corrected in place, with no new entry on top of it.
+    await expect.poll(() => urlParams(page).get('at')).toBe('1');
+    expect(await page.evaluate(() => history.length)).toBe(entries + 1);
+    // Nothing was pushed over the entry we came back to, so Forward still reaches the node the skip landed on.
+    await page.goForward();
+    await expect.poll(() => urlParams(page).get('node')).toBe(first);
+    await page.goBack();
+    await expect.poll(() => urlParams(page).get('node')).toBe(trail[2]);
+    await idle(page);
+    // Back past the skip: the skipped node is gone, so the centre stays, and still nothing is pushed.
+    await page.goBack();
+    await idle(page);
+    await expect.poll(() => urlParams(page).get('node')).toBe(trail[2]);
+    expect(await page.evaluate(() => history.length)).toBe(entries + 1);
   });
 
   test('the Callers filter shows only callers and re-opens the view; a failed re-open puts the filter back', async ({ page }) => {
