@@ -86,14 +86,14 @@ class OrganizationsMixin(IdentityMixin):
 
     async def get_organization_record_reach(self, org_id: str, keys: list[str], transaction: str | None = None, *,
                                             record_cap: int | None = None) -> dict[str, dict[str, Any]]:
-        """For each of ``keys`` that is an external organisation of ``org_id``: how many EXTRACTED edges from live records of the org name it (one per record:
-        MENTIONS is the only extracted type), counted up to ``record_cap``, and whether a connector knows it (an INFERRED edge from a live record, or a
+        """For each of ``keys`` that is an external organisation of ``org_id``: how many live records of the org name it over an EXTRACTED edge (each record
+        once, even with edges of two types to it), counted up to ``record_cap``, and whether a connector knows it (an INFERRED edge from a live record, or a
         ``dealOf``/``prospect``/``customer`` edge to it)."""
         wanted = sorted({k for k in keys if k})
         if not org_id or not wanted or not self._mine(org_id):
             return {}
         rows = await self._id_rows("""/* pipeshub:graph.get_organization_record_reach */ SELECT o.id,
-              (SELECT count(*) FROM (SELECT 1 FROM graph.edges e JOIN graph.nodes r ON r.org_id = e.org_id AND r.coll = 'records' AND r.id = e.from_id
+              (SELECT count(*) FROM (SELECT DISTINCT r.id FROM graph.edges e JOIN graph.nodes r ON r.org_id = e.org_id AND r.coll = 'records' AND r.id = e.from_id
                  WHERE e.org_id = $1 AND e.coll = 'entityRelations' AND e.from_coll = 'records' AND e.to_coll = 'organizations' AND e.to_id = o.id
                    AND coalesce(e.doc->>'origin', $5) = $6 AND r.doc->>'orgId' = $2 AND coalesce((r.doc->>'isDeleted')::boolean, false) = false LIMIT $4) c) AS records,
               EXISTS (SELECT 1 FROM graph.edges e JOIN graph.nodes r ON r.org_id = e.org_id AND r.coll = 'records' AND r.id = e.from_id

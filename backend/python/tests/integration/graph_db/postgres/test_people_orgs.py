@@ -497,6 +497,8 @@ async def test_reach_counts_live_records_naming_it_and_whether_a_connector_knows
     await w.nodes("records", rec("r4"), rec("r5"))
     await relate(w, ("records", "r4"), ("organizations", "named"), "MENTIONS", origin="EXTRACTED")
     assert (await w.p.get_organization_record_reach(w.org, ["named"]))["named"]["records"] == 2
+    await relate(w, ("records", "r4"), ("organizations", "named"), "FOR_ACCOUNT", origin="EXTRACTED")     # a second extracted type: still one record
+    assert (await w.p.get_organization_record_reach(w.org, ["named"]))["named"]["records"] == 2
     await relate(w, ("records", "r5"), ("organizations", "named"), "MENTIONS", origin="EXTRACTED")
     assert await w.p.get_organization_record_reach(w.org, ["named"], record_cap=2) == {"named": {"records": 2, "inferred": False}}
     assert (await w.p.get_organization_record_reach(w.org, ["named"], record_cap=0))["named"]["records"] == 1      # a cap is at least one
