@@ -664,7 +664,8 @@ class TestGitHubTeamsIssues:
             )
             # assignee_source_id is written but never hydrated back (see
             # _TICKET_UNHYDRATED), so the observable consequence is asserted instead:
-            # exactly one ASSIGNED_TO edge, built from the primary assignee's email.
+            # one ASSIGNED_TO edge per assignee. The record's people links resolve
+            # each id to a member, or to a person node for someone who is not one.
             expected_email = emails.get(str(assignees[0]["id"]))
             assert record.assignee_email == expected_email, (
                 "assignee_email must be the PRIMARY assignee's or None — never borrowed "
@@ -675,8 +676,9 @@ class TestGitHubTeamsIssues:
             assigned = await graph_provider.get_record_outgoing_entity_relations(
                 connector_id, multi_external, "ASSIGNED_TO",
             )
-            assert len(assigned) <= 1, (
-                f"expected at most one ASSIGNED_TO edge (single-valued assignee_email), "
+            assignee_ids = {str(a["id"]) for a in assignees if a.get("id") is not None}
+            assert len(assigned) == len(set(assigned)) == len(assignee_ids), (
+                f"expected one ASSIGNED_TO edge per assignee ({len(assignee_ids)}), "
                 f"got {assigned!r}"
             )
             if expected_email:
