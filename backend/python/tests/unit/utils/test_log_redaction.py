@@ -557,6 +557,17 @@ class TestNonSecretValues:
             (f"token_url=https://h.example.com/t,client_secret={_SECRET}", _SECRET),
             (f"token_url=https://h.example.com/t;client_secret={_SECRET}", _SECRET),
             (f"token_url=https://h.example.com/t,client_secret={_SECRET}&x=1", _SECRET),
+            # The characters of _PUBLIC_URL's class that a secret can hide behind, one per row: dropping one must fail its row.
+            (f"token_url=https://{_SECRET}@h/t", _SECRET),
+            (f"token_url=https://h/t#{_SECRET}", _SECRET),
+            (f"token_url=https://h/t%3Fauth%3D{_SECRET}", _SECRET),
+            (f'{{"token_url": "https://h/t?auth={_SECRET}"}}', _SECRET),
+            (f"token_url=https://h/t/auth={_SECRET}", _SECRET),
+            (f"token_url=https://h/t?{_SECRET}", _SECRET),
+            (f"token_url=https://h/t\\x3fauth\\x3d{_SECRET}", _SECRET),      # an escaped query
+            # The endpoint names are exact: a refresh or access token's own URL can hold the token.
+            (f"refresh_token_url=https://h/{_SECRET}", _SECRET),
+            (f"access_token_url=https://h/{_SECRET}", _SECRET),
         ],
     )
     def test_credential_is_still_masked(self, text: str, secret: str) -> None:
