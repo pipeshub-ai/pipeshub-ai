@@ -38,7 +38,7 @@ def _rows(*keys: str) -> list[dict]:
 
 
 def _graph(rows: list[dict], **kwargs: object) -> MagicMock:
-    return entity_graph(lambda refs, org, **_: {(PERSON_ENTITY_TYPE, "u1"): rows}, **kwargs)
+    return entity_graph(lambda refs, org, **_: {(PERSON_ENTITY_TYPE, "users:u1"): rows}, **kwargs)
 
 
 class TestPersonListing:
@@ -50,7 +50,7 @@ class TestPersonListing:
         )
         (ref,) = graph.get_permitted_entity_records.await_args.args[0]
         assert ref == {
-            "id": "u1", "type": PERSON_ENTITY_TYPE, "userIds": ["u1", "u2"], "personIds": [],
+            "id": "users:u1", "type": PERSON_ENTITY_TYPE, "userIds": ["u1", "u2"], "personIds": [],
             "outTypes": ["REPORTED_BY"], "inTypes": ["MENTIONED_IN"], "connectorIds": [JIRA],
         }
 

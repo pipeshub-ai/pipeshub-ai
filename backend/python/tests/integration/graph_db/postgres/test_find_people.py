@@ -162,7 +162,7 @@ async def test_a_user_and_a_person_with_one_key_each_reach_only_their_own_record
 
     async def reached(coll: str) -> list[str]:
         ref = {**_person_ref([(coll, "same")], ["AUTHORED_BY"]), "connectorIds": [APP]}
-        return [r["_key"] for r in (await w.p.get_entity_candidate_records([ref], w.org))[(ref["type"], "same")]]
+        return [r["_key"] for r in (await w.p.get_entity_candidate_records([ref], w.org))[(ref["type"], ref["id"])]]
     assert await reached("users") == ["of-user"]
     assert await reached("person") == ["of-person"]
 
@@ -172,4 +172,4 @@ async def test_a_person_node_naming_another_org_reaches_nothing(w: World) -> Non
     await w.nodes("records", done("here", 1))
     await w.edge("entityRelations", ("records", "here"), ("person", "foreign"), edgeType="AUTHORED_BY")
     ref = {**_person_ref([("person", "foreign")], ["AUTHORED_BY"]), "connectorIds": [APP]}
-    assert (await w.p.get_entity_candidate_records([ref], w.org))[(ref["type"], "foreign")] == []
+    assert (await w.p.get_entity_candidate_records([ref], w.org))[(ref["type"], ref["id"])] == []

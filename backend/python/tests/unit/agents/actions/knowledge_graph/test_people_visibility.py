@@ -56,7 +56,7 @@ def _state(users: list[dict], candidates: dict[str, list[dict]], *, readable: tu
             await asyncio.sleep(delay)
         return {
             (ref["type"], ref["id"]): EntityCandidateRows(
-                candidates.get(ref["id"], [])[offset:offset + limit_per_entity], capped=capped,
+                candidates.get(ref["id"], candidates.get(ref["id"].split(":", 1)[-1], []))[offset:offset + limit_per_entity], capped=capped,
             )
             for ref in refs
         }
@@ -180,4 +180,11 @@ class TestProbe:
         state = _state([], {"u-a": _rows("a", 900), "u-b": _rows("b", 30), "u-c": []}, readable=("a850", "b3"))
         refs = [entity_permissions._person_ref([("users", uid)], ["ASSIGNED_TO"]) for uid in ("u-a", "u-b", "u-c")]
         found = await entity_permissions.first_readable_offsets(state["graph_provider"], CONTEXT, refs)
-        assert found == {(PERSON_ENTITY_TYPE, "u-a"): 850, (PERSON_ENTITY_TYPE, "u-b"): 3}
+        assert found == {(PERSON_ENTITY_TYPE, "users:u-a"): 850, (PERSON_ENTITY_TYPE, "users:u-b"): 3}
+
+    async def test_a_user_and_a_person_with_one_id_are_probed_apart(self) -> None:
+        state = _state([], {"users:same": _rows("u", 3), "person:same": _rows("p", 3)}, readable=("p1",))
+        offsets = await entity_permissions.readable_person_offsets(
+            state["graph_provider"], CONTEXT, [[("users", "same")], [("person", "same")]], edge_types=["ASSIGNED_TO", "AUTHORED_BY"],
+        )
+        assert offsets == [None, 1]                 # the member with nothing readable is not shown on the strength of the person's record

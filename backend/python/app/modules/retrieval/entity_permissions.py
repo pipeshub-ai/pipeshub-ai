@@ -1019,7 +1019,8 @@ def _person_ref(nodes: Iterable[tuple[str, str]], edge_types: Iterable[str]) -> 
     if not found or not (out_types or in_types):
         raise ValueError("A person listing needs a person and at least one relation")
     return {
-        "id": found[0][1], "type": PERSON_ENTITY_TYPE, "userIds": ids, "personIds": person_ids,
+        # With its collection: a user and a person may share an id, and refs are told apart by this.
+        "id": f"{found[0][0]}:{found[0][1]}", "type": PERSON_ENTITY_TYPE, "userIds": ids, "personIds": person_ids,
         "outTypes": out_types, "inTypes": in_types,
     }
 
