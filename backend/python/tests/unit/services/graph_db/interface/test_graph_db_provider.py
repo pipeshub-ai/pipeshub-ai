@@ -245,6 +245,7 @@ class TestAbstractMethodInventory:
         "delete_edges_touching_nodes",
         "get_edge_rollup_by_file_prefix",
         "get_file_paths_for_records",
+        "find_blocks_by_external_ref_prefix",
         "get_edges_by_target_keys",
         "delete_edges_by_source_keys",
         "count_nodes_by_filters",

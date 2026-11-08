@@ -1,6 +1,7 @@
 """Unit tests for app.modules.retrieval.retrieval_service.RetrievalService."""
 
 import asyncio
+import logging
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2678,6 +2679,36 @@ class TestSearchWithFiltersBranches:
         )
         assert result["status"] == "success"
         assert len(result["searchResults"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_point_without_metadata_is_normalised_then_dropped_silently(
+        self, retrieval_service, mock_graph_provider, mock_vector_db_service, caplog
+    ) -> None:
+        """Through the real _run_searches: the point gains metadata ({"point_id"}),
+        so no "no metadata" branch can see it; it has no record and is dropped,
+        and no WARNING reports it; its content is never logged."""
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {"_key": "rec1", "virtualRecordId": "vr1", "origin": "drive", "recordName": "Doc", "mimeType": "text/plain"}
+        ]
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        bare = MagicMock(id="p-bare", score=0.95, payload={"page_content": "content-sentinel"})
+        good = MagicMock(id="p-good", score=0.9, payload={
+            "page_content": "with metadata", "metadata": {"virtualRecordId": "vr1", "orgId": "o1"},
+        })
+        mock_vector_db_service.query_nearest_points.return_value = [[bare, good]]
+        retrieval_service.logger = logging.getLogger("tests.retrieval")
+
+        with caplog.at_level(logging.DEBUG, logger="tests.retrieval"):
+            result = await retrieval_service.search_with_filters(queries=["test"], user_id="u1", org_id="o1")
+
+        assert result["status"] == "success"
+        assert [r["content"] for r in result["searchResults"]] == ["with metadata"]
+        warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert not [r for r in warned if "metadata" in r.getMessage() or "results_skipped" in r.getMessage()]
+        assert not [r for r in caplog.records if "sentinel" in r.getMessage()]
 
     @pytest.mark.asyncio
     async def test_virtual_id_not_in_record_map_goes_to_final(

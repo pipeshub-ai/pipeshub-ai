@@ -1966,6 +1966,23 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def find_blocks_by_external_ref_prefix(
+        self,
+        org_id: str,
+        connector_id: str,
+        prefixes: list[str],
+        limit: int,
+        record_group_ids: list[str] | None = None,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict[str, Any]]:
+        """The connector's code blocks (in *record_group_ids*, when given) with an ``externalRefs`` entry
+        (``specifier:name``) starting with any of *prefixes*, in ``_key`` order, at most *limit*, each with its
+        ``externalRefs``. The groups filter before the limit applies."""
+        pass
+
+    @abstractmethod
     async def get_edges_by_target_keys(
         self,
         target_keys: list[str],

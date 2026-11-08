@@ -46,6 +46,8 @@ def _flexible_base_connector_init(self, *args: Any, **kwargs: Any) -> None:
     self.connector_id = cid
     self.app = app
     self.connector_name = app.get_app_name()
+    self._resilience_loaded = True
+    self._resilience = None
     self.scope = scope
     self.created_by = created_by
     self.creator_email = None
@@ -80,6 +82,8 @@ def _make_connector() -> Any:
     client.get_token = MagicMock(return_value="xoxp-test-token")
     c.external_client.get_client = MagicMock(return_value=client)
     c.data_source = MagicMock()
+    c._resilience_loaded = True
+    c._resilience = None
     c.workspace_domain = "myworkspace"
     c.team_id = "T12345"
     c.authenticated_user_id = "U111"
