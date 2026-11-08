@@ -1619,7 +1619,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                         pageToken=page_token,
                         useDomainAdminAccess=True,
                         # Without a field mask the restrictions that narrow every grant in the drive are left out.
-                        fields="nextPageToken,drives(id,name,createdTime,description,restrictions)",
+                        fields="nextPageToken,drives(id,name,createdTime,restrictions)",
                     )
 
                     drives_data = result.get("drives", [])

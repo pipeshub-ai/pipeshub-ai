@@ -111,6 +111,13 @@ LIST_RESPONSE_FIELDS = {
 }
 
 
+# The fields of a shared drive in the Drive API v3 reference: an unknown one in a field mask is a 400.
+DRIVE_RESOURCE_FIELDS = frozenset({
+    "kind", "id", "name", "colorRgb", "backgroundImageLink", "capabilities", "themeId", "backgroundImageFile",
+    "createdTime", "hidden", "restrictions", "orgUnitId",
+})
+
+
 def top_level_fields(fields: str) -> list[str]:
     names, depth, current = [], 0, ""
     for ch in fields:
@@ -135,6 +142,10 @@ def _invalid_field_selection(req: ApiRequest, resource: str) -> Optional[tuple[i
     for name in top_level_fields(fields):
         if name not in allowed:
             return google_error(400, "invalidParameter", f"Invalid field selection {name}")
+    if resource == "drives" and (nested := re.search(r"drives\((.*)\)", fields)):
+        for name in top_level_fields(nested.group(1)):
+            if name not in DRIVE_RESOURCE_FIELDS:
+                return google_error(400, "invalidParameter", f"Invalid field selection {name}")
     return None
 
 
