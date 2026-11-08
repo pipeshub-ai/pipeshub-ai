@@ -186,9 +186,12 @@ def _check_group_images(group: object, i: int, refs: ImageRefs) -> None:
         sources = group_image_sources(data, group.format, MAX_IMAGES_PER_RECORD - refs.images)
     except TooManyImages:
         raise _limit(location, f"A record may hold at most {MAX_IMAGES_PER_RECORD} images.") from None
-    for raw_source in sources:
+    for source in sources:
         refs.images += 1
-        source = raw_source.strip()
+        if source != source.strip():
+            # The parser keeps these spaces (an angle-bracket destination), and indexing reads an
+            # inline image only when its URI starts with data:, so the image would be dropped.
+            raise _fail("IMAGE_REF_INVALID", location, "Remove the spaces around the image's data: URI.")
         if source[:5].lower() != "data:":
             raise _fail(
                 "IMAGE_REF_REFUSED", location,

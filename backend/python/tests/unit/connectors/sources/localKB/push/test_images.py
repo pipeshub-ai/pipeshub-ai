@@ -256,6 +256,21 @@ class TestDataUriCase:
         assert raised.value.reason == "IMAGE_REF_INVALID"
 
 
+class TestGroupImageSourceSpacing:
+    """The markdown parser hands indexing an angle-bracket destination with its spaces kept, and an
+    inline image is read only when its URI starts with ``data:``, so a padded one would be dropped."""
+
+    @pytest.mark.parametrize("data", [
+        f"![a](< data:image/png;base64,{PNG}>)",
+        f"![a](<data:image/png;base64,{PNG} >)",
+    ])
+    def test_a_padded_image_source_is_refused_with_a_clear_reason(self, data: str) -> None:
+        with pytest.raises(PushRefusal) as raised:
+            check_groups(group(data))
+        assert raised.value.reason == "IMAGE_REF_INVALID"
+        assert "space" in raised.value.message
+
+
 class TestGroupImages:
     @pytest.mark.parametrize(
         "data",
