@@ -396,6 +396,7 @@ export const listAppsQuerySchema = z.object({
       .optional(),
     status: z.enum(['active', 'suspended', 'revoked']).optional(),
     search: z.string().optional(),
+    createdBy: z.string().regex(mongoIdRegex, 'Invalid user ID').optional(),
   }),
 });
 

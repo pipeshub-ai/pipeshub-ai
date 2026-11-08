@@ -39,6 +39,13 @@ import {
   registerCodeGraphTools,
   ToolRegistrar,
 } from '../code-graph.tools';
+import {
+  mcpAccessPolicyOf,
+  toolTurnedOff,
+  toolTurnedOffMessage,
+} from '../access-policy';
+import { McpToolCatalog, registeredTools } from '../tool-catalog';
+import { mcpLinkRouting } from '../public-links';
 
 const logger = Logger.getInstance({
   service: 'MCPController',
@@ -245,6 +252,16 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
       const { HTTPClient } = await httpModule;
       const { requiredOAuthScopes } = await oauthScopesModule;
 
+      const policy = mcpAccessPolicyOf(res);
+      // Before the step-up: a tool an admin turned off must not send the client asking for scopes.
+      const turnedOff = await toolTurnedOff(req.body, policy, () =>
+        McpToolCatalog.isWriteTool(),
+      );
+      if (turnedOff) {
+        sendMcpError(res, 403, toolTurnedOffMessage(turnedOff));
+        return;
+      }
+
       const held = heldOAuthScopes(req.user);
       if (held) {
         const missing = missingToolScopes(req.body, held, requiredOAuthScopes);
@@ -274,11 +291,12 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
       const relay = signMcpRelay(relaySigningKey, token);
       const requestContext = getRequestContext();
       if (requestContext) requestContext.mcpRelay = relay;
+      const links = mcpLinkRouting(serverURL, appConfig.frontendUrl);
       const httpClient = new HTTPClient().addHook(
         'beforeRequest',
         (request) => {
           request.headers.set(MCP_RELAY_HEADER, relay);
-          return request;
+          return links.toLoopback(request);
         },
       );
 
@@ -291,12 +309,17 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
           error: logger.error.bind(logger),
         },
         dynamic: false,
-        scopes: mcpToolScopes(req.user),
+        scopes: policy.allowWriteTools ? mcpToolScopes(req.user) : ['read'],
         // Tools are listed only when the token holds every scope they need.
         grantedOAuthScopes: held,
         // Chat runs the person's connected actions only for a token allowed to run agents.
         allowChatActions:
-          held === undefined || held.includes(OAuthScopeNames.AGENT_EXECUTE),
+          policy.allowWriteTools &&
+          (held === undefined || held.includes(OAuthScopeNames.AGENT_EXECUTE)),
+        // Without chat the package also cuts the instructions and descriptions that point at it.
+        ...(policy.disabledTools.includes('pipeshub_chat')
+          ? { chat: false }
+          : {}),
         onToolCall: (call) => {
           auditToolCall(req, call);
         },
@@ -304,7 +327,7 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
         getSDK: () =>
           new PipeshubCore({
             security: { bearerAuth: token },
-            serverURL,
+            serverURL: links.serverURL,
             httpClient,
           }),
       });
@@ -315,6 +338,9 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
       };
       if (
         reachesCodeTools(req.body) &&
+        CODE_GRAPH_TOOL_NAMES.some(
+          (name) => !policy.disabledTools.includes(name),
+        ) &&
         mayReadCode(req.user) &&
         (await callerHasCodeRepos(
           codeDeps,
@@ -327,12 +353,7 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
         const codeOnly = req.query.tools === 'code';
         // Only listings are narrowed: a batch that also calls a document tool keeps it.
         if (codeOnly && !callsATool(req.body)) {
-          const tools = (
-            mcpServer as unknown as {
-              _registeredTools?: Record<string, { remove(): void }>;
-            }
-          )._registeredTools;
-          Object.values(tools ?? {}).forEach((tool) => {
+          Object.values(registeredTools(mcpServer)).forEach((tool) => {
             tool.remove();
           });
         }
@@ -348,6 +369,9 @@ export const handleMCPRequest = (appConfig: AppConfig) => {
           ? CODE_GRAPH_INSTRUCTIONS.trimStart()
           : (server._instructions ?? '') + CODE_GRAPH_INSTRUCTIONS;
       }
+
+      const mounted = registeredTools(mcpServer);
+      for (const name of policy.disabledTools) mounted[name]?.remove();
 
       // A client that hangs up cancels the call: closing aborts the running handlers' signals.
       res.on('close', () => {

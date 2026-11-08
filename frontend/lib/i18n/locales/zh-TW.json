@@ -1651,6 +1651,8 @@
         "demoteAdminBeforeRemove": "請先將管理員降級為成員，再將其移除。",
         "removeUserTitle": "要移除使用者嗎？",
         "removeUserMessage": "確定要將 {{email}} 從 {{workspace}} 工作區移除嗎？",
+        "removeUserOAuthAppsOne": "此使用者建立了 1 個 OAuth 應用程式。它將轉移給您，透過它連線的使用者會保持連線。",
+        "removeUserOAuthAppsMany": "此使用者建立了 {{count}} 個 OAuth 應用程式。它們將轉移給您，透過它們連線的使用者會保持連線。",
         "removeButton": "移除",
         "cancelButton": "取消",
         "removeSuccess": "已成功移除使用者",
@@ -1941,7 +1943,8 @@
     },
     "oauth2": {
       "title": "OAuth 2.0",
-      "subtitle": "建立並管理您註冊的 OAuth 應用程式。只有您能在此看到自己的應用程式。",
+      "subtitle": "建立並管理您註冊的 OAuth 應用程式。只有您和組織管理員能看到。",
+      "subtitleAdmin": "組織中的所有 OAuth 應用程式及其建立者。暫停或刪除任何您不認得的應用程式。",
       "searchPlaceholder": "搜尋…",
       "newApplication": "新增 OAuth 應用程式",
       "emptyTitle": "沒有 OAuth 2.0 應用程式",
@@ -1951,6 +1954,7 @@
       "retry": "重試",
       "scopesBadgeOne": "{{count}} 個範圍",
       "scopesBadgeMany": "{{count}} 個範圍",
+      "createdBy": "建立者：{{name}}",
       "manage": "管理",
       "noSearchResults": "沒有符合搜尋條件的應用程式。",
       "manageComingSoonTitle": "即將推出",
@@ -1961,6 +1965,7 @@
         "saveDisabledNoChanges": "沒有可儲存的變更。",
         "saveDisabledInvalid": "請先修正驗證錯誤再儲存。",
         "tabAdvanced": "進階",
+        "creatorOnlyNotice": "只有建立此應用程式的人可以變更它。您仍可在「進階」中暫停或刪除它。",
         "aboutHeading": "關於",
         "aboutHelper": "請在您的 OAuth 流程中使用此用戶端 ID。",
         "copyClientIdAria": "複製用戶端 ID",
@@ -2434,6 +2439,7 @@
       "nav": {
         "general": "一般",
         "labs": "實驗室",
+        "mcpAccess": "MCP 存取",
         "authentication": "驗證",
         "connectors": "連接器",
         "mcpServers": "MCP 伺服器",
@@ -2725,6 +2731,30 @@
         "message": "若捨棄，您的編輯內容將不會被儲存",
         "confirm": "捨棄",
         "cancel": "繼續編輯"
+      }
+    },
+    "mcpAccess": {
+      "title": "MCP 存取",
+      "subtitle": "選擇 Claude、Cursor 或 ChatGPT 等 MCP 用戶端可以透過此工作區的 /mcp 端點執行哪些操作。",
+      "enabled": {
+        "label": "允許 MCP 存取",
+        "description": "關閉後，MCP 用戶端的每個請求都會被拒絕。重新開啟後，已連線的用戶端會立即恢復運作。"
+      },
+      "writeTools": {
+        "label": "允許寫入工具",
+        "description": "關閉後，MCP 用戶端無法建立集合、上傳檔案或新增網站，聊天也不會執行已連線的動作。"
+      },
+      "tools": {
+        "title": "工具",
+        "subtitle": "關閉個別工具。關閉的工具不會提供給 MCP 用戶端，對它的呼叫會被拒絕。",
+        "writes": "寫入"
+      },
+      "appliesNote": "變更會在幾秒內套用到新的 MCP 請求。",
+      "loadError": "無法載入 MCP 存取設定。請重新載入頁面後再試一次。",
+      "toasts": {
+        "saveSuccess": "MCP 存取設定已儲存",
+        "saveError": "無法儲存 MCP 存取設定",
+        "saveErrorDescription": "請檢查網路連線後再試一次。"
       }
     },
     "labs": {
@@ -5342,6 +5372,7 @@
     "notGrantedOfflineAccess": "此應用程式不會保持登入狀態。工作階段結束後，你需要重新登入。",
     "unreviewedApp": "此應用程式是自行註冊的，沒有管理員審核過。",
     "clientIdHost": "由 {{host}} 識別",
+    "registeredBy": "註冊者：{{name}}",
     "redirectTo": "將您送回 {{uri}}",
     "legalNotice": "按一下「允許」即表示您授權 {{appName}} 依上述說明存取您的資料。",
     "privacyPolicy": "隱私權政策",

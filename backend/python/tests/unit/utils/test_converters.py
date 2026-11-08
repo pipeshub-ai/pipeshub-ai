@@ -346,10 +346,10 @@ class TestProcessContentInOrder:
         mock_enrichment = TableEnrichmentResult(
             summary="A summary", headers=["A", "B"], descriptions=["Row 1 text"]
         )
-        mock_get_llm = AsyncMock(return_value=(MagicMock(), {}))
+        mock_get_llm = AsyncMock(return_value=MagicMock())
         mock_enrich_tables = AsyncMock(return_value=[mock_enrichment])
 
-        with patch("app.utils.converters.docling_doc_to_blocks.get_llm_for_role", mock_get_llm), \
+        with patch("app.utils.converters.docling_doc_to_blocks.indexing_llm_or_none", mock_get_llm), \
              patch("app.utils.converters.docling_doc_to_blocks.enrich_tables", mock_enrich_tables):
 
             result = await converter._process_content_in_order(doc)
@@ -386,8 +386,8 @@ class TestProcessContentInOrder:
         from app.utils.table_enrichment import TableEnrichmentResult
 
         enrichment = TableEnrichmentResult(summary="A summary", headers=["A"], descriptions=["Row 1"])
-        with patch("app.utils.converters.docling_doc_to_blocks.get_llm_for_role",
-                   AsyncMock(return_value=(MagicMock(), {}))), \
+        with patch("app.utils.converters.docling_doc_to_blocks.indexing_llm_or_none",
+                   AsyncMock(return_value=MagicMock())), \
              patch("app.utils.converters.docling_doc_to_blocks.enrich_tables",
                    AsyncMock(return_value=[enrichment])):
             result = await converter._process_content_in_order(_make_doc(doc_dict))
@@ -965,11 +965,11 @@ class TestTableBlockWithChildren:
         mock_enrichment = TableEnrichmentResult(
             summary="Summary", headers=["A"], descriptions=["Row text"]
         )
-        mock_get_llm = AsyncMock(return_value=(MagicMock(), {}))
+        mock_get_llm = AsyncMock(return_value=MagicMock())
         mock_enrich_tables = AsyncMock(return_value=[mock_enrichment])
 
         with patch(
-            "app.utils.converters.docling_doc_to_blocks.get_llm_for_role",
+            "app.utils.converters.docling_doc_to_blocks.indexing_llm_or_none",
             mock_get_llm,
         ), patch(
             "app.utils.converters.docling_doc_to_blocks.enrich_tables",

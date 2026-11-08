@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useCallback, useMemo, useState, Suspense, u
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { useToastStore } from '@/lib/store/toast-store';
+import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { isProcessedError } from '@/lib/api';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { isElectron } from '@/lib/electron';
@@ -61,6 +62,9 @@ function PersonalConnectorsPageContent() {
 
   const managedWatcherIdsRef = useRef<Set<string>>(new Set());
   const [isRefreshingAllInstances, setIsRefreshingAllInstances] = useState(false);
+  const [listsLoaded, setListsLoaded] = useState(false);
+  const isAdmin = useUserStore(selectIsAdmin);
+  const isProfileInitialized = useUserStore(selectIsProfileInitialized);
 
   const {
     registryConnectors,
@@ -160,12 +164,25 @@ function PersonalConnectorsPageContent() {
       setError('Failed to load connectors');
     } finally {
       setIsLoading(false);
+      setListsLoaded(true);
     }
   }, [setRegistryConnectors, setActiveConnectors, setIsLoading, setError, addToast]);
 
   useEffect(() => {
     fetchData();
   }, [fetchData, catalogRefreshToken]);
+
+  // A link can name a connector only an admin adds for the whole organization (Jira,
+  // Confluence): it is not in this catalog, and its details page would render empty.
+  useEffect(() => {
+    const requested = searchParams.get('connectorType')?.trim();
+    if (!requested || connectorType || !listsLoaded || !isProfileInitialized) return;
+    router.replace(
+      isAdmin === true
+        ? `/workspace/connectors/team/?connectorType=${encodeURIComponent(requested)}`
+        : '/workspace/connectors/personal/'
+    );
+  }, [searchParams, connectorType, listsLoaded, isProfileInitialized, isAdmin, router]);
 
   /** Stable across upserts that only change fields on existing instances (same ids → same string). */
   const instanceDetailKeys = useMemo(() => {

@@ -307,11 +307,11 @@ class TestTableBlockWithChildren:
         mock_enrichment = TableEnrichmentResult(
             summary="Summary", headers=["A"], descriptions=["Row text"]
         )
-        mock_get_llm = AsyncMock(return_value=(MagicMock(), {}))
+        mock_get_llm = AsyncMock(return_value=MagicMock())
         mock_enrich_tables = AsyncMock(return_value=[mock_enrichment])
 
         with patch(
-            "app.utils.converters.docling_doc_to_blocks.get_llm_for_role",
+            "app.utils.converters.docling_doc_to_blocks.indexing_llm_or_none",
             mock_get_llm,
         ), patch(
             "app.utils.converters.docling_doc_to_blocks.enrich_tables",

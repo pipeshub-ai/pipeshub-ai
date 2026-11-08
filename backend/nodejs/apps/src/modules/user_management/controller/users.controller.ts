@@ -3,7 +3,7 @@ import {
   AuthenticatedServiceRequest,
   AuthenticatedUserRequest,
 } from '../../../libs/middlewares/types';
-import { isValidId } from '../../../libs/repositories/ids';
+import { idOf, isValidId } from '../../../libs/repositories/ids';
 import { UniqueConstraintError } from '../../../libs/repositories/errors';
 import { getUserRepository } from '../../../libs/repositories/user';
 import type {
@@ -103,6 +103,7 @@ import {
 } from '../../../utils/xss-sanitization';
 import { inInstallOrg } from '../../../libs/repositories/identity/install-org';
 import { getOAuthAppRepository } from '../../../libs/repositories/oauth-app';
+import { getOAuthTokenRepository } from '../../../libs/repositories/oauth-token';
 import { resolveOAuthTokenService } from '../../../libs/services/oauth-token-service.provider';
 import { ProjectService } from '../../projects/services/project.service';
 import { ProjectKnowledgeBaseService } from '../../projects/services/project-kb.service';
@@ -1442,22 +1443,48 @@ export class UserController {
   }
 
   /**
-   * Soft-delete all OAuth apps owned by a user and revoke their tokens (when OAuth is initialized).
+   * What a deleted person leaves behind in OAuth.
+   *
+   * Every token they hold is revoked, under every client: personal access
+   * tokens are access tokens of the org's personal-token app, and restoring
+   * the account (a re-invite) reuses this id, so anything left live would
+   * start working again.
+   *
+   * The apps they registered move to the administrator deleting them, so
+   * colleagues who connected through one keep working. Except an app whose
+   * own `client_credentials` tokens act as this person (no service account
+   * named): handing it over would make those tokens act as the administrator,
+   * so it is deleted with its tokens, as it always was.
    */
-  protected async softDeleteOAuthAppsForUser(
+  protected async handOverOAuthOfDeletedUser(
     orgId: unknown,
-    createdByUserId: unknown,
+    deletedUserId: unknown,
     actorUser: Record<string, unknown>,
   ): Promise<void> {
     const orgOid = String(orgId);
-    const creatorOid = String(createdByUserId);
+    const userOid = String(deletedUserId);
+    const actorIdRaw = actorUser.userId ?? actorUser._id;
+    if (actorIdRaw == null) {
+      throw new UnauthorizedError('Unauthorized to delete the user');
+    }
+    const actorId = idOf(actorIdRaw);
+
+    // Through the repository, not OAuthTokenService: that service is
+    // registered only once the OAuth provider is up, and a deletion must not
+    // go through without this.
+    const tokens = getOAuthTokenRepository();
+    await tokens.revokeAllForUser(userOid);
+    await tokens.revokeAgentRegistrationsForUser(userOid);
+    await tokens.deleteUnusedCodesForUser(userOid);
+
     const apps = getOAuthAppRepository();
-
-    const clientIds = await apps.listClientIdsCreatedBy(orgOid, creatorOid);
-
+    const actingAsUser = await apps.listClientIdsActingAsCreator(
+      orgOid,
+      userOid,
+    );
     const oauthTokenService = resolveOAuthTokenService();
-    if (oauthTokenService && clientIds.length > 0) {
-      for (const clientId of clientIds) {
+    if (oauthTokenService) {
+      for (const clientId of actingAsUser) {
         if (!clientId) {
           continue;
         }
@@ -1471,11 +1498,9 @@ export class UserController {
         }
       }
     }
+    await apps.softDeleteActingAsCreator(orgOid, userOid, actorId);
 
-    const actorIdRaw = actorUser.userId ?? actorUser._id;
-    const deletedBy = actorIdRaw != null ? String(actorIdRaw) : creatorOid;
-
-    await apps.softDeleteCreatedBy(orgOid, creatorOid, deletedBy);
+    await apps.transferCreatedBy(orgOid, userOid, actorId);
   }
 
   async deleteUser(
@@ -1538,7 +1563,7 @@ export class UserController {
 
       await getGroupRepository().removeFromAll(orgId, userId);
 
-      await this.softDeleteOAuthAppsForUser(orgId, userId, req.user);
+      await this.handOverOAuthOfDeletedUser(orgId, userId, req.user);
 
       // Revoke KB permissions BEFORE pulling memberships so a failed
       // revocation leaves the membership row intact — a retry of

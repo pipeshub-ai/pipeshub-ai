@@ -174,4 +174,32 @@ describe('Personal connectors page', () => {
     await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
     expect(toastTitles()).not.toContain('Connector sync enabled');
   });
+
+  describe('a link to a connector that is not in the personal catalog', () => {
+    it('sends a member to the personal catalog instead of an empty page', async () => {
+      nav.params = new URLSearchParams('connectorType=Confluence');
+      renderInTheme(<PersonalConnectorsPage />);
+
+      await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/workspace/connectors/personal/'));
+    });
+
+    it('sends an admin to the team page for that connector', async () => {
+      signInAs('admin');
+      nav.params = new URLSearchParams('connectorType=Confluence');
+      renderInTheme(<PersonalConnectorsPage />);
+
+      await waitFor(() =>
+        expect(nav.replace).toHaveBeenCalledWith('/workspace/connectors/team/?connectorType=Confluence')
+      );
+    });
+
+    it('stays on the page for a personal connector', async () => {
+      nav.params = new URLSearchParams('connectorType=gmail');
+      renderInTheme(<PersonalConnectorsPage />);
+      await waitFor(() => expect(api.getRegistryConnectors).toHaveBeenCalled());
+      await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/workspace/connectors/personal/?connectorType=Gmail'));
+
+      expect(nav.replace).not.toHaveBeenCalledWith('/workspace/connectors/personal/');
+    });
+  });
 });

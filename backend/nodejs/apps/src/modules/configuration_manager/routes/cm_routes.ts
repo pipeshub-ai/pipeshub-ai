@@ -139,6 +139,7 @@ import {
   SyncEventProducer,
 } from '../services/kafka_events.service';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
+import { createMcpAccessRouter } from '../../mcp/routes/mcp-access.routes';
 
 export function createConfigurationManagerRouter(container: Container): Router {
   const router = Router();
@@ -913,6 +914,8 @@ export function createConfigurationManagerRouter(container: Container): Router {
       appConfig,
     ),
   );
+
+  router.use('/mcp', createMcpAccessRouter(container));
 
   router.get(
     '/ai-models/identity-policy',
