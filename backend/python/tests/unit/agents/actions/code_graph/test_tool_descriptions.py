@@ -29,7 +29,7 @@ NUMBER_WORDS = "zero one two three four five six seven eight nine ten eleven twe
 # How a description names each language whose calls resolve through imports; TSX is TypeScript.
 LANGUAGE_NAMES = {"python": "Python", "javascript": "JavaScript", "typescript": "TypeScript", "tsx": "TypeScript",
                   "java": "Java", "go": "Go", "csharp": "C#", "php": "PHP", "rust": "Rust", "c": " C ", "cpp": "C++"}
-HIDDEN_CALLERS = "ncalled means no caller anywhere in the index, including files you can't open"
+HIDDEN_CALLERS = "ncalled means no caller among the files you can read"
 # Upper-case words in descriptions that are not relation names.
 NOT_RELATIONS = {"FIRST", "NOT", "HTTP", "ID", "PHP"}
 MCP_TOOLS = Path(__file__).parents[6] / "nodejs" / "apps" / "src" / "modules" / "mcp" / "code-graph.tools.ts"
@@ -183,8 +183,8 @@ class TestTextMatchesTheCode:
         for language in EDGE_LANGUAGES:
             assert LANGUAGE_NAMES[language] in d, language
 
-    def test_entry_points_says_a_caller_in_a_file_you_cannot_open_still_counts(self) -> None:
-        """An unreadable caller leaves a symbol off the list, which says the caller exists."""
+    def test_entry_points_says_only_readable_callers_count(self) -> None:
+        """A caller in a file the user cannot read does not count, so its callee can still be listed."""
         assert HIDDEN_CALLERS in _meta("entry_points").description
 
 

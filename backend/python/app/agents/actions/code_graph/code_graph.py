@@ -577,8 +577,8 @@ class CodeGraph:
             "'inbound' has no substitute — callers leave no trace in the code you are "
             "reading.\n\n"
             "Returns rows with `relation`, `direction`, file and `line`. If `truncated`, "
-            "page with the `next` offset; do not raise `limit`. Next: get_neighbour a row, "
-            "or read_code(lines=...) for a body."
+            "do what `next` says; do not raise `limit`. Next: get_neighbour a row, or "
+            "read_code(lines=...) for a body."
         ),
         parameters=[
             ToolParameter(
@@ -1003,9 +1003,9 @@ class CodeGraph:
         short_description="Find code by a symbol name, or by exact text or a regex in file bodies",
         description=(
             "Use when you know a name or exact text but not its file.\n\n"
-            "`mode='identifier'` (default): every definition with that name, exactly "
+            "`mode='identifier'` (default): the definitions with that name, exactly "
             "(case-insensitive), across the repo — `parse_config`, `Client.fetch` and "
-            "`method:Client.fetch` all match.\n\n"
+            "`method:Client.fetch` all match; `truncated` says there are more.\n\n"
             "`mode='text'` or `mode='regex'`: lines in file bodies that contain the text or "
             "match the regex — a string literal, a call site, a config key. With `path` (a "
             "directory, file or glob) they read the files it selects and stop after "
@@ -1312,8 +1312,7 @@ class CodeGraph:
             "(main, handler, ...) and files (main.py, routes/, ...) first. "
             "Python, JavaScript, TypeScript, Java, Go, C#, PHP, Rust, C and C++ calls are resolved "
             "through imports; other languages' calls are matched by name, and `coverage` says when "
-            "that applies. Uncalled means no caller anywhere in the index, including files you "
-            "can't open.\n\n"
+            "that applies. Uncalled means no caller among the files you can read.\n\n"
             "Next: outline or read_code an entry point; get_neighbour outbound to follow what it calls."
         ),
         parameters=[
