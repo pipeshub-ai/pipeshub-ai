@@ -218,6 +218,8 @@ app_schema = {
             # app.services.permissions.structure_generation: moves with every structural write of the connector
             "scopeProjectionGeneration": {"type": ["number", "null"]},  # incremented in AQL, which computes in doubles
             "scopeProjectionUnsafe": {"type": ["boolean", "number", "null"]},  # a mark: true (older code) or a time
+            "scopeProjectionPendingRoots": {"type": ["string", "null"]},
+            "scopeProjectionUnscopedGeneration": {"type": ["integer", "null"]},
             "scopeProjectionOpened": {"type": ["number", "null"]},  # writes started that could not be undone, and finished (see unclosed_writes)
             "scopeProjectionClosed": {"type": ["number", "null"]},
             # app.services.vector_db.scope_backfill: the checkpoint of the permission scope-field back-fill
