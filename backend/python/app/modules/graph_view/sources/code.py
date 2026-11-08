@@ -61,6 +61,13 @@ def _edges(walk: Walk) -> dict[str, tuple[GraphEdge, str, dict[str, Any]]]:
     return found
 
 
+def _file_order(block: dict[str, Any]) -> tuple[bool, int, str]:
+    """A file's own definitions first, in file order; the key breaks a tie, so which block a bare file resolves to
+    never depends on the order a store returned the rows in."""
+    return ((block.get("kind") or "").lower() in FILLER_KINDS, block.get("startLine") or 0,
+            str(block.get("_key") or block.get("id") or ""))
+
+
 class CodeSource:
     scope = OAuthScopes.CODE_READ.value
 
@@ -117,14 +124,14 @@ class CodeSource:
             )
             blocks = [{**row, "_key": key} for key, row in found.items()
                       if not req.qualifiedName or row.get("qualifiedName") == req.qualifiedName]
-            # The file's own definitions first, in file order; the key breaks a tie, so the answer never depends
-            # on the order a store returned the rows in.
-            blocks.sort(key=lambda b: ((b.get("kind") or "").lower() in FILLER_KINDS, b.get("startLine") or 0, b["_key"]))
+            blocks.sort(key=_file_order)
         else:
             blocks, _ = await _resolve_anchors(
                 self._graph, self._org_id, req.filePath, req.qualifiedName, connector_id,
                 repo=group_id, access=access,
             )
+            if not req.qualifiedName:  # a named symbol keeps the order of the match (exact before looser)
+                blocks.sort(key=_file_order)
         return node_id(BLOCK, blocks[0].get("_key") or blocks[0].get("id")) if blocks else None
 
     async def _status(self, group_ids: set[str | None]) -> str:

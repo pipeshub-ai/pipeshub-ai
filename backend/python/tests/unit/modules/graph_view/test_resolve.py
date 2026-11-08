@@ -136,3 +136,21 @@ def test_a_store_that_cannot_load_the_blocks_is_a_503_not_a_404() -> None:
     world.get_nodes_by_field_in = broken
     res = resolve(world, recordId="r")
     assert res.status_code == 503 and res.headers["cache-control"] == "private, no-store"
+
+
+def test_a_bare_file_path_resolves_the_same_whatever_order_the_store_answers_in() -> None:
+    answers = set()
+    for reverse in (False, True):
+        world = World(spec_of_one_file())
+        world.records["r"]["recordGroupId"] = "grp"
+        for doc in world.blocks.values():
+            doc["startLine"], doc["kind"] = 3, "function"
+        real = world.get_nodes_by_field_in
+
+        async def ordered(*a, _real=real, _reverse=reverse, **k) -> list:
+            rows = await _real(*a, **k)
+            return rows[::-1] if _reverse else rows
+
+        world.get_nodes_by_field_in = ordered
+        answers.add(resolve(world, repo="acme/shop", filePath="src/r.py").content)
+    assert len(answers) == 1
