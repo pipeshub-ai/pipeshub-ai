@@ -420,15 +420,25 @@ export function registerCodeGraphToolDefinitions(
         'Find code without knowing its file. `mode: "identifier"` (default) lists every ' +
         'definition with that name. `mode: "text"` or `"regex"` finds lines in file bodies ' +
         '(a string, a call site, a config key); these need a repo-relative `path` and read ' +
-        'at most 400 files.',
+        'at most 400 files. `mode: "external"` lists who calls into a library: `pattern` is ' +
+        'the module as code imports it (`requests`, `django.db`, `node:fs`), `name` narrows ' +
+        'to one of its names.',
       inputSchema: {
         repo: repoRequired,
         pattern: z
           .string()
           .min(1)
           .max(200)
-          .describe('A symbol name, text, or a regex.'),
-        mode: z.enum(['identifier', 'text', 'regex']).default('identifier'),
+          .describe('A symbol name, text, a regex, or for external a library module.'),
+        mode: z
+          .enum(['identifier', 'text', 'regex', 'external'])
+          .default('identifier'),
+        name: z
+          .string()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe('External only: one name of the module, e.g. `get`.'),
         path: z
           .string()
           .min(1)

@@ -29,6 +29,8 @@ from .ops import (
 )
 from .query import files_by_pattern, path_matches
 from .read import _outer_spans
+from .repos import repo_not_found_message
+from .semantic import _repo_groups
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -40,9 +42,15 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["DEFAULT_SEARCH_LIMIT", "SEARCH_MODES", "search_code_impl"]
 
-SEARCH_MODES = ("identifier", "text", "regex")
+SEARCH_MODES = ("identifier", "text", "regex", "external")
 DEFAULT_SEARCH_LIMIT = 50
 MAX_SEARCH_LIMIT = 200
+# Blocks an external search reads before the name narrows them; the cap is reported, never silent.
+_EXTERNAL_ROWS = 2000
+# What follows a module in a longer specifier: `django.db` -> `django.db.models`, `lodash` -> `lodash/fp`,
+# `tokio` -> `tokio::sync` (Rust), `Illuminate\Http` -> `Illuminate\Http\Request` (PHP); neither occurs in a
+# Python or JS specifier.
+_SUBMODULE_SEPARATORS = (".", "/", "::", "\\")
 # Files whose source a text search reads, and how many at once: each is a
 # blob fetch (~3 ms), and repeat scans are served from the line cache below.
 # The cap is reported, never applied silently.
@@ -82,9 +90,11 @@ async def search_code_impl(
     limit: int = DEFAULT_SEARCH_LIMIT,
     include_tests: bool = False,
     max_limit: int = MAX_SEARCH_LIMIT,
+    name: str | None = None,
 ) -> dict[str, Any]:
     """``max_limit`` lifts the cap on ``limit`` for in-process callers that filter the
-    matches themselves; a model's request is held to MAX_SEARCH_LIMIT."""
+    matches themselves; a model's request is held to MAX_SEARCH_LIMIT. ``name`` narrows
+    ``mode="external"`` to one name of the module ``pattern`` names."""
     pattern = (pattern or "").strip()
     if not pattern:
         return {"error": "pattern is required"}
@@ -95,6 +105,9 @@ async def search_code_impl(
     if mode == "identifier":
         return await _by_identifier(graph_provider, org_id, connector_id, pattern, path, repo,
                                     limit, include_tests=include_tests, access=access)
+    if mode == "external":
+        return await _by_external(graph_provider, org_id, connector_id, pattern, (name or "").strip() or None,
+                                  path, repo, limit, include_tests=include_tests, access=access)
     if not path:
         return {"error": (
             "Text and regex search read file bodies, so they need `path`: a directory "
@@ -130,21 +143,11 @@ async def _by_identifier(
         raise_on_error=True,
     )
     blocks = [r for r in rows or [] if r.get("orgId") == org_id]
-    blocks = await _readable_only(access, blocks)
-    hidden = 0
-    if not include_tests:
-        roles = await get_record_roles(graph_provider, org_id,
-                                       {b.get("recordId") for b in blocks if b.get("recordId")})
-        kept = [b for b in blocks if roles.get(b.get("recordId")) != TEST_ROLE]
-        hidden = len({b.get("recordId") for b in blocks} - {b.get("recordId") for b in kept})
-        blocks = kept
     if repo:
         names = await repo_names(graph_provider, org_id, (b.get("recordGroupId") for b in blocks))
         blocks = [b for b in blocks if _repo_matches(repo, b.get("recordGroupId"), names)]
-    await attach_file_paths(graph_provider, org_id, blocks)
-    if path:
-        blocks = [b for b in blocks if path_matches(b.get("filePath") or "", path)]
-    blocks.sort(key=lambda b: (b.get("filePath") or "", b.get("startLine") or 0))
+    blocks, hidden = await _in_scope(graph_provider, org_id, blocks, path,
+                                     include_tests=include_tests, access=access)
     out: dict[str, Any] = {
         "mode": "identifier",
         "connector_id": connector_id,
@@ -157,6 +160,79 @@ async def _by_identifier(
     if not blocks:
         out["hint"] = ("No definition has that name. For text inside bodies (a string, a "
                        "call site), use mode='text' with a `path`.")
+    return out
+
+
+async def _in_scope(
+    graph_provider: IGraphDBProvider, org_id: str, blocks: list[dict[str, Any]], path: str | None,
+    *, include_tests: bool, access: RecordAccess,
+) -> tuple[list[dict[str, Any]], int]:
+    """The blocks the caller may read, under *path*, tests left out unless asked, in file order,
+    with their paths: ``(blocks, test files left out)``."""
+    blocks = await _readable_only(access, blocks)
+    hidden = 0
+    if not include_tests:
+        roles = await get_record_roles(graph_provider, org_id,
+                                       {b.get("recordId") for b in blocks if b.get("recordId")})
+        kept = [b for b in blocks if roles.get(b.get("recordId")) != TEST_ROLE]
+        hidden = len({b.get("recordId") for b in blocks} - {b.get("recordId") for b in kept})
+        blocks = kept
+    await attach_file_paths(graph_provider, org_id, blocks)
+    if path:
+        blocks = [b for b in blocks if path_matches(b.get("filePath") or "", path)]
+    blocks.sort(key=lambda b: (b.get("filePath") or "", b.get("startLine") or 0))
+    return blocks, hidden
+
+
+def _external_ref_matches(ref: str, module: str, name: str | None) -> bool:
+    """Whether `specifier:name` (the specifier may hold a colon, `node:fs`) is *module* or one of its
+    submodules and, given *name*, is that name, one of its members, or reached through a binding."""
+    specifier, _, ref_name = ref.rpartition(":")
+    if specifier != module and not specifier.startswith(tuple(module + s for s in _SUBMODULE_SEPARATORS)):
+        return False
+    return name is None or ref_name == name or ref_name.startswith(f"{name}.") or ref_name.endswith(f".{name}")
+
+
+async def _by_external(
+    graph_provider: IGraphDBProvider, org_id: str, connector_id: str, module: str, name: str | None,
+    path: str | None, repo: str | None, limit: int, *, include_tests: bool, access: RecordAccess,
+) -> dict[str, Any]:
+    """Blocks calling into an external *module* (or its *name*), from the refs the edge build wrote."""
+    groups = None
+    if repo:
+        # In the query, so other repos' callers cannot use up the row cap.
+        groups = await _repo_groups(graph_provider, org_id, connector_id, repo)
+        if not groups:
+            return {"error": repo_not_found_message(repo)}
+    # One row past the cap tells "exactly the cap" from "more than the cap".
+    rows = await graph_provider.find_blocks_by_external_ref_prefix(
+        org_id=org_id, connector_id=connector_id, limit=_EXTERNAL_ROWS + 1, raise_on_error=True,
+        prefixes=[module + s for s in (":", *_SUBMODULE_SEPARATORS)], record_group_ids=groups,
+    ) or []
+    capped = len(rows) > _EXTERNAL_ROWS
+    blocks = []
+    for row in rows[:_EXTERNAL_ROWS]:
+        refs = [r for r in row.get("externalRefs") or () if _external_ref_matches(r, module, name)]
+        if refs and row.get("orgId") == org_id:
+            blocks.append({**row, "externalRefs": refs})
+    blocks, hidden = await _in_scope(graph_provider, org_id, blocks, path,
+                                     include_tests=include_tests, access=access)
+    out: dict[str, Any] = {
+        "mode": "external",
+        "connector_id": connector_id,
+        "module": module,
+        **({"name": name} if name else {}),
+        "matches": [{**SymbolRef.from_block(b), "external_refs": b["externalRefs"]} for b in blocks[:limit]],
+        "total": len(blocks),
+        "truncated": len(blocks) > limit or capped,
+    }
+    if hidden:
+        out["hidden_tests"] = hidden
+    if not blocks:
+        out["hint"] = ("Nothing indexed calls into that module through an import. Library calls are "
+                       "recorded per block at edge build from the file's imports; a call on an "
+                       "untyped value (`resp.json()`) names no module. For call sites by text, use "
+                       "mode='text' with a `path`.")
     return out
 
 

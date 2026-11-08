@@ -420,7 +420,7 @@ def _imports_js(node: Node, src: bytes, out: list[PendingEdgeFact]) -> None:
             if spec.type == "identifier":
                 out.append(PendingEdgeFact(
                     relation=Relation.IMPORTS, to_name=_text(spec, src), line=line,
-                    to_kind="block", qualified_prefix=specifier,
+                    to_kind="block", qualified_prefix=specifier, context="default",
                 ))
             elif spec.type == "namespace_import":
                 ns = next((c for c in spec.named_children if c.type == "identifier"), None)
@@ -2000,6 +2000,11 @@ class _Walker:
             _heritage_go if cfg.name == "go" else None)
         # Grammars whose bare calls are checked against the names their scopes bind (`_shadowed`).
         self._shadow_guard = cfg.import_handler_name in _SHADOW_GUARDED
+        # Python keeps them: an untyped receiver there is as often a repo object (`qs.count()`, `cache.get()`)
+        # whose type the builder can still work out, and it guesses no further.
+        self.builtin_methods = _BUILTIN_METHODS.get(cfg.name, frozenset()) if cfg.name != "python" else frozenset()
+        # Ids of the member calls in `builtin_methods` whose receiver the enclosing scope binds: never an import.
+        self.local_receivers: set[int] = set()
         self._names_by_scope: dict[tuple[int, str], frozenset[str]] = {}
         self._block_scopes = _BLOCK_SCOPES.get(cfg.import_handler_name, frozenset())
         self._all_bound: frozenset[str] | None = None
@@ -2656,7 +2661,7 @@ class _Walker:
         # `task(ref)` on a parameter or local calls that value, never a module function named `task`.
         if not is_member and self._shadow_guard and self._shadowed(node, name):
             return
-        self.out.pending.append(PendingEdgeFact(
+        fact = PendingEdgeFact(
             relation=Relation.CALLS,
             to_name=name,
             line=self._line_at(node.start_byte),
@@ -2671,7 +2676,12 @@ class _Walker:
             head_type_arg=self._head_type(node, qualifier, suffix="<>"),
             context=self.cfg.construction_contexts.get(node.type),
             arrow=is_member and self.cfg.type_table_handler_name == "cpp" and _arrow_call(node),
-        ))
+        )
+        self.out.pending.append(fact)
+        # `function show(lib) { lib.get() }` calls the argument, not the imported module `lib`.
+        if is_member and receiver and name in self.builtin_methods and self._shadow_guard \
+                and self._shadowed(node, (qualifier or receiver).split(".")[0]):
+            self.local_receivers.add(id(fact))
 
     def _head_type(self, node: Node, qualifier: str | None, suffix: str = "") -> str | None:
         """The function-scoped type of the variable a TS or C++ receiver chain starts from;
@@ -3068,7 +3078,8 @@ def parse_code(source: bytes, language: str) -> ParsedFile:
         return ParsedFile(language=cfg.name, skipped_reason="grammar_unavailable")
     tree = parser.parse(src)
 
-    parsed = _Walker(src, cfg).walk(tree.root_node)
+    walker = _Walker(src, cfg)
+    parsed = walker.walk(tree.root_node)
 
     # A partially-broken file still yields usable definitions above the break;
     # record where parsing degraded so callers can judge the result.
@@ -3077,10 +3088,11 @@ def parse_code(source: bytes, language: str) -> ParsedFile:
 
     # A member call on a built-in container can never resolve -- resolution
     # needs a known receiver type and these receivers are language primitives
-    # -- so keeping the fact would only bloat a traversed node. Python keeps them:
-    # an untyped receiver there is as often a repo object (`qs.count()`, `cache.get()`)
-    # whose type the builder can still work out, and it guesses no further.
-    builtin_methods = _BUILTIN_METHODS.get(cfg.name, frozenset()) if cfg.name != "python" else frozenset()
+    # -- so keeping the fact would only bloat a traversed node (Python keeps them, `_Walker.builtin_methods`).
+    # A receiver an import binds is no primitive: `axios.get(url)` is the library's own `get`.
+    builtin_methods = walker.builtin_methods
+    imported = {f.local_name or f.to_name for f in parsed.pending
+                if f.relation in (Relation.IMPORTS, Relation.IMPORTS_FROM)}
     parsed.pending = [
         fact for fact in parsed.pending
         if not (
@@ -3089,6 +3101,7 @@ def parse_code(source: bytes, language: str) -> ParsedFile:
             and fact.receiver not in ("self", "this")
             and not (fact.receiver or "")[:1].isupper()  # `Controller.get(editor)`: a class
             and fact.receiver not in parsed.type_table
+            and (fact.receiver not in imported or id(fact) in walker.local_receivers)
             and fact.to_name in builtin_methods
         )
     ]
