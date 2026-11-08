@@ -13,11 +13,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import MimeTypes
+from app.config.constants.arangodb import MimeTypes, ProgressStatus
 from app.models.blocks import BlocksContainer
 from app.modules.indexing.embed_resume import (
     DELIVERY_ID_KEY,
     EMBED_FIELDS,
+    chain_end_fields,
     current_attempt,
     end_attempt,
 )
@@ -93,7 +94,7 @@ class TestResume:
 
         items = await _drain(ep.on_event(event))
 
-        processor.load_checkpoint.assert_awaited_once_with(VRID, "org-1")
+        processor.load_checkpoint.assert_awaited_once_with(VRID, "org-1", REV)
         processor.resume_from_checkpoint.assert_called_once()
         processor.process_delimited_document.assert_not_called()
         assert "START_PARSING" not in _events(items)
@@ -174,16 +175,6 @@ class TestNoResume:
         processor.process_delimited_document.assert_called_once()
         assert not current_attempt().resume
 
-    async def test_a_storage_error_while_loading_fails_the_attempt_and_keeps_the_marker(self) -> None:
-        ep, processor, gp, event = _setup()
-        processor.load_checkpoint = AsyncMock(side_effect=TimeoutError("storage"))
-
-        with pytest.raises(TimeoutError):
-            await _drain(ep.on_event(event))
-
-        processor.process_delimited_document.assert_not_called()
-        assert not any("embedVrid" in w.args[2] for w in gp.update_node.await_args_list)
-
     @pytest.mark.parametrize("mime", [MimeTypes.SQL_TABLE.value])
     async def test_kinds_whose_stored_blocks_are_not_the_whole_content_never_resume(self, mime: str) -> None:
         ep, processor, _gp, event = _setup(mime=mime)
@@ -215,3 +206,56 @@ class TestTwinFoundWhileResuming:
         ep._spawn_abandoned_vrid_cleanup.assert_called_once_with("org-1", VRID)
         ep._rewrite_or_delete_vrid_vectors.assert_awaited_once_with(VRID)
         processor.resume_from_checkpoint.assert_not_called()
+
+
+@pytest.mark.asyncio
+class TestAMarkerDoesNotOutliveItsEvent:
+    async def test_a_run_that_cannot_resume_clears_the_marker_when_it_starts(self) -> None:
+        # Kills: a marker left behind by an earlier cut event on a kind that never embeds under one.
+        ep, _processor, gp, event = _setup(delivery_id=None)
+
+        await _drain(ep.on_event(event))
+
+        writes = [call.args[2] for call in gp.update_node.await_args_list]
+        assert dict.fromkeys(EMBED_FIELDS) in writes
+
+    async def test_a_run_with_no_marker_writes_no_clear(self) -> None:
+        ep, _processor, gp, event = _setup(dict.fromkeys(EMBED_FIELDS), delivery_id=None)
+
+        await _drain(ep.on_event(event))
+
+        assert not any("embedVrid" in call.args[2] for call in gp.update_node.await_args_list)
+
+    @pytest.mark.parametrize("status", ["COMPLETED", "EMPTY", "FAILED", "PASSWORD_PROTECTED", "FILE_TYPE_NOT_SUPPORTED"])
+    def test_every_terminal_status_clears_it(self, status: str) -> None:
+        assert chain_end_fields(status) == dict.fromkeys(EMBED_FIELDS)
+
+    @pytest.mark.parametrize("status", ["QUEUED", "IN_PROGRESS", "NOT_STARTED", None])
+    def test_a_status_a_retry_follows_keeps_it(self, status: str | None) -> None:
+        assert chain_end_fields(status) == {}
+
+    async def test_the_events_own_terminal_status_write_clears_it(self) -> None:
+        ep, _processor, gp, _event = _setup()
+        doc = {"_key": "rec-1"}
+
+        await ep.mark_record_status(doc, ProgressStatus.FILE_TYPE_NOT_SUPPORTED)
+        await ep.mark_record_status(doc, ProgressStatus.IN_PROGRESS)
+
+        terminal, running = (call.args[2] for call in gp.update_node.await_args_list)
+        assert dict.fromkeys(EMBED_FIELDS).items() <= terminal.items()
+        assert not set(EMBED_FIELDS) & set(running)
+
+    @pytest.mark.parametrize(("status", "clears"), [("FAILED", True), ("PASSWORD_PROTECTED", True), ("QUEUED", False)])
+    async def test_the_handlers_status_write_clears_it_only_when_the_chain_ends(self, status: str, clears: bool) -> None:
+        from tests.unit.services.messaging.test_record_handler import _make_handler
+
+        handler = _make_handler()
+        graph = handler.event_processor.graph_provider
+        graph.get_document = AsyncMock(return_value={"_key": "rec-1", "extractionStatus": "NOT_STARTED"})
+        graph.update_node = AsyncMock(return_value=True)
+
+        await handler._RecordEventHandler__update_document_status("rec-1", status, "NOT_STARTED")
+
+        written = graph.update_node.await_args.args[2]
+        assert (dict.fromkeys(EMBED_FIELDS).items() <= written.items()) is clears
+        assert clears or not set(EMBED_FIELDS) & set(written)

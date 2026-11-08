@@ -67,6 +67,15 @@ def cleared_fields() -> dict[str, None]:
     return dict.fromkeys(EMBED_FIELDS)
 
 
+#: Indexing statuses that end a chain of attempts: nothing will retry the event that wrote a marker.
+_ENDS_A_CHAIN = frozenset({"COMPLETED", "EMPTY", "FAILED", "PASSWORD_PROTECTED", "FILE_TYPE_NOT_SUPPORTED"})
+
+
+def chain_end_fields(indexing_status: str | None) -> dict[str, None]:
+    """The marker clear that belongs in a write of ``indexing_status``; empty for a status a retry follows."""
+    return cleared_fields() if indexing_status in _ENDS_A_CHAIN else {}
+
+
 def marker_of(record: Mapping[str, Any] | None) -> dict[str, Any]:
     """The marker fields of a record node as read, or ``{}`` when it carries none."""
     if not record or not record.get(EMBED_VRID):

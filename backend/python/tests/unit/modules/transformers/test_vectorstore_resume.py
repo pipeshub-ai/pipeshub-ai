@@ -141,6 +141,7 @@ class Chain:
         self.parse_calls = 0
         self.llm_calls = 0
         self.blob: dict[str, Any] | None = None
+        self.blob_rev: str | None = None
         self.db = InMemoryVectorDBService()
         self.graph = Graph()
         self.embedder = Embedder()
@@ -162,10 +163,14 @@ class Chain:
                     block.data["row_natural_language_text"] += f" ({random.Random().random():.9f})"
         return container
 
-    def store_blob(self, container: BlocksContainer) -> None:
+    def store_blob(self, container: BlocksContainer, rev: str | None = None) -> None:
         self.blob = container.model_dump(mode="json")
+        self.blob_rev = rev
 
-    def load_blob(self) -> BlocksContainer | None:
+    def load_blob(self, rev: str | None = None) -> BlocksContainer | None:
+        """What ``Processor.load_checkpoint`` returns: nothing when the blob is another revision's."""
+        if rev is not None and self.blob_rev != rev:
+            return None
         return BlocksContainer.model_validate(self.blob) if self.blob else None
 
     async def attempt(
@@ -184,11 +189,11 @@ class Chain:
             marker, delivery_id=delivery_id, rev=rev,
             node_vrid=self.graph.node.get("virtualRecordId"), force_reindex=force_reindex,
         ) and not always_parse
-        container = self.load_blob() if resume else None
+        container = self.load_blob(rev) if resume else None
         if container is None:
             resume = False
             container = await self.parse()
-            self.store_blob(container)
+            self.store_blob(container, rev)
         self.embedder.cut_after = None if cut_after is None else len(self.embedder.batches) + cut_after
         begin_attempt(EmbedAttempt(delivery_id=delivery_id, rev=rev, vrid=VRID, prior=marker, resume=resume))
         try:
@@ -356,10 +361,22 @@ class TestWhenNotToResume:
         with pytest.raises(Cut):
             await chain.attempt(cut_after=3)
         stale = chain.ids()
-        chain.store_blob(await chain.parse())  # the stored blocks are another parse's
+        chain.store_blob(await chain.parse(), "rev1")  # the stored blocks are another parse's
         await chain.attempt()
         assert chain.parse_calls == 2
         assert not (stale & chain.ids())
+        assert chain.ids() == await chain.wanted_ids()
+
+    async def test_a_blob_of_another_revision_is_not_embedded_under_this_ones(self) -> None:
+        # Kills: loading whatever blob is stored under the vrid. Another run stored its blocks there and died.
+        chain = await Chain(60).start()
+        with pytest.raises(Cut):
+            await chain.attempt("d1", rev="R1", cut_after=1)
+        chain.store_blob(await Chain(60, content=_json_bytes(60, salt="-CHANGED")).parse(), "R2")
+        parsed = chain.parse_calls
+        await chain.attempt("d1", rev="R1")
+        assert chain.parse_calls == parsed + 1
+        assert not any("-CHANGED" in str(p.payload) for p in chain.db.collections[COLL].values())
         assert chain.ids() == await chain.wanted_ids()
 
     async def test_a_marker_of_another_vrid_is_not_trusted(self) -> None:
@@ -482,6 +499,20 @@ class TestTheEndOfAResumedRun:
         await chain.db.upsert_points(COLL, [stray, legacy])
         await chain.attempt()
         assert "stray" not in chain.ids() and "legacy" not in chain.ids()
+        assert chain.ids() == await chain.wanted_ids()
+
+    async def test_a_late_write_of_the_right_revision_and_the_wrong_embedding_setup_is_removed_too(self) -> None:
+        # Kills: a fence on the revision alone.
+        chain = await Chain().start()
+        with pytest.raises(Cut):
+            await chain.attempt(cut_after=3)
+        wrong_key = VectorPoint(
+            id="wrong-key", dense_vector=[1.0, 0.0],
+            payload={"page_content": "x", "metadata": {"orgId": ORG, "virtualRecordId": VRID, "blockId": "b", "contentRev": "rev1", "embedKey": "another-model"}},
+        )
+        await chain.db.upsert_points(COLL, [wrong_key])
+        await chain.attempt()
+        assert "wrong-key" not in chain.ids()
         assert chain.ids() == await chain.wanted_ids()
 
     async def test_the_fence_never_touches_another_orgs_points_or_another_record(self) -> None:
@@ -679,8 +710,10 @@ class PdfChain(Chain):
         pages = await asyncio.to_thread(parse_pdf_layout, self.content)
         return await PDFPlumberOpenCVProcessor(logging.getLogger("pdf"), None).create_blocks(pages, skip_llm_enrichment=True)
 
-    def load_blob(self) -> BlocksContainer | None:
+    def load_blob(self, rev: str | None = None) -> BlocksContainer | None:
         # The way the parsing-service client rebuilds a container from a dump.
+        if rev is not None and self.blob_rev != rev:
+            return None
         return BlocksContainer(**self.blob) if self.blob else None
 
 
@@ -696,3 +729,41 @@ async def test_a_cut_pdf_is_resumed_from_its_stored_blocks_with_the_ids_the_firs
     assert chain.parse_calls == 1
     assert first <= chain.ids() == wanted
     assert len(chain.embedder.batches) == _batches(len(wanted))
+
+
+@pytest.mark.asyncio
+async def test_the_existence_check_goes_out_in_requests_of_500_ids() -> None:
+    # Kills: one request for the whole record, which is a 100,000-term request on a large one.
+    chain = await Chain().start()
+    sizes: list[int] = []
+    real = chain.db.existing_point_ids
+
+    async def spy(collection_name: str, ids: list[str]) -> set[str]:
+        sizes.append(len(ids))
+        return await real(collection_name, ids)
+
+    chain.db.existing_point_ids = spy  # type: ignore[method-assign]
+    ids = [f"id-{n}" for n in range(1201)]
+    await chain.db.upsert_points(COLL, [VectorPoint(id=ids[7], dense_vector=[1.0, 0.0], payload={}), VectorPoint(id=ids[1100], dense_vector=[1.0, 0.0], payload={})])
+    assert await chain.store._existing_ids(COLL, ids) == {ids[7], ids[1100]}
+    assert sizes == [500, 500, 201]
+
+
+@pytest.mark.asyncio
+async def test_a_document_without_a_block_id_gets_the_same_point_id_with_or_without_a_marker() -> None:
+    # The stamp goes on the payload after the id is derived. An id with no block id hashes all of its metadata,
+    # so this is the case where folding the stamp into the id would show.
+    from langchain_core.documents import Document
+
+    from app.modules.transformers.vectorstore import deterministic_point_id
+
+    chain = await Chain().start()
+    metadata = {"orgId": ORG}
+    wanted = deterministic_point_id(metadata, "text")
+    begin_attempt(EmbedAttempt(delivery_id="d1", rev="rev1", vrid=VRID))
+    from app.modules.indexing.embed_resume import current_attempt
+
+    current_attempt().stamp = {"contentRev": "rev1", "embedKey": "k"}  # type: ignore[union-attr]
+    await chain.store._embed_and_upsert_documents([Document(page_content="text", metadata=dict(metadata))], RECORD, COLL)
+    assert chain.ids() == {wanted}
+    assert chain.db.collections[COLL][wanted].payload["metadata"]["contentRev"] == "rev1"

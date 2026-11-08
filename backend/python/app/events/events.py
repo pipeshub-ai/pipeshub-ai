@@ -42,6 +42,7 @@ from app.modules.indexing.embed_resume import (
     EMBED_VRID,
     EmbedAttempt,
     begin_attempt,
+    chain_end_fields,
     cleared_fields,
     end_attempt,
     marker_of,
@@ -562,6 +563,7 @@ class EventProcessor:
                         # parsingStatus is already COMPLETED from the write above.
                         "indexingStatus": ProgressStatus.EMPTY.value,
                         **indexed_copy_fields(ProgressStatus.EMPTY),
+                        **cleared_fields(),
                         "extractionStatus": ProgressStatus.NOT_STARTED.value,
                         "isDirty": False,
                     },
@@ -756,6 +758,7 @@ class EventProcessor:
         fields = {
             "indexingStatus": status.value,
             **indexed_copy_fields(status),
+            **chain_end_fields(status.value),
             "processingStartedAt": (
                 get_epoch_timestamp_in_ms()
                 if status == ProgressStatus.IN_PROGRESS
@@ -1689,7 +1692,7 @@ class EventProcessor:
                 node_vrid=doc.get("virtualRecordId"),
                 force_reindex=bool(event_data.get("forceReindex")),
             ):
-                checkpoint = await self.processor.load_checkpoint(embed_marker[EMBED_VRID], org_id)
+                checkpoint = await self.processor.load_checkpoint(embed_marker[EMBED_VRID], org_id, content_rev)
             if store_only:
                 # Nothing is reconciled and nothing is cleaned up: a record with automatic indexing off holds no
                 # vectors, so its content is stored under its own id, or a new one when others share it.
@@ -1784,6 +1787,13 @@ class EventProcessor:
                 ))
             else:
                 end_attempt()
+                if embed_marker:
+                    # A marker only an attempt that embeds under it can use; this kind of run never will.
+                    self._require_persisted(
+                        await self.update_record_fields(doc, cleared_fields()),
+                        "Failed to clear the embedding marker of record",
+                        doc,
+                    )
             if checkpoint is not None:
                 # No parse permit is taken: the START_DOWNLOAD reservation already covers this record's
                 # size until INDEXING_COMPLETE, and the loaded blocks are the parse output it was sized for.

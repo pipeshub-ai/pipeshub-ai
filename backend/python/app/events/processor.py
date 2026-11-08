@@ -53,32 +53,34 @@ from app.modules.parsers import parse_pool
 from app.modules.parsers.code_parser import engine as code_parser_engine
 from app.modules.parsers.code_parser.lang_config import detect_language
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
-from app.modules.parsers.markdown.image_references import extract_and_replace_images
 from app.modules.parsers.csv.csv_parser import CSVParser
+from app.modules.parsers.epub.epub_reader import read_epub
 from app.modules.parsers.excel.excel_parser import ExcelParser
-from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.lightweight_group_parsers import lightweight_group_parsers
+from app.modules.parsers.markdown.image_references import extract_and_replace_images
+from app.modules.parsers.markdown.markdown_parser import MarkdownParser
+from app.modules.parsers.pdf.docling_processor import DoclingProcessor
+from app.modules.parsers.pdf.ocr_handler import OCRHandler
+from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+    PDFPlumberOpenCVProcessor,
+)
 from app.modules.parsers.push_origin import (
     assert_images_inline,
     content_is_push_origin,
     record_is_push_origin,
 )
-from app.modules.parsers.epub.epub_reader import read_epub
-from app.modules.parsers.pdf.docling_processor import DoclingProcessor
-from app.modules.parsers.pdf.ocr_handler import OCRHandler
-from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
 from app.modules.parsers.text_decoding import decode_text
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
-from app.services.parsing.interface import ParseError
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.common.record_visibility import indexed_copy_fields
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
     PipelineEventData,
 )
+from app.services.parsing.interface import ParseError
 from app.utils.aimodels import is_multimodal_llm
 from app.utils.concurrency import MAX_CONCURRENT_PAGE_BUILDS
 from app.utils.cpu_offload import offload_if_large
@@ -158,36 +160,32 @@ class Processor:
         )
 
     async def load_checkpoint(
-        self, virtual_record_id: str, org_id: str
+        self, virtual_record_id: str, org_id: str, rev: str
     ) -> tuple[BlocksContainer, Any] | None:
         """The blocks and semantic metadata the interrupted run stored for ``virtual_record_id``.
 
-        ``None`` when nothing usable is stored, which sends the caller down the full path. A storage
-        error that a retry could clear is raised instead: it must not read as "nothing stored", or
-        one timeout would throw away an attempt's progress.
+        Loading is only a shortcut, so anything that stops it (a missing, oversized, truncated or
+        undecodable document, a storage outage, a blob written for another revision than ``rev``)
+        returns ``None`` and the attempt parses as it always did. It never raises: a failure that
+        repeated on every retry would otherwise turn a recoverable record into a failed one.
         """
-        from app.services.messaging.error_classifier import (
-            MessageErrorClassifier,
-            MessageErrorType,
-        )
-
         blob_storage = self.sink_orchestrator.blob_storage
         try:
-            blob = await blob_storage.get_record_from_storage(virtual_record_id, org_id)
-        except Exception as exc:
-            if MessageErrorClassifier.classify_by_exception(exc) == MessageErrorType.TRANSIENT:
-                raise
-            self.logger.warning("Stored blocks of %s unreadable; parsing again: %s", virtual_record_id, exc)
-            return None
-        containers = blob.get("block_containers") if isinstance(blob, dict) else None
-        if not isinstance(containers, dict) or not (containers.get("blocks") or containers.get("block_groups")):
-            return None
-        try:
+            lookup = await blob_storage.get_document_id_by_virtual_record_id(virtual_record_id)
+            if not lookup or lookup.get("storedRev") != rev:
+                self.logger.info("No stored blocks of this revision for %s; parsing again", virtual_record_id)
+                return None
+            blob = await blob_storage.get_record_from_storage(virtual_record_id, org_id, lookup)
+            containers = blob.get("block_containers") if isinstance(blob, dict) else None
+            if not isinstance(containers, dict) or not (containers.get("blocks") or containers.get("block_groups")):
+                return None
             container = BlocksContainer.model_validate(containers)
             raw_semantic = blob.get("semantic_metadata")
             semantic = SemanticMetadata.model_validate(raw_semantic) if raw_semantic else None
         except Exception as exc:
-            self.logger.warning("Stored blocks of %s are not valid; parsing again: %s", virtual_record_id, exc)
+            self.logger.warning(
+                "Stored blocks of %s could not be loaded (%s); parsing again", virtual_record_id, type(exc).__name__
+            )
             return None
         return container, semantic
 

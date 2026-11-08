@@ -55,7 +55,7 @@ from app.modules.indexing.connector_off_events import (
     resuming_enrichment as record_resuming_enrichment,
 )
 from app.modules.indexing.duplicate_reconcile import DuplicateReconciler
-from app.modules.indexing.embed_resume import end_attempt
+from app.modules.indexing.embed_resume import chain_end_fields, end_attempt
 from app.modules.indexing.parse_now_marker import (
     PARSE_NOW_REV,
     PARSE_NOW_STATUS,
@@ -2637,6 +2637,7 @@ class RecordEventHandler(BaseEventService):
                 "indexingStatus": indexing_status,
                 "extractionStatus": extraction_status,
                 "processingStartedAt": None,
+                **chain_end_fields(indexing_status),
             }
             # Mirror the terminal status onto parsingStatus, but never
             # downgrade a parse that already completed in this attempt.
