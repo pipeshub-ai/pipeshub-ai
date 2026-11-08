@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { cyNodeIds, fake, openExplorer, waitForNodes } from './helpers';
+import { cyNodeIds, fake, openExplorer, waitForNodes, FOCUS_BADGE } from './helpers';
 
 test.describe('failure and recovery', () => {
   test('during an outage Expand keeps the picture, shows an error with Retry, and Retry recovers', async ({ page }) => {
@@ -21,7 +21,7 @@ test.describe('failure and recovery', () => {
     const before = await cyNodeIds(page);
     await fake(page, (f) => (f.outage = true));
     await page.getByRole('button', { name: 'Show as table' }).click();
-    await page.getByRole('row').filter({ hasNotText: 'Centre' }).nth(1).getByRole('button', { name: 'Open' }).click();
+    await page.getByRole('row').filter({ hasNotText: FOCUS_BADGE }).nth(1).getByRole('button', { name: 'Open' }).click();
     await expect(page.getByRole('alert')).toBeVisible();
     await page.getByRole('button', { name: 'Show as graph' }).click();
     await waitForNodes(page, before.length);
@@ -77,13 +77,13 @@ test.describe('failure and recovery', () => {
     for (const [status, text] of Object.entries(lines)) {
       await page.evaluate((s) => ((window as unknown as { __fake: { status: string } }).__fake.status = s), status);
       await page.getByRole('button', { name: 'Show as table' }).click();
-      await page.getByRole('row').filter({ hasNotText: 'Centre' }).nth(1).getByRole('button', { name: 'Expand' }).click();
+      await page.getByRole('row').filter({ hasNotText: FOCUS_BADGE }).nth(1).getByRole('button', { name: 'Expand' }).click();
       await expect(page.getByText(text)).toBeVisible();
       await page.getByRole('button', { name: 'Show as graph' }).click();
     }
     await page.evaluate(() => ((window as unknown as { __fake: { status: string } }).__fake.status = 'never_built'));
     await page.getByRole('button', { name: 'Show as table' }).click();
-    await page.getByRole('row').filter({ hasNotText: 'Centre' }).nth(1).getByRole('button', { name: 'Open' }).click();
+    await page.getByRole('row').filter({ hasNotText: FOCUS_BADGE }).nth(1).getByRole('button', { name: 'Open' }).click();
     await expect(page.getByText('This repository has no code graph yet.')).toBeVisible();
   });
 
@@ -92,7 +92,7 @@ test.describe('failure and recovery', () => {
     await waitForNodes(page, 2);
     await page.evaluate(() => ((window as unknown as { __fake: { incomplete: boolean } }).__fake.incomplete = true));
     await page.getByRole('button', { name: 'Show as table' }).click();
-    await page.getByRole('row').filter({ hasNotText: 'Centre' }).nth(1).getByRole('button', { name: 'Expand' }).click();
+    await page.getByRole('row').filter({ hasNotText: FOCUS_BADGE }).nth(1).getByRole('button', { name: 'Expand' }).click();
     await expect(page.getByText('Some links may be missing.')).toBeVisible();
   });
 });

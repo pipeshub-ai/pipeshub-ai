@@ -407,3 +407,50 @@ describe('the explorer does not take focus when the page loads', () => {
     expect(document.activeElement).toBe(document.body);
   });
 });
+
+
+describe('the address filters survive the first pass and a replayed mount', () => {
+  it('keeps the filters of an address that names no node, writing nothing over them', async () => {
+    search = 'dir=inbound&tests=1';
+    ui(<GraphExplorer />);
+    await act(async () => undefined);
+    await act(async () => undefined);
+    const s = useGraphStore.getState();
+    expect([s.direction, s.includeTests]).toEqual(['inbound', true]);
+    expect(replaceSpy).not.toHaveBeenCalled(); // the first write must not put the defaults over the link's filters
+  });
+
+  it('applies the filters of the address again when Strict Mode replays the mount', async () => {
+    search = 'node=block%3Aa&dir=inbound&tests=1';
+    expand.mockResolvedValue(answerFor('block:a'));
+    render(
+      <React.StrictMode>
+        <Theme>
+          <GraphExplorer />
+        </Theme>
+      </React.StrictMode>,
+    );
+    await act(async () => undefined);
+    await act(async () => undefined);
+    const s = useGraphStore.getState();
+    expect([s.direction, s.includeTests]).toEqual(['inbound', true]);
+    const last = expand.mock.calls.at(-1)?.[0] as { direction?: string; includeTests?: boolean };
+    expect(last).toMatchObject({ direction: 'inbound', includeTests: true });
+  });
+});
+
+describe('the legend', () => {
+  it('uses the drawing\'s own colours, and a focus dot that follows the theme', async () => {
+    const { KIND_COLOUR } = await import('../engine/colours');
+    const { Legend } = await import('../components/legend');
+    const { container } = ui(<Legend />);
+    const dots = [...container.querySelectorAll('span[aria-hidden=true]')].map((d) => (d as HTMLElement).style.background);
+    // jsdom writes a colour back in its own notation, so the expected ones go through the same round trip.
+    const asWritten = (c: string) => {
+      const probe = document.createElement('span');
+      probe.style.background = c;
+      return probe.style.background;
+    };
+    expect(dots).toEqual([KIND_COLOUR.function, KIND_COLOUR.class, 'var(--gray-12)'].map(asWritten));
+  });
+});

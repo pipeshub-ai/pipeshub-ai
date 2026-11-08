@@ -70,10 +70,11 @@ export function GraphExplorer() {
   const tableOnly = Boolean(quality?.tableOnly) || tableView;
   const hasNodes = Object.keys(model.nodes).length > 0;
 
-  // The link is the starting state: ids and filters only. Applied once, then the store leads.
+  // The link is the starting state: ids and filters only. Applied once per mount, then the store leads. A mount that
+  // is replayed (React Strict Mode runs the effects, their cleanup and the effects again in development) applies it
+  // again, because the cleanup above reset the store.
   const started = useRef(false);
   useEffect(() => {
-    if (started.current) return;
     started.current = true;
     const url = parseGraphUrl(params);
     store.setFilters({ direction: url.direction, edgeTypes: url.edgeTypes, includeTests: url.includeTests });
@@ -81,14 +82,20 @@ export function GraphExplorer() {
     entryPending.current = Boolean(url.node || entry);
     if (url.node) void controller.open(url.node);
     else if (entry) void controller.openAddress({ source: 'code', ...entry, includeTests: url.includeTests });
+    return () => {
+      started.current = false;
+    };
   }, []);
 
   useEffect(() => {
+    // What the store holds now, not what this render saw: the first run comes in the same pass that applied the
+    // filters of the link, and must not write the defaults over them.
+    const now = useGraphStore.getState();
     const next = serializeGraphUrl(
-      { node: store.node, direction: store.direction, edgeTypes: store.edgeTypes, includeTests: store.includeTests },
-      store.trailIndex,
+      { node: now.node, direction: now.direction, edgeTypes: now.edgeTypes, includeTests: now.includeTests },
+      now.trailIndex,
     ).toString();
-    if (store.node) entryPending.current = false;
+    if (now.node) entryPending.current = false;
     // A link that has not resolved (or that failed for a reason a retry or reload can fix) keeps its address.
     if (entryPending.current) {
       if (failure && failure !== 'unavailable' && failure !== 'unexpected') entryPending.current = false;
@@ -105,8 +112,8 @@ export function GraphExplorer() {
     const shownAt = parseTrailPosition(params);
     // Moving to another place on the trail from the page is a step the browser's Back can undo; the first centre, a
     // rewritten entry link, a filter change and the entry a Back or Forward just landed on replace the entry instead.
-    const moved = store.node !== shown || (shownAt !== undefined && shownAt !== store.trailIndex);
-    if (shown && store.node && moved && !followedBrowser) router.push(url, { scroll: false });
+    const moved = now.node !== shown || (shownAt !== undefined && shownAt !== now.trailIndex);
+    if (shown && now.node && moved && !followedBrowser) router.push(url, { scroll: false });
     else router.replace(url, { scroll: false });
   }, [store.node, store.trailIndex, store.direction, store.edgeTypes, store.includeTests, failure, moving, followed]);
 

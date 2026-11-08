@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { cyNodeIds, cyNodePoint, fake, openExplorer, waitForNodes } from './helpers';
+import { cyNodeIds, cyNodePoint, fake, openExplorer, waitForNodes, FOCUS_BADGE } from './helpers';
 
 test.describe('keyboard, screen readers and layout', () => {
   test('every control has a name, icons are hidden from screen readers, and a polite region is always there', async ({ page }) => {
@@ -36,7 +36,7 @@ test.describe('keyboard, screen readers and layout', () => {
     await page.clock.runFor(500);
     await waitForNodes(page, 2);
     await page.getByRole('button', { name: 'Show as table' }).click();
-    const row = page.getByRole('row').filter({ hasNotText: 'Centre' }).nth(1);
+    const row = page.getByRole('row').filter({ hasNotText: FOCUS_BADGE }).nth(1);
     await row.click();
     await row.getByRole('button', { name: 'Expand' }).focus();
     const label = (await row.getByRole('rowheader').innerText()).trim();
@@ -53,7 +53,7 @@ test.describe('keyboard, screen readers and layout', () => {
     await page.mouse.move(600, 500);
     await page.evaluate(() => ((window as unknown as { __fake: { status: string } }).__fake.status = 'stale'));
     await page.getByRole('button', { name: 'Show as table' }).click();
-    await page.getByRole('row').filter({ hasNotText: 'Centre' }).nth(1).getByRole('button', { name: 'Expand' }).click();
+    await page.getByRole('row').filter({ hasNotText: FOCUS_BADGE }).nth(1).getByRole('button', { name: 'Expand' }).click();
     await expect(page.getByText('The graph is being updated')).toBeVisible();
     await page.getByRole('button', { name: 'Show as graph' }).click();
     await page.mouse.move(700, 600);

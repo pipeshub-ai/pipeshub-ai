@@ -84,8 +84,10 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     const kept = trail.filter((id) => !gone.has(id));
     // The position moves back by the number of removed entries at or before it.
     const removedBefore = trail.slice(0, trailIndex + 1).filter((id) => gone.has(id)).length;
-    const index = Math.min(kept.length - 1, Math.max(-1, trailIndex - removedBefore));
     const focusGone = node !== null && gone.has(node);
+    const back = Math.min(kept.length - 1, Math.max(-1, trailIndex - removedBefore));
+    // When the entry that went was the first and entries remain after it, the view moves forward to the nearest one.
+    const index = back < 0 && focusGone && kept.length > 0 ? 0 : back;
     set({
       trail: kept,
       trailIndex: index,

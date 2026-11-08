@@ -1,4 +1,5 @@
 import { expect, type Page } from '@playwright/test';
+import en from '../../../lib/i18n/locales/en-US.json';
 
 type Fake = {
   persona: 'owner' | 'bob';
@@ -39,24 +40,53 @@ export const fake = <T, A = undefined>(page: Page, fn: (f: Fake, arg: A) => T, a
 /** The file (0 to 79) a block id belongs to: 25 blocks a file. */
 export const fileOfId = (id: string) => Math.floor(Number(id.replace('block:b', '')) / 25);
 
-/** The Cytoscape instance the engine keeps on its container (read only). */
-const CY = `(() => { const d=[...document.querySelectorAll('div')].find(x=>x._cyreg); return d && d._cyreg.cy; })()`;
+/** The badge on the centre row, read from the product's own English strings so a rewording cannot break the specs. */
+export const FOCUS_BADGE: string = en.graph.ui.table.focus;
+
+/**
+ * The Cytoscape instance the engine keeps on its container (read only). Each helper below finds it inside its own
+ * page function and takes what it needs as an argument: nothing is spliced into code that runs in the page.
+ */
+type CyHandle = {
+  nodes: (selector?: string) => { map: <T>(fn: (n: { id: () => string }) => T) => T[] };
+  edges: () => { length: number };
+  getElementById: (id: string) => { length: number; renderedPosition: () => { x: number; y: number } };
+  container: () => Element;
+};
 
 export const cyNodeIds = (page: Page): Promise<string[]> =>
-  page.evaluate(`(() => { const cy=${CY}; return cy ? cy.nodes().map(n=>n.id()) : []; })()`) as Promise<string[]>;
+  page.evaluate(() => {
+    const host = [...document.querySelectorAll('div')].find((x) => (x as unknown as { _cyreg?: unknown })._cyreg);
+    const cy = host && (host as unknown as { _cyreg: { cy: CyHandle } })._cyreg.cy;
+    return cy ? cy.nodes().map((n) => n.id()) : [];
+  });
 
 export const cyEdgeCount = (page: Page): Promise<number> =>
-  page.evaluate(`(() => { const cy=${CY}; return cy ? cy.edges().length : 0; })()`) as Promise<number>;
+  page.evaluate(() => {
+    const host = [...document.querySelectorAll('div')].find((x) => (x as unknown as { _cyreg?: unknown })._cyreg);
+    const cy = host && (host as unknown as { _cyreg: { cy: CyHandle } })._cyreg.cy;
+    return cy ? cy.edges().length : 0;
+  });
 
 export const cySelected = (page: Page): Promise<string[]> =>
-  page.evaluate(`(() => { const cy=${CY}; return cy ? cy.nodes(':selected').map(n=>n.id()) : []; })()`) as Promise<string[]>;
+  page.evaluate(() => {
+    const host = [...document.querySelectorAll('div')].find((x) => (x as unknown as { _cyreg?: unknown })._cyreg);
+    const cy = host && (host as unknown as { _cyreg: { cy: CyHandle } })._cyreg.cy;
+    return cy ? cy.nodes(':selected').map((n) => n.id()) : [];
+  });
 
 /** Where a node is drawn, in page pixels, for clicking exactly on it. */
 export const cyNodePoint = (page: Page, id: string): Promise<{ x: number; y: number } | null> =>
-  page.evaluate(
-    `(() => { const cy=${CY}; if(!cy) return null; const n=cy.getElementById(${JSON.stringify(id)}); if(!n.length) return null;
-      const r=cy.container().getBoundingClientRect(); const p=n.renderedPosition(); return { x: r.left+p.x, y: r.top+p.y }; })()`,
-  ) as Promise<{ x: number; y: number } | null>;
+  page.evaluate((nodeId) => {
+    const host = [...document.querySelectorAll('div')].find((x) => (x as unknown as { _cyreg?: unknown })._cyreg);
+    const cy = host && (host as unknown as { _cyreg: { cy: CyHandle } })._cyreg.cy;
+    if (!cy) return null;
+    const node = cy.getElementById(nodeId);
+    if (!node.length) return null;
+    const box = cy.container().getBoundingClientRect();
+    const at = node.renderedPosition();
+    return { x: box.left + at.x, y: box.top + at.y };
+  }, id);
 
 export const urlParams = (page: Page) => new URL(page.url()).searchParams;
 
@@ -65,7 +95,10 @@ export const waitForNodes = (page: Page, n = 1) => expect.poll(async () => (awai
 
 /** The labels listed in the table view (switch to it first). */
 export async function tableLabels(page: Page): Promise<string[]> {
-  return page.getByRole('rowheader').evaluateAll((els) => els.map((e) => (e.textContent ?? '').replace(/Centre$/, '').trim()));
+  return page.getByRole('rowheader').evaluateAll(
+    (els, badge) => els.map((e) => (e.textContent ?? '').replace(new RegExp(`${badge}$`), '').trim()),
+    FOCUS_BADGE,
+  );
 }
 
 export const notices = (page: Page) => page.locator('[role=status], [role=alert]').allInnerTexts();

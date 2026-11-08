@@ -211,3 +211,27 @@ describe('the trail position on a history entry', () => {
     expect(parseTrailPosition(new URLSearchParams('node=block%3Aa'))).toBeUndefined();
   });
 });
+
+
+describe('forget moves the view forward when the first entry goes and others remain', () => {
+  it('keeps a focus on the nearest entry after it instead of clearing the view', () => {
+    const store = useGraphStore;
+    store.getState().reset();
+    for (const id of ['block:a', 'block:b']) store.getState().focusOn(id);
+    store.getState().jumpTo(0); // Back from [a, b]
+    store.getState().forget(['block:a']);
+    const s = store.getState();
+    expect(s.trail).toEqual(['block:b']);
+    expect(s.trailIndex).toBe(0);
+    expect(s.node).toBe('block:b');
+  });
+
+  it('still empties the view when nothing remains', () => {
+    const store = useGraphStore;
+    store.getState().reset();
+    store.getState().focusOn('block:a');
+    store.getState().forget(['block:a']);
+    expect(store.getState().node).toBeNull();
+    expect(store.getState().trailIndex).toBe(-1);
+  });
+});

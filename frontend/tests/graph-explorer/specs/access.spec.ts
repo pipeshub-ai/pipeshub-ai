@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { cyNodeIds, fake, fileOfId, openExplorer, tableLabels, urlParams, waitForNodes } from './helpers';
+import { cyNodeIds, fake, fileOfId, openExplorer, tableLabels, urlParams, waitForNodes, FOCUS_BADGE } from './helpers';
 
 /** Files whose functions Bob cannot read: file % 5 == 3. */
 const hiddenFromBob = (id: string) => fileOfId(id) % 5 === 3;
@@ -44,7 +44,7 @@ test.describe('access', () => {
   test('a selected node that is revoked leaves the panel with the planned sentence and no trace of its name', async ({ page }) => {
     await openWithClock(page);
     await page.getByRole('button', { name: 'Show as table' }).click();
-    const row = page.getByRole('row').filter({ hasNotText: 'Centre' }).nth(1);
+    const row = page.getByRole('row').filter({ hasNotText: FOCUS_BADGE }).nth(1);
     const name = (await row.getByRole('rowheader').innerText()).trim();
     const id = `block:b${String(Number(name.replace(/\D/g, ''))).padStart(4, '0')}`;
     expect(fileOfId(id)).not.toBe(fileOfId('block:b0001'));

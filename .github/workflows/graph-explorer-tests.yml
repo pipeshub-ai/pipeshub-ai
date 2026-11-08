@@ -11,6 +11,9 @@ on:
       - 'frontend/tests/graph-explorer/**'
       - 'frontend/playwright.graph.config.ts'
       - 'frontend/lib/i18n/locales/*.json'
+      - 'frontend/app/globals.css'
+      - 'frontend/package.json'
+      - 'frontend/package-lock.json'
       - '.github/workflows/graph-explorer-tests.yml'
   workflow_dispatch:
 

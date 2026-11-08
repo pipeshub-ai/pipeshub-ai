@@ -1,6 +1,6 @@
 // Each test here was a finding from a review round: it fails if the fix is removed.
 import { expect, test } from '@playwright/test';
-import { cyNodeIds, cyNodePoint, cySelected, direction, fake, idle, openExplorer, urlParams, waitForNodes } from './helpers';
+import { cyNodeIds, cyNodePoint, cySelected, direction, fake, idle, openExplorer, urlParams, waitForNodes, FOCUS_BADGE } from './helpers';
 
 test.describe('regressions found in review', () => {
   test('a search from the empty start page draws the picked graph, with no workaround', async ({ page }) => {
@@ -71,7 +71,7 @@ test.describe('regressions found in review', () => {
     await waitForNodes(page, 2);
     await fake(page, (f) => (f.status = 'never_built'));
     await page.getByRole('button', { name: 'Show as table' }).click();
-    await page.getByRole('row').filter({ hasNotText: 'Centre' }).nth(1).getByRole('button', { name: 'Open' }).click();
+    await page.getByRole('row').filter({ hasNotText: FOCUS_BADGE }).nth(1).getByRole('button', { name: 'Open' }).click();
     const message = page.getByText('This repository has no code graph yet.');
     await expect(message).toBeVisible();
     const bg = await message.evaluate((el) => getComputedStyle(el.parentElement!).backgroundColor);

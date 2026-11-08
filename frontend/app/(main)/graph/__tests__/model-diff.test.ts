@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { diffModel } from '../engine/model-diff';
 import { buildStyle, createCytoscapeEngine } from '../engine/cytoscape-engine';
 import { qualityFor } from '../engine/tiers';
@@ -146,5 +146,42 @@ describe('a new view is laid out afresh', () => {
     const cell = shifted['block:main'];
     expect(cy.getElementById('block:main').position()).toEqual({ x: cell.c * CELL_WIDTH, y: cell.r * CELL_HEIGHT });
     engine.destroy();
+  });
+});
+
+
+describe('the engine on its own', () => {
+  const canvas = qualityFor({ hasWebgl2: false, renderer: '', devicePixelRatio: 1, reducedMotion: false }, 'canvas', 0);
+  const handlers = { onSelect: () => undefined, onExpand: () => undefined, onHover: () => undefined, onFrame: () => undefined };
+  type Rule = { selector: string; style: Record<string, unknown> };
+
+  it('draws the focus ring in the theme colour, so it shows on a dark page too', () => {
+    const focus = (buildStyle({ text: '#ededed', background: '#111111' }) as unknown as Rule[]).find((r) => r.selector === 'node.focus');
+    expect(focus?.style['border-color']).toBe('#ededed');
+  });
+
+  it('builds nothing when destroy() ran while the library was still loading', async () => {
+    let created = 0;
+    const engine = createCytoscapeEngine({ headless: true, expose: () => { created += 1; } });
+    const mounting = engine.mount(document.createElement('div'), canvas, handlers);
+    engine.destroy(); // before the import resolves, as a replayed effect or a quick toggle does
+    await mounting;
+    expect(created).toBe(0);
+  });
+
+  it('turns fits and centring into jumps for reduced motion, and animates them otherwise', async () => {
+    const run = async (reducedMotion: boolean) => {
+      let cy!: import('cytoscape').Core;
+      const engine = createCytoscapeEngine({ headless: true, expose: (c) => (cy = c) });
+      await engine.mount(document.createElement('div'), qualityFor({ hasWebgl2: true, renderer: 'GPU', devicePixelRatio: 1, reducedMotion }, 'gpu', 0), handlers);
+      engine.setModel(built());
+      const spy = vi.spyOn(cy, 'animate');
+      engine.reveal('block:main');
+      const duration = (spy.mock.calls[0][0] as { duration: number }).duration;
+      engine.destroy();
+      return duration;
+    };
+    expect(await run(true)).toBe(0);
+    expect(await run(false)).toBeGreaterThan(0);
   });
 });

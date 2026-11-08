@@ -5805,7 +5805,7 @@
         "moreRows": "Show more rows",
         "callersShown": "Callers shown",
         "calleesShown": "Callees shown",
-        "focus": "Centre"
+        "focus": "Center"
       },
       "emptyPrompt": "Search for a function, method or class above to see what calls it and what it calls.",
       "disclosure": "Shows only what you can access.",
@@ -5831,10 +5831,10 @@
       "legend": {
         "functions": "Functions and methods",
         "classes": "Classes and interfaces",
-        "focus": "Centre of this view"
+        "focus": "Center of this view"
       },
       "openHint": "Open: make this the centre of a new view.",
-      "expandHint": "Expand: show its neighbours here, keeping what is on screen.",
+      "expandHint": "Expand: show its neighbors here, keeping what is on screen.",
       "announce": {
         "opened": "Showing {{n}} items.",
         "added": "{{n}} items added."

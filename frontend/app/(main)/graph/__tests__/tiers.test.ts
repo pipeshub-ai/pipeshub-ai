@@ -53,6 +53,19 @@ describe('qualityFor', () => {
     expect(qualityFor(caps(), 'gpu', 99).step).toBe(5);
   });
 
+  it('a canvas tier steps down from its own floor: every step changes something, and the table is two steps away', () => {
+    const rungs = [0, 1, 2, 3].map((s) => qualityFor(caps(), 'canvas', s));
+    expect(rungs.map((q) => q.step)).toEqual([3, 4, 5, 5]);
+    expect(rungs.map((q) => q.hardCap)).toEqual([1000, 500, 500, 500]);
+    expect(rungs.map((q) => q.tableOnly)).toEqual([false, false, true, true]);
+  });
+
+  it('animates unless the person asked their system for reduced motion', () => {
+    expect(qualityFor(caps(), 'gpu', 0).animate).toBe(true);
+    expect(qualityFor(caps({ reducedMotion: true }), 'gpu', 0).animate).toBe(false);
+    expect(qualityFor(caps({ reducedMotion: true }), 'canvas', 2).animate).toBe(false);
+  });
+
   it('clamps an absurd pixel ratio', () => {
     expect(qualityFor(caps({ devicePixelRatio: 9 }), 'gpu', 0).pixelRatio).toBe(3);
     expect(qualityFor(caps({ devicePixelRatio: 0 }), 'gpu', 0).pixelRatio).toBe(1);

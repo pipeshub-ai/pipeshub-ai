@@ -1,19 +1,12 @@
 import type { Core, StylesheetJson } from 'cytoscape';
 import type { GraphModel } from '../model/graph-model';
+import { DEFAULT_COLOUR, KIND_COLOUR } from './colours';
 import { capModel, diffModel } from './model-diff';
 import type { Quality } from './tiers';
 import type { EngineHandlers, GraphEngine } from './types';
 
-// Node colours by kind, and a dashed edge when the link is inferred by name. Colour is
+// Node colours by kind (./colours), and a dashed edge when the link is inferred by name. Colour is
 // never the only cue: the label, the tooltip and the table twin all name the kind.
-const KIND_COLOUR: Record<string, string> = {
-  function: '#3f8f6b',
-  method: '#3f8f6b',
-  class: '#4f6fd0',
-  interface: '#4f6fd0',
-  imports: '#6b6b6b',
-};
-const DEFAULT_COLOUR = '#5f6f6a';
 
 export interface EngineTheme {
   /** Label colour and the halo behind it, so a line never strikes through a name. */
@@ -62,7 +55,7 @@ export function buildStyle(theme: EngineTheme = LIGHT): StylesheetJson {
     // Applied while the view moves when labels are hidden in motion (Cytoscape 3.34 types
     // `hideLabelsOnViewport` but does not implement it, so the class does the work).
     { selector: 'node.moving', style: { label: '' } },
-    { selector: 'node.focus', style: { width: 22, height: 22, 'border-width': 3, 'border-color': '#1c2220', 'font-weight': 'bold', 'font-size': 13 } },
+    { selector: 'node.focus', style: { width: 22, height: 22, 'border-width': 3, 'border-color': theme.text, 'font-weight': 'bold', 'font-size': 13 } },
     { selector: 'node:selected', style: { 'border-width': 4, 'border-color': '#a86f00' } },
     {
       selector: 'edge',
@@ -110,6 +103,8 @@ export function createCytoscapeEngine(options: CytoscapeEngineOptions = {}): Gra
   let selected: string | null = null;
   let focused: string | null = null;
   let stopWatching: (() => void) | null = null;
+  /** destroy() ran: a mount still waiting for the library must not build anything afterwards. */
+  let destroyed = false;
 
   const applyQuality = (q: Quality) => {
     quality = q;
@@ -145,6 +140,7 @@ export function createCytoscapeEngine(options: CytoscapeEngineOptions = {}): Gra
   return {
     async mount(container, q, h) {
       const { default: cytoscape } = await import('cytoscape');
+      if (destroyed) return;
       handlers = h;
       quality = q;
       cy = cytoscape({
@@ -220,7 +216,7 @@ export function createCytoscapeEngine(options: CytoscapeEngineOptions = {}): Gra
       this.select(selected);
       this.setFocus(focused);
       if (diff.addNodes.length === 0 && diff.removeIds.length === 0 && diff.moveNodes.length === 0) return;
-      const duration = quality?.simplified ? 0 : 200;
+      const duration = quality?.simplified || quality?.animate === false ? 0 : 200;
       ignoreMotionUntil = performance.now() + duration + 150;
       if (first) {
         cy.fit(undefined, 40);
@@ -265,11 +261,12 @@ export function createCytoscapeEngine(options: CytoscapeEngineOptions = {}): Gra
 
     reveal(id) {
       if (!cy) return;
-      if (id) cy.animate({ center: { eles: cy.getElementById(id) }, duration: quality?.simplified ? 0 : 150 });
+      if (id) cy.animate({ center: { eles: cy.getElementById(id) }, duration: quality?.simplified || quality?.animate === false ? 0 : 150 });
       else cy.fit(undefined, 40);
     },
 
     destroy() {
+      destroyed = true;
       if (sampler) cancelAnimationFrame(sampler);
       sampler = 0;
       stopWatching?.();

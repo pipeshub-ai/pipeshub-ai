@@ -34,6 +34,8 @@ export interface Quality {
   softCap: number;
   /** Past the last rung: offer the table twin. */
   tableOnly: boolean;
+  /** Animated fits and centring; off for a person who asked their system for reduced motion. */
+  animate: boolean;
   /** Text for the quiet line "Simplified view for smooth movement", shown from step 1. */
   simplified: boolean;
 }
@@ -42,16 +44,19 @@ export const SOFT_CAP = 300;
 export const HARD_CAP = 1000;
 export const DEGRADED_HARD_CAP = 500;
 export const MAX_STEP = 5;
+/** The rung a canvas tier starts on. */
+const CANVAS_FLOOR = 3;
 
 /**
  * The ladder, one rung at a time:
  * 0 full; 1 hide labels in motion; 2 hide edges in motion; 3 pixel ratio 1;
  * 4 lower node cap; 5 table only.
- * A canvas tier starts at step 2 (with no GPU, edges and labels are hidden while moving
- * and pixel ratio is 1): at 2x with no GPU, panning fell to 34 and 15.8 fps at 250 and 1,000 nodes.
+ * A canvas tier starts on rung 3 (with no GPU, edges and labels are hidden while moving and the
+ * pixel ratio is 1): at 2x with no GPU, panning fell to 34 and 15.8 fps at 250 and 1,000 nodes.
+ * Each step down from there is one more rung, so it always changes something: 4, then 5.
  */
 export function qualityFor(caps: Capabilities, tier: Tier, step: number): Quality {
-  const s = Math.max(tier === 'canvas' ? 3 : 0, Math.min(step, MAX_STEP));
+  const s = Math.min((tier === 'canvas' ? CANVAS_FLOOR : 0) + Math.max(0, step), MAX_STEP);
   const nativeRatio = Math.max(1, Math.min(caps.devicePixelRatio || 1, 3));
   return {
     tier,
@@ -62,6 +67,7 @@ export function qualityFor(caps: Capabilities, tier: Tier, step: number): Qualit
     hardCap: s >= 4 ? DEGRADED_HARD_CAP : HARD_CAP,
     softCap: SOFT_CAP,
     tableOnly: s >= MAX_STEP,
+    animate: !caps.reducedMotion,
     simplified: s >= 1,
   };
 }

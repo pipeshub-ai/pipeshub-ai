@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { cyEdgeCount, cyNodeIds, cyNodePoint, cySelected, direction, fake, fileOfId, idle, openExplorer, tableLabels, urlParams, waitForNodes } from './helpers';
+import { cyEdgeCount, cyNodeIds, cyNodePoint, cySelected, direction, fake, fileOfId, idle, openExplorer, tableLabels, urlParams, waitForNodes, FOCUS_BADGE } from './helpers';
 
 const HUB = 'block:b0000';
 
@@ -27,7 +27,7 @@ test.describe('paging, table and trail', () => {
     const labels = await tableLabels(page);
     expect(labels.length).toBe(drawn);
     expect(labels[0]).toBe('fn_1');
-    await expect(page.getByRole('row').nth(1)).toContainText('Centre');
+    await expect(page.getByRole('row').nth(1)).toContainText(FOCUS_BADGE);
     const dashes = page.getByRole('cell', { name: '–' });
     expect(await dashes.count()).toBeGreaterThan(0);
     await page.getByRole('button', { name: 'Show as graph' }).click();
@@ -39,10 +39,11 @@ test.describe('paging, table and trail', () => {
     await waitForNodes(page, 2);
     const before = await cyNodeIds(page);
     await page.getByRole('button', { name: 'Show as table' }).click();
-    await page.getByRole('row').filter({ hasNotText: 'Centre' }).nth(1).getByRole('button', { name: 'Expand' }).click();
+    await page.getByRole('row').filter({ hasNotText: FOCUS_BADGE }).nth(1).getByRole('button', { name: 'Expand' }).click();
     await page.getByRole('button', { name: 'Show as graph' }).click();
     await expect.poll(async () => (await cyNodeIds(page)).length).toBeGreaterThan(before.length);
-    expect(before.every(async (id) => (await cyNodeIds(page)).includes(id))).toBe(true);
+    const after = await cyNodeIds(page);
+    expect(before.filter((id) => !after.includes(id))).toEqual([]); // every earlier node is still drawn
     await page.getByRole('button', { name: 'Show as table' }).click();
     await page.getByRole('row').nth(1).getByRole('button', { name: 'Expand' }).click(); // the centre: already expanded
     await expect(page.getByText('Nothing more to show for this node.')).toBeVisible();
@@ -52,7 +53,7 @@ test.describe('paging, table and trail', () => {
     await openExplorer(page, '/?node=block:b0001');
     await waitForNodes(page, 2);
     await page.getByRole('button', { name: 'Show as table' }).click();
-    const row = page.getByRole('row').filter({ hasNotText: 'Centre' }).nth(1);
+    const row = page.getByRole('row').filter({ hasNotText: FOCUS_BADGE }).nth(1);
     await row.getByRole('button', { name: 'Open' }).click();
     await expect.poll(() => urlParams(page).get('node')).not.toBe('block:b0001');
     const second = urlParams(page).get('node');
@@ -66,14 +67,14 @@ test.describe('paging, table and trail', () => {
     await openExplorer(page, '/?node=block:b0001');
     await waitForNodes(page, 2);
     await page.getByRole('button', { name: 'Show as table' }).click();
-    await page.getByRole('row').filter({ hasNotText: 'Centre' }).nth(1).getByRole('button', { name: 'Open' }).click();
+    await page.getByRole('row').filter({ hasNotText: FOCUS_BADGE }).nth(1).getByRole('button', { name: 'Open' }).click();
     await expect.poll(() => urlParams(page).get('node')).not.toBe('block:b0001');
     const second = urlParams(page).get('node');
     await page.getByRole('radio', { name: 'Callers' }).click();
     await expect.poll(() => urlParams(page).get('dir')).not.toBeNull();
     await page.goBack(); // undoes the Open, not the filter
     await expect.poll(() => urlParams(page).get('node')).toBe('block:b0001');
-    await expect(page.getByRole('row').filter({ hasText: 'Centre' })).toContainText('fn_1');
+    await expect(page.getByRole('row').filter({ hasText: FOCUS_BADGE })).toContainText('fn_1');
     await expect(page.getByRole('button', { name: 'Forward' })).toBeEnabled(); // the trail kept the step it went Back from
     await page.goForward();
     await expect.poll(() => urlParams(page).get('node')).toBe(second);
@@ -89,13 +90,13 @@ test.describe('paging, table and trail', () => {
       const used = trail.map(fileOfId);
       // Open a node from a file no earlier node is in, so revoking one file takes away exactly one trail entry.
       const index = await page.getByRole('row').evaluateAll(
-        (rows, usedFiles) =>
+        (rows, [usedFiles, badge]) =>
           rows.findIndex((row, i) => {
             const name = row.querySelector('th')?.textContent ?? '';
             const n = Number(name.replace(/\D/g, ''));
-            return i > 0 && !name.includes('Centre') && name.length > 0 && !usedFiles.includes(Math.floor(n / 25));
+            return i > 0 && !name.includes(badge) && name.length > 0 && !usedFiles.includes(Math.floor(n / 25));
           }),
-        used,
+        [used, FOCUS_BADGE] as const,
       );
       expect(index).toBeGreaterThan(0);
       await page.getByRole('row').nth(index).getByRole('button', { name: 'Open' }).click();
@@ -117,7 +118,7 @@ test.describe('paging, table and trail', () => {
     await page.goBack();
     await expect.poll(() => urlParams(page).get('node')).toBe(trail[2]);
     await idle(page);
-    await expect(page.getByRole('row').filter({ hasText: 'Centre' })).toBeVisible();
+    await expect(page.getByRole('row').filter({ hasText: FOCUS_BADGE })).toBeVisible();
     // The entry the browser landed on is the visit: its address is corrected in place, with no new entry on top of it.
     await expect.poll(() => urlParams(page).get('at')).toBe('1');
     expect(await page.evaluate(() => history.length)).toBe(entries + 1);
