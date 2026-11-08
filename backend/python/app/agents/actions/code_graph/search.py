@@ -42,8 +42,8 @@ from .ops import (
 from .query import files_by_pattern, path_matches
 from .read import _outer_spans
 from .repos import repo_not_found_message
-from .semantic import _repo_groups
 from .results import saw_commit
+from .semantic import _repo_groups
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -287,7 +287,7 @@ async def _by_text(
         return {"error": await _missing_path_message(graph_provider, org_id, connector_id, asked, repo, access),
                 **({"truncated": True} if scan_capped else {})}
     grep = await _grep(graph_provider, blob_store, org_id, matcher, paths, records, include_tests=include_tests)
-    out = grep.result(mode, connector_id, limit, capped=scan_capped)
+    out = grep.result(mode, connector_id, limit, commits, capped=scan_capped)
     if grep.files_capped or scan_capped:
         out["note"] = (f"Only the first {_TEXT_SEARCH_FILES} files under {path!r} were read, so "
                        "a match may be missing; narrow `path` to search the rest.")
@@ -318,9 +318,9 @@ async def _by_index(
         vrids, partial = await _lexical_candidates(retrieval_service, word, user_id, org_id, connector_id)
     except LexicalSearchUnavailableError:
         return {"error": _NEEDS_PATH}
-    paths, records = await _records_holding(graph_provider, org_id, connector_id, vrids, groups, access)
+    paths, records, commits = await _records_holding(graph_provider, org_id, connector_id, vrids, groups, access)
     grep = await _grep(graph_provider, blob_store, org_id, matcher, paths, records, include_tests=include_tests)
-    out = grep.result(mode, connector_id, limit)
+    out = grep.result(mode, connector_id, limit, commits)
     # Residue units put every line holding a word in the index, but files indexed before them gain theirs
     # only from the backfill: until it is done, a missing line in such a file proves nothing.
     reasons = [] if await _residue_backfilled(retrieval_service) else [_UNINDEXED_FILLER]
@@ -410,8 +410,9 @@ async def _lexical_candidates(
 async def _records_holding(
     graph_provider: IGraphDBProvider, org_id: str, connector_id: str, vrids: list[str],
     groups: set[str] | None, access: RecordAccess,
-) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
-    """``(record id -> path, record id -> record)`` for the readable code files with these contents.
+) -> tuple[dict[str, str], dict[str, dict[str, Any]], dict[str, str | None]]:
+    """``(record id -> path, record id -> record, record id -> commit)`` for the readable code files with
+    these contents.
 
     One content can be several files (a vendored copy); each is checked on its own record.
     """
@@ -424,11 +425,11 @@ async def _records_holding(
         records = {k: r for k, r in records.items() if r.get("recordGroupId") in groups}
     readable = await access.readable(records)
     if not readable:
-        return {}, {}
+        return {}, {}, {}
     info = await graph_provider.get_file_paths_for_records(
         org_id=org_id, record_ids=sorted(readable), raise_on_error=True)
     paths = {key: found.file_path for key in readable if (found := info.get(key)) and found.file_path}
-    return paths, {k: records[k] for k in paths}
+    return paths, {k: records[k] for k in paths}, {k: info[k].commit_sha for k in paths}
 
 
 def _in_connector(rows: list[dict[str, Any]] | None, org_id: str, connector_id: str) -> dict[str, dict[str, Any]]:
@@ -441,12 +442,18 @@ def _in_connector(rows: list[dict[str, Any]] | None, org_id: str, connector_id: 
 @dataclass
 class _Grep:
     matches: list[dict[str, Any]]
+    record_ids: list[str]  # the record each match is in
     files_searched: int
     files_capped: bool
     hidden: int
     unreadable: int
 
-    def result(self, mode: str, connector_id: str, limit: int, *, capped: bool = False) -> dict[str, Any]:
+    def result(
+        self, mode: str, connector_id: str, limit: int, commits: dict[str, str | None], *, capped: bool = False,
+    ) -> dict[str, Any]:
+        # Only the files whose matches are shown: another readable copy of a path must not blank their commit.
+        for key, match in zip(self.record_ids[:limit], self.matches[:limit]):
+            saw_commit(match["file_path"], key, commits.get(key))
         out: dict[str, Any] = {
             "mode": mode,
             "connector_id": connector_id,
@@ -473,8 +480,6 @@ async def _grep(
         roles = await get_record_roles(graph_provider, org_id, set(records))
         tests = {k for k in records if roles.get(k) == TEST_ROLE}
         hidden, records = len(tests), {k: r for k, r in records.items() if k not in tests}
-    for key in records:  # in scope and readable: another repo's copy of a path never reaches the result
-        saw_commit(paths[key], key, commits.get(key))
 
     # Only records with stored source count toward the cap: a repo's images, locale
     # and data files would otherwise take the slots and leave its code unread.
@@ -504,7 +509,7 @@ async def _grep(
         return key, lines
 
     loaded = await asyncio.gather(*(load(k) for k in ordered))
-    matches: list[dict[str, Any]] = []
+    found: list[tuple[str, dict[str, Any]]] = []  # (record id, match)
     unreadable = 0
     for key, lines in sorted(loaded, key=lambda kv: paths[kv[0]]):
         if lines is None:
@@ -512,8 +517,9 @@ async def _grep(
             continue
         for line_no, text in lines:
             if matcher.search(text[:_MAX_LINE]):
-                matches.append({"file_path": paths[key], "line": line_no, "text": text.strip()[:200]})
-    return _Grep(matches, len(loaded) - unreadable, files_capped, hidden, unreadable)
+                found.append((key, {"file_path": paths[key], "line": line_no, "text": text.strip()[:200]}))
+    return _Grep([match for _, match in found], [key for key, _ in found], len(loaded) - unreadable,
+                 files_capped, hidden, unreadable)
 
 
 async def _scoped_files(

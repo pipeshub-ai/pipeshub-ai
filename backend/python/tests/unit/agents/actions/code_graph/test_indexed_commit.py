@@ -257,3 +257,37 @@ async def test_a_text_match_takes_its_own_files_commit_not_a_hidden_copys(hidden
                               "connectorId": "conn-other" if hidden_by == "another connector" else CONN}
     out = await _call(_tool(graph), "search_code", pattern="return", mode="text", path="src/b.py")
     assert out["matches"] and out["indexed_commit"] == COMMIT
+
+
+
+def _second_copy_of_b(graph: QueryGraphProvider, **record) -> None:
+    """rec-x: another readable file at src/b.py (a second repo in the same connector), synced at OTHER."""
+    graph.commits["rec-x"] = OTHER
+    graph.code_files["rec-x"] = "src/b.py"
+    graph.records["rec-x"] = {"_key": "rec-x", "orgId": ORG, "connectorId": CONN, "virtualRecordId": "v-x",
+                              **record}
+
+
+async def test_a_text_search_says_the_commit_of_the_file_that_matched() -> None:
+    """Both copies of the path are read; only rec-b holds the text, so only its commit is the answer's."""
+    graph = QueryGraphProvider()
+    _second_copy_of_b(graph)
+    blobs = _blob()
+    blobs.records["v-x"] = {"block_containers": {"blocks": [{
+        "code_metadata": {"qualified_name": "function:other", "kind": "function", "start_line": 1, "end_line": 2},
+        "data": {"text": "def other():\n    pass\n"}}], "block_groups": []}}
+    tool = cg.CodeGraph({"org_id": ORG, "user_id": USER, "graph_provider": graph, "blob_store": blobs})
+    out = await _call(tool, "search_code", pattern="return", mode="text", path="src/b.py")
+    assert out["files_searched"] == 2 and len(out["matches"]) == 1
+    assert out["indexed_commit"] == COMMIT
+
+
+@pytest.mark.parametrize(("hidden_by", "args"), [("the limit", {"limit": 2}),
+                                                 ("the test filter", {})])
+async def test_a_listing_says_only_the_listed_files_commits(hidden_by, args) -> None:
+    """A second src/b.py that the listing leaves out does not blank the listed one's commit."""
+    graph = QueryGraphProvider(file_roles={"rec-x": "test"} if hidden_by == "the test filter" else None)
+    _second_copy_of_b(graph)
+    out = await _call(_tool(graph), "query_code_graph", select="src/", **args)
+    assert [f["path"] for f in out["files"]] == ["src/a.py", "src/b.py"]
+    assert out["indexed_commit"] == COMMIT

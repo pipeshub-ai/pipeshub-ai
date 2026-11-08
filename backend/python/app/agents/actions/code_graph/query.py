@@ -255,6 +255,8 @@ async def _list_children(
     prefix: str,
     connector_id: str,
     limit: int,
+    *,
+    include_tests: bool,
 ) -> dict[str, Any]:
     """Immediate files and subdirectories under a directory prefix.
 
@@ -283,7 +285,7 @@ async def _list_children(
         graph_provider, org_id, user_id, connector_id,
         {key for row in rows if (key := (row.get("_key") or row.get("id")))},
     )
-    files: list[dict[str, Any]] = []
+    files: list[tuple[dict[str, Any], str, str | None]] = []  # (row, record id, commit)
     dirs: dict[str, int] = {}
     for row in rows:
         path = row.get("filePath")
@@ -296,20 +298,25 @@ async def _list_children(
             child = rest.split("/", 1)[0]
             dirs[child] = dirs.get(child, 0) + 1
             continue
-        saw_commit(path, row.get("_key") or row.get("id"), row.get("commitSha"))
-        files.append({
+        files.append(({
             "path": path,
             "language": row.get("language"),
             "role": row.get("fileRole"),
             "select": path,
-        })
+        }, row.get("_key") or row.get("id"), row.get("commitSha")))
+    shown = sorted(files, key=lambda f: f[0]["path"])[:limit]
+    if not include_tests:
+        shown = [f for f in shown if f[0].get("role") != TEST_ROLE]
+    # Only the listed files: a cut or hidden file sharing a listed path must not blank its commit.
+    for row, record_id, commit in shown:
+        saw_commit(row["path"], record_id, commit)
     scanned = len(rows)
     return {
         "directories": [
             {"path": f"{prefix}{name}", "files": n, "select": f"{prefix}{name}/"}
             for name, n in sorted(dirs.items(), key=lambda kv: (-kv[1], kv[0]))
         ][:limit],
-        "files": sorted(files, key=lambda f: f["path"])[:limit],
+        "files": [row for row, _, _ in shown],
         "truncated": scanned >= _LIST_SCAN_LIMIT or len(files) > limit or len(dirs) > limit,
     }
 
@@ -370,13 +377,11 @@ async def query_code_graph_impl(
 
     if _looks_like_directory(select):
         listing = await _list_children(
-            graph_provider, org_id, user_id, select, connector_id, limit
+            graph_provider, org_id, user_id, select, connector_id, limit, include_tests=include_tests,
         )
         # An empty listing means this was never a directory. `conversations/
         # stream` is a URL fragment; answering it with "no such directory" is a
         # dead end for something free text finds.
-        if not include_tests:
-            listing["files"] = [f for f in listing["files"] if f.get("role") != TEST_ROLE]
         if listing["directories"] or listing["files"]:
             return {
                 "select": select,
