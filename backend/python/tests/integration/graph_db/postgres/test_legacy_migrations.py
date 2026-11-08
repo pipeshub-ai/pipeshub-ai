@@ -14,9 +14,11 @@ from typing import TYPE_CHECKING
 import pytest
 
 from app.core.org_context import MissingOrgContext, system
+from app.migrations.kb_apps_migration import run_kb_apps_migration
 from app.migrations.node_relation_migration import (
     LEGACY_ARANGO_COLLECTION,
     LEGACY_NEO4J_RELATIONSHIP_TYPE,
+    run_node_relation_migration,
 )
 from app.schema.node_validator import SchemaValidationError
 from app.services.graph_db.postgres import legacy_migrations
@@ -427,3 +429,40 @@ async def test_kg_holds_the_hierarchy_once_it_is_on_the_current_name(orgs, org_c
     kg = await held(w.p, w.org)
     assert kg["records"]["c1"][3] == "p" and kg["records"]["c2"][3] == "p"
     assert not await differences(w.p, w.org)
+
+
+# ---- the start-up migrations, called as start-up calls them ------------------------------------------------------------------------------
+
+class _Flags:
+    """The configuration store's migration flags, in memory."""
+
+    def __init__(self) -> None:
+        self.values: dict[str, object] = {}
+
+    async def get_config(self, key: str, default: object = None, use_cache: bool = True) -> object:
+        return self.values.get(key, default)
+
+    async def set_config(self, key: str, value: object) -> bool:
+        self.values[key] = value
+        return True
+
+
+async def test_the_start_up_migrations_run_with_no_org_bound(orgs, org_ctx, pg_provider) -> None:
+    """Start-up binds no org: each migration binds its own scope (every org for the edge rename and the org listing, one org for its knowledge
+    bases), so on PostgreSQL the fatal edge rename and the knowledge base migration both complete."""
+    import logging
+    w = orgs()
+    with org_ctx(w.org):
+        await legacy_world(w)
+        await legacy_edges(w)
+    log, flags = logging.getLogger("startup-migrations"), _Flags()
+    renamed = await run_node_relation_migration(graph_provider=pg_provider, config_service=flags, logger=log)
+    assert renamed["success"] is True and renamed["migrated"] >= 5, renamed
+    assert flags.values["/migrations/node_relation_v1"]["done"] is True
+    migrated = await run_kb_apps_migration(graph_provider=pg_provider, config_service=flags, logger=log)
+    assert migrated["kbs_migrated"] >= 2 and "error" not in migrated, migrated
+    with org_ctx(w.org):
+        assert await edges_of(w, LEGACY) == []
+        assert await w.p.count_legacy_kb_record_groups(w.org) == 0
+        assert {r["id"] for r in await rows(w, "SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'apps'")} == {"kb1", "kb2"}   # the hub app went too
+
