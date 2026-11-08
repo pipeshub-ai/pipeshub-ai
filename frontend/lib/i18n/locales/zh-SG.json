@@ -5808,6 +5808,7 @@
       "canvasHint": "图谱图像无法供屏幕阅读器使用。请使用“以表格显示”按钮来阅读和操作每个节点。",
       "selectionGone": "你选择的项目已不可用。",
       "viewGraph": "查看图谱",
+      "viewGraphOf": "查看图谱：{{repo}}",
       "fillerNode": "{{file}} 中的 {{kind}}"
     },
     "capped": "图中只显示此视图的一部分，表格列出全部内容。",

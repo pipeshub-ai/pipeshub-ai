@@ -5915,6 +5915,7 @@
       "canvasHint": "La imagen del grafo no está disponible para lectores de pantalla. Usa el botón «Mostrar como tabla» para leer y usar cada nodo.",
       "selectionGone": "El elemento que seleccionaste ya no está disponible.",
       "viewGraph": "Ver grafo",
+      "viewGraphOf": "Ver grafo de {{repo}}",
       "fillerNode": "{{kind}} en {{file}}"
     },
     "capped": "La imagen muestra solo una parte de esta vista. La tabla lo lista todo.",
