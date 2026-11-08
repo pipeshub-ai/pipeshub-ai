@@ -102,8 +102,9 @@ class _Repo:
 _LANGUAGES = {"py": ("python", "text/x-python"), "cs": ("csharp", "text/x-csharp"), "php": ("php", "text/x-php")}
 
 
-async def _write_repo(graph: IGraphDBProvider, org_id: str, connector_id: str,
-                      group_id: str, files: dict[str, str] = FILES) -> tuple[dict[str, str], _Blobs]:
+async def _write_repo(graph: IGraphDBProvider, org_id: str, connector_id: str, group_id: str,
+                      files: dict[str, str] = FILES, roles: dict[str, str] | None = None,
+                      ) -> tuple[dict[str, str], _Blobs]:
     parser = CodeFileParser()
     blobs = _Blobs()
     record_ids = {path: str(uuid.uuid4()) for path in files}
@@ -119,7 +120,7 @@ async def _write_repo(graph: IGraphDBProvider, org_id: str, connector_id: str,
             version=1, origin=OriginTypes.CONNECTOR, connector_name=Connectors.GITHUB,
             connector_id=connector_id, mime_type=language(path)[1], extension=language(path)[2],
             file_path=path, file_hash=uuid.uuid4().hex, language=language(path)[0],
-            indexing_status=ProgressStatus.COMPLETED.value,
+            indexing_status=ProgressStatus.COMPLETED.value, file_role=(roles or {}).get(path),
         )
         for path in files
     ]
@@ -468,8 +469,8 @@ async def test_a_deleted_files_names_are_kept_and_served_once(repo: _Repo) -> No
 # -- end to end: parse -> project -> build -> an agent tool's answer ---------
 
 
-async def _grant(repo: _Repo, user_key: str, user_id: str) -> None:
-    """A user who owns the repo's files through the connector, as a sync leaves it."""
+async def _grant(repo: _Repo, user_key: str, user_id: str, record_ids: list[str] | None = None) -> None:
+    """A user who owns the repo's files (or just ``record_ids``) through the connector, as a sync leaves it."""
     g, now = repo.graph, get_epoch_timestamp_in_ms()
     await g.batch_upsert_nodes(
         [{"id": user_key, "userId": user_id, "orgId": repo.org_id, "email": f"{user_id}@example.com",
@@ -490,7 +491,7 @@ async def _grant(repo: _Repo, user_key: str, user_id: str) -> None:
                 "createdAtTimestamp": now, "updatedAtTimestamp": now, **extra}
 
     await g.batch_create_edges(
-        [edge(rid, RECORDS, role="OWNER", type="USER") for rid in repo.record_ids.values()],
+        [edge(rid, RECORDS, role="OWNER", type="USER") for rid in (repo.record_ids.values() if record_ids is None else record_ids)],
         collection=CollectionNames.PERMISSION.value,
     )
     await g.batch_create_edges(

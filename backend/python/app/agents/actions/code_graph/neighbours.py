@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import RecordRelations
@@ -38,7 +39,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["DEFAULT_NEIGHBOR_LIMIT", "IMPACT_RELATIONS", "MAX_NEIGHBOUR_DEPTH", "MAX_IMPACT_DEPTH", "get_neighbour_impl", "impact_impl", "DEFAULT_IMPACT_DEPTH"]
+__all__ = ["DEFAULT_NEIGHBOR_LIMIT", "IMPACT_RELATIONS", "MAX_NEIGHBOUR_DEPTH", "MAX_IMPACT_DEPTH", "Walk", "get_neighbour_impl", "impact_impl", "walk_neighbours", "DEFAULT_IMPACT_DEPTH"]
 
 DEFAULT_NEIGHBOR_LIMIT = 100
 # A neighbour walk is for tracing a specific chain, not surveying the repo:
@@ -264,6 +265,127 @@ async def _name_candidates(
     }
 
 
+@dataclass
+class Walk:
+    """What a neighbour walk found, before anyone words it.
+
+    ``rows`` are edge rows in walk order whose far block is in ``blocks``: the
+    caller can read it, it is in the connector, and it is not test code unless
+    asked for. Each carries ``key`` (block key), ``hop``, ``_origin`` (the anchor
+    the chain started from) and ``_via`` (the node one hop back).
+    """
+    anchors: list[dict[str, Any]]
+    rows: list[dict[str, Any]]
+    blocks: dict[str, dict[str, Any]]
+    hidden_tests: set[str] = field(default_factory=set)
+    fanout_capped: bool = False
+    incomplete: bool = False
+
+
+async def walk_neighbours(
+    graph_provider: IGraphDBProvider,
+    org_id: str,
+    user_id: str,
+    anchors: list[dict[str, Any]],
+    *,
+    relations: list[str],
+    direction: str,
+    connector_id: str,
+    depth: int = 1,
+    include_tests: bool = False,
+    row_limit: int | None = None,
+    access: RecordAccess | None = None,
+) -> Walk:
+    """Walk ``depth`` hops from ``anchors`` over ``relations``, reading only what the caller may.
+
+    ``anchors`` are block documents the caller already resolved and may read.
+    Pass the caller's ``access`` to reuse its verdicts; a second check of the
+    same record then costs no query. ``row_limit`` stops each hop's read at that
+    many readable rows (one more is read to tell "exactly" from "more");
+    the default is the per-hop cap the tools use.
+    """
+    access = access or RecordAccess(graph_provider, org_id, user_id)
+    fanout_capped = len(anchors) > _NEIGHBOUR_FANOUT
+    incomplete = False
+    anchors = anchors[:_NEIGHBOUR_FANOUT]
+
+    anchor_names = {k: a.get("qualifiedName") for a in anchors
+                    if (k := a.get("_key") or a.get("id"))}
+    anchor_keys = list(anchor_names)
+    # Every row is attributed to the anchor its chain started from, not to the
+    # node one hop back, so a whole-file walk can say which symbol reaches what.
+    origin_of = {k: k for k in anchor_keys}
+    visited = set(anchor_keys)
+    frontier = list(anchor_keys)
+    rows: list[dict[str, Any]] = []
+    seen_rows: set[tuple[str, str | None, str | None, str | None]] = set()
+    for hop in range(1, depth + 1):
+        if not frontier:
+            break
+        if len(frontier) > _NEIGHBOUR_FANOUT:
+            fanout_capped = True
+        expand = frontier[:_NEIGHBOUR_FANOUT]
+        if row_limit is None:
+            hop_rows = min(_HOP_ROW_LIMIT, len(expand) * _ROWS_PER_ANCHOR)
+        else:
+            hop_rows = row_limit
+        # One readable row past the limit is the only way to know the limit bit:
+        # exactly `hop_rows` rows is a complete answer, one more is not.
+        batch, over, spent = await _readable_neighbour_rows(
+            graph_provider, org_id, access, expand, relations, direction,
+            page=hop_rows + 1, budget=_HOP_SCAN_LIMIT, want=hop_rows,
+            connector_id=connector_id, include_tests=include_tests,
+            accept=lambda r: r.get("collection") == _BLOCKS,
+        )
+        fanout_capped = fanout_capped or over
+        incomplete = incomplete or spent
+
+        next_frontier: list[str] = []
+        for row in batch:
+            key = row.get("key")
+            if not key:
+                continue
+            back = row.get("anchorKey")
+            origin = origin_of.get(back, back)
+            # A walk that comes back to where it started (A calls B calls A) or
+            # reaches a node twice by different routes from one origin adds rows,
+            # not facts. Two symbols of a file that both call it are two facts.
+            seen_key = (key, row.get("relationshipType"), row.get("direction"), origin)
+            if (hop > 1 and key in anchor_names) or seen_key in seen_rows:
+                continue
+            seen_rows.add(seen_key)
+            row["hop"] = hop
+            row["_origin"] = origin
+            row["_via"] = back
+            rows.append(row)
+            if row.get("collection") == _BLOCKS and key not in visited:
+                visited.add(key)
+                origin_of[key] = origin
+                next_frontier.append(key)
+        # The next hop starts only from what the caller can read: rows reached
+        # through a hidden file would show what that file calls (S-7).
+        if hop < depth and next_frontier:
+            readable_next = await _readable_keys(graph_provider, org_id, access, next_frontier)
+            next_frontier = [k for k in next_frontier if k in readable_next]
+        frontier = next_frontier
+
+    block_keys = [r["key"] for r in rows if r.get("collection") == _BLOCKS and r.get("key")]
+    if depth > 1:
+        block_keys += [r["_via"] for r in rows if r.get("hop", 1) > 1 and r.get("_via")]
+    blocks = await _readable_blocks(graph_provider, org_id, access, block_keys,
+                                     connector_id=connector_id)
+
+    hidden_tests: set[str] = set()
+    if not include_tests:
+        rid_set = {b.get("recordId") for b in blocks.values() if b.get("recordId")}
+        roles = await get_record_roles(graph_provider, org_id, rid_set)
+        hidden_tests = {k for k, b in blocks.items() if roles.get(b.get("recordId")) == TEST_ROLE}
+        blocks = {k: b for k, b in blocks.items() if k not in hidden_tests}
+
+    present = [row for row in rows if row.get("key") in blocks]
+    return Walk(anchors, present, blocks, hidden_tests, fanout_capped, incomplete)
+
+
 async def get_neighbour_impl(
     *,
     graph_provider: IGraphDBProvider,
@@ -333,80 +455,16 @@ async def get_neighbour_impl(
             graph_provider, anchors, relations, qualified_name, direction,
             connector_id, org_id, include_tests=include_tests, access=access,
         )
-    fanout_capped = len(anchors) > _NEIGHBOUR_FANOUT
-    incomplete = False
-    anchors = anchors[:_NEIGHBOUR_FANOUT]
-
+    walk = await walk_neighbours(
+        graph_provider, org_id, user_id, anchors, relations=relations, direction=direction,
+        depth=depth, connector_id=connector_id, include_tests=include_tests, access=access,
+    )
+    anchors, blocks, hidden_tests = walk.anchors, walk.blocks, walk.hidden_tests
+    fanout_capped, incomplete = walk.fanout_capped, walk.incomplete
     anchor_names = {k: a.get("qualifiedName") for a in anchors
                     if (k := a.get("_key") or a.get("id"))}
     anchor_keys = list(anchor_names)
     anchor_order = {k: i for i, k in enumerate(anchor_keys)}
-    # Every row is attributed to the anchor its chain started from, not to the
-    # node one hop back, so a whole-file walk can say which symbol reaches what.
-    origin_of = {k: k for k in anchor_keys}
-    visited = set(anchor_keys)
-    frontier = list(anchor_keys)
-    rows: list[dict[str, Any]] = []
-    seen_rows: set[tuple[str, str | None, str | None, str | None]] = set()
-    for hop in range(1, depth + 1):
-        if not frontier:
-            break
-        if len(frontier) > _NEIGHBOUR_FANOUT:
-            fanout_capped = True
-        expand = frontier[:_NEIGHBOUR_FANOUT]
-        row_limit = min(_HOP_ROW_LIMIT, len(expand) * _ROWS_PER_ANCHOR)
-        # One readable row past the limit is the only way to know the limit bit:
-        # exactly `row_limit` rows is a complete answer, one more is not.
-        batch, over, spent = await _readable_neighbour_rows(
-            graph_provider, org_id, access, expand, relations, direction,
-            page=row_limit + 1, budget=_HOP_SCAN_LIMIT, want=row_limit,
-            connector_id=connector_id, include_tests=include_tests,
-            accept=lambda r: r.get("collection") == _BLOCKS,
-        )
-        fanout_capped = fanout_capped or over
-        incomplete = incomplete or spent
-
-        next_frontier: list[str] = []
-        for row in batch:
-            key = row.get("key")
-            if not key:
-                continue
-            back = row.get("anchorKey")
-            origin = origin_of.get(back, back)
-            # A walk that comes back to where it started (A calls B calls A) or
-            # reaches a node twice by different routes from one origin adds rows,
-            # not facts. Two symbols of a file that both call it are two facts.
-            seen_key = (key, row.get("relationshipType"), row.get("direction"), origin)
-            if (hop > 1 and key in anchor_names) or seen_key in seen_rows:
-                continue
-            seen_rows.add(seen_key)
-            row["hop"] = hop
-            row["_origin"] = origin
-            row["_via"] = back
-            rows.append(row)
-            if row.get("collection") == _BLOCKS and key not in visited:
-                visited.add(key)
-                origin_of[key] = origin
-                next_frontier.append(key)
-        # The next hop starts only from what the caller can read: rows reached
-        # through a hidden file would show what that file calls (S-7).
-        if hop < depth and next_frontier:
-            readable_next = await _readable_keys(graph_provider, org_id, access, next_frontier)
-            next_frontier = [k for k in next_frontier if k in readable_next]
-        frontier = next_frontier
-
-    block_keys = [r["key"] for r in rows if r.get("collection") == _BLOCKS and r.get("key")]
-    if depth > 1:
-        block_keys += [r["_via"] for r in rows if r.get("hop", 1) > 1 and r.get("_via")]
-    blocks = await _readable_blocks(graph_provider, org_id, access, block_keys,
-                                     connector_id=connector_id)
-
-    hidden_tests: set[str] = set()
-    if not include_tests:
-        rid_set = {b.get("recordId") for b in blocks.values() if b.get("recordId")}
-        roles = await get_record_roles(graph_provider, org_id, rid_set)
-        hidden_tests = {k for k, b in blocks.items() if roles.get(b.get("recordId")) == TEST_ROLE}
-        blocks = {k: b for k, b in blocks.items() if k not in hidden_tests}
 
     # Rank each row among its own anchor's, then take rank 0 from every anchor
     # before rank 1 from any: a whole-file walk otherwise spends the entire
@@ -417,8 +475,7 @@ async def get_neighbour_impl(
     per_origin: dict[str, int] = {}
     # Ordered by what the rows say, not by the order the database returned
     # them in, so the same walk reads the same twice (A-8).
-    present = [row for row in rows if row.get("key") in blocks]
-    present.sort(key=lambda row: (
+    present = sorted(walk.rows, key=lambda row: (
         row.get("hop", 1), row.get("relationshipType") or "",
         blocks[row["key"]].get("filePath") or "", blocks[row["key"]].get("qualifiedName") or "",
         row.get("direction") or "",
