@@ -43,23 +43,29 @@ class Loaded:
     apps: list[str] = field(default_factory=list)
 
 
-def vrids_for(world: World, share: bool) -> dict[str, str]:
-    """A virtual record per record; with `share`, the first two live records of each app share one (deduplicated content)."""
+def vrids_for(world: World, share: bool | str) -> dict[str, str]:
+    """A virtual record per record; with `share`, the first two live records of each app share one (deduplicated content). With
+    ``"cross"`` the first live record of every app shares one virtual record with that of the others (the same content in two connectors)."""
     out: dict[str, str] = {}
     first: dict[str, str] = {}
     for n in world.nodes:
         if n.kind != "record" or not n.connector:
             continue
-        if share and n.connector in first and not n.deleted and not n.placeholder:
+        if share is True and n.connector in first and not n.deleted and not n.placeholder:
             out[n.id] = out[first[n.connector]]
         else:
             out[n.id] = f"v-{n.id}"
             if not n.deleted and not n.placeholder:
                 first.setdefault(n.connector, n.id)
+    if share == "cross":
+        apps = {n.id for n in world.nodes if n.kind == "app"}
+        for connector, rid in first.items():
+            if connector in apps:
+                out[rid] = "v-cross"
     return out
 
 
-async def load(vdb: IVectorDBService, collection: str, worlds: dict[str, World], *, share: bool = False,
+async def load(vdb: IVectorDBService, collection: str, worlds: dict[str, World], *, share: bool | str = False,
                chunks: int = 1, sparse: bool = False) -> Loaded:
     """Points for every live record of every world, ids namespaced `<name>:`, no scope fields yet. With `sparse` every point also
     carries the lexical term 1 (for the stores that search it)."""

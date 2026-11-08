@@ -112,7 +112,7 @@ class Env:
     loaded: Loaded
     w0: World
     world: World
-    share: bool
+    share: bool | str
     chunks: int
     backfill: ScopeBackfill
     job: ScopeRewriteJob
@@ -125,7 +125,7 @@ class Env:
     unstamped: int = 0
 
     @classmethod
-    async def make(cls, world: World, vdb: IVectorDBService | None = None, *, share: bool = False, chunks: int = 1, settle_seconds: float = 0.2,
+    async def make(cls, world: World, vdb: IVectorDBService | None = None, *, share: bool | str = False, chunks: int = 1, settle_seconds: float = 0.2,
                    collection: str = COLL) -> Env:
         vdb = vdb or InMemoryVectorDBService()
         loaded = await load(vdb, collection, {NAME: world}, share=share, chunks=chunks)
