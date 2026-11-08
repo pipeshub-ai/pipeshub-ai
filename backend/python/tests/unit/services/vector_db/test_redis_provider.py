@@ -1344,7 +1344,7 @@ class TestRedisUpdatePayloadByIds:
 
 class TestRedisUpdatePayloadsByIdsFence:
     @staticmethod
-    def _pipeline(mock_redis_client, owners):
+    def _pipeline(mock_redis_client: MagicMock, owners: list) -> MagicMock:
         pipeline = mock_redis_client.pipeline.return_value
         pipeline.execute_command = MagicMock()
         pipeline.execute = AsyncMock(side_effect=[owners, [1] * len(owners)])

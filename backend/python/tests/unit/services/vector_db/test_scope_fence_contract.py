@@ -45,7 +45,7 @@ async def test_the_default_groups_points_that_share_a_payload_and_passes_the_ext
     calls: list[tuple] = []
 
     class Spy(InMemoryVectorDBService):
-        async def update_payload_by_ids(self, collection_name, point_ids, payload, *, org_id, **extra):  # type: ignore[override]
+        async def update_payload_by_ids(self, collection_name, point_ids, payload, *, org_id, **extra) -> None:  # type: ignore[override]
             calls.append((sorted(point_ids), payload, org_id, extra))
 
     await Spy().update_payloads_by_ids("c", {"a": {"k": 1}, "b": {"k": 2}, "c": {"k": 1}}, org_id=ORG, computed_at="t")

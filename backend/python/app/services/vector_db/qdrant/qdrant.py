@@ -999,7 +999,8 @@ class QdrantService(IVectorDBService):
         operation in the store. Without a fence it is ``update_payload_by_ids`` for each distinct payload."""
         fence = extra.pop("fence", None)
         if fence is None:
-            return await super().update_payloads_by_ids(collection_name, updates, org_id=org_id, **extra)
+            await super().update_payloads_by_ids(collection_name, updates, org_id=org_id, **extra)
+            return
         self._assert_connected()
         if is_missing(org_id):
             raise OrgRequired("update_payload_by_ids needs the org of the points")

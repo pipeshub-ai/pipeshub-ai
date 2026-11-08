@@ -1,4 +1,4 @@
-# ruff: noqa: ANN401, ANN201, ANN202
+# ruff: noqa: ANN401
 """The conditional write of the stores: a write that carries the generation its graph was read at is refused, point by point and
 atomically, where a newer one has written.
 

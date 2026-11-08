@@ -49,8 +49,8 @@ import asyncio
 import json
 import re
 import time
-from dataclasses import replace
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any, Dict, List, Optional, Union
 
 from opensearchpy import AsyncOpenSearch  # type: ignore
@@ -1351,7 +1351,8 @@ class OpenSearchService(IVectorDBService):
         for one whose ``scopeFence`` is above ``n``. Without a fence it is ``update_payload_by_ids`` for each distinct payload."""
         fence = extra.pop("fence", None)
         if fence is None:
-            return await super().update_payloads_by_ids(collection_name, updates, org_id=org_id, **extra)
+            await super().update_payloads_by_ids(collection_name, updates, org_id=org_id, **extra)
+            return
         await self._assert_connected()
         if is_missing(org_id):
             raise OrgRequired("update_payload_by_ids needs the org of the points")
