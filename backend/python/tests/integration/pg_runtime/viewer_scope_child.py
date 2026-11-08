@@ -3,11 +3,15 @@
 
 import asyncio
 import json
+import logging
 import sys
 import time
 from types import SimpleNamespace
 
-from app.services.permissions.cache import ViewerScopeCache
+# Before app is imported: its log lines then go to stderr, not to the stdout this script answers on (docs/logging.md).
+logging.basicConfig()
+
+from app.services.permissions.cache import ViewerScopeCache  # noqa: E402
 
 
 class Cfg:
