@@ -558,7 +558,7 @@ def _reindex_connector(issue: dict, scheme_reads: list) -> JiraConnector:
     ds.get_issue = AsyncMock(return_value=_resp(200, issue))
     c._get_fresh_datasource = AsyncMock(return_value=ds)
     c._call_with_retry = AsyncMock(side_effect=scheme_reads)
-    c._browse_issue_holders = {"PROJ": []}  # the permission scheme was read by the last sync
+    c._read_browse_issue_holders = AsyncMock(return_value=[])  # the scheme, read fresh by the reindex
     return c
 
 
@@ -1366,7 +1366,7 @@ class TestBrowseHoldersNamingPeoplePerIssue:
     @pytest.mark.asyncio
     async def test_a_personal_connector_reads_no_holders(self) -> None:
         c = self._scheme_connector([])
-        ctx = await c._attach_browse_holders(IssueSecurityContext(knowledge=SchemeKnowledge.NONE, enforce=False), "PROJ", read_missing=True)
+        ctx = await c._attach_browse_holders(IssueSecurityContext(knowledge=SchemeKnowledge.NONE, enforce=False), "PROJ", fresh=True)
         assert ctx.browse_holders == [] and c._get_fresh_datasource.await_count == 0
 
     # The checkpoint keeps a digest of the holders; no issue's `updated` moves when they change.
@@ -1463,15 +1463,75 @@ class TestBrowseHoldersNamingPeoplePerIssue:
     async def test_a_reindex_applies_the_holders_to_the_issue(self) -> None:
         c = _reindex_connector(_issue(None, updated="2025-01-01T00:00:00.000+0000"), [_resp(404, {"errorMessages": [
             "Security level for project 10000 does not exist."]})])
-        c._browse_issue_holders = {"PROJ": [{"type": "reporter"}]}
+        c._read_browse_issue_holders = AsyncMock(return_value=[{"type": "reporter"}])
         record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
         assert {p.email for p in perms} == {"rep@x.com"} and record.access_rule == AccessRule.OPEN
+
+    @pytest.mark.asyncio
+    async def test_a_reindex_reads_the_holders_fresh_and_leaves_the_sync_cache_alone(self) -> None:
+        """A holder removed in Jira since the last sync must not be granted on a changed issue."""
+        c = _reindex_connector(_issue(None, updated="2025-01-01T00:00:00.000+0000"), [_resp(404, {"errorMessages": [
+            "Security level for project 10000 does not exist."]})])
+        c._browse_issue_holders = {"PROJ": [{"type": "reporter"}]}  # the last sync saw the reporter holder
+        c._call_with_retry = AsyncMock(side_effect=[
+            _resp(404, {"errorMessages": ["Security level for project 10000 does not exist."]}),
+            _resp(200, {"id": 7}), _resp(200, {"permissions": []})])  # the scheme, its holder since removed
+        del c._read_browse_issue_holders  # use the real one
+        _, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
+        assert perms == []
+        assert c._browse_issue_holders == {"PROJ": [{"type": "reporter"}]}
+
+    @pytest.mark.asyncio
+    async def test_a_reindex_that_closes_an_issue_leaves_the_retry_marker_and_a_clean_sync_restores_the_reporter(
+        self,
+    ) -> None:
+        digest = self._none(self.HOLDERS).browse_fingerprint()
+        point = {"last_sync_time": 5, "last_issue_updated": 1_700_000_000_000, "issue_placement": ISSUE_PLACEMENT,
+                 "security_levels": json.dumps(_present().level_fingerprints()), "browse_holders": digest}
+        c = _reindex_connector(_issue(None, updated="2025-01-01T00:00:00.000+0000"), [_resp(404, {"errorMessages": [
+            "Security level for project 10000 does not exist."]})])
+        c._read_browse_issue_holders = AsyncMock(return_value=None)
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda _key: dict(point))
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda _key, data: point.update(data))
+        _, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
+        assert perms == [] and point["browse_holders"] == "?"  # closed, as an explicit null level must be
+
+        # The next sync reads the same holders (unchanged digest) and re-reads every stored issue.
+        c._browse_issue_holders["PROJ"] = self.HOLDERS
+        c._load_issue_security = AsyncMock(return_value=_present())
+        calls = []
+
+        async def fetch(*a, **kw) -> AsyncIterator:
+            calls.append(kw)
+            return
+            yield
+
+        c._fetch_issues_batched = fetch
+        await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
+        assert len(calls) == 2 and calls[1]["stored_only"] is True and point["browse_holders"] == digest
+
+    @pytest.mark.asyncio
+    async def test_a_failed_marker_save_is_logged_and_the_issue_is_still_closed(self) -> None:
+        c = _reindex_connector(_issue(None, updated="2025-01-01T00:00:00.000+0000"), [_resp(404, {"errorMessages": [
+            "Security level for project 10000 does not exist."]})])
+        c._read_browse_issue_holders = AsyncMock(return_value=None)
+        c._get_project_sync_checkpoint = AsyncMock(side_effect=RuntimeError("store down"))
+        record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
+        assert perms == [] and record.access_rule == AccessRule.STRICT
+
+    def test_a_malformed_grant_or_holder_is_skipped_and_the_rest_are_kept(self) -> None:
+        grants = ["x", None, {"permission": "BROWSE_PROJECTS", "holder": "reporter"},
+                  {"permission": "BROWSE_PROJECTS", "holder": None},
+                  {"permission": "BROWSE_PROJECTS", "holder": {"type": "assignee"}}]
+        assert JiraConnector._browse_issue_holders_of(grants) == [{"type": "assignee"}]
+        assert JiraConnector._browse_issue_holders_of(None) == []
 
     @pytest.mark.asyncio
     async def test_a_reindex_that_cannot_read_the_scheme_still_applies_the_change_and_keeps_the_grants(self) -> None:
         c = _reindex_connector(_issue(None, updated="2025-01-01T00:00:00.000+0000"), [_resp(404, {"errorMessages": [
             "Security level for project 10000 does not exist."]}), _resp(403, {})])
-        c._browse_issue_holders = {}
+        c._read_browse_issue_holders = AsyncMock(return_value=None)
         record, perms = await c._check_and_fetch_updated_issue(_stored_ticket(), {"acc-1": _users()[0]})
         assert record.source_updated_at == c._parse_jira_timestamp("2025-01-01T00:00:00.000+0000")
         # The payload says the level is null: the old level grants go, as on main.

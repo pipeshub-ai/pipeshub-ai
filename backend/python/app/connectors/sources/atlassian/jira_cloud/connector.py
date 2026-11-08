@@ -2860,51 +2860,64 @@ class JiraConnector(BaseConnector):
             return None
 
     @staticmethod
-    def _browse_issue_holders_of(permission_grants: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        holders = (
-            g.get("holder") or {} for g in permission_grants if g.get("permission") == BROWSE_PROJECTS_PERMISSION
-        )
-        return [h for h in holders if h.get("type") in BROWSE_ISSUE_HOLDER_TYPES]
+    def _browse_issue_holders_of(permission_grants: list[Any]) -> list[dict[str, Any]]:
+        """The per-issue Browse holders of a scheme's grants; a malformed grant or holder is skipped."""
+        found: list[dict[str, Any]] = []
+        for grant in permission_grants if isinstance(permission_grants, list) else []:
+            if not isinstance(grant, dict) or grant.get("permission") != BROWSE_PROJECTS_PERMISSION:
+                continue
+            holder = grant.get("holder")
+            if isinstance(holder, dict) and holder.get("type") in BROWSE_ISSUE_HOLDER_TYPES:
+                found.append(holder)
+        return found
 
     async def _attach_browse_holders(
-        self, security: IssueSecurityContext, project_key: str, *, read_missing: bool = False,
+        self, security: IssueSecurityContext, project_key: str, *, fresh: bool = False,
     ) -> IssueSecurityContext:
-        """Give the context the project's per-issue Browse holders, from this sync's scheme read.
-        ``read_missing`` reads the scheme when it has not been (a reindex between syncs). They stay
+        """Give the context the project's per-issue Browse holders: from this sync's scheme read, or
+        with ``fresh`` (a reindex between syncs) read now, leaving the sync's copy alone. They stay
         None when the scheme could not be read."""
         if security.enforce:
-            holders = await self._read_browse_issue_holders(project_key) if read_missing else (
+            holders = await self._read_browse_issue_holders(project_key) if fresh else (
                 self._browse_issue_holders.get(project_key)
             )
             security.browse_holders = holders
             security.custom_field_ids = sorted({
                 *security.custom_field_ids, *custom_field_ids_from_members({"browse": holders or []}),
             })
+            if fresh and holders is None:
+                await self._mark_browse_holders_unread(project_key)
         return security
 
+    async def _mark_browse_holders_unread(self, project_key: str) -> None:
+        """A reindex that could not read the holders may have dropped a stored reporter or assignee
+        grant; the `?` marker makes the next sync that reads them re-read the project's issues."""
+        try:
+            stored = ((await self._get_project_sync_checkpoint(project_key)) or {}).get("browse_holders") or ""
+            if stored not in ("", "?"):
+                await self._update_project_sync_checkpoint(project_key, browse_holders="?")
+        except Exception as e:
+            self.logger.warning("Could not mark the Browse holders of %s unread: %s", project_key, e)
+
     async def _read_browse_issue_holders(self, project_key: str) -> list[dict[str, Any]] | None:
-        if project_key not in self._browse_issue_holders:
-            try:
-                scheme = await self._call_with_retry(
-                    lambda ds: ds.get_assigned_permission_scheme(projectKeyOrId=project_key),
-                    ctx=f"permission scheme for {project_key}",
-                )
-                scheme_id = scheme.json().get("id") if scheme.status == HttpStatusCode.OK.value else None
-                if scheme_id is None:
-                    return None
-                grants = await self._call_with_retry(
-                    lambda ds: ds.get_permission_scheme_grants(schemeId=scheme_id, expand="all"),
-                    ctx=f"permission grants for {project_key}",
-                )
-                if grants.status != HttpStatusCode.OK.value:
-                    return None
-                self._browse_issue_holders[project_key] = self._browse_issue_holders_of(
-                    grants.json().get("permissions", [])
-                )
-            except Exception as e:
-                self.logger.warning("Could not read the permission scheme of %s: %s", project_key, e)
+        try:
+            scheme = await self._call_with_retry(
+                lambda ds: ds.get_assigned_permission_scheme(projectKeyOrId=project_key),
+                ctx=f"permission scheme for {project_key}",
+            )
+            scheme_id = scheme.json().get("id") if scheme.status == HttpStatusCode.OK.value else None
+            if scheme_id is None:
                 return None
-        return self._browse_issue_holders[project_key]
+            grants = await self._call_with_retry(
+                lambda ds: ds.get_permission_scheme_grants(schemeId=scheme_id, expand="all"),
+                ctx=f"permission grants for {project_key}",
+            )
+            if grants.status != HttpStatusCode.OK.value:
+                return None
+            return self._browse_issue_holders_of(grants.json().get("permissions", []))
+        except Exception as e:
+            self.logger.warning("Could not read the permission scheme of %s: %s", project_key, e)
+            return None
 
     def _keeps_stored_grants(self, record: Record) -> bool:
         context = self._issue_security.get(getattr(record, "external_record_group_id", None))
@@ -7167,7 +7180,7 @@ class JiraConnector(BaseConnector):
             if security is None:
                 security = await self._attach_browse_holders(
                     self._hold_levels_naming_unread_roles(await self._load_issue_security(project_ref, cached=False)),
-                    project_ref, read_missing=True,
+                    project_ref, fresh=True,
                 )
                 if security_by_project is not None:
                     security_by_project[project_ref] = security
