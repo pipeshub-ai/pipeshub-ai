@@ -704,3 +704,11 @@ async def test_embedding_health_check_does_not_log_the_configs() -> None:
         await initialize_embedding_model(request, configs)
     line = TextFormatter("%(message)s").format(records[0])
     assert line == "Starting embedding health check | count=1"
+
+
+def test_a_number_under_a_non_credential_name_skips_the_redactor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The credential-name gate keeps the pair probe off the hot path (duration_ms, tokens_in on every log_event line)."""
+    spy = MagicMock(side_effect=L.redact_secrets_in_text)
+    monkeypatch.setattr(L, "redact_secrets_in_text", spy)
+    L.log_record_fields(_record(duration_ms=1834, tokens_in=48211, ratio=0.5))
+    spy.assert_not_called()
