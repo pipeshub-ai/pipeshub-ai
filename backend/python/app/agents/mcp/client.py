@@ -23,6 +23,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any, Optional
+from urllib.parse import urlsplit
 
 import anyio
 import httpx
@@ -709,7 +710,7 @@ class MCPClientManager:
                     challenge=from_wire.challenge,
                 )
         elif isinstance(leaf, MCPError) and _is_refused_redirect(leaf):
-            logger.warning(f"MCP server {self.config.id} redirected elsewhere: {redact_urls_in_text(leaf.message)}")
+            self._log_refused_redirect(leaf)
             error = MCPUrlBlockedError(_REFUSED_REDIRECT)
         elif isinstance(leaf, httpx2.HTTPStatusError) and leaf.response.is_redirect:
             error = MCPUrlBlockedError(_REFUSED_REDIRECT)
@@ -912,6 +913,14 @@ class MCPClientManager:
             session.lost = True
         return failed
 
+    def _log_refused_redirect(self, error: MCPError) -> None:
+        """The target's host only: the rest of the SDK's message is the server's Location header, which a server controls."""
+        target = error.message.removeprefix("Redirect to ").split(" ", 1)[0]
+        log_event(
+            logger, "mcp.redirect_refused", level=logging.WARNING,
+            mcp_server_id=self.config.id, target_host=urlsplit(target).hostname or "unknown",
+        )
+
     def _operation_error(
         self, session: _Session, error: MCPError, record: wire.WireRecord, *, method: str, what: str,
         may_have_run_once_taken: bool,
@@ -945,13 +954,14 @@ class MCPClientManager:
         if _is_sdk_timeout(error, method):
             return TimeoutError(f"The MCP server didn't answer {what} within {call_timeout(self.config):g}s")
         if _is_refused_redirect(error):
-            logger.warning(f"MCP server {self.config.id} redirected elsewhere: {redact_urls_in_text(error.message)}")
+            self._log_refused_redirect(error)
             return MCPUrlBlockedError(_REFUSED_REDIRECT)
         if error.code == CONNECTION_CLOSED and error.message == _SDK_CONNECTION_CLOSED:
             session.lost = True
             if session.runner.failure is not None:
-                logger.warning(
-                    f"MCP session for {self.config.id} ({self.config.name}) ended: {_describe_error(session.runner.failure)}"
+                log_event(
+                    logger, "mcp.session.ended", level=logging.WARNING,
+                    mcp_server_id=self.config.id, error_type=_innermost_type(session.runner.failure),
                 )
             return MCPConnectionLostError("The connection to the MCP server closed.")
         if error.code == CONNECTION_CLOSED and error.message.startswith(_SDK_STREAM_LOST):

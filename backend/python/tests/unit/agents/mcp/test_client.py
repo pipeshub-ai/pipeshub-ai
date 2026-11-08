@@ -1478,3 +1478,44 @@ class TestHttpReadTimeout:
     @pytest.mark.parametrize(("call_timeout", "read_timeout"), [(None, 300.0), (60, 300.0), (280, 310.0), (600, 630.0)])
     def test_never_shorter_than_the_call_or_the_sdk_default(self, call_timeout: float | None, read_timeout: float) -> None:
         assert http_read_timeout(_http_config(call_timeout_seconds=call_timeout)) == read_timeout
+
+
+class TestNoServerTextInTheLog:
+    """A refused redirect and an ended session log fields, not the server's or the SDK's text."""
+
+    async def test_a_refused_redirect_logs_its_target_host_only(self, sdk: _Script, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        manager = await _open(sdk)
+        sdk.answer = _answer_with(error=MCPError(-32600, "Redirect to https://other.example.net/p?k=S3CRET not followed; S3CRET-TEXT"))
+
+        with pytest.raises(MCPUrlBlockedError):
+            await manager.call_tool_in_session("search", {})
+        (record,) = [r for r in caplog.records if r.getMessage() == "mcp.redirect_refused"]
+        assert record.levelno == logging.WARNING
+        assert log_record_fields(record)["target_host"] == "other.example.net"
+        assert "S3CRET" not in caplog.text
+
+    async def test_a_refused_redirect_while_opening_logs_its_target_host_only(
+        self, sdk: _Script, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        caplog.set_level(logging.DEBUG)
+        await TestWhatAFailedConnectSays._open_failing(
+            self, sdk, lambda: _answered(307), MCPError(-32600, "Redirect to https://elsewhere.example.net/mcp not followed; S3CRET-TEXT"),
+        )
+        (record,) = [r for r in caplog.records if r.getMessage() == "mcp.redirect_refused"]
+        assert log_record_fields(record)["target_host"] == "elsewhere.example.net"
+        assert "S3CRET" not in caplog.text
+
+    async def test_an_ended_session_logs_the_failures_type_only(self, sdk: _Script, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        manager = await _open(sdk, _config())
+        assert manager._session is not None
+        manager._session.runner.failure = RuntimeError("server said S3CRET-TEXT")
+        sdk.answer = _answer_with(error=MCPError(CONNECTION_CLOSED, "Connection closed"))
+
+        with pytest.raises(MCPConnectionLostError):
+            await manager.call_tool_in_session("create_issue", {})
+        (record,) = [r for r in caplog.records if r.getMessage() == "mcp.session.ended"]
+        assert record.levelno == logging.WARNING
+        assert log_record_fields(record)["error_type"] == "RuntimeError"
+        assert "S3CRET" not in caplog.text

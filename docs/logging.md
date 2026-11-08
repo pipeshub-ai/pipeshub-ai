@@ -251,19 +251,23 @@ the batch is launched before the calls are dispatched.
 | `mcp.retry` | WARNING; `reason=renegotiate` INFO | `mcp_server_id`, `op` (connect, list, call), `reason` (token_refresh, resend, relist, renegotiate), `error_type` |
 | `mcp.discover.end` | a failure at its class's level; `reason=no_attached_tools` WARNING | `mcp_server_id`, `outcome`, `error_class`, `mcp_reason`, `error_type`, `source`, `duration_ms` |
 | `mcp.result.schema_mismatch` | WARNING (the result is kept) | `error_type` |
+| `mcp.redirect_refused` | WARNING (the call fails with a blocked-URL error) | `mcp_server_id`, `target_host` |
+| `mcp.session.ended` | WARNING, when a closed connection had a recorded cause | `mcp_server_id`, `error_type` |
 | `mcp.load.end` | INFO, once per turn | `servers`, `servers_loaded`, `tools_listed`, `failed` |
 | `openapi.retry` | WARNING | `status`, `reason` |
 | `tool_approval.run_failed` | DEBUG in practice: the executor already logged it | `error_class`, `error_type` |
 
 - Every tool call has exactly one `tool_call.end` at INFO or above, whatever the exit: run, raised, denied, blocked, malformed,
-  duplicate, skipped by Stop before it ran, or a parked call once its card is settled. A card never answered leaves only the DEBUG line. The success line at
+  duplicate, skipped by Stop before it ran, or a parked call once its card is settled. A card never answered leaves only the DEBUG line.
+  A call the executor never reached has none: when the turn's event stream or checkpoint store fails first, the turn fails and
+  `agent_turn.failed` reports it. The success line at
   INFO is an agreed exception to "no more INFO": it is the one line per unit of work that says which tool ran, for whom, how long.
 - A tool hands a failure to the executor as `ToolOutput(cause=exc, end_fields={...})` or raises; it never logs and returns.
   The executor logs it once (`log_failure`, so the stack prints only for `internal` and `misconfigured`). Calls that fail with one
   shared exception (a shared MCP listing, a memoised lookup) each keep their line at their own level, and the stack prints once:
   when `error_class.logged_level(exc)` says it was already written at that level, the line is a `log_event` with the error fields.
 - Tool, MCP, OpenAPI and OAuth failures never log the error's text (`include_error_text=False`): a server's answer can quote the
-  arguments. Nor a STDIO server's stderr: it can echo earlier calls' arguments and its environment. What the model sees (`ToolOutput.error`, an `isError` result, an HTTP body) is never a field.
+  arguments. A refused redirect logs only the target's host, and an ended MCP session only the cause's type. Nor a STDIO server's stderr: it can echo earlier calls' arguments and its environment. What the model sees (`ToolOutput.error`, an `isError` result, an HTTP body) is never a field.
 - `mcp.connect.end` (like `llm_call.end`) is an operation record: it stays at INFO when it failed, and the layer that retries or
   gives up (`mcp.retry`, `mcp.discover.end`, `tool_call.end`) logs the severity.
 - `app.agents.mcp.failure.mcp_error_class` maps an MCP failure: `classify_error` first, then what its `MCPFailureReason` means; a
