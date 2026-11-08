@@ -162,10 +162,9 @@ export function StaticNavSection() {
           }
           href={item.route}
           onClick={closeOnMobile}
-          isActive={
-            item.route.startsWith('/artifacts') &&
-            pathname.startsWith('/artifacts')
-          }
+          isActive={['/artifacts', '/graph'].some(
+            (base) => item.route.startsWith(base) && pathname.startsWith(base),
+          )}
         />
       ))}
     </Flex>
