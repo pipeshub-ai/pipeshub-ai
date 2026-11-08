@@ -190,6 +190,15 @@ async def test_outline_and_entry_points_routes_answer_for_one_repo(blobs) -> Non
     assert bad.status_code == 422
 
 
+async def test_the_search_route_takes_the_external_mode_and_a_name(blobs) -> None:
+    res = _client(Repos()).post("/api/v1/code-graph/search", json={
+        "repo": "acme/admin", "pattern": "requests", "mode": "external", "name": "get"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["mode"] == "external" and body["module"] == "requests" and body["name"] == "get"
+    assert body["matches"] == [] and "hint" in body
+
+
 async def test_read_by_search_hit_needs_no_repo(blobs) -> None:
     res = _client(Repos()).post("/api/v1/code-graph/read", json={"record_id": "rec-shop"})
     assert res.status_code == 200, res.text

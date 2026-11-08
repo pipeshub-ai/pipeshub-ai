@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import time
+import traceback
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -178,17 +179,17 @@ class TestLinearTime:
         return (unit * (size // len(unit) + 1))[:size]
 
     @staticmethod
-    def _best_of_three(text: str) -> float:
+    def _best_of_three(text: str, redact: Callable[[str], str]) -> float:
         best = float("inf")
         for _ in range(3):
             start = time.thread_time()
-            redact_secrets_in_text(text)
+            redact(text)
             best = min(best, time.thread_time() - start)
         return best
 
-    def _assert_linear(self, make: Callable[[int], str]) -> None:
-        small = self._best_of_three(make(self.SMALL))
-        large = self._best_of_three(make(self.LARGE))
+    def _assert_linear(self, make: Callable[[int], str], redact: Callable[[str], str] = redact_secrets_in_text) -> None:
+        small = self._best_of_three(make(self.SMALL), redact)
+        large = self._best_of_three(make(self.LARGE), redact)
         assert large < self.MAX_GROWTH * small + self.SLACK_SECONDS, (
             f"{self.SMALL} chars took {small:.4f}s, {self.LARGE} chars {large:.4f}s"
         )
@@ -199,6 +200,13 @@ class TestLinearTime:
         self._assert_linear(lambda n: "a" * n)
 
     @pytest.mark.parametrize(
+        ("prefix", "unit"),
+        [("", "org-"), ("", "org-a"), ("", "org_"), ("", "proj-a_b-"), ("", "org-aaaa-org_("), ("org-", "a")],
+    )
+    def test_account_id_shapes_in_error_text(self, prefix: str, unit: str) -> None:
+        self._assert_linear(lambda n: prefix + self._repeat(unit, n), log_redaction.redact_error_for_log)
+
+    @pytest.mark.parametrize(
         "unit",
         [
             "eyJ", "eyJaaaaaaaa.", "_eyJ", "-eyJaaaaaaaa.", "sk-", "_sk-", "_xoxb-", "AKIA", "phpat_", "xoxb-", "AIza", "gh",
@@ -206,6 +214,7 @@ class TestLinearTime:
             "-----BEGIN ", "-----BEGIN PRIVATE KEY-----", "Bearer ", "Basic AAAAAAA= ",
             "https://", "://", "https://h/?" + "=" * 900 + " ", "https://u:" + "p@" * 400 + " ",
             " ", "'", '"', "\\", "input_value=", "input_value=x, input_type",
+            'File "', '  File "a", line 1, in f\n    token = x\n', '  File "a", line 1, in f\n', " |", "|" * 200 + "\n",
         ],
     )
     def test_pathological_shapes(self, unit: str) -> None:
@@ -221,10 +230,203 @@ class TestLinearTime:
             ("https://a/?", "=", ""),
             ("-----BEGIN PRIVATE KEY-----", "A", ""),
             ("input_value=", "x", ""),
+            ('token\n  File "a", line ', "1", "\n"),
+            ('token\n  File "a", line ', "1", ""),
+            ('token\n  File "a", line 1, in ', "f", "\n    x"),
+            ('  File "a", line 1, in f\n    ', "token=", ""),
+            ('  File "a", line 1, in f\n    ', "a=token=", ""),
         ],
     )
     def test_one_long_run_after_a_trigger(self, prefix: str, fill: str, suffix: str) -> None:
-        self._assert_linear(lambda n: prefix + fill * n + suffix)
+        self._assert_linear(lambda n: prefix + self._repeat(fill, n) + suffix)
+
+
+def _fail_with(message: str) -> None:
+    raise RuntimeError(message)
+
+
+async def _fail_async(message: str) -> None:
+    raise RuntimeError(message)
+
+
+# Python's own layout: a frame line, then its source line indented two more.
+_TB_HEAD = 'Traceback (most recent call last):\n  File "/app/python/app/x.py", line 7, in refresh\n'
+
+
+class TestTracebackSourceLines:
+    """A traceback's source lines are code read from a source file, so a
+    credential-named assignment there is masked only when it is a literal."""
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "token_data = await self._make_token_request(data)",
+            "new_token = await oauth_provider.refresh_access_token(refresh_token)",
+            "password = await vault.get(name)",
+            "secret = get_secret(name)",
+            'secret = self.config["x"]',
+            "access_token = token.access_token",
+            'refresh_token = creds.get("refresh_token")',
+            "token = None",
+            "token_data = yield from x",
+            "if token == expected:",
+            "token_data: dict = {}",
+            "password=password,",
+            'return {"access_token": access_token, "expires_in": 3600}',
+            "def refresh(self, token: str) -> None:",
+            'secret_stack = "".join(parts)',
+        ],
+    )
+    def test_source_line_is_kept(self, source: str) -> None:
+        text = f"{_TB_HEAD}    {source}\n    ^^^^^\nRuntimeError: password=SENTINEL-msg"
+
+        out = redact_secrets_in_text(text)
+
+        assert f"\n    {source}\n" in out
+        assert "SENTINEL-msg" not in out
+
+    def test_exception_group_source_line_is_kept(self) -> None:
+        text = (
+            "  + Exception Group Traceback (most recent call last):\n"
+            '  |   File "/app/python/app/x.py", line 8, in group\n'
+            "  |     async with asyncio.TaskGroup() as tg:\n"
+            "  | ExceptionGroup: unhandled errors in a TaskGroup (1 sub-exception)\n"
+            "  +-+---------------- 1 ----------------\n"
+            "    | Traceback (most recent call last):\n"
+            '    |   File "/app/python/app/x.py", line 5, in refresh\n'
+            "    |     token_data = await self._make_token_request(data)\n"
+            "    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"
+            "    | RuntimeError: token=SENTINEL-group\n"
+            "    +------------------------------------"
+        )
+
+        out = redact_secrets_in_text(text)
+
+        assert "    |     token_data = await self._make_token_request(data)\n" in out
+        assert "SENTINEL-group" not in out
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # The exception line, also after a frame whose source is unavailable.
+            f"{_TB_HEAD}    x = 1\nRuntimeError: password=SENTINEL-a",
+            '  File "<generated>", line 2, in f\nRuntimeError: password=SENTINEL-a',
+            # A message line under an exception line, or not indented as a source line.
+            f"{_TB_HEAD}    x = 1\nValueError: bad\n    token=SENTINEL-a",
+            '  File "/a.py", line 2, in f\n  token=SENTINEL-a',
+            '  File "/a.py", line 2, in f\n\ttoken=SENTINEL-a',
+            # Inside an exception group: same gutter, not two further spaces.
+            '    |   File "/a.py", line 5, in f\n    | RuntimeError: token=SENTINEL-a',
+            # The frame line itself, and a chained exception's message.
+            '  File "/a.py", line 2, in f password=SENTINEL-a\n    x = 1',
+            f"{_TB_HEAD}    x = 1\nKeyError: 'a'\n\nDuring handling of the above exception, another exception "
+            "occurred:\n\nRuntimeError: secret: SENTINEL-a",
+            # A SyntaxError's frame has no `, in`: the line under it is the parsed input.
+            '  File "<unknown>", line 1\n    password=SENTINEL-a extra\n    ^\nSyntaxError: invalid syntax',
+            # Literals on a source line: hard-coded, a captured local, or under a fake frame.
+            f'{_TB_HEAD}    client = dict(password="SENTINEL-a")\nRuntimeError: x',
+            f"{_TB_HEAD}    secret = b'SENTINEL-a'\nRuntimeError: x",
+            "  File \"<generated>\", line 2, in g\n    password = 'SENTINEL-a'\nRuntimeError: x",
+            '  File "x", line 1, in f\n    password="SENTINEL-a"',
+            '  File "x", line 1, in f\r\n    password="SENTINEL-a"',
+            # A pair inside a string or a comment on a source line is text, not code.
+            f'{_TB_HEAD}    conn = connect("dbname=app user=app password=SENTINEL-a")\nRuntimeError: x',
+            f'{_TB_HEAD}    q = "client_secret=SENTINEL-a&x=%s" % x\nRuntimeError: x',
+            f"{_TB_HEAD}    hdr = 'X-Api-Key: SENTINEL-a'\nRuntimeError: x",
+            f"{_TB_HEAD}    s = 'token=SENTINEL-a'\nRuntimeError: x",
+            f'{_TB_HEAD}    url = f"a?x=1&token=SENTINEL-a"\nRuntimeError: x',
+            f"{_TB_HEAD}    t = get()  # token=SENTINEL-a old\nRuntimeError: x",
+            # Code-shaped text outside a traceback is indistinguishable from a pair.
+            "    token = SENTINEL-a",
+        ],
+    )
+    def test_everything_else_in_a_traceback_is_still_redacted(self, text: str) -> None:
+        assert "SENTINEL-a" not in redact_secrets_in_text(text)
+
+    def test_key_shapes_on_a_source_line_are_still_redacted(self) -> None:
+        text = f"{_TB_HEAD}    client = OpenAI(api_key=key or sk-proj-SENTINELabcdefghijklmnop)\nRuntimeError: x"
+
+        assert "SENTINELabcdefghijklmnop" not in redact_secrets_in_text(text)
+
+    def test_formatted_traceback_keeps_the_failing_line(self) -> None:
+        message = "upstream said password=" + "SENTINEL-real"
+        try:
+            token_data = _fail_with(message)  # noqa: F841
+        except RuntimeError:
+            record = _record("refresh failed", exc_info=sys.exc_info())
+
+        out = RedactingFormatter("%(message)s").format(record)
+
+        assert "    token_data = _fail_with(message)  # noqa: F841\n" in out
+        assert "SENTINEL-real" not in out
+
+    def test_formatted_traceback_keeps_await(self) -> None:
+        message = "upstream said token=" + "SENTINEL-await"
+
+        async def refresh() -> None:
+            token_data = await _fail_async(message)  # noqa: F841
+
+        coro = refresh()
+        try:
+            coro.send(None)
+        except RuntimeError:
+            record = _record("refresh failed", exc_info=sys.exc_info())
+
+        out = RedactingFormatter("%(message)s").format(record)
+
+        assert "    token_data = await _fail_async(message)  # noqa: F841\n" in out
+        assert "SENTINEL-await" not in out
+
+    def test_stack_info_keeps_the_calling_line(self) -> None:
+        record = _record("checkpoint")
+        # The credential-named variable is what puts its own line through the pair pass.
+        secret_stack = "".join(traceback.format_stack())
+        record.stack_info = f"Stack (most recent call last):\n{secret_stack}"
+
+        out = RedactingFormatter("%(message)s").format(record)
+
+        assert '    secret_stack = "".join(traceback.format_stack())\n' in out
+
+    def test_a_hard_coded_pair_in_a_raise_message_is_still_redacted(self) -> None:
+        try:
+            raise RuntimeError("token=SENTINEL-raise")
+        except RuntimeError:
+            record = _record("refresh failed", exc_info=sys.exc_info())
+
+        out = RedactingFormatter("%(message)s").format(record)
+
+        assert '    raise RuntimeError("token=[REDACTED]")\n' in out
+        assert "SENTINEL-raise" not in out
+
+    @pytest.mark.parametrize("chained", [False, True])
+    def test_syntax_error_input_is_still_redacted(self, chained: bool) -> None:
+        stored = "{'password': 'SENTINEL-syntax', broken"
+        try:
+            try:
+                ast.literal_eval(stored)
+            except SyntaxError as err:
+                if not chained:
+                    raise
+                raise ValueError("stored config is not a literal") from err
+        except (SyntaxError, ValueError):
+            record = _record("config unreadable", exc_info=sys.exc_info())
+
+        out = RedactingFormatter("%(message)s").format(record)
+
+        assert "SyntaxError" in out
+        assert "SENTINEL-syntax" not in out
+
+    def test_captured_locals_of_a_frame_without_source_are_still_redacted(self) -> None:
+        code = compile("def g():\n    password = 'SENTINEL-local'\n    1 / 0\n", "<generated>", "exec")
+        scope: dict = {}
+        exec(code, scope)
+        try:
+            scope["g"]()
+        except ZeroDivisionError as exc:
+            text = "".join(traceback.TracebackException.from_exception(exc, capture_locals=True).format())
+
+        assert "    password = 'SENTINEL-local'" in text
+        assert "SENTINEL-local" not in redact_secrets_in_text(text)
 
 
 class TestPydanticValidationErrors:
@@ -386,3 +588,46 @@ def test_every_service_installs_redaction_at_startup() -> None:
 )
 def test_account_key_is_a_credential_name(name: str, expected: bool) -> None:
     assert is_credential_name(name) is expected
+
+
+class TestRedactErrorForLog:
+    """Provider error text on its way to a log line (app.utils.log_redaction.redact_error_for_log)."""
+
+    @pytest.mark.parametrize("ours", [
+        'File "/app/python/app/core/org_context.py", line 3',
+        "KeyError: org_id_hash",
+        "org_context_missing site=x",
+        "account_service.get_user failed",
+        "org-abcdef failed",
+        "org_context1.py",
+        "org-a1b2(x)",
+        "proj_" + "a" * 20,
+        "org-abcd\u0663",
+    ])
+    def test_our_own_names_survive(self, ours: str) -> None:
+        from app.utils.log_redaction import redact_error_for_log
+
+        assert redact_error_for_log(ours) == ours
+
+    @pytest.mark.parametrize("provider_id", ["org-AbCd1234", "proj_abc123XYZ", "acct-9f8e7d"])
+    def test_provider_account_ids_are_masked(self, provider_id: str) -> None:
+        from app.utils.log_redaction import redact_error_for_log
+
+        assert redact_error_for_log(f"quota for {provider_id} exceeded") == "quota for [redacted] exceeded"
+
+    @pytest.mark.parametrize(("text", "expected"), [
+        # The digit counts even past where `(?!\.py|\()` ends the match.
+        ("org-abcd-1(", "[redacted]1("),
+        ("account-x-org-1234", "[redacted]"),
+        ("org-aaaa-org_x1 org-bbbb", "[redacted] org-bbbb"),
+    ])
+    def test_digit_anywhere_in_the_id_masks_it(self, text: str, expected: str) -> None:
+        from app.utils.log_redaction import redact_error_for_log
+
+        assert redact_error_for_log(text) == expected
+
+    def test_urls_and_keys_masked_and_capped(self) -> None:
+        from app.utils.log_redaction import redact_error_for_log
+
+        out = redact_error_for_log("GET https://gen.example/v1?key=AIzaSyA1234567890abcdefghijklmnopqrstuv failed" + "x" * 2000)
+        assert out.startswith("GET [url] failed") and "AIza" not in out and len(out) == 1000

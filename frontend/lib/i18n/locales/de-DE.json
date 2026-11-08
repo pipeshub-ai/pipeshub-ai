@@ -5750,5 +5750,107 @@
       "onTitle": "Demodaten für alle wieder eingeschaltet",
       "errorTitle": "Die Demodaten konnten nicht für alle geändert werden"
     }
+  },
+  "graph": {
+    "status": {
+      "stale": "Der Graph wird aktualisiert; neueste Änderungen fehlen möglicherweise.",
+      "building": "Der Graph wird erstellt, daher ist die Ansicht möglicherweise unvollständig.",
+      "retrying": "Beim Erstellen des Graphen ist ein Problem aufgetreten; es wird erneut versucht.",
+      "failed": "Der letzte Graph-Aufbau ist fehlgeschlagen, daher ist diese Ansicht möglicherweise veraltet.",
+      "unknown": "Der Zustand dieses Graphen konnte nicht gelesen werden."
+    },
+    "empty": {
+      "neverBuilt": "Für dieses Repository gibt es noch keinen Code-Graphen.",
+      "tooLarge": "Dieses Repository ist zu groß für einen Graphen."
+    },
+    "incomplete": "Einige Verknüpfungen fehlen möglicherweise. Grenzen Sie nach Kantentyp oder Richtung ein.",
+    "simplified": "Vereinfachte Ansicht für flüssige Bewegung.",
+    "verify": {
+      "degraded": "Der Zugriff kann derzeit nicht geprüft werden. Angezeigt wird der zuletzt bestätigte Stand.",
+      "blank": "Der Zugriff konnte mehrere Minuten lang nicht geprüft werden, daher wurde der Graph geleert. Verbindung wird wiederhergestellt …"
+    },
+    "error": {
+      "unavailable": "Dies konnte gerade nicht geladen werden. Bitte erneut versuchen.",
+      "notAvailable": "Dieses Element ist nicht verfügbar.",
+      "unexpected": "Etwas ist schiefgelaufen.",
+      "ambiguous": "Mehrere Repositories tragen diesen Namen. Wählen Sie das Repository im Suchfeld.",
+      "full": "Diese Ansicht ist voll. Öffnen Sie einen Knoten, um eine neue zu beginnen.",
+      "revoked": "Das Element, das Sie angesehen haben, ist nicht mehr verfügbar."
+    },
+    "title": "Code-Graph",
+    "ui": {
+      "back": "Zurück",
+      "forward": "Vor",
+      "fit": "An Ansicht anpassen",
+      "showTable": "Als Tabelle anzeigen",
+      "showGraph": "Als Graph anzeigen",
+      "direction": {
+        "any": "Beide",
+        "inbound": "Aufrufer",
+        "outbound": "Aufgerufene"
+      },
+      "includeTests": "Tests einbeziehen",
+      "showMore": "Mehr anzeigen",
+      "expand": "Erweitern",
+      "open": "Öffnen",
+      "nothingSelected": "Wählen Sie einen Knoten, um Details zu sehen.",
+      "details": "Details",
+      "links": "Verknüpfungen: {{n}}",
+      "table": {
+        "caption": "Knoten in dieser Ansicht",
+        "name": "Name",
+        "kind": "Art",
+        "file": "Datei",
+        "actions": "Aktionen",
+        "moreRows": "Weitere Zeilen anzeigen",
+        "callersShown": "Angezeigte Aufrufer",
+        "calleesShown": "Angezeigte Aufgerufene",
+        "focus": "Mittelpunkt"
+      },
+      "emptyPrompt": "Suchen Sie oben nach einer Funktion, Methode oder Klasse, um zu sehen, was sie aufruft und von wem sie aufgerufen wird.",
+      "disclosure": "Zeigt nur, worauf Sie Zugriff haben.",
+      "legendInferred": "Gestrichelte Linien sind anhand des Namens abgeleitete Verknüpfungen.",
+      "disabled": "Der Code-Graph ist nicht aktiviert.",
+      "search": {
+        "repo": "Repository",
+        "repoPlaceholder": "Repository wählen",
+        "placeholder": "Funktion, Methode oder Klasse nach Namen suchen",
+        "label": "Code durchsuchen",
+        "results": "Suchergebnisse",
+        "noRepos": "Keine Code-Repositories, die Sie lesen können.",
+        "noMatches": "Keine Treffer.",
+        "chooseFirst": "Wählen Sie zuerst ein Repository",
+        "minChars": "Geben Sie mindestens 2 Zeichen ein.",
+        "more": "Es werden die ersten Treffer angezeigt. Geben Sie mehr ein, um die Suche einzugrenzen."
+      },
+      "action": {
+        "retry": "Erneut versuchen",
+        "restore": "Volle Qualität verwenden"
+      },
+      "loading": "Wird geladen …",
+      "legend": {
+        "functions": "Funktionen und Methoden",
+        "classes": "Klassen und Schnittstellen",
+        "focus": "Mittelpunkt dieser Ansicht"
+      },
+      "openHint": "Öffnen: macht dies zum Mittelpunkt einer neuen Ansicht.",
+      "expandHint": "Erweitern: zeigt die Nachbarn hier an und behält die aktuelle Ansicht.",
+      "announce": {
+        "opened": "{{n}} Elemente werden angezeigt.",
+        "added": "{{n}} Elemente hinzugefügt."
+      },
+      "canvasHint": "Die Grafik ist für Screenreader nicht verfügbar. Nutzen Sie die Schaltfläche „Als Tabelle anzeigen“, um alle Knoten zu lesen und zu bedienen.",
+      "selectionGone": "Das ausgewählte Element ist nicht mehr verfügbar.",
+      "viewGraph": "Graph ansehen",
+      "viewGraphOf": "Graph ansehen: {{repo}}",
+      "fillerNode": "{{kind}} in {{file}}"
+    },
+    "capped": "Die Grafik zeigt nur einen Teil dieser Ansicht. Die Tabelle listet alles auf.",
+    "crowded": "Diese Ansicht wird voll. Grenzen Sie sie mit Filtern ein.",
+    "hint": {
+      "testsOff": "Testdateien sind ausgeblendet. Liegt das Element im Testcode, schalten Sie „Tests einbeziehen“ ein."
+    },
+    "nothingNew": "Für diesen Knoten gibt es nichts weiter anzuzeigen.",
+    "tableOnly": "Es wird nur die Tabelle angezeigt, damit alles flüssig bleibt."
   }
 }

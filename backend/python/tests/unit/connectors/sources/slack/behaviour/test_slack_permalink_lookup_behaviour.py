@@ -55,10 +55,13 @@ class SyncedGraph:
                 return r
         return None
 
-    async def get_record_by_weburl(
-        self, weburl: str, org_id: Optional[str] = None, transaction: Optional[str] = None,
-    ) -> Optional[MessageRecord]:
-        return next((r for r in self.records if r.weburl == weburl), None)
+    async def get_records_by_weburls(
+        self, weburls: list[str], org_id: str, per_address: int = 2, transaction: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        return [{"id": r.id, "webUrl": r.weburl} for r in self.records if r.weburl in weburls][:per_address]
+
+    async def get_record_by_id(self, record_id: str, transaction: Optional[str] = None) -> Optional[MessageRecord]:
+        return next((r for r in self.records if r.id == record_id), None)
 
     async def get_knowledge_hub_node_access(self, node_id: str, **_: object) -> dict[str, Any]:
         return {"id": node_id}

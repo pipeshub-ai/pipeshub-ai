@@ -331,6 +331,13 @@ class RateLimiter:
     .with_categories(["Messaging"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
     .with_permission_model(PermissionModel.APP_LEVEL)\
+    .with_resilience_config(
+        # A ceiling across all methods; RateLimiter below paces each Slack tier.
+        rate_limit=20,
+        max_retries=3,  # a 429 is retried after its Retry-After, up to max_delay
+        base_delay=1.0,
+        max_delay=60.0,
+    )\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Slack",
@@ -677,13 +684,20 @@ class SlackIndividualConnector(BaseConnector):
     def _token_renewal(self) -> SlackTokenRenewal:
         return SlackTokenRenewal(
             self.connector_id, type(self)._connector_metadata["name"], self.config_service, self.logger,
+            resilience=self.resilience,
         )
 
-    async def _fresh_datasource(self) -> RenewingSlackDataSource:
-        """Return a SlackDataSource backed by the always-current token, renewed when it expires."""
+    async def _fresh_datasource(self, *, retry_rate_limits: bool = True) -> RenewingSlackDataSource:
+        """Return a SlackDataSource backed by the always-current token, renewed when it expires.
+
+        Sync retries a 429 after its Retry-After. Streaming passes ``retry_rate_limits=False``:
+        a user is waiting, so the 429 goes back with its Retry-After instead.
+        """
         if not self.external_client:
             raise RuntimeError("Call init() first.")
-        return await self._token_renewal.datasource(self.external_client, self._current_token)
+        return await self._token_renewal.datasource(
+            self.external_client, self._current_token, retry_rate_limits=retry_rate_limits,
+        )
 
     async def _current_token(self) -> tuple[dict[str, Any], str]:
         cfg = await self.config_service.get_config(
@@ -4125,7 +4139,7 @@ class SlackIndividualConnector(BaseConnector):
                 raise HTTPException(400, f"Burst record {ext_id} missing start_ts/end_ts")
 
             await self.rate_limiter.acquire(Tier.T3)
-            ds   = await self._fresh_datasource()
+            ds   = await self._fresh_datasource(retry_rate_limits=False)
             resp = await ds.conversations_history(
                 channel=ch, oldest=start_ts, latest=end_ts,
                 inclusive=True, limit=200,
@@ -4181,7 +4195,7 @@ class SlackIndividualConnector(BaseConnector):
                 )
 
             await self.rate_limiter.acquire(Tier.T3)
-            ds   = await self._fresh_datasource()
+            ds   = await self._fresh_datasource(retry_rate_limits=False)
             resp = await ds.conversations_replies(
                 channel=ch, ts=thread_ts_val,
                 oldest=start_ts, latest=end_ts,
@@ -4228,7 +4242,7 @@ class SlackIndividualConnector(BaseConnector):
         # ── Single message record ─────────────────────────────────────────
         else:
             await self.rate_limiter.acquire(Tier.T3)
-            ds   = await self._fresh_datasource()
+            ds   = await self._fresh_datasource(retry_rate_limits=False)
             resp = await ds.conversations_history(
                 channel=ch, oldest=ext_id, latest=ext_id,
                 inclusive=True, limit=1,
@@ -4243,7 +4257,7 @@ class SlackIndividualConnector(BaseConnector):
                 tid = getattr(record, "thread_id", None)
                 if tid and tid != ext_id:
                     await self.rate_limiter.acquire(Tier.T3)
-                    resp = await (await self._fresh_datasource()).conversations_replies(
+                    resp = await (await self._fresh_datasource(retry_rate_limits=False)).conversations_replies(
                         channel=ch, ts=tid, oldest=ext_id, latest=ext_id,
                         inclusive=True, limit=1,
                     )
@@ -4291,7 +4305,7 @@ class SlackIndividualConnector(BaseConnector):
             raise HTTPException(400, f"No file ID for {record.id}")
 
         await self.rate_limiter.acquire(Tier.T4)
-        ds   = await self._fresh_datasource()
+        ds   = await self._fresh_datasource(retry_rate_limits=False)
         info = await ds.files_info(file=fid)
         if not info or not info.success:
             raise slack_stream_error(info, connector=self.display_name)
