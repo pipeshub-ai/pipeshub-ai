@@ -105,7 +105,7 @@ class AppGraph:
     """The app document of one connector, with the write lock `increment_node_field` takes and a log of what was written."""
 
     def __init__(self, app: dict | None) -> None:
-        self.app, self.writes, self.txn = app, [], "t1"
+        self.app, self.writes, self.txn, self.explicit = app, [], "t1", True
         self.graph_provider = self
 
     def is_write_conflict(self, exc: BaseException) -> bool:
@@ -427,6 +427,9 @@ class Apps:
         self.apps_error = apps_error
         self.sharers = [{"_key": f"r-{n}", "connectorId": n} for n in names]
         self.read_error = False
+        self.record: dict = {"_key": "me", "virtualRecordId": "attached", "indexingStatus": "IN_PROGRESS"}
+        self.record_writes: list[dict] = []
+        self.update_ok = True
 
     async def get_nodes_by_field_in(self, collection, field, values, **kw) -> list[dict]:
         if self.read_error:
@@ -443,7 +446,12 @@ class Apps:
         return self.docs[key][field]
 
     async def get_document(self, key, collection, **kw) -> dict:
-        return dict(self.docs[key])
+        return dict(self.docs[key]) if collection == "apps" else dict(self.record)
+
+    async def update_node(self, key, collection, updates, transaction=None) -> bool:
+        self.record.update(updates)
+        self.record_writes.append(dict(updates))
+        return self.update_ok
 
     async def update_node_fields_if_match(self, key, collection, updates, expected, transaction=None) -> bool:
         if any((self.docs[key].get(f) or None) != v for f, v in expected.items()):
@@ -526,3 +534,89 @@ async def test_a_mark_after_the_write_that_cannot_land_is_logged_with_the_organi
             g.apps_error = True                                          # the listing breaks after the write
     assert ran and g.docs["A"][GENERATION_KEY] == 1                       # marked before; the second mark failed
     assert any(r.levelname == "ERROR" and ORG in r.getMessage() for r in caplog.records)
+
+
+class Unlocked:
+    """One app document that statements change one by one (no explicit transaction): the increment is atomic, nothing stays locked."""
+
+    def __init__(self) -> None:
+        self.app: dict = {GENERATION_KEY: 0}
+        self.graph_provider, self.txn, self.explicit = self, None, False
+
+    def is_write_conflict(self, exc: BaseException) -> bool:
+        return False
+
+    async def increment_node_field(self, key, collection, field, transaction=None) -> int:  # noqa: ANN001
+        self.app[field] = self.app.get(field, 0) + 1
+        return self.app[field]
+
+    async def get_document(self, key, collection, **kw) -> dict:  # noqa: ANN001, ANN003
+        seen = dict(self.app)
+        await asyncio.sleep(0)                  # another statement may run before the caller writes what it read
+        return seen
+
+    async def update_node(self, key, collection, updates, transaction=None) -> bool:  # noqa: ANN001
+        self.app.update(updates)
+        return True
+
+    async def update_node_fields_if_match(self, key, collection, updates, expected, transaction=None) -> bool:  # noqa: ANN001
+        if any((self.app.get(f) or None) != v for f, v in expected.items()):
+            return False
+        self.app.update(updates)
+        return True
+
+
+async def test_syncs_without_an_explicit_transaction_registering_at_once_lose_no_root() -> None:
+    g = Unlocked()
+    await asyncio.gather(*(bump_generation_in(g, "c1", [f"r{i}"]) for i in range(4)))      # each round of the compare-and-set lets one through
+    assert set(parse(g.app[PENDING_KEY])) == {f"r{i}" for i in range(4)} and g.app[GENERATION_KEY] == 4
+
+
+async def test_a_failed_registration_when_the_fence_exits_does_not_skip_the_cleanup_of_a_skipped_file() -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.events.processor import Processor
+
+    g = Apps("A", fail={("A", GENERATION_KEY): "raise"})
+    proc = object.__new__(Processor)
+    proc.graph_provider, proc.logger = g, MagicMock()
+    proc.indexing_pipeline, proc.sink_orchestrator = AsyncMock(), MagicMock(blob_storage=AsyncMock())
+    with pytest.raises(RuntimeError, match="write failed"):
+        await proc._release_skipped_content(ORG, "me", "attached")
+    assert g.record_writes == [{"virtualRecordId": None}]
+    proc.indexing_pipeline.rewrite_or_delete_vector_membership.assert_awaited_once_with("attached")
+    proc.sink_orchestrator.blob_storage.delete_storage_docs_for_vrid.assert_awaited_once_with(ORG, "attached")
+
+
+async def test_a_detach_that_returns_false_still_raises_and_cleans_nothing() -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.events.processor import Processor
+    from app.exceptions.indexing_exceptions import DocumentProcessingError
+
+    g = Apps("A")
+    g.update_ok = False
+    proc = object.__new__(Processor)
+    proc.graph_provider, proc.logger = g, MagicMock()
+    proc.indexing_pipeline, proc.sink_orchestrator = AsyncMock(), MagicMock(blob_storage=AsyncMock())
+    with pytest.raises(DocumentProcessingError):
+        await proc._release_skipped_content(ORG, "me", "attached")
+    proc.indexing_pipeline.rewrite_or_delete_vector_membership.assert_not_awaited()
+
+
+async def test_restoring_the_prior_identity_after_a_failed_attach_fences_the_records_still_sharing_the_virtual_record_it_leaves() -> None:
+    from unittest.mock import MagicMock
+
+    from app.events.events import EventProcessor
+    from app.services.permissions.structure_generation import CLOSED_KEY, OPENED_KEY
+
+    g = Apps("A")
+    ep = object.__new__(EventProcessor)
+    ep.graph_provider, ep.logger = g, MagicMock()
+    await ep._restore_identity_after_failed_attach("me", {"virtualRecordId": "prior"}, None)
+    assert g.record_writes == [{"virtualRecordId": "prior"}]
+    assert set(parse(g.docs["A"][PENDING_KEY])) == {"r-A"} and g.docs["A"][OPENED_KEY] == g.docs["A"][CLOSED_KEY] == 1
+    g2 = Apps("A")
+    ep.graph_provider = g2
+    await ep._restore_identity_after_failed_attach("me", {"contentRev": "x"}, None)        # no change of virtual record: nothing to fence
+    assert PENDING_KEY not in g2.docs["A"] and OPENED_KEY not in g2.docs["A"]

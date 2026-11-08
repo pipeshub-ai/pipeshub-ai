@@ -118,14 +118,17 @@ async def bump_generation_in(tx_store: Any, connector_id: str, roots: Collection
     app document's write lock (`increment_node_field`), so two transactions that both bump get two different, growing values. Raises when
     the write fails, which rolls the transaction back; a write-write conflict is `ScopeGenerationConflict`, which the caller retries.
 
-    `roots`: the change reaches only the subtrees of these records; they are registered as pending in the same transaction, after the
-    lock is taken, so a registration read-modifies-writes the latest value and two syncs lose none. None, or more than
-    `MAX_PENDING_ROOTS` roots, or a stored value that is unreadable: nothing is listed, and the bump alone leaves the connector not
-    current until a full pass."""
+    `roots`: the change reaches only the subtrees of these records; they are registered as pending after the bump. In a real transaction
+    (``tx_store.explicit``) the app document stays locked until commit, so the read-modify-write of the list is safe and two syncs lose
+    none. Without one the statements commit one by one, the lock is gone after the bump, and the list is written by compare-and-set
+    instead (`_add_roots`). None, or more than `MAX_PENDING_ROOTS` roots, or a stored value that is unreadable: nothing is listed, and
+    the bump alone leaves the connector not current until a full pass."""
     graph = tx_store.graph_provider
     try:
         new = await graph.increment_node_field(connector_id, CollectionNames.APPS.value, GENERATION_KEY, tx_store.txn)
-        if new is not None and roots:
+        if new is not None and roots and not tx_store.explicit:
+            await _add_roots(graph, connector_id, roots, new, tx_store.txn)
+        elif new is not None and roots:
             app = await graph.get_document(connector_id, CollectionNames.APPS.value, transaction=tx_store.txn, raise_on_error=True) or {}
             try:
                 value = with_roots(app.get(PENDING_KEY), roots, new)
@@ -142,6 +145,22 @@ async def bump_generation_in(tx_store: Any, connector_id: str, roots: Collection
     return new
 
 
+async def _add_roots(graph_provider: Any, connector_id: str, roots: Collection[str], generation: int,  # noqa: ANN401
+                     txn: str | None = None, *, attempts: int = 5) -> None:
+    """Register ``roots`` at ``generation`` by compare-and-set on the stored string, retried: no registration is lost without a lock.
+    Nothing is listed (the bump alone stands) past the cap or over an unreadable value."""
+    for _ in range(attempts):
+        app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, transaction=txn, raise_on_error=True) or {}
+        raw = app.get(PENDING_KEY) or None
+        try:
+            value = with_roots(raw, roots, generation)
+        except (PendingOverflow, PendingUnreadable):
+            return
+        if await graph_provider.update_node_fields_if_match(connector_id, CollectionNames.APPS.value, {PENDING_KEY: value}, {PENDING_KEY: raw}, txn):
+            return
+    raise ScopeGenerationError(f"could not register the pending roots of {connector_id}")
+
+
 async def register_pending_roots(graph_provider: Any, connector_id: str, roots: Collection[str], *, attempts: int = 5) -> int:  # noqa: ANN401
     """`bump_generation_in` for a change made outside a transaction: bump, then add the roots by compare-and-set on the stored string
     (retried). A crash between the two leaves a bump with no root, which only costs a full pass. Raises when the bump or the
@@ -149,16 +168,8 @@ async def register_pending_roots(graph_provider: Any, connector_id: str, roots: 
     new = await graph_provider.increment_node_field(connector_id, CollectionNames.APPS.value, GENERATION_KEY)
     if new is None:
         raise ScopeGenerationError(f"could not bump the structure generation of {connector_id}")
-    for _ in range(attempts):
-        app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) or {}
-        raw = app.get(PENDING_KEY) or None
-        try:
-            value = with_roots(raw, roots, new)
-        except (PendingOverflow, PendingUnreadable):
-            return new
-        if await graph_provider.update_node_fields_if_match(connector_id, CollectionNames.APPS.value, {PENDING_KEY: value}, {PENDING_KEY: raw}):
-            return new
-    raise ScopeGenerationError(f"could not register the pending roots of {connector_id}")
+    await _add_roots(graph_provider, connector_id, roots, new, attempts=attempts)
+    return new
 
 
 @contextlib.asynccontextmanager
