@@ -12,6 +12,7 @@ import { Logger } from './libs/services/logger.service';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
 import { ConfigService } from './modules/tokens_manager/services/cm.service';
 import { createCodeGraphRouter } from './modules/enterprise_search/routes/code-graph.routes';
+import { createGraphViewRouter } from './modules/enterprise_search/routes/graph-view.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
 import { registerOAuthTokenService } from './libs/services/oauth-token-service.provider';
@@ -686,6 +687,12 @@ export class Application {
     this.app.use(
       '/api/v1/code-graph',
       createCodeGraphRouter(this.esAgentContainer),
+    );
+
+    // the graph explorer's reads: expand and revalidate (permission-aware, never cached)
+    this.app.use(
+      '/api/v1/graph',
+      createGraphViewRouter(this.esAgentContainer),
     );
 
     // enterprise search connectors routes — pass the crawling container
