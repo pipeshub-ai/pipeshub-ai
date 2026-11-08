@@ -307,14 +307,15 @@ async def _bfs_edges(
         for key, phase in frontier:
             phases_by_key.setdefault(key, []).append(phase)
         def steppable(row: dict[str, Any], phases_by_key: dict[str, list[int]] = phases_by_key) -> bool:
-            return bool(
-                row.get("collection") == _BLOCKS and row.get("key") and row.get("anchorKey")
-                and any(
-                    (step := _next_phase(phase, row, undirected=undirected)) is not None
-                    and (row["key"], step) not in visited
-                    for phase in phases_by_key.get(row["anchorKey"], ())
-                )
-            )
+            if not (row.get("collection") == _BLOCKS and row.get("key") and row.get("anchorKey")):
+                return False
+            steps = [step for phase in phases_by_key.get(row["anchorKey"], ())
+                     if (step := _next_phase(phase, row, undirected=undirected)) is not None]
+            if any((row["key"], step) not in visited for step in steps):
+                return True
+            # A callee already reached another way (say through OVERRIDES) still leads on to its implementations,
+            # until they have been looked up once.
+            return bool(steps) and _dispatches(row, implementations) and row["key"] not in impls_of
 
         # The shape rules and the access check run per page inside the fetch, so
         # neither a hub's unreadable callers nor its dropped ones fill the cap.
@@ -323,8 +324,7 @@ async def _bfs_edges(
                                               org_id=org_id, access=access)
         capped = capped or hit_cap
         if implementations is not None:
-            callees = [row for row in rows if row.get("direction") == "outbound"
-                       and row.get("relationshipType") == RecordRelations.CALLS.value]
+            callees = [row for row in rows if _dispatches(row, implementations)]
             new = list(dict.fromkeys(row["key"] for row in callees if row["key"] not in impls_of))
             if new:
                 found, spent = await implementations(new)
@@ -363,6 +363,12 @@ async def _bfs_edges(
         frontier = next_frontier
 
     return None, capped
+
+
+def _dispatches(row: dict[str, Any], implementations: object) -> bool:
+    """A call whose callee's implementations a directed walk also steps to."""
+    return (implementations is not None and row.get("direction") == "outbound"
+            and row.get("relationshipType") == RecordRelations.CALLS.value)
 
 
 async def _neighbour_rows(

@@ -210,3 +210,18 @@ async def test_a_path_without_overrides_or_undirected_is_unchanged() -> None:
     undirected = await _path(graph(*INTERFACE), SETTLE, (STRIPE, "method:Stripe.charge"), undirected=True)
     assert [h["relation"] for h in undirected["hops"]] == ["CALLS", "OVERRIDES"]
     assert not [h for h in undirected["hops"] if h.get("via")]
+
+
+async def test_a_call_to_a_method_reached_earlier_through_overrides_still_leads_to_its_implementations() -> None:
+    """settle -> Sib.charge -OVERRIDES-> Port.charge visits Port.charge at hop 2; the call to it at hop 3
+    (settle -> b -> c -> Port.charge) must still step on to Stripe.charge, which only that call reaches."""
+    g = graph(edge("k_settle", "k_sib", "CALLS"), edge("k_sib", "k_port", "OVERRIDES"),
+              edge("k_settle", "k_b", "CALLS"), edge("k_b", "k_c", "CALLS"), edge("k_c", "k_port", "CALLS"),
+              edge("k_impl", "k_port", "OVERRIDES"))
+    _add(g, "k_sib", "rec-sib", "src/sib.py", "method", "Sib.charge")
+    _add(g, "k_b", "rec-b", "src/b.py", "function", "b")
+    _add(g, "k_c", "rec-c", "src/c.py", "function", "c")
+    out = await _path(g, SETTLE, (STRIPE, "method:Stripe.charge"))
+    assert out["found"] is True and "reversed" not in out
+    assert [h["to"]["qualified_name"] for h in out["hops"]] == ["function:b", "function:c", "method:Stripe.charge"]
+    assert out["hops"][-1]["via"] == "implementation"
