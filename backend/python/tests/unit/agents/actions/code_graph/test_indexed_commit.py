@@ -17,6 +17,7 @@ from app.agents.actions.code_graph.results import (
 
 from .conftest import COMMIT, CONN, ORG, USER, QueryGraphProvider
 from .test_read_code import _blob
+from .test_search_without_path import FakeLexical
 from .test_semantic_search import FakeRetrieval, _hit
 
 pytestmark = pytest.mark.asyncio
@@ -322,16 +323,28 @@ def _two_repos_hold_b(graph: QueryGraphProvider) -> None:
     graph.record_groups["repo-2"] = {"_key": "repo-2", "orgId": ORG, "connectorId": CONN, "groupName": "acme/admin"}
 
 
-def _same_text_in_both(graph: QueryGraphProvider) -> cg.CodeGraph:
+def _same_text_in_both(graph: QueryGraphProvider, retrieval_service: object = None) -> cg.CodeGraph:
     blobs = _blob()
     blobs.records["v-x"] = blobs.records["v-b"]
-    return cg.CodeGraph({"org_id": ORG, "user_id": USER, "graph_provider": graph, "blob_store": blobs})
+    return cg.CodeGraph({"org_id": ORG, "user_id": USER, "graph_provider": graph, "blob_store": blobs,
+                         "retrieval_service": retrieval_service})
 
 
 async def test_text_matches_in_two_repos_copies_of_a_path_each_say_their_commit() -> None:
     graph = QueryGraphProvider()
     _two_repos_hold_b(graph)
     out = await _call(_same_text_in_both(graph), "search_code", pattern="return", mode="text", path="src/b.py")
+    rows = sorted((m["repo"], m["indexed_commit"]) for m in out["matches"])
+    assert rows == [("acme/admin", OTHER), ("acme/shop", COMMIT)]
+    assert "indexed_commit" not in out
+
+
+async def test_a_text_search_without_a_path_says_each_repos_copy_its_commit() -> None:
+    """The keyword index proposes both copies of src/b.py; each match names its repo and that copy's commit."""
+    graph = QueryGraphProvider()
+    _two_repos_hold_b(graph)
+    tool = _same_text_in_both(graph, FakeLexical(["v-b", "v-x"]))
+    out = await _call(tool, "search_code", pattern="return", mode="text")
     rows = sorted((m["repo"], m["indexed_commit"]) for m in out["matches"])
     assert rows == [("acme/admin", OTHER), ("acme/shop", COMMIT)]
     assert "indexed_commit" not in out
