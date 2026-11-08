@@ -259,6 +259,8 @@ CLASSIFICATION: dict[str, str] = {
     # taxonomy.py: the taxonomy collections have no schema; the hierarchy edge is built from a timestamp; a move carries the stored edge with a provenance key
     "create_taxonomy_node_if_absent": "create", "add_taxonomy_aliases": "targeted", "ensure_taxonomy_hierarchy_edge": "edge", "move_taxonomy_edges": "none",
     "batch_upsert_app_users": "delegates",       # builds users and edges, then calls batch_upsert_nodes and batch_create_edges
+    # the legacy migrations write what is already stored and constants (no caller payload); they validate what they build anyway
+    **dict.fromkeys(["migrate_legacy_kb_to_app", "migrate_agent_hub_knowledge", "migrate_legacy_relation_edge"], "none"),
     "migrate_person_to_user": "none",            # moves a person's stored edges onto a user
     **dict.fromkeys([
         "backfill_block_name_folded", "backfill_indexed_copy_flags", "batch_delete_edges", "copy_document_relationships", "delete_all_edges_for_node",

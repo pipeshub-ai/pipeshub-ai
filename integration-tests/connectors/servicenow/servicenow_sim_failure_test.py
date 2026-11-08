@@ -46,11 +46,11 @@ class TestServiceNowSimFailures:
     async def test_tc_snsim_fail_003_hourly_rule_stops_then_resumes(self, servicenow_world: ServiceNowWorld) -> None:
         w = servicenow_world
         assert succeeded(await w.start())
-        # A rule the instance counts from the start of the hour: a few calls past what the first sync used, so
-        # the next run starts and is stopped part way.
-        used = w.sim.call("GET", "/_sim/calls")["total"]
+        # The simulator counts a rule's calls from when the rule exists (per hour of simulator time), not the
+        # first sync's: a limit of a few calls lets the next run start and stops it part way. A limit above what
+        # the first sync used only stopped a run that happened to make more calls than a full sync (11-07).
         rule = w.sim.mutate({"op": "record_create", "args": {
-            "table": "sys_rate_limit_rules", "name": "PipesHub IT", "active": "true", "requests": str(used + 5),
+            "table": "sys_rate_limit_rules", "name": "PipesHub IT", "active": "true", "requests": "5",
             "_path_regex": "^/api/now/"}})[0]["record"]
         w.sim.advance(counts={"article_edit": 3, "article_create": 2})
         assert not succeeded(await w.sync()), "a sync over the hourly limit cannot have read the whole instance"
