@@ -656,8 +656,8 @@ describe('MCP Controller — handleMCPRequest', () => {
     let coreOpts: any
     beforeEach(() => {
       coreOpts = undefined
-      mcpCoreExports.PipeshubCore = class {
-        constructor(opts: any) { coreOpts = opts }
+      mcpCoreExports.PipeshubCore = function PipeshubCore(opts: any) {
+        coreOpts = opts
       }
       mcpServerExports.createMCPServer = sinon.stub().callsFake((opts: any) => {
         opts.getSDK()
@@ -1544,6 +1544,7 @@ describe('MCP Controller — handleMCPRequest', () => {
     describe('with the real @pipeshub-ai/mcp package', () => {
       const nm = (p: string): string => path.join(__dirname, '../../../../node_modules', p)
       // The mocha setup mocks the CJS view of the package; load the real ESM files.
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval -- ts-node compiles import() to the mocked require()
       const nativeImport = new Function('p', 'return import(p)') as (p: string) => Promise<any>
       let served: any
 

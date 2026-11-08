@@ -130,12 +130,15 @@ export async function mcpAccessGuard(
   res: Response,
   next: NextFunction,
 ): Promise<void> {
-  const fromUser = (req as Request & { user?: { orgId?: unknown } }).user?.orgId;
-  const orgId =
-    getCurrentOrgId() || (fromUser != null ? String(fromUser) : undefined);
+  const fromUser = (req as Request & { user?: { orgId?: string } }).user?.orgId;
+  const orgId = getCurrentOrgId() ?? fromUser;
   // Without an org there is no policy to apply, and skipping it would reopen an org an admin turned off.
   if (orgId === undefined || orgId === '') {
-    sendMcpError(res, 503, 'MCP access settings could not be read. Try again shortly.');
+    sendMcpError(
+      res,
+      503,
+      'MCP access settings could not be read. Try again shortly.',
+    );
     return;
   }
   let policy: McpAccessPolicy;

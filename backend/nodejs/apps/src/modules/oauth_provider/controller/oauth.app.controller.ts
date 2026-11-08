@@ -12,6 +12,9 @@ import {
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types'
 import { isUserOrgAdmin } from '../../user_management/services/user-admin.service'
 
+const callerIsAdmin = (userId: unknown, orgId: unknown): Promise<boolean> =>
+  isUserOrgAdmin(userId as string, orgId as string);
+
 @injectable()
 export class OAuthAppController {
   constructor(
@@ -42,14 +45,14 @@ export class OAuthAppController {
         search: req.query.search as string,
         createdBy: req.query.createdBy as string | undefined,
       }
-      const isAdmin = await isUserOrgAdmin(userId, orgId)
+      const isAdmin = await callerIsAdmin(userId, orgId);
 
       const result = await this.oauthAppService.listApps(
         orgId,
         userId,
         query,
         isAdmin,
-      )
+      );
 
       res.json(result)
     } catch (error) {
@@ -68,7 +71,7 @@ export class OAuthAppController {
     try {
       const orgId = req.user!.orgId
       const userId = req.user!.userId
-      const isAdmin = await isUserOrgAdmin(userId, orgId)
+      const isAdmin = await callerIsAdmin(userId, orgId);
       const data: CreateOAuthAppRequest = req.body
 
       const app = await this.oauthAppService.createApp(orgId, userId, isAdmin, data)
@@ -101,14 +104,14 @@ export class OAuthAppController {
       const orgId = req.user!.orgId
       const userId = req.user!.userId
       const appId = req.params.appId!
-      const isAdmin = await isUserOrgAdmin(userId, orgId)
+      const isAdmin = await callerIsAdmin(userId, orgId);
 
       const app = await this.oauthAppService.getAppById(
         appId,
         orgId,
         userId,
         isAdmin,
-      )
+      );
 
       res.json(app)
     } catch (error) {
@@ -169,7 +172,7 @@ export class OAuthAppController {
     try {
       const orgId = req.user!.orgId
       const userId = req.user!.userId
-      const isAdmin = await isUserOrgAdmin(userId, orgId)
+      const isAdmin = await callerIsAdmin(userId, orgId);
       const appId = req.params.appId!
       const data: UpdateOAuthAppRequest = req.body
 
@@ -202,7 +205,7 @@ export class OAuthAppController {
       const userId = req.user!.userId
       const appId = req.params.appId!
 
-      const isAdmin = await isUserOrgAdmin(userId, orgId)
+      const isAdmin = await callerIsAdmin(userId, orgId);
 
       // Revoke all tokens first
       const app = await this.oauthAppService.getAppById(
@@ -210,11 +213,11 @@ export class OAuthAppController {
         orgId,
         userId,
         isAdmin,
-      )
+      );
       await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
 
       // Then delete the app
-      await this.oauthAppService.deleteApp(appId, orgId, userId, isAdmin)
+      await this.oauthAppService.deleteApp(appId, orgId, userId, isAdmin);
 
       this.logger.info('OAuth app deleted via API', {
         appId,
@@ -273,14 +276,14 @@ export class OAuthAppController {
       const userId = req.user!.userId
       const appId = req.params.appId!
 
-      const isAdmin = await isUserOrgAdmin(userId, orgId)
+      const isAdmin = await callerIsAdmin(userId, orgId);
 
       const app = await this.oauthAppService.suspendApp(
         appId,
         orgId,
         userId,
         isAdmin,
-      )
+      );
 
       this.logger.info('OAuth app suspended via API', {
         appId,
@@ -309,14 +312,14 @@ export class OAuthAppController {
       const userId = req.user!.userId
       const appId = req.params.appId!
 
-      const isAdmin = await isUserOrgAdmin(userId, orgId)
+      const isAdmin = await callerIsAdmin(userId, orgId);
 
       const app = await this.oauthAppService.activateApp(
         appId,
         orgId,
         userId,
         isAdmin,
-      )
+      );
 
       this.logger.info('OAuth app activated via API', {
         appId,
@@ -367,7 +370,7 @@ export class OAuthAppController {
       const userId = req.user!.userId
       const appId = req.params.appId!
 
-      const isAdmin = await isUserOrgAdmin(userId, orgId)
+      const isAdmin = await callerIsAdmin(userId, orgId);
 
       // Verify app belongs to org
       const app = await this.oauthAppService.getAppById(
@@ -375,7 +378,7 @@ export class OAuthAppController {
         orgId,
         userId,
         isAdmin,
-      )
+      );
       const tokens = await this.oauthTokenService.listTokensForApp(app.clientId)
 
       res.json({
@@ -399,7 +402,7 @@ export class OAuthAppController {
       const userId = req.user!.userId
       const appId = req.params.appId!
 
-      const isAdmin = await isUserOrgAdmin(userId, orgId)
+      const isAdmin = await callerIsAdmin(userId, orgId);
 
       // Verify app belongs to org
       const app = await this.oauthAppService.getAppById(
@@ -407,7 +410,7 @@ export class OAuthAppController {
         orgId,
         userId,
         isAdmin,
-      )
+      );
       await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
 
       this.logger.info('All tokens revoked for OAuth app via API', {

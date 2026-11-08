@@ -6,7 +6,8 @@ import { AddressInfo } from 'net'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import yaml from 'js-yaml'
-import { createMcpAccessRouter } from '../../../../src/modules/mcp/routes/mcp-access.routes'
+import { Container } from 'inversify'
+import { createConfigurationManagerRouter } from '../../../../src/modules/configuration_manager/routes/cm_routes'
 import { McpAccessPolicyStore } from '../../../../src/modules/mcp/access-policy'
 import { McpToolCatalog } from '../../../../src/modules/mcp/tool-catalog'
 import { BaseError } from '../../../../src/libs/errors/base.error'
@@ -15,6 +16,7 @@ import { makeOrgContext, runWithOrgContext } from '../../../../src/libs/context/
 
 const SPEC = join(__dirname, '..', '..', '..', '..', 'src', 'modules', 'api-docs', 'pipeshub-openapi.yaml')
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- express treats only a four-argument handler as an error handler
 const sendError: express.ErrorRequestHandler = (err, _req, res, _next) => {
   res.status(err instanceof BaseError ? err.statusCode : 500).json({ error: err.message })
 }
@@ -27,21 +29,26 @@ describe('MCP access settings routes', () => {
   const serve = async <T>(fn: (url: string) => Promise<T>): Promise<T> => {
     const app = express()
     app.use(express.json())
-    app.use(
-      '/api/v1/configurationManager/mcp',
-      createMcpAccessRouter({
-        get: () => ({
-          // As the real middleware does: the caller's org is bound for the rest of the request.
-          authenticate: (req: any, _res: any, next: any) => {
-            req.user = caller
-            runWithOrgContext(
-              makeOrgContext({ orgId: String(caller.orgId), userId: String(caller.userId), kind: 'user', source: 'jwt' }),
-              () => next(),
-            )
-          },
-        }),
-      } as any),
-    )
+    const container = new Container()
+    const events = { start: sinon.stub().resolves(), publishEvent: sinon.stub().resolves(), stop: sinon.stub().resolves() }
+    container.bind('KeyValueStoreService').toConstantValue({} as any)
+    container.bind('AppConfig').toConstantValue({ scopedJwtSecret: 's', storage: {} } as any)
+    container.bind('EntitiesEventProducer').toConstantValue(events as any)
+    container.bind('AiConfigEventProducer').toConstantValue(events as any)
+    container.bind('SyncEventProducer').toConstantValue(events as any)
+    container.bind('ConfigService').toConstantValue({} as any)
+    container.bind('AuthMiddleware').toConstantValue({
+      // As the real middleware does: the caller's org is bound for the rest of the request.
+      authenticate(req: any, _res: any, next: any) {
+        req.user = caller
+        runWithOrgContext(
+          makeOrgContext({ orgId: String(caller.orgId), userId: String(caller.userId), kind: 'user', source: 'jwt' }),
+          () => next(),
+        )
+      },
+      scopedTokenValidator: () => (_req: any, _res: any, next: any) => next(),
+    } as any)
+    app.use('/api/v1/configurationManager', createConfigurationManagerRouter(container))
     app.use(sendError)
     const server = app.listen(0)
     try {

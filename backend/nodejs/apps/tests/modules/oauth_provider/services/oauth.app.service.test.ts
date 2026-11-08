@@ -656,7 +656,7 @@ describe('OAuthAppService', () => {
       const app = membersApp()
       sinon.stub(OAuthApp, 'findOne').callsFake(((filter: Record<string, unknown>) => {
         const owner = filter.createdBy
-        const found = owner === undefined || String(owner) === creatorId
+        const found = owner === undefined || (owner as { toString(): string }).toString() === creatorId
         return Promise.resolve(found ? app : null)
       }) as any)
       return app
