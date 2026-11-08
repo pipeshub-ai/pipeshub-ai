@@ -32,6 +32,7 @@ from app.models.entities import (
     PullRequestRecord,
     TicketRecord,
 )
+from app.schema.node_validator import SchemaValidationError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -57,6 +58,8 @@ _NEW_EDGE_TYPES = frozenset({
     EntityRelations.REVIEWED_BY.value, EntityRelations.OWNED_BY.value,
     EntityRelations.LAST_MODIFIED_BY.value,
 })
+
+_ARANGO_SCHEMA_VIOLATION = 1620
 
 # Roles in which someone who is not a member still gets a person node.
 _PERSON_NODE_ROLES = frozenset(EntityRelations) - {EntityRelations.ADDRESSED_TO}
@@ -312,6 +315,11 @@ class _PersonResolver:
         return (CollectionNames.PEOPLE.value, key) if key else None
 
 
+def _rejects_edge_type(exc: Exception) -> bool:
+    """The store refused the edges by schema, as an older pod's edge-type enum does during a rolling deploy."""
+    return isinstance(exc, SchemaValidationError) or getattr(exc, "error_num", None) == _ARANGO_SCHEMA_VIOLATION or "schema" in str(exc).lower()
+
+
 def is_programming_error(exc: Exception) -> bool:
     """A store called with arguments it does not take, or missing a method:
     never an unanswered read, so it is raised rather than skipped."""
@@ -395,6 +403,7 @@ async def link_record_people(
         if (
             len(established) == len(edges)
             or propagate(exc) or is_programming_error(exc) or store.is_transient_error(exc) is True
+            or not _rejects_edge_type(exc)  # the retry drops the new types' links, so only a rejection of them may
         ):
             raise
         logger.warning(

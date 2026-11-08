@@ -269,6 +269,18 @@ class TestReviewFixes:
         assert store.replace_record_entity_relations.await_count == 2
         assert all(c.args[3] for c in store.replace_record_entity_relations.await_args_list)
 
+    async def test_a_failure_that_is_not_a_rejection_keeps_the_new_types_links(self) -> None:
+        # The fallback replace leaves out the new types, so running it on a one-off error would delete those links.
+        store = _store()
+        store.replace_record_entity_relations = AsyncMock(side_effect=RuntimeError("connection reset by peer"))
+        with pytest.raises(RuntimeError, match="connection reset"):
+            await link_record_people(
+                TicketRecord(record_type=RecordType.TICKET, assignee_email="ann@acme.com",
+                             authored_by=SourcePerson(email="bob@acme.com"), **BASE),
+                store, logging.getLogger("t"),
+            )
+        assert store.replace_record_entity_relations.await_count == 1
+
     async def test_a_rejected_new_edge_type_falls_back_to_the_established_ones(self) -> None:
         store = _store()
         store.replace_record_entity_relations = AsyncMock(side_effect=[RuntimeError("schema"), None])
