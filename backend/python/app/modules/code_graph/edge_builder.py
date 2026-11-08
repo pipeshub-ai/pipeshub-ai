@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import CollectionNames, RecordRelations, RecordTypes
 from app.modules.code_graph.family_rules import FamilyRules, rules_for
 from app.modules.code_graph.guards import (
+    CALLABLE_KINDS,
+    TYPE_KINDS,
     is_test_path,
     lang_family,
     path_proximity_winner,
@@ -36,8 +38,10 @@ from app.modules.parsers.code_parser.languages.rust import HELD, POINTED, PRELUD
 from app.modules.parsers.code_parser.models import (
     CONSTRUCT,
     DECLARATION,
+    FIXTURE_MARK,
     INITIALIZER,
     RETURNS,
+    STAR_EXPORTS_MARK,
     STATIC,
 )
 from app.utils.env_config import env_int
@@ -64,6 +68,7 @@ _BLOCK_SCAN_FIELDS = [
     "_key", "recordId", "name", "kind", "qualifiedName", "language",
     "isBlockGroup", "parentBlockId", "pendingEdges", "typeTable", "referencedNames", "modifiers", "macroTable",
     "typeParamCount",
+    "startLine",
 ]
 
 _CALL_RELATIONS = {RecordRelations.CALLS.value}
@@ -116,6 +121,12 @@ _EMBEDS = "embeds"
 # A local name an import binds to something outside the repo (`from requests
 # import get`). It shadows every repo definition of that name in the file.
 _EXTERNAL = ""
+# The parser's context for the module of a Python `from m import f`, which binds no name `m`.
+_FROM_IMPORT = "from"
+# The IMPORTS name of `from m import *`.
+_STAR = "*"
+# The type-table key prefix of a pytest fixture's type (the parser marks a parameter that may be one FIXTURE_MARK).
+_FIXTURE_KEY = "fixture:"
 
 
 def _split_arity(type_name: str, family: str | None) -> tuple[str, int]:
@@ -455,6 +466,12 @@ class _Builder:
         # `_EXTERNAL`. Calls resolve through these before any name matching.
         self.symbol_bindings: dict[str, dict[str, str]] = _BindingMap(self.bindings_missing, lambda: self.resolving)
         self.module_bindings: dict[str, dict[str, str]] = _BindingMap(self.bindings_missing, lambda: self.resolving)
+        # file -> local name -> every (block holding the import, its line) a binding was made at: one at module
+        # level and others inside functions bind the name for different callers.
+        self.module_binding_sites: dict[str, dict[str, list[tuple[str, int | None]]]] = {}
+        self.symbol_binding_sites: dict[str, dict[str, list[tuple[str, int | None]]]] = {}
+        # file -> the repo modules it imports with `from m import *` (only what m exports).
+        self.star_imports: dict[str, set[str]] = {}
         # Python: file -> local name -> (file, name) of a module-level value it imports
         # (`from django.apps import apps`), whose type that file's assignment gives.
         self.value_imports: dict[str, dict[str, tuple[str, str]]] = _BindingMap(self.bindings_missing, lambda: self.resolving)
@@ -475,6 +492,8 @@ class _Builder:
         self.types_missing: dict[str, set[str]] = {}
         self._expr_memo: dict[tuple, str | None] = {}
         self._named_memo: dict[tuple[str, str | None], list[str]] = {}
+        self._named_from_memo: dict[tuple[str, str | None, str | None], str | None] = {}
+        self._top_level_memo: dict[tuple[str, str], str | None] = {}
         self._bases_memo: dict[str, list[str]] = {}
         # file -> macro -> callees, of the macros its macro scope (its includes) defines.
         self._scoped_macros: dict[str, dict[str, list[str]]] = {}
@@ -596,6 +615,17 @@ class _Builder:
             return self._record_key(self.index.record_by_block.get(block_id, ""))
         return self._block_key(block_id)
 
+    def _add_import_edge(self, block_id: str, fact: dict, to_key: str, relation: str) -> None:
+        """An import edge from the block holding the statement, or from the file when the statement sits inside
+        a definition and the family counts such an import as the file's (FamilyRules)."""
+        source = self._source_key(block_id, fact)
+        row = self.index.rows.get(block_id)
+        if row is not None and row.kind in CALLABLE_KINDS | TYPE_KINDS \
+                and rules_for(self._family_of(block_id)).local_imports_are_the_files:
+            source = self._record_key(row.record_id)
+        self._add_edge(source, to_key, relation, confidence=CONFIDENCE_EXTRACTED, line=fact.get("line"),
+                       resolution=RESOLUTION_IMPORT)
+
     # -- step 3: imports ------------------------------------------------
 
     def resolve_imports(self, work: list[tuple[str, dict]]) -> None:
@@ -621,12 +651,16 @@ class _Builder:
             specifier = fact.get("toName") or ""
             target_file = self.imports.resolve(specifier, from_file or "", family)
             if relation == RecordRelations.IMPORTS_FROM.value:
-                # `import m` binds `m`; a JS import binds a module only as `* as ns`.
-                local = fact.get("localName") or (specifier if family == "py" else None)
+                # `import m` binds `m`, `from m import f` binds only `f`; a JS import binds a module only as
+                # `* as ns`.
+                local = fact.get("localName") or (
+                    specifier if family == "py" and fact.get("context") != _FROM_IMPORT else None)
                 if local:
                     self.module_bindings.setdefault(from_file or "", {})[local] = (
                         target_file or _EXTERNAL
                     )
+                    self.module_binding_sites.setdefault(from_file or "", {}).setdefault(local, []).append(
+                        (block_id, fact.get("line")))
             if not target_file:
                 # A bare specifier (`react`, `os`) resolves to no repo file.
                 self.result.external_refs += 1
@@ -642,11 +676,7 @@ class _Builder:
             target_record = self.index.record_by_file.get(target_file)
             if not target_record:
                 continue
-            self._add_edge(
-                self._source_key(block_id, fact), self._record_key(target_record), relation,
-                confidence=CONFIDENCE_EXTRACTED, line=fact.get("line"),
-                resolution=RESOLUTION_IMPORT,
-            )
+            self._add_import_edge(block_id, fact, self._record_key(target_record), relation)
 
         # Symbol-level imports bind a local name and, when the symbol is in the
         # repo, become an edge to the definition itself.
@@ -660,11 +690,16 @@ class _Builder:
         record_id = self.index.record_by_block.get(block_id, "")
         from_file = self.index.file_by_record.get(record_id) or ""
         name = fact.get("toName") or ""
-        local = fact.get("localName") or name
-        bindings = self.symbol_bindings.setdefault(from_file, {})
-
         family = self.index.family_by_block.get(block_id) or lang_family(None, from_file)
         specifier = fact.get("qualifiedPrefix") or ""
+        if name == _STAR:  # binds no one name: _follow_reexport and the imported-modules rung read it
+            source = self.imports.resolve(specifier, from_file, family)
+            if source and rules_for(family).star_import_obeys_all:
+                self.star_imports.setdefault(from_file, set()).add(source)
+            return
+        local = fact.get("localName") or name
+        bindings = self.symbol_bindings.setdefault(from_file, {})
+        self.symbol_binding_sites.setdefault(from_file, {}).setdefault(local, []).append((block_id, fact.get("line")))
         target_file = self.imports.resolve(specifier, from_file, family)
         if not target_file:
             # A package import (`requests`, `lodash`). Matching the name across
@@ -707,12 +742,8 @@ class _Builder:
             candidates = candidates[:1]
         if len(candidates) == 1:
             bindings[local] = candidates[0]
-            self._add_edge(
-                self._source_key(block_id, fact), self._block_key(owner or candidates[0]),
-                RecordRelations.IMPORTS.value,
-                confidence=CONFIDENCE_EXTRACTED, line=fact.get("line"),
-                resolution=RESOLUTION_IMPORT,
-            )
+            self._add_import_edge(block_id, fact, self._block_key(owner or candidates[0]),
+                                  RecordRelations.IMPORTS.value)
             return
         if candidates:
             self.result.ambiguous_skipped += 1
@@ -721,25 +752,22 @@ class _Builder:
         if reexported:
             # `from django.urls import reverse`: the package re-exports it from base.py.
             bindings[local] = reexported
-            self._add_edge(
-                self._source_key(block_id, fact), self._block_key(reexported),
-                RecordRelations.IMPORTS.value,
-                confidence=CONFIDENCE_EXTRACTED, line=fact.get("line"),
-                resolution=RESOLUTION_IMPORT,
-            )
+            self._add_import_edge(block_id, fact, self._block_key(reexported), RecordRelations.IMPORTS.value)
             return
         submodule = self._python_submodule(specifier, name, from_file, family)
         if submodule:
             # `from app.analytics import jobs`: the name is a module, not a symbol.
             self.module_bindings.setdefault(from_file, {})[local] = submodule
+            self.module_binding_sites.setdefault(from_file, {}).setdefault(local, []).append(
+                (block_id, fact.get("line")))
             self.module_imports.setdefault(from_file, set()).add(submodule)
-            self._add_edge(
-                self._source_key(block_id, fact),
-                self._record_key(self.index.record_by_file[submodule]),
-                RecordRelations.IMPORTS_FROM.value,
-                confidence=CONFIDENCE_EXTRACTED, line=fact.get("line"),
-                resolution=RESOLUTION_IMPORT,
-            )
+            self._add_import_edge(block_id, fact, self._record_key(self.index.record_by_file[submodule]),
+                                  RecordRelations.IMPORTS_FROM.value)
+        elif self._star_withholds(target_file, name, family):
+            # `from pkg import hidden` where pkg's `from .m import *` leaves `hidden` out (m's `__all__`, or a
+            # leading `_`): an ImportError, never a call into m. Checked after the submodule: Python falls back
+            # to importing `pkg.hidden` when the attribute is missing.
+            bindings[local] = _EXTERNAL
         elif family == "py":
             # A module-level value (`apps = Apps()`), or a name the file re-exports:
             # calls on it are typed from that file's assignment.
@@ -843,8 +871,14 @@ class _Builder:
                 target, confidence, resolution = self._resolve_member_call(block_id, fact, record_id)
                 if not target and resolution != _EXTERNAL and relation == RecordRelations.CALLS.value:
                     target, confidence, resolution = self._extension_method(fact, record_id, family)
-                if target:
-                    for one in target if isinstance(target, list) else [target]:
+                targets = target if isinstance(target, list) else [target] if target else []
+                if resolution == RESOLUTION_TYPE and not rules_for(family).typed_calls_reach_fields:
+                    # Python's `app_container.config_service()` on a dependency-injector provider field is no call
+                    # of the field.
+                    targets = [one for one in targets
+                               if one in self.index.type_blocks or one in self.index.callable_blocks]
+                if targets:
+                    for one in targets:
                         self._add_edge(
                             self._source_key(block_id, fact), self._block_key(one),
                             RecordRelations.CALLS.value,
@@ -899,7 +933,7 @@ class _Builder:
             else:
                 target, confidence, resolution = self._resolve_direct(
                     name, call_file, family, relation, fact.get("qualifiedPrefix"),
-                    type_args=fact.get("typeArgs"),
+                    type_args=fact.get("typeArgs"), caller=block_id, line=fact.get("line"),
                 )
             if not target:
                 continue
@@ -1105,6 +1139,7 @@ class _Builder:
 
     def _resolve_direct(self, name: str, call_file: str, family: str | None,
                         relation: str, qualified_prefix: str | None = None, *, type_args: int | None = None,
+                        caller: str | None = None, line: int | None = None,
                         ) -> tuple[str | None, str, str | None]:
         """Name -> definition, strongest evidence first.
 
@@ -1113,6 +1148,9 @@ class _Builder:
         guess comes last and is only ever INFERRED.
         """
         bound = self.symbol_bindings.get(call_file, {}).get(name) if not qualified_prefix else None
+        if bound is not None and self._own_definition_wins(call_file, name, caller, family,
+                                                           self.symbol_binding_sites, line):
+            bound = None
         if bound == _EXTERNAL:
             self.result.external_refs += 1
             return None, CONFIDENCE_INFERRED, None
@@ -1121,10 +1159,11 @@ class _Builder:
             return bound, CONFIDENCE_EXTRACTED, RESOLUTION_IMPORT
         rules = rules_for(family)
         modules_bound = self.module_bindings.get(call_file, {}) if not bound and not qualified_prefix else {}
-        if name in modules_bound and rules.module_binding_is_the_module:
-            # `import * as message from "./message"`, `const f = require("./f")`: the name is that module, never
-            # a same-named definition elsewhere; where a module can be a function or class (CommonJS), the
-            # module's own top-level definition of that name.
+        if (name in modules_bound and rules.module_binding_is_the_module
+                and not self._own_definition_wins(call_file, name, caller, family, self.module_binding_sites, line)):
+            # `import * as message from "./message"`, `const f = require("./f")`, `from django.core.mail import
+            # message`, `import time`: the name is that module, never a same-named definition elsewhere; where a
+            # module can be a function or class (CommonJS), the module's own top-level definition of that name.
             module = modules_bound[name]
             target = (self._top_level_in_file(module, name)
                       if module != _EXTERNAL and rules.module_may_be_callable else None)
@@ -1176,8 +1215,10 @@ class _Builder:
             modules = set(self.module_imports.get(call_file, ())) if rules.bare_names_from_imported_modules else set()
             if rules.implicit_scope:
                 modules.update(rules.implicit_scope(self.index, call_file))
+            stars = self.star_imports.get(call_file, set())
             imported = self._eligible(
-                [cid for module in sorted(modules) for cid in self._defined_in(module, name)],
+                [cid for module in sorted(modules) for cid in self._defined_in(module, name)
+                 if module not in stars or self._star_exports(module, name)],
                 family, relation,
             )
             imported = self._nearest_scope_level(imported, call_file, rules)
@@ -1189,6 +1230,11 @@ class _Builder:
                 candidates, confidence, resolution = imported, CONFIDENCE_EXTRACTED, RESOLUTION_MODULE
             elif inferred:
                 candidates, confidence, resolution = inferred, CONFIDENCE_INFERRED, RESOLUTION_MODULE
+            elif any(self._defined_in(module, name) for module in stars):
+                # `from lib import *` where lib defines `hidden` outside its `__all__` (or `_under`): the star
+                # import binds no such name, so neither does a guess by name.
+                self.result.unresolved += 1
+                return None, CONFIDENCE_INFERRED, None
             elif rules.lexical_module_scope and relation in _CALL_RELATIONS:
                 # ES modules have no implicit cross-module scope: without an
                 # import the call cannot be reaching this definition.
@@ -1342,6 +1388,18 @@ class _Builder:
             mark, receiver_type = _split_mark(receiver_type)
             if mark == HELD or name in _POINTER_METHODS:
                 return None, CONFIDENCE_INFERRED, None   # the wrapper's own method: `opt.map(..)`, `arc.clone()`
+        type_record = record_id
+        if receiver_type and receiver_type.startswith(FIXTURE_MARK):  # only Python's parser writes it
+            receiver_type, type_record = self._fixture_type(receiver_type[len(FIXTURE_MARK):], record_id)
+        if receiver_type and receiver_type.startswith("=") and family == "py":
+            # The parser's chain for what the receiver holds where it is read (`=self.http.execute()`, `=make()`).
+            owner = self._expr_type(receiver_type[1:], record_id, self._enclosing_type(block_id))
+            if owner:
+                return self._methods_on(owner, name) or None, CONFIDENCE_INFERRED, RESOLUTION_TYPE
+            call_file = self.index.file_by_record.get(record_id) or ""
+            if receiver and receiver.isidentifier() and (receiver in self.module_bindings.get(call_file, {})
+                                                         or receiver in self.symbol_bindings.get(call_file, {})):
+                return None, CONFIDENCE_INFERRED, None  # a local the chain could not type still shadows an import
         # C++ `auto& cfg = DBConfig::GetConfig(ctx); cfg.Set()`: a local the initializer types (`=` alone when the
         # parser could not read it), which shadows any field so named.
         initialized = rules.evaluated_receivers and bool(receiver_type) and receiver_type.startswith("=")
@@ -1419,8 +1477,10 @@ class _Builder:
                 head = _SEGMENT.match(chain)
                 head_type = self._types(record_id).get(head.group()) if head else None
                 head_type = None if head_type == "=" else head_type
+            # Python: the head is a name the parser saw in its scope and could not type, never the file table's.
             owner = self._expr_type(chain, record_id, self._enclosing_type(block_id),
-                                    head_type=head_type, head_type_arg=fact.get("headTypeArg"))
+                                    head_type=head_type, head_type_arg=fact.get("headTypeArg"),
+                                    scoped_head=family == "py" and not rules.file_wide_receiver_types)
             if owner:
                 target = self._methods_on(owner, name)
                 if target:
@@ -1444,11 +1504,11 @@ class _Builder:
         if "|" in receiver_type:  # `e: A | B`
             found: dict[str, None] = {}
             for member in receiver_type.split("|"):
-                candidates = self._type_candidates(member, record_id, family)
+                candidates = self._type_candidates(member, type_record, family)
                 target = self._methods_on(candidates[0], name) if len(candidates) == 1 else None
                 found.update(dict.fromkeys(target if isinstance(target, list) else [target] if target else []))
             return list(found) or None, CONFIDENCE_INFERRED, RESOLUTION_TYPE
-        type_candidates = self._type_candidates(receiver_type, record_id, family)
+        type_candidates = self._type_candidates(receiver_type, type_record, family)
         if len(type_candidates) != 1:  # god-node guard
             if type_candidates:
                 self.result.ambiguous_skipped += 1
@@ -1570,6 +1630,25 @@ class _Builder:
         return {_split_arity(type_name, family)[0]} | {
             self.index.rows[t].name or "" for t, _ in self._type_chain(candidates[0])}
 
+    def _fixture_type(self, name: str, record_id: str) -> tuple[str | None, str]:
+        """(type, the record whose imports name it) of the pytest fixture *name* a test parameter receives:
+        the calling file's own, else the nearest conftest.py above it, as pytest looks them up."""
+        call_file = self.index.file_by_record.get(record_id) or ""
+        key = f"{_FIXTURE_KEY}{name}"
+        folder, here = call_file.rpartition("/")[0], record_id
+        while True:
+            typ = self._types(here).get(key) if here else None
+            if typ:
+                return typ, here
+            if folder is None:
+                return None, record_id
+            here = self.index.record_by_file.get(f"{folder}/conftest.py" if folder else "conftest.py")
+            folder = (folder.rpartition("/")[0] if "/" in folder else "") if folder else None
+
+    def _imported_from_outside(self, call_file: str, name: str) -> bool:
+        """`from requests import Session`, or an import the resolver cannot place: no repo class so named."""
+        return self.symbol_bindings.get(call_file, {}).get(name) == _EXTERNAL
+
     def _type_candidates(self, type_name: str, record_id: str, family: str | None) -> list[str]:
         """The types *type_name* can mean in a file: the one it imports or defines, if any. A C# type-table
         name carries its type-argument count (`IHandler`1`; none written is 0)."""
@@ -1579,6 +1658,9 @@ class _Builder:
                 return placed
             type_name = type_name.rpartition(rules_for(family).qualified_path_separator)[2]
         type_name, arity = _split_arity(type_name, family)
+        call_file = self.index.file_by_record.get(record_id) or ""
+        if family == "py" and self._imported_from_outside(call_file, type_name):
+            return []
         type_candidates = [
             cid for cid in self.index.candidates(type_name)
             if cid in self.index.type_blocks
@@ -1586,7 +1668,6 @@ class _Builder:
         ]
         type_candidates = self._by_arity(type_candidates, arity, family)
         if len(type_candidates) > 1:
-            call_file = self.index.file_by_record.get(record_id) or ""
             bound = self.symbol_bindings.get(call_file, {}).get(type_name)
             local = [cid for cid in type_candidates
                      if cid in self.index.rows and self.index.rows[cid].file_path == call_file]
@@ -1659,7 +1740,7 @@ class _Builder:
 
     def _expr_type(self, expr: str, record_id: str, this_type: str | None, depth: int = 0, *,
                    head_type: str | None = None, array: bool = False,
-                   head_type_arg: str | None = None) -> str | None:
+                   head_type_arg: str | None = None, scoped_head: bool = False) -> str | None:
         """The type block a JS/TS receiver expression evaluates to, or None.
 
         Walks `a.b().c` left to right through the parser's type tables: a
@@ -1668,29 +1749,32 @@ class _Builder:
         in its own file, so a type name resolves against that file's imports.
         *head_type* is the first name's type in the calling function, when the
         parser saw one. An array of T is `[]T`, returned only when *array*; an
-        `xs[*]` expression is one element of `xs`.
+        `xs[*]` expression is one element of `xs`. With *scoped_head*, a bare head
+        is not looked up in the file's type table.
         """
         element = expr.endswith("[*]")
         if element:
             expr = expr[:-3]
-        key = (record_id, this_type, expr, head_type, head_type_arg, element)
+        key = (record_id, this_type, expr, head_type, head_type_arg, element, scoped_head)
         if key not in self._expr_memo:
             self._expr_memo[key] = None  # a cycle (`a = a.next`) resolves to nothing
-            self._expr_memo[key] = self._eval_expr(expr, record_id, this_type, depth, head_type, head_type_arg)
+            self._expr_memo[key] = self._eval_expr(expr, record_id, this_type, depth, head_type, head_type_arg,
+                                                   scoped_head=scoped_head)
         owner = self._expr_memo[key]
         if element:
             return owner[2:] if owner and owner.startswith("[]") else None
         return owner if array or not owner or not owner.startswith("[]") else None
 
     def _eval_expr(self, expr: str, record_id: str, this_type: str | None, depth: int,
-                   head_type: str | None, head_type_arg: str | None = None) -> str | None:
+                   head_type: str | None, head_type_arg: str | None = None, *,
+                   scoped_head: bool = False) -> str | None:
         segments = _receiver_segments(expr) if depth < _EXPR_DEPTH else None
         owner = None
         if segments:
             (head, called, first_arg), rest = segments[0], segments[1:]
             py = lang_family(None, self.index.file_by_record.get(record_id)) == "py"
-            if (head == "this" or (py and head in ("self", "cls"))) and not called:
-                owner = this_type
+            if ((head == "this" or (py and head in ("self", "cls"))) and not called) or (py and head == "cls"):
+                owner = this_type  # `cls(...)` in a classmethod constructs its class
             elif called and py and len(self._type_candidates(head, record_id, "py")) == 1:
                 owner = self._type_candidates(head, record_id, "py")[0]  # `Foo(...).bar()`
             elif called and head in _CLASS_ARG_CALLS and _SEGMENT.fullmatch(first_arg) and first_arg[:1].isupper():
@@ -1700,7 +1784,7 @@ class _Builder:
             elif head_type:
                 owner = self._declared_type(head_type, record_id, this_type, depth)
             else:
-                owner = self._value_type(head, record_id, this_type, depth)
+                owner = self._value_type(head, record_id, this_type, depth, file_wide=not scoped_head)
             # `IObservable<Foo>`'s argument, for a `read(): T` called on it next. A scoped
             # head keeps its own scope's argument: another function's `v` may differ.
             declared_arg = None if called or head == "this" else head_type_arg if head_type else \
@@ -1727,13 +1811,14 @@ class _Builder:
                         owner = self._py_named_like(name, call_file=self.index.file_by_record.get(record_id))
         return owner
 
-    def _value_type(self, name: str, record_id: str, this_type: str | None, depth: int) -> str | None:
+    def _value_type(self, name: str, record_id: str, this_type: str | None, depth: int, *,
+                    file_wide: bool = True) -> str | None:
         """A bare name: a typed variable, else a field of the class the code is in (C++ `m_list`), else a class it
         names (`Ctl.get()` is static)."""
-        declared = self._types(record_id).get(name)
+        family = lang_family(None, self.index.file_by_record.get(record_id))
+        declared = self._types(record_id).get(name) if file_wide else None
         if declared:
             return self._declared_type(declared, record_id, this_type, depth)
-        family = lang_family(None, self.index.file_by_record.get(record_id))
         field = self._member_type(this_type, name, depth) \
             if this_type and rules_for(family).implicit_member_receivers else None
         if field:
@@ -1741,7 +1826,7 @@ class _Builder:
         candidates = self._type_candidates(name, record_id, family)
         if len(candidates) == 1:
             return candidates[0]
-        if family != "py":
+        if family != "py" or self._imported_from_outside(self.index.file_by_record.get(record_id) or "", name):
             return None
         return (self._py_imported_value(record_id, name, depth)
                 or self._py_named_like(name, call_file=self.index.file_by_record.get(record_id)))
@@ -1816,6 +1901,9 @@ class _Builder:
                 if roots:
                     break
             self._named_memo[memo_key] = roots
+        seen_from = (name, method, call_file)
+        if seen_from in self._named_from_memo:
+            return self._named_from_memo[seen_from]
         roots = self._named_memo[memo_key]
         if call_file and not is_test_path(call_file):
             # App code never resolves into a test file, even when one class matches.
@@ -1823,7 +1911,8 @@ class _Builder:
         if len(roots) > 1 and call_file:
             roots = [cid for cid in roots if self._py_reachable(call_file, cid)]
         # Several unrelated classes the caller can all see: a guess would be a coin toss.
-        return roots[0] if len(roots) == 1 else None
+        self._named_from_memo[seen_from] = roots[0] if len(roots) == 1 else None
+        return self._named_from_memo[seen_from]
 
     def _py_reachable(self, call_file: str, target: str) -> bool:
         """Whether a guessed *target* is code *call_file* can see: its own file, a file it
@@ -2147,12 +2236,14 @@ class _Builder:
         return None
 
     def _top_level_in_file(self, file_path: str, name: str) -> str | None:
-        record = self.index.record_by_file.get(file_path)
-        for candidate in self.index.blocks_by_record.get(record, ()):
-            row = self.index.rows.get(candidate)
-            if row and row.name == name and not row.parent_block_id:
-                return candidate
-        return None
+        key = (file_path, name)
+        if key not in self._top_level_memo:
+            record = self.index.record_by_file.get(file_path)
+            self._top_level_memo[key] = next(
+                (candidate for candidate in self.index.blocks_by_record.get(record, ())
+                 if (row := self.index.rows.get(candidate)) and row.name == name and not row.parent_block_id),
+                None)
+        return self._top_level_memo[key]
 
     def _defined_or_reexported(self, file_path: str, name: str) -> str | None:
         if file_path.endswith(".go"):
@@ -2181,23 +2272,114 @@ class _Builder:
         # incremental one, and the two must agree.
         if depth >= _MAX_REEXPORT_HOPS or not file_path.endswith("__init__.py"):
             return None
+        # A named re-export (`from .related import ForeignKey`) wins; behind star imports, two definitions of
+        # the name are ambiguous and bind nothing (as `_follow_barrel` does).
+        # shortcut: Python binds in statement order, so a later `from .b import *` would override an earlier
+        # named import; the named one always wins here. Follow the order if such packages show up.
+        star_hits: set[str] = set()
         record = self.index.record_by_file.get(file_path)
         for block_id in self.index.blocks_by_record.get(record, ()):
             row = self.index.rows.get(block_id)
             for fact in row.pending_edges if row else ():
                 if fact.get("relation") != RecordRelations.IMPORTS.value:
                     continue
-                if (fact.get("localName") or fact.get("toName")) != name:
+                star = fact.get("toName") == _STAR
+                if not star and (fact.get("localName") or fact.get("toName")) != name:
                     continue
                 source = self.imports.resolve(fact.get("qualifiedPrefix") or "", file_path, family)
-                if not source or source == file_path:
+                if not source or source == file_path or (star and not self._star_exports(source, name)):
                     continue
-                original = fact.get("toName") or name
+                original = name if star else (fact.get("toName") or name)
                 hit = self._top_level_in_file(source, original) or self._follow_reexport(
                     source, original, family, depth + 1)
-                if hit:
+                if hit and not star:
                     return hit
-        return None
+                if hit:
+                    star_hits.add(hit)
+        return star_hits.pop() if len(star_hits) == 1 else None
+
+    def _star_withholds(self, package: str, name: str, family: str | None) -> bool:
+        """Whether a package `__init__.py` star-imports a module that defines *name* without exporting it."""
+        if not package.endswith("__init__.py") or not rules_for(family).star_import_obeys_all:
+            return False
+        record = self.index.record_by_file.get(package)
+        for block_id in self.index.blocks_by_record.get(record, ()):
+            row = self.index.rows.get(block_id)
+            for fact in row.pending_edges if row else ():
+                if fact.get("relation") != RecordRelations.IMPORTS.value or fact.get("toName") != _STAR:
+                    continue
+                source = self.imports.resolve(fact.get("qualifiedPrefix") or "", package, family)
+                if source and self._top_level_in_file(source, name) and not self._star_exports(source, name):
+                    return True
+        return False
+
+    def _star_exports(self, file_path: str, name: str) -> bool:
+        """Whether `from m import *` of *file_path* brings *name*: its literal `__all__` when it has one (the
+        parser keeps it in the type table, models.STAR_EXPORTS_MARK), else every name without a leading `_`."""
+        record = self.index.record_by_file.get(file_path)
+        declared = self._types(record).get("__all__", "")
+        if declared.startswith(STAR_EXPORTS_MARK):
+            return name in declared[len(STAR_EXPORTS_MARK):].split(",")
+        return not name.startswith("_")
+
+    def _own_definition_wins(self, file_path: str, name: str, caller: str | None, family: str | None,
+                             binding_sites: dict[str, dict[str, list[tuple[str, int | None]]]],
+                             use_line: int | None = None) -> bool:
+        """Whether an import binding of *name*, made at *binding_sites* (module or symbol bindings), gives way to
+        the file's own top-level definition of it, where the family's scoping allows it.
+
+        Each import is judged in its own scope, never by which was written last: inside a function that imports
+        the name (or nested in it), it stays the import; elsewhere only module-level imports bind it, and the
+        definition wins when it starts after the last of them (`import time`, then `def time()`) and the use at
+        *use_line* runs after it, or when there is none (the imports are all local to other functions)."""
+        if not rules_for(family).definition_rebinds_import:
+            return False
+        own = self._top_level_in_file(file_path, name)
+        sites = binding_sites.get(file_path, {}).get(name)
+        if own is None or not sites:
+            return False
+        module_level: list[int | None] = []
+        for import_block, import_line in sites:
+            importer = self.index.rows.get(import_block)
+            if importer is None or importer.kind not in CALLABLE_KINDS:
+                module_level.append(import_line)
+            elif caller and (caller == import_block or self._nested_in(caller, import_block)):
+                return False
+        if not module_level:
+            return True
+        own_line = self.index.rows[own].start_line
+        if not (isinstance(own_line, int) and all(isinstance(line, int) for line in module_level)
+                and own_line > max(module_level)):
+            return False
+        # A use run as the module loads (`class IsValid(GeoFuncMixin, Transform)` above its own
+        # `class Transform`, `@helper` above `def helper`) sees the definition only once it has run; a function
+        # body runs later and sees it. A decorator or default argument sits on or above its function's first
+        # line and runs where the `def` statement does.
+        # shortcut: a one-line function (body on the `def` line) reads as its header, and call facts merge per
+        # name per block keeping the first line; carry a header span on the block if either shows up.
+        row = self.index.rows.get(caller) if caller else None
+        runs_in = caller
+        if row is not None and isinstance(use_line, int) and isinstance(row.start_line, int) \
+                and use_line <= row.start_line:
+            runs_in = row.parent_block_id
+        if self._runs_after_load(runs_in):
+            return True
+        if not isinstance(use_line, int):
+            use_line = row.start_line if row is not None else None
+        return isinstance(use_line, int) and use_line > own_line
+
+    def _runs_after_load(self, block_id: str | None) -> bool:
+        """Whether *block_id* is a function (or nested in one), so its code runs after the module has loaded."""
+        seen: set[str] = set()
+        while block_id and block_id not in seen:
+            row = self.index.rows.get(block_id)
+            if row is None:
+                return False
+            if row.kind in CALLABLE_KINDS:
+                return True
+            seen.add(block_id)
+            block_id = row.parent_block_id
+        return False
 
     def _follow_barrel(self, file_path: str, name: str, seen: set[str], depth: int = 0) -> str | None:
         """`import { f } from "@pkg/common"` with an index.ts of `export * from "./a"`, `"./b"`, …:
@@ -2364,7 +2546,8 @@ class _Builder:
             return []
         family = self._family_of(block_id)
         found = (self._resolve_type_name(fact.get("toName") or "", row.file_path or "", family,
-                                         fact.get("qualifiedPrefix"), type_args=fact.get("typeArgs"))
+                                         fact.get("qualifiedPrefix"), type_args=fact.get("typeArgs"),
+                                         caller=block_id, line=fact.get("line"))
                  for fact in row.pending_edges if fact.get("relation") in _TYPE_RELATIONS)
         return [target for target in found if target]
 
@@ -2450,13 +2633,17 @@ class _Builder:
         return parent.name if parent else None
 
     def _resolve_type_name(self, name: str, from_file: str, family: str | None,
-                           qualified_prefix: str | None = None, *, type_args: int | None = None) -> str | None:
+                           qualified_prefix: str | None = None, *, type_args: int | None = None,
+                           caller: str | None = None, line: int | None = None) -> str | None:
         """Name -> type block. Deliberately without `_resolve_direct`'s counters:
         a heritage hop taken while resolving a call is not itself a resolution
-        the run should report on."""
+        the run should report on. *caller* and *line* place the use, as in `_resolve_direct`."""
         if not name:
             return None
         bound = self.symbol_bindings.get(from_file, {}).get(name) if not qualified_prefix else None
+        if bound is not None and self._own_definition_wins(from_file, name, caller, family,
+                                                           self.symbol_binding_sites, line):
+            bound = None  # the file's own later definition, as INHERITS takes it in `_resolve_direct`
         if bound == _EXTERNAL:
             return None
         if bound in self.index.type_blocks:
