@@ -626,12 +626,19 @@ class EventProcessor:
         if not fields:
             return True
         # Records that keep sharing the id being left are fenced around the write (see leaving_vrid)
-        async with leaving_vrid(self.graph_provider, record_id, left_vrid, self.logger) if leaving else contextlib.nullcontext():
-            success = await self.graph_provider.update_node(
-                record_id,
-                CollectionNames.RECORDS.value,
-                fields,
-            )
+        success = False
+        try:
+            async with leaving_vrid(self.graph_provider, record_id, left_vrid, self.logger) if leaving else contextlib.nullcontext():
+                success = await self.graph_provider.update_node(
+                    record_id,
+                    CollectionNames.RECORDS.value,
+                    fields,
+                )
+        except Exception as e:
+            if not success:
+                raise
+            # The write landed, so a retry sees the new id and cannot redo this; the failed connector stays not current, and the caller still owes the old id's clean-up.
+            self.logger.error("Could not register the records still sharing VRID %s after updating %s: %s", left_vrid, record_id, e)
         if not success:
             self.logger.warning(
                 f"❌ Failed to update record {record_id} fields {tuple(fields)}"
