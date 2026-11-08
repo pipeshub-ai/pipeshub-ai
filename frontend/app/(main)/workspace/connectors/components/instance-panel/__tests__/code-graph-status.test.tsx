@@ -13,6 +13,7 @@ vi.mock('../../../api', () => ({
   ConnectorsApi: { getCodeGraphRepos: () => getCodeGraphRepos() },
 }));
 
+import { locales } from '@/lib/i18n/locales';
 import { CodeGraphStatus } from '../code-graph-status';
 import { installDomShims, renderInTheme } from '../../../__tests__/fixtures';
 
@@ -52,6 +53,14 @@ describe('CodeGraphStatus', () => {
     expect(screen.getByRole('link', { name: 'View graph of acme/api' })).toBeTruthy();
     expect(screen.getAllByRole('link')).toHaveLength(2);
   });
+
+  it.each(Object.entries(locales))(
+    '%s: the link name contains its visible label, so speech input can click it',
+    (_lang, strings) => {
+      const ui = (strings as { graph: { ui: Record<string, string> } }).graph.ui;
+      expect(ui.viewGraphOf).toContain(ui.viewGraph);
+    },
+  );
 
   it('renders nothing when the code graph cannot be reached', async () => {
     getCodeGraphRepos.mockRejectedValue(new Error('503'));
