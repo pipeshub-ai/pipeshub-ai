@@ -192,10 +192,12 @@ class Env:
     async def settle(self, *, max_runs: int = 8) -> list[RewriteResult]:
         """Rewrite every connector that has roots until none has, with the full pass where the job leaves one to it."""
         results: list[RewriteResult] = []
-        for _ in range(max_runs):
+        for run in range(max_runs + 1):
             busy = [a for a in self.apps if self.graph.app_docs.get(a, {}).get(PENDING_KEY)]
             if not busy:
                 return results
+            if run == max_runs:
+                break
             for app in busy:
                 results.append(await self.job.run_connector(ORG, app))
                 if results[-1].state == "full_pass":
@@ -332,4 +334,36 @@ def random_change(world: World, rng: random.Random) -> Mutation | None:
     return Mutation("moved", node.id, ref=to.id, value=to.id if to.kind == "group" else "")
 
 
-__all__ = ["COLL", "NAME", "PREFIX", "Env", "Log", "descendants", "play", "random_change", "registration"]
+class Killed(BaseException):
+    """A process killed mid-run: not an Exception, so nothing in the job may swallow it."""
+
+
+class Tap:
+    """Every call the job makes to the graph and to the store goes through `before(name)` first, which may raise (a kill, a transient failure) or
+    return "drop" (a write the store acknowledged and lost)."""
+
+    GRAPH = ("get_document", "get_records_by_virtual_record_id", "get_edges_from_node", "update_node_fields_if_match")
+    STAMPS = ("nodes", "subtree_vrids", "app")
+    STORE = ("scroll", "count_points", "retrieve_points", "update_payloads_by_ids", "make_searchable")
+
+    def __init__(self, env: Env, before: Callable[[str], Awaitable[str | None]], after: Callable[[str], Awaitable[None]] | None = None) -> None:
+        self.calls: list[str] = []
+        self.before, self.after = before, after
+        for obj, names in ((env.graph, self.GRAPH), (env.graph.stamps, self.STAMPS), (env.vdb, self.STORE)):
+            for name in names:
+                setattr(obj, name, self._wrap(name, getattr(obj, name)))
+
+    def _wrap(self, name: str, real: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+        async def tapped(*args: Any, **kwargs: Any) -> Any:
+            self.calls.append(name)
+            if await self.before(name) == "drop":
+                return None
+            out = await real(*args, **kwargs)
+            if self.after is not None:
+                await self.after(name)
+            return out
+
+        return tapped
+
+
+__all__ = ["COLL", "NAME", "PREFIX", "Env", "Killed", "Log", "Tap", "descendants", "play", "random_change", "registration"]
