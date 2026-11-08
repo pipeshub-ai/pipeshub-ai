@@ -77,18 +77,11 @@ class PeopleMixin(IdentityMixin):
         """Moves the person's grants and app memberships, and the entity relations that point at it, onto the user, in one transaction; a person with a CRM
         edge (``memberOf``, ``lead``, ``contact``, either direction) keeps it and stays (SPLIT), any other goes with its edges (MIGRATED). An edge the user already
         has (to the same node; for an entity relation, from the same node with the same type) stays and the person's copy goes. None when the org has no person
-        with the email or no such user. Serialised with the creators of the email, so a second run finds nothing to move. A failure raises."""
+        with the email or no such user; every person with the email is moved, SPLIT if any stays. Serialised with the creators of the email, so a second run finds nothing to move. A failure raises."""
         self._require_org(org_id)
         org, low = current_org_id(), email.lower()
 
-        async def go(tx: Tx) -> str | None:
-            await tx.fetchval("/* pipeshub:graph.migrate_person_lock */ SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", f"person:{org}:{low}")
-            pid = await tx.fetchval("/* pipeshub:graph.migrate_person_find */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'person' AND doc->>'email' = $2 ORDER BY id LIMIT 1 FOR UPDATE",
-                                    org, low)
-            # Neo4j matches the user too: no user, nothing moves. Its row is locked, so two persons moving onto it never both find a node free.
-            if pid is None or await tx.fetchval("/* pipeshub:graph.migrate_person_user */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND id = $2 FOR NO KEY UPDATE",
-                                                org, user_key) is None:
-                return None
+        async def move(tx: Tx, pid: str) -> str:
             is_crm = await tx.fetchval("""/* pipeshub:graph.migrate_person_crm */ SELECT EXISTS (SELECT 1 FROM graph.edges WHERE org_id = $1 AND coll = ANY($3::text[]) AND from_coll = 'person' AND from_id = $2)
                 OR EXISTS (SELECT 1 FROM graph.edges WHERE org_id = $1 AND coll = ANY($3::text[]) AND to_coll = 'person' AND to_id = $2)""", org, pid, list(PERSON_CRM_EDGES))
             # one grant and one membership per node (a MERGE without properties): the person's first, and none where the user has one
@@ -118,6 +111,18 @@ class PeopleMixin(IdentityMixin):
             mode = PersonMigrationMode.SPLIT if is_crm else PersonMigrationMode.MIGRATED
             self.logger.info("Person -> user %s: %s (%s grant and membership, %s entity relation edges moved)", user_key, mode, moved, named)
             return mode
+
+        async def go(tx: Tx) -> str | None:
+            await tx.fetchval("/* pipeshub:graph.migrate_person_lock */ SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", f"person:{org}:{low}")
+            # every match, as Neo4j's MATCH: a Salesforce contact is written without this lock, so an external share can make a second person with the address
+            persons = await tx.fetch("/* pipeshub:graph.migrate_person_find */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'person' AND doc->>'email' = $2 ORDER BY id FOR UPDATE",
+                                     org, low)
+            # Neo4j matches the user too: no user, nothing moves. Its row is locked, so two persons moving onto it never both find a node free.
+            if not persons or await tx.fetchval("/* pipeshub:graph.migrate_person_user */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND id = $2 FOR NO KEY UPDATE",
+                                                org, user_key) is None:
+                return None
+            modes = [await move(tx, r["id"]) for r in persons]
+            return PersonMigrationMode.SPLIT if PersonMigrationMode.SPLIT in modes else PersonMigrationMode.MIGRATED
 
         try:
             return await self._q(go, transaction, write=True)

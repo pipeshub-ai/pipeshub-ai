@@ -179,6 +179,23 @@ async def test_a_person_with_a_crm_edge_either_way_splits_keeping_it_and_a_secon
     assert [await edges(w, c, frm=("users", "ueve")) + await edges(w, c, to=("users", "ueve")) for c in ("permission", "userAppRelation", "entityRelations")] == after
 
 
+async def test_every_person_with_the_address_moves_and_a_crm_one_stays(w: World) -> None:
+    await w.nodes("users", {"_key": "ueve", "email": "eve@x.io", "fullName": "Eve"})
+    await w.nodes("records", rec("r1"), rec("r2"))
+    await w.nodes("organizations", {"_key": "acme", "name": "Acme", "isExternal": True, "parentOrgId": w.org})
+    await person(w, "a-contact", "eve@x.io", fullName="Eve")                                        # sorts first, so a lookup of one person would stop here
+    await w.edge("memberOf", ("person", "a-contact"), ("organizations", "acme"))
+    await w.edge("permission", ("person", "a-contact"), ("records", "r1"), type="USER", role="READER")
+    await person(w, "b-share", "eve@x.io", fullName="Eve")
+    await w.edge("permission", ("person", "b-share"), ("records", "r1"), type="USER", role="OWNER")
+    await w.edge("permission", ("person", "b-share"), ("records", "r2"), type="USER", role="WRITER")
+    assert await w.p.migrate_person_to_user("eve@x.io", "ueve", w.org) == SPLIT
+    grants = {e[1]: e[3]["role"] for e in await edges(w, "permission", frm=("users", "ueve"))}
+    assert grants == {"records/r1": "READER", "records/r2": "WRITER"}                               # a node's first grant, as for one person
+    assert await w.p.get_document("b-share", "person") is None and await touching(w, "person", "b-share") == 0
+    assert await edges(w, "permission", frm=("person", "a-contact")) == [] and len(await edges(w, "memberOf", frm=("person", "a-contact"))) == 1
+
+
 async def test_no_person_no_user_or_another_org_moves_nothing(w: World) -> None:
     await promotion_world(w)
     assert await w.p.migrate_person_to_user("nobody@x.io", "ueve", w.org) is None
