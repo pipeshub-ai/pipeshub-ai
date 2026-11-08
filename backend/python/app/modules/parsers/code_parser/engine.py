@@ -1026,7 +1026,8 @@ def _python_literal_all(root: Node, src: bytes) -> list[str] | None:
         if node is None or node.type != "assignment" or _text(_field(node, "left"), src) != "__all__":
             continue
         value = _field(node, "right")
-        items = value.named_children if value is not None and value.type in ("list", "tuple") else None
+        items = ([c for c in value.named_children if c.type != "comment"]  # `# models` grouping the names
+                 if value is not None and value.type in ("list", "tuple") else None)
         contents = [next((c for c in item.named_children if c.type == "string_content"), None)
                     for item in items] if items is not None else None
         if contents is None or any(item.type != "string" for item in items) or None in contents:

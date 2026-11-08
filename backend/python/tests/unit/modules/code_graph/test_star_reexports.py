@@ -90,6 +90,9 @@ def hidden():
     return 2
 '''
 
+# The same module, its `__all__` written over lines with a comment among the names.
+WITH_COMMENTED_ALL = WITH_ALL.replace(b'__all__ = ["pub"]', b'__all__ = [\n    # functions\n    "pub",\n]')
+
 WITHOUT_ALL = b'''
 def open_fn():
     return 1
@@ -109,10 +112,11 @@ def _calls_by_caller(graph) -> dict[str, set[str]]:
     return out
 
 
-async def test_a_star_reexport_brings_only_the_literal_all(graph, index_file) -> None:
+@pytest.mark.parametrize("module", [WITH_ALL, WITH_COMMENTED_ALL], ids=["one-line", "with-a-comment"])
+async def test_a_star_reexport_brings_only_the_literal_all(graph, index_file, module: bytes) -> None:
     """`from pkg.with_all import *` in pkg/__init__.py re-exports `pub` only (its `__all__`)."""
     await index_file("r1", "pkg/__init__.py", b"from pkg.with_all import *  # noqa\n", "python")
-    await index_file("r2", "pkg/with_all.py", WITH_ALL, "python")
+    await index_file("r2", "pkg/with_all.py", module, "python")
     await index_file("r3", "app/re.py", b"from pkg import pub, hidden\nimport pkg\n\n\ndef via_from():\n    pub()\n"
                      b"    hidden()\n\n\ndef via_module():\n    pkg.pub()\n    pkg.hidden()\n", "python")
     await _build(graph)
