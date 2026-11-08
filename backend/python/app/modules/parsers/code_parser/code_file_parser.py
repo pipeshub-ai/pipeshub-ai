@@ -431,10 +431,13 @@ class CodeFileParser:
         """Bucket pending facts by owning block; return the file-level ones."""
         buckets: dict[tuple[bool, int] | None, list[dict]] = {}
         seen: dict[tuple[bool, int] | None, set[tuple]] = {}
+        # Functions passed as values get a budget of their own, so they never crowd out a block's calls.
+        kept: dict[tuple[tuple[bool, int] | None, bool], int] = {}
         for fact in parsed.pending:
             key = placement.get(fact.from_symbol) if fact.from_symbol is not None else None
             facts = buckets.setdefault(key, [])
-            if len(facts) >= MAX_FACTS_PER_BLOCK:
+            budget = (key, fact.relation == Relation.INDIRECT_CALL)
+            if kept.get(budget, 0) >= MAX_FACTS_PER_BLOCK:
                 continue
             fact_dict = fact.to_dict()
             # The same call on another line resolves to the same edge.
@@ -442,6 +445,7 @@ class CodeFileParser:
             if identity in seen.setdefault(key, set()):
                 continue
             seen[key].add(identity)
+            kept[budget] = kept.get(budget, 0) + 1
             facts.append(fact_dict)
 
         for key, facts in buckets.items():
