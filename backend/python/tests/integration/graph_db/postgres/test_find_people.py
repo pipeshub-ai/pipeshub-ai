@@ -15,7 +15,7 @@ import pytest
 from app.agents.actions.knowledge_graph.ops import entity_filters, people
 from app.agents.actions.knowledge_graph.ops.entity_records import LOOKUP_FAILED_MSG
 from app.agents.actions.knowledge_graph.ops.people import execute_find_records_by_person
-from app.modules.retrieval.entity_permissions import EntityAccessContext
+from app.modules.retrieval.entity_permissions import EntityAccessContext, _person_ref
 
 from .test_access import APP, rec
 from .test_access import w as w
@@ -151,3 +151,25 @@ async def test_a_failed_read_is_not_a_no_match_and_the_record_comes_back_with_th
         ok, text = await execute_find_records_by_person({"org_id": world.org, "user_id": "u", "user_email": "me@acme.test", "graph_provider": world.p}, "Quincy Outsider")
         assert not ok and text == LOOKUP_FAILED_MSG
     assert "Doc ext" in await ask(world, "Quincy Outsider")
+
+
+async def test_a_user_and_a_person_with_one_key_each_reach_only_their_own_records(w: World) -> None:
+    await w.nodes("users", {"_key": "same", "userId": "same", "email": "same@acme.test"})
+    await w.nodes("person", {"_key": "same", "fullName": "Same Key", "email": "same@partner.test"})
+    await w.nodes("records", done("of-user", 2), done("of-person", 1))
+    await w.edge("entityRelations", ("records", "of-user"), ("users", "same"), edgeType="AUTHORED_BY")
+    await w.edge("entityRelations", ("records", "of-person"), ("person", "same"), edgeType="AUTHORED_BY")
+
+    async def reached(coll: str) -> list[str]:
+        ref = {**_person_ref([(coll, "same")], ["AUTHORED_BY"]), "connectorIds": [APP]}
+        return [r["_key"] for r in (await w.p.get_entity_candidate_records([ref], w.org))[(ref["type"], "same")]]
+    assert await reached("users") == ["of-user"]
+    assert await reached("person") == ["of-person"]
+
+
+async def test_a_person_node_naming_another_org_reaches_nothing(w: World) -> None:
+    await w.nodes("person", {"_key": "foreign", "orgId": OTHER_ORG, "fullName": "Far Away"})
+    await w.nodes("records", done("here", 1))
+    await w.edge("entityRelations", ("records", "here"), ("person", "foreign"), edgeType="AUTHORED_BY")
+    ref = {**_person_ref([("person", "foreign")], ["AUTHORED_BY"]), "connectorIds": [APP]}
+    assert (await w.p.get_entity_candidate_records([ref], w.org))[(ref["type"], "foreign")] == []
