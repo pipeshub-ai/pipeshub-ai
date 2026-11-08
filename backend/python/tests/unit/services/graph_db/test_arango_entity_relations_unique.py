@@ -113,5 +113,6 @@ async def test_an_unreadable_index_list_does_not_stop_setup() -> None:
     p.http_client.get_indexes = AsyncMock(side_effect=RuntimeError("index list unavailable"))
     p.http_client.execute_aql = AsyncMock(return_value=[])
     await p._ensure_indexes()
+    p.http_client.execute_aql.assert_awaited()  # the cleanup still runs, so duplicates can't block the build
     fields = [c.args[1] for c in p.http_client.ensure_persistent_index.await_args_list]
     assert ["_from", "_to", "edgeType"] in fields and ["tableFqn", "orgId"] in fields
