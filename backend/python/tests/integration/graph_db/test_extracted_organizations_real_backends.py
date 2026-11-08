@@ -100,6 +100,37 @@ async def test_each_writer_clears_only_its_own_origin(backend) -> None:  # noqa:
     assert await _edges_from(provider, f"{org}-deal") == [(f"{org}-globex", "MENTIONS", "EXTRACTED")]
 
 
+async def test_a_replace_keeps_the_other_origin_and_survives_a_failed_write(backend) -> None:  # noqa: F811
+    provider, org = backend
+    await provider.ensure_schema()
+    await provider.batch_upsert_nodes([
+        _account(org, "acme", "Acme", parent=org), _account(org, "globex", "Globex", parent=org),
+        _account(org, "initech", "Initech", parent=org),
+    ], ORGS)
+    await _records(provider, org, "deal")
+    await provider.batch_create_entity_relations([
+        _edge(org, "deal", f"{org}-acme", EntityRelations.FOR_ACCOUNT.value, EntityOrigin.INFERRED.value),
+        _edge(org, "deal", f"{org}-globex", EntityRelations.MENTIONS.value, EntityOrigin.EXTRACTED.value),
+    ])
+    inferred = EntityOrigin.INFERRED.value
+    new = _edge(org, "deal", f"{org}-initech", EntityRelations.FOR_ACCOUNT.value, inferred)
+    old = [(f"{org}-acme", "FOR_ACCOUNT", "INFERRED"), (f"{org}-globex", "MENTIONS", "EXTRACTED")]
+    assert await _edges_from(provider, f"{org}-deal") == old
+
+    # A failed write replaces nothing, with no transaction to roll it back: a caller may log it and carry on.
+    bad = {**new, "extra": {"a": 1}} if hasattr(provider, "client") else {**new, "edgeType": "NOT_A_TYPE"}
+    with pytest.raises(Exception):  # noqa: B017
+        await provider.replace_record_entity_relations(f"{org}-deal", [ORGS], inferred, [bad])
+    assert await _edges_from(provider, f"{org}-deal") == old
+
+    await provider.replace_record_entity_relations(f"{org}-deal", [ORGS], inferred, [new])
+    assert await _edges_from(provider, f"{org}-deal") == [
+        (f"{org}-globex", "MENTIONS", "EXTRACTED"), (f"{org}-initech", "FOR_ACCOUNT", "INFERRED"),
+    ]
+    await provider.replace_record_entity_relations(f"{org}-deal", [ORGS], inferred, [])
+    assert await _edges_from(provider, f"{org}-deal") == [(f"{org}-globex", "MENTIONS", "EXTRACTED")]
+
+
 async def test_reach_counts_live_records_naming_it_and_whether_a_connector_knows_it(backend) -> None:  # noqa: F811
     provider, org = backend
     await provider.ensure_schema()

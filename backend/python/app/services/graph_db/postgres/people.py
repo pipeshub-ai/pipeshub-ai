@@ -43,6 +43,7 @@ def _relation_ends(e: dict) -> tuple[str, str, str, str] | None:
     return (fc, fi, tc, ti) if fc and fi and tc and ti else None
 
 
+
 class PeopleMixin(IdentityMixin):
     # ---- persons a source names by its own user id --------------------------------------------------------------------------------
     @_soft(None, flag=True)
@@ -157,6 +158,21 @@ class PeopleMixin(IdentityMixin):
         type is missing, or whose end is not a node, is skipped. Every edge is checked against the schema before the first is written. True."""
         if not edges:
             return True
+        rows = self._entity_relation_rows(edges)
+        if not rows:
+            return True
+        await self._q(lambda tx: tx.execute("""/* pipeshub:graph.batch_create_entity_relations */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
+            SELECT $1, 'entityRelations', x.fc, x.fi, x.tc, x.ti, x.k, jsonb_strip_nulls(x.doc)
+            FROM jsonb_to_recordset($2::jsonb) AS x(fc text, fi text, tc text, ti text, k text, doc jsonb)
+            WHERE EXISTS (SELECT 1 FROM graph.nodes f WHERE f.org_id = $1 AND f.coll = x.fc AND f.id = x.fi)
+              AND EXISTS (SELECT 1 FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = x.tc AND t.id = x.ti)
+            ORDER BY x.fc, x.fi, x.tc, x.ti, x.k
+            ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = EXCLUDED.doc""", current_org_id(), _j(rows)),
+                      transaction, write=True)
+        return True
+
+    def _entity_relation_rows(self, edges: list[dict]) -> list[dict]:
+        """The edges as rows to store, one per pair and ``edgeType`` (the last of a duplicate wins, as SET after MERGE); each is checked against the schema first."""
         for e in edges:
             _VALIDATOR.validate_edge(_ER, e)
         rows: dict[tuple, dict] = {}
@@ -168,18 +184,31 @@ class PeopleMixin(IdentityMixin):
             props = {k: v for k, v in e.items() if k not in _ENDS}
             fc, fi, tc, ti = ends
             k = _ekey(_ER, props)
-            rows[(fc, fi, tc, ti, k)] = {"fc": fc, "fi": fi, "tc": tc, "ti": ti, "k": k, "doc": props}      # the last of a duplicate wins, as SET after MERGE
-        if not rows:
-            return True
-        await self._q(lambda tx: tx.execute("""/* pipeshub:graph.batch_create_entity_relations */ INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
+            rows[(fc, fi, tc, ti, k)] = {"fc": fc, "fi": fi, "tc": tc, "ti": ti, "k": k, "doc": props}
+        return list(rows.values())
+
+    async def replace_record_entity_relations(self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
+                                              transaction: str | None = None) -> None:
+        """Replaces the record's ``entityRelations`` edges of this ``origin`` (an edge without one is INFERRED) to nodes of ``to_collections`` with ``edges``;
+        no edges clears them. One statement: the new edges are written and only the record's other edges of that origin go, so a failed write leaves the old
+        links, in or out of a transaction, and an edge of another origin stays. Every row is scoped to the ambient org."""
+        if not record_id or not to_collections or not origin:
+            raise ValueError("replacing a record's entity relations needs a record, collections and an origin")
+        rows = self._entity_relation_rows(edges) if edges else []
+        await self._q(lambda tx: tx.execute("""/* pipeshub:graph.replace_record_entity_relations */ WITH ins AS (INSERT INTO graph.edges
+                (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc)
             SELECT $1, 'entityRelations', x.fc, x.fi, x.tc, x.ti, x.k, jsonb_strip_nulls(x.doc)
             FROM jsonb_to_recordset($2::jsonb) AS x(fc text, fi text, tc text, ti text, k text, doc jsonb)
             WHERE EXISTS (SELECT 1 FROM graph.nodes f WHERE f.org_id = $1 AND f.coll = x.fc AND f.id = x.fi)
               AND EXISTS (SELECT 1 FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = x.tc AND t.id = x.ti)
             ORDER BY x.fc, x.fi, x.tc, x.ti, x.k
-            ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = EXCLUDED.doc""", current_org_id(), _j(list(rows.values()))),
+            ON CONFLICT (org_id, coll, from_coll, from_id, to_coll, to_id, ekey) DO UPDATE SET doc = EXCLUDED.doc
+            RETURNING from_coll, from_id, to_coll, to_id, ekey),
+            gone AS (DELETE FROM graph.edges d WHERE d.org_id = $1 AND d.coll = 'entityRelations' AND d.from_coll = 'records' AND d.from_id = $3
+                AND d.to_coll = ANY($4::text[]) AND coalesce(d.doc->>'origin', $5) = $6
+                AND NOT EXISTS (SELECT 1 FROM ins i WHERE (i.from_coll, i.from_id, i.to_coll, i.to_id, i.ekey) = (d.from_coll, d.from_id, d.to_coll, d.to_id, d.ekey)))
+            SELECT count(*) FROM ins""", current_org_id(), _j(rows), record_id, list(to_collections), EntityOrigin.INFERRED.value, origin),
                       transaction, write=True)
-        return True
 
     async def delete_record_entity_relations(self, record_id: str, to_collection: str, origin: str, transaction: str | None = None) -> int:
         """Deletes the record's ``entityRelations`` edges to nodes of ``to_collection`` of this ``origin`` (an edge without one is INFERRED); how many went."""

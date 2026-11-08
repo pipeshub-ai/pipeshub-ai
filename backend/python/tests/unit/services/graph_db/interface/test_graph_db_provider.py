@@ -269,6 +269,7 @@ class TestAbstractMethodInventory:
         "find_organizations",
         "create_organization_if_absent",
         "delete_record_entity_relations",
+        "replace_record_entity_relations",
         "get_organization_record_reach",
         "update_node_fields_if_match",
         "create_node_if_absent",

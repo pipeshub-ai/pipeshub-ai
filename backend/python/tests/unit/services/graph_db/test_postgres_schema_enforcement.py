@@ -250,7 +250,7 @@ CLASSIFICATION: dict[str, str] = {
                      "update_drive_sync_state", "stamp_external_org_parents"], "targeted"),
     **dict.fromkeys(["batch_create_edges", "create_edges_if_absent", "batch_upsert_node_relations", "ensure_app_membership", "ensure_team_app_edge",
                      "upsert_authenticated_as", "link_record_to_group", "batch_update_team_member_roles", "update_edge", "update_user_sync_state",
-                     "batch_create_entity_relations"], "edge"),
+                     "batch_create_entity_relations", "replace_record_entity_relations"], "edge"),
     "create_named_entities_if_absent": "create", "replace_named_entity_values": "replace",
     **dict.fromkeys(["schedule_named_entity_persist_retry", "schedule_named_entity_reextract", "schedule_named_entity_reproject"], "create"),
     **dict.fromkeys(["add_named_entity_aliases", "mark_orphan_named_entities"], "targeted"),
@@ -358,6 +358,8 @@ INVALID: list[tuple[str, str, tuple, dict]] = [
        {"_from": "records/a1", "_to": "users/b1", "edgeType": "NOT_A_TYPE", "createdAtTimestamp": 1}],), {}),
     ("batch_create_entity_relations missing required", "batch_create_entity_relations",
      ([{"from_id": "a1", "from_collection": "records", "to_id": "b1", "to_collection": "users", "edgeType": "ASSIGNED_TO"}],), {}),
+    ("replace_record_entity_relations bad type", "replace_record_entity_relations",
+     ("a1", ["users"], "INFERRED", [{"_from": "records/a1", "_to": "users/b1", "edgeType": "NOT_A_TYPE", "createdAtTimestamp": 1}]), {}),
 ]
 
 #: payloads the app legitimately writes: (id, method, args, kwargs)
@@ -411,6 +413,9 @@ VALID: list[tuple[str, str, tuple, dict]] = [
     ("batch_create_entity_relations", "batch_create_entity_relations",
      ([{"_from": "records/a1", "_to": "users/b1", "edgeType": "ASSIGNED_TO", "origin": "INFERRED", "createdAtTimestamp": 1},
        {"from_id": "a1", "from_collection": "records", "to_id": "o1", "to_collection": "organizations", "edgeType": "FOR_ACCOUNT", "createdAtTimestamp": 1}],), {}),
+    ("replace_record_entity_relations", "replace_record_entity_relations",
+     ("a1", ["users", "organizations"], "INFERRED",
+      [{"_from": "records/a1", "_to": "users/b1", "edgeType": "ASSIGNED_TO", "origin": "INFERRED", "createdAtTimestamp": 1}]), {}),
     ("stamp_external_org_parents", "stamp_external_org_parents", (ORG,), {}),
 ]
 
