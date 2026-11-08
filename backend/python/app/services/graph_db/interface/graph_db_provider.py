@@ -8877,6 +8877,20 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def replace_record_entity_relations(
+        self,
+        record_id: str,
+        to_collections: list[str],
+        origin: str,
+        edges: list[dict],
+        transaction: str | None = None,
+    ) -> None:
+        """Replace the record's ``entityRelations`` edges of ``origin`` to nodes of
+        ``to_collections`` with *edges*. A failed write must leave the old edges,
+        even with no transaction, or a caller that logs the failure and commits.
+        """
+
+    @abstractmethod
     async def get_organization_record_reach(
         self,
         org_id: str,
