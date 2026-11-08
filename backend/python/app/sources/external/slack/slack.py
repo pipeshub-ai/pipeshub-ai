@@ -5191,6 +5191,17 @@ class SlackDataSource:
         except Exception as e:
             return await self._handle_slack_error(e)
 
+    async def canvases_get_content(self, canvas_id: str) -> SlackResponse:
+        """Read Canvas Markdown through the Slack SDK's generic API method."""
+        try:
+            response = await self._call(
+                self.client.api_call, api_method="canvases.getContent",
+                json={"canvas_id": canvas_id, "content_type": "markdown"},
+            )
+            return await self._handle_slack_response(response)
+        except Exception as e:
+            return await self._handle_slack_error(e)
+
     async def files_info(self,
         *,
         file: Optional[str] = None,

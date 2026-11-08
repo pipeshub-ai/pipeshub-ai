@@ -284,7 +284,7 @@ class TestPartialFailures:
 
         assert store.message_ts_count().get(healthy_reply) == 1
 
-    async def test_a_public_channel_the_bot_is_not_in_is_joined_and_synced(self, workspace, store, checkpoints) -> None:
+    async def test_a_public_channel_the_bot_is_not_in_is_not_joined(self, workspace, store, checkpoints) -> None:
         workspace.channels[GENERAL]["is_member"] = False
         ts = ts_minutes_ago(50)
         workspace.post(GENERAL, ts, ALICE, "hello bot")
@@ -292,8 +292,9 @@ class TestPartialFailures:
 
         await connector.run_sync()
 
-        assert [c.params["channel"] for c in workspace.calls_to("conversations.join")] == [GENERAL]
-        assert block_ts(channel_records(store, GENERAL)) == [ts]
+        assert workspace.calls_to("conversations.join") == []
+        assert block_ts(channel_records(store, GENERAL)) == []
+        assert checkpoints.value(f"slack_messages/{GENERAL}") is None
 
     async def test_a_private_channel_the_bot_cannot_join_is_skipped(self, workspace, store, checkpoints) -> None:
         workspace.channels[SECRET]["is_member"] = False

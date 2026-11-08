@@ -122,9 +122,9 @@ class TestConversationalBurst:
 class TestRateLimiter:
     def test_init_uses_defaults(self):
         from app.connectors.sources.slack.team.connector import (
-            RateLimiter,
-            SLACK_TIER_LIMITS_PER_MINUTE,
             RATE_LIMIT_HEADROOM,
+            SLACK_TIER_LIMITS_PER_MINUTE,
+            RateLimiter,
         )
         rl = RateLimiter()
         for tier, cap in SLACK_TIER_LIMITS_PER_MINUTE.items():
@@ -895,16 +895,16 @@ class TestReplaceMentionsInText:
 
 class TestSlackWorkspaceApp:
     def test_instantiation(self):
+        from app.config.constants.arangodb import AppGroups, Connectors
         from app.connectors.sources.slack.common.apps import SlackWorkspaceApp
-        from app.config.constants.arangodb import Connectors, AppGroups
         app = SlackWorkspaceApp("conn-123")
         assert app.connector_id == "conn-123"
         assert app.app_name == Connectors.SLACK_WORKSPACE
         assert app.app_group_name == AppGroups.SLACK
 
     def test_slack_app_instantiation(self):
+        from app.config.constants.arangodb import AppGroups, Connectors
         from app.connectors.sources.slack.common.apps import SlackApp
-        from app.config.constants.arangodb import Connectors, AppGroups
         app = SlackApp("conn-456")
         assert app.connector_id == "conn-456"
         assert app.app_name == Connectors.SLACK
@@ -1742,11 +1742,7 @@ class TestWarmUserCacheForMessages:
 
     @pytest.mark.asyncio
     async def test_users_info_updates_caches_and_ctx(self):
-        from app.connectors.sources.slack.team.connector import (
-            SlackConnector,
-            ProcessingContext,
-            RateLimiter,
-        )
+        from app.connectors.sources.slack.team.connector import ProcessingContext, RateLimiter, SlackConnector
 
         c = _make_connector()
         c.user_id_to_name_cache = {}
@@ -1968,7 +1964,7 @@ class TestSyncChannelMessagesPipeline:
         assert call_kw["oldest"] == "50.000000"
 
     @pytest.mark.asyncio
-    async def test_sync_channel_messages_join_then_retry(self):
+    async def test_sync_channel_messages_never_joins_a_channel(self) -> None:
         from app.connectors.sources.slack.team.connector import SlackConnector
 
         c = _connector_pipeline_ready()
@@ -1998,8 +1994,10 @@ class TestSyncChannelMessagesPipeline:
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             await c.sync_channel_messages(cid)
 
-        ds.conversations_join.assert_awaited_once()
-        assert len(hist_calls) == 2
+        ds.conversations_join.assert_not_awaited()
+        assert len(hist_calls) == 1
+        c.messages_sync_point.update_sync_point.assert_not_awaited()
+        assert c._full_sync_read_failed
 
     @pytest.mark.asyncio
     async def test_sync_channel_messages_pagination_two_pages(self):
@@ -2385,7 +2383,7 @@ class TestSyncChannelsAndMembers:
 class TestProcessBatchEnrichReindex:
     @pytest.mark.asyncio
     async def test_process_message_batch_burst_and_single(self):
-        from app.connectors.sources.slack.team.connector import SlackConnector, ProcessingContext, RateLimiter
+        from app.connectors.sources.slack.team.connector import ProcessingContext, RateLimiter, SlackConnector
 
         c = _connector_pipeline_ready()
         cid = "CBURST"
@@ -4284,7 +4282,7 @@ class TestSlackConnectorCoverageExtended:
             await c.sync_channel_messages("Cx")
 
     @pytest.mark.asyncio
-    async def test_sync_channel_messages_join_retry_and_checkpoint(self):
+    async def test_sync_channel_messages_inaccessible_keeps_checkpoint(self) -> None:
         from app.connectors.sources.slack.team.connector import SlackConnector
 
         c = _connector_pipeline_ready()
@@ -4313,7 +4311,9 @@ class TestSlackConnectorCoverageExtended:
             patch.object(SlackConnector, "_process_message_batch", new_callable=AsyncMock, return_value=([], [])),
         ):
             await c.sync_channel_messages("Cok")
-        c.messages_sync_point.update_sync_point.assert_awaited()
+        ds.conversations_join.assert_not_awaited()
+        c.messages_sync_point.update_sync_point.assert_not_awaited()
+        assert c._full_sync_read_failed
 
     @pytest.mark.asyncio
     async def test_sync_channel_messages_deferred_threads_branches(self):
@@ -5274,7 +5274,7 @@ class TestSlackTeamConnectorCoverageBoost:
         c.logger.warning.assert_called()
 
     @pytest.mark.asyncio
-    async def test_sync_channel_messages_still_not_in_channel_after_join(self):
+    async def test_sync_channel_messages_inaccessible_does_not_retry_by_joining(self) -> None:
         from app.connectors.sources.slack.team.connector import SlackConnector
 
         c = _connector_pipeline_ready()
@@ -5292,7 +5292,8 @@ class TestSlackTeamConnectorCoverageBoost:
         ds.conversations_join = AsyncMock(return_value=MagicMock(success=True))
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             await c.sync_channel_messages(cid)
-        assert n >= 2
+        assert n == 1
+        ds.conversations_join.assert_not_awaited()
         c.logger.warning.assert_called()
 
     @pytest.mark.asyncio
@@ -9393,12 +9394,9 @@ class TestCheckUpdatedMessageFallbackBranches:
 
 from types import SimpleNamespace  # noqa: E402
 
-
 # ===========================================================================
 # _reindex_root_rg_id — root resolution when reindexing an existing record
 # ===========================================================================
-
-
 from app.connectors.sources.slack.team.connector import ProcessingContext  # noqa: E402
 
 
@@ -9706,7 +9704,7 @@ class TestFailedPageDoesNotAdvanceCheckpoint:
         )
 
     @pytest.mark.asyncio
-    async def test_channel_not_found_on_page_two_is_still_a_completed_skip(self) -> None:
+    async def test_channel_not_found_on_page_two_does_not_advance_checkpoint(self) -> None:
         from app.connectors.sources.slack.team.connector import SlackConnector
 
         c = _connector_pipeline_ready()
@@ -9720,9 +9718,8 @@ class TestFailedPageDoesNotAdvanceCheckpoint:
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
             await c.sync_channel_messages("C1")
 
-        c.messages_sync_point.update_sync_point.assert_awaited_once()
-        _key, payload = c.messages_sync_point.update_sync_point.call_args[0]
-        assert payload == {"last_sync_time": "10.0"}
+        c.messages_sync_point.update_sync_point.assert_not_awaited()
+        assert c._full_sync_read_failed
 
     @pytest.mark.asyncio
     async def test_partial_thread_replies_do_not_write_thread_checkpoint(self) -> None:
@@ -10257,3 +10254,110 @@ class TestHasRepliesOnBurstRecords:
         assert recs[0][0].has_replies is True
         recs, _ = await c._process_single({"ts": "21.0", "user": "U1", "text": "quiet"}, self._ctx())
         assert recs[0][0].has_replies is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("file_data", [
+    {"url_private": "https://attacker.example/file", "mode": "external"},
+    {"url_private": "https://files.slack.com.attacker.example/file"},
+    {"url_private": "http://files.slack.com/file"},
+])
+async def test_untrusted_file_url_never_receives_slack_token(file_data) -> None:
+    from fastapi import HTTPException
+
+    from app.connectors.sources.slack.team.connector import SlackConnector
+
+    c = _connector_pipeline_ready()
+    ds = MagicMock()
+    ds.files_info = AsyncMock(return_value=MagicMock(success=True, data={"file": file_data}))
+    record = MagicMock(external_record_id="F123")
+    with (
+        patch.object(SlackConnector, "_fresh_datasource", new=AsyncMock(return_value=ds)),
+        patch("app.connectors.sources.slack.team.connector.httpx.AsyncClient") as http,
+        pytest.raises(HTTPException),
+    ):
+        await anext(c._stream_file_bytes(record))
+    http.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_untrusted_file_url_is_not_downloaded_for_hashing() -> None:
+    c = _make_connector()
+    ctx = c._make_ctx("C1", "rg1")
+    file_data = {"id": "F123", "name": "a.txt", "created": 1,
+                 "url_private": "https://attacker.example/file", "mode": "external"}
+    with patch("app.connectors.sources.slack.team.connector.httpx.AsyncClient") as http:
+        record = await c._process_file_raw(file_data, ctx)
+    assert record is not None and record.sha256_hash is None
+    http.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_huddle_channels_require_confirmed_bot_membership() -> None:
+    from app.connectors.sources.slack.team.connector import SlackConnector
+    from app.models.permission import EntityType, Permission, PermissionType
+
+    c = _connector_pipeline_ready()
+    grant = Permission(email="member@example.test", entity_type=EntityType.USER, type=PermissionType.READ)
+    def channel(cid, **kwargs) -> dict:
+        return {"id": cid, "name": cid, "topic": {}, "created": "1", **kwargs}
+    ds = MagicMock()
+    ds.conversations_list = AsyncMock(return_value=MagicMock(success=True, data={
+        "channels": [channel("C1", is_member=True), channel("C2", is_member=False),
+                     channel("C3"), channel("D1", is_im=True, is_member=True)],
+        "response_metadata": {"next_cursor": ""},
+    }))
+    with (patch.object(SlackConnector, "_fresh_datasource", new=AsyncMock(return_value=ds)),
+          patch.object(SlackConnector, "_channel_permissions", new=AsyncMock(return_value=[grant]))):
+        await c._sync_channels()
+    assert list(c._huddle_channel_permissions) == ["C1"]
+    assert c._huddle_channel_permissions["C1"] == [grant]
+    assert c._huddle_unknown_channels == {"C3"}
+    ds.conversations_join = AsyncMock()
+    ds.conversations_join.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_huddle_channel_cache_is_cleared_when_filter_excludes_all() -> None:
+    from app.connectors.core.registry.filters import (
+        Filter,
+        FilterCollection,
+        FilterType,
+        MultiselectOperator,
+        SyncFilterKey,
+    )
+
+    c = _connector_pipeline_ready()
+    c._huddle_channel_permissions = {"Cprevious": []}
+    c._huddle_unknown_channels = {"Cunknown"}
+    c.sync_filters = FilterCollection(filters=[Filter(
+        key=SyncFilterKey.CHANNEL_TYPES.value, value=["public_channel", "private_channel"],
+        type=FilterType.MULTISELECT, operator=MultiselectOperator.NOT_IN,
+    )])
+    assert await c._sync_channels() == []
+    assert c._huddle_channel_permissions == {}
+    assert c._huddle_unknown_channels == set()
+
+
+
+@pytest.mark.asyncio
+async def test_stream_huddle_uses_canvas_api_only_when_channel_still_has_access() -> None:
+    from fastapi import HTTPException
+
+    from app.connectors.sources.slack.team.connector import SlackConnector
+
+    c = _connector_pipeline_ready()
+    ds = MagicMock()
+    fd = {"id": "F1", "is_huddle_canvas": True, "channels": ["C1"]}
+    ds.files_info = AsyncMock(return_value=MagicMock(success=True, data={"file": fd}))
+    ds.canvases_get_content = AsyncMock(return_value=MagicMock(success=True, data={"content": "# Notes"}))
+    record = MagicMock(external_record_id="slack-huddle:C1:F1")
+    with (patch.object(SlackConnector, "_fresh_datasource", new=AsyncMock(return_value=ds)),
+          patch("app.connectors.sources.slack.team.connector.httpx.AsyncClient") as http):
+        assert b"".join([chunk async for chunk in c._stream_file_bytes(record)]) == b"# Notes"
+        fd["channels"] = []
+        with pytest.raises(HTTPException) as exc:
+            await anext(c._stream_file_bytes(record))
+        assert exc.value.status_code == 403
+        assert ds.canvases_get_content.await_count == 1
+        http.assert_not_called()

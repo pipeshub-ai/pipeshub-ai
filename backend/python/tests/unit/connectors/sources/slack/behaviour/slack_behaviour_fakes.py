@@ -92,6 +92,7 @@ class SlackWorkspace:
     history: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     replies: dict[tuple[str, str], list[dict[str, Any]]] = field(default_factory=dict)
     files: dict[str, dict[str, Any]] = field(default_factory=dict)
+    canvases: dict[str, str] = field(default_factory=dict)
     downloads: dict[str, object] = field(default_factory=dict)
     usergroups: list[dict[str, Any]] = field(default_factory=list)
     page_size: dict[str, int] = field(default_factory=dict)
@@ -197,7 +198,10 @@ class SlackWorkspace:
         method = parsed.path[len("/api/"):]
         params = {k: v[0] for k, v in parse_qs(parsed.query, keep_blank_values=True).items()}
         if req.data:
-            params.update({k: v[0] for k, v in parse_qs(req.data.decode(), keep_blank_values=True).items()})
+            if "application/json" in (req.get_header("Content-type") or ""):
+                params.update(json.loads(req.data.decode()))
+            else:
+                params.update({k: v[0] for k, v in parse_qs(req.data.decode(), keep_blank_values=True).items()})
         auth = req.get_header("Authorization") or ""
         token = auth.removeprefix("Bearer ") or None
         self.calls.append(SlackCall(method, params, token))
@@ -374,6 +378,21 @@ class SlackWorkspace:
         page, nxt = self._page("conversations.replies", [parent, *thread], params)
         return {"ok": True, "messages": page, "has_more": bool(nxt), "response_metadata": {"next_cursor": nxt}}
 
+    def _api_files_list(self, params: dict[str, str]) -> dict[str, Any]:
+        channel = params.get("channel", "")
+        items = [f for f in self.files.values() if f.get("is_huddle_canvas")
+                 and channel in (f.get("channels", []) + f.get("groups", []) + f.get("ims", []))]
+        size = self.page_size.get("files.list", 200)
+        page = int(params.get("page", 1))
+        return {"ok": True, "files": items[(page-1)*size:page*size],
+                "paging": {"page": page, "pages": (len(items)+size-1)//size}}
+
+    def _api_canvases_getContent(self, params: dict[str, str]) -> dict[str, Any]:
+        if self.granted_scopes is not None and "canvases:read" not in self.granted_scopes:
+            return {"ok": False, "error": "missing_scope", "needed": "canvases:read"}
+        content = self.canvases.get(params.get("canvas_id", ""))
+        return {"ok": True, "content": content} if content is not None else {"ok": False, "error": "canvas_not_found"}
+
     def _api_files_info(self, params: dict[str, str]) -> dict[str, Any]:
         fd = self.files.get(params.get("file", ""))
         return {"ok": True, "file": fd} if fd else {"ok": False, "error": "file_not_found"}
@@ -430,6 +449,7 @@ class FakeSlackStore:
         # What the connector wrote, in order: (method, external ids of the groups it saved).
         self.events: list[tuple[str, tuple[str, ...]]] = []
         self.records: dict[str, Record] = {}
+        self.record_permissions: dict[str, list[Any]] = {}
         self.record_groups: dict[str, Any] = {}
         self.group_access: dict[str, list[Any]] = {}
         self.app_users: dict[str, Any] = {}
@@ -502,13 +522,25 @@ class FakeSlackStore:
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[RecordGroup]:
         return self.record_groups.get(external_id)
 
-    async def on_new_records(self, records_with_permissions: list[tuple[Record, list[Any]]]) -> None:
+    async def on_new_records(self, records_with_permissions: list[tuple[Record, list[Any]]], *, replace_permissions: bool = False) -> None:
         self.record_batches.append([rec for rec, _ in records_with_permissions])
-        for record, _ in records_with_permissions:
+        for record, permissions in records_with_permissions:
+            if replace_permissions:
+                self.record_permissions[record.external_record_id] = list(permissions)
             existing = self.records.get(record.external_record_id)
             if existing:
                 record.id = existing.id
             self.records[record.external_record_id] = record
+
+    async def get_records_by_status(self, connector_id, status_filters, limit, after_key=None) -> list:
+        records = sorted((r for r in self.records.values() if r.connector_id == connector_id), key=lambda r: r.id)
+        return [r for r in records if after_key is None or r.id > after_key][:limit]
+
+    def note_kept_records(self, connector_id, record_ids) -> None:
+        pass
+
+    async def on_record_deleted(self, record_id) -> None:
+        self.records = {k: r for k, r in self.records.items() if r.id != record_id}
 
     async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
         """A base Record, as both graph stores rebuild it: no subclass fields."""
@@ -533,7 +565,9 @@ class FakeSlackStore:
         self.records[record.external_record_id] = record
 
     async def on_updated_record_permissions(self, record: Record, permissions: list[Any]) -> None:
-        raise AssertionError("Slack records inherit access from their channel")
+        if not record.external_record_id.startswith("slack-huddle:"):
+            raise AssertionError("Slack messages inherit access from their channel")
+        self.record_permissions[record.external_record_id] = list(permissions)
 
     async def reindex_existing_records(self, records: list[Record]) -> None:
         self.reindexed.extend(records)

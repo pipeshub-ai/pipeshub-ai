@@ -1246,3 +1246,46 @@ async def test_every_folder_is_rewritten_to_text_directory_and_no_file_is_touche
         assert (await backend.provider.get_document(folder.id, records))["mimeType"] == "text/directory"
     assert (await backend.provider.get_document(plain.id, records))["mimeType"] == "text/plain"
     assert (await backend.provider.normalize_folder_mime_types())["normalized"] == 0
+
+
+async def test_slack_huddle_direct_grants_are_independent_and_revocable(backend) -> None:
+    """A Huddle shared in two channels must not inherit either channel's blanket ACL."""
+    processor, _ = build_processor(backend.provider, ORG)
+    connector_id = f"huddle-{_suffix()}"
+    await _seed_app(backend, connector_id, name="Slack Workspace",
+                    app_type=Connectors.SLACK_WORKSPACE.value, app_group="Slack")
+    alice_email = f"alice-{_suffix()}@example.test"
+    bob_email = f"bob-{_suffix()}@example.test"
+    alice = await _seed_user(backend, alice_email)
+    bob = await _seed_user(backend, bob_email)
+    for user in (alice, bob):
+        await backend.provider.batch_create_edges([{
+            "from_id": user, "from_collection": CollectionNames.USERS.value,
+            "to_id": connector_id, "to_collection": CollectionNames.APPS.value,
+            "syncState": "COMPLETED", "lastSyncUpdate": TS,
+        }], collection=CollectionNames.USER_APP_RELATION.value)
+    record = FileRecord(
+        org_id=ORG, record_name="Huddle.md", external_record_id=f"slack-huddle:C1:F{_suffix()}",
+        record_type=RecordType.FILE, connector_id=connector_id,
+        connector_name=Connectors.SLACK_WORKSPACE, origin=OriginTypes.CONNECTOR,
+        version=0, mime_type="text/markdown", is_file=True, inherit_permissions=False,
+    )
+    grant = Permission(email=alice_email, type=PermissionType.READ, entity_type=EntityType.USER)
+    await processor.on_new_records([(record, [grant])], replace_permissions=True)
+    assert record.id in (await backend.provider.check_access(alice, ORG, node_ids=[record.id])).node_ids
+    assert record.id not in (await backend.provider.check_access(bob, ORG, node_ids=[record.id])).node_ids
+    await processor.on_updated_record_permissions(record, [])
+    assert record.id not in (await backend.provider.check_access(alice, ORG, node_ids=[record.id])).node_ids
+    from app.models.entities import AppRole, AppUser
+
+    role = AppRole(app_name=Connectors.SLACK_WORKSPACE, connector_id=connector_id,
+                   source_role_id="workspace_member", name="Workspace Member", org_id=ORG)
+    member = AppUser(app_name=Connectors.SLACK_WORKSPACE, connector_id=connector_id,
+                     source_user_id="U1", email=bob_email, full_name="Bob", org_id=ORG)
+    await processor.on_new_app_roles([(role, [member])])
+    role_grant = Permission(external_id="workspace_member", type=PermissionType.READ, entity_type=EntityType.ROLE)
+    await processor.on_new_records([(record, [role_grant])], replace_permissions=True)
+    assert record.id in (await backend.provider.check_access(bob, ORG, node_ids=[record.id])).node_ids
+    assert record.id not in (await backend.provider.check_access(alice, ORG, node_ids=[record.id])).node_ids
+    await processor.on_new_app_roles([(role, [])])
+    assert record.id not in (await backend.provider.check_access(bob, ORG, node_ids=[record.id])).node_ids

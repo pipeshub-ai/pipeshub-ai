@@ -157,3 +157,24 @@ class TestScopeReporting:
         ds.client.auth_test = MagicMock(return_value=MagicMock(data={"ok": True}, headers={}))
         resp = await ds.check_token_scopes()
         assert resp.data == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_canvas_content_uses_slack_api_and_preserves_errors() -> None:
+    from unittest.mock import MagicMock
+
+    from app.sources.external.slack.slack import SlackDataSource
+
+    ds = SlackDataSource.__new__(SlackDataSource)
+    ds.client = MagicMock()
+    ds._executor = None
+    ds.client.api_call.return_value = {"ok": True, "content": "# Notes"}
+    response = await ds.canvases_get_content("F123")
+    assert response.success and response.data["content"] == "# Notes"
+    ds.client.api_call.assert_called_once_with(
+        api_method="canvases.getContent",
+        json={"canvas_id": "F123", "content_type": "markdown"},
+    )
+    ds.client.api_call.return_value = {"ok": False, "error": "missing_scope"}
+    response = await ds.canvases_get_content("F123")
+    assert not response.success and response.error == "missing_scope"

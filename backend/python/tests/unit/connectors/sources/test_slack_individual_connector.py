@@ -4176,3 +4176,66 @@ class TestHasRepliesOnBurstRecords:
         )
         assert (await c._build_thread_burst_record(first, "1.0", "rg", _ctx(c))).has_replies is True
         assert (await c._build_thread_burst_record(later, "1.0", "rg", _ctx(c))).has_replies is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("file_data", [
+    {"url_private": "https://attacker.example/file", "mode": "external"},
+    {"url_private": "https://files.slack.com.attacker.example/file"},
+    {"url_private": "http://files.slack.com/file"},
+])
+async def test_untrusted_file_url_never_receives_slack_token(file_data) -> None:
+    from fastapi import HTTPException
+
+    from app.connectors.sources.slack.individual.connector import (
+        SlackIndividualConnector,
+    )
+
+    c = _make_connector()
+    ds = MagicMock()
+    ds.files_info = AsyncMock(return_value=MagicMock(success=True, data={"file": file_data}))
+    record = MagicMock(external_record_id="F123")
+    with (
+        patch.object(SlackIndividualConnector, "_fresh_datasource", new=AsyncMock(return_value=ds)),
+        patch("app.connectors.sources.slack.individual.connector.httpx.AsyncClient") as http,
+        pytest.raises(HTTPException),
+    ):
+        await anext(c._stream_file_bytes(record))
+    http.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_untrusted_file_url_is_not_downloaded_for_hashing() -> None:
+    c = _make_connector()
+    ctx = _ctx(c)
+    file_data = {"id": "F123", "name": "a.txt", "created": 1,
+                 "url_private": "https://attacker.example/file", "mode": "external"}
+    with patch("app.connectors.sources.slack.individual.connector.httpx.AsyncClient") as http:
+        record = await c._process_file_raw(file_data, ctx)
+    assert record is not None and record.sha256_hash is None
+    http.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stream_huddle_uses_canvas_api_only_when_channel_still_has_access() -> None:
+    from fastapi import HTTPException
+
+    from app.connectors.sources.slack.individual.connector import (
+        SlackIndividualConnector,
+    )
+
+    c = _make_connector()
+    ds = MagicMock()
+    fd = {"id": "F1", "is_huddle_canvas": True, "channels": ["C1"]}
+    ds.files_info = AsyncMock(return_value=MagicMock(success=True, data={"file": fd}))
+    ds.canvases_get_content = AsyncMock(return_value=MagicMock(success=True, data={"content": "# Notes"}))
+    record = MagicMock(external_record_id="slack-huddle:C1:F1")
+    with (patch.object(SlackIndividualConnector, "_fresh_datasource", new=AsyncMock(return_value=ds)),
+          patch("app.connectors.sources.slack.individual.connector.httpx.AsyncClient") as http):
+        assert b"".join([chunk async for chunk in c._stream_file_bytes(record)]) == b"# Notes"
+        fd["channels"] = []
+        with pytest.raises(HTTPException) as exc:
+            await anext(c._stream_file_bytes(record))
+        assert exc.value.status_code == 403
+        assert ds.canvases_get_content.await_count == 1
+        http.assert_not_called()

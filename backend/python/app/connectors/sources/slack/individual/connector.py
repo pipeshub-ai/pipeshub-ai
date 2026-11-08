@@ -105,6 +105,12 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.slack.common.apps import SlackApp
+from app.connectors.sources.slack.common.file_urls import slack_file_url
+from app.connectors.sources.slack.common.huddle import (
+    parse_huddle_id,
+    stream_huddle,
+    sync_huddles,
+)
 from app.connectors.sources.slack.common.people import file_uploader
 from app.connectors.sources.slack.common.stream_errors import (
     sanitize_retry_after,
@@ -352,7 +358,7 @@ class RateLimiter:
                     "im:read",            "im:history",
                     "users:read",         "users:read.email",
                     "users.profile:read",
-                    "files:read",
+                    "files:read", "canvases:read",
                 ],
                 team_sync=[],
                 agent=[]
@@ -803,6 +809,15 @@ class SlackIndividualConnector(BaseConnector):
 
             # Phase 4 — Thread-growth detection (edit detection bypassed for now)
             await self._sync_thread_growth()
+
+            try:
+                await sync_huddles(
+                    self, {rg.external_group_id: [] for rg in channels if rg.external_group_id},
+                    personal=True,
+                )
+            except Exception as exc:
+                self._full_sync_read_failed = True
+                self.logger.warning("Huddle sync failed: %s", exc)
 
             self.logger.info("✅ Slack Individual sync complete")
 
@@ -2714,16 +2729,16 @@ class SlackIndividualConnector(BaseConnector):
         the parent record has been created.
         """
         fid = fd.get("id")
-        if not fid:
+        if not fid or fd.get("is_huddle_canvas") is True or fd.get("filetype") in ("canvas", "quip"):
             return None
 
         file_hash: Optional[str] = None
-        url_dl = fd.get("url_private_download") or fd.get("url_private")
+        url_dl = slack_file_url(fd)
         if url_dl:
             try:
                 await ctx.rate_limiter.acquire(Tier.T4)
                 token = (await self._fresh_datasource()).access_token
-                async with httpx.AsyncClient(timeout=30.0) as http:
+                async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as http:
                     headers = {"Authorization": f"Bearer {token}"} if token else {}
                     r = await http.get(url_dl, headers=headers)
                     # Slack answers a token it no longer accepts with 200 and its sign-in
@@ -4303,6 +4318,10 @@ class SlackIndividualConnector(BaseConnector):
         fid = record.external_record_id
         if not fid:
             raise HTTPException(400, f"No file ID for {record.id}")
+        huddle = parse_huddle_id(fid)
+        if huddle:
+            yield await stream_huddle(self, *huddle)
+            return
 
         await self.rate_limiter.acquire(Tier.T4)
         ds   = await self._fresh_datasource(retry_rate_limits=False)
@@ -4311,7 +4330,7 @@ class SlackIndividualConnector(BaseConnector):
             raise slack_stream_error(info, connector=self.display_name)
 
         fd  = info.data.get("file", {})
-        url = fd.get("url_private_download") or fd.get("url_private")
+        url = slack_file_url(fd)
         if not url:
             raise not_downloadable(
                 f"Slack does not expose a download URL for file {fid}.",
@@ -4319,7 +4338,7 @@ class SlackIndividualConnector(BaseConnector):
             )
 
         token = ds.access_token
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as http:
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as http:
             headers = {"Authorization": f"Bearer {token}"} if token else {}
             async with http.stream("GET", url, headers=headers) as r:
                 if r.status_code != 200:

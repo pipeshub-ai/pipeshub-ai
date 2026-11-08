@@ -104,6 +104,12 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.slack.common.apps import SlackWorkspaceApp
+from app.connectors.sources.slack.common.file_urls import slack_file_url
+from app.connectors.sources.slack.common.huddle import (
+    parse_huddle_id,
+    stream_huddle,
+    sync_huddles,
+)
 from app.connectors.sources.slack.common.people import file_uploader
 from app.connectors.sources.slack.common.stream_errors import (
     sanitize_retry_after,
@@ -887,6 +893,16 @@ class SlackConnector(BaseConnector):
             # Phase 5 — Thread-growth detection (edit detection bypassed for now)
             await self._sync_thread_growth()
 
+            try:
+                await sync_huddles(
+                    self, getattr(self, "_huddle_channel_permissions", {}), personal=False,
+                    unknown_channels=getattr(self, "_huddle_unknown_channels", set()),
+                    channels_complete=not self._channel_list_failed,
+                )
+            except Exception as exc:
+                self._full_sync_read_failed = True
+                self.logger.warning("Huddle sync failed: %s", exc)
+
             await self._report_unreadable_channels()
             if self._channel_list_failed:
                 await self.notify(
@@ -1246,6 +1262,14 @@ class SlackConnector(BaseConnector):
         MPIM (group DM) → members from conversations.members get READ permission
         """
         self.logger.info("📢 Syncing channels…")
+        self._huddle_channel_permissions = {}
+        self._huddle_unknown_channels = set()
+
+        # Clear channel caches so stale entries from a previous sync (with different
+        # channel filters) never bleed into Phase 5 (thread-growth / change detection)
+        self.channel_groups_cache.clear()
+        self.channel_id_to_name_cache.clear()
+        self._archived_channel_ids.clear()
 
         # Apply channel_ids filter
         ch_filter = self.sync_filters.get(SyncFilterKey.CHANNEL_IDS)
@@ -1274,12 +1298,6 @@ class SlackConnector(BaseConnector):
                     self.logger.info("channel_types filter excludes all types — nothing to sync")
                     return []
         types_param = ",".join(allowed_types) if allowed_types else "public_channel,private_channel"
-
-        # Clear channel caches so stale entries from a previous sync (with different
-        # channel filters) never bleed into Phase 5 (thread-growth / change detection)
-        self.channel_groups_cache.clear()
-        self.channel_id_to_name_cache.clear()
-        self._archived_channel_ids.clear()
 
         cursor: Optional[str] = None
         record_groups: list[RecordGroup] = []
@@ -1335,6 +1353,7 @@ class SlackConnector(BaseConnector):
                     self.logger.warning(
                         f"User list was not read in full; channel {cd.get('name') or cid} left as it is"
                     )
+                    self._huddle_unknown_channels.add(cid)
                     continue
                 try:
                     rg = self._to_channel_record_group(cd)
@@ -1373,12 +1392,18 @@ class SlackConnector(BaseConnector):
                     # grants. Leave it as it is until a sync can read its members,
                     # and skip its messages this time; their checkpoint stays put.
                     self._full_sync_read_failed = True
+                    self._huddle_unknown_channels.add(rg.external_group_id)
                     self.logger.error(
                         f"❌ Permission resolution failed for "
                         f"{cd.get('name')}: {perms}; channel left unchanged"
                     )
                     continue
                 # None: the grants are unknown, so the processor keeps the stored ones.
+                if not cd.get("is_im") and not cd.get("is_mpim"):
+                    if perms is None or cd.get("is_member") is None:
+                        self._huddle_unknown_channels.add(rg.external_group_id)
+                    elif cd.get("is_member") is True:
+                        self._huddle_channel_permissions[rg.external_group_id] = perms
                 batch.append((rg, None if perms is None else self._with_authenticator(perms)))
                 record_groups.append(rg)
                 total += 1
@@ -1729,8 +1754,6 @@ class SlackConnector(BaseConnector):
         # an exception while processing the thread). Their parents must stay
         # inside the next sync's window, so the channel checkpoint waits too.
         incomplete_threads = 0
-        join_attempted = False
-
         while True:
             await self.rate_limiter.acquire(Tier.T3)
             ds   = await self._fresh_datasource()
@@ -1744,44 +1767,18 @@ class SlackConnector(BaseConnector):
             if not resp or not resp.success:
                 error = getattr(resp, "error", "no response")
                 if error == "not_in_channel" and channel_id in self._archived_channel_ids:
-                    # Slack does not let anyone join an archived channel.
+                    # An unreadable channel is not an empty channel.
+                    history_error = error
+                    self._full_sync_read_failed = True
                     self.logger.warning(f"Channel {channel_id} is archived and the bot is not in it, skipping.")
                     self._unreadable_archived_channels.append(
                         self.channel_id_to_name_cache.get(channel_id, channel_id)
                     )
                     break
-                if error == "not_in_channel" and not join_attempted:
-                    # Bot is not a member — try joining (works for public channels)
-                    self.logger.info(
-                        f"Bot not in channel {channel_id}, attempting to join…"
-                    )
-                    join_ds = await self._fresh_datasource()
-                    join_resp = await join_ds.conversations_join(channel=channel_id)
-                    if join_resp and join_resp.success:
-                        self.logger.info(
-                            f"✅ Joined channel {channel_id}, retrying sync…"
-                        )
-                        join_attempted = True
-                        continue
-                    else:
-                        join_err = getattr(join_resp, "error", "unknown")
-                        self.logger.warning(
-                            f"Could not join channel {channel_id} ({join_err}), skipping."
-                        )
-                        self._unreadable_channels.append(
-                            self.channel_id_to_name_cache.get(channel_id, channel_id)
-                        )
-                        break
-                elif error == "channel_not_found":
-                    self.logger.warning(
-                        f"Skipping channel {channel_id}: {error}"
-                    )
-                    break
-                elif error == "not_in_channel":
-                    # Already attempted join but still failing
-                    self.logger.warning(
-                        f"Skipping channel {channel_id}: still not_in_channel after join attempt"
-                    )
+                if error in ("not_in_channel", "channel_not_found"):
+                    history_error = error
+                    self._full_sync_read_failed = True
+                    self.logger.warning("Skipping channel %s: %s", channel_id, error)
                     self._unreadable_channels.append(
                         self.channel_id_to_name_cache.get(channel_id, channel_id)
                     )
@@ -3069,18 +3066,18 @@ class SlackConnector(BaseConnector):
         the parent record has been created.
         """
         fid = fd.get("id")
-        if not fid:
+        if not fid or fd.get("is_huddle_canvas") is True or fd.get("filetype") in ("canvas", "quip"):
             return None
 
         file_hash: Optional[str] = None
-        url_dl = fd.get("url_private_download") or fd.get("url_private")
+        url_dl = slack_file_url(fd)
         if url_dl:
             try:
                 # files.slack.com downloads aren't covered by the Web API tiers;
                 # T3 keeps a sane upper bound on parallel binary transfers.
                 await ctx.rate_limiter.acquire(Tier.T3)
                 token = (await self._fresh_datasource()).access_token
-                async with httpx.AsyncClient(timeout=30.0) as http:
+                async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as http:
                     file_hash = await self._hash_download(http, url_dl, token)
                     # Slack answers a token it no longer accepts with 200 and its sign-in
                     # page. Right after a scheduled rotation the connector can still hold
@@ -4880,6 +4877,10 @@ class SlackConnector(BaseConnector):
         fid = record.external_record_id
         if not fid:
             raise HTTPException(400, f"No file ID for {record.id}")
+        huddle = parse_huddle_id(fid)
+        if huddle:
+            yield await stream_huddle(self, *huddle)
+            return
 
         await self.rate_limiter.acquire(Tier.T4)
         ds   = await self._fresh_datasource(retry_rate_limits=False)
@@ -4888,7 +4889,7 @@ class SlackConnector(BaseConnector):
             raise slack_stream_error(info, connector=self.display_name)
 
         fd  = info.data.get("file", {})
-        url = fd.get("url_private_download") or fd.get("url_private")
+        url = slack_file_url(fd)
         if not url:
             raise not_downloadable(
                 f"Slack does not expose a download URL for file {fid}.",
@@ -4896,7 +4897,7 @@ class SlackConnector(BaseConnector):
             )
 
         token = ds.access_token
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as http:
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as http:
             headers = {"Authorization": f"Bearer {token}"} if token else {}
             async with http.stream("GET", url, headers=headers) as r:
                 if r.status_code != 200:
