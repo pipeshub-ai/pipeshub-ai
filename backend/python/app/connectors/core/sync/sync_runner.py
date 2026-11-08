@@ -657,7 +657,7 @@ async def _finish_full_sync_memberships(
     try:
         await finish(connector_id, seen)
     except Exception as e:
-        logger.error(f"Could not give the groups the members the full sync of {connector_id} read: {e}")
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="finish_memberships")
         await note_structure_change(graph_provider, connector_id, logger)  # part of it may have run
         return False
     return True
@@ -682,7 +682,7 @@ async def _unlink_what_full_sync_missed(
     if not isinstance(coverage, FullSyncCoverage):
         coverage = FullSyncCoverage()
     if not coverage.lists_everything:
-        logger.debug(f"Full sync of {connector_id}: the source lists only part of itself; nothing is unlinked")
+        logger.debug("Full sync: the source lists only part of itself; nothing is unlinked")
         if not coverage.complete:
             return True
         # The groups' members were still read in full, so a member removed at the source goes.

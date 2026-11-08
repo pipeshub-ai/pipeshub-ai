@@ -244,6 +244,26 @@ class TestFailure:
         assert end["outcome"] == "partial" and end["full_sync_cut_short"] is True
         assert not [r for r in records if "did not finish" in r.getMessage()]
 
+    async def test_a_failed_member_write_is_one_classed_step_failure_and_partial(self, records) -> None:
+        processor = DataSourceEntitiesProcessor(_log(), MagicMock(), MagicMock())
+        processor.finish_full_sync_memberships = AsyncMock(side_effect=ConnectionError("graph down"))
+        connector = _connector(None)
+        connector.data_entities_processor = processor
+        connector.full_sync_coverage = MagicMock(return_value=FullSyncCoverage())
+
+        async def run_sync() -> None:
+            processor._note_full_sync_seen("c1", CollectionNames.RECORDS.value, "r1")
+
+        connector.run_sync = run_sync
+
+        await _run(connector, _gp(), start_status=AppStatus.FULL_SYNCING.value)
+
+        record, step = _one(records, "sync_step.failed")
+        assert record.levelno == logging.ERROR and step["step"] == "finish_memberships"
+        assert step["error_class"] == "unavailable"
+        _, end = _one(records, "sync_run.end")
+        assert end["outcome"] == "partial" and step["run_id"] == end["run_id"]
+
 
 async def _blocks(started: asyncio.Event) -> None:
     started.set()
