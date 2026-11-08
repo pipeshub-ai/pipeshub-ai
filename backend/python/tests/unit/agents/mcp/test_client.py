@@ -1519,3 +1519,13 @@ class TestNoServerTextInTheLog:
         assert record.levelno == logging.WARNING
         assert log_record_fields(record)["error_type"] == "RuntimeError"
         assert "S3CRET" not in caplog.text
+
+    async def test_a_malformed_redirect_target_is_still_blocked(self, sdk: _Script, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        manager = await _open(sdk)
+        sdk.answer = _answer_with(error=MCPError(-32600, "Redirect to https://[broken not followed"))
+
+        with pytest.raises(MCPUrlBlockedError):
+            await manager.call_tool_in_session("search", {})
+        (record,) = [r for r in caplog.records if r.getMessage() == "mcp.redirect_refused"]
+        assert log_record_fields(record)["target_host"] == "unknown"

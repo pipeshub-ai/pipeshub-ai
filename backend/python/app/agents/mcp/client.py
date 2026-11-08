@@ -916,10 +916,11 @@ class MCPClientManager:
     def _log_refused_redirect(self, error: MCPError) -> None:
         """The target's host only: the rest of the SDK's message is the server's Location header, which a server controls."""
         target = error.message.removeprefix("Redirect to ").split(" ", 1)[0]
-        log_event(
-            logger, "mcp.redirect_refused", level=logging.WARNING,
-            mcp_server_id=self.config.id, target_host=urlsplit(target).hostname or "unknown",
-        )
+        try:
+            host = urlsplit(target).hostname or "unknown"
+        except ValueError:          # a malformed target ("https://[broken") must not replace the blocked-URL error
+            host = "unknown"
+        log_event(logger, "mcp.redirect_refused", level=logging.WARNING, mcp_server_id=self.config.id, target_host=host)
 
     def _operation_error(
         self, session: _Session, error: MCPError, record: wire.WireRecord, *, method: str, what: str,
