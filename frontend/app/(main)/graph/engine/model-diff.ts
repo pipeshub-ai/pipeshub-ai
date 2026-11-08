@@ -23,6 +23,8 @@ export interface ModelDiff {
   removeIds: string[];
   /** Nodes whose label or kind changed (a fuller record arrived). */
   updateNodes: { id: string; data: Record<string, unknown> }[];
+  /** Nodes drawn before that sit on a different cell in a new view: the layout is new, so they move with it. */
+  moveNodes: { id: string; position: { x: number; y: number } }[];
 }
 
 const nodeData = (model: GraphModel, id: string) => {
@@ -32,8 +34,9 @@ const nodeData = (model: GraphModel, id: string) => {
 
 /** What to add, remove and update to turn what was drawn into `next`. */
 export function diffModel(prev: GraphModel | null, next: GraphModel): ModelDiff {
-  const before = prev ?? { nodes: {}, edges: {}, positions: {} };
-  const diff: ModelDiff = { addNodes: [], addEdges: [], removeIds: [], updateNodes: [] };
+  const before = prev ?? { nodes: {}, edges: {}, positions: {}, view: next.view };
+  const diff: ModelDiff = { addNodes: [], addEdges: [], removeIds: [], updateNodes: [], moveNodes: [] };
+  const relaid = before.view !== next.view;
   for (const id of Object.keys(before.nodes)) if (!next.nodes[id]) diff.removeIds.push(id);
   for (const id of Object.keys(before.edges)) if (!next.edges[id]) diff.removeIds.push(id);
   for (const id of Object.keys(next.nodes)) {
@@ -48,6 +51,8 @@ export function diffModel(prev: GraphModel | null, next: GraphModel): ModelDiff 
       const was = before.nodes[id];
       const now = next.nodes[id];
       if (was.label !== now.label || was.kind !== now.kind) diff.updateNodes.push({ id, data: nodeData(next, id) });
+      // Within a view a node stays where the person may have dragged it; a new view is placed afresh.
+      if (relaid) diff.moveNodes.push({ id, position: { x: cell.c * CELL_WIDTH, y: cell.r * CELL_HEIGHT } });
     }
   }
   for (const [id, e] of Object.entries(next.edges)) {

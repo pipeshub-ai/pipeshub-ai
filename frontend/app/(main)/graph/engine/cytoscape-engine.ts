@@ -214,11 +214,12 @@ export function createCytoscapeEngine(options: CytoscapeEngineOptions = {}): Gra
         cy!.add(diff.addNodes);
         cy!.add(diff.addEdges);
         for (const { id, data } of diff.updateNodes) cy!.getElementById(id).data(data);
+        for (const { id, position } of diff.moveNodes) cy!.getElementById(id).position(position);
       });
       drawn = model;
       this.select(selected);
       this.setFocus(focused);
-      if (diff.addNodes.length === 0 && diff.removeIds.length === 0) return;
+      if (diff.addNodes.length === 0 && diff.removeIds.length === 0 && diff.moveNodes.length === 0) return;
       const duration = quality?.simplified ? 0 : 200;
       ignoreMotionUntil = performance.now() + duration + 150;
       if (first) {

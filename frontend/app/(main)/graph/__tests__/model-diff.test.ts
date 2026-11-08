@@ -3,6 +3,7 @@ import { diffModel } from '../engine/model-diff';
 import { buildStyle, createCytoscapeEngine } from '../engine/cytoscape-engine';
 import { qualityFor } from '../engine/tiers';
 import { emptyModel, mergeExpand, removeNodes } from '../model/graph-model';
+import { CELL_HEIGHT, CELL_WIDTH } from '../model/placement';
 import type { ExpandResponse } from '../types';
 
 const answer = (over: Partial<ExpandResponse> = {}): ExpandResponse => ({
@@ -115,5 +116,35 @@ describe('capModel and the table page', () => {
     const diff = diffModel(capModel(model, 5), capModel(grown, 5));
     expect(diff.addNodes).toEqual([]);
     expect(diff.addEdges).toEqual([]);
+  });
+});
+
+
+describe('a new view is laid out afresh', () => {
+  const moved = (base: ReturnType<typeof built>, view: number, positions: ReturnType<typeof built>['positions']) => ({ ...base, view, positions });
+
+  it('moves a node that was already drawn to its cell in the new view, and only then', () => {
+    const before = built();
+    const shifted = Object.fromEntries(Object.entries(before.positions).map(([id, c]) => [id, { c: c.c + 3, r: c.r + 2 }]));
+    const newView = diffModel(before, moved(before, before.view + 1, shifted));
+    expect(newView.moveNodes.map((m) => m.id).sort()).toEqual(['block:lib', 'block:main']);
+    expect(newView.addNodes).toEqual([]);
+    const sameView = diffModel(before, moved(before, before.view, shifted));
+    expect(sameView.moveNodes).toEqual([]);
+  });
+
+  it('puts the survivor of a new view on the new grid in the drawing too', async () => {
+    let cy!: import('cytoscape').Core;
+    const engine = createCytoscapeEngine({ headless: true, expose: (c) => (cy = c) });
+    await engine.mount(document.createElement('div'), qualityFor({ hasWebgl2: false, renderer: '', devicePixelRatio: 1, reducedMotion: false }, 'canvas', 0), {
+      onSelect: () => undefined, onExpand: () => undefined, onHover: () => undefined, onFrame: () => undefined,
+    });
+    const before = built();
+    engine.setModel(before);
+    const shifted = Object.fromEntries(Object.entries(before.positions).map(([id, c]) => [id, { c: c.c + 3, r: c.r + 2 }]));
+    engine.setModel(moved(before, before.view + 1, shifted));
+    const cell = shifted['block:main'];
+    expect(cy.getElementById('block:main').position()).toEqual({ x: cell.c * CELL_WIDTH, y: cell.r * CELL_HEIGHT });
+    engine.destroy();
   });
 });

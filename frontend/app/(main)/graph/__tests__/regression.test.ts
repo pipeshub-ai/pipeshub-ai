@@ -601,3 +601,25 @@ describe('the toolbar arrows keep the trail honest', () => {
     expect(now.trail[now.index]).toBe('block:b');
   });
 });
+
+
+describe('a Back or Forward over an unavailable node skips every copy of it', () => {
+  const at = () => ({ trail: useGraphStore.getState().trail, index: useGraphStore.getState().trailIndex, node: useGraphStore.getState().node });
+
+  it('Back from C over a node that is on the trail twice lands on B', async () => {
+    const { controller, state } = world();
+    for (const id of ['block:a', 'block:b', 'block:a', 'block:c']) await controller.open(id);
+    state.missing.add('block:a');
+    expect(await controller.go(-1)).toBe(true);
+    expect(at()).toEqual({ trail: ['block:b', 'block:c'], index: 0, node: 'block:b' });
+  });
+
+  it('Forward from B over a node that is on the trail twice lands on C', async () => {
+    const { controller, state } = world();
+    for (const id of ['block:a', 'block:b', 'block:a', 'block:c']) await controller.open(id);
+    useGraphStore.getState().jumpTo(1); // sitting on B
+    state.missing.add('block:a');
+    expect(await controller.go(1)).toBe(true);
+    expect(at()).toEqual({ trail: ['block:b', 'block:c'], index: 1, node: 'block:c' });
+  });
+});

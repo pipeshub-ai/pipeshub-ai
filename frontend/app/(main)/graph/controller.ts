@@ -172,7 +172,8 @@ export class ExplorerController {
       }
       if (this.snapshot.failure !== 'not-available') return false;
       useGraphStore.getState().forget([target]);
-      if (step < 0) index -= 1;
+      // Every copy of the node left the trail, so the next candidate is whatever now lies in that direction.
+      index = useGraphStore.getState().trailIndex + step;
     }
   }
 
