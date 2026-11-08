@@ -148,6 +148,22 @@ async def register_pending_roots(graph_provider: Any, connector_id: str, roots: 
     raise ScopeGenerationError(f"could not register the pending roots of {connector_id}")
 
 
+async def register_vrid_left(graph_provider: Any, record_key: str, vrid: str) -> bool:  # noqa: ANN401
+    """A record stops standing for virtual record ``vrid`` (the indexing side gave it another one). The points of ``vrid`` keep the
+    scope of the record that left until they are stamped again, so each record that still stands for it is registered as a pending
+    root of its connector, with a bump. With no other record the points have no owner and nothing is registered. Called BEFORE the
+    record is given another id: a crash in between leaves a harmless registration, never a stale point. Raises when a registration
+    cannot be written. Returns whether any connector was registered."""
+    by_connector: dict[str, list[str]] = {}
+    for doc in await graph_provider.get_nodes_by_field_in(CollectionNames.RECORDS.value, "virtualRecordId", [vrid], raise_on_error=True):
+        key = str(doc.get("_key") or doc.get("id") or "")
+        if key and key != record_key and doc.get("connectorId"):
+            by_connector.setdefault(str(doc["connectorId"]), []).append(key)
+    for connector_id in sorted(by_connector):  # one order for every writer
+        await register_pending_roots(graph_provider, connector_id, by_connector[connector_id])
+    return bool(by_connector)
+
+
 async def clear_pending_covered(graph_provider: Any, connector_id: str, done_at: int, *, attempts: int = 5) -> None:  # noqa: ANN401
     """Take off the list the roots a full pass covered: the pass read the graph from structure generation ``done_at``, so every root
     registered at or before it is in the stamps it wrote. Compare-and-set on the stored string: a root registered again meanwhile
