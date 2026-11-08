@@ -21,8 +21,7 @@ Off unless CODE_GRAPH_BACKFILL=true (and CODE_GRAPH_ENABLED not false), like the
 with the same flag shape (/migrations/<name>/<version>). It runs in the indexing service, which holds the
 embedding model, once per EMBED_UNITS_VERSION, one page of records at a time with a pause between pages,
 on one indexing replica (a leader lock). The flag keeps the cursor and the counts after every page, so a
-restart resumes where it stopped. Pages are listed across orgs; each org's records are embedded under
-that org's context.
+restart resumes where it stopped. Each org's records are paged and embedded under that org's context.
 """
 from __future__ import annotations
 
@@ -33,7 +32,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus, RecordTypes
-from app.core.org_context import for_org, system
+from app.core.org_context import for_org
 from app.models.blocks import BlocksContainer
 from app.modules.artifacts.reader import record_artifact_reader
 from app.modules.code_graph import enabled as code_graph_switch
@@ -82,6 +81,10 @@ def _switched_on(logger: Logger) -> bool:
     return True
 
 
+class _LeaseLost(Exception):
+    """Another replica may hold the backfill now: stop without writing the cursor."""
+
+
 async def backfill_class_units(
     *,
     graph_provider: IGraphDBProvider,
@@ -89,11 +92,16 @@ async def backfill_class_units(
     blob_store: Any,  # noqa: ANN401 - BlobStorage; only get_record_from_storage is read
     config_service: ConfigurationService,
     logger: Logger,
+    org_ids: list[str],
     page_size: int = _PAGE,
     pause_seconds: float = _PAUSE_SECONDS,
-    keep_lease: Any = None,  # noqa: ANN401 - async () -> bool; False stops the run (another replica took over)
+    keep_lease: Callable[[], Awaitable[bool]] | None = None,
 ) -> BackfillCounts | None:
-    """Run (or resume) this version's backfill; None when it is switched off or already done."""
+    """Run (or resume) this version's backfill over ``org_ids``; None when it is switched off or already done.
+
+    Each org's records are paged under that org (a store that keeps every row under an org reads none under a
+    system scope). The flag's cursor is ``(org, after)``: orgs before ``org`` are done. ``keep_lease`` is
+    renewed before every record and before every cursor write, and a lost lease stops the run unwritten."""
     if not _switched_on(logger):
         return None
     flag_key = f"{FLAG_PREFIX}{EMBED_UNITS_VERSION}"
@@ -101,53 +109,71 @@ async def backfill_class_units(
     flag = flag if isinstance(flag, dict) else {}
     if flag.get("done") is True:
         return None
-    after = flag.get("after")
+    resume_org, after = flag.get("org"), flag.get("after")
     counts = BackfillCounts(**{k: int(flag.get(k) or 0) for k in BackfillCounts.__dataclass_fields__})
-    if after:
-        logger.info("Class units backfill for %s resuming after %s (%s)", EMBED_UNITS_VERSION, after, asdict(counts))
+    if resume_org:
+        logger.info("Class units backfill for %s resuming in org %s after %s (%s)",
+                    EMBED_UNITS_VERSION, resume_org, after, asdict(counts))
 
-    while True:
+    async def held() -> None:
         if keep_lease is not None and not await keep_lease():
-            logger.warning("Class units backfill stopped: its leader lease was lost")
-            return counts
-        with system("class_units_backfill"):  # a page spans orgs; each org's records are embedded under it
-            rows = await graph_provider.get_documents_paginated(
-                collection=CollectionNames.RECORDS.value, limit=page_size, filters=_CODE_RECORDS,
-                sort_field="_key", after_key=after, return_fields=_RECORD_FIELDS, raise_on_error=True,
-            ) or []
-        if rows:
-            await _backfill_page(rows, vector_store, blob_store, logger, counts)
-            counts.pages += 1
-            after = rows[-1].get("_key")
-        done = len(rows) < page_size
-        await config_service.set_config(flag_key, {"done": done, **({} if done else {"after": after}), **asdict(counts)})
-        logger.info("Class units backfill page %d: %s", counts.pages, asdict(counts))
-        if done:
-            logger.info("Class units backfill for %s done: %d record(s) gained %d class unit(s), %d failed",
-                        EMBED_UNITS_VERSION, counts.embedded, counts.units, counts.failed)
-            return counts
-        await asyncio.sleep(pause_seconds)
+            raise _LeaseLost
+
+    reader = record_artifact_reader(blob_store)
+    try:
+        for org_id in sorted(org_ids):
+            if resume_org and org_id < resume_org:
+                continue
+            cursor = after if org_id == resume_org else None
+            with for_org(org_id, job="class_units_backfill"):
+                while True:
+                    await held()
+                    rows = await graph_provider.get_documents_paginated(
+                        collection=CollectionNames.RECORDS.value, limit=page_size,
+                        filters={**_CODE_RECORDS, "orgId": org_id}, sort_field="_key", after_key=cursor,
+                        return_fields=_RECORD_FIELDS, raise_on_error=True,
+                    ) or []
+                    if rows:
+                        await _backfill_org_records(org_id, _page_records(org_id, rows), vector_store, reader,
+                                                    logger, counts, held)
+                        counts.pages += 1
+                        cursor = rows[-1].get("_key")
+                    if len(rows) < page_size:
+                        break
+                    await held()
+                    await config_service.set_config(
+                        flag_key, {"done": False, "org": org_id, "after": cursor, **asdict(counts)})
+                    logger.info("Class units backfill page %d: %s", counts.pages, asdict(counts))
+                    await asyncio.sleep(pause_seconds)
+        await held()
+    except _LeaseLost:
+        logger.warning("Class units backfill stopped: its leader lease was lost")
+        return counts
+    await config_service.set_config(flag_key, {"done": True, **asdict(counts)})
+    logger.info("Class units backfill for %s done: %d record(s) gained %d unit(s), %d failed",
+                EMBED_UNITS_VERSION, counts.embedded, counts.units, counts.failed)
+    return counts
 
 
-async def _backfill_page(rows: list[dict], vector_store: VectorStore, blob_store: Any,  # noqa: ANN401
-                         logger: Logger, counts: BackfillCounts) -> None:
-    by_org: dict[str, dict[str, dict]] = {}
+def _page_records(org_id: str, rows: list[dict]) -> dict[str, dict]:
+    """A page's completed code records of ``org_id``, by virtual record id. Re-checked: a page is filtered in
+    the query, and a row can change while the run walks the pages."""
+    records: dict[str, dict] = {}
     for row in rows:
         vrid = row.get("virtualRecordId")
-        # Re-checked: a page is filtered in the query, and a row can change while the run walks the pages.
         if (row.get("recordType") == RecordTypes.CODE_FILE.value
                 and row.get("indexingStatus") == ProgressStatus.COMPLETED.value
-                and vrid and row.get("orgId")):
-            by_org.setdefault(row["orgId"], {}).setdefault(vrid, row)
-    reader = record_artifact_reader(blob_store)
-    for org_id, records in sorted(by_org.items()):
-        with for_org(org_id, job="class_units_backfill"):
-            await _backfill_org_records(org_id, records, vector_store, reader, logger, counts)
+                and vrid and row.get("orgId") == org_id):
+            records.setdefault(vrid, row)
+    return records
 
 
 async def _backfill_org_records(org_id: str, records: dict[str, dict], vector_store: VectorStore,
-                                reader: Any, logger: Logger, counts: BackfillCounts) -> None:  # noqa: ANN401
+                                reader: Any, logger: Logger, counts: BackfillCounts,  # noqa: ANN401
+                                held: Callable[[], Awaitable[None]]) -> None:
     """Embed the units of one org's records on a page (virtual record id -> record) that lack them."""
+    if not records:
+        return
     views = {vrid: _record_view(row) for vrid, row in records.items()}
     have = await vector_store.virtual_records_with_residue_units([(org_id, v, view) for v, view in views.items()])
     counts.records += len(records)
@@ -159,6 +185,7 @@ async def _backfill_org_records(org_id: str, records: dict[str, dict], vector_st
         logger.warning("Class units backfill: batched record lookup failed, reading one by one: %s", exc)
         lookups = {}
     for vrid in pending:
+        await held()  # a page can outlast the lease; the next record waits for it to be renewed
         try:
             stored = await reader.read_record(vrid, org_id, lookup=lookups.get(vrid))
             containers = (stored or {}).get("block_containers")
@@ -197,31 +224,37 @@ def _record_view(row: dict) -> SimpleNamespace:
 
 
 async def mark_done_without_code(graph_provider: IGraphDBProvider, config_service: ConfigurationService,
-                                 logger: Logger) -> bool:
-    """Whether this version's backfill is done; marked so when the deployment holds no code record yet.
+                                 logger: Logger, org_ids: list[str]) -> bool:
+    """Whether this version's backfill is done; marked so when no org of ``org_ids`` holds a code record yet.
 
     Every code record indexed from now on gets its class and residue units, so with none indexed before
     there is nothing to backfill, whether or not the backfill is switched on, and a path-free search_code
-    can say it is complete. Records are not org-scoped here: the flag is the deployment's."""
+    can say it is complete. The flag is the deployment's; each org is asked under its own context."""
     flag_key = f"{FLAG_PREFIX}{EMBED_UNITS_VERSION}"
     flag = await config_service.get_config(flag_key, use_cache=False)
     if isinstance(flag, dict) and flag.get("done") is True:
         return True
     if flag:
         return False
-    with system("class_units_backfill"):
-        any_code = await graph_provider.get_documents_paginated(
-            collection=CollectionNames.RECORDS.value, limit=1, filters={"recordType": RecordTypes.CODE_FILE.value},
-            return_fields=["_key"], raise_on_error=True)
-    if any_code:
-        return False
+    for org_id in org_ids:
+        with for_org(org_id, job="class_units_backfill"):
+            if await graph_provider.get_documents_paginated(
+                    collection=CollectionNames.RECORDS.value, limit=1,
+                    filters={"recordType": RecordTypes.CODE_FILE.value, "orgId": org_id},
+                    return_fields=["_key"], raise_on_error=True):
+                return False
     await config_service.set_config(flag_key, {"done": True, **asdict(BackfillCounts())})
     logger.info("Class units backfill for %s: no code indexed before it, so nothing to add", EMBED_UNITS_VERSION)
     return True
 
 
-async def run_class_units_backfill(app_container: Any, graph_provider: IGraphDBProvider) -> None:  # noqa: ANN401
-    """Startup task on indexing: wait out startup, take the leader lease, run the backfill once."""
+async def run_class_units_backfill(
+    app_container: Any,  # noqa: ANN401
+    graph_provider: IGraphDBProvider,
+    org_ids_of: Callable[[IGraphDBProvider], Awaitable[list[str]]],
+) -> None:
+    """Startup task on indexing: wait out startup, take the leader lease, run the backfill once over the orgs
+    ``org_ids_of`` lists."""
     from app.modules.indexing.vector_membership_backfill import (
         VectorMembershipBackfillLeaderLock,
     )
@@ -229,7 +262,8 @@ async def run_class_units_backfill(app_container: Any, graph_provider: IGraphDBP
 
     logger = app_container.logger()
     try:
-        if await mark_done_without_code(graph_provider, app_container.config_service(), logger):
+        if await mark_done_without_code(graph_provider, app_container.config_service(), logger,
+                                        await org_ids_of(graph_provider)):
             return
     except Exception:  # the backfill below, or the next start, decides instead
         logger.warning("Class units backfill: could not check for code records", exc_info=True)
@@ -247,7 +281,7 @@ async def run_class_units_backfill(app_container: Any, graph_provider: IGraphDBP
         blob_store = await _resolved(app_container.blob_storage)
         await backfill_class_units(graph_provider=graph_provider, vector_store=vector_store, blob_store=blob_store,
                                    config_service=app_container.config_service(), logger=logger,
-                                   keep_lease=lock.refresh)
+                                   org_ids=await org_ids_of(graph_provider), keep_lease=lock.refresh)
     except asyncio.CancelledError:
         raise
     except Exception:

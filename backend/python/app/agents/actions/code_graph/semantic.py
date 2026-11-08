@@ -16,6 +16,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Literal
 
+from app.config.constants.arangodb import RecordTypes
+
 from .ops import (
     _BLOCKS,
     _RECORD_GROUPS,
@@ -232,14 +234,16 @@ async def _nodes_for(
 async def _record_groups(
     graph_provider: IGraphDBProvider, connector_id: str, record_ids: set[str],
 ) -> dict[str, str | None]:
-    """Each record's group from the record itself. The ids are hit records that already passed the
-    search's org scope and the access check, so only the connector is re-checked."""
+    """Each code file's group from the record itself. The ids are hit records that already passed the
+    search's org scope and the access check, so only the connector is re-checked. Other records of a code
+    connector (an issue, a pull request) have summaries too, but no file a code tool can read: left out."""
     rows = await graph_provider.get_nodes_by_field_in(
         collection=_RECORDS, field_name="_key", field_values=sorted(record_ids),
-        return_fields=["_key", "connectorId", "recordGroupId"], raise_on_error=True,
+        return_fields=["_key", "connectorId", "recordGroupId", "recordType"], raise_on_error=True,
     ) or []
     return {key: row.get("recordGroupId") for row in map(_unwrap, rows)
-            if row.get("connectorId") == connector_id and (key := row.get("_key") or row.get("id"))}
+            if row.get("connectorId") == connector_id and row.get("recordType") == RecordTypes.CODE_FILE.value
+            and (key := row.get("_key") or row.get("id"))}
 
 
 def _node_for(nodes: dict[tuple[str, bool, int], dict[str, Any]], groups: dict[str, str | None],

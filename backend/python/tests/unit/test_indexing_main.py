@@ -1672,6 +1672,41 @@ class TestLifespan:
             assert parse_pool._State.governor is None
             assert parse_pool._State.pool is None
 
+    async def test_the_class_units_backfill_runs_on_the_record_consumers_loop_on_every_store(self) -> None:
+        """It embeds through the consumers' VectorStore, whose clients belong to their loop, so it is
+        scheduled there on ArangoDB too, not only on Neo4j."""
+        from app.indexing_main import _all_org_ids, lifespan
+
+        mock_container = _make_container()
+        mock_container._graph_provider = _make_graph_provider()
+        mock_app = MagicMock()
+        mock_app.state = MagicMock()
+        consumer_loop = MagicMock(name="record consumer loop")
+        scheduled = []
+
+        def schedule(coro: object, loop: object) -> MagicMock:
+            scheduled.append((coro, loop))
+            if hasattr(coro, "close"):
+                coro.close()
+            return MagicMock(done=MagicMock(return_value=True))
+
+        backfill = MagicMock(return_value="class-units-run")
+        with (
+            patch("app.indexing_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.indexing_main.recover_in_progress_records", new_callable=AsyncMock),
+            patch("app.indexing_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[("record", MagicMock())]),
+            patch("app.indexing_main.stop_kafka_consumers", new_callable=AsyncMock),
+            patch("app.indexing_main.record_consumer_loop", return_value=consumer_loop),
+            patch("app.indexing_main.asyncio.run_coroutine_threadsafe", side_effect=schedule),
+            patch("app.indexing_main.asyncio.wrap_future", new_callable=AsyncMock),
+            patch("app.indexing_main.run_class_units_backfill", backfill),
+            patch.dict("os.environ", {"DATA_STORE": "arangodb"}),
+        ):
+            async with lifespan(mock_app):
+                pass
+        assert ("class-units-run", consumer_loop) in scheduled
+        backfill.assert_called_once_with(mock_container, mock_container._graph_provider, _all_org_ids)
+
     async def test_graph_provider_fallback(self):
         """When _graph_provider is not set, it falls back to graph_provider()."""
         from app.indexing_main import lifespan

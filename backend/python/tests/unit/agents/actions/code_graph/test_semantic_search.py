@@ -132,7 +132,7 @@ async def test_a_file_hit_on_a_file_without_named_code_takes_its_repo_from_the_r
     graph = _graph()
     for rid, path in (("rec-e", "scripts/setup.py"), ("rec-f", "scripts/empty.py")):
         graph.records[rid] = {"_key": rid, "orgId": ORG, "connectorId": CONN, "virtualRecordId": f"v-{rid}",
-                              "recordGroupId": "repo-1"}
+                              "recordGroupId": "repo-1", "recordType": "CODE_FILE"}
         graph.code_files[rid] = path
     # rec-e holds only module statements (no qualified name); rec-f has no node at all
     graph.blocks["k_stmt"] = {**graph.blocks["k_caller"], "_key": "k_stmt", "id": "k_stmt", "recordId": "rec-e",
@@ -145,6 +145,18 @@ async def test_a_file_hit_on_a_file_without_named_code_takes_its_repo_from_the_r
         {"file_path": "scripts/empty.py", "kind": "file", "repo": "acme/shop", "summary": "Nothing yet.",
          "score": 0.7},
     ]
+
+
+async def test_a_summary_hit_on_a_record_that_is_not_a_code_file_is_not_a_match() -> None:
+    """A code connector's issues and pull requests have summaries too; no code tool can read them as files,
+    and a path lookup would answer with the record's name."""
+    graph = _graph()
+    graph.records["rec-i"] = {"_key": "rec-i", "orgId": ORG, "connectorId": CONN, "virtualRecordId": "v-rec-i",
+                              "recordGroupId": "repo-1", "recordType": "ISSUE"}
+    graph.code_files["rec-i"] = "Billing fails on retry"
+    retrieval = FakeRetrieval([_file_hit("rec-i", 0.9, "Billing fails on retry."), _hit("rec-a", 0, 0.5)])
+    out = await _search(graph, retrieval, query="billing retry")
+    assert [m["file_path"] for m in out["matches"]] == ["src/a.py"] and out["total"] == 1
 
 
 async def test_class_and_file_hits_in_a_file_the_caller_cannot_read_are_dropped() -> None:

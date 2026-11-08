@@ -74,10 +74,11 @@ def code_units(blocks: list, header_of: Callable[[Any], str], *,
         lead = "\n".join(p for p in (header, _signature_line(meta)) if p)
         cuts: list[str] = []
         pieces = _pieces(text, budget - token_len(lead) - 1, token_len, split_long_line, cuts.extend)
+        # On the first piece only: the block's cut words, carried by every piece, would grow as pieces x cuts.
         units.extend(
             CodeUnit(block, f"{lead}\n{piece}" if lead else piece, whole=False, sparse_extra=sparse,
-                     cut_words=tuple(cuts))
-            for piece in pieces
+                     cut_words=tuple(cuts) if i == 0 else ())
+            for i, piece in enumerate(pieces)
         )
     return units
 
@@ -243,10 +244,11 @@ _WORD_END, _WORD_START = re.compile(r"\w+$"), re.compile(r"^\w+")
 
 
 def _straddling(parts: list[str]) -> list[str]:
-    """The words split across two consecutive parts of one cut line."""
+    """The words split across two consecutive parts of one cut line. A word that fills a whole part runs
+    past these two and is longer than a unit, so no unit could hold it whole: it is left out."""
     out = []
     for left, right in zip(parts, parts[1:]):
         head, tail = _WORD_END.search(left), _WORD_START.match(right)
-        if head and tail:
+        if head and tail and head.start() > 0 and tail.end() < len(right):
             out.append(head.group() + tail.group())
     return out

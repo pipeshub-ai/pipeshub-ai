@@ -2611,10 +2611,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_vector_membership_backfill_loop(app_container, graph_provider),
             worker_loop,
         )
-        app.state.class_units_future = asyncio.run_coroutine_threadsafe(
-            run_class_units_backfill(app_container, graph_provider),
-            worker_loop,
-        )
         app.state.entity_index_future = asyncio.run_coroutine_threadsafe(
             run_entity_index_rebuild_loop(app_container, graph_provider),
             worker_loop,
@@ -2634,9 +2630,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.backfill_task = spawn_detached(
             run_vector_membership_backfill_loop(app_container, graph_provider)
         )
-        app.state.class_units_task = spawn_detached(
-            run_class_units_backfill(app_container, graph_provider)
-        )
         app.state.entity_index_task = spawn_detached(
             run_entity_index_rebuild_loop(app_container, graph_provider)
         )
@@ -2648,16 +2641,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
 
     # On every store, not only Neo4j: on the loop records are indexed on, beside the
-    # consumers whose slot use (process-wide, see LLMGateway) it yields to.
+    # consumers whose slot use (process-wide, see LLMGateway) it yields to. The class-units
+    # backfill too: it embeds through their VectorStore, whose clients belong to that loop.
     completion_loop = record_consumer_loop(consumers)
     if completion_loop is not None:
         app.state.named_entity_completion_future = asyncio.run_coroutine_threadsafe(
             run_named_entity_completion_loop(app_container, graph_provider),
             completion_loop,
         )
+        app.state.class_units_future = asyncio.run_coroutine_threadsafe(
+            run_class_units_backfill(app_container, graph_provider, _all_org_ids),
+            completion_loop,
+        )
     else:
         app.state.named_entity_completion_task = spawn_detached(
             run_named_entity_completion_loop(app_container, graph_provider)
+        )
+        app.state.class_units_task = spawn_detached(
+            run_class_units_backfill(app_container, graph_provider, _all_org_ids)
         )
 
     yield

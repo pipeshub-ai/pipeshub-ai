@@ -12,7 +12,7 @@ import pytest
 from app.models.blocks import BlocksContainer
 from app.modules.parsers.code_parser import CodeFileParser
 from app.modules.reconciliation.service import ReconciliationService
-from app.modules.transformers.code_units import residue_pieces
+from app.modules.transformers.code_units import code_units, residue_pieces
 from app.modules.transformers.transformer import ReconciliationContext
 from app.modules.transformers.vectorstore import (
     _build_code_documents,
@@ -106,6 +106,32 @@ def test_a_word_a_long_symbol_line_is_cut_through_is_whole_in_the_residue() -> N
     residue = {w for d in _residue(docs) for w in re.findall(r"\w+", d.page_content)}
     assert len([d for d in docs if d.metadata.get("unitKind") is None]) > 1  # the line was cut
     assert not [w for w in words if w not in whole and w not in residue]
+
+
+def test_a_cut_blocks_words_are_carried_once_not_by_every_piece() -> None:
+    """Carried by every piece, a long line's cut words would cost pieces x cuts to collect."""
+    words = [f"segment{i}x{i * 7}" for i in range(1500)]
+    container = _parse(f'def path():\n    return "{" ".join(words)}"\n'.encode())
+
+    def hard_cut(text: str, n: int) -> list[str]:  # cuts anywhere, as the token splitter does
+        return [text[i:i + n] for i in range(0, len(text), n)]
+    units = code_units(_code_blocks(container), lambda _b: "", exceeds=lambda t, n: len(t) > n, token_len=len,
+                       split_long_line=hard_cut, budget=200)
+    assert len(units) > 2 and units[0].cut_words
+    assert all(not u.cut_words for u in units[1:])
+
+
+def test_a_word_longer_than_a_unit_is_not_added_to_the_residue() -> None:
+    """A word that fills whole pieces (a base64 literal) can be whole in no unit; joining two of its parts
+    would only copy text into the residue."""
+    blob = "A" * 2000
+    container = _parse(f'def data():\n    return "{blob}" + other_name\n'.encode())
+
+    def hard_cut(text: str, n: int) -> list[str]:
+        return [text[i:i + n] for i in range(0, len(text), n)]
+    units = code_units(_code_blocks(container), lambda _b: "", exceeds=lambda t, n: len(t) > n, token_len=len,
+                       split_long_line=hard_cut, budget=200)
+    assert all("A" * 100 not in w for u in units for w in u.cut_words)
 
 
 @pytest.mark.asyncio

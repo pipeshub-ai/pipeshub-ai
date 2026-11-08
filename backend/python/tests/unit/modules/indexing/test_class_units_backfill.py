@@ -41,12 +41,19 @@ class Graph:
                               "externalRecordId": "src/client.py", "recordType": record_type,
                               "indexingStatus": status} for rid, (_, status) in records.items()}
         self.pages: list[str | None] = []
+        self.read_as: list[tuple[str, str | None]] = []  # (org asked for, org bound) per page read
         self.fail_on_page: int | None = None
+
+    def org_ids(self) -> list[str]:
+        return sorted({r["orgId"] for r in self.records.values()})
 
     async def get_documents_paginated(self, collection, limit=50, filters=None, sort_field=None, *,
                                       after_key=None, return_fields=None, raise_on_error=False, **_) -> list[dict]:
-        assert collection == "records" and filters == {"recordType": "CODE_FILE", "indexingStatus": "COMPLETED"}
-        assert sort_field == "_key"
+        assert collection == "records" and sort_field == "_key"
+        assert {k: v for k, v in filters.items() if k != "orgId"} == {"recordType": "CODE_FILE",
+                                                                       "indexingStatus": "COMPLETED"}
+        # A store that keeps every row under an org (PostgreSQL) reads none under a system scope.
+        self.read_as.append((filters["orgId"], org_context.current_org_id()))
         self.pages.append(after_key)
         if self.fail_on_page is not None and len(self.pages) == self.fail_on_page:
             raise RuntimeError("graph went away")
@@ -132,6 +139,7 @@ async def _run(graph, vs, blobs, config, **kwargs) -> backfill.BackfillCounts | 
     return await backfill.backfill_class_units(graph_provider=graph, vector_store=vs, blob_store=blobs,
                                                config_service=config, logger=SimpleNamespace(
                                                    info=lambda *a, **k: None, warning=lambda *a, **k: None),
+                                               org_ids=kwargs.pop("org_ids", None) or graph.org_ids(),
                                                pause_seconds=0, **kwargs)
 
 
@@ -212,8 +220,8 @@ async def test_a_run_cut_off_resumes_after_the_last_finished_page() -> None:
     config, blobs = Config(), Blobs({"vr-a": WITH_CLASSES, "vr-b": WITH_CLASSES})
     with pytest.raises(RuntimeError):
         await _run(graph, _store(have_units=set()), blobs, config, page_size=1)
-    assert config.values[FLAG] == {"done": False, "after": "a", "pages": 1, "records": 1, "embedded": 1,
-                                   "units": 1, "skipped": 0, "failed": 0}
+    assert config.values[FLAG] == {"done": False, "org": "org-1", "after": "a", "pages": 1, "records": 1,
+                                   "embedded": 1, "units": 1, "skipped": 0, "failed": 0}
 
     graph.fail_on_page = None
     vs = _store(have_units=set())
@@ -308,6 +316,39 @@ async def test_each_orgs_records_are_embedded_under_that_orgs_context() -> None:
     assert seen == [("org-1", "org-1"), ("org-2", "org-2")]
 
 
+async def test_records_are_paged_under_each_org_and_a_cut_off_run_resumes_in_its_org() -> None:
+    graph = Graph({"a": (WITH_CLASSES, "COMPLETED"), "b": (WITH_CLASSES, "COMPLETED"),
+                   "c": (WITH_CLASSES, "COMPLETED")})
+    graph.records["a"]["orgId"] = graph.records["b"]["orgId"] = "org-2"
+    graph.fail_on_page = 4  # org-1: c, then its end; org-2: a, then the read after a fails
+    config, blobs = Config(), Blobs({"vr-a": WITH_CLASSES, "vr-b": WITH_CLASSES, "vr-c": WITH_CLASSES})
+    with pytest.raises(RuntimeError):
+        await _run(graph, _store(have_units=set()), blobs, config, page_size=1)
+    assert graph.read_as == [("org-1", "org-1"), ("org-1", "org-1"), ("org-2", "org-2"), ("org-2", "org-2")]
+    assert (config.values[FLAG]["org"], config.values[FLAG]["after"]) == ("org-2", "a")
+
+    graph.fail_on_page, graph.read_as, graph.pages = None, [], []
+    vs = _store(have_units=set())
+    await _run(graph, vs, blobs, config, page_size=1)
+    assert graph.read_as[0] == ("org-2", "org-2") and graph.pages[0] == "a"  # org-1 is not read again
+    assert {d.metadata["virtualRecordId"] for d in _embedded(vs)} == {"vr-b"}
+    assert config.values[FLAG]["done"] is True
+
+
+async def test_a_lease_lost_during_a_page_stops_before_the_next_record_and_writes_no_cursor() -> None:
+    """A page can outlast the lease: it is renewed before every record, and a lost one stops the run without
+    moving the cursor another replica now owns."""
+    graph = Graph({"a": (WITH_CLASSES, "COMPLETED"), "b": (WITH_CLASSES, "COMPLETED"),
+                   "c": (WITH_CLASSES, "COMPLETED")})
+    leases = iter([True, True, False])  # the page read, record a, then lost before record b
+    vs = _store(have_units=set())
+    config = Config()
+    counts = await _run(graph, vs, Blobs({"vr-a": WITH_CLASSES, "vr-b": WITH_CLASSES, "vr-c": WITH_CLASSES}),
+                        config, keep_lease=AsyncMock(side_effect=lambda: next(leases, False)))
+    assert {d.metadata["virtualRecordId"] for d in _embedded(vs)} == {"vr-a"}
+    assert counts.embedded == 1 and FLAG not in config.values
+
+
 async def test_a_record_whose_embed_fails_is_counted_failed_and_the_run_goes_on() -> None:
     graph = Graph({"a": (WITH_CLASSES, "COMPLETED"), "b": (WITH_CLASSES, "COMPLETED")})
     vs = _store(have_units=set())
@@ -330,7 +371,7 @@ class AnyCode:
         self.keys, self.asked = keys, []
 
     async def get_documents_paginated(self, collection, limit=50, filters=None, **_) -> list[dict]:
-        self.asked.append((collection, limit, filters))
+        self.asked.append((collection, limit, filters, org_context.current_org_id()))
         return [{"_key": k} for k in self.keys][:limit]
 
 
@@ -342,8 +383,9 @@ async def test_a_deployment_with_no_code_yet_is_marked_done_switch_or_not(monkey
     a path-free search_code can be complete without CODE_GRAPH_BACKFILL."""
     monkeypatch.delenv("CODE_GRAPH_BACKFILL")
     graph, config = AnyCode([]), Config()
-    assert await backfill.mark_done_without_code(graph, config, _LOG) is True
-    assert graph.asked == [("records", 1, {"recordType": "CODE_FILE"})]
+    assert await backfill.mark_done_without_code(graph, config, _LOG, ["org-1", "org-2"]) is True
+    assert graph.asked == [("records", 1, {"recordType": "CODE_FILE", "orgId": "org-1"}, "org-1"),
+                           ("records", 1, {"recordType": "CODE_FILE", "orgId": "org-2"}, "org-2")]
     assert config.values[FLAG]["done"] is True and config.values[FLAG]["failed"] == 0
 
 
@@ -351,17 +393,17 @@ async def test_the_indexing_startup_task_marks_a_fresh_deployment_done_at_once(m
     monkeypatch.delenv("CODE_GRAPH_BACKFILL")
     config = Config()
     container = SimpleNamespace(logger=lambda: _LOG, config_service=lambda: config)
-    await backfill.run_class_units_backfill(container, AnyCode([]))  # no startup grace, lock or scan
+    await backfill.run_class_units_backfill(container, AnyCode([]), AsyncMock(return_value=["org-1"]))
     assert config.values[FLAG]["done"] is True
 
 
 async def test_existing_code_or_a_backfill_under_way_is_left_to_the_backfill() -> None:
     config = Config()
-    assert await backfill.mark_done_without_code(AnyCode(["r1"]), config, _LOG) is False
+    assert await backfill.mark_done_without_code(AnyCode(["r1"]), config, _LOG, ["org-1"]) is False
     assert FLAG not in config.values
     under_way = Config({"done": False, "after": "r5"})
-    assert await backfill.mark_done_without_code(AnyCode([]), under_way, _LOG) is False
+    assert await backfill.mark_done_without_code(AnyCode([]), under_way, _LOG, ["org-1"]) is False
     assert under_way.values[FLAG] == {"done": False, "after": "r5"}
     done = Config({"done": True})
     graph = AnyCode(["r1"])
-    assert await backfill.mark_done_without_code(graph, done, _LOG) is True and graph.asked == []
+    assert await backfill.mark_done_without_code(graph, done, _LOG, ["org-1"]) is True and graph.asked == []

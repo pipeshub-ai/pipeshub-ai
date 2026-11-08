@@ -1409,7 +1409,8 @@ class VectorStore(Transformer):
         """
         groups = [g for g in block_containers.block_groups if g.sub_type == GroupSubType.CODE_CLASS]
         context = _record_context_line(record)
-        documents = code_documents_for_record(
+        documents = await asyncio.to_thread(
+            code_documents_for_record,
             [], groups, virtual_record_id, org_id, context, member_blocks=block_containers.blocks,
         )
         if not documents:
@@ -2374,8 +2375,8 @@ class VectorStore(Transformer):
                         {code_residue_block_id(virtual_record_id)}, virtual_record_id, collection_name, org_id=org_id)
                     if not any(map(_is_code_block, blocks)) and not any(
                             g.sub_type == GroupSubType.CODE_CLASS for g in block_groups):
-                        residue = code_residue_documents(code_members, virtual_record_id, org_id,
-                                                         _record_context_line(record))
+                        residue = await asyncio.to_thread(code_residue_documents, code_members, virtual_record_id,
+                                                          org_id, _record_context_line(record))
                         if residue:
                             await self._process_document_chunks(residue, record_id, collection_name)
 
@@ -2438,8 +2439,10 @@ class VectorStore(Transformer):
             # ── Code blocks and classes ──
             class_groups = [g for g in block_groups if g.sub_type == GroupSubType.CODE_CLASS]
             if code_blocks or class_groups:
+                # Tokenizing every block is CPU work, kept off the loop the consumers share.
                 documents_to_embed.extend(
-                    code_documents_for_record(
+                    await asyncio.to_thread(
+                        code_documents_for_record,
                         code_blocks, class_groups, virtual_record_id, org_id,
                         _record_context_line(record), member_blocks=member_blocks,
                     )
