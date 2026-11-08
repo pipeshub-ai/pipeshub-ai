@@ -1221,7 +1221,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Use provided drive_data_source or fall back to service account's data source
         data_source = drive_data_source if drive_data_source else self.drive_data_source
         # Read before any grant is, so an unreadable restriction fails the item and keeps what is stored.
-        allowed = await self._restriction_filter(resource_id if is_drive else item_drive_id, is_drive)
+        allowed = await self._restriction_filter(resource_id if is_drive else item_drive_id, is_drive=is_drive)
 
         def allowed_email(email: str) -> bool:
             return allowed(Permission(email=email, type=PermissionType.READ, entity_type=EntityType.USER))
@@ -1413,7 +1413,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         source = restrictions if isinstance(restrictions, dict) else {}
         return {flag: bool(source.get(flag)) for flag in DRIVE_RESTRICTION_FLAGS}
 
-    async def _restriction_filter(self, drive_id: str | None, is_drive: bool) -> Callable[[Permission], bool]:
+    async def _restriction_filter(self, drive_id: str | None, *, is_drive: bool) -> Callable[[Permission], bool]:
         """Whether a grant on this shared drive (or an item in it) survives the drive's restrictions.
 
         driveMembersOnly: only members of the drive read its items, whoever an item is shared with.
@@ -1458,7 +1458,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._drive_principals[drive_id] = (users, groups)
         return self._drive_principals[drive_id]
 
-    async def _reconcile_drive_restrictions(self, drive: Dict) -> None:
+    async def _reconcile_drive_restrictions(self, drive: dict) -> None:
         """A drive whose restrictions differ from the ones its items were last synced under is listed again in
         full for every user: a change feed reports no change on an item whose share a restriction now cuts
         or restores. The new restrictions are remembered only once that is done, so a failure repeats it."""
