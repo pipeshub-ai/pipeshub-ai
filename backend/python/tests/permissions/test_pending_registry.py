@@ -546,20 +546,20 @@ class Unlocked:
     def is_write_conflict(self, exc: BaseException) -> bool:
         return False
 
-    async def increment_node_field(self, key, collection, field, transaction=None) -> int:  # noqa: ANN001
+    async def increment_node_field(self, key, collection, field, transaction=None) -> int:
         self.app[field] = self.app.get(field, 0) + 1
         return self.app[field]
 
-    async def get_document(self, key, collection, **kw) -> dict:  # noqa: ANN001, ANN003
+    async def get_document(self, key, collection, **kw) -> dict:
         seen = dict(self.app)
         await asyncio.sleep(0)                  # another statement may run before the caller writes what it read
         return seen
 
-    async def update_node(self, key, collection, updates, transaction=None) -> bool:  # noqa: ANN001
+    async def update_node(self, key, collection, updates, transaction=None) -> bool:
         self.app.update(updates)
         return True
 
-    async def update_node_fields_if_match(self, key, collection, updates, expected, transaction=None) -> bool:  # noqa: ANN001
+    async def update_node_fields_if_match(self, key, collection, updates, expected, transaction=None) -> bool:
         if any((self.app.get(f) or None) != v for f, v in expected.items()):
             return False
         self.app.update(updates)
