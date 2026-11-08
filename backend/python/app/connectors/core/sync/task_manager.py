@@ -9,6 +9,7 @@ import contextvars
 import logging
 from typing import Coroutine, Dict, Optional
 
+from app.utils import error_class
 from app.utils.request_context import (
     RequestContext,
     bind_context,
@@ -33,10 +34,13 @@ class SyncTaskManager:
     keeps only weak ones, so an unreferenced task can be collected mid-flight.
     """
 
-    def __init__(self, label: str = "Sync") -> None:
+    def __init__(self, label: str = "Sync", lifecycle_level: int = logging.INFO) -> None:
+        """``lifecycle_level``: the level of the started and completed lines, DEBUG
+        where the task logs its own start and end (a sync's ``sync_run.*``)."""
         self.logger = logging.getLogger(__name__)
         self._tasks: Dict[str, asyncio.Task] = {}
         self._label = label
+        self._lifecycle_level = lifecycle_level
 
     async def start_sync(self, key: str, coro: Coroutine) -> asyncio.Task:
         """
@@ -93,7 +97,7 @@ class SyncTaskManager:
         # Auto-remove the task from the registry once it finishes
         task.add_done_callback(lambda t: self._on_task_done(key, t), context=context)
 
-        context.run(self.logger.info, f"{self._label} task started for {key}")
+        context.run(self.logger.log, self._lifecycle_level, f"{self._label} task started for {key}")
         return task
 
     def request_stop(self, key: str) -> bool:
@@ -232,13 +236,13 @@ class SyncTaskManager:
 
         if task.cancelled():
             self.logger.debug(f"{self._label} task for {key} was cancelled")
-        elif task.exception():
-            self.logger.error(
-                f"{self._label} task for {key} raised an exception",
-                exc_info=task.exception(),
+        elif (exc := task.exception()) is not None:
+            # DEBUG when the task already logged it (a sync's sync_run.end); full level otherwise.
+            error_class.log_failure(
+                self.logger, "task.failed", exc, task_label=self._label.lower(), task_key=key
             )
         else:
-            self.logger.info(f"{self._label} task for {key} completed successfully")
+            self.logger.log(self._lifecycle_level, f"{self._label} task for {key} completed successfully")
 
 
 # Sync tasks are owned by the SyncCoordinator, which holds its own instance so

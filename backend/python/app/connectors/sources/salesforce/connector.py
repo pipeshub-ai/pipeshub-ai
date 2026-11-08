@@ -9,6 +9,7 @@ from logging import Logger
 from typing import Any, AsyncGenerator, Callable, DefaultDict, Dict, List, Optional, Set, Tuple, Type, TypeAlias, TypeVar
 from urllib.parse import parse_qsl, quote, urlsplit
 from uuid import uuid4
+from app.utils.credential_refresh_log import EVENT_CHECK_FAILED, log_refresh_failure
 from app.utils.html_markdown import html_to_markdown, html_to_markdown_async
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
@@ -1255,7 +1256,7 @@ class SalesforceConnector(BaseConnector):
                 self.connector_id, connector_type, refresh_token
             )
         except Exception as e:
-            self.logger.error(f"Token refresh failed for connector {self.connector_id}: {e}", exc_info=True)
+            log_refresh_failure(self.logger, EVENT_CHECK_FAILED, e)
             return False
 
         # Re-initialize the connector so the data source uses the new token
