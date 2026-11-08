@@ -2674,7 +2674,7 @@ class OneDriveConnector(BaseConnector):
             self.logger.error("❌ Error checking if user has OneDrive: %s", e)
             raise
     
-    async def _withdraw_unlisted_app_users(self, enabled: List[AppUser]) -> None:
+    async def _withdraw_unlisted_app_users(self, enabled: list[AppUser]) -> None:
         """Take the connector away from stored users the complete user read does not list as
         enabled: disabled and deleted accounts. A failed read raises before this runs, and an
         empty list withdraws nobody (a tenant always has users)."""
