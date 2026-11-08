@@ -22,7 +22,6 @@ from app.services.graph_db.common.utils import (
 )
 from app.services.graph_db.postgres.base import (
     _VALIDATOR,
-    NotImplementedInPostgres,
     PgBase,
     _arango,
     _doc,
