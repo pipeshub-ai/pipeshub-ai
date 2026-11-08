@@ -20,11 +20,11 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.services.permissions.errors import ViewerScopesUnavailable
 from app.services.permissions.pending import MAX_PENDING_ROOTS, parse
 from app.services.permissions.structure_generation import (
-    ScopeGenerationConflict,
     CLOSED_KEY,
     GENERATION_KEY,
     OPENED_KEY,
     PENDING_KEY,
+    ScopeGenerationConflict,
     ScopeGenerationError,
     clear_pending_covered,
     leaving_vrid,
