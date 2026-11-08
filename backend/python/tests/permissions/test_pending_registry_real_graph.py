@@ -344,6 +344,29 @@ async def test_a_sharer_read_that_fails_marks_the_connectors_and_does_not_fail_t
     assert (await marks(backend, conn))[0] > g0                                  # fail closed: the connector is not current
 
 
+async def test_a_skipped_file_that_detaches_its_virtual_record_registers_the_records_that_stay(backend) -> None:
+    from unittest.mock import AsyncMock
+
+    from app.events.processor import Processor
+
+    conn, page, child, shared = await _shared(backend)
+    proc = object.__new__(Processor)
+    proc.graph_provider, proc.logger = backend.provider, MagicMock()
+    proc.indexing_pipeline, proc.sink_orchestrator = AsyncMock(), MagicMock(blob_storage=AsyncMock())
+    await proc._release_skipped_content(ORG, page.id, shared)
+    assert set((await marks(backend, conn))[1]) == {child.id}
+
+
+async def test_a_connector_save_keeps_the_registry(backend) -> None:
+    processor, conn, _, space2, _, child, _ = await _writers_world(backend)
+    moved = _record(child.external_record_id, connector_id=conn, group_external=space2)
+    await processor.on_records_moved([(child.external_record_id, moved, [])])
+    before = (await app_of(backend, conn)).get(PENDING_KEY)
+    assert before
+    await backend.provider.batch_upsert_nodes([{"id": conn, "isLocked": False, "updatedAtTimestamp": 1700000000001}], CollectionNames.APPS.value)
+    assert (await app_of(backend, conn)).get(PENDING_KEY) == before
+
+
 async def test_with_the_setting_off_the_app_document_is_not_touched(backend, monkeypatch) -> None:
     processor, conn, _, space2, _, child, _ = await _writers_world(backend)
     monkeypatch.delenv("ACL_SCOPE_FIELDS")
