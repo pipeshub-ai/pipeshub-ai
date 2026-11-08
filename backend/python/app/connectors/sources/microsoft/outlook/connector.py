@@ -333,6 +333,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
 
         # Group cache for web URL construction
         self._disabled_user_ids: set[str] = set()  # accountEnabled false, from the last /users read
+        self._listed_user_ids: set[str] = set()  # every account (guests too) of the last /users read
         self._group_cache: dict[str, dict[str, str]] = {}  # group_id -> {'mail': ..., 'mailNickname': ...}
 
         self.email_delta_sync_point = SyncPoint(
@@ -656,13 +657,16 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             raise
 
     async def _withdraw_disabled_app_users(self) -> None:
-        """Take the connector away from stored users whose account is disabled, so no mailbox
-        or group grant reaches them. Enabling the account saves the user, and the access, again."""
-        if not self._disabled_user_ids:
+        """Take the connector away from stored users whose account is disabled or no longer in
+        the complete user read, so no mailbox or group grant reaches them. Enabling or restoring
+        the account saves the user, and the access, again. A failed read raises before this
+        runs, and an empty one withdraws nobody (a tenant always has users)."""
+        if not self._listed_user_ids:
             return
         gone = [
             u for u in await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
-            if u.source_user_id in self._disabled_user_ids
+            if u.source_user_id
+            and (u.source_user_id in self._disabled_user_ids or u.source_user_id not in self._listed_user_ids)
         ]
         if gone:
             await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
@@ -675,6 +679,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
 
             all_users = []
             self._disabled_user_ids = set()
+            self._listed_user_ids = set()
             next_url = None
             page_num = 1
 
@@ -693,12 +698,19 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                     # users from every group they belong to.
                     raise Exception(f"Failed to fetch users (page {page_num}): {response.error}")
                 if not response.data:
+                    if next_url:
+                        raise Exception(f"Failed to fetch users (page {page_num}): no data")
                     break
 
                 # response.data is UserCollectionResponse with .value containing list[User]
                 user_data = response.data.value if response.data.value else []
+                if not user_data and response.data.odata_next_link:
+                    # An empty page with a next link lost its users; a short list must not
+                    # read as accounts that were deleted.
+                    raise Exception(f"Failed to fetch users (page {page_num}): empty page with a next link")
 
                 for user in user_data:
+                    self._listed_user_ids.add(user.id)
                     # A disabled account is left out like a deleted one: no mailbox sync and
                     # no group membership (the cache is built from this list).
                     if user.account_enabled is False:

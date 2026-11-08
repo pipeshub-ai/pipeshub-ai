@@ -3608,6 +3608,20 @@ class SharePointConnector(BaseConnector):
         else:
             return PermissionType.READ
 
+    async def _withdraw_unlisted_app_users(self, listed: list[AppUser]) -> None:
+        """Take the connector away from stored users the complete user read no longer lists
+        (deleted accounts). A failed read raises before this runs, and an empty one withdraws
+        nobody (a tenant always has users). Restoring the account saves the user again."""
+        if not listed:
+            return
+        kept = {u.source_user_id for u in listed}
+        gone = [
+            u for u in await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
+            if u.source_user_id and u.source_user_id not in kept
+        ]
+        if gone:
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+
     async def _sync_users(self) -> None:
         """Sync the tenant's users, note who is disabled, and rewrite the tenant-wide claim groups.
 
@@ -3629,6 +3643,7 @@ class SharePointConnector(BaseConnector):
             )
             raise
         await self.data_entities_processor.on_new_app_users(users)
+        await self._withdraw_unlisted_app_users(users)
         self._inactive_emails = {user.email.lower() for user in users if user.email and user.is_active is False}
         stored = await self.user_sync_point.read_sync_point(INACTIVE_USERS_SYNC_POINT_KEY)
         # Saved once every group has been read with the new set (_sync_azure_ad_groups).
