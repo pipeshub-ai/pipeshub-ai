@@ -108,7 +108,8 @@ class IssueSecurityContext:
         if self.browse_holders is None:
             return "?"
         return hashlib.sha256(",".join(sorted(
-            f"{h.get('type')}:{h.get('parameter') or h.get('value')}" for h in self.browse_holders
+            f"{h.get('type')}:{h.get('parameter') or h.get('value') or (h['field'].get('id') if isinstance(h.get('field'), dict) else '')}"
+            for h in self.browse_holders
         )).encode()).hexdigest()[:16] if self.browse_holders else ""
 
     def level_fingerprints(

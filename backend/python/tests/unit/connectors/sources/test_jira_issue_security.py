@@ -625,3 +625,10 @@ class TestBrowseHoldersNamingPeoplePerIssue:
         assert fp([]) == "" and fp(None) == "?"
         assert fp([{"type": "reporter"}]) not in ("", "?")
         assert fp([{"type": "reporter"}]) != fp([{"type": "assignee"}])
+
+    def test_the_fingerprint_tells_two_field_holders_apart_by_the_field_they_carry(self) -> None:
+        def fp(field_id: str) -> str:
+            holder = {"type": "userCustomField", "field": {"id": field_id}}
+            return IssueSecurityContext(knowledge=SchemeKnowledge.NONE, browse_holders=[holder]).browse_fingerprint()
+        assert fp("customfield_1") != fp("customfield_2")
+
