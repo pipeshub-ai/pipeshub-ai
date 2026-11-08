@@ -36,6 +36,7 @@ from app.agent_loop_lib.core.messages import (
 )
 from app.agent_loop_lib.core.responses import RunUsage, StopReason
 from app.agent_loop_lib.core.scope import RunScope, TurnScope
+from app.agent_loop_lib.core.tasks import wait_owned
 from app.agent_loop_lib.core.streaming import (
     StreamCompleteEvent,
     TextDeltaEvent,
@@ -907,12 +908,12 @@ class Agent:
             return final_response
 
         # --- Guarded, hook-wrapped LLM call. Parallel guardrails: input
-        # guardrails race the LLM call itself via asyncio.wait(FIRST_EXCEPTION)
+        # guardrails race the LLM call itself via wait_owned(FIRST_EXCEPTION)
         # instead of running serially before it.
         try:
             guardrail_task = asyncio.create_task(hooks.dispatch_guardrail_input(self._hooks, messages, scope=turn_scope))
             model_task = asyncio.create_task(hooks.call_model_wrapped(self._hooks, _call_llm))
-            await asyncio.wait({guardrail_task, model_task}, return_when=asyncio.FIRST_EXCEPTION)
+            await wait_owned({guardrail_task, model_task}, return_when=asyncio.FIRST_EXCEPTION)
 
             if guardrail_task.done() and guardrail_task.exception() is not None:
                 model_task.cancel()
