@@ -154,3 +154,22 @@ def test_a_bare_file_path_resolves_the_same_whatever_order_the_store_answers_in(
         world.get_nodes_by_field_in = ordered
         answers.add(resolve(world, repo="acme/shop", filePath="src/r.py").content)
     assert len(answers) == 1
+
+
+def test_a_file_with_more_tied_definitions_than_the_cut_keeps_resolving_to_the_first_key() -> None:
+    answers = set()
+    for reverse in (False, True):
+        keys = {f"b{i:03d}": "r" for i in range(230)}
+        world = World(Spec(records={"r": CONN}, blocks=keys, acl={"bob": {"r"}}))
+        world.records["r"]["recordGroupId"] = "grp"
+        for doc in world.blocks.values():
+            doc["startLine"], doc["kind"] = 1, "function"
+        real = world.get_nodes_by_field_in
+
+        async def ordered(*a, _real=real, _reverse=reverse, **k) -> list:
+            rows = await _real(*a, **k)
+            return rows[::-1] if _reverse else rows
+
+        world.get_nodes_by_field_in = ordered
+        answers.add(resolve(world, repo="acme/shop", filePath="src/r.py").content)
+    assert answers == {b'{"nodeId":"block:b000"}'}
