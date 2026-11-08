@@ -164,6 +164,7 @@ def graph() -> MagicMock:
     g.update_node = AsyncMock(return_value=True)
     g.get_document = AsyncMock(return_value=None)
     g.get_edges_to_node = AsyncMock(return_value=[])
+    g.get_all_orgs = AsyncMock(return_value=[])
     g.get_nodes_by_filters = AsyncMock(return_value=[])
     return g
 
@@ -178,7 +179,10 @@ async def service(config: FakeConfigStore, graph: MagicMock, caplog: pytest.LogC
 
 
 def _connectors(graph: MagicMock, *docs: dict) -> None:
-    graph.get_nodes_by_filters = AsyncMock(side_effect=lambda _c, f: list(docs) if f["authType"] == "OAUTH" else [])
+    """The scan lists the orgs, then reads each org's OAuth connectors with an ``orgId`` filter."""
+    graph.get_all_orgs = AsyncMock(return_value=[{"_key": org} for org in dict.fromkeys(d["orgId"] for d in docs)])
+    graph.get_nodes_by_filters = AsyncMock(side_effect=lambda _c, f: [
+        d for d in docs if d["orgId"] == f["orgId"]] if f["authType"] == "OAUTH" else [])
 
 
 def _events(caplog: pytest.LogCaptureFixture, event: str) -> list[logging.LogRecord]:
