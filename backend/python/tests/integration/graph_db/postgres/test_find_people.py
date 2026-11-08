@@ -18,7 +18,7 @@ from app.agents.actions.knowledge_graph.ops.people import execute_find_records_b
 from app.modules.retrieval.entity_permissions import EntityAccessContext
 
 from .test_access import APP, rec
-from .test_access import w as w  # noqa: F401
+from .test_access import w as w
 from .test_grants import failing, in_org
 
 if TYPE_CHECKING:
@@ -34,7 +34,7 @@ def done(key: str, stamp: int, **kw: object) -> dict:
 
 
 @pytest.fixture
-async def world(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> World:  # noqa: F811
+async def world(w: World, pg_db, monkeypatch: pytest.MonkeyPatch) -> World:
     await w.nodes("users", {"_key": "mia", "userId": "mia", "email": "mia@acme.test", "fullName": "Mia Member"},
                   {"_key": "u", "userId": "u", "email": "me@acme.test", "fullName": "Me Myself"})
     outsiders = [("ext", "Quincy Outsider", "quincy@partner.test"), ("hid", "Hidden Hank", "hank@partner.test"), ("trash", "Trashed Tina", "tina@partner.test"),
