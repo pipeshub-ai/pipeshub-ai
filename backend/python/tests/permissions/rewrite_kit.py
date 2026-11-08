@@ -29,9 +29,21 @@ from app.services.permissions.scope_fields import (
 )
 from app.services.permissions.structure_generation import GENERATION_KEY
 from app.services.vector_db import scope_expr as sx
-from app.services.vector_db.filters import ScopeFilter
+from app.services.vector_db.const.const import PAYLOAD_KEYWORD_INDEXES, SCOPE_INTEGER_INDEXES, SCOPE_KEYWORD_INDEXES
+from app.services.vector_db.filters import ScopeFilter, ScopeFilterUnsupported
+from app.services.vector_db.models import (
+    FieldCondition,
+    FilterExpression,
+    HybridSearchRequest,
+)
 from app.services.vector_db.scope_backfill import DONE, ScopeBackfill
-from app.services.vector_db.scope_rewrite import PENDING_KEY, UNSCOPED_KEY, RewriteResult, ScopeRewriteJob
+from app.services.vector_db.scope_rewrite import (
+    PENDING_KEY,
+    UNSCOPED_KEY,
+    RewriteResult,
+    ScopeRewriteJob,
+)
+from tests.integration.vector_db.helpers import make_dense
 from tests.support.in_memory_vector_db import InMemoryVectorDBService, _passes
 
 from . import mutations
@@ -114,6 +126,7 @@ class Log:
     audits: int = 0
     points: int = 0
     stale_seen: int = 0
+    search_mismatch: list[tuple] = field(default_factory=list)  # a store's search with the filter does not return what the filter tree admits
 
 
 @dataclass
@@ -139,12 +152,16 @@ class Env:
                    collection: str = COLL) -> Env:
         vdb = vdb or FencedMemoryVectorDB()
         loaded = await load(vdb, collection, {NAME: world}, share=share, chunks=chunks)
+        for field_name, schema in (*PAYLOAD_KEYWORD_INDEXES, *SCOPE_KEYWORD_INDEXES, *SCOPE_INTEGER_INDEXES):      # (the search filter reads them)
+            await vdb.create_index(collection, field_name, schema)
+        await vdb.make_searchable(collection)      # (a set_payload finds only the points a search sees)
         backfill = ScopeBackfill(loaded.graph, vdb, loaded.locator, log)
         stale = 0
         for app in loaded.apps:
             done = await backfill.run_connector(ORG, app)
             assert done.state == DONE, done.line()
             stale += done.stale
+        await vdb.make_searchable(collection)
         env = cls(vdb, loaded, world, world, share, chunks, backfill, ScopeRewriteJob(loaded.graph, vdb, loaded.locator, settle_seconds=settle_seconds))
         env.unstamped = stale
         real = vdb.update_payloads_by_ids
@@ -273,6 +290,28 @@ class Env:
                     into.inexact.append((*tag, "admitted" if admitted else "refused"))
 
 
+    async def store_audit(self, into: Log) -> None:
+        """The real store's search with the scope filter returns exactly the points the filter tree admits (what the rewrite wrote is searchable)."""
+        world, layer = self.world, OracleScopeLayer()
+        current, roots = await self.current(), self.pending()
+        blocked = frozenset(a for a in self.apps if parse(self.graph.app_docs.get(a, {}).get(PENDING_KEY)))
+        pids = {p: v for v, ps in self.loaded.points.items() for p in ps}
+        payloads = {str(p.id): p.payload for p in await self.vdb.retrieve_points(self.loaded.collection, list(pids))}
+        for viewer in world.users():
+            flt = ScopeFilter.of(_prefixed(await layer.viewer_scopes(world, viewer), roots), current, version=SCOPE_FIELDS_VERSION,
+                                 generation=current_scope_generation(), blocked=blocked)
+            req = HybridSearchRequest(dense_query=make_dense([1.0]), filter=FilterExpression(must=[FieldCondition(key="metadata.orgId", value=ORG)]),
+                                      limit=1000, scope_filter=flt)
+            try:
+                [hits] = await self.vdb.query_nearest_points(self.loaded.collection, [req])
+            except ScopeFilterUnsupported:
+                continue      # the store refuses this filter (Redis: ids with capital letters); the product reads such a viewer with the legacy filter
+            got = {str(h.id) for h in hits}
+            want = {pid for pid in pids if pid in payloads and sx.evaluate(sx.admits(flt), payloads[pid])}
+            if got != want:
+                into.search_mismatch.append((viewer, sorted(want - got)[:3], sorted(got - want)[:3]))
+
+
 def _prefixed(scopes: ViewerScopes, pending: Collection[str]) -> ViewerScopes:
     def add(xs: frozenset[str]) -> frozenset[str]:
         return frozenset(PREFIX + x for x in xs)
@@ -376,4 +415,63 @@ class Tap:
         return tapped
 
 
-__all__ = ["COLL", "FencedMemoryVectorDB", "NAME", "PREFIX", "Env", "Killed", "Log", "Tap", "descendants", "play", "random_change", "registration"]
+async def held_up_writer(env: Env, layer: str, monkeypatch: Any) -> None:
+    """Writer A reads the graph after a first move and is held up; a second move commits and writer B (another process: its own loop, so its
+    own virtual record locks) rewrites and finishes; A goes on. `generation_check`: A is held before its request and the check right before
+    the request stops it. `store_fence`: A is held at the store's door with the check disabled and the store refuses its older fence.
+    Whatever A does, the store never holds fields older than the graph's, and nothing leaks."""
+    import asyncio
+
+    from app.services.vector_db.scope_rewrite import RewriteIncomplete
+
+    from .model import Mutation as M
+
+    await env.change((M("moved", "page:Handbook", "space:ALL", "space:ALL"),))
+    b = ScopeRewriteJob(env.graph, env.vdb, env.loaded.locator, settle_seconds=0.5)
+    seen, held, stale_writes = Log(), {"done": False}, []
+    if layer == "store_fence":
+        async def no_check(*a: Any, **k: Any) -> None:
+            return None
+
+        monkeypatch.setattr(ScopeRewriteJob, "_guard", no_check)
+
+    async def hold() -> None:
+        if held["done"]:
+            return
+        held["done"] = True
+        await env.change((M("moved", "page:Handbook", "space:HR", "space:HR"),))        # the second move
+
+        async def b_finishes() -> None:
+            for _ in range(4):
+                if env.pending():
+                    await b.run_connector(ORG, PREFIX + "app")
+
+        await asyncio.to_thread(asyncio.run, b_finishes())
+        assert not await env.problems()
+
+    async def at_the_door(name: str) -> str | None:
+        if name == "update_payloads_by_ids" and held["done"] and not stale_writes:
+            stale_writes.append(name)      # A's first request after B finished
+        if layer == "generation_check" and name == "retrieve_points":
+            await hold()
+        return None
+
+    async def after(name: str) -> None:
+        if name == "update_payloads_by_ids" and stale_writes:
+            await env.audit(seen)
+            assert not await env.problems(), "a held-up writer's older fields are in the store"
+
+    if layer == "store_fence":
+        env.before_write = hold
+    Tap(env, at_the_door, after)
+    try:
+        await env.job.run_connector(ORG, PREFIX + "app")
+    except RewriteIncomplete:
+        pass          # (a writer that is refused ends incomplete: fine)
+    env.before_write = None
+    assert held["done"] and not seen.leaks and not seen.pending_admits
+    await env.settle()
+    assert not await env.problems()
+
+
+__all__ = ["COLL", "FencedMemoryVectorDB", "NAME", "PREFIX", "Env", "Killed", "held_up_writer", "Log", "Tap", "descendants", "play", "random_change", "registration"]

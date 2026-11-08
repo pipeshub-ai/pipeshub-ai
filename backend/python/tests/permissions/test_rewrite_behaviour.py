@@ -5,7 +5,6 @@ connector that cannot be released is left to the full pass, and the run is idemp
 
 from __future__ import annotations
 
-import asyncio
 import copy
 from dataclasses import replace
 from typing import Any
@@ -16,11 +15,19 @@ from app.services.permissions.pending import parse
 from app.services.permissions.structure_generation import GENERATION_KEY, UNSAFE_KEY
 from app.services.vector_db import membership, scope_rewrite
 from app.services.vector_db.models import VectorPoint
-from app.services.vector_db.scope_backfill import BACKFILL_KEYS, ScopeFieldsOff, UnknownConnector
-from app.services.vector_db.scope_rewrite import PENDING_KEY, UNSCOPED_KEY, RewriteIncomplete, ScopeRewriteJob
+from app.services.vector_db.scope_backfill import (
+    BACKFILL_KEYS,
+    ScopeFieldsOff,
+    UnknownConnector,
+)
+from app.services.vector_db.scope_rewrite import (
+    PENDING_KEY,
+    UNSCOPED_KEY,
+    RewriteIncomplete,
+)
 
 from .model import Mutation as M
-from .rewrite_kit import Env, Log, Tap
+from .rewrite_kit import Env, Log, Tap, held_up_writer
 from .scenario import WorldStore
 from .stamp_world import ORG
 
@@ -141,57 +148,7 @@ async def test_a_held_up_writer_cannot_write_over_a_newer_rewrite(monkeypatch: p
     disabled, and the store refuses the older fence."""
     env = await hr()
     env.vdb.generation_fence = layer == "store_fence"
-    await env.change((MOVE,))
-    b = ScopeRewriteJob(env.graph, env.vdb, env.loaded.locator, settle_seconds=0.1)
-    seen, held = Log(), {"done": False}
-    if layer == "store_fence":
-        monkeypatch.setattr(ScopeRewriteJob, "_guard", _no_check)
-
-    async def hold() -> None:
-        if held["done"]:
-            return
-        held["done"] = True
-        await env.change((M("moved", "page:Handbook", "space:HR", "space:HR"),))        # change 2
-
-        async def b_finishes() -> None:
-            for _ in range(4):
-                if env.pending():
-                    await b.run_connector(ORG, "w:app")
-
-        await asyncio.to_thread(asyncio.run, b_finishes())       # (another process: its own loop, so its own virtual record locks)
-        assert not await env.problems()
-
-    stale_writes: list[str] = []
-
-    async def at_the_door(name: str) -> str | None:
-        if name == "update_payloads_by_ids":
-            if held["done"] and not stale_writes:
-                stale_writes.append(name)      # A's first request after B finished
-            return None
-        if layer == "generation_check" and name == "retrieve_points":
-            await hold()
-        return None
-
-    async def after(name: str) -> None:
-        if name == "update_payloads_by_ids" and stale_writes:
-            await env.audit(seen)
-            assert not await env.problems(), "a held-up writer's older fields are in the store"
-
-    if layer == "store_fence":
-        env.before_write = hold
-    Tap(env, at_the_door, after)
-    try:
-        await env.job.run_connector(ORG, "w:app")
-    except RewriteIncomplete:
-        pass          # (a writer that is refused ends incomplete: fine)
-    env.before_write = None
-    assert held["done"] and not seen.leaks and not seen.pending_admits
-    await env.settle()
-    assert not await env.problems()
-
-
-async def _no_check(*a: Any, **k: Any) -> None:
-    return None
+    await held_up_writer(env, layer, monkeypatch)
 
 
 async def test_the_app_document_is_written_only_outside_the_virtual_record_locks() -> None:
