@@ -106,11 +106,18 @@ test.describe('paging, table and trail', () => {
     const [first, middle] = trail;
     expect(new Set(trail.map(fileOfId)).size).toBe(3);
     await fake(page, (f, file) => f.revoked.add(file), fileOfId(middle));
+    const entries = await page.evaluate(() => history.length);
     await page.getByRole('button', { name: 'Back' }).click();
     await expect.poll(() => urlParams(page).get('node')).toBe(first);
     await expect(page.getByRole('alert')).toHaveCount(0);
     await idle(page);
     expect((await tableLabels(page)).length).toBeGreaterThan(1);
+    // The skip is one step in the browser's history, and the browser's Back returns to where it left from.
+    expect(await page.evaluate(() => history.length)).toBe(entries + 1);
+    await page.goBack();
+    await expect.poll(() => urlParams(page).get('node')).toBe(trail[2]);
+    await idle(page);
+    await expect(page.getByRole('row').filter({ hasText: 'Centre' })).toBeVisible();
   });
 
   test('the Callers filter shows only callers and re-opens the view; a failed re-open puts the filter back', async ({ page }) => {

@@ -535,8 +535,9 @@ describe('the browser Back and Forward follow the trail instead of adding to it'
     expect(trailState().at).toBe(2);
     expect(await controller.follow('block:z')).toBe(true); // a link with no place
     expect(trailState().trail).toEqual(['block:a', 'block:b', 'block:c', 'block:z']);
-    expect(await controller.follow('block:b', 0)).toBe(true); // a place that no longer holds that node is a new step
-    expect(trailState().trail.at(-1)).toBe('block:b');
+    expect(await controller.follow('block:b', 0)).toBe(true); // the entry's place holds another node: the nearest place that holds b
+    expect(trailState().trail).toEqual(['block:a', 'block:b', 'block:c', 'block:z']);
+    expect(trailState().at).toBe(1);
   });
 
   it('keeps the two places apart when the same node is on the trail twice', async () => {
@@ -621,5 +622,32 @@ describe('a Back or Forward over an unavailable node skips every copy of it', ()
     state.missing.add('block:a');
     expect(await controller.go(1)).toBe(true);
     expect(at()).toEqual({ trail: ['block:b', 'block:c'], index: 1, node: 'block:c' });
+  });
+});
+
+
+describe('a move along the trail is one step for the address', () => {
+  it('raises moving until the move has landed, so a trail compacted on the way is never written to the address', async () => {
+    const { controller, state } = world();
+    for (const id of ['block:a', 'block:b', 'block:c']) await controller.open(id);
+    state.missing.add('block:b');
+    const seen: boolean[] = [];
+    controller.subscribe(() => seen.push(controller.getSnapshot().moving));
+    expect(controller.getSnapshot().moving).toBe(false);
+    const back = controller.go(-1);
+    expect(controller.getSnapshot().moving).toBe(true);
+    expect(await back).toBe(true);
+    expect(controller.getSnapshot().moving).toBe(false);
+    expect(seen.at(-1)).toBe(false);
+    expect(seen.includes(true)).toBe(true);
+  });
+
+  it('follow lands on the nearest place that holds the node when the entry\'s place has shifted, even if it is already the centre', async () => {
+    const { controller } = world();
+    for (const id of ['block:a', 'block:b', 'block:c']) await controller.open(id);
+    expect(await controller.follow('block:c', 5)).toBe(true); // a stale place past the end
+    const s = useGraphStore.getState();
+    expect(s.trail).toEqual(['block:a', 'block:b', 'block:c']);
+    expect(s.trailIndex).toBe(2);
   });
 });

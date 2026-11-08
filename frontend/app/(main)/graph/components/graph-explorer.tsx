@@ -36,7 +36,7 @@ export function GraphExplorer() {
   const params = useSearchParams();
   const store = useGraphStore();
   const controller = useMemo(() => new ExplorerController(GraphApi), []);
-  const { model, failure, loading, lastAdded, selectionGone } = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
+  const { model, failure, loading, lastAdded, selectionGone, moving } = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
 
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [tableView, setTableView] = useState(false);
@@ -91,7 +91,7 @@ export function GraphExplorer() {
       else return;
     }
     // The address leads while the view is catching up with Back or Forward: a filter finishing then must not write the old node back.
-    if (!started.current || following.current || next === params.toString()) return;
+    if (!started.current || following.current || moving || next === params.toString()) return;
     const url = next ? `${pathname}?${next}` : pathname;
     written.current.push(next);
     const shown = parseGraphUrl(params).node;
@@ -101,7 +101,7 @@ export function GraphExplorer() {
     const moved = store.node !== shown || (shownAt !== undefined && shownAt !== store.trailIndex);
     if (shown && store.node && moved) router.push(url, { scroll: false });
     else router.replace(url, { scroll: false });
-  }, [store.node, store.trailIndex, store.direction, store.edgeTypes, store.includeTests, failure]);
+  }, [store.node, store.trailIndex, store.direction, store.edgeTypes, store.includeTests, failure, moving]);
 
   // The browser's Back and Forward change the address: follow it to the place on the trail it names.
   const search = params.toString();
@@ -188,7 +188,8 @@ export function GraphExplorer() {
     let previous: VerifyState = 'ok';
     const revalidator = new Revalidator({
       getIds: controller.ids,
-      call: async (ids) => (await GraphApi.revalidate({ source: 'code', nodeIds: ids, includeTests: useGraphStore.getState().includeTests })).visible,
+      call: async (ids, signal) =>
+        (await GraphApi.revalidate({ source: 'code', nodeIds: ids, includeTests: useGraphStore.getState().includeTests }, signal)).visible,
       onResult: (asked, visible) => controller.revoke(asked, visible),
       onState: (state: VerifyState) => {
         useGraphStore.getState().setVerify(state);

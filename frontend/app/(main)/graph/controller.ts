@@ -28,6 +28,8 @@ export interface ExplorerSnapshot {
   /** The selected node was taken away by an access re-check; cleared by the next selection or view. */
   selectionGone: boolean;
   loading: boolean;
+  /** A move along the trail (the toolbar's arrows, the browser's Back or Forward) is under way: the address waits for where it lands. */
+  moving: boolean;
 }
 
 const PAGE_LIMIT = 50;
@@ -47,12 +49,13 @@ const nodeTotal = (model: GraphModel): number => Object.keys(model.nodes).length
  * answer is in, and the trail and the filters move only when that worked.
  */
 export class ExplorerController {
-  private snapshot: ExplorerSnapshot = { model: emptyModel(), failure: null, lastAdded: null, selectionGone: false, loading: false };
+  private snapshot: ExplorerSnapshot = { model: emptyModel(), failure: null, lastAdded: null, selectionGone: false, loading: false, moving: false };
   private listeners = new Set<() => void>();
   /** Bumped by every new view, so an answer to a question asked before it is ignored. */
   private generation = 0;
   private views = 0;
   private pending = 0;
+  private moves = 0;
   private last: (() => Promise<unknown>) | null = null;
   /** Ids an access re-check removed in this view. An answer that was already on its way must not put them back. */
   private revoked = new Map<NodeId, number>();
@@ -137,13 +140,19 @@ export class ExplorerController {
    * Retry repeats the same move; anything else is a new, tracked step.
    */
   async follow(id: NodeId, at?: number): Promise<boolean> {
-    const { trail } = useGraphStore.getState();
-    if (at === undefined || trail[at] !== id) return this.open(id);
-    const run = this.open(id, { track: false });
-    this.last = () => this.follow(id, at);
-    const ok = await run;
-    if (ok) this.landOn(id, at);
-    return ok;
+    return this.whileMoving(async () => {
+      const { trail } = useGraphStore.getState();
+      // The place the entry names, or if the trail has shifted since (a skipped node, a revoke) the nearest place
+      // that still holds the node; a node that is not on the trail at all is a new step.
+      const places = trail.flatMap((entry, i) => (entry === id ? [i] : []));
+      if (at === undefined || places.length === 0) return this.open(id);
+      const place = places.reduce((best, i) => (Math.abs(i - at) < Math.abs(best - at) ? i : best));
+      const run = this.open(id, { track: false });
+      this.last = () => this.follow(id, at);
+      const ok = await run;
+      if (ok) this.landOn(id, place);
+      return ok;
+    });
   }
 
   /**
@@ -160,6 +169,10 @@ export class ExplorerController {
   /** One step along the trail. A node that is no longer available is dropped from it and the next one is tried. */
   async go(step: -1 | 1): Promise<boolean> {
     this.last = () => this.go(step);
+    return this.whileMoving(() => this.walkTrail(step));
+  }
+
+  private async walkTrail(step: -1 | 1): Promise<boolean> {
     for (let index = useGraphStore.getState().trailIndex + step; ; ) {
       const { trail } = useGraphStore.getState();
       if (index < 0 || index >= trail.length) return false;
@@ -304,6 +317,18 @@ export class ExplorerController {
     if (gone.length === 0) return model;
     const { node } = useGraphStore.getState();
     return pruneOrphans(removeNodes(model, gone), node ? [node] : []);
+  }
+
+  /** Runs a move along the trail with `moving` raised, so a half-done move (a trail compacted before it lands) is never written to the address. */
+  private async whileMoving<T>(run: () => Promise<T>): Promise<T> {
+    this.moves += 1;
+    this.set({ moving: true });
+    try {
+      return await run();
+    } finally {
+      this.moves -= 1;
+      if (this.moves === 0) this.set({ moving: false });
+    }
   }
 
   private begin(): void {
