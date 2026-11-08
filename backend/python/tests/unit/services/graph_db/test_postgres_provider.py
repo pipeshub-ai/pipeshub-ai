@@ -230,7 +230,7 @@ class TestReplaceRecordEntityRelations:
         provider.logger = logging.getLogger("t")
         seen: dict = {}
 
-        async def q(fn, transaction, write=False):  # noqa: ANN001, ANN202
+        async def q(fn, transaction, write=False):  # noqa: ANN202
             tx = MagicMock()
             tx.execute = AsyncMock(side_effect=lambda sql, *args: seen.update(sql=sql, args=args))
             await fn(tx)
