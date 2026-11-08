@@ -168,9 +168,15 @@ async def leaving_vrid(graph_provider: Any, record_key: str, vrid: str, logger: 
     after the write. Before the write each of those connectors is opened (`OPENED_KEY`), and closed only once its roots are registered
     (`CLOSED_KEY`): a process that dies between the write and the registration leaves the connector with an unclosed write, which is not
     current, so no crash point has the write durable and nothing fencing it. With no other record the points have no owner and nothing is
-    done. If the sharers cannot be read, every connector of the organisation is marked before the write and again after it (`note_*`,
-    logged and not raised when a mark fails), because indexing must not fail on a read; that path has the crash window only when a pass
-    also finishes between the two marks. Raises when an opening or a registration cannot be written."""
+    done. If the sharers cannot be read, every connector of the organisation is marked before the write and again after it (`note_*`).
+    The mark before the write must land, or this raises and the write does not happen (the event is retried); the one after is logged at
+    error when it fails, because the write is done. That path has the crash window only when a pass also finishes between the two marks.
+    Raises when an opening cannot be written (after closing the connectors already opened) or a registration cannot, after trying every
+    connector; a connector whose registration failed is not closed, which keeps it not current.
+
+    shortcut: a process that dies inside the window leaves the write unclosed, and the connector stays not current (legacy filter, and no
+    back-fill) until an operator runs the back-fill with ``--close-open-mark``; upgrade with the operator view that shows and clears it,
+    before serving depends on the filter."""
     log = logger or logging.getLogger(__name__)
     by_connector: dict[str, list[str]] = {}
     try:
@@ -180,32 +186,64 @@ async def leaving_vrid(graph_provider: Any, record_key: str, vrid: str, logger: 
                 by_connector.setdefault(str(doc["connectorId"]), []).append(key)
     except Exception:
         log.exception("could not read the records sharing virtual record %s: marking the organisation's connectors instead", vrid)
-        await _mark_organisation(graph_provider, log)
+        await _mark_organisation(graph_provider, log, before_write=True)
         try:
             yield
         finally:
-            await _mark_organisation(graph_provider, log)
+            await _mark_organisation(graph_provider, log, before_write=False)
         return
     connectors = sorted(by_connector)  # one order for every writer
-    for connector_id in connectors:
-        if await graph_provider.increment_node_field(connector_id, CollectionNames.APPS.value, OPENED_KEY) is None:
-            raise ScopeGenerationError(f"could not open the write that moves {record_key} off virtual record {vrid}: no connector {connector_id}")
+    opened: list[str] = []
+    try:
+        for connector_id in connectors:
+            if await graph_provider.increment_node_field(connector_id, CollectionNames.APPS.value, OPENED_KEY) is None:
+                raise ScopeGenerationError(f"could not open the write that moves {record_key} off virtual record {vrid}: no connector {connector_id}")
+            opened.append(connector_id)
+    except BaseException:
+        for connector_id in opened:  # the write will not happen: do not leave the ones opened so
+            await _close(graph_provider, connector_id, log)
+        raise
+    first: BaseException | None = None
     try:
         yield
     finally:  # a write that raised may still have landed: its registration is harmless when it did not
         for connector_id in connectors:
-            await register_pending_roots(graph_provider, connector_id, by_connector[connector_id])
-            if await graph_provider.increment_node_field(connector_id, CollectionNames.APPS.value, CLOSED_KEY) is None:
-                raise ScopeGenerationError(f"could not close the write on connector {connector_id}")
+            try:
+                await register_pending_roots(graph_provider, connector_id, by_connector[connector_id])
+            except Exception as exc:
+                log.error("could not register the pending roots of connector %s: it stays opened, so not current", connector_id)
+                first = first or exc
+                continue
+            await _close(graph_provider, connector_id, log)
+        if first is not None:
+            raise first
 
 
-async def _mark_organisation(graph_provider: Any, log: logging.Logger) -> None:  # noqa: ANN401
+async def _close(graph_provider: Any, connector_id: str, log: logging.Logger) -> None:  # noqa: ANN401
+    """Count one write of the connector as closed. Not retried: an increment that raised may have been applied, and a second would close a
+    write that is still running. A close that did not land leaves the connector opened (not current) and is logged."""
+    try:
+        if await graph_provider.increment_node_field(connector_id, CollectionNames.APPS.value, CLOSED_KEY) is not None:
+            return
+    except Exception:
+        pass
+    log.error("could not close the write on connector %s: it stays not current until the back-fill is run with --close-open-mark", connector_id)
+
+
+async def _mark_organisation(graph_provider: Any, log: logging.Logger, *, before_write: bool) -> None:  # noqa: ANN401
+    """Mark every connector of the current organisation. Before the write a missing organisation or a mark that did not land raises, so the
+    write does not happen; after it the failure is logged at error with the organisation."""
     try:
         org_id = current().org_id
     except (MissingOrgContext, SystemContextNotAllowed):
-        log.error("no organisation bound: the connectors sharing a virtual record were not marked")
+        if before_write:
+            raise ScopeGenerationError("no organisation is bound, so the connectors sharing the virtual record cannot be marked") from None
+        log.error("no organisation bound: the connectors sharing a virtual record were not marked after the write")
         return
-    await note_org_structure_change(graph_provider, org_id, log)
+    if not await note_org_structure_change(graph_provider, org_id, log):
+        if before_write:
+            raise ScopeGenerationError(f"could not mark the connectors of organisation {org_id} before the write")
+        log.error("could not mark the connectors of organisation %s after the write: their stamps may read as current", org_id)
 
 
 async def clear_pending_covered(graph_provider: Any, connector_id: str, done_at: int, *, attempts: int = 5) -> None:  # noqa: ANN401
