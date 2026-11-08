@@ -107,6 +107,7 @@ WRITERS: dict[str, tuple[str, str]] = {
     "migrate_person_to_user": (PROJECTED, ""),
     "batch_create_entity_relations": (NO_PROJECTION, _NAMED),
     "delete_record_entity_relations": (NO_PROJECTION, _NAMED),
+    "replace_record_entity_relations": (NO_PROJECTION, _NAMED),
     "stamp_external_org_parents": (NO_PROJECTION, "parentOrgId of an external organization: kg holds that an organization exists, no field of its document"),
 }
 
