@@ -681,21 +681,32 @@ class TestGitHubTeamsIssues:
                 f"expected one ASSIGNED_TO edge per assignee ({len(assignee_ids)}), "
                 f"got {assigned!r}"
             )
-            # A member's edge ends on their user, anyone else's on a person node keyed
-            # by their GitHub id, so the targets are known without another lookup.
-            non_members = {i for i in assignee_ids if not emails.get(i)}
-            assert non_members <= set(assigned), (
-                f"non-member assignees {sorted(non_members - set(assigned))} have no "
-                f"ASSIGNED_TO edge; got {assigned!r}"
-            )
-            member_targets = set(assigned) - assignee_ids
-            assert len(member_targets) == len(assignee_ids) - len(non_members), (
-                f"expected one ASSIGNED_TO edge to a user per member assignee, got {assigned!r}"
-            )
-            if expected_email:
-                assert member_targets, (
-                    "primary assignee resolved to a user but no ASSIGNED_TO edge ends on a user"
+            # A target is the node's sourceUserId, else userId, else its key. A user that
+            # already existed keeps its own userId; one the connector created carries the
+            # GitHub id there; a non-member's edge ends on a person node with a generated
+            # key. So members are matched on whatever their user node carries, as the Jira
+            # test does, and what is left must be one edge per non-member.
+            unmatched = set(assigned)
+            non_members = 0
+            for github_id in sorted(assignee_ids):
+                email = emails.get(github_id)
+                if not email:
+                    non_members += 1
+                    continue
+                user_doc = await graph_provider.graph_find_user_by_email(email) or {}
+                expected_ids = {github_id} | {
+                    str(user_doc[k]) for k in ("sourceUserId", "userId", "_key", "id") if user_doc.get(k)
+                }
+                hit = expected_ids & unmatched
+                assert hit, (
+                    f"member assignee {github_id} ({email}): none of {sorted(expected_ids)} "
+                    f"in ASSIGNED_TO targets {assigned!r}"
                 )
+                unmatched -= hit
+            assert len(unmatched) == non_members, (
+                f"expected {non_members} ASSIGNED_TO edge(s) to non-member person nodes, "
+                f"got {sorted(unmatched)} left of {assigned!r}"
+            )
 
             # Hidden-email tickets link the author as REPORTED_BY only: CREATED_BY comes
             # from creator_email, which GitHub never gives.
