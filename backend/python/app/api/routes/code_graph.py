@@ -244,7 +244,8 @@ async def _run(request: Request, body: RepoRef, record_id: str | None, call: Too
     if isinstance(repo, JSONResponse):
         return repo
     try:
-        # Only the semantic search needs it, and building it costs an embedding-model lookup.
+        # Only searches through the vector store need it (semantic, text without a path): building it costs
+        # an embedding-model lookup.
         retrieval_service = await container.retrieval_service() if semantic else None
         toolset = _toolset(container, graph_provider, org_id, user_id, repo, retrieval_service)
         _ok, raw = await call(toolset, repo)
@@ -337,7 +338,7 @@ async def code_search(request: Request, body: SearchBody) -> JSONResponse:
     return await _run(request, body, None, lambda t, repo: t.search_code(
         connector_id=repo.connector_id, pattern=body.pattern, mode=body.mode, path=body.path,
         limit=body.limit, include_tests=body.include_tests, repo=repo.group_id, name=body.name,
-    ))
+    ), semantic=body.mode in ("text", "regex") and not body.path)  # path-free text search uses the keyword index
 
 
 @router.post("/semantic-search")
