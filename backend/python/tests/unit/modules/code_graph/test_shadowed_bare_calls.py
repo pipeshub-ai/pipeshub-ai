@@ -1,7 +1,7 @@
 """A bare call to a parameter or local is no CALLS fact, and what the shadow guard
 must leave alone: a name the function binds by import, `global` or `nonlocal`, a comprehension's own
 variable, a class-body name seen from that class's methods, and a nested function declaration all
-still resolve. The guard runs only for the families with the scope-names collector (Python).
+still resolve. The guard runs for the families with the scope-names collector (Python, JS/TS).
 """
 import pytest
 
@@ -107,3 +107,18 @@ export function shadowed(g: () => number): number {
   return g();
 }
 '''
+
+
+TS_HELPERS = b"export function helper(): number {\n  return 1;\n}\n\nexport function g(): number {\n  return 2;\n}\n"
+
+
+async def test_typescript_shares_the_guard_a_nested_function_resolves_and_a_parameter_shadows(
+        graph, index_file) -> None:
+    """The scope collector is shared with JS/TS: `run`'s `g()` is its nested `function g`, and
+    `shadowed(g)`'s `g()` calls the parameter, never helpers.ts's exported `g`."""
+    await index_file("recTH", "app/helpers.ts", TS_HELPERS, "typescript")
+    await index_file("recTU", "app/use.ts", TS, "typescript")
+    await _build(graph)
+    edges = {(graph.blocks.get(e["_from"].partition("/")[2], {}).get("qualifiedName"),
+              graph.blocks.get(e["_to"].partition("/")[2], {}).get("qualifiedName")) for e in graph.code_edges(CALLS)}
+    assert edges == {("function:run", "function:run.g"), ("function:run", "function:helper")}
