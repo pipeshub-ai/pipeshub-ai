@@ -175,6 +175,19 @@ class FakeGraphProvider:
             self.blocks[doc["_key"]] = doc
         return True
 
+    async def batch_update_nodes(self, nodes, collection, transaction=None) -> bool:
+        """A partial merge into blocks that exist, as both providers do; a missing one is skipped."""
+        found = True
+        for node in nodes:
+            key = node.get("id") or node.get("_key")
+            if "externalRefs" in node:
+                self.ref_updates = [*getattr(self, "ref_updates", []), (key, node["externalRefs"])]
+            if collection != CollectionNames.BLOCKS.value or key not in self.blocks:
+                found = False
+                continue
+            self.blocks[key].update({k: v for k, v in node.items() if k not in ("id", "_key")})
+        return found
+
     async def delete_nodes(self, keys, collection, transaction=None) -> bool:
         for key in keys:
             self.blocks.pop(key, None)

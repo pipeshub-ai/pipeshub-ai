@@ -14,6 +14,7 @@ _CODE = "code graph and block collections (codeFiles, blocks): not part of the a
 _SYNC = "sync points hold a connector's cursor"
 _STATUS = "indexing and extraction status fields: kg.record_state, written by the indexing role"
 _ENTITY = "entity and taxonomy collections and their enrichment edges"
+_NAMED = "entityRelations edges (a record and the people and organizations it names): not part of the access data"
 
 WRITERS: dict[str, tuple[str, str]] = {
     "backfill_block_name_folded": (NO_PROJECTION, _CODE),
@@ -104,6 +105,12 @@ WRITERS: dict[str, tuple[str, str]] = {
     "add_taxonomy_aliases": (NO_PROJECTION, _ENTITY),
     "ensure_taxonomy_hierarchy_edge": (NO_PROJECTION, _ENTITY),
     "move_taxonomy_edges": (NO_PROJECTION, _ENTITY),
+    # people.py, organizations.py: a person's grants and memberships become the user's; the edges from records to the people and organisations they name,
+    # and the owning org of an external organisation, are not held
+    "migrate_person_to_user": (PROJECTED, ""),
+    "batch_create_entity_relations": (NO_PROJECTION, _NAMED),
+    "delete_record_entity_relations": (NO_PROJECTION, _NAMED),
+    "stamp_external_org_parents": (NO_PROJECTION, "parentOrgId of an external organization: kg holds that an organization exists, no field of its document"),
 }
 
 
