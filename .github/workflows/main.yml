@@ -304,8 +304,17 @@ jobs:
       # errors inside `run:` blocks, bad expressions, and invalid schema before
       # a push discovers them. Pinned to a release tarball rather than an
       # action, because actionlint does not publish one.
+      # The tarball is cached so a GitHub release-download outage (HTTP 504) does not fail the lint. The checksum
+      # below is checked on every run, cached or downloaded: the cache is not trusted any more than the URL.
+      - name: Cache the actionlint release
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/actionlint
+          key: actionlint-1.7.7-023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+
       - name: Install actionlint
         env:
+          # Keep in step with the cache key above.
           ACTIONLINT_VERSION: 1.7.7
           # Checksum of the pinned release tarball. Without it this step trusts
           # whatever the URL returns, which is a release asset a third party can
@@ -313,10 +322,17 @@ jobs:
           ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
         run: |
           set -euo pipefail
-          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          curl -fsSL "$url" -o /tmp/actionlint.tar.gz
-          echo "${ACTIONLINT_SHA256}  /tmp/actionlint.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          tarball="$HOME/.cache/actionlint/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          verified() { [ -f "$tarball" ] && echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum -c --quiet -; }
+          if ! verified; then
+            # no cached copy, or a damaged one: download it again; a download that fails the check fails the step
+            rm -f "$tarball"
+            mkdir -p "$(dirname "$tarball")"
+            url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+            curl -fsSL --retry 6 --retry-all-errors --retry-delay 20 "$url" -o "$tarball"
+            echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum -c -
+          fi
+          tar -xzf "$tarball" -C /tmp actionlint
           sudo install -m 0755 /tmp/actionlint /usr/local/bin/actionlint
           actionlint --version
 

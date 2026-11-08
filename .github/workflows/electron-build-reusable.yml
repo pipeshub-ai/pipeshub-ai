@@ -26,9 +26,9 @@ jobs:
           TARGETS: ${{ inputs.targets }}
         run: |
           ALL='[
-            {"name":"macOS","os":"macos-latest","target":"mac","cache_path":"~/Library/Caches/electron"},
-            {"name":"Windows","os":"windows-latest","target":"win","cache_path":"~/AppData/Local/electron/Cache"},
-            {"name":"Linux","os":"ubuntu-latest","target":"linux","cache_path":"~/.cache/electron"}
+            {"name":"macOS","os":"macos-latest","target":"mac","cache_path":"~/Library/Caches/electron","builder_cache_path":"~/Library/Caches/electron-builder"},
+            {"name":"Windows","os":"windows-latest","target":"win","cache_path":"~/AppData/Local/electron/Cache","builder_cache_path":"~/AppData/Local/electron-builder/Cache"},
+            {"name":"Linux","os":"ubuntu-latest","target":"linux","cache_path":"~/.cache/electron","builder_cache_path":"~/.cache/electron-builder"}
           ]'
           MATRIX=$(jq -cn --argjson all "$ALL" --argjson t "$TARGETS" \
             '{include: [$all[] | select(.target | IN($t[]))]}')
@@ -59,11 +59,17 @@ jobs:
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Cache Electron binaries
+      # electron-builder also fetches its packaging tools from GitHub releases (AppImage, 7-Zip and fpm on Linux,
+      # NSIS on Windows, dmg tooling on macOS). Cached with Electron so a release-download outage does not fail
+      # the build: the retries below span about two minutes, and such outages have lasted longer.
+      # The key changed when the electron-builder folder was added: an exact hit on the old key is never re-saved.
+      - name: Cache Electron and electron-builder downloads
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ matrix.cache_path }}
-          key: ${{ runner.os }}-electron-${{ hashFiles('frontend/package-lock.json') }}
+          path: |
+            ${{ matrix.cache_path }}
+            ${{ matrix.builder_cache_path }}
+          key: ${{ runner.os }}-electron-and-builder-${{ hashFiles('frontend/package-lock.json') }}
 
       - name: Install dependencies
         run: npm ci --include=dev
@@ -75,8 +81,8 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           TARGET: ${{ matrix.target }}
         run: |
-          # Retry to ride out transient GitHub release CDN failures (HTTP 502)
-          # while electron-builder downloads the Electron binary.
+          # Retry to ride out transient GitHub release CDN failures (HTTP 502/504)
+          # while electron-builder downloads what the cache above does not hold.
           for attempt in 1 2 3; do
             if npm run electron:build:"$TARGET"; then
               exit 0
