@@ -135,6 +135,7 @@ async def test_a_hub_with_exactly_the_limit_of_callers_and_its_files_contains_ed
 
 
 async def test_each_further_page_is_larger_and_what_comes_back_is_the_same() -> None:
+    """A hub of rows nobody may read is read in growing pages, and the answer does not depend on the page sizes."""
     g, sizes = world(3, 60), []
     read = g.get_neighbors_for_nodes_by_relationship_types
 
@@ -158,6 +159,7 @@ async def test_each_further_page_is_larger_and_what_comes_back_is_the_same() -> 
 @pytest.mark.parametrize("page", [1, 2, 3, 7, 40, 1000])
 @pytest.mark.parametrize(("edges", "expected"), [(39, False), (40, True), (41, True), (90, True)])
 async def test_the_scan_budget_trips_at_one_raw_count_whatever_the_page(page, edges, expected) -> None:
+    """`incomplete` turns true at the same raw edge count whatever the page size, and no read passes the budget."""
     g, scanned = world(0, edges), []
     read = g.get_neighbors_for_nodes_by_relationship_types
 
@@ -175,6 +177,7 @@ async def test_the_scan_budget_trips_at_one_raw_count_whatever_the_page(page, ed
 
 
 async def test_a_page_of_many_blocks_is_one_store_load() -> None:
+    """Checking a page of hundreds of blocks takes one store load, not one per block."""
     g, loads = world(0, 300), []
     load = g.get_nodes_by_field_in
 

@@ -105,6 +105,7 @@ _LANGUAGES = {"py": ("python", "text/x-python"), "cs": ("csharp", "text/x-csharp
 async def _write_repo(graph: IGraphDBProvider, org_id: str, connector_id: str, group_id: str,
                       files: dict[str, str] = FILES, roles: dict[str, str] | None = None,
                       ) -> tuple[dict[str, str], _Blobs]:
+    """Parse, project and store ``files`` for ``connector_id``; ``roles`` marks a path as test, docs and so on."""
     parser = CodeFileParser()
     blobs = _Blobs()
     record_ids = {path: str(uuid.uuid4()) for path in files}

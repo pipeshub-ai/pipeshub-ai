@@ -403,6 +403,10 @@ async def get_neighbour_impl(
     repo: str | None = None,
     max_depth: int = MAX_NEIGHBOUR_DEPTH,
 ) -> dict[str, Any]:
+    """Callers and callees of one symbol (or every symbol of a file), as the code-graph neighbours tool answers them.
+
+    The walk itself is ``walk_neighbours``; this shapes its rows into the tool's answer (nodes, edges and counts).
+    """
     if offset < 0:
         return {"error": "offset must be 0 or greater"}
     if direction not in ("inbound", "outbound", "any"):
