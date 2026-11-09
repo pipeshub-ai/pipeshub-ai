@@ -466,6 +466,13 @@ INTERNAL_RECORD_FIELDS = frozenset({
     "propsGen",
     "propsSrc",
     "propsVer",
+    "embedVrid",
+    "embedRev",
+    "embedKey",
+    "embedDigest",
+    "embedTotal",
+    "embedDeliveryId",
+    "embedStartedMs",
 })
 
 #: A projected property value on a Neo4j record node (``p_<name>``); never part of a record the API returns.

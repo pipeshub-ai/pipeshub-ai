@@ -62,3 +62,10 @@ async def test_a_count_that_keeps_failing_fails_the_scan_after_the_attempts() ->
     with pytest.raises(PartialResult):
         await job._scan(ORG, COLL, ["v1"])
     assert store.count_calls == scope_rewrite.SCAN_ATTEMPTS
+
+
+async def test_a_store_that_does_not_declare_count_cannot_be_rewritten() -> None:
+    from app.services.vector_db.interface.vector_db import IVectorDBService
+
+    with pytest.raises(NotImplementedError):
+        await IVectorDBService.count_points(_Store(), COLL, FilterExpression())

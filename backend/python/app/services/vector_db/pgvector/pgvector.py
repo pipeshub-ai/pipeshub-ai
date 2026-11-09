@@ -461,6 +461,17 @@ class PgVectorService(IVectorDBService):
         position = {str(i): n for n, i in enumerate(wanted)}
         return sorted(found, key=lambda p: position.get(str(p.id), len(position)))
 
+    async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
+        """Which of these ids have a live point in the request's org, reading no payload; real time like ``retrieve_points``."""
+        db, catalog = self._assert_connected()
+        org = ambient_or_required()
+        coll = await catalog.require_collection(collection_name)
+        space = await catalog.active_space(org, real_time=True)
+        wanted = _ids(ids)
+        if space is None or not wanted:
+            return set()
+        return await db.run(lambda tx: reads.existing_ids(tx, org, coll.collection_id, space.space_id, wanted), custom_plan=True)
+
     # Search ----------------------------------------------------------------------------------------------------------
 
     async def query_nearest_points(

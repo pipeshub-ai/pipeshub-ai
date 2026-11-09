@@ -2,6 +2,7 @@ import logging
 from typing import TYPE_CHECKING, Optional
 
 from app.config.constants.arangodb import CollectionNames, EventTypes, ProgressStatus
+from app.modules.indexing.embed_resume import cleared_fields, current_attempt
 from app.modules.reconciliation.service import ReconciliationMetadata, ReconciliationService
 from app.modules.transformers.blob_storage import StorageLookupUnavailableError
 from app.modules.transformers.block_container_validator import BlockContainerValidator
@@ -78,6 +79,14 @@ class IndexingPipeline:
                         blocks_to_index_ids=blocks_to_index_ids,
                         block_ids_to_delete=block_ids_to_delete,
                     )
+                attempt = current_attempt()
+                if attempt is not None and attempt.resume:
+                    # The points already written by the interrupted run are what a resume keeps.
+                    logger.info(
+                        f"Resuming the first reconciliation pass of {record.virtual_record_id}; "
+                        f"not purging its vectors"
+                    )
+                    return ReconciliationContext(new_metadata=new_metadata.to_dict())
                 logger.info(
                     f"📊 No previous metadata found for {record.virtual_record_id}, "
                     f"purging stale vectors and indexing all blocks (first reconciliation pass)"
@@ -182,6 +191,7 @@ class IndexingPipeline:
                         )
 
                 status_fields = {
+                    **(cleared_fields() if current_attempt() is not None else {}),
                     "indexingStatus": ProgressStatus.EMPTY.value,
                     **indexed_copy_fields(ProgressStatus.EMPTY),
                     # The parse finished and found nothing to index.
