@@ -219,3 +219,58 @@ async def test_arango_a_withdrawn_user_gets_the_link_back_when_the_next_listing_
         assert await _recover(graph, user, org, connector) == ({user}, set(), {user})
     finally:
         await graph.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# The read honours the transaction it is given
+# ---------------------------------------------------------------------------
+
+async def _link_seen_only_inside_its_transaction(graph, user_key: str, org: str, connector: str) -> tuple[set[str], set[str]]:
+    """Write a link inside an open transaction; the ids ``get_app_user_links`` returns inside it, and after it was rolled back."""
+    txn = await graph.begin_transaction(read=["users", "apps", "userAppRelation"], write=["userAppRelation"], explicit=True)
+    try:
+        await graph.ensure_app_membership(user_key, "users", connector, is_external=False, source_user_id="src-tx", transaction=txn)
+        inside = {link["id"] for link in await graph.get_app_user_links(org, connector, transaction=txn)}
+    finally:
+        await graph.rollback_transaction(txn)
+    return inside, {link["id"] for link in await graph.get_app_user_links(org, connector)}
+
+
+async def test_neo4j_a_link_written_in_an_open_transaction_is_read_inside_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ..test_soft_delete_e2e import _connect_neo4j
+
+    graph = await _connected(_connect_neo4j(monkeypatch), "NEO4J_IT_URI")
+    try:
+        t = uuid.uuid4().hex[:8]
+        org, user, connector = f"org-{t}", f"u-{t}", f"app-{t}"
+        q = graph.client.execute_query
+        await q("CREATE (:App {id: $a, type: 'ONEDRIVE'})", parameters={"a": connector})
+        await q("CREATE (:User {id: $u, orgId: $o, email: $e})", parameters={"u": user, "o": org, "e": f"{user}@example.com"})
+        assert await _link_seen_only_inside_its_transaction(graph, user, org, connector) == ({user}, set())
+    finally:
+        await graph.disconnect()
+
+
+async def test_arango_a_link_written_in_an_open_transaction_is_read_inside_it() -> None:
+    from ..test_soft_delete_e2e import _connect_arango
+
+    graph = await _connected(_connect_arango(), "ARANGO_IT_URL")
+    try:
+        from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+        t = uuid.uuid4().hex[:8]
+        org, user, connector = f"org-{t}", f"u-{t}", f"app-{t}"
+        now = get_epoch_timestamp_in_ms()
+        await graph.batch_upsert_nodes(
+            [{"id": user, "userId": user, "orgId": org, "email": f"{user}@example.com", "fullName": "Tx", "isActive": True,
+              "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+            collection="users",
+        )
+        await graph.batch_upsert_nodes(
+            [{"id": connector, "name": "OneDrive", "type": "ONEDRIVE", "appGroup": "Microsoft 365", "scope": "team", "isActive": True,
+              "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+            collection="apps",
+        )
+        assert await _link_seen_only_inside_its_transaction(graph, user, org, connector) == ({user}, set())
+    finally:
+        await graph.disconnect()

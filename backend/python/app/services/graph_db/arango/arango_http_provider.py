@@ -8493,7 +8493,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 raise
             return []
 
-    async def get_app_user_links(self, org_id: str, connector_id: str) -> list[dict]:
+    async def get_app_user_links(self, org_id: str, connector_id: str, transaction: str | None = None) -> list[dict]:
         query = f"""
             FOR edge IN {CollectionNames.USER_APP_RELATION.value}
                 FILTER edge._to == CONCAT('{CollectionNames.APPS.value}/', @connector_id)
@@ -8504,7 +8504,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 RETURN {{ id: user._key, sourceUserId: edge.sourceUserId }}
         """
         return await self.http_client.execute_aql(
-            query, bind_vars={"connector_id": connector_id, "org_id": org_id}
+            query, bind_vars={"connector_id": connector_id, "org_id": org_id}, txn_id=transaction
         )
 
     async def get_user_group_by_external_id(

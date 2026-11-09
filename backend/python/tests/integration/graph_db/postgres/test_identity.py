@@ -368,3 +368,15 @@ async def test_a_withdrawn_user_gets_the_link_back_when_the_next_listing_shows_t
     assert await links() == set()
     await processor.on_new_app_users([listed])                                  # the next listing shows the user again
     assert await links() == {"m"}
+
+
+async def test_a_link_written_in_an_open_transaction_is_read_inside_it(w: World) -> None:
+    await member(w, "m", userId="um", email="m@x.com")
+    txn = await w.p.begin_transaction(read=[], write=[], explicit=True)
+    try:
+        await w.p.ensure_app_membership("m", "users", APP, is_external=False, source_user_id="src-tx", transaction=txn)
+        inside = {link["id"] for link in await w.p.get_app_user_links(w.org, APP, transaction=txn)}
+    finally:
+        await w.p.rollback_transaction(txn)
+    assert inside == {"m"}
+    assert await w.p.get_app_user_links(w.org, APP) == []

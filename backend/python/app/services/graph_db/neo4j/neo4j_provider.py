@@ -6675,14 +6675,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 raise
             return []
 
-    async def get_app_user_links(self, org_id: str, connector_id: str) -> list[dict]:
+    async def get_app_user_links(self, org_id: str, connector_id: str, transaction: str | None = None) -> list[dict]:
         query = """
         MATCH (u:User {orgId: $org_id})-[r:USER_APP_RELATION]->(app:App {id: $connector_id})
         WHERE r.sourceUserId IS NOT NULL
         RETURN u.id AS id, r.sourceUserId AS sourceUserId
         """
         results = await self.client.execute_query(
-            query, parameters={"connector_id": connector_id, "org_id": org_id}
+            query, parameters={"connector_id": connector_id, "org_id": org_id}, txn_id=transaction
         )
         return [{"id": r["id"], "sourceUserId": r["sourceUserId"]} for r in results]
 
