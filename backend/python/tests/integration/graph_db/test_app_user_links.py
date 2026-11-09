@@ -22,7 +22,7 @@ async def _ensure_arango_collections(provider) -> None:
 
     client = provider.http_client
     async with aiohttp.ClientSession(auth=aiohttp.BasicAuth("root", client.password)) as s:
-        for name, kind in (("users", 2), ("apps", 2), ("userAppRelation", 3)):
+        for name, kind in (("users", 2), ("people", 2), ("apps", 2), ("userAppRelation", 3)):
             async with s.post(f"{client.base_url}/_db/{client.database}/_api/collection", json={"name": name, "type": kind}) as r:
                 if r.status not in (200, 201, 409):
                     raise RuntimeError(f"cannot create collection {name}: {r.status}")
@@ -30,7 +30,7 @@ async def _ensure_arango_collections(provider) -> None:
 
 def _ids() -> dict[str, str]:
     t = uuid.uuid4().hex[:8]
-    return {k: f"{k}-{t}" for k in ("orgA", "orgB", "app1", "app2", "member", "guest", "stranger", "unnamed", "otherapp")}
+    return {k: f"{k}-{t}" for k in ("orgA", "orgB", "app1", "app2", "member", "guest", "stranger", "unnamed", "otherapp", "person")}
 
 
 # (user, org, connector, source id)
@@ -46,6 +46,7 @@ def _links(i: dict[str, str]) -> list[tuple[str, str, str, str | None]]:
 
 async def _seed_neo4j(p, i: dict[str, str]) -> None:
     q = p.client.execute_query
+    await q("CREATE (:Person {id: $id, orgId: $org})", parameters={"id": i["person"], "org": i["orgA"]})
     for app in (i["app1"], i["app2"]):
         await q("CREATE (:App {id: $id, type: 'ONEDRIVE'})", parameters={"id": app})
     await q("CREATE (:Organization {id: $id})", parameters={"id": i["orgA"]})
@@ -55,6 +56,10 @@ async def _seed_neo4j(p, i: dict[str, str]) -> None:
             "MATCH (u:User {id: $u}), (a:App {id: $a}) CREATE (u)-[:USER_APP_RELATION {sourceUserId: $s}]->(a)",
             parameters={"u": user, "a": app, "s": sid},
         )
+    await q(  # an external collaborator (a Person) linked to the connector with a source id is no user
+        "MATCH (u:Person {id: $u}), (a:App {id: $a}) CREATE (u)-[:USER_APP_RELATION {sourceUserId: 'src-person'}]->(a)",
+        parameters={"u": i["person"], "a": i["app1"]},
+    )
     await q(
         "MATCH (u:User {id: $u}), (o:Organization {id: $o}) CREATE (u)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(o)",
         parameters={"u": i["member"], "o": i["orgA"]},
@@ -66,6 +71,12 @@ async def _seed_arango(p, i: dict[str, str]) -> None:
     q = p.http_client.execute_aql
     for app in (i["app1"], i["app2"]):
         await q("INSERT {_key: @k} INTO apps", bind_vars={"k": app})
+    # an external collaborator (a Person) linked to the connector with a source id is no user
+    await q("INSERT {_key: @k, orgId: @o} INTO people", bind_vars={"k": i["person"], "o": i["orgA"]})
+    await q(
+        "INSERT {_from: CONCAT('people/', @p), _to: CONCAT('apps/', @a), sourceUserId: 'src-person'} INTO userAppRelation",
+        bind_vars={"p": i["person"], "a": i["app1"]},
+    )
     for user, org, app, sid in _links(i):
         await q("INSERT {_key: @k, orgId: @o} INTO users", bind_vars={"k": user, "o": org})
         await q(

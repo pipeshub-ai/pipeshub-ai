@@ -148,6 +148,8 @@ async def test_the_app_user_links_include_guests_but_not_another_orgs_or_connect
     await w.edge("userAppRelation", ("users", "guest"), ("apps", APP), sourceUserId="src-guest")
     await w.edge("userAppRelation", ("users", "unnamed"), ("apps", APP))                                    # a link the source names no user for
     await w.edge("userAppRelation", ("users", "elsewhere"), ("apps", "app2"), sourceUserId="src-else")     # another connector
+    await w.nodes("people", {"_key": "person"})
+    await w.edge("userAppRelation", ("people", "person"), ("apps", APP), sourceUserId="src-person")        # an external collaborator is no user
     other = _org()
     token = org_context.push(None)
     try:

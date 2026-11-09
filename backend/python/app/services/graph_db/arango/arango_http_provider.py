@@ -8492,6 +8492,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         query = f"""
             FOR edge IN {CollectionNames.USER_APP_RELATION.value}
                 FILTER edge._to == CONCAT('{CollectionNames.APPS.value}/', @connector_id)
+                FILTER STARTS_WITH(edge._from, '{CollectionNames.USERS.value}/')
                 FILTER edge.sourceUserId != null
                 LET user = DOCUMENT(edge._from)
                 FILTER user != null AND user.orgId == @org_id
