@@ -70,7 +70,11 @@ class StageHeldForDelete(StagePaused):
     Not settled, since a delete can be put back: once it sticks the job finds its records gone
     and is dropped as stale; after a revert it runs. A run held mid-way leaves its claim
     IN_PROGRESS, which the redelivery takes over like a crashed run's.
+
+    Only this message waits: the other connectors' jobs on the stage keep running.
     """
+
+    pauses_consumer = False
 
 
 # How long a job held for a delete waits before it is delivered again.

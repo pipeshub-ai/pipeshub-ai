@@ -75,6 +75,8 @@ def _handback_limit() -> int:
 class RecordHeld(RequeueWithoutAttempt):
     """The record's lease is held by another delivery (a stage rewriting the record, a duplicate): not a reason to pause a consumer."""
 
+    pauses_consumer = False
+
 
 def _retry_base_s() -> float:
     return float(os.getenv("PG_QUEUE_RETRY_BASE_S", "5"))
@@ -399,7 +401,7 @@ class PgMessagingConsumer(IMessagingConsumer):
             reason = type(e).__name__
             self._handback_log[reason] = self._handback_log.get(reason, 0) + 1
             self.logger.debug("%s handed back without counting an attempt (%d so far, retry in %.1fs): %s", d.message_id, n, delay, e)
-            if self.stage_admission is not None and not isinstance(e, RecordHeld):
+            if self.stage_admission is not None and e.pauses_consumer:
                 self._paused_until = max(self._paused_until, time.monotonic() + delay)     # stop claiming until the stage can run
             if e.counts_toward_backstop and n > _handback_limit():
                 # handed back for ever (a lease that is never freed): charged as a failure, so the delivery limit ends it

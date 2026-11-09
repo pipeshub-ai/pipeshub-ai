@@ -1159,6 +1159,9 @@ class RequeueWithoutAttempt(Exception):
     # Whether hand-backs count toward the delivery backstop, which stops a message from
     # being handed back forever.
     counts_toward_backstop = True
+    # Whether the reason holds for the whole stage (a paused dependency), so a consumer that
+    # can stop claiming does; False when only this message has to wait.
+    pauses_consumer = True
 
     def __init__(self, message: str = "", *, delay_s: float | None = None) -> None:
         super().__init__(message)
