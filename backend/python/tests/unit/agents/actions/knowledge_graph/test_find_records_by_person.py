@@ -56,6 +56,7 @@ def _state(users: list[dict] | Exception = (), **overrides: object) -> dict:
     graph.find_users = AsyncMock(side_effect=users) if isinstance(users, Exception) else AsyncMock(
         return_value=list(users),
     )
+    graph.find_people = AsyncMock(return_value=[])
     return {"org_id": "org-1", "user_id": "user-1", "user_email": "me@x.io", "graph_provider": graph,
             "include_retrieval_context": True, **overrides}
 
@@ -70,10 +71,10 @@ def listing(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     page has records, else not at all."""
     pages: dict[str, EntityRecordPage] = {}
     visible: dict[str, int] = {}
-    mock = AsyncMock(side_effect=lambda graph, context, *, user_ids, **_: pages.get(user_ids[0], _EMPTY))
+    mock = AsyncMock(side_effect=lambda graph, context, *, nodes, **_: pages.get(nodes[0][1], _EMPTY))
 
-    async def _offsets(graph: object, context: object, groups: list[list[str]], **_: object) -> list[int | None]:
-        return [visible.get(ids[0], 0 if pages.get(ids[0], _EMPTY).records else None) for ids in groups]
+    async def _offsets(graph: object, context: object, groups: list[list[tuple[str, str]]], **_: object) -> list[int | None]:
+        return [visible.get(ids[0][1], 0 if pages.get(ids[0][1], _EMPTY).records else None) for ids in groups]
 
     mock.pages, mock.visible = pages, visible
     mock.probe = AsyncMock(side_effect=_offsets)
@@ -120,7 +121,7 @@ class TestResolvingThePerson:
         ok, text = await execute_find_records_by_person(_state([DARSHAN, DARSHAN_STUB]), "Darshan Godase")
         assert ok is True and "Ticket r1" in text
         listing.assert_awaited_once()
-        assert listing.await_args.kwargs["user_ids"] == ["u-d", "u-d2"]
+        assert listing.await_args.kwargs["nodes"] == [("users", "u-d"), ("users", "u-d2")]
 
     async def test_namesakes_with_readable_records_are_listed_without_records(self, listing) -> None:
         listing.pages["u-d"] = EntityRecordPage(records=[_row("r1")], next_cursor=None)
@@ -172,7 +173,7 @@ class TestResolvingThePerson:
         _, nobody = await execute_find_records_by_person(_state([]), "Alex Kim")
         assert text == nobody
         assert listing.probe.await_count == 1
-        assert listing.probe.await_args.args[2] == [[f"u-{i}"] for i in range(7)]
+        assert listing.probe.await_args.args[2] == [[("users", f"u-{i}")] for i in range(7)]
         listing.assert_not_awaited()
 
     async def test_the_listing_starts_where_the_probe_found_the_first_readable_record(self, listing) -> None:
@@ -191,7 +192,119 @@ class TestResolvingThePerson:
         ok, text = await execute_find_records_by_person(state, me)
         assert ok is True and "Ticket r1" in text
         state["graph_provider"].find_users.assert_awaited_once_with("org-1", "me@x.io", limit=20)
-        assert listing.await_args.kwargs["user_ids"] == ["ukey", "u-me2"]
+        assert listing.await_args.kwargs["nodes"] == [("users", "ukey"), ("users", "u-me2")]
+
+
+QUINCY = {"id": "p-q", "fullName": "Quincy Outsider", "email": "quincy@partner.test"}
+
+
+class TestPeopleWhoAreNotMembers:
+    def _with(self, outsiders: list[dict], members: list[dict] = ()) -> dict:
+        state = _state(members)
+        state["graph_provider"].find_people = AsyncMock(return_value=list(outsiders))
+        return state
+
+    async def test_a_non_member_with_a_readable_record_is_named_without_an_email(self, listing) -> None:
+        listing.pages["p-q"] = EntityRecordPage(records=[_row("r1")], next_cursor=None)
+        _, text = await execute_find_records_by_person(self._with([QUINCY]), "Quincy Outsider")
+        assert text.startswith("Records linked to Quincy Outsider (not a member)")
+        assert "Ticket r1" in text and "quincy@partner.test" not in text
+        assert listing.await_args.kwargs["nodes"] == [("person", "p-q")]
+
+    async def test_a_non_member_with_no_readable_record_reads_as_no_match(self, listing) -> None:
+        _, nobody = await execute_find_records_by_person(self._with([]), "Quincy Outsider")
+        _, hidden = await execute_find_records_by_person(self._with([QUINCY]), "Quincy Outsider")
+        assert hidden == nobody and "not a member" not in hidden
+        listing.assert_not_awaited()
+
+    async def test_the_same_lookups_run_whether_or_not_anything_matches(self, listing) -> None:
+        for outsiders in ([], [QUINCY]):
+            state = self._with(outsiders)
+            await execute_find_records_by_person(state, "Quincy Outsider")
+            graph = state["graph_provider"]
+            assert graph.find_users.await_count == 1 and graph.find_people.await_count == 1
+
+    async def test_a_member_and_a_person_of_one_email_are_one_person_with_each_records_own_link(self, listing) -> None:
+        member = {"id": "u-m", "fullName": "Mia Member", "email": "mia@acme.test"}
+        person = {"id": "p-m", "fullName": "Mia Member", "email": "mia@acme.test"}
+        listing.pages["u-m"] = EntityRecordPage(records=[_row("r-own"), _row("r-ext")], next_cursor=None)
+        state = self._with([person], [member])
+        state["graph_provider"].get_record_people = AsyncMock(
+            side_effect=lambda rid, org: [{"id": "u-m"}] if rid == "r-own" else [],
+        )
+        _, text = await execute_find_records_by_person(state, "Mia Member")
+        own, ext = (next(line for line in text.splitlines() if f"Ticket {k}" in line) for k in ("r-own", "r-ext"))
+        assert text.startswith("Records linked to Mia Member (mia@acme.test)")
+        assert "not a member" not in own and "(not a member)" in ext
+        assert listing.await_args.kwargs["nodes"] == [("users", "u-m"), ("person", "p-m")]
+        assert listing.probe.await_args.args[2] == [[("users", "u-m")], [("person", "p-m")]]
+
+
+    async def test_a_member_with_no_readable_record_of_her_own_is_never_named(self, listing) -> None:
+        member = {"id": "u-m", "fullName": "Mia Member", "email": "mia@acme.test"}
+        person = {"id": "p-m", "fullName": "Mia Outside", "email": "mia@acme.test"}
+        listing.pages["p-m"] = EntityRecordPage(records=[_row("r-ext")], next_cursor=None)
+        state = self._with([person], [member])
+        state["graph_provider"].get_record_people = AsyncMock(return_value=[])
+        _, text = await execute_find_records_by_person(state, "Mia Member")
+        assert text.startswith("Records linked to Mia Outside (not a member)")
+        assert "mia@acme.test" not in text and "Mia Member" not in text.replace('"Mia Member"', "") and "not to" not in text
+        assert listing.await_args.kwargs["nodes"] == [("person", "p-m")]
+        state["graph_provider"].get_record_people.assert_not_awaited()
+
+    async def test_a_failed_attribution_lookup_never_names_the_person(self, listing) -> None:
+        member = {"id": "u-m", "fullName": "Mia Member", "email": "mia@acme.test"}
+        person = {"id": "p-m", "fullName": "Mia Outside", "email": "mia@acme.test"}
+        listing.pages["u-m"] = EntityRecordPage(records=[_row("r-own")], next_cursor=None)
+        state = self._with([person], [member])
+        state["graph_provider"].get_record_people = AsyncMock(side_effect=RuntimeError("down"))
+        ok, text = await execute_find_records_by_person(state, "Mia Member")
+        assert ok and "Ticket r-own" in text
+        assert "Mia Outside" not in text and "not a member" not in text
+        assert text.startswith("Records possibly linked to Mia Member")
+
+    @pytest.mark.parametrize(("links", "own_said", "ext_said"), [
+        (lambda rid, org: [{"id": "u-m"}] if rid == "r-own" else [],
+         "linked to Mia Member (mia@acme.test) as author", "linked to Mia Outside (not a member) as author"),
+        (AssertionError, "possibly linked to Mia Member (mia@acme.test) as author",
+         "possibly linked to Mia Member (mia@acme.test) as author"),
+    ], ids=["links-read", "links-unread"])
+    async def test_a_citation_never_gives_the_member_a_persons_record(
+        self, listing, monkeypatch, links, own_said, ext_said,
+    ) -> None:
+        cite = AsyncMock(return_value={})
+        monkeypatch.setattr(people, "cite_listed_records", cite)
+        member = {"id": "u-m", "fullName": "Mia Member", "email": "mia@acme.test"}
+        person = {"id": "p-m", "fullName": "Mia Outside", "email": "mia@acme.test"}
+        listing.pages["u-m"] = EntityRecordPage(records=[_row("r-own"), _row("r-ext")], next_cursor=None)
+        state = self._with([person], [member])
+        state["graph_provider"].get_record_people = AsyncMock(side_effect=links)
+        await execute_find_records_by_person(state, "Mia Member", roles=["author"])
+        assert cite.await_args.args[3] == {"r-own": own_said, "r-ext": ext_said}
+
+    async def test_a_member_with_nothing_readable_and_a_person_with_nothing_readable_read_as_no_match(self, listing) -> None:
+        member = {"id": "u-m", "fullName": "Mia Member", "email": "mia@acme.test"}
+        person = {"id": "p-m", "fullName": "Mia Member", "email": "mia@acme.test"}
+        _, nobody = await execute_find_records_by_person(self._with([]), "Mia Member")
+        _, text = await execute_find_records_by_person(self._with([person], [member]), "Mia Member")
+        assert text == nobody
+
+    async def test_the_one_reachable_namesake_is_not_cut_by_twenty_it_cannot_reach(self, listing) -> None:
+        many = [{"id": f"p-{i:03d}", "fullName": "Alex Kim", "email": f"alex{i}@partner.test"} for i in range(150)]
+        listing.pages["p-149"] = EntityRecordPage(records=[_row("r1")], next_cursor=None)
+        state = self._with([])
+        state["graph_provider"].find_people = AsyncMock(side_effect=lambda org, q, *, limit: many[:limit])
+        _, text = await execute_find_records_by_person(state, "Alex Kim")
+        assert text.startswith("Records linked to Alex Kim (not a member)") and "Ticket r1" in text
+        assert len(listing.probe.await_args.args[2]) == 150
+
+    async def test_namesakes_who_are_not_members_are_listed_without_an_email_hint(self, listing) -> None:
+        a = {"id": "p-a", "fullName": "Alex Kim", "email": "a@partner.test"}
+        b = {"id": "p-b", "fullName": "Alex Kim", "email": "b@partner.test"}
+        listing.pages["p-a"] = listing.pages["p-b"] = EntityRecordPage(records=[_row("r1")], next_cursor=None)
+        _, text = await execute_find_records_by_person(self._with([a, b]), "Alex Kim")
+        assert "partner.test" not in text and "with the person's email" not in text
+        assert text.count("(not a member)") >= 2 and "ask the user for more of the name" in text
 
 
 class TestRoles:

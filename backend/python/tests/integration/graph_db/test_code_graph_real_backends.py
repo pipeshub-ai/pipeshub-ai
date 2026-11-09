@@ -100,7 +100,8 @@ class _Repo:
         return f"{BLOCKS}/{self.block(path, qualified_name)}"
 
 
-_LANGUAGES = {"py": ("python", "text/x-python"), "cs": ("csharp", "text/x-csharp"), "php": ("php", "text/x-php")}
+_LANGUAGES = {"py": ("python", "text/x-python"), "cs": ("csharp", "text/x-csharp"), "php": ("php", "text/x-php"),
+              "ts": ("typescript", "text/typescript")}
 
 
 async def _write_repo(graph: IGraphDBProvider, org_id: str, connector_id: str, group_id: str,

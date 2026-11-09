@@ -55,6 +55,8 @@ STRUCTURAL_RELATIONS = [
 # reaching another across files (calls, imports, heritage).
 CROSS_FILE_RELATIONS = [
     RecordRelations.CALLS.value,
+    # A function handed over as a value (callback, table entry): it may run later.
+    RecordRelations.INDIRECT_CALL.value,
     RecordRelations.IMPORTS.value,
     RecordRelations.IMPORTS_FROM.value,
     RecordRelations.RE_EXPORTS.value,

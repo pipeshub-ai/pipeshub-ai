@@ -68,10 +68,14 @@ _BLOCK_SCAN_FIELDS = [
     "_key", "recordId", "name", "kind", "qualifiedName", "language",
     "isBlockGroup", "parentBlockId", "pendingEdges", "typeTable", "referencedNames", "modifiers", "macroTable",
     "typeParamCount",
-    "startLine", "externalRefs",
+    "startLine", "externalRefs", "isAccessor",
 ]
 
-_CALL_RELATIONS = {RecordRelations.CALLS.value}
+_INDIRECT = RecordRelations.INDIRECT_CALL.value
+# Both resolve by the call ladder; an indirect call never takes the bare-name guess, a class or a field.
+_CALL_RELATIONS = {RecordRelations.CALLS.value, _INDIRECT}
+# The parser's context for `TABLE[k]()`: one site naming every value of a table.
+_DISPATCH = "dispatch"
 # A repeated definition's `#n` (`method:S.Copy#2`, an overload).
 _REPEAT_SUFFIX = re.compile(r"#\d+(?=\.|$)")
 # What a C++ construction constructs: a class, never an alias of one or an enum.
@@ -479,6 +483,8 @@ class _Builder:
         # documents are built per write chunk: a full dict per edge held at once
         # was most of a large build's heap (SC-1).
         self.edges: dict[tuple[str, str, str], tuple[str, str | None, int | None]] = {}
+        # (from, to, INDIRECT_CALL) -> the value's position (argument, collection, ...).
+        self.edge_context: dict[tuple[str, str, str], str] = {}
         self.external_nodes: dict[str, dict] = {}
         # Files whose import bindings a resolution read but this build did not bind.
         self.bindings_missing: dict[str, set[str]] = {}
@@ -563,7 +569,8 @@ class _Builder:
     # -- emit -----------------------------------------------------------
 
     def _add_edge(self, from_key: str, to_key: str, relation: str, *,
-                  confidence: str, line: int | None, resolution: str | None = None) -> None:
+                  confidence: str, line: int | None, resolution: str | None = None,
+                  context: str | None = None) -> None:
         if from_key == to_key:  # self-loop
             return
         if relation in _CALL_RELATIONS and self._uncallable(to_key.partition("/")[2]):
@@ -571,14 +578,18 @@ class _Builder:
         dedup = (from_key, to_key, relation)
         if dedup in self.edges:
             return
+        if relation == _INDIRECT:  # a value may run later, or never: whatever rung found it
+            confidence = CONFIDENCE_INFERRED
+            if context:
+                self.edge_context[dedup] = context
         self.edges[dedup] = (confidence, resolution, line)
         self.result.edges_by_type[relation] = self.result.edges_by_type.get(relation, 0) + 1
-        if relation == RecordRelations.CALLS.value:
+        if relation in _CALL_RELATIONS:
             owner = self._closure_owner(from_key.partition("/")[2])
             # A sibling closure is the owner's own local, not something it calls.
             if owner and not self._nested_in(to_key.partition("/")[2], owner):
                 self._add_edge(self._block_key(owner), to_key, relation, confidence=confidence,
-                               line=line, resolution=resolution)
+                               line=line, resolution=resolution, context=context)
 
     def _uncallable(self, block_id: str) -> bool:
         """A block its family says no call can run, whichever rung resolved the call to it."""
@@ -615,7 +626,9 @@ class _Builder:
                       meta: tuple[str, str | None, int | None], now: int) -> dict:
         from_key, to_key, relation = key
         confidence, resolution, line = meta
+        context = self.edge_context.get(key)
         return {
+            **({"context": context} if context else {}),
             "_from": from_key,
             "_to": to_key,
             "relationshipType": relation,
@@ -866,7 +879,10 @@ class _Builder:
     def resolve_rest(self, work: list[tuple[str, dict]]) -> None:
         # Added after every written call: a caller that also calls the wrapped function directly keeps that edge.
         wrapped: list[tuple[str, str, int | None]] = []
+        flooded = self._flooded_dispatch_sites(work)
         for block_id, fact in work:
+            if fact.get("context") == _DISPATCH and (block_id, fact.get("line")) in flooded:
+                continue
             self.resolving = self.index.record_by_block.get(block_id)
             relation = fact.get("relation")
             if relation == _LEGACY_EXTENDS:
@@ -908,7 +924,13 @@ class _Builder:
                 if not target and not _is_external(resolution) and relation == RecordRelations.CALLS.value:
                     target, confidence, resolution = self._extension_method(fact, record_id, family)
                 targets = target if isinstance(target, list) else [target] if target else []
-                if resolution == RESOLUTION_TYPE and not rules_for(family).typed_calls_reach_fields:
+                if relation == _INDIRECT:
+                    # A value hands over a callable; `self.text` on a property, here or inherited, reads it now.
+                    # `self.cursor` that no type places is an attribute likelier than another class's method.
+                    targets = [one for one in targets
+                               if one in self.index.callable_blocks and not self.index.rows[one].is_accessor
+                               and resolution != RESOLUTION_NAME]
+                elif resolution == RESOLUTION_TYPE and not rules_for(family).typed_calls_reach_fields:
                     # Python's `app_container.config_service()` on a dependency-injector provider field is no call
                     # of the field.
                     targets = [one for one in targets
@@ -916,9 +938,9 @@ class _Builder:
                 if targets:
                     for one in targets:
                         self._add_edge(
-                            self._source_key(block_id, fact), self._block_key(one),
-                            RecordRelations.CALLS.value,
+                            self._source_key(block_id, fact), self._block_key(one), relation,
                             confidence=confidence, line=fact.get("line"), resolution=resolution,
+                            context=fact.get("context"),
                         )
                 elif _is_external(resolution) or not self.index.candidates(name):
                     # `resp.json()` on a third-party object -- the method name
@@ -979,6 +1001,7 @@ class _Builder:
                 source, self._block_key(target),
                 self._heritage_relation(relation, block_id, target),
                 confidence=confidence, line=fact.get("line"), resolution=resolution,
+                context=fact.get("context"),
             )
         for source, target, line in wrapped:
             self._add_edge(source, target, RecordRelations.CALLS.value, confidence=CONFIDENCE_INFERRED, line=line,
@@ -986,8 +1009,20 @@ class _Builder:
 
     def _note_external(self, block_id: str, relation: str, resolution: object) -> None:
         """A call into a library this file imports by name."""
-        if relation in _CALL_RELATIONS and _is_external(resolution) and resolution.specifier:
+        if relation == RecordRelations.CALLS.value and _is_external(resolution) and resolution.specifier:
             self.external_refs_by_block.setdefault(block_id, set()).add(str(resolution))
+
+    def _flooded_dispatch_sites(self, work: list[tuple[str, dict]]) -> set[tuple[str, int | None]]:
+        """`COMMANDS[k]()` sites (block, line) whose table holds more values than a guess may
+        weigh: linking each would flood impact from one line, so they link none, counted."""
+        sites: dict[tuple[str, int | None], int] = {}
+        for block_id, fact in work:
+            if fact.get("context") == _DISPATCH:
+                site = (block_id, fact.get("line"))
+                sites[site] = sites.get(site, 0) + 1
+        flooded = {site for site, values in sites.items() if values > _MAX_HEURISTIC_CANDIDATES}
+        self.result.ambiguous_skipped += len(flooded)
+        return flooded
 
     def _shadowing_trait(self, file_path: str, name: str) -> tuple[str | None, str, str | None]:
         """The repo trait a prelude name means in *file_path*: the one its import binds, else the one it
@@ -1199,6 +1234,8 @@ class _Builder:
             return None, CONFIDENCE_INFERRED, bound
         if (bound and (family is None or self._family_of(bound) == family)
                 and (relation not in _TYPE_RELATIONS or bound in self.index.type_blocks)):
+            if relation == _INDIRECT and bound not in self.index.callable_blocks:
+                return None, CONFIDENCE_INFERRED, None  # an imported class or constant, passed along
             return bound, CONFIDENCE_EXTRACTED, RESOLUTION_IMPORT
         rules = rules_for(family)
         modules_bound = self.module_bindings.get(call_file, {}) if not bound and not qualified_prefix else {}
@@ -1214,7 +1251,7 @@ class _Builder:
                 return None, CONFIDENCE_INFERRED, module
             target = (self._top_level_in_file(module, name)
                       if not _is_external(module) and rules.module_may_be_callable else None)
-            if target:
+            if target and (relation != _INDIRECT or target in self.index.callable_blocks):
                 return target, CONFIDENCE_EXTRACTED, RESOLUTION_MODULE
             self.result.unresolved += 1
             return None, CONFIDENCE_INFERRED, None
@@ -1282,9 +1319,11 @@ class _Builder:
                 # import binds no such name, so neither does a guess by name.
                 self.result.unresolved += 1
                 return None, CONFIDENCE_INFERRED, None
-            elif rules.lexical_module_scope and relation in _CALL_RELATIONS:
+            elif relation == _INDIRECT or (rules.lexical_module_scope and relation in _CALL_RELATIONS):
                 # ES modules have no implicit cross-module scope: without an
-                # import the call cannot be reaching this definition.
+                # import the call cannot be reaching this definition. A value
+                # with no evidence is likelier a variable than a function, so it
+                # is never guessed by name either.
                 self.result.unresolved += 1
                 return None, CONFIDENCE_INFERRED, None
             else:
@@ -1362,7 +1401,7 @@ class _Builder:
             # Class exclusion: `select(Model)` is not a call to Model.
             callable_only = [cid for cid in candidates
                              if cid in self.index.callable_blocks and not self._is_constructor(cid)]
-            if callable_only:
+            if callable_only or relation == _INDIRECT:  # a class passed as a value is not run
                 return callable_only
             # `Foo()` / `new Foo()` calls the type, which is where a constructor
             # call points in every language; a field or variable never is (P-3).
