@@ -167,7 +167,9 @@ async def mcp_result_to_tool_output(result: Any, context: "AgentContext | None" 
 
     if _field(result, "isError", "is_error"):
         message = "\n".join(texts) or (_to_json(structured) if structured is not None else "")
-        return ToolOutput(success=False, error=_capped(message) or _EMPTY_ERROR_MESSAGE)
+        return ToolOutput(
+            success=False, error=_capped(message) or _EMPTY_ERROR_MESSAGE, end_fields={"reason": "server_error"},
+        )
 
     if structured is not None and not texts and not image_uris:
         serialized = _to_json(structured)

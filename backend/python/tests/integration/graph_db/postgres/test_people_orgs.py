@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import secrets
 
 import pytest
 
@@ -369,6 +370,63 @@ async def test_each_writer_clears_only_its_own_origin(w: World) -> None:
     for args in (("", "organizations", "INFERRED"), ("deal", "", "INFERRED"), ("deal", "organizations", "")):
         with pytest.raises(ValueError, match="needs a record"):
             await w.p.delete_record_entity_relations(*args)
+
+
+async def test_a_replace_swaps_the_origins_links_and_leaves_the_rest(w: World) -> None:
+    await w.nodes("organizations", {"_key": "acme", "isExternal": True, "parentOrgId": w.org}, {"_key": "globex", "isExternal": True, "parentOrgId": w.org})
+    await w.nodes("users", {"_key": "bob"}, {"_key": "ann"})
+    await w.nodes("records", rec("deal"), rec("other"))
+    await relate(w, ("records", "deal"), ("organizations", "acme"), "FOR_ACCOUNT", origin="INFERRED")
+    await relate(w, ("records", "deal"), ("organizations", "globex"), "MENTIONS", origin="EXTRACTED")
+    await relate(w, ("records", "deal"), ("users", "bob"), "ASSIGNED_TO")                                  # from before origins existed: INFERRED
+    await relate(w, ("records", "other"), ("organizations", "acme"), "FOR_ACCOUNT", origin="INFERRED")      # another record
+    new = [{"_from": "records/deal", "_to": "users/ann", "edgeType": "ASSIGNED_TO", "origin": "INFERRED", "createdAtTimestamp": 2}]
+    await w.p.replace_record_entity_relations("deal", ["users", "person"], "INFERRED", new)
+    assert [(e[1], e[2]) for e in await edges(w, "entityRelations", frm=("records", "deal"))] == [
+        ("organizations/acme", "FOR_ACCOUNT"), ("organizations/globex", "MENTIONS"), ("users/ann", "ASSIGNED_TO")]      # the organisations are not in to_collections
+    keep = {"_from": "records/deal", "_to": "organizations/acme", "edgeType": "FOR_ACCOUNT", "origin": "INFERRED", "createdAtTimestamp": 3}
+    await w.p.replace_record_entity_relations("deal", ["organizations"], "INFERRED", [keep])                  # the same edge again: kept, not duplicated
+    await w.p.replace_record_entity_relations("deal", ["organizations"], "INFERRED", [{**keep, "_to": "organizations/globex", "edgeType": "FOR_ACCOUNT"}])
+    assert [(e[1], e[2], e[3].get("origin")) for e in await edges(w, "entityRelations", frm=("records", "deal"))] == [
+        ("organizations/globex", "FOR_ACCOUNT", "INFERRED"), ("organizations/globex", "MENTIONS", "EXTRACTED"), ("users/ann", "ASSIGNED_TO", "INFERRED")]
+    await w.p.replace_record_entity_relations("deal", ["organizations", "users"], "INFERRED", [])             # no edges clears the origin
+    assert [(e[1], e[2]) for e in await edges(w, "entityRelations", frm=("records", "deal"))] == [("organizations/globex", "MENTIONS")]
+    assert len(await edges(w, "entityRelations", frm=("records", "other"))) == 1
+    for args in (("", ["users"], "INFERRED", []), ("deal", [], "INFERRED", []), ("deal", ["users"], "", [])):
+        with pytest.raises(ValueError, match="needs a record"):
+            await w.p.replace_record_entity_relations(*args)
+
+
+async def test_a_replace_that_fails_keeps_the_old_links_without_a_transaction(w: World) -> None:
+    await w.nodes("users", {"_key": "bob"}, {"_key": "ann"})
+    await w.nodes("records", rec("case"))
+    await relate(w, ("records", "case"), ("users", "bob"), "ASSIGNED_TO", origin="INFERRED")
+    good = {"_from": "records/case", "_to": "users/ann", "edgeType": "ASSIGNED_TO", "origin": "INFERRED", "createdAtTimestamp": 2}
+    # an edge type no index row can hold: the insert fails inside the statement, after its delete is planned
+    bad = {**good, "edgeType": secrets.token_hex(8000)}
+    with pytest.raises(Exception, match="index row requires"):
+        await w.p.replace_record_entity_relations("case", ["users"], "INFERRED", [good, bad])
+    assert [(e[1], e[2]) for e in await edges(w, "entityRelations", frm=("records", "case"))] == [("users/bob", "ASSIGNED_TO")]
+    tx = await w.p.begin_transaction([], [])
+    await w.p.replace_record_entity_relations("case", ["users"], "INFERRED", [good], tx)
+    await w.p.rollback_transaction(tx)
+    assert [(e[1], e[2]) for e in await edges(w, "entityRelations", frm=("records", "case"))] == [("users/bob", "ASSIGNED_TO")]
+
+
+async def test_a_replace_in_one_org_never_touches_another(w: World) -> None:
+    await w.nodes("users", {"_key": "bob"})
+    await w.nodes("records", rec("case"))
+    await relate(w, ("records", "case"), ("users", "bob"), "ASSIGNED_TO", origin="INFERRED")
+    other = _org()
+    with in_org(other):
+        await w.p.replace_record_entity_relations("case", ["users"], "INFERRED", [])        # same ids, another org: nothing there to clear
+        await w.p.replace_record_entity_relations("case", ["users"], "INFERRED", [{"_from": "records/case", "_to": "users/bob", "edgeType": "OWNED_BY"}])   # nor to link
+    assert [(e[1], e[2]) for e in await edges(w, "entityRelations", frm=("records", "case"))] == [("users/bob", "ASSIGNED_TO")]
+
+
+async def test_no_org_is_an_error_for_a_replace(pg_provider) -> None:
+    with pytest.raises(MissingOrgContext):
+        await pg_provider.replace_record_entity_relations("case", ["users"], "INFERRED", [])
 
 
 async def test_the_people_of_a_record_are_its_orgs_users_linked_either_way_each_once(w: World) -> None:

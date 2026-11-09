@@ -81,3 +81,10 @@ class WorldGraph:
     async def update_node(self, key: str, collection: str, updates: dict, *args: object) -> bool:
         self.app_docs.setdefault(key, {"_key": key}).update(updates)
         return True
+
+    async def update_node_fields_if_match(self, key: str, collection: str, updates: dict, expected: dict, *args: object) -> bool:
+        doc = self.app_docs.setdefault(key, {"_key": key})
+        if any(doc.get(f) != v for f, v in expected.items()):
+            return False
+        doc.update(updates)
+        return True

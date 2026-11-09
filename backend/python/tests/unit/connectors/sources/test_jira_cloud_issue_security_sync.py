@@ -1622,3 +1622,83 @@ class TestBrowseHoldersNamingPeoplePerIssue:
     async def test_unread_holders_of_a_project_that_never_had_any_are_taken_as_none(self) -> None:
         c = await self._sync_stored(None, None)
         assert c._issue_security[PROJECT_ID].browse_holders == [] and self._saved_digests(c) == []
+
+
+
+
+class TestDeferredReadOnAProjectNeverTightened:
+    """Issues stored open have no grants of their own to keep: while the levels cannot be read their leveled
+    issues are closed once, the pass is marked done, and a read that keeps failing does not repeat it."""
+
+    _sync = TestMemberChangeRereadsOnlyTheAffectedLevels._sync
+    DOWN = IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, defer_checkpoint=True, read_status=503)
+
+    @staticmethod
+    def _saved(c: JiraConnector) -> list[dict]:
+        return [json.loads(call.args[1]["security_levels"])
+                for call in c.issues_sync_point.update_sync_point.await_args_list if "security_levels" in call.args[1]]
+
+    @pytest.mark.asyncio
+    async def test_two_failed_reads_in_a_row_close_once_and_a_clean_read_grants_the_holders(self) -> None:
+        c, _, calls, _ = await self._sync(stored_levels=None, ctx=self.DOWN)
+        assert [x["leveled_only"] for x in calls] == [False, True], "the leveled pass runs once"
+        assert self._saved(c)[-1] == {"*": "held"}
+
+        c, _, calls, _ = await self._sync(stored_levels={"*": "held"}, ctx=self.DOWN)
+        assert len(calls) == 1, "the second failed read does not walk the project again"
+        assert self._saved(c) == [], "and does not write 'retry' over the marker"
+
+        c, _, calls, _ = await self._sync(stored_levels={"*": "held"})
+        assert calls[1]["leveled_only"] is True and calls[1]["stored_only"] is True, "a clean read grants the holders"
+
+    @pytest.mark.asyncio
+    async def test_the_marker_saved_before_the_walk_keeps_held(self) -> None:
+        saved_before: list = []
+
+        async def record_then_fail(c: JiraConnector, calls: list) -> None:
+            saved_before.extend(TestDeferredReadOnAProjectNeverTightened._saved(c))
+            raise JiraReadError(503, "later page")
+
+        with pytest.raises(JiraReadError):
+            await self._sync(stored_levels={"*": "held"}, ctx=self.DOWN, fetch_fn=record_then_fail)
+        assert saved_before == []
+
+    @pytest.mark.asyncio
+    async def test_the_notice_says_hidden_from_the_first_failed_sync_and_after(self) -> None:
+        for stored in (None, {"*": "held"}):
+            c, _, _, _ = await self._sync(stored_levels=stored, ctx=self.DOWN)
+            c.notify = AsyncMock()
+            await c._warn_unreadable_security()
+            assert "hidden from everyone" in c.notify.await_args.kwargs["message"]
+            assert "keep the access they had" not in c.notify.await_args.kwargs["message"]
+
+    @pytest.mark.asyncio
+    async def test_a_project_already_tightened_keeps_its_access_and_says_so(self) -> None:
+        c, _, _, _ = await self._sync(stored_levels=_present().level_fingerprints(), ctx=self.DOWN)
+        c.notify = AsyncMock()
+        await c._warn_unreadable_security()
+        assert "keep the access they had" in c.notify.await_args.kwargs["message"]
+
+    @pytest.mark.asyncio
+    async def test_an_issue_that_failed_to_build_in_the_closing_pass_keeps_it_scheduled(self) -> None:
+        async def one_fails(c: JiraConnector, calls: list) -> None:
+            if calls[-1]["stored_only"]:
+                c._issue_build_failures += 1
+
+        c, _, _, _ = await self._sync(stored_levels=None, ctx=self.DOWN, fetch_fn=one_fails)
+        assert self._saved(c)[-1] == {"*": "retry"}, "not marked done"
+
+        _, _, calls, _ = await self._sync(stored_levels={"*": "retry"}, ctx=self.DOWN)
+        assert calls[1]["leveled_only"] is True, "the next sync closes it again"
+
+
+class TestSkippedHoldersAreReportedOncePerLevel:
+    @pytest.mark.asyncio
+    async def test_a_holder_with_no_e_mail_is_one_warning_not_one_per_issue(self, caplog: pytest.LogCaptureFixture) -> None:
+        c = _connector()
+        c._issue_security[PROJECT_ID] = _present(members={"10102": [
+            {"type": "user", "parameter": "acc-404", "user": {"accountId": "acc-404"}}]})
+        issues = [_issue({"id": "10102"}, key=f"PROJ-{n}", issue_id=str(1000 + n)) for n in range(5)]
+        with caplog.at_level(logging.WARNING, logger="test.jira.sec"):
+            await c._build_issue_records(issues, PROJECT_ID, _users())
+        assert len([r for r in caplog.records if "were not granted" in r.getMessage()]) == 1

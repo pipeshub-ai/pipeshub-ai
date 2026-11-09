@@ -280,6 +280,7 @@ class _SlowClient:
     def __init__(self, _streams: object, **_kwargs: object) -> None:
         self.session = MagicMock(initialize_result=MagicMock(instructions=None))
         self.instructions = None
+        self.protocol_version = "2025-11-25"
 
     async def __aenter__(self) -> "_SlowClient":
         if self.hang_on_connect:

@@ -82,6 +82,8 @@ class BlockRow:
     start_line: int | None = None
     # The stored Block.externalRefs: the edge build rewrites only the lists that change.
     external_refs: tuple[str, ...] = ()
+    # A property / getter (block `isAccessor`): a member value landing on it is a read.
+    is_accessor: bool = False
 
     @staticmethod
     def from_doc(doc: dict[str, Any], paths: dict[str, str]) -> "BlockRow":
@@ -110,6 +112,7 @@ class BlockRow:
             type_param_count=doc.get("typeParamCount") or 0,
             start_line=doc.get("startLine") if isinstance(doc.get("startLine"), int) else None,
             external_refs=_ensure_str_list(doc.get("externalRefs")),
+            is_accessor=bool(doc.get("isAccessor")),
         )
 
 

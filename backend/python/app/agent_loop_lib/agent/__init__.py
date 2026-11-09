@@ -42,6 +42,7 @@ from app.agent_loop_lib.core.streaming import (
     ThinkingDeltaEvent,
     ToolCallDeltaEvent,
 )
+from app.agent_loop_lib.core.tasks import wait_owned
 from app.agent_loop_lib.core.types import (
     AgentResult,
     AgentTurn,
@@ -56,7 +57,7 @@ from app.agent_loop_lib.core.types import (
 )
 from app.agent_loop_lib.events.base import AgentEvent, EventType
 from app.agent_loop_lib.hooks.middleware.builtin.turn_guards import install_turn_guards
-from app.agent_loop_lib.tools.executor import ToolExecutor
+from app.agent_loop_lib.tools.executor import ToolExecutor, log_tool_call_end
 from app.agent_loop_lib.tools.tags import TAG_LIFECYCLE_TERMINAL, TAG_SPAWN_BATCH
 from app.agent_loop_lib.transport.base import llm_error_class
 from app.utils.error_class import log_failure
@@ -907,12 +908,12 @@ class Agent:
             return final_response
 
         # --- Guarded, hook-wrapped LLM call. Parallel guardrails: input
-        # guardrails race the LLM call itself via asyncio.wait(FIRST_EXCEPTION)
+        # guardrails race the LLM call itself via wait_owned(FIRST_EXCEPTION)
         # instead of running serially before it.
         try:
             guardrail_task = asyncio.create_task(hooks.dispatch_guardrail_input(self._hooks, messages, scope=turn_scope))
             model_task = asyncio.create_task(hooks.call_model_wrapped(self._hooks, _call_llm))
-            await asyncio.wait({guardrail_task, model_task}, return_when=asyncio.FIRST_EXCEPTION)
+            await wait_owned({guardrail_task, model_task}, return_when=asyncio.FIRST_EXCEPTION)
 
             if guardrail_task.done() and guardrail_task.exception() is not None:
                 model_task.cancel()
@@ -1119,6 +1120,10 @@ class Agent:
 
         async def _run_one_tool_call(call: ToolCall, *, is_duplicate: bool) -> ToolCallOutcome:
             if runtime.cancellation_token is not None and runtime.cancellation_token.is_cancelled:
+                log_tool_call_end(
+                    outcome="skipped", reason="cancelled_before_execution", error_class="cancelled",
+                    tool=call.name, tool_call_id=call.id,
+                )
                 return ToolCallOutcome(result=ToolResult(
                     tool_call_id=call.id, name=call.name,
                     content="Cancelled before execution", is_error=True,

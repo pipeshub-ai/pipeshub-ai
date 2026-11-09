@@ -7,10 +7,13 @@ Listing and access go through the entity listing engine
 (``list_accessible_person_records``). A person is shown (named, counted,
 offered as a choice or a continuation) only when they link to a record the
 user can read: a name that matches no one, a person with no readable linked
-records and a probe that ran out of time all get the same reply.
+records and a probe that ran out of time all get the same reply. That holds
+for people who are not members (Person nodes) as for members: they are
+candidates only through the same readable-record probe.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -27,7 +30,7 @@ from app.agents.actions.knowledge_graph.ops.entity_records import (
 )
 from app.agents.actions.knowledge_graph.views import _read_hint, _trunc
 from app.agents.agent_loop.entity_search_tool import entity_search_offered_in
-from app.config.constants.arangodb import EntityRelations
+from app.config.constants.arangodb import CollectionNames, EntityRelations
 from app.modules.agents.qna.chat_state import remember_record_ids
 from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
@@ -64,6 +67,8 @@ _MAX_LIMIT = 50
 _DEFAULT_LIMIT = 20
 _MAX_READ_HINT_IDS = 8
 _USER_MATCH_LIMIT = 20
+# Non-members are fetched wider than they are shown: the one the user can reach must not be cut by namesakes they cannot.
+_PERSON_MATCH_LIMIT = 200
 NO_FURTHER_RECORDS_MSG = (
     "No further readable records for this person - the previous page was the last."
 )
@@ -114,7 +119,7 @@ async def execute_find_records_by_person(
                 return True, _no_match(state, asked, context)
             group, start = shown[0]
         page = await list_accessible_person_records(
-            graph, context, user_ids=[u["id"] for u in group], edge_types=edge_types,
+            graph, context, nodes=_nodes(group), edge_types=edge_types,
             record_types=wanted_types, limit=bounded_limit,
             # The probe already walked the newer candidates and found none readable.
             cursor=cursor or (str(start) if start else None),
@@ -145,15 +150,22 @@ async def execute_find_records_by_person(
     shortener = get_record_id_shortener_if_enabled(state)
     frontend_url = await resolve_frontend_url(state.get("config_service"))
     who = _label(group)
+    # A record reached only through a Person of a member's email is not the member's own.
+    outside = await _reached_only_by_person(graph, context, group, page.records)
     # The roles asked for, as the header says them: a record's own role is not known here.
     roles = wanted_roles or list(ROLE_EDGES)
-    linked = f"linked to {who} as {'one of ' if len(roles) > 1 else ''}{' / '.join(roles)}"
+    role_text = f"as {'one of ' if len(roles) > 1 else ''}{' / '.join(roles)}"
+    linked = f"{'possibly ' if outside is None else ''}linked to {who} {role_text}"
+    not_member = f"linked to {_person_name(group)} (not a member) {role_text}"
+    outside = outside or set()
     cite_refs = await cite_listed_records(
-        state, graph, context.org_id, {r["_key"]: listing_facts(r, linked) for r in page.records if r.get("_key")},
+        state, graph, context.org_id,
+        {r["_key"]: listing_facts(r, not_member if r["_key"] in outside else linked) for r in page.records if r.get("_key")},
     )
     lines = [f"Records {linked}, newest first:", *cite_note(page.records, cite_refs)]
     lines.extend(
         record_line(record, context, shortener, frontend_url, cite=cite_refs.get(record["_key"]))
+        + (f" (linked to {_person_name(group)} (not a member), not to {who})" if record.get("_key") in outside else "")
         for record in page.records
     )
     lines.append("")
@@ -191,28 +203,92 @@ async def _shown_people(
 ) -> list[tuple[list[dict[str, Any]], int]]:
     """The people ``asked`` names that link to a record the user can read, each
     with the candidate offset of the newest one; nobody else may be shown."""
-    people = _people(await graph.find_users(context.org_id, asked, limit=_USER_MATCH_LIMIT))
+    # Both lookups always run, so a name that matches only a non-member costs the same as one that matches no one.
+    members, outsiders = await asyncio.gather(
+        graph.find_users(context.org_id, asked, limit=_USER_MATCH_LIMIT),
+        graph.find_people(context.org_id, asked, limit=_PERSON_MATCH_LIMIT),
+    )
+    people = _people([
+        *({**u, "collection": CollectionNames.USERS.value} for u in members),
+        *({**p, "collection": CollectionNames.PEOPLE.value} for p in outsiders),
+    ])
     if not people:
         return []
-    starts = await readable_person_offsets(
-        graph, context, [[u["id"] for u in group] for group in people],
+    # A group of a member and a Person is probed as its two halves in the same batch, so
+    # a member with no readable record of her own is told apart from one who has.
+    halves = [
+        [_nodes(_members(g)), _nodes([u for u in g if u not in _members(g)])]
+        if _members(g) and len(_members(g)) < len(g) else [_nodes(g)]
+        for g in people
+    ]
+    starts = iter(await readable_person_offsets(
+        graph, context, [nodes for pair in halves for nodes in pair],
         edge_types=edge_types, record_types=record_types,
-    )
-    return [(group, start) for group, start in zip(people, starts) if start is not None]
+    ))
+    shown = []
+    for group, pair in zip(people, halves):
+        found = [next(starts) for _ in pair]
+        readable = [s for s in found if s is not None]
+        if not readable:
+            continue
+        if len(pair) == 2 and found[0] is None:
+            # Only the Person's records are readable: she is shown as the non-member she is, never as the member.
+            shown_group = [u for u in group if u not in _members(group)]
+        else:
+            shown_group = group
+        # Each half's offset counts its own candidates, which are never later than the union's.
+        shown.append((shown_group, min(readable)))
+    return shown
 
 
 def _people(users: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-    """Users grouped into people: nodes sharing an email are one person."""
+    """Nodes (User or Person) grouped into people: nodes sharing an email are one person."""
     groups: dict[str, list[dict[str, Any]]] = {}
     for user in users:
         if not user.get("id"):
             continue
         email = (user.get("email") or "").strip().casefold()
-        groups.setdefault(email or f"id:{user['id']}", []).append(user)
+        groups.setdefault(email or f"{user.get('collection')}:{user['id']}", []).append(user)
     return list(groups.values())
 
 
+def _nodes(group: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    return [(u.get("collection") or CollectionNames.USERS.value, u["id"]) for u in group]
+
+
+def _members(group: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [u for u in group if u.get("collection") != CollectionNames.PEOPLE.value]
+
+
+def _person_name(group: list[dict[str, Any]]) -> str:
+    outsiders = [u for u in group if u.get("collection") == CollectionNames.PEOPLE.value]
+    return _trunc(next((u["fullName"] for u in outsiders if (u.get("fullName") or "").strip()), "") or "this person")
+
+
+async def _reached_only_by_person(
+    graph: Any, context: EntityAccessContext, group: list[dict[str, Any]],  # noqa: ANN401
+    records: list[dict[str, Any]],
+) -> set[str] | None:
+    """Ids of the listed records that link to none of the group's members, or None
+    when the links could not be read. Only a group of a member and a Person needs the question."""
+    members = {u["id"] for u in _members(group)}
+    if not members or len(members) == len(group):
+        return set()
+    # shortcut: one read per listed record (at most 50), only for a member who shares an email with a Person.
+    keyed = [r for r in records if r.get("_key")]
+    try:
+        linked = await asyncio.gather(*(graph.get_record_people(r["_key"], context.org_id) for r in keyed))
+    except Exception:  # unknown: naming the Person here could name one with no readable record
+        logger.warning("find_records_by_person could not attribute records", exc_info=True)
+        return None
+    return {r["_key"] for r, people in zip(keyed, linked) if not members & {p["id"] for p in people}}
+
+
 def _label(group: list[dict[str, Any]]) -> str:
+    # A person who is not a member is named, never given an email: the caller may not know it.
+    if not _members(group):
+        return f"{_person_name(group)} (not a member)"
+    group = _members(group)
     name = next((u["fullName"] for u in group if (u.get("fullName") or "").strip()), "")
     email = next((u["email"] for u in group if u.get("email")), "")
     if name and email:
@@ -222,8 +298,11 @@ def _label(group: list[dict[str, Any]]) -> str:
 
 def _ambiguous(asked: str, groups: list[list[dict[str, Any]]]) -> str:
     lines = [f'Several people match "{_trunc(asked)}":']
-    lines.extend(f"- {_label(group)}" for group in groups)
-    lines.append("Call knowledgegraph__find_records_by_person again with the person's email.")
+    lines.extend(f"- {_label(group)}" for group in groups[:_USER_MATCH_LIMIT])
+    if any(_members(group) for group in groups):
+        lines.append("Call knowledgegraph__find_records_by_person again with the person's email.")
+    if any(not _members(group) for group in groups):
+        lines.append("People marked (not a member) have no email to give: ask the user for more of the name.")
     return "\n".join(lines)
 
 
@@ -244,7 +323,7 @@ def _continue_call(
 ) -> str:
     # The cursor offsets this person's candidate set, so the next call must resolve to the same nodes:
     # "me" stays "me" (it keeps the caller's own node), anyone else is pinned by email when there is one.
-    who = "me" if is_self else next((u["email"] for u in group if u.get("email")), "") or asked
+    who = "me" if is_self else next((u["email"] for u in _members(group) if u.get("email")), "") or asked
     args = [f'person="{who}"']
     if roles:
         args.append(f"roles={roles!r}".replace("'", '"'))

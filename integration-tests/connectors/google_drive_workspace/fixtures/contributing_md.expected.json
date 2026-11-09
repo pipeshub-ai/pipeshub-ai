@@ -1750,6 +1750,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -1761,7 +1763,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "sudo apt update\nsudo apt install python3.12-venv\nsudo apt-get install libreoffice\nsudo apt install libmariadb-dev",
@@ -1814,6 +1817,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -1825,7 +1830,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "# Install Homebrew if not already installed\n/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"\n\n\n# Install required packages\nbrew install python@3.12\nbrew install libreoffice\nbrew install mariadb-connector-c # Add to path",
@@ -1878,6 +1884,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -1889,7 +1897,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "- Install Python 3.12\n- Consider using WSL2 for a Linux-like environment",
@@ -1942,6 +1951,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -1953,7 +1964,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "1. **Docker** - Install Docker for your platform\n2. **Node.js** - Install Node.js(v22.15.0)\n3. **Python 3.12** - Install as shown above\n4. **Optional debugging tools:**\n   - MongoDB Compass or Studio 3T\n   - etcd-manager",
@@ -2006,6 +2018,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -2017,7 +2031,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "docker run -d --name redis --restart always -p 6379:6379 redis:bookworm",
@@ -2070,6 +2085,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -2081,7 +2098,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "docker run -p 6333:6333 -p 6334:6334 -e QDRANT__SERVICE__API_KEY=your_qdrant_secret_api_key qdrant/qdrant:v1.13.6",
@@ -2159,6 +2177,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -2170,7 +2190,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "docker run -d --name etcd-server --restart always -p 2379:2379 -p 2380:2380 quay.io/coreos/etcd:v3.5.17 /usr/local/bin/etcd \\\n  --name etcd0 \\\n  --data-dir /etcd-data \\\n  --listen-client-urls http://0.0.0.0:2379 \\\n  --advertise-client-urls http://0.0.0.0:2379 \\\n  --listen-peer-urls http://0.0.0.0:2380",
@@ -2223,6 +2244,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -2234,7 +2257,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "docker run -d --name etcd-server --restart always `\n  -p 2379:2379 -p 2380:2380 `\n  quay.io/coreos/etcd:v3.5.17 /usr/local/bin/etcd `\n  --name etcd0 `\n  --data-dir /etcd-data `\n  --listen-client-urls http://0.0.0.0:2379 `\n  --advertise-client-urls http://0.0.0.0:2379 `\n  --listen-peer-urls http://0.0.0.0:2380",
@@ -2287,6 +2311,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -2298,7 +2324,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "docker run -e ARANGO_ROOT_PASSWORD=your_password -p 8529:8529 --name arango --restart always -d arangodb:3.12.4",
@@ -2551,6 +2578,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -2562,7 +2591,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "docker run -d --name mongodb --restart always -p 27017:27017 \\\n  -e MONGO_INITDB_ROOT_USERNAME=admin \\\n  -e MONGO_INITDB_ROOT_PASSWORD=password \\\n  mongo:8.0.6",
@@ -2615,6 +2645,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -2626,7 +2658,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "docker run -d --name mongodb --restart always -p 27017:27017 `\n  -e MONGO_INITDB_ROOT_USERNAME=admin `\n  -e MONGO_INITDB_ROOT_PASSWORD=password `\n  mongo:8.0.6",
@@ -2704,6 +2737,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -2715,7 +2750,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "docker run -d --name zookeeper --restart always -p 2181:2181 \\\n  -e ZOOKEEPER_CLIENT_PORT=2181 \\\n  -e ZOOKEEPER_TICK_TIME=2000 \\\n  confluentinc/cp-zookeeper:7.9.0",
@@ -2768,6 +2804,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -2779,7 +2817,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "docker run -d --name zookeeper --restart always -p 2181:2181 `\n  -e ZOOKEEPER_CLIENT_PORT=2181 `\n  -e ZOOKEEPER_TICK_TIME=2000 `\n  confluentinc/cp-zookeeper:7.9.0",
@@ -2857,6 +2896,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -2868,7 +2909,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "docker run -d --name kafka --restart always --link zookeeper:zookeeper -p 9092:9092 \\\n  -e KAFKA_BROKER_ID=1 \\\n  -e KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181 \\\n  -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \\\n  -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT \\\n  -e KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT \\\n  -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \\\n  confluentinc/cp-kafka:7.9.0",
@@ -2921,6 +2963,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -2932,7 +2976,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "docker run -d --name kafka --restart always --link zookeeper:zookeeper -p 9092:9092 `\n  -e KAFKA_BROKER_ID=1 `\n  -e KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181 `\n  -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 `\n  -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT `\n  -e KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT `\n  -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 `\n  confluentinc/cp-kafka:7.9.0",
@@ -2985,6 +3030,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -2996,7 +3043,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "cd backend/nodejs/apps\ncp ../../env.template .env  # Create .env file from template\nnpm install\nnpm run dev",
@@ -3049,6 +3097,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -3060,7 +3110,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "cd backend/python\ncp ../env.template .env\n# Create and activate virtual environment\npython3.12 -m venv venv\nsource venv/bin/activate  # On Windows: venv\\Scripts\\activate\n\n# Install uv\npip install uv\n\n# Install dependencies\nuv pip install -e .\n\n# Install additional language models\npython -c \"import nltk; nltk.download('punkt')\"\n\n# Run each service in a separate terminal: First, cd backend/python and activate the existing virtual environment\n# Start the embedding server before indexing and query when using default local embeddings (HuggingFace / SentenceTransformers).\npython -m app.embedding_main\npython -m app.connectors_main\npython -m app.indexing_main\npython -m app.query_main\npython -m app.docling_main",
@@ -3113,6 +3164,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -3124,7 +3177,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "cd frontend\ncp env.template .env  # Modify port if Node.js backend uses a different one\nnpm install\nPORT=3001 npm run dev",
@@ -3802,6 +3856,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -3813,7 +3869,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "cd backend/nodejs/apps\n\n# Run all unit tests (parallel, 4 workers)\nnpm run test\n\n# Run tests with detailed coverage report (text + lcov + html)\nnpm run test:coverage\n\n# Run tests with coverage thresholds (90% lines/functions/statements, 80% branches)\nnpm run test:coverage-check\n\n# Run a specific test file\nnpx mocha --require ts-node/register tests/libs/utils/password.utils.test.ts",
@@ -3866,6 +3923,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -3877,7 +3936,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "cd backend/python\nsource venv/bin/activate\n\n# Run all unit tests\npytest\n\n# Run tests with verbose output\npytest -v\n\n# Run a specific test file\npytest tests/unit/connectors/sources/test_dropbox_connector.py\n\n# Run a specific test function\npytest tests/unit/connectors/sources/test_dropbox_connector.py::test_function_name\n\n# Run tests matching a keyword expression\npytest -k \"gmail\"\n\n# Run tests with coverage\npytest --cov=app --cov-report=term-missing\n\n# Run tests in parallel (requires pytest-xdist)\npytest -n auto",
@@ -4457,6 +4517,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -4468,7 +4530,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "# Visible browser + trace for every test\nnpx playwright test --headed --trace on\n\n# Slow motion \u2014 1 second pause between each action\nnpx playwright test --headed --trace on --slow-mo=1000\n\n# Record video of every test\nnpx playwright test --headed --video on\n\n# Screenshot after every test (pass or fail)\nnpx playwright test --screenshot on",
@@ -4681,6 +4744,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -4692,7 +4757,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "npm run test:e2e:ui",
@@ -4770,6 +4836,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -4781,7 +4849,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "# Open the HTML report \u2014 click any test to see its trace\nnpx playwright show-report\n\n# Open a specific trace file directly\nnpx playwright show-trace test-results/<test-folder>/trace.zip",
@@ -4959,6 +5028,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -4970,7 +5041,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "frontend/tests/e2e/\n\u251c\u2500\u2500 setup/           # Auth setup (login + save storageState)\n\u251c\u2500\u2500 fixtures/        # Shared test fixtures (API context, base)\n\u251c\u2500\u2500 helpers/         # Reusable interaction helpers\n\u2502   \u251c\u2500\u2500 login.helper.ts\n\u2502   \u251c\u2500\u2500 entity-table.helper.ts\n\u2502   \u251c\u2500\u2500 pagination.helper.ts\n\u2502   \u251c\u2500\u2500 search.helper.ts\n\u2502   \u251c\u2500\u2500 sidebar-form.helper.ts\n\u2502   \u2514\u2500\u2500 tag-input.helper.ts\n\u251c\u2500\u2500 seed/            # Data seeding and cleanup\n\u251c\u2500\u2500 auth/            # Login and logout tests\n\u251c\u2500\u2500 navigation/      # Routing and sidebar navigation tests\n\u251c\u2500\u2500 workspace/       # Workspace settings page tests\n\u251c\u2500\u2500 users/           # Users table, invite, actions, bulk ops\n\u251c\u2500\u2500 groups/          # Groups table, create, actions\n\u251c\u2500\u2500 teams/           # Teams table, create, actions\n\u251c\u2500\u2500 chat/            # Chat interface tests\n\u2514\u2500\u2500 knowledge-base/  # Knowledge base tests",
@@ -5123,6 +5195,8 @@
       "citation_metadata": null,
       "code_metadata": {
         "decorators": null,
+        "modifiers": null,
+        "type_param_count": null,
         "dependencies": null,
         "docstring": null,
         "end_line": null,
@@ -5134,7 +5208,8 @@
         "qualified_name": null,
         "signature": null,
         "start_line": null,
-        "type_table": null
+        "type_table": null,
+        "macro_table": null
       },
       "comments": [],
       "data": "import { test, expect } from '@playwright/test';\n\ntest.describe('My Feature', () => {\n  test('loads the page', async ({ page }) => {\n    await page.goto('/workspace/my-feature/');\n    await expect(page.locator('text=\"My Feature\"')).toBeVisible();\n  });\n});",

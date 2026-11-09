@@ -110,7 +110,7 @@ class ViewerScopeResolver:
             parts = [p for a, p in zip(apps, parts, strict=True) if a not in legacy]
             groups = frozenset[str]().union(*(g for g, _, _ in parts))
             scopes = tuple(s for _, ss, _ in parts for s in ss)
-            pending = await self._hierarchy.pending_scopes(org_id)
+            pending_by_app = await self._hierarchy.pending_scopes(org_id)
             # A node that only a direct grant can open is not asked about unless the viewer holds one.
             asked = groups | {s.id for s in scopes if not s.needs_grant or s.id in who.granted_ids}
             # Bounded on what is asked, so the store is not run over an unbounded set only to be refused afterwards.
@@ -137,7 +137,8 @@ class ViewerScopeResolver:
                 if s.restricted and s.id not in readable
                 and (s.rule_restricted or uses_exclusion(facts[s.connector_id].connector_type))),
             principal_tokens=who.tokens,
-            pending=pending,
+            pending=frozenset().union(*pending_by_app.values()),
+            blocked=frozenset(pending_by_app),
             legacy_apps=legacy,
             version=version,
         )
