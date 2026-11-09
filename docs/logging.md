@@ -201,7 +201,7 @@ consumer's or the boot job's OrgContext. So every line of a run, the connector's
 | Event | Level | Fields |
 | --- | --- | --- |
 | `sync_run.start` | INFO | `sync_type` (`full`, `incremental`) |
-| `sync_run.end` | INFO; WARNING for `partial` or a lost lease; a failure at its class's level | `sync_type`, `duration_ms`, `outcome`, `reason`, `full_sync_cut_short=true` when the next sync runs in full; on failure the `log_failure` fields |
+| `sync_run.end` | INFO; WARNING for `partial` or a lost lease; a failure at its class's level | `sync_type`, `duration_ms`, `outcome`, `reason`, `full_sync_cut_short=true` when the next sync runs in full, the run's counts and `backoff_wait_ms` (below); on failure the `log_failure` fields |
 | `sync_run.refused` | INFO | `reason` (the admission) |
 | `sync_run.start_failed` | the failure's level | the `log_failure` fields |
 | `sync_step.failed` | ERROR, WARNING for an optional step | `step` (`status_write`, `idle_write`, `drain`, `unlink`, …), the `log_failure` fields |
@@ -210,6 +210,35 @@ consumer's or the boot job's OrgContext. So every line of a run, the connector's
 `skipped` with `reason=<code>` (the connector declined, e.g. `DESKTOP_OFFLINE`); `failure` with `error_class=cancelled` and
 `reason` = `requested`, `shutdown`, `cancelled` or `lease_lost` for a stop; `failure` with the exception's class otherwise. A
 failed run's exception is logged once there; `SyncTaskManager` then logs it at DEBUG (`task.failed`).
+
+Counts on `sync_run.end`, each left out when 0. Unlike `agent_turn.end`, which prints its zero counts, a sync line stays
+short: a count that is absent is 0.
+- `records_new`: not stored before. A placeholder (a stand-in for a parent not synced yet) is not counted; the real record
+  that replaces it counts as new.
+- `records_updated`: stored before, and its source revision changed, it came back from the trash, or it was renamed onto
+  a new external id.
+- `records_unchanged`: stored before with the same source revision and saved again, which a full sync does to every record.
+  Its name, place or access may still have been refreshed.
+- `records_deleted`: removed or sent to the trash, descendants included. A delete of something not stored counts nothing.
+- `records_failed`: a batch of new or changed records that failed for good, a record the schema refused, or a delete the
+  store refused. A single-record update that fails raises to the connector and is not counted.
+- `records_skipped`, the sum of `skipped_owned_elsewhere` (its id belongs to another org or connector), `skipped_in_trash`
+  (a user deleted it; the delete holds until the purge) and `skipped_not_content` (a system file such as `Thumbs.db`).
+- `backoff_wait_ms`: how long this run's own calls kept the connector's `ResiliencePolicy` gate shut after a 429, a
+  retryable 5xx or a network error, counted once however many calls waited behind it. Only clients built on
+  `ResiliencePolicy` report it. A client that retries by itself (python-gitlab, the Google and Microsoft SDKs) does not, so
+  no field there means "not measured", not "no wait". A backoff armed outside the run (a webhook or an API call on the same
+  connector) is not counted, even when it held the run's calls.
+
+A write counts once its transaction commits; deletes count after theirs. Limits: on a deadlock retry,
+`retry_on_deadlock` re-runs the whole `on_new_records` call, so `records_unchanged` and `records_failed` can count again
+records an earlier attempt stored or refused; likewise a connector that sends a failed batch again counts it failed, then
+new. Work the run hands to `loop.run_in_executor` (which does not copy the context), or that a connector leaves running
+after `run_sync` returns, is not counted. On Neo4j with `NEO4J_EXPLICIT_TRANSACTIONS=false` the single-record updates
+(content, metadata, moves and permissions) commit each statement on their own, so one that fails part-way is not counted
+although some of it stayed; batch writes still run in a real transaction. Records a connector writes to the graph without
+the processor are not counted. A rename or move that the connector sends through `on_records_moved` rewrites the
+stored record in place and is not counted either, unless the old record is missing and the move falls back to a plain add.
 
 ## Agent loop events (Python)
 
