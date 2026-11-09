@@ -2068,6 +2068,7 @@ class TestRun:
             host="0.0.0.0",
             port=8091,
             log_level="info",
+            access_log=False,
             reload=True,
             workers=1,
             timeout_worker_healthcheck=60,
@@ -2085,6 +2086,7 @@ class TestRun:
             host="127.0.0.1",
             port=9000,
             log_level="info",
+            access_log=False,
             reload=False,
             workers=1,
             timeout_worker_healthcheck=60,
@@ -2096,6 +2098,14 @@ class TestRun:
 # ---------------------------------------------------------------------------
 class TestModuleLevelCode:
     """Tests for module-level attributes."""
+
+    def test_the_request_line_sits_just_inside_the_request_context(self):
+        from app.api.middlewares.request_context import RequestContextMiddleware
+        from app.api.middlewares.request_log import RequestLogMiddleware
+        from app.indexing_main import app
+
+        classes = [m.cls for m in app.user_middleware]
+        assert classes.index(RequestContextMiddleware) + 1 == classes.index(RequestLogMiddleware)
 
     def test_app_is_fastapi_instance(self):
         """The module-level app is a FastAPI instance."""
@@ -2232,6 +2242,7 @@ class TestRunWorkersWarning:
                 host="0.0.0.0",
                 port=8091,
                 log_level="info",
+                access_log=False,
                 reload=True,
                 workers=1,
                 timeout_worker_healthcheck=60,
@@ -2252,6 +2263,7 @@ class TestRunWorkersWarning:
             host="0.0.0.0",
             port=8091,
             log_level="info",
+            access_log=False,
             reload=False,
             workers=4,
             timeout_worker_healthcheck=60,
