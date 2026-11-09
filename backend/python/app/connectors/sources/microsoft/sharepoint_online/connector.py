@@ -699,6 +699,8 @@ class SharePointConnector(BaseConnector):
         self._refresh_all_groups = False
         # Set for a run whose user listing is not trusted and that has no earlier disabled set to fall back on.
         self._disabled_set_unknown = False
+        # Whether this run's disabled set comes from a trusted listing, and so may become the stored one.
+        self._listing_trusted = True
 
         self.tenant_region: str = None
         self.sync_filters: FilterCollection = FilterCollection()
@@ -3391,9 +3393,10 @@ class SharePointConnector(BaseConnector):
                     sync_point_key,
                     {"nextLink": None, "deltaLink": new_delta_link}
                 )
-                await self.user_sync_point.update_sync_point(
-                    INACTIVE_USERS_SYNC_POINT_KEY, sync_point_data={"emails": sorted(self._inactive_emails)}
-                )
+                if self._listing_trusted:
+                    await self.user_sync_point.update_sync_point(
+                        INACTIVE_USERS_SYNC_POINT_KEY, sync_point_data={"emails": sorted(self._inactive_emails)}
+                    )
         else:
             await self._perform_delta_sync(delta_link, sync_point_key)
 
@@ -3676,14 +3679,17 @@ class SharePointConnector(BaseConnector):
             # Saved once every group has been read with the new set (_sync_azure_ad_groups).
             self._refresh_all_groups = stored_emails != self._inactive_emails
             self._disabled_set_unknown = False
+            self._listing_trusted = True
             await self.data_entities_processor.on_new_user_groups(
                 everyone_groups(self.connector_name, self.connector_id, users)
             )
         else:
             # Unknown is not empty: a listing that may be cut or stale replaces no membership and no disabled set.
             self.logger.warning("User listing is not trusted; no user loses access and the claim groups keep their members this run")
-            self._inactive_emails = stored_emails
+            # The accounts a cut listing shows as disabled are disabled; the rest is the last good set. Used this run, never saved.
+            self._inactive_emails = stored_emails | {user.email.lower() for user in users if user.email and user.is_active is False}
             self._refresh_all_groups = False
+            self._listing_trusted = False
             # Without an earlier set nobody is known to be enabled either: no group is read until a trusted listing.
             self._disabled_set_unknown = stored is None
             self._health.skipped("user listing", "not trusted; the claim groups and the disabled set were not rewritten")

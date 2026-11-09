@@ -529,7 +529,8 @@ async def test_sharepoint_incomplete_listing_leaves_the_groups_and_the_disabled_
     await c._sync_users()
     c.data_entities_processor.on_new_user_groups.assert_not_awaited()
     c.data_entities_processor.on_new_app_users.assert_awaited_once()  # the listed users are still saved
-    assert c._inactive_emails == {"old@x.com"} and c._refresh_all_groups is False
+    # the accounts the cut listing shows as disabled are used this run, on top of the last good set
+    assert c._inactive_emails == {"old@x.com", "blocked@x.com"} and c._refresh_all_groups is False
 
 
 @pytest.mark.asyncio
@@ -538,7 +539,7 @@ async def test_sharepoint_stale_listing_with_a_matching_count_leaves_the_groups_
     _sharepoint_sync_point(c, [])
     await c._sync_users()
     c.data_entities_processor.on_new_user_groups.assert_not_awaited()
-    assert c._inactive_emails == set() and c._refresh_all_groups is False
+    assert c._inactive_emails == {"blocked@x.com"} and c._refresh_all_groups is False
 
 
 @pytest.mark.asyncio
@@ -667,3 +668,17 @@ async def test_sharepoint_run_reads_no_group_while_the_disabled_set_is_unknown(s
         with pytest.raises(SharePointSyncIncomplete):  # an untrusted listing leaves the run incomplete, which a sync reports
             await c.run_sync()
     assert c._sync_user_groups.await_count == (1 if reads_groups else 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("complete", "saved"), [(True, True), (False, False)])
+async def test_sharepoint_the_disabled_set_is_saved_only_from_a_trusted_listing(complete: bool, saved: bool) -> None:
+    c, _ = _sharepoint(["a"], [_app_user("a"), _app_user("blocked", active=False)], complete=complete)
+    _sharepoint_sync_point(c, [])
+    c.user_group_sync_point = MagicMock(read_sync_point=AsyncMock(return_value=None), update_sync_point=AsyncMock())
+    c.user_sync_point.update_sync_point = AsyncMock()
+    c._get_initial_delta_link = AsyncMock(return_value="delta")
+    c._perform_initial_full_sync = AsyncMock(return_value=True)
+    await c._sync_users()
+    await c._sync_azure_ad_groups()
+    assert c.user_sync_point.update_sync_point.await_count == (1 if saved else 0)
