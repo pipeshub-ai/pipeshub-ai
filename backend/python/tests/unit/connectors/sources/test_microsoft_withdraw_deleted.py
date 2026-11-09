@@ -502,3 +502,125 @@ async def test_outlook_a_404_then_a_server_error_keeps_access() -> None:
     c.external_users_client.client.users.by_user_id.return_value.get = AsyncMock(side_effect=[_odata_error(404), _odata_error(500)])
     await c._sync_users()
     assert set(stored) == {"a", "x"}
+
+
+# ----------------------------------- group writes need a trusted listing
+
+def _sharepoint_sync_point(c: SharePointConnector, emails: list[str] | None) -> None:
+    c.user_sync_point.read_sync_point = AsyncMock(return_value=None if emails is None else {"emails": emails})
+
+
+@pytest.mark.asyncio
+async def test_sharepoint_trusted_listing_replaces_the_claim_groups_and_the_disabled_set() -> None:
+    c, _ = _sharepoint(["a", "blocked"], [_app_user("a"), _app_user("blocked", active=False)])
+    _sharepoint_sync_point(c, [])
+    await c._sync_users()
+    c.data_entities_processor.on_new_user_groups.assert_awaited_once()
+    assert c._inactive_emails == {"blocked@x.com"} and c._refresh_all_groups is True
+
+
+@pytest.mark.asyncio
+async def test_sharepoint_incomplete_listing_leaves_the_groups_and_the_disabled_set_alone() -> None:
+    c, _ = _sharepoint(["a", "b"], [_app_user("a"), _app_user("blocked", active=False)], complete=False)
+    _sharepoint_sync_point(c, ["old@x.com"])
+    await c._sync_users()
+    c.data_entities_processor.on_new_user_groups.assert_not_awaited()
+    c.data_entities_processor.on_new_app_users.assert_awaited_once()  # the listed users are still saved
+    assert c._inactive_emails == {"old@x.com"} and c._refresh_all_groups is False
+
+
+@pytest.mark.asyncio
+async def test_sharepoint_stale_listing_with_a_matching_count_leaves_the_groups_alone() -> None:
+    c, _ = _sharepoint(["a", "new"], [_app_user("a"), _app_user("blocked", active=False)], status="present")
+    _sharepoint_sync_point(c, [])
+    await c._sync_users()
+    c.data_entities_processor.on_new_user_groups.assert_not_awaited()
+    assert c._inactive_emails == set() and c._refresh_all_groups is False
+
+
+@pytest.mark.asyncio
+async def test_sharepoint_a_direct_read_that_raised_leaves_the_groups_alone() -> None:
+    c, _ = _sharepoint(["a", "x"], [_app_user("a")], status=_odata_error(429))
+    await c._sync_users()
+    c.data_entities_processor.on_new_user_groups.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sharepoint_failed_read_of_the_stored_users_leaves_the_groups_alone() -> None:
+    c, _ = _sharepoint(["a"], [_app_user("a")])
+    c.data_entities_processor.get_app_user_links = AsyncMock(side_effect=RuntimeError("db down"))
+    await c._sync_users()
+    c.data_entities_processor.on_new_user_groups.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sharepoint_a_listing_that_never_becomes_trusted_does_not_stop_the_sync_and_a_good_one_catches_up() -> None:
+    c, _ = _sharepoint(["a", "b"], [_app_user("a")], complete=False)
+    for _ in range(3):
+        await c._sync_users()
+    c.data_entities_processor.on_new_user_groups.assert_not_awaited()
+    c.msgraph_client.get_all_users = AsyncMock(return_value=UserListing([_app_user("a"), _app_user("b"), _app_user("new")]))
+    await c._sync_users()
+    groups = c.data_entities_processor.on_new_user_groups.await_args.args[0]
+    assert groups  # the claim groups are written once a trusted listing arrives
+
+
+def _outlook_run(c: OutlookConnector) -> tuple[AsyncMock, AsyncMock]:
+    """run_sync with everything but the user sync and the group sync stubbed; returns the two group mocks."""
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    groups, conversations = AsyncMock(return_value=[]), AsyncMock()
+    c._sync_user_groups, c._sync_group_conversations = groups, conversations
+    c._reinitialize_client_if_needed = AsyncMock()
+    c.external_outlook_client = MagicMock()
+
+    async def no_mail(*_a: object, **_k: object):  # noqa: ANN202
+        return
+        yield
+
+    c._process_users = no_mail
+    c.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
+    stack = ExitStack()
+    stack.enter_context(patch("app.connectors.sources.microsoft.outlook.connector.load_connector_filters",
+                              AsyncMock(return_value=(MagicMock(get=MagicMock(return_value=None)), MagicMock()))))
+    stack.enter_context(patch("app.connectors.sources.microsoft.outlook.connector.notify_sync_outcome", AsyncMock()))
+    c._stack = stack
+    return groups, conversations
+
+
+@pytest.mark.asyncio
+async def test_outlook_trusted_listing_rewrites_the_groups_and_fills_the_cache() -> None:
+    c, _ = _outlook(["a"], [_page([_graph_user("a")])])
+    groups, _ = _outlook_run(c)
+    with c._stack:
+        await c.run_sync()
+    groups.assert_awaited_once()
+    assert c._user_cache == {"a@x.com": "a"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scenario", ["incomplete", "stale", "read_raised", "stored_read_failed"])
+async def test_outlook_untrusted_listing_rewrites_no_group_and_keeps_the_last_good_cache(scenario: str) -> None:
+    pages = [_page([_graph_user("a")], count=3)] if scenario == "incomplete" else [_page([_graph_user("a")])]
+    status = {"stale": "present", "read_raised": _odata_error(429)}.get(scenario, "gone")
+    c, stored = _outlook(["a", "x"], pages, status=status)
+    if scenario == "stored_read_failed":
+        c.data_entities_processor.get_app_user_links = AsyncMock(side_effect=RuntimeError("db down"))
+    c._user_cache = {"old@x.com": "old"}
+    groups, conversations = _outlook_run(c)
+    with c._stack:
+        await c.run_sync()  # the sync goes on: it does not raise
+    groups.assert_not_awaited()
+    conversations.assert_not_awaited()
+    assert c._user_cache == {"old@x.com": "old"}
+    c.data_entities_processor.on_new_app_users.assert_awaited_once()  # the listed users are still saved
+    assert c._full_sync_incomplete is True  # the skipped groups are owed, as after a failed group sync
+
+
+@pytest.mark.asyncio
+async def test_outlook_a_cut_refresh_does_not_replace_the_last_good_cache() -> None:
+    c, _ = _outlook([], [_page([_graph_user("a")], count=3)])
+    c._user_cache = {"old@x.com": "old"}
+    await c._populate_user_cache()
+    assert c._user_cache == {"old@x.com": "old"}

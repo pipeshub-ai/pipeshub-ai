@@ -341,6 +341,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
         # User cache for performance optimization
         self._user_cache: dict[str, str] = {}  # email -> source_user_id mapping
         self._user_cache_timestamp: int | None = None
+        self._users_trusted = True  # whether the last user listing of the sync could be trusted
         self._user_cache_ttl: int = 3600  # 1 hour TTL in seconds
 
         # Group cache for web URL construction
@@ -534,6 +535,8 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             self.logger.info("Refreshing user cache...")
             users = await self._get_all_users_external()
 
+        if not getattr(users, "complete", True) and self._user_cache:
+            return  # a cut list does not replace the last good cache
         self._user_cache = {user.email.lower(): user.source_user_id for user in users if user.email}
         self._user_cache_timestamp = current_time
         self.logger.info(f"User cache refreshed with {len(self._user_cache)} users")
@@ -580,8 +583,14 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             # without Group.Read.All) must not stop mail from syncing. It is counted as skipped,
             # not raised: a failed full sync is owed again, which first clears every delta link.
             try:
-                synced_groups = await self._sync_user_groups()
-                await self._sync_group_conversations(synced_groups)
+                if self._users_trusted:
+                    synced_groups = await self._sync_user_groups()
+                    await self._sync_group_conversations(synced_groups)
+                else:
+                    # Unknown is not empty: a listing that may be cut or stale rewrites no group's members.
+                    self.logger.warning("User listing is not trusted; groups keep their stored members this run")
+                    self._skipped["groups"] += 1
+                    self._full_sync_incomplete = True
             except Exception as e:
                 self.logger.error(f"Microsoft 365 groups sync failed; syncing mailboxes anyway: {e}")
                 self._skipped["groups"] += 1
@@ -621,9 +630,8 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             # Get active users from database
             all_active_users = await self.data_entities_processor.get_all_active_users()
 
-            # The same list feeds the user cache: a second /users read could fail or differ.
-            await self._populate_user_cache(all_enterprise_users)
-            email_to_source_id = self._user_cache
+            # The same list feeds the user cache (below, once it is trusted): a second /users read could fail or differ.
+            email_to_source_id = {u.email.lower(): u.source_user_id for u in all_enterprise_users if u.email}
 
             # Filter active users that exist in enterprise (add source_user_id)
             users_to_sync = []
@@ -656,7 +664,9 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
 
             # Sync all enterprise users to database
             await self.data_entities_processor.on_new_app_users(all_enterprise_users)
-            await self._withdraw_disabled_app_users(all_enterprise_users)
+            self._users_trusted = await self._withdraw_disabled_app_users(all_enterprise_users)
+            if self._users_trusted:
+                await self._populate_user_cache(all_enterprise_users)
 
             self.logger.info(f"✅ Synced {len(all_enterprise_users)} enterprise users, {len(users_to_sync)} active users to process")
 
@@ -666,38 +676,49 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             self.logger.error(f"Error syncing users: {e}")
             raise
 
-    async def _withdraw_disabled_app_users(self, listing: OutlookUserListing) -> None:
+    async def _withdraw_disabled_app_users(self, listing: OutlookUserListing) -> bool:
         """Take the connector away from stored users (guest accounts included) whose account
         is disabled, and from those the complete user read of this sync does not list that
         Microsoft confirms are gone (a 404 on the user itself) or disabled. Enabling or
         restoring the account saves the user, and the access, again. The id sets are those of
         this sync's own read and are empty unless it was complete, so an incomplete or empty
         read withdraws nobody (the directory always has users); neither does a stale listing,
-        a failed or throttled read of the user, or a failed read of the stored users."""
+        a failed or throttled read of the user, or a failed read of the stored users.
+
+        Returns whether the listing can be trusted: every stored account it does not list was
+        confirmed gone. An incomplete or empty listing, a failed read of the stored users, and
+        an unlisted account that was found (disabled included) or whose read failed make it
+        untrusted."""
         listed, disabled = listing.listed_ids, listing.disabled_ids
         if not listed:
             self.logger.warning("User listing is incomplete or empty; no user loses access this run")
-            return
+            return False
         try:
             stored = await self.data_entities_processor.get_app_user_links(self.connector_id)
         except Exception as e:
             self.logger.error(f"Could not read the stored users; no user loses access this run: {e}")
-            return
+            return False
         gone = []
+        trusted = True
         for u in stored:
             sid = u.source_user_id
             if not sid or (sid in listed and sid not in disabled):
                 continue
             if sid not in listed:
                 try:
-                    if await read_user_status(self.external_users_client.client, sid) == "present":
-                        continue
+                    status = await read_user_status(self.external_users_client.client, sid)
                 except Exception as e:
                     self.logger.error(f"Could not confirm user {sid} is gone; keeping the access: {e}")
+                    trusted = False
+                    continue
+                if status != "gone":
+                    trusted = False
+                if status == "present":
                     continue
             gone.append(u)
         if gone:
             await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+        return trusted
 
     async def _get_all_users_external(self) -> OutlookUserListing:
         """Get all users using external Users Groups API with pagination."""

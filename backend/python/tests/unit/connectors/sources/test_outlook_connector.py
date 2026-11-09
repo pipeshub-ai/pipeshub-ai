@@ -1956,7 +1956,10 @@ class TestSyncUsersDeep:
             app_name=Connectors.OUTLOOK, connector_id="conn-1",
             source_user_id="su1", email="active@test.com", full_name="Active User",
         )
-        connector._get_all_users_external = AsyncMock(return_value=OutlookUserListing([enterprise_user]))
+        listing = OutlookUserListing([enterprise_user])
+        listing.listed_ids = {"su1"}  # a complete read
+        connector._get_all_users_external = AsyncMock(return_value=listing)
+        connector.data_entities_processor.get_app_user_links = AsyncMock(return_value=[])
 
         active_user = MagicMock()
         active_user.email = "active@test.com"

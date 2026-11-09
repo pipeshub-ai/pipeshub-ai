@@ -3608,34 +3608,42 @@ class SharePointConnector(BaseConnector):
         else:
             return PermissionType.READ
 
-    async def _withdraw_unlisted_app_users(self, listed: list[AppUser]) -> None:
+    async def _withdraw_unlisted_app_users(self, listed: list[AppUser]) -> bool:
         """Take the connector away from stored users (guest accounts included) the complete
         user read no longer lists and that Microsoft confirms are gone (a 404 on the user
         itself): a stale listing cannot withdraw anyone, nor can a failed or throttled read
         of the user. Only called after a complete read; an empty list withdraws nobody (the
         directory always has users), and so does a failed read of the stored users.
-        Restoring the account saves the user again."""
+        Restoring the account saves the user again.
+
+        Returns whether the listing can be trusted: every stored account it does not list was
+        confirmed gone. An empty listing, a failed read of the stored users, and an unlisted
+        account that was found or whose read failed make it untrusted."""
         if not listed:
-            return
+            return False
         try:
             stored = await self.data_entities_processor.get_app_user_links(self.connector_id)
         except Exception as e:
             self.logger.error(f"Could not read the stored users; no user loses access this run: {e}")
-            return
+            return False
         kept = {u.source_user_id for u in listed}
         gone = []
+        trusted = True
         for u in stored:
             if not u.source_user_id or u.source_user_id in kept:
                 continue
             try:
                 if await self.msgraph_client.get_user_status(u.source_user_id) != "gone":
+                    trusted = False
                     continue
             except Exception as e:
                 self.logger.error(f"Could not confirm user {u.source_user_id} is gone; keeping the access: {e}")
+                trusted = False
                 continue
             gone.append(u)
         if gone:
             await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+        return trusted
 
     async def _sync_users(self) -> None:
         """Sync the tenant's users, note who is disabled, and rewrite the tenant-wide claim groups.
@@ -3658,17 +3666,21 @@ class SharePointConnector(BaseConnector):
             )
             raise
         await self.data_entities_processor.on_new_app_users(users)
-        if getattr(users, "complete", True):
-            await self._withdraw_unlisted_app_users(users)
-        else:
-            self.logger.warning("User listing is incomplete; no user loses access this run")
-        self._inactive_emails = {user.email.lower() for user in users if user.email and user.is_active is False}
+        trusted = getattr(users, "complete", True) and await self._withdraw_unlisted_app_users(users)
         stored = await self.user_sync_point.read_sync_point(INACTIVE_USERS_SYNC_POINT_KEY)
-        # Saved once every group has been read with the new set (_sync_azure_ad_groups).
-        self._refresh_all_groups = set((stored or {}).get("emails") or []) != self._inactive_emails
-        await self.data_entities_processor.on_new_user_groups(
-            everyone_groups(self.connector_name, self.connector_id, users)
-        )
+        stored_emails = set((stored or {}).get("emails") or [])
+        if trusted:
+            self._inactive_emails = {user.email.lower() for user in users if user.email and user.is_active is False}
+            # Saved once every group has been read with the new set (_sync_azure_ad_groups).
+            self._refresh_all_groups = stored_emails != self._inactive_emails
+            await self.data_entities_processor.on_new_user_groups(
+                everyone_groups(self.connector_name, self.connector_id, users)
+            )
+        else:
+            # Unknown is not empty: a listing that may be cut or stale replaces no membership and no disabled set.
+            self.logger.warning("User listing is not trusted; no user loses access and the claim groups keep their members this run")
+            self._inactive_emails = stored_emails
+            self._refresh_all_groups = False
         self.logger.info(f"✅ Successfully synced {len(users)} users")
 
     # Record update handling
