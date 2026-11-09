@@ -30,6 +30,10 @@ from app.agents.agent_loop.langchain_transport import (
     _supports_multipart_tool_result,
 )
 from app.utils.llm_api_mode_store import REASONING_MANDATORY_FALLBACK_EFFORT, LLMApiMode
+from tests.unit.agents.adapter.support.provider_stall import (
+    ProviderStall,
+    pending_since,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -1979,15 +1983,16 @@ class _StallingModel:
     def __init__(self, chunks: list[AIMessageChunk]) -> None:
         self._chunks = chunks
         self.aclose_called = False
+        self.stall = ProviderStall()
 
     def bind_tools(self, tools: list[Any]) -> "_StallingModel":
         return self
 
-    async def astream(self, messages: list, config: Any = None) -> "AsyncIterator[AIMessageChunk]":
+    async def astream(self, messages: list, config: Any = None, **kwargs: Any) -> "AsyncIterator[AIMessageChunk]":  # noqa: ANN401
         try:
             for chunk in self._chunks:
                 yield chunk
-            await asyncio.Event().wait()  # never set -- simulates an indefinite stall
+            await self.stall.read()
         finally:
             # A real provider stream's teardown runs here on GeneratorExit
             # (delivered by our `.aclose()`) -- this is how we assert that
@@ -2036,6 +2041,33 @@ class TestStreamCancellationDuringProviderStall:
             pass
 
         assert model.aclose_called is True
+
+    @pytest.mark.parametrize("with_token", [True, False], ids=["token", "no-token"])
+    @pytest.mark.parametrize("cancels", [1, 3])
+    async def test_cancelling_the_consumer_closes_the_provider_read(self, with_token: bool, cancels: int) -> None:
+        """A client disconnect cancels the task iterating the stream, with no token fired, once
+        per layer of the turn. The task reading the provider must get exactly one cancel, inside
+        the provider generator, so its close completes; the `finally`'s `aclose()` alone cannot
+        close a generator another task is still running."""
+        model = _StallingModel([AIMessageChunk(content="partial")])
+        transport = LangChainTransport(model, cancellation_token=CancellationToken() if with_token else None)
+        before = asyncio.all_tasks()
+
+        async def consume() -> None:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+
+        consumer = asyncio.create_task(consume())
+        await model.stall.started.wait()
+        for _ in range(cancels):
+            consumer.cancel()
+            await asyncio.sleep(0)
+        with pytest.raises(asyncio.CancelledError):
+            await consumer
+        await model.stall.settle()
+
+        assert (model.stall.cancels, model.stall.closed, model.aclose_called) == (1, True, True)
+        assert await pending_since(before) == []
 
 
 _KEY_SENTINEL = "AIzaSyLOGSENTINEL0123456789abcdefghijkl"
