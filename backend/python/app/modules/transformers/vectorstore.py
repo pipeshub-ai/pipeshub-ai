@@ -2416,6 +2416,8 @@ class VectorStore(Transformer):
 
         if todo:
             await self._process_document_chunks(todo, record_id, collection_name)
+        if progress is not None:
+            progress.finish()
 
         if not resuming:
             return

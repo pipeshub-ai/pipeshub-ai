@@ -331,3 +331,26 @@ class TestTheMarkerCountersAndProgress:
         })
         await consumer.run(complete=False)
         assert chain.graph.node[EMBED_SECONDS] >= 21_600.0 - 1
+
+
+@pytest.mark.asyncio
+class TestAfterTheEmbedding:
+    async def test_a_slow_verification_after_a_resume_is_not_cut_by_the_stall_limit(self) -> None:
+        # Kills: a stall timer still armed once every point exists, which would cut and count a resume
+        # whose verification outlasts the stall limit although the cap has room for it.
+        from app.modules.transformers.vectorstore import VectorStore
+
+        chain = await _chain(120, 0.1)
+        consumer = Consumer(chain, cap=0.45, floor=0.3, max_counted=1)
+        real_verify = VectorStore._fence_and_verify
+
+        async def slow_verify(self: VectorStore, *a: Any, **k: Any) -> None:  # noqa: ANN401
+            await asyncio.sleep(0.35)
+            await real_verify(self, *a, **k)
+
+        with patch.object(VectorStore, "_fence_and_verify", slow_verify):
+            consumer.cap = 0.45
+            outcome = await consumer.run()
+        assert outcome == "completed"
+        assert consumer.counted == 0
+        assert consumer.progresses[-1].finished

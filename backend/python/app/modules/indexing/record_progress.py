@@ -135,6 +135,7 @@ class RecordProgress:
 
         # Set by the vector store.
         self.planned = False
+        self.finished = False
         self.restarted = False
         self.total = 0
         self.done = 0
@@ -257,6 +258,14 @@ class RecordProgress:
                 self.record_id, self.done, self.total, self.new_units,
             )
 
+    def finish(self) -> None:
+        """Every point is embedded. What follows (verification, the record's writes) has no batches to
+        time, so only the attempt's cap bounds it, as before the stall timer existed."""
+        if not self.planned:
+            return
+        self.finished = True
+        self._arm()
+
     def pause(self) -> None:
         """The embedding service is failing and the caller is waiting to retry: do not call that a stall."""
         if not self.planned:
@@ -297,8 +306,8 @@ class RecordProgress:
 
     # ---- the deadline -----------------------------------------------------------------------------------------------------------
     def _deadline(self) -> float | None:
-        if self._cap is None:
-            return None
+        if self._cap is None or self.finished:
+            return self._cap
         stall = self.stall_seconds()
         if self._pausers:
             allowance = max(0.0, self._pause_limit - self._paused_total)

@@ -232,6 +232,46 @@ class TestTheDeadline:
         assert await _run(p, work, cap=10.0)
         assert asyncio.get_running_loop().time() - started < 1.4  # 0.3 allowance + 0.3 limit, not the cap
 
+    async def test_the_pause_allowance_is_shared_by_every_pause_of_the_attempt(self) -> None:
+        # Kills: an allowance that starts over at each pause, so repeated outages are never bounded.
+        p = _progress(pause_limit_seconds=0.6)
+        second: list[float] = []
+
+        async def work(pp: RecordProgress) -> None:
+            pp.pause()
+            await asyncio.sleep(0.5)
+            pp.resume()
+            pp.pause()
+            second.append(asyncio.get_running_loop().time())
+            await asyncio.sleep(30)
+
+        assert await _run(p, work, cap=10.0)
+        # 0.1 s of allowance left plus the 0.3 s stall limit, not a fresh 0.6 + 0.3.
+        assert asyncio.get_running_loop().time() - second[0] < 0.7
+
+    async def test_the_stall_timer_is_off_once_the_embedding_is_done(self) -> None:
+        # Kills: a stall limit still armed through the verification and the writes after the
+        # embedding, which cuts a slow verify at the stall limit and counts it.
+        p = _progress()
+
+        async def work(pp: RecordProgress) -> None:
+            await asyncio.sleep(0.02)
+            pp.beat(20)
+            pp.finish()
+            await asyncio.sleep(0.8)  # well past the 0.3 s stall limit, inside the cap
+
+        assert not await _run(p, work, cap=2.0)
+
+    async def test_a_beat_after_the_embedding_is_done_does_not_arm_the_stall_timer_again(self) -> None:
+        p = _progress()
+
+        async def work(pp: RecordProgress) -> None:
+            pp.finish()
+            pp.beat(1)
+            await asyncio.sleep(0.8)
+
+        assert not await _run(p, work, cap=2.0)
+
     async def test_paused_time_counts_in_the_seconds_of_the_attempt(self) -> None:
         # Kills: embed seconds that leave the pause out, which would let the 6 h ceiling be dodged.
         p = _progress()
@@ -406,3 +446,19 @@ class TestTheCountersOfAChain:
         assert set(cleared) == set(EMBED_FIELDS)
         assert {EMBED_SECONDS, EMBED_UNCOUNTED, EMBED_DONE} <= set(cleared)
         assert all(v is None for v in cleared.values())
+
+
+def test_the_shipped_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Kills: a default changed by accident; these are the figures the docs and the design state.
+    from app.services.messaging.config import messaging_env
+
+    for name in (
+        "EMBED_STALL_FLOOR_SECONDS", "EMBED_STALL_CEILING_SECONDS",
+        "EMBED_RECORD_CEILING_SECONDS", "EMBED_CUT_REQUEUE_DELAY_SECONDS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    assert messaging_env.embed_stall_floor_seconds == 360.0
+    assert messaging_env.embed_stall_ceiling_seconds == 1200.0
+    assert messaging_env.embed_record_ceiling_seconds == 21600.0
+    assert messaging_env.embed_cut_requeue_delay_seconds == 5.0
+    assert rp.PAUSE_LIMIT_SECONDS == 1800.0

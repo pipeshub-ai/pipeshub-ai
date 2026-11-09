@@ -133,12 +133,16 @@ class TestAProductiveCut:
         rm.record_delivery.assert_not_awaited()
 
     @RUNNERS
-    async def test_it_is_cut_at_the_stall_limit_not_at_the_processing_timeout(self, run: Any) -> None:  # noqa: ANN401
+    async def test_it_is_cut_at_the_stall_limit_not_at_the_processing_timeout(
+        self, run: Any, monkeypatch: pytest.MonkeyPatch,  # noqa: ANN401
+    ) -> None:
+        # A budget far above the 0.25 s stall limit, so a loaded runner cannot blur the two.
+        monkeypatch.setattr(MessagingEnvConfig, "record_processing_timeout", property(lambda self: 10.0))
         handler = Handler(beats=2)
         loop = asyncio.get_running_loop()
         started = loop.time()
         await run(handler)
-        assert loop.time() - started < 1.0  # the budget is 1.5 s
+        assert loop.time() - started < 5.0
 
     @RUNNERS
     async def test_a_cut_the_node_refuses_is_counted(self, run: Any) -> None:  # noqa: ANN401
