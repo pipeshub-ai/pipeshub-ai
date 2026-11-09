@@ -466,7 +466,7 @@ async def held_up_writer(env: Env, layer: str, monkeypatch: Any) -> None:
                     await b.run_connector(ORG, PREFIX + "app")
 
         await asyncio.to_thread(asyncio.run, b_finishes())
-        assert not await env.problems()
+        violations.extend(await env.problems())      # (not an assert: the job takes a failed assert in a request for a failed root)
 
     async def at_the_door(name: str) -> str | None:
         if layer == "generation_check" and name == "retrieve_points":

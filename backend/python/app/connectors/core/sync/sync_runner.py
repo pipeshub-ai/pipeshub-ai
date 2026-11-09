@@ -27,7 +27,13 @@ from app.connectors.core.base.connector.connector_service import (
 )
 from app.connectors.core.constants import ConnectorStateKeys, SyncRunOutcome
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage, FullSyncSeen
-from app.connectors.core.sync.run_context import reset_run_sync_id, set_run_sync_id
+from app.connectors.core.sync.run_context import (
+    SyncRunStats,
+    bind_run_stats,
+    reset_run_stats,
+    reset_run_sync_id,
+    set_run_sync_id,
+)
 from app.connectors.core.sync.sync_coordinator import SyncCoordinator, SyncLease, _now_ms
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils import error_class
@@ -772,6 +778,8 @@ async def run_sync_task(
     # downstream processing can be correlated back to the run.
     run_sync_id = str(uuid4())
     run_sync_token = set_run_sync_id(run_sync_id)
+    run_stats = SyncRunStats()
+    run_stats_token = bind_run_stats(run_stats)
     # On every line of the run: the connector's, the processor's and the finalizer task's (it copies the context).
     fields_token = bind_log_fields(run_id=run_sync_id, connector_id=connector_id)
     sync_type = "full" if full_sync else "incremental"
@@ -852,6 +860,8 @@ async def run_sync_task(
                 # Logged, not raised: the finalizer below must still run.
                 error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="full_sync_tracking")
         reset_run_sync_id(run_sync_token)
+        # Before the finalizer task copies the context: its writes are not the run's.
+        reset_run_stats(run_stats_token)
         # A stop that arrives through the lease ends _run_until_aborted without
         # raising, so it has to be read here or it would log as a clean finish.
         if lease is not None and lease.stop_requested.is_set():
@@ -871,6 +881,7 @@ async def run_sync_task(
             "duration_ms": int((time.monotonic() - start) * 1000),
             # The next sync of this connector runs in full.
             "full_sync_cut_short": full_sync_cut_short or None,
+            **run_stats.end_fields(),
         }
         # The run's one failure line; the task manager then logs the same exception at DEBUG.
         if error is not None:
