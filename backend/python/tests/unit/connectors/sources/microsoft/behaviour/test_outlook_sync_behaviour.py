@@ -148,7 +148,7 @@ def db() -> OutlookRecordsDb:
 @pytest.fixture
 def api(cloud: MicrosoftCloudStub, monkeypatch: pytest.MonkeyPatch) -> MicrosoftCloudStub:
     route_microsoft_http(monkeypatch, cloud, "app.sources.client.microsoft.microsoft")
-    cloud.on("GET", "/v1.0/users", page([graph_user("u-ana", ANA), graph_user("u-bo", BO)]))
+    cloud.on("GET", "/v1.0/users", page([graph_user("u-ana", ANA), graph_user("u-bo", BO)], count=2))
     cloud.on("GET", "/v1.0/groups", page([]))
     cloud.on("GET", "/v1.0/users/u-ana/mailFolders", page([folder(INBOX, "Inbox")]))
     cloud.on("GET", delta_path(), page([], delta_link=delta_url("D0")))
