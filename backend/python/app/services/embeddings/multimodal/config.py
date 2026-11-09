@@ -20,7 +20,7 @@ class MultimodalProviderConfig:
     aws_secret_access_key: str | None = None
     base_url: str | None = None
     # Dimension the target collection was created with. Providers that let
-    # the caller choose an output length (Bedrock Titan) must request this
+    # the caller choose an output length (Bedrock Titan, Gemini) must request this
     # one, or every point they return is rejected by
     # ``VectorStore._build_image_points``'s dimension check.
     embedding_size: int | None = None

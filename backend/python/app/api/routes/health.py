@@ -1681,8 +1681,8 @@ async def _probe_image_embedding(
 
     if multimodal_provider is None or not multimodal_provider.supports_multimodal():
         return (
-            f"Provider '{provider}' has no image-embedding support in PipesHub, "
-            "so images would never be indexed for this model."
+            f"Provider '{provider}' has no image-embedding support in PipesHub for this "
+            "model, so its images would only be indexed by their descriptions."
         )
 
     try:
@@ -1816,8 +1816,8 @@ async def perform_embedding_health_check(
                 # `isMultimodal` on an embedding model is what makes indexing send
                 # images down the image-embedding path at all, and only a handful
                 # of providers implement one. Claiming it without checking means
-                # images silently never get indexed
-                # (`vectorstore._process_image_embeddings` warns and returns []).
+                # images never get embedded as images
+                # (`vectorstore._process_image_embeddings` falls back to their descriptions).
                 if _is_multimodal(embedding_config):
                     try:
                         image_error = await _probe_image_embedding(

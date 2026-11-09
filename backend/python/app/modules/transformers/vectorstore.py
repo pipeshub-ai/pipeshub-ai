@@ -1107,6 +1107,15 @@ class _RecordPresence:
             return record_doc is not None
 
 
+# ponytail: matches provider error text; a retriable flag on ImageEmbeddingResult if a provider words these differently.
+_UNUSABLE_IMAGE_ERRORS = ("invalid image data", "image size must be at most")
+
+
+def _image_is_unusable(error: str | None) -> bool:
+    """The image itself is the problem, so retrying the record cannot help."""
+    return any(text in (error or "") for text in _UNUSABLE_IMAGE_ERRORS)
+
+
 class VectorStore(Transformer):
     # The embedding model's input window, once known; None until then and under policy A.
     model_window: _Window | None = None
@@ -1950,10 +1959,10 @@ class VectorStore(Transformer):
         Skips any index that errored or came back without an embedding —
         provider implementations always return one result per input index
         (never raise), so this is the single place that decides what
-        "failed to embed" means for indexing purposes. Also skips any result
-        whose dimension doesn't match the collection: mixing dimensions in
-        one collection makes cosine similarity meaningless and some vector
-        DBs would otherwise reject the whole upsert batch over one bad point.
+        "failed to embed" means for indexing purposes. Raises on any result
+        whose dimension doesn't match the collection: mixing dimensions in one
+        collection makes cosine similarity meaningless, and dropping the point
+        would end the record COMPLETED without the image.
         """
         points: List[VectorPoint] = []
         for result in results:
@@ -1964,11 +1973,10 @@ class VectorStore(Transformer):
                     )
                 continue
             if self.embedding_size is not None and len(result.embedding) != self.embedding_size:
-                self.logger.error(
+                raise EmbeddingError(
                     f"Image embedding dimension mismatch for index {result.index}: "
-                    f"got {len(result.embedding)}, expected {self.embedding_size}. Skipping point."
+                    f"got {len(result.embedding)}, expected {self.embedding_size}"
                 )
-                continue
             chunk: dict[str, Any] = image_chunks[result.index]
             points.append(
                 VectorPoint(
@@ -1986,8 +1994,13 @@ class VectorStore(Transformer):
 
     async def _process_image_embeddings(
         self, image_chunks: List[dict], image_base64s: List[str], record_id: str = ""
-    ) -> List[VectorPoint]:
+    ) -> tuple[list[VectorPoint], list[Document]]:
         """Embed images via the provider the factory resolves for this config.
+
+        Writes nothing, so callers run it before deleting anything: a failure
+        here then leaves the old vectors searchable. Returns the image points and
+        the description documents of images that cannot be embedded, which go
+        through the text path.
 
         Guard: skip entirely if the record was deleted mid-flight.
         """
@@ -1998,20 +2011,38 @@ class VectorStore(Transformer):
             self.logger.warning(
                 f"Record {record_id} not found in database, skipping image embedding"
             )
-            return []
+            return [], []
 
         if not image_base64s:
-            return []
+            return [], []
 
         provider = MultimodalEmbeddingFactory.create(self._multimodal_provider_config())
         if provider is None or not provider.supports_multimodal():
             self.logger.warning(
                 f"Unsupported embedding provider for images: {self.embedding_provider}"
             )
-            return []
+            return [], self._description_documents(image_chunks)
 
         results = await provider.embed_images(image_base64s)
-        return self._build_image_points(image_chunks, results)
+        failed = [r for r in results if r.embedding is None]
+        retriable = [r for r in failed if not _image_is_unusable(r.error)]
+        if retriable:
+            # Before COMPLETED and the reconciliation save, so a retry embeds these images.
+            raise EmbeddingError(
+                f"{len(retriable)} of {len(results)} images failed to embed "
+                f"for record {record_id}: {retriable[0].error}"
+            )
+        points = self._build_image_points(image_chunks, results)
+        return points, self._description_documents([image_chunks[r.index] for r in failed])
+
+    @staticmethod
+    def _description_documents(image_chunks: list[dict]) -> list[Document]:
+        """Images that cannot be embedded, as a text-only model would index them."""
+        return [
+            Document(page_content=c["description"], metadata=c.get("metadata", {}))
+            for c in image_chunks
+            if c.get("description")
+        ]
 
     async def _store_image_points(
         self, points: List[VectorPoint], collection_name: str
@@ -2287,18 +2318,24 @@ class VectorStore(Transformer):
             else:
                 image_chunks.append(chunk)
 
-        # Delete existing embeddings first (full replace, non-reconciliation path)
-        with stage("vector.delete"):
-            await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
-
         self.logger.debug(
             f"📊 Processing {len(langchain_docs)} text + {len(image_chunks)} image chunks"
         )
 
+        points: list[VectorPoint] = []
         if image_chunks:
             image_base64s = [c.get("image_uri") for c in image_chunks]
             with stage("embed.image", detail=f"{len(image_chunks)} images"):
-                points = await self._process_image_embeddings(image_chunks, image_base64s, record_id)
+                points, described = await self._process_image_embeddings(
+                    image_chunks, image_base64s, record_id
+                )
+            langchain_docs.extend(described)
+
+        # Delete existing embeddings first (full replace, non-reconciliation path)
+        with stage("vector.delete"):
+            await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
+
+        if image_chunks:
             with stage("vector.upsert", detail=f"{len(points)} image points"):
                 await self._store_image_points(points, collection_name)
 
@@ -2721,21 +2758,24 @@ class VectorStore(Transformer):
                 # were derived from the block, or by an attempt that stopped part way) would
                 # sit beside their replacements, so they go first.
                 reindexed_ids = {b.id for b in blocks} | {bg.id for bg in block_groups}
+                langchain_docs = [d for d in documents_to_embed if isinstance(d, Document)]
+                image_chunks = [d for d in documents_to_embed if not isinstance(d, Document)]
+                points: list[VectorPoint] = []
+                if image_chunks:
+                    image_base64s = [c.get("image_uri") for c in image_chunks]
+                    points, described = await self._process_image_embeddings(
+                        image_chunks, image_base64s, record_id
+                    )
+                    langchain_docs.extend(described)
                 with stage("vector.delete"):
                     await self.delete_blocks_by_ids(reindexed_ids, virtual_record_id, collection_name, org_id=org_id)
                 if block_ids_to_delete:
                     # A block id in both sets was just replaced; deleting it now would drop
                     # the new points.
                     block_ids_to_delete = set(block_ids_to_delete) - reindexed_ids
-                langchain_docs = [d for d in documents_to_embed if isinstance(d, Document)]
-                image_chunks = [d for d in documents_to_embed if not isinstance(d, Document)]
                 if langchain_docs:
                     await self._process_document_chunks(langchain_docs, record_id, collection_name)
                 if image_chunks:
-                    image_base64s = [c.get("image_uri") for c in image_chunks]
-                    points = await self._process_image_embeddings(
-                        image_chunks, image_base64s, record_id
-                    )
                     await self._store_image_points(points, collection_name)
             else:
                 await self._create_embeddings(documents_to_embed, record_id, virtual_record_id, collection_name, org_id=org_id)

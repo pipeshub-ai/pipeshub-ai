@@ -45,10 +45,13 @@ class JinaMultimodalProvider(IMultimodalEmbeddingProvider):
         self.logger = logger
         if logger and not supports_image_input(model_name):
             logger.warning(
-                "Jina model %r has no image input schema; image requests will be "
-                "rejected. Use a jina-clip-* or jina-embeddings-v4/v5 model.",
+                "Jina model %r has no image input schema; images are indexed by "
+                "their descriptions. Use a jina-clip-* or jina-embeddings-v4/v5 model.",
                 model_name,
             )
+
+    def supports_multimodal(self) -> bool:
+        return supports_image_input(self.model_name)
 
     @property
     def provider_name(self) -> str:
