@@ -258,6 +258,19 @@ class TestWriteRevision:
 
         assert MANIFEST_PATH not in storage.put_order
 
+    async def test_a_write_another_stored_write_took_over_stores_no_manifest(self, storage: FakeStorage) -> None:
+        record = _record(_text_blocks(5, 10))
+        answers = iter([False, True])
+
+        async def still_current() -> bool:
+            return next(answers)
+
+        writer = _writer(storage)
+        assert await writer.write_revision(record, "org-1", "vr-1", REV, record.block_containers, still_current=still_current) is None
+        assert MANIFEST_PATH not in storage.put_order
+        assert await writer.write_revision(record, "org-1", "vr-1", REV, record.block_containers, still_current=still_current) is not None
+        assert storage.put_order[-1] == MANIFEST_PATH
+
     async def test_more_files_than_one_presign_takes(self, storage: FakeStorage) -> None:
         images = [_image_block(i, _uri("image/png", PNG + i.to_bytes(4, "big"))) for i in range(1200)]
         record = _record(images)
