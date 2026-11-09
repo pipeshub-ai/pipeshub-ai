@@ -8,11 +8,19 @@ no organization membership (a guest account) still has its link, so it must be l
 organization's link or another connector's link must not be.
 """
 
+from __future__ import annotations
+
 import uuid
+from typing import TYPE_CHECKING
 
 import pytest
 
 from .test_connector_entities import arango_provider, neo4j_provider  # noqa: F401  (fixtures)
+
+if TYPE_CHECKING:
+    from collections.abc import Coroutine
+
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
@@ -129,7 +137,7 @@ async def test_a_failed_read_raises_on_arango(arango_provider, monkeypatch: pyte
 # A withdrawn link comes back through the real processor
 # ---------------------------------------------------------------------------
 
-async def _connected(connecting, env: str):
+async def _connected(connecting: Coroutine[object, object, IGraphDBProvider], env: str) -> IGraphDBProvider:
     """A store that is not configured and not reachable skips the test, as in the other integration tests here; one that is configured must be there."""
     import os
 
