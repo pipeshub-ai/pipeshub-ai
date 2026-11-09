@@ -134,6 +134,9 @@ class _StreamedRepo:
 
 
 @pytest.mark.asyncio
+# tracemalloc over a 40k-edge build is slow, and coverage tracing multiplies it (about 2.5 s plain, 27 s under --cov on a
+# fast core). CI's 4 workers share 2 cores, which put it at 29-60 s against the 60 s default and failed unrelated PRs.
+@pytest.mark.timeout(240)
 async def test_a_builds_heap_stays_within_its_per_block_budget() -> None:
     """Blocks are indexed page by page and edges kept as tuples until written (SC-1):
     10k blocks and 40k edges peaked at 61 MB before, 39 MB after."""
