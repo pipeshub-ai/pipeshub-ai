@@ -2676,15 +2676,18 @@ class OneDriveConnector(BaseConnector):
     
     async def _withdraw_unlisted_app_users(self, enabled: list[AppUser]) -> None:
         """Take the connector away from stored users the complete user read does not list as
-        enabled: disabled and deleted accounts. A failed read raises before this runs, and an
-        empty list withdraws nobody (a tenant always has users)."""
+        enabled: disabled and deleted accounts. Only called after a complete read; an empty
+        list withdraws nobody (the directory always has users), and so does a failed read
+        of the stored users."""
         if not enabled:
             return
+        try:
+            stored = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
+        except Exception as e:
+            self.logger.error(f"Could not read the stored users; no user loses access this run: {e}")
+            return
         kept = {u.source_user_id for u in enabled}
-        gone = [
-            u for u in await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
-            if u.source_user_id and u.source_user_id not in kept
-        ]
+        gone = [u for u in stored if u.source_user_id and u.source_user_id not in kept]
         if gone:
             await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
 
@@ -2699,7 +2702,10 @@ class OneDriveConnector(BaseConnector):
             # what it shared with others stays visible to them.
             enabled = [u for u in users if u.is_active is not False]
             await self.data_entities_processor.on_new_app_users(enabled)
-            await self._withdraw_unlisted_app_users(enabled)
+            if getattr(users, "complete", True):
+                await self._withdraw_unlisted_app_users(enabled)
+            else:
+                self.logger.warning("User listing is incomplete; no user loses access this run")
             self.logger.info(f"✅ Successfully synced {len(users)} users")
             return users
         except ODataError as e:
