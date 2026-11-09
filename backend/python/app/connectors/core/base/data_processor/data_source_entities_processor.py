@@ -25,6 +25,7 @@ from app.connectors.core.base.data_processor.record_organizations import (
     link_record_organization,
 )
 from app.connectors.core.base.data_processor.record_people import link_record_people
+from app.connectors.core.base.data_processor.pr_links import Linked, write_modifies
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.core.base.data_processor.system_files import is_office_lock_file, is_system_file_name
 from app.connectors.core.base.data_store.data_store import (
@@ -110,6 +111,9 @@ from app.utils.retry import retry_async
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from app.models.blocks import FileChangeMetadata
     from app.services.messaging.interface.producer import IMessagingProducer
 
 # (org_id, old_path, new_path, owner): owner is the record's virtual_record_id,
@@ -7078,6 +7082,16 @@ class DataSourceEntitiesProcessor:
     async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool | None:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.batch_update_nodes(nodes, collection)
+
+    @retry_on_deadlock()
+    async def on_pr_file_changes(
+        self, pr: Record, changes: "list[FileChangeMetadata]", code_external_id: "Callable[[str], str]",
+    ) -> "Linked":
+        """Link *pr* to the code files it changed (MODIFIES), replacing its earlier links; see ``pr_links``."""
+        # explicit=True: with Neo4j auto-commit on, a delete that committed alone and a failed write after it left
+        # the PR with no links; one real transaction keeps the old links on any failure.
+        async with self.data_store_provider.transaction(explicit=True) as tx_store:
+            return await write_modifies(tx_store, pr, changes, code_external_id)
 
     @retry_on_deadlock()
     async def delete_parent_child_edge_to_record(self, record_id: str) -> int:

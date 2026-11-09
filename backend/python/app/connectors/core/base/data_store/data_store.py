@@ -445,7 +445,9 @@ class BaseDataStore(ABC):
         from_id: str,
         from_collection: str,
         collection: str,
-        relationship_types: list[str]
+        relationship_types: list[str],
+        *,
+        raise_on_error: bool = False,
     ) -> int:
         """
         Delete edges from a record by relationship types.

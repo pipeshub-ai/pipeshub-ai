@@ -53,6 +53,7 @@ router = APIRouter(
 # Claude Code warns on a tool result past 10k tokens and cuts it at 25k; at
 # ~4 characters a token this keeps a result near 8k.
 MAX_RESULT_CHARS = 32_000
+MAX_PATCH_CHARS = 2_000_000
 
 
 class RepoRef(BaseModel):
@@ -120,6 +121,19 @@ class ImpactBody(RepoRef):
     qualified_name: str | None = None
     depth: int = Field(default=DEFAULT_IMPACT_DEPTH, ge=1, le=MAX_IMPACT_DEPTH)
     edge_types: list[str] | None = None
+
+
+class ImpactOfDiffBody(RepoRef):
+    # A large PR's diff is a few hundred KB; past this a client is sending something else.
+    patch: str = Field(min_length=1, max_length=MAX_PATCH_CHARS)
+    depth: int = Field(default=DEFAULT_IMPACT_DEPTH, ge=1, le=MAX_IMPACT_DEPTH)
+
+
+class HistoryBody(RepoRef):
+    file_path: str | None = None
+    record_id: str | None = None
+    qualified_name: str | None = None
+    limit: int = Field(default=20, ge=1, le=100)
 
 
 class EntryPointsBody(RepoRef):
@@ -367,6 +381,22 @@ async def code_impact(request: Request, body: ImpactBody) -> JSONResponse:
         connector_id=repo.connector_id, file_path=body.file_path, record_id=body.record_id,
         qualified_name=body.qualified_name, depth=body.depth,
         include_tests=body.include_tests, repo=repo.group_id, edge_types=body.edge_types,
+    ))
+
+
+@router.post("/impact-of-diff")
+async def code_impact_of_diff(request: Request, body: ImpactOfDiffBody) -> JSONResponse:
+    return await _run(request, body, None, lambda t, repo: t.impact_of_diff(
+        connector_id=repo.connector_id, patch=body.patch, depth=body.depth,
+        include_tests=body.include_tests, repo=repo.group_id,
+    ))
+
+
+@router.post("/history")
+async def code_history(request: Request, body: HistoryBody) -> JSONResponse:
+    return await _run(request, body, body.record_id, lambda t, repo: t.history(
+        connector_id=repo.connector_id, file_path=body.file_path, record_id=body.record_id,
+        qualified_name=body.qualified_name, limit=body.limit, repo=repo.group_id,
     ))
 
 
