@@ -1,6 +1,5 @@
 """SharePoint and Outlook: a deleted account loses the connector; an uncertain listing withdraws nobody."""
 
-import asyncio
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
