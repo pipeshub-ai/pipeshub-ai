@@ -137,6 +137,7 @@ async def _chain(items: int, delay: float = 0.0) -> Chain:
 
 @pytest.mark.asyncio
 class TestARecordThatMakesProgress:
+    @pytest.mark.timeout(120)  # 18 s idle on four cores; a loaded runner must not hit the 30 s default
     async def test_a_1200_row_file_finishes_within_a_short_budget_without_dead_lettering_or_embedding_twice(self) -> None:
         # Kills: a counted cut (dead letter after 3 short budgets); a resume that embeds a batch again;
         # a stall limit that cuts a record that keeps finishing batches.
@@ -182,17 +183,19 @@ class TestARecordThatMakesProgress:
         assert consumer.uncounted >= 2
         assert chain.graph.node[EMBED_SECONDS] >= 0.0
 
+    @pytest.mark.timeout(90)
     async def test_the_ceiling_stays_on_the_node_through_a_restart_of_the_process(self) -> None:
         # Kills: a ceiling held in memory. A new consumer object, as after a restart or a stale
-        # recovery, has only the node, and its first cut is already counted.
-        chain = await _chain(2400, 0.05)
-        first = Consumer(chain, cap=1.5, floor=1.0, ceiling=2.5, max_counted=1)
+        # recovery, has only the node, and its first cut is already counted. The times leave a
+        # loaded runner room to finish a batch inside the first attempt.
+        chain = await _chain(2400, 0.125)
+        first = Consumer(chain, cap=3.75, floor=2.5, ceiling=6.25, max_counted=1)
         assert await first.run() == "dead-lettered"
         assert first.uncounted >= 1
         spent = chain.graph.node[EMBED_SECONDS]
-        assert spent >= 1.0
+        assert spent >= 2.5
 
-        second = Consumer(chain, cap=1.5, floor=1.0, ceiling=2.5, max_counted=1)
+        second = Consumer(chain, cap=3.75, floor=2.5, ceiling=6.25, max_counted=1)
         assert second.progress().prior_seconds == spent
         assert await second.run() == "dead-lettered"
         assert second.uncounted == 0
