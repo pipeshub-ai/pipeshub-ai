@@ -865,7 +865,7 @@ class GraphTransactionStore(TransactionStore):
         ]
 
     async def get_app_user_links(self, org_id: str, connector_id: str) -> list[dict]:
-        return await self.graph_provider.get_app_user_links(org_id, connector_id)
+        return await self.graph_provider.get_app_user_links(org_id, connector_id, transaction=self.txn)
 
     async def get_user_groups(
         self, connector_id: str, org_id: str, *, raise_on_error: bool = False

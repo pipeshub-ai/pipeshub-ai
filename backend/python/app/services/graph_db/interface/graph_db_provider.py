@@ -3674,11 +3674,13 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def get_app_user_links(self, org_id: str, connector_id: str) -> list[dict]:
+    async def get_app_user_links(
+        self, org_id: str, connector_id: str, transaction: str | None = None
+    ) -> list[dict]:
         """Every user of the org linked to the connector with a source user id, guests
         included (``get_app_users`` lists org members only). Each item is
         ``{"id": <user key>, "sourceUserId": <id at the source>}``. Used to find the links
-        to withdraw. A failed read raises.
+        to withdraw. Reads inside ``transaction`` when given. A failed read raises.
         """
         pass
 
