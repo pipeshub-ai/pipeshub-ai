@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import CollectionNames
 from app.models.blocks import BlocksContainer
 from app.models.entities import Record
+from app.modules.pipeline.connector_gate import ConnectorBeingDeleted
 from app.modules.pipeline.leases import RecordBusy, RecordLeases, RevisionSuperseded
 from app.modules.pipeline.models import StageJob
 from app.modules.pipeline.policy import PipelinePolicy
@@ -91,9 +92,14 @@ class RecordStageIO:
         and a write to one makes the delete's batch lose a write conflict."""
         return self._connector_deleting is not None and await self._connector_deleting(job.connector_id)
 
-    async def current_record_ids(self, job: StageJob) -> list[str]:
+    async def _not_being_deleted(self, job: StageJob) -> None:
+        # Raised rather than answered as "no record is current": that would end the run STALE,
+        # which is terminal, and a delete that is put back must leave the job runnable.
         if await self.connector_deleting(job):
-            return []
+            raise ConnectorBeingDeleted(job.connector_id)
+
+    async def current_record_ids(self, job: StageJob) -> list[str]:
+        await self._not_being_deleted(job)
         current: list[str] = []
         for record_id in job.record_ids:
             # Raising: a failed read answering None would read as "the record is gone".
@@ -139,8 +145,7 @@ class RecordStageIO:
 
     async def _on_revision(self, job: StageJob, record_id: str) -> bool:
         # Checked under the lease before every write, so a delete that starts mid-run stops the rest.
-        if await self.connector_deleting(job):
-            return False
+        await self._not_being_deleted(job)
         document = await self._graph.get_document(record_id, CollectionNames.RECORDS.value)
         return document is not None and document.get("contentRev") == job.rev
 

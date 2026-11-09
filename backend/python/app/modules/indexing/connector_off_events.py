@@ -249,7 +249,7 @@ class GraphConnectorOffFilter:
                 CollectionNames.APPS.value,
                 "id",
                 sorted(connector_ids),
-                return_fields=["id", "isActive"],
+                return_fields=["id", "isActive", "status"],
                 raise_on_error=True,
             ),
             timeout=self._read_timeout_seconds,

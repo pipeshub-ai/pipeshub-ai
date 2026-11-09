@@ -254,6 +254,23 @@ def _filter(graph: FakeConnectorGraph, clock: list[float] | None = None) -> Grap
 
 
 class TestGraphConnectorOffFilter:
+    @pytest.mark.parametrize("active", [False, True])
+    async def test_a_connector_being_deleted_is_settled_without_a_write(self, active: bool) -> None:
+        """The delete publishes appDisabled after marking the app DELETING, so the app can be off
+        too; writing AUTO_INDEX_OFF then would be a write to records the delete is removing."""
+        graph = FakeConnectorGraph()
+        graph.add_connector("conn-off", active=active)
+        graph.apps["conn-off"]["status"] = "DELETING"
+        graph.add_record("r1", "conn-off")
+        connector_filter = _filter(graph)
+
+        result = await connector_filter.settle([_message()])
+
+        assert result.settled == frozenset({0})
+        assert graph.batch_updates == []
+        assert graph.records["r1"]["indexingStatus"] == ProgressStatus.QUEUED.value
+        assert not connector_filter._known_active("conn-off")
+
     async def test_a_batch_costs_one_connector_read_one_record_read_and_one_write(self) -> None:
         graph = FakeConnectorGraph()
         graph.add_connector("conn-off", active=False)

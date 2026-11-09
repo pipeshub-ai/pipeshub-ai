@@ -10,6 +10,7 @@ from app.events.processor import convert_record_dict_to_record
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.models.entities import Record
 from app.modules.named_entities.domain.models import NamedEntityExtraction
+from app.modules.pipeline.connector_gate import ConnectorBeingDeleted
 from app.modules.pipeline.leases import RecordLeases, RevisionSuperseded
 from app.modules.pipeline.models import Priority, StageJob
 from app.modules.pipeline.policy import DEFAULT_POLICY
@@ -505,10 +506,11 @@ def _deleting_classify_io(blob: _Blob, deleting: set[str]) -> GraphClassifyIO:
 
 
 @pytest.mark.asyncio
-async def test_a_connector_being_deleted_has_no_record_left_on_the_revision() -> None:
-    """The stages end STALE on an empty list, so a job started before the delete writes nothing more."""
+async def test_a_connector_being_deleted_is_raised_not_reported_as_no_record() -> None:
+    """No record would end the run STALE, which is terminal; a delete that is put back must leave it runnable."""
     io = _deleting_classify_io(_Blob({"block_containers": {"blocks": [], "block_groups": []}}), {"conn-1"})
-    assert await io.current_record_ids(_job()) == []
+    with pytest.raises(ConnectorBeingDeleted):
+        await io.current_record_ids(_job())
 
 
 @pytest.mark.asyncio
@@ -519,7 +521,7 @@ async def test_a_delete_that_starts_mid_run_stops_the_next_write() -> None:
     io = _deleting_classify_io(blob, deleting)
     assert await io.current_record_ids(_job()) == ["rec-1"]
     deleting.add("conn-1")
-    with pytest.raises(RevisionSuperseded):
+    with pytest.raises(ConnectorBeingDeleted):
         await io.save(_job(), ["rec-1"], SemanticMetadata(summary="s"))
     assert blob.saves == 0
 
