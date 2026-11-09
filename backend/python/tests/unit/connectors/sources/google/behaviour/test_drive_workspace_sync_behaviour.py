@@ -2214,6 +2214,25 @@ def leave_group(ws: Workspace, group: str, email: str) -> None:
     ws.world.groups[group]["members"].remove(email)
 
 
+async def test_members_only_a_non_member_who_joins_a_kept_group_gets_nothing(ws: Workspace) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_group("eng@example.com", [BOB])
+    ws.world.add_group("kept@example.com", [BOB])
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", "eng@example.com": "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        {"type": "group", "role": "reader", "emailAddress": "kept@example.com"},
+    ])
+    await ws.sync()
+    assert "kept@example.com" in f1_people(ws) and CAROL not in f1_people(ws)
+
+    join_group(ws, "kept@example.com", CAROL)
+    before = len(ws.http.requests)
+    await ws.sync()
+
+    assert drive_listings(ws, before) > 0
+    assert "kept@example.com" not in f1_people(ws) and CAROL not in f1_people(ws) and BOB in f1_people(ws)
+
+
 async def relisted(ws: Workspace) -> bool:
     before = len(ws.http.requests)
     await ws.sync()
