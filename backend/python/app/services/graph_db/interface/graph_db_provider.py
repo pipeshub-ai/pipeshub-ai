@@ -1990,6 +1990,30 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def find_uncalled_blocks(
+        self,
+        org_id: str,
+        connector_id: str,
+        record_ids: list[str],
+        kinds: list[str],
+        relations: list[str],
+        limit: int,
+        after_key: str | None = None,
+        uncounted_caller_records: list[str] | None = None,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Blocks of *kinds* in *record_ids* with no inbound code edge of *relations*, in ``_key`` order after
+        *after_key*: ``(page, next after_key or None)``.
+
+        An edge from a block of one of *uncounted_caller_records* (or from that record itself) does not count, so
+        a caller the reader may not see neither hides a block nor reveals itself. The anti-join runs in the
+        database, so a caller ranks a whole scope instead of a scanned sample.
+        """
+        pass
+
+    @abstractmethod
     async def get_edges_by_target_keys(
         self,
         target_keys: list[str],

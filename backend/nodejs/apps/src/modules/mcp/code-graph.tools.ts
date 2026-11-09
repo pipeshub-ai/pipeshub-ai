@@ -362,7 +362,9 @@ export function registerCodeGraphToolDefinitions(
         '(`"outbound"`). For what a change breaks, pipeshub_code_impact does it in one call. ' +
         'Returns rows with repo, file_path, line range and qualified name. Calls are resolved ' +
         'to the definition they reach, so a same-named method on another type is left out and ' +
-        'a renamed import is followed. Next: pipeshub_code_neighbours on a row, or ' +
+        'a renamed import is followed. Outbound, a call to an interface or base method also ' +
+        'lists what implements it (`of`: the method called), constructed classes first. ' +
+        'Next: pipeshub_code_neighbours on a row, or ' +
         `pipeshub_code_read for a body. ${COVERAGE}`,
       inputSchema: {
         repo,

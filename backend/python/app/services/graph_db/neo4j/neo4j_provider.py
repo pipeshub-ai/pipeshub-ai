@@ -3859,6 +3859,55 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Get edge rollup by file prefix failed: {str(e)}")
             return []
 
+    async def find_uncalled_blocks(
+        self,
+        org_id: str,
+        connector_id: str,
+        record_ids: list[str],
+        kinds: list[str],
+        relations: list[str],
+        limit: int,
+        after_key: str | None = None,
+        uncounted_caller_records: list[str] | None = None,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        if not record_ids:
+            return [], None
+        try:
+            label = collection_to_label(CollectionNames.BLOCKS.value)
+            rel_type = Neo4jRelationshipType.RECORD_LINK.value
+            query = f"""
+            MATCH (b:{label})
+            WHERE b.orgId = $orgId AND b.connectorId = $connectorId AND b.kind IN $kinds
+              AND b.recordId IN $records
+              AND ($after IS NULL OR b.id > $after)
+              AND NOT EXISTS {{
+                  MATCH (caller)-[e:{rel_type}]->(b)
+                  WHERE e.relationshipType IN $relations
+                    AND NOT coalesce(caller.recordId, caller.id) IN $uncounted
+              }}
+            RETURN b
+            ORDER BY b.id
+            LIMIT $limit
+            """
+            rows = await self.client.execute_query(
+                query,
+                parameters={"orgId": org_id, "connectorId": connector_id, "kinds": kinds,
+                            "records": record_ids, "after": after_key, "relations": relations,
+                            "uncounted": uncounted_caller_records or [], "limit": limit},
+                txn_id=transaction,
+            )
+            page = [self._neo4j_to_arango_node(dict(row["b"]), CollectionNames.BLOCKS.value)
+                    for row in rows or []]
+            return page, (page[-1].get("_key") if len(page) == limit else None)
+        except Exception as e:
+            self.logger.error("Find uncalled blocks failed: %s", e)
+            if raise_on_error:
+                raise
+            return [], None
+
     async def get_file_paths_for_records(
         self,
         org_id: str,

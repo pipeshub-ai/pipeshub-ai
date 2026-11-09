@@ -24,7 +24,6 @@ HUB = 4 * LIMIT        # more hidden rows than any page or limit below
 @pytest.fixture(autouse=True)
 def small_caps(monkeypatch) -> None:
     monkeypatch.setattr(nb, "_ROWS_PER_ANCHOR", LIMIT)
-    monkeypatch.setattr(query, "_ENTRY_CALLER_PAGE", LIMIT)
     monkeypatch.setattr(path_mod, "_FRONTIER_LIMIT", LIMIT)
     monkeypatch.setattr(path_mod, "_CALLER_PROBE", LIMIT)
     monkeypatch.setattr(ops, "_DEGREE_PAGE", 1)
