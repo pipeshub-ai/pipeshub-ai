@@ -101,6 +101,10 @@ async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: in
                     ghosts = [r["sk"] for r in await tx.fetch("""/* pipeshub:kg.ghosts */ SELECT r.sk FROM kg.records r WHERE r.org_id = $1 AND r.app_sk = $2
                         AND NOT EXISTS (SELECT 1 FROM graph.nodes n WHERE n.org_id = r.org_id AND n.coll = CASE r.coll WHEN 1 THEN 'apps' WHEN 2 THEN 'recordGroups' ELSE 'records' END AND n.id = r.id)""",
                                                          org, app_sk)]
+                    orphans = [r["sk"] for r in await tx.fetch("""/* pipeshub:kg.orphan_scopes */ SELECT s.sk FROM kg.scopes s WHERE s.org_id = $1 AND s.app_sk = $2
+                        AND NOT EXISTS (SELECT 1 FROM kg.records r WHERE r.org_id = s.org_id AND r.sk = s.sk)""", org, app_sk)]
+                    if orphans:      # an access list whose record row is gone (an older process deleted the record alone)
+                        await w.scopes_delete(orphans)
                     if ghosts:
                         links = await tx.fetch("/* pipeshub:kg.ghost_links */ SELECT parent_sk, kind, child_sk FROM kg.links WHERE org_id = $1 AND (child_sk = ANY($2::bigint[]) OR parent_sk = ANY($2::bigint[]))",
                                                org, ghosts)

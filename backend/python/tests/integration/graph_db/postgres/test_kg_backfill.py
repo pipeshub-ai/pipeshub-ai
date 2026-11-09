@@ -214,18 +214,27 @@ async def test_a_restart_removes_a_row_no_node_explains_with_its_access_list(pg_
     assert await run_in(pg_db, org, held) == (0, 0)
 
 
-async def test_an_access_list_whose_record_row_is_gone_is_named_by_the_verify_and_hidden_from_a_reader(pg_db) -> None:
+async def test_an_access_list_whose_record_row_is_gone_fails_only_its_own_connector_stays_hidden_and_a_restart_removes_it(pg_db) -> None:
     from app.services.graph_db.postgres.kg import restamp
     p, org = await shadowed(pg_db)
+    assert (await bf.backfill(pg_db, org, "app2", page=4)).flipped
     app = await sk_of(pg_db, org, ("apps", "app1"))
     orphan = await KgWriterNodes.make(pg_db, org, ("records", "orphan"))
     await corrupt(pg_db, org, lambda tx, w: w.scopes_set([(orphan, 3, app, False, False, False, False)]))        # what an older process leaves when it deletes the record alone
-    res = await verify(pg_db, org, "app1")
-    assert not res.ok and any(m.startswith(f"sc|{orphan}") for m in res.extra)
 
     async def visible(tx) -> set[int]:
         return {r["sk"] for r in await tx.fetch("SELECT s.sk FROM kg.scopes s WHERE s.org_id = $1 AND NOT (" + restamp.HIDDEN_SCOPE + ")", org)}
     assert orphan not in await run_in(pg_db, org, visible) and await run_in(pg_db, org, visible)             # the orphan is not counted; the others are
+    res = await verify(pg_db, org, "app1")
+    assert not res.ok and any(m.startswith(f"sc|{orphan}") for m in res.extra)
+    other = await verify(pg_db, org, "app2")
+    assert other.ok and not any(m.startswith("sc|") for m in other.extra)                                   # another connector is not held up by it
+    assert (await bf.backfill(pg_db, org, "app1", page=4, restart=True)).flipped                            # the restart removes it, and the connector verifies again
+    assert (await verify(pg_db, org, "app1")).ok
+
+    async def held(tx) -> int:
+        return await tx.fetchval("SELECT count(*) FROM kg.scopes WHERE org_id = $1 AND sk = $2", org, orphan)
+    assert await run_in(pg_db, org, held) == 0
 
 
 class KgWriterNodes:
