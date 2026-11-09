@@ -389,3 +389,11 @@ def test_the_docs_state_the_limits_of_retuning_and_the_route_retry() -> None:
     assert "flat charge is never scaled" in section
     assert f"{kinds.TEXT_MAX_GB:g} GiB cap" in section
     assert "429 with `Retry-After`" in section and "the caller retries" in section
+
+
+def test_the_docs_say_spawn_admission_charges_by_kind_unless_the_flat_figure_is_set() -> None:
+    doc = (Path(__file__).parents[6] / "docs" / "indexing-service.md").read_text(encoding="utf-8")
+    lanes = doc.split("**CPU lanes (`PARSE_LANES=on`")[1].split("**Weighted leases.")[0]
+    assert "each charged `GOVERNOR_LANE_WORKING_SET_GB`" not in lanes
+    assert "each charged by its kind of job" in lanes
+    assert kinds.explicit_lane_working_set_bytes({}) is None, "the flat figure is unset by default"
