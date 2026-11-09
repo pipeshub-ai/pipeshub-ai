@@ -158,12 +158,14 @@ async def read_user_status(graph: GraphServiceClient, user_id: str) -> str:
     otherwise. Any other failure (throttling, a server error), on any attempt, raises, so the
     caller keeps the user."""
     query = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(select=["id", "accountEnabled"])
-    for wait in (2, 4, None):
+    waits = iter((2, 4))
+    while True:
         try:
             user = await graph.users.by_user_id(user_id).get(RequestConfiguration(query_parameters=query))
         except ODataError as e:
             if e.response_status_code != 404:
                 raise
+            wait = next(waits, None)
             if wait is None:
                 return "gone"
             # A just-created user can answer 404 from a lagging replica: wait, read again, double the wait.
@@ -171,8 +173,8 @@ async def read_user_status(graph: GraphServiceClient, user_id: str) -> str:
             # comes back on the next listing that shows it; upgrade to a two-sync confirmation if real
             # deployments show this happening.
             await asyncio.sleep(wait)
-            continue
-        return "disabled" if user is not None and user.account_enabled is False else "present"
+        else:
+            return "disabled" if user is not None and user.account_enabled is False else "present"
 
 
 class MSGraphClient:
