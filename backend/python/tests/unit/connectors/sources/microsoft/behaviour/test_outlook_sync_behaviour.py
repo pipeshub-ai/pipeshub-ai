@@ -1121,7 +1121,7 @@ class TestDisabledAccounts:
         assert db.user_groups[GROUP] == [ANA, BO]
         assert len(api.calls("GET", folders)) == 1
 
-        api.on("GET", "/v1.0/users", page([{**graph_user("u-ana", ANA), "accountEnabled": False}, graph_user("u-bo", BO)]))
+        api.on("GET", "/v1.0/users", page([{**graph_user("u-ana", ANA), "accountEnabled": False}, graph_user("u-bo", BO)], count=2))
         await connector.run_sync()
 
         assert db.user_groups[GROUP] == [BO], "transitiveMembers lists disabled accounts too"
@@ -1129,7 +1129,7 @@ class TestDisabledAccounts:
         assert "u-ana" not in {u.source_user_id for u in db.app_users}
         assert len(api.calls("GET", folders)) == 1, "the mailbox is not synced"
 
-        api.on("GET", "/v1.0/users", page([{**graph_user("u-ana", ANA), "accountEnabled": True}, graph_user("u-bo", BO)]))
+        api.on("GET", "/v1.0/users", page([{**graph_user("u-ana", ANA), "accountEnabled": True}, graph_user("u-bo", BO)], count=2))
         await connector.run_sync()
 
         assert db.user_groups[GROUP] == [ANA, BO]

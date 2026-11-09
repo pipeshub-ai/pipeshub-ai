@@ -67,8 +67,10 @@ def graph_error(status: int, code: str, message: str = "error", headers: dict[st
     return json_response({"error": {"code": code, "message": message}}, status=status, headers=headers)
 
 
-def page(values: list, *, next_link: str | None = None, delta_link: str | None = None) -> dict[str, Any]:
+def page(values: list, *, next_link: str | None = None, delta_link: str | None = None, count: int | None = None) -> dict[str, Any]:
     body: dict[str, Any] = {"value": values}
+    if count is not None:
+        body["@odata.count"] = count
     if next_link:
         body["@odata.nextLink"] = next_link
     if delta_link:

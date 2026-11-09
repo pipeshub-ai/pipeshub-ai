@@ -145,6 +145,12 @@ class GroupDeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
         super().serialize(writer)
         writer.write_collection_of_object_values("value", self.value)
 
+class UserListing(list):
+    """The users of one listing, with whether it is known to be complete."""
+
+    complete: bool = True
+
+
 class MSGraphClient:
     def __init__(self, app_name: str, connector_id: str, client: GraphServiceClient, logger: Logger, max_requests_per_second: int = 10) -> None:
         """
@@ -229,12 +235,14 @@ class MSGraphClient:
                 raise
             return []
 
-    async def get_all_users(self) -> List[AppUser]:
+    async def get_all_users(self) -> "UserListing":
         """
         Retrieves a list of all users in the organization.
 
         Returns:
-            List[User]: A list of users with their details.
+            The users with their details. ``complete`` is False when the list may be cut
+            (an empty page with a next link, a next page with no data, fewer users than the
+            directory counts, or no count at all); callers then must not withdraw anyone.
         """
         try:
             users = []
@@ -255,25 +263,26 @@ class MSGraphClient:
 
             # The directory's own total: a list that ends short of it was cut, not complete.
             expected = result.odata_count if result else None
+            complete = True
 
             while result:
                 if result.value:
                     users.extend(result.value)
                 elif getattr(result, 'odata_next_link', None):
-                    # An empty page with a next link lost its users; a short list must not
-                    # read as accounts that were deleted.
-                    raise RuntimeError("User listing returned an empty page with a next link")
+                    complete = False    # an empty page with a next link lost its users
 
                 if hasattr(result, 'odata_next_link') and result.odata_next_link:
                     async with self.rate_limiter:
                         result = await self.client.users.with_url(result.odata_next_link).get()
+                    complete = complete and bool(result)    # a next page with no data
                 else:
                     break
 
-            if isinstance(expected, int) and len(users) < expected:
-                raise RuntimeError(f"User listing is short: {len(users)} of {expected} users")
+            # A missing count cannot confirm the list, so it is not complete either.
+            if not isinstance(expected, int) or len(users) < expected:
+                complete = False
 
-            self.logger.info(f"Retrieved {len(users)} users.")
+            self.logger.info(f"Retrieved {len(users)} users (complete: {complete}).")
 
             user_list: List[AppUser] = []
             for user in users:
@@ -289,7 +298,9 @@ class MSGraphClient:
                     is_guest=user.user_type == GUEST_USER_TYPE,
                 ))
 
-            return user_list
+            listing = UserListing(user_list)
+            listing.complete = complete
+            return listing
 
         except ODataError as e:
             self.logger.error(f"Error fetching users: {e}")
