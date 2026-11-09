@@ -3309,11 +3309,11 @@ export const embeddingRefusalMessage = (
 };
 
 // Deleting the only embedding model hands embedding to the built-in model, a
-// different model, so clearing Labs is the wrong advice: adding the model that
-// should take over first (the same model from another provider keeps the
-// stored vectors) avoids re-embedding altogether.
+// different model. Adding the same model from another provider first keeps the
+// stored vectors, so that comes first; only a different model needs Labs cleared,
+// because the takeover check refuses it while its vectors are stored.
 const LAST_EMBEDDING_MODEL_MESSAGE =
-  'This is the only embedding model, so deleting it would switch embedding to the built-in model, which cannot use the vectors already stored. Add the model that should take over first, then delete this one. The same model from another provider, at the same size, keeps your embeddings.';
+  'This is the only embedding model, so deleting it would switch embedding to the built-in model, which cannot use the vectors already stored. To keep your embeddings, first add the same model from another provider, at the same size, then delete this one. To use a different model, delete the embeddings in Labs first, then change or delete this model and re-embed.';
 
 const lastEmbeddingModelRefusalMessage = (
   response: AIServiceResponse | undefined,

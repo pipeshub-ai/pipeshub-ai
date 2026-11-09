@@ -3553,7 +3553,7 @@ describe('ConfigurationManager Controller', () => {
     const IN_USE =
       'This model is embedding your indexed content. Delete the embeddings in Labs first, then change or delete the model and re-embed.'
     const LAST_MODEL =
-      'This is the only embedding model, so deleting it would switch embedding to the built-in model, which cannot use the vectors already stored. Add the model that should take over first, then delete this one. The same model from another provider, at the same size, keeps your embeddings.'
+      'This is the only embedding model, so deleting it would switch embedding to the built-in model, which cannot use the vectors already stored. To keep your embeddings, first add the same model from another provider, at the same size, then delete this one. To use a different model, delete the embeddings in Labs first, then change or delete this model and re-embed.'
 
     // Records what reaches the AI service and answers the embedding takeover
     // check with `takeoverStatus` (400 is its answer while vectors are stored).
