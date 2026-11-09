@@ -5,7 +5,7 @@ import pytest
 
 from app.services.vector_db import scope_rewrite
 from app.services.vector_db.errors import PartialResult
-from app.services.vector_db.models import VectorPoint
+from app.services.vector_db.models import FilterExpression, VectorPoint
 from app.services.vector_db.scope_rewrite import ScopeRewriteJob
 from tests.support.in_memory_vector_db import InMemoryVectorDBService
 
@@ -19,7 +19,7 @@ class _Store(InMemoryVectorDBService):
         super().__init__()
         self.count_fails, self.count_calls, self.unpublished = count_fails, 0, {}
 
-    async def count_points(self, collection_name, count_filter):
+    async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
         self.count_calls += 1
         if self.count_calls <= self.count_fails:
             raise PartialResult("a shard failed")
