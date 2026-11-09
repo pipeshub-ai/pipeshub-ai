@@ -609,25 +609,6 @@ async def _readable_block_records(
     return {key: r["recordId"] for key, r in rows.items()}
 
 
-async def nodes_in_org(
-    graph_provider: IGraphDBProvider, org_id: str, collection: str, keys: "Iterable[str]", fields: list[str],
-) -> list[dict[str, Any]]:
-    """The *collection* nodes with these keys that belong to *org_id*, with *fields*.
-
-    A lookup by key is not org-scoped, so its rows are re-filtered against the org the caller already validated.
-    """
-    if not org_id:  # `None == None` would keep every row stored without an org
-        raise ValueError("nodes_in_org needs the caller's org")
-    wanted = sorted({k for k in keys if k})
-    if not wanted:
-        return []
-    rows = await graph_provider.get_nodes_by_field_in(
-        collection=collection, field_name="_key", field_values=wanted,
-        return_fields=[*fields, "orgId"], raise_on_error=True,
-    ) or []
-    return [row for row in map(_unwrap, rows) if row.get("orgId") == org_id]
-
-
 async def _readable_keys(
     graph_provider: IGraphDBProvider, org_id: str, access: RecordAccess, keys: "Iterable[str]",
 ) -> set[str]:

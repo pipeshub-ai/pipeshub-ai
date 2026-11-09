@@ -155,6 +155,8 @@ const MCP_TOOL_NAMES: Record<string, string> = {
   search_semantic: 'pipeshub_code_semantic_search',
   outline: 'pipeshub_code_outline',
   impact: 'pipeshub_code_impact',
+  impact_of_diff: 'pipeshub_code_impact_of_diff',
+  history: 'pipeshub_code_history',
   entry_points: 'pipeshub_code_entry_points',
 };
 const INTERNAL_TOOL_NAMES = new RegExp(
@@ -596,11 +598,13 @@ export function registerCodeGraphToolDefinitions(
     'pipeshub_code_impact_of_diff',
     {
       description:
-        'What a patch or PR diff breaks, in one call: give a unified diff (`git diff` output). ' +
-        'Returns the symbols it changes (`changed`, plus the whole file for a module-level ' +
-        'change), the files and tests that reach them (`impacted_files`, `impacted_tests`), ' +
-        'and `untested_callers`, direct callers no test reaches. Lines are matched against the ' +
-        `indexed commit, so a patch on another base can drift. ${COVERAGE}`,
+        'Use to review a patch or pull request: give a unified diff (`git diff` output) for ' +
+        'what it can break, in one call. Returns the symbols it changes (`changed`, plus the ' +
+        'whole file for a module-level change), the files and tests that reach them ' +
+        '(`impacted_files`, `impacted_tests`), and `untested_callers`, direct callers no test ' +
+        'reaches. Lines are matched against the indexed commit, so a patch on another base ' +
+        'can drift. Next: pipeshub_code_read only what it lists; for one symbol, ' +
+        `pipeshub_code_impact is the same walk. ${COVERAGE}`,
       inputSchema: {
         repo: repoRequired,
         // The query service's MAX_PATCH_CHARS.
@@ -627,11 +631,12 @@ export function registerCodeGraphToolDefinitions(
     'pipeshub_code_history',
     {
       description:
-        'Who changed a file and why: the indexed pull or merge requests that modified it, merged ' +
-        'newest first, with title, link, author, `requested_reviewers` (asked, not who reviewed), who ' +
-        'merged it and when, and the tickets it names. Per file: with `qualified_name`, ' +
-        "`touches_symbol` says whether the PR's diff names that symbol in a changed line " +
-        '(null if unknown).',
+        'Use for who changed a file and why. Returns the indexed pull or merge requests that ' +
+        'modified it, merged newest first, with title, link, author, `requested_reviewers` ' +
+        '(asked, not who reviewed), who merged it and when, and the tickets it names. Per ' +
+        "file: with `qualified_name`, `touches_symbol` says whether the PR's diff names that " +
+        'symbol in a changed line (null if unknown). Next: pipeshub_code_read the file; for ' +
+        'what a change can break, pipeshub_code_impact or pipeshub_code_impact_of_diff.',
       inputSchema: {
         repo,
         file_path: filePath,

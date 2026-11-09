@@ -43,6 +43,8 @@ CALLS = {
     "outline": {"file_path": "src/b.py"},
     "impact": {"file_path": "src/b.py", "qualified_name": "function:target"},
     "entry_points": {},
+    "impact_of_diff": {"patch": "--- a/src/b.py\n+++ b/src/b.py\n@@ -1 +1 @@\n-a\n+b\n"},
+    "history": {"file_path": "src/b.py"},
 }
 
 
@@ -73,7 +75,7 @@ async def test_every_tool_result_names_the_commit_it_was_read_from(name) -> None
     assert all("indexed_commit" not in row for row in _rows_with_files(out) if row is not out)
 
 
-async def test_the_tools_and_the_cases_are_all_nine() -> None:
+async def test_every_tool_has_a_case() -> None:
     tools = {n for n in dir(cg.CodeGraph) if not n.startswith("_") and callable(getattr(cg.CodeGraph, n))}
     assert set(CALLS) == tools
 

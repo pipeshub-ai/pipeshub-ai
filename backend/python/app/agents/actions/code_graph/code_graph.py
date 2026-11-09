@@ -1,6 +1,6 @@
 """CodeGraph toolset — read the code knowledge graph.
 
-Nine tools over the blocks + recordLinks graph the indexing pipeline builds:
+Eleven tools over the blocks + recordLinks graph the indexing pipeline builds:
 
   query_code_graph    — module structure, and the symbols a directory or file holds
   get_neighbour       — what reaches a file or symbol, and what it reaches
@@ -11,6 +11,8 @@ Nine tools over the blocks + recordLinks graph the indexing pipeline builds:
   outline             — a file's definitions with signatures and line ranges
   impact              — what a change to a symbol can break, grouped by file
   entry_points        — functions and methods nothing in the repo calls
+  impact_of_diff      — what a unified diff can break, grouped by file
+  history             — the pull requests that changed a file, newest first
 
 A symbol is addressed as ``(file_path, qualified_name)`` — written
 ``path/to/file.py#function:main`` where one argument has to carry both. Both
@@ -1327,14 +1329,17 @@ class CodeGraph:
         path="/tools/codegraph/impact_of_diff",
         short_description="What a patch or PR diff changes and what that can break",
         description=(
-            "Give it a unified diff (`git diff` output). It names the symbols the diff changes "
-            "(`changed`: the innermost definition around each changed line, plus the whole file "
-            "for a module-level change or one no definition holds), then runs impact on each: the files and tests that "
-            "reach them, merged by file (`impacted_files`, `impacted_tests`), and "
-            "`untested_callers`, direct callers that no test reaches within two hops. Lines are "
-            "matched against the indexed commit, so a patch made on another base can drift. "
-            "New files are in `added_files`; files the graph does not hold are in `not_indexed`. "
-            "For one symbol you already know, impact is the same walk."
+            "Use to review a patch or pull request: give it a unified diff (`git diff` output) "
+            "for what it can break, in one call.\n\n"
+            "Returns the symbols the diff changes (`changed`: the innermost definition around "
+            "each changed line, plus the whole file for a module-level change or one no "
+            "definition holds), then impact on each: the files and tests that reach them, "
+            "merged by file (`impacted_files`, `impacted_tests`), and `untested_callers`, direct "
+            "callers that no test reaches within two hops. Lines are matched against the "
+            "indexed commit, so a patch made on another base can drift. New files are in "
+            "`added_files`; files the graph does not hold are in `not_indexed`.\n\n"
+            "Next: read_code only what it lists; for one symbol you already know, impact is the "
+            "same walk."
         ),
         parameters=[
             ToolParameter(name="connector_id", type=ParameterType.STRING,
@@ -1351,6 +1356,7 @@ class CodeGraph:
         ],
         tags=_IMPACT_TAGS,
     )
+    @_counted
     async def impact_of_diff(
         self,
         connector_id: str,
@@ -1375,14 +1381,15 @@ class CodeGraph:
         path="/tools/codegraph/history",
         short_description="The pull requests that changed a file, with people and tickets",
         description=(
-            "Who changed a file and why: the pull or merge requests that modified it, merged newest "
-            "first, each with its title, link, author, the reviewers asked or assigned "
-            "(`requested_reviewers`: not necessarily who reviewed), who merged it and when, and the "
-            "tickets it names (`tickets`). "
-            "Only indexed PRs are known, and a PR is linked to the files it changed when it is indexed. "
-            "With `qualified_name` the list is still per file, and `touches_symbol` says whether the PR's "
-            "diff names the symbol in a changed line (null when not known). For what a change can break, "
-            "use impact or impact_of_diff."
+            "Use for who changed a file and why.\n\n"
+            "Returns the pull or merge requests that modified it, merged newest first, each with "
+            "its title, link, author, the reviewers asked or assigned (`requested_reviewers`: not "
+            "necessarily who reviewed), who merged it and when, and the tickets it names "
+            "(`tickets`). Only indexed pull requests are known, and one is linked to the files it "
+            "changed when it is indexed. With `qualified_name` the list is still per file, and "
+            "`touches_symbol` says whether the pull request's diff names the symbol in a changed "
+            "line (null when not known).\n\n"
+            "Next: read_code the file; for what a change can break, impact or impact_of_diff."
         ),
         parameters=[
             ToolParameter(name="connector_id", type=ParameterType.STRING,
@@ -1401,6 +1408,7 @@ class CodeGraph:
         ],
         tags=_IMPACT_TAGS,
     )
+    @_counted
     async def history(
         self,
         connector_id: str,
