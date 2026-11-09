@@ -369,3 +369,23 @@ def test_parent_growth_is_within_the_base_in_every_pdf_cell() -> None:
     for name, cell in _cells().items():
         if cell["kind"] == "pdf_layout":
             assert cell["median_parent_growth_bytes"] <= 0.25 * GIB, name
+
+
+def test_retuning_cannot_lift_a_charge_past_its_limits() -> None:
+    """What the reaper's scale can and cannot do, as the operator docs state it."""
+    flat = 3 * GIB
+    assert lane_charge_bytes(ParseKind.PDF_LAYOUT, 0, scale=kinds.MAX_CHARGE_SCALE, flat_bytes=flat) == flat
+    huge_text = lane_charge_bytes(ParseKind.TEXT, 500 * MIB, scale=kinds.MAX_CHARGE_SCALE)
+    assert huge_text == int(kinds.TEXT_MAX_GB * GIB)
+    scales = ChargeScales()
+    scales.observe(ParseKind.PDF_LAYOUT, 1000 * GIB, GIB)
+    assert scales.scale(ParseKind.PDF_LAYOUT) == kinds.MAX_CHARGE_SCALE == 4.0
+
+
+def test_the_docs_state_the_limits_of_retuning_and_the_route_retry() -> None:
+    doc = (Path(__file__).parents[6] / "docs" / "indexing-service.md").read_text(encoding="utf-8")
+    section = doc.split("**Memory charged by kind of job")[1].split("**The heavy permit")[0]
+    assert f"at most {kinds.MAX_CHARGE_SCALE:g}x" in section
+    assert "flat charge is never scaled" in section
+    assert f"{kinds.TEXT_MAX_GB:g} GiB cap" in section
+    assert "429 with `Retry-After`" in section and "the caller retries" in section
