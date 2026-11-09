@@ -129,6 +129,18 @@ async def test_a_failed_read_raises_on_arango(arango_provider, monkeypatch: pyte
 # A withdrawn link comes back through the real processor
 # ---------------------------------------------------------------------------
 
+async def _connected(connecting, env: str):
+    """A store that is not configured and not reachable skips the test, as in the other integration tests here; one that is configured must be there."""
+    import os
+
+    try:
+        return await connecting
+    except Exception as exc:
+        if os.environ.get(env):
+            pytest.fail(f"{env} is set but the store is not reachable: {exc!r}")
+        pytest.skip(f"no store configured ({env} unset) and none reachable locally: {exc!r}")
+
+
 async def _recover(graph, user_key: str, org: str, connector: str) -> tuple[set[str], set[str], set[str]]:
     """Link a user to a connector through the processor, withdraw it, save the user again; the link ids seen at each step."""
     import logging
@@ -162,7 +174,7 @@ async def _recover(graph, user_key: str, org: str, connector: str) -> tuple[set[
 async def test_neo4j_a_withdrawn_user_gets_the_link_back_when_the_next_listing_shows_the_user(monkeypatch: pytest.MonkeyPatch) -> None:
     from ..test_soft_delete_e2e import _connect_neo4j
 
-    graph = await _connect_neo4j(monkeypatch)
+    graph = await _connected(_connect_neo4j(monkeypatch), "NEO4J_IT_URI")
     try:
         t = uuid.uuid4().hex[:8]
         org, user, connector = f"org-{t}", f"u-{t}", f"app-{t}"
@@ -177,7 +189,7 @@ async def test_neo4j_a_withdrawn_user_gets_the_link_back_when_the_next_listing_s
 async def test_arango_a_withdrawn_user_gets_the_link_back_when_the_next_listing_shows_the_user() -> None:
     from ..test_soft_delete_e2e import _connect_arango
 
-    graph = await _connect_arango()
+    graph = await _connected(_connect_arango(), "ARANGO_IT_URL")
     try:
         t = uuid.uuid4().hex[:8]
         org, user, connector = f"org-{t}", f"u-{t}", f"app-{t}"
