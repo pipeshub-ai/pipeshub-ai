@@ -1906,8 +1906,8 @@ def _reference_info(
     target: Node, src: bytes, cfg: LanguageConfig,
 ) -> tuple[str | None, bool, str | None, str | None]:
     """(name, is_member, receiver, qualified_prefix) for what a call, a decorator
-    or a JSX tag names: `f`, `obj.f`, `pkg.mod.f`."""
-    if target.type in ("identifier", "type_identifier"):
+    or a JSX tag names: `f`, `obj.f`, `pkg.mod.f`, and the `f` of an object's `{ f }`."""
+    if target.type in ("identifier", "type_identifier", "shorthand_property_identifier"):
         return _text(target, src), False, None, None
 
     if target.type in cfg.accessor_types:
@@ -1924,6 +1924,51 @@ def _reference_info(
             return name, True, receiver_text.rsplit(".", 1)[-1], receiver_text
         return name, True, receiver_text, receiver_text
     return None, False, None, None
+
+
+# --------------------------------------------------------------------------
+# Functions as values (INDIRECT_CALL)
+# --------------------------------------------------------------------------
+
+# A node that holds values (Python and JS/TS node types), and the position they are in.
+_VALUE_CONTEXTS = {
+    "argument_list": "argument", "arguments": "argument",
+    "dictionary": "collection", "list": "collection", "tuple": "collection", "set": "collection",
+    "object": "collection", "array": "collection",
+    "assignment": "assignment", "assignment_expression": "assignment", "variable_declarator": "assignment",
+    "return_statement": "return",
+    # `<Button onClick={handle} />`: an attribute's value, handed to the component.
+    "jsx_expression": "prop",
+}
+# Where an assignment keeps its one value; any other holder's values are its children.
+_VALUE_FIELDS = {"assignment": "right", "assignment_expression": "right", "variable_declarator": "value"}
+_TABLE_TYPES = frozenset({"dictionary", "list", "tuple", "set", "object", "array"})
+_SUBSCRIPT_OBJECT_FIELDS = {"subscript": "value", "subscript_expression": "object"}
+# Only a bound method is a value reference through a receiver; `utils.parse` passed along is not resolvable here.
+_SELF_RECEIVERS = frozenset({"self", "this"})
+# Decorators (their last segment) that make a method read like an attribute. A setter shares the
+# property's name, so `self.x` may resolve to either.
+_ACCESSOR_DECORATORS = frozenset({"property", "cached_property", "setter", "getter", "deleter"})
+
+
+def _values_of(holder: Node) -> list[Node]:
+    """The value nodes a holder holds: `f` of `g(f)`, `{"k": f}`, `[f]`, `x = f`, `return f`."""
+    field_name = _VALUE_FIELDS.get(holder.type)
+    if field_name:
+        value = _field(holder, field_name)
+        return [value] if value is not None else []
+    values = (_field(c, "value") if c.type in ("pair", "keyword_argument") else c for c in holder.named_children)
+    return [v for v in values if v is not None]
+
+
+def _is_accessor(def_node: Node | None, decorators: tuple[str, ...]) -> bool:
+    """A method read like an attribute, `@property`/`cached_property` or a `get`/`set` accessor:
+    `self.text` runs it there and then, nothing is handed over (a setter shares its getter's name)."""
+    if any(d.lstrip("@").strip().rsplit(".", 1)[-1] in _ACCESSOR_DECORATORS for d in decorators):
+        return True
+    return def_node is not None and def_node.type == "method_definition" \
+        and any(c.type in ("get", "set") for c in def_node.children)
+
 
 # --------------------------------------------------------------------------
 # Spans
@@ -2011,6 +2056,8 @@ class _Walker:
         self._exported_names: frozenset[str] | None = None
         self._root: Node | None = None
         self._class_names: dict[int, dict[str, int]] = {}
+        # name -> values of the file's module-level tables (`COMMANDS = {...}`), read by `TABLE[k]()`.
+        self._module_tables: dict[str, list[Node]] | None = None
         # Python: each scope's own typed bindings, its untyped `x = <value>` (None: two values), and the chains
         # already read off them.
         self._py_scopes: dict[int | None, dict[str, str]] | None = None
@@ -2483,6 +2530,7 @@ class _Walker:
             modifiers=self._modifiers(span, kind) if span.kind == "definition" else (),
             is_exported=span.is_exported,
             parent=parent_idx,
+            is_accessor=kind == "method" and _is_accessor(span.def_node, span.decorators),
             type_param_count=_type_param_count(span.def_node) if span.kind == "definition" else 0,
             owns_facts=span.owns_facts,
         ))
@@ -2632,6 +2680,8 @@ class _Walker:
         pushed reversed so facts are still emitted in source order.
         """
         cfg = self.cfg
+        # *node* itself can hold values: a function body's `return on_done` is walked from the statement.
+        self._emit_value_refs(node, enclosing)
         stack = list(reversed(node.named_children))
         while stack:
             child = stack.pop()
@@ -2639,6 +2689,7 @@ class _Walker:
             if ntype in cfg.import_types or ntype in cfg.export_types:
                 self._run_handler(child, enclosing)
                 continue
+            self._emit_value_refs(child, enclosing)
             if (arguments := self._macro_arguments.get(child.start_byte)) is not None and ntype == "macro_invocation":
                 stack.extend(reversed(arguments.named_children))
                 continue
@@ -2655,8 +2706,11 @@ class _Walker:
         if self.cfg.import_handler_name == "js" and self._emit_js_dynamic_import(node, enclosing):
             return
         name, is_member, receiver, qualifier = _callee_info(node, self.src, self.cfg)
+        if not name:
+            self._emit_dispatch(node, enclosing)
+            return
         # Builtin globals only shadow bare calls; `this.fetch()` is a method.
-        if not name or (not is_member and name in self.builtins):
+        if not is_member and name in self.builtins:
             return
         # `task(ref)` on a parameter or local calls that value, never a module function named `task`.
         if not is_member and self._shadow_guard and self._shadowed(node, name):
@@ -2984,18 +3038,77 @@ class _Walker:
             scope = scope.parent
         return None
 
-    def _emit_reference(self, target: Node, enclosing: int) -> None:
-        """A CALLS fact for something referenced as a callee without a call node."""
+    def _emit_reference(self, target: Node, enclosing: int, *, relation: str = Relation.CALLS,
+                        context: str | None = None, at: Node | None = None) -> None:
+        """A fact for something referenced without a call node: CALLS for a decorator or a JSX tag,
+        INDIRECT_CALL for a function named as a value. *at* is where the reference happens when that
+        is not *target*: `COMMANDS[k]()` reaches a table value written elsewhere."""
         name, is_member, receiver, qualifier = _reference_info(target, self.src, self.cfg)
         if not name or (not is_member and name in self.builtins):
             return
+        at = at or target
         self.out.pending.append(PendingEdgeFact(
-            relation=Relation.CALLS, to_name=name, line=self._line_at(target.start_byte),
-            byte_offset=target.start_byte, from_symbol=enclosing, to_kind="block",
+            relation=relation, to_name=name, line=self._line_at(at.start_byte),
+            byte_offset=at.start_byte, from_symbol=enclosing, to_kind="block",
             is_member_call=is_member, receiver=receiver,
             receiver_type=self._receiver_type(target, receiver, qualifier),
-            qualified_prefix=qualifier,
+            qualified_prefix=qualifier, context=context,
         ))
+
+    def _emit_value_refs(self, holder: Node, enclosing: int) -> None:
+        """INDIRECT_CALL facts for the functions *holder* holds as values: arguments, table
+        entries, an assignment's right-hand side, a return value, a JSX prop. Only where the
+        shadow guard runs: without it a local would read as a module function."""
+        context = _VALUE_CONTEXTS.get(holder.type) if self._shadow_guard else None
+        if context is None:
+            return
+        # `class A(Base)` has an argument list too; only a call's arguments are passed along.
+        if context == "argument" and (holder.parent is None or holder.parent.type not in self.cfg.call_types):
+            return
+        # `{renderBody}` between tags is rendered, not handed over: only an attribute's value is a prop.
+        if context == "prop" and (holder.parent is None or holder.parent.type != "jsx_attribute"):
+            return
+        for value in _values_of(holder):
+            self._emit_value(value, enclosing, context)
+
+    def _emit_value(self, value: Node, enclosing: int, context: str, at: Node | None = None) -> None:
+        name, is_member, receiver, _ = _reference_info(value, self.src, self.cfg)
+        if not name or (receiver not in _SELF_RECEIVERS if is_member else self._shadowed(value, name)):
+            return
+        self._emit_reference(value, enclosing, relation=Relation.INDIRECT_CALL, context=context, at=at)
+
+    def _emit_dispatch(self, call: Node, enclosing: int) -> None:
+        """`COMMANDS[name](ref)` runs one of a module table's values: an INDIRECT_CALL from the caller
+        to each of them. Only a table this file defines at module level, under a name not rebound here."""
+        target = _field(call, self.cfg.call_function_field) if self._shadow_guard else None
+        object_field = _SUBSCRIPT_OBJECT_FIELDS.get(target.type) if target is not None else None
+        table = _field(target, object_field) if object_field else None
+        if table is None or table.type != "identifier":
+            return
+        name = _text(table, self.src)
+        if self._shadowed(call, name):
+            return
+        for value in self._tables_of(call).get(name, ()):
+            self._emit_value(value, enclosing, "dispatch", at=call)
+
+    def _tables_of(self, node: Node) -> dict[str, list[Node]]:
+        """The file's module-level tables, `NAME = {...}` / `const NAME = [...]`: name -> values."""
+        if self._module_tables is None:
+            root = node
+            while root.parent is not None:
+                root = root.parent
+            self._module_tables = {}
+            for top in root.named_children:
+                statement = _field(top, "declaration") or top  # `export const`
+                for binding in statement.named_children:
+                    if binding.type not in _VALUE_FIELDS:
+                        continue
+                    name = _field(binding, _BINDING_FIELDS.get(binding.type, "left"))
+                    value = _field(binding, _VALUE_FIELDS[binding.type])
+                    if name is not None and name.type == "identifier" and value is not None \
+                            and value.type in _TABLE_TYPES:
+                        self._module_tables[_text(name, self.src)] = _values_of(value)
+        return self._module_tables
 
     def _emit_js_dynamic_import(self, node: Node, enclosing: int) -> bool:
         """`require('./m')` and `import('./m')` as imports (P-5). True if it was one.

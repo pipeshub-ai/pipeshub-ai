@@ -554,11 +554,12 @@ class CodeGraph:
     @tool(
         path="/tools/codegraph/get_neighbour",
         short_description=(
-            "Walk a symbol's edges: CALLS, METHOD/CONTAINS, INHERITS/"
+            "Walk a symbol's edges: CALLS, INDIRECT_CALL, METHOD/CONTAINS, INHERITS/"
             "IMPLEMENTS, OVERRIDES, IMPORTS_FROM. A read shows none of these."
         ),
         description=(
             "Walk edges of a file or symbol: METHOD/CONTAINS (its class), CALLS, "
+            "INDIRECT_CALL (passed as a callback or handler), "
             "INHERITS/IMPLEMENTS, OVERRIDES, IMPORTS_FROM. A read shows none "
             "of these.\n\n"
             "Give it something you already hold — a `record_id`, a `file_path` on its "
@@ -1162,14 +1163,16 @@ class CodeGraph:
         path="/tools/codegraph/impact",
         short_description="What a change to a symbol can break, grouped by file",
         description=(
-            "The blast radius of changing a symbol: everything that calls it, imports "
-            "it, or builds on it (inherits, implements, overrides), followed backwards "
+            "The blast radius of changing a symbol: everything that calls it, passes it "
+            "as a callback or handler, imports it, or builds on it (inherits, implements, "
+            "overrides), followed backwards "
             f"up to `depth` hops (default {DEFAULT_IMPACT_DEPTH}), grouped by file with "
             "the nearest hop. Symbols that build on it rather than call it are also named "
             "in each file's `built_on`; `edge_types=['CALLS']` follows calls only (callers, "
             "their callers, ...). Test code it reaches is affected too and is listed apart "
             "in `impacted_tests`. Only edges the parser could prove; `coverage` says when a "
-            "language has none."
+            "language has none. Reads of a property or getter are not followed: a changed "
+            "`@property` or `get` accessor lists none of the code that reads it."
         ),
         parameters=[
             ToolParameter(name="connector_id", type=ParameterType.STRING,

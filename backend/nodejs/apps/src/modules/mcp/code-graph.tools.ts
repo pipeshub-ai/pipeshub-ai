@@ -98,7 +98,7 @@ const qualifiedName = z
 const edgeTypes = z
   .array(z.string())
   .optional()
-  .describe('CALLS, IMPORTS, INHERITS, CONTAINS; omit for all.');
+  .describe('CALLS, INDIRECT_CALL, IMPORTS, INHERITS, CONTAINS; omit for all.');
 
 const repoRequired = repo
   .unwrap()
@@ -512,9 +512,10 @@ export function registerCodeGraphToolDefinitions(
     'pipeshub_code_impact',
     {
       description:
-        'What changing a symbol can break: everything that calls, imports or builds on it, ' +
-        'followed backwards up to `depth` hops, grouped by file, in one call instead of a ' +
-        `grep per caller. ${COVERAGE}`,
+        'What changing a symbol can break: everything that calls it, passes it as a callback ' +
+        'or handler, imports or builds on it, followed backwards up to `depth` hops, grouped ' +
+        'by file, in one call instead of a grep per caller. Reads of a property or getter are ' +
+        `not followed. ${COVERAGE}`,
       inputSchema: {
         repo,
         file_path: filePath,
