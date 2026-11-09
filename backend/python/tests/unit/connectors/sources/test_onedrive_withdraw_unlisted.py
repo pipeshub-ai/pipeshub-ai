@@ -4,6 +4,7 @@ import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from app.config.constants.arangodb import Connectors
 from app.connectors.sources.microsoft.common.msgraph_client import (
@@ -227,8 +228,6 @@ async def test_direct_reads_are_bounded_to_the_absent_accounts() -> None:
 
 @pytest.mark.asyncio
 async def test_status_read_is_a_definite_404_or_it_raises() -> None:
-    from msgraph.generated.models.o_data_errors.o_data_error import ODataError
-
     from app.connectors.sources.microsoft.common.msgraph_client import read_user_status
 
     def graph_failing_with(code: int | None) -> MagicMock:
@@ -255,3 +254,56 @@ async def test_guest_accounts_follow_the_same_rule() -> None:
     c, stored = _connector(["a", "g1", "g2"], [_user("a"), listed_guest])  # g2 is a guest that was deleted
     await c._sync_users()
     assert set(stored) == {"a", "g1"}
+
+
+@pytest.fixture(autouse=True)
+def sleeps(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """The retry waits of ``read_user_status`` are recorded, not slept."""
+    from types import SimpleNamespace
+
+    from app.connectors.sources.microsoft.common import msgraph_client
+
+    sleep = AsyncMock()
+    monkeypatch.setattr(msgraph_client, "asyncio", SimpleNamespace(sleep=sleep))
+    return sleep
+
+
+def _odata_error(code: int) -> ODataError:
+    err = ODataError()
+    err.response_status_code = code
+    return err
+
+
+def _graph_answering(*answers: object) -> MagicMock:
+    """A Graph client whose reads of one user answer in turn: an int is an ODataError with that status, anything else is returned."""
+    g = MagicMock()
+    g.users.by_user_id.return_value.get = AsyncMock(side_effect=[_odata_error(a) if isinstance(a, int) else a for a in answers])
+    return g
+
+
+@pytest.mark.asyncio
+async def test_a_404_is_read_again_after_2_then_4_seconds_before_it_is_gone(sleeps: AsyncMock) -> None:
+    from unittest.mock import call
+
+    from app.connectors.sources.microsoft.common.msgraph_client import read_user_status
+
+    g = _graph_answering(404, 404, 404)
+    assert await read_user_status(g, "u") == "gone"
+    assert g.users.by_user_id.return_value.get.await_count == 3
+    assert sleeps.await_args_list == [call(2), call(4)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answers", [(404, MagicMock(account_enabled=True)), (404, 404, MagicMock(account_enabled=True))])
+async def test_a_user_found_on_a_later_read_is_present(answers: tuple) -> None:
+    from app.connectors.sources.microsoft.common.msgraph_client import read_user_status
+
+    assert await read_user_status(_graph_answering(*answers), "u") == "present"
+
+
+@pytest.mark.asyncio
+async def test_a_404_then_a_server_error_raises() -> None:
+    from app.connectors.sources.microsoft.common.msgraph_client import read_user_status
+
+    with pytest.raises(ODataError):
+        await read_user_status(_graph_answering(404, 500), "u")
