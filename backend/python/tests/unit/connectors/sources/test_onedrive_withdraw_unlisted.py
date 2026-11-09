@@ -21,14 +21,15 @@ def _user(sid: str, active: bool = True) -> AppUser:
     )
 
 
-def _connector(stored_ids: list[str], listing: object, complete: bool = True) -> tuple[OneDriveConnector, dict]:
+def _connector(stored_ids: list[str], listing: object, complete: bool = True, status: object = "gone") -> tuple[OneDriveConnector, dict]:
     """A connector whose store holds ``stored_ids`` and whose listing is ``listing``
     (a list of AppUser, or an exception to raise)."""
     stored = {sid: _user(sid) for sid in stored_ids}
     proc = MagicMock()
     proc.org_id = "org"
     proc.on_new_app_users = AsyncMock()
-    proc.get_all_app_users = AsyncMock(side_effect=lambda *a, **k: list(stored.values()))
+    proc.get_app_user_links = AsyncMock(side_effect=lambda *a, **k: list(stored.values()))
+    proc.get_all_app_users = AsyncMock(side_effect=AssertionError("the member-only read must not pick candidates"))
 
     async def withdraw(_cid: str, users: list[AppUser]) -> None:
         for u in users:
@@ -37,6 +38,7 @@ def _connector(stored_ids: list[str], listing: object, complete: bool = True) ->
     proc.withdraw_app_user_access = AsyncMock(side_effect=withdraw)
     c = OneDriveConnector(logging.getLogger("t"), proc, MagicMock(), MagicMock(), "c1", "team", "creator")
     c.msgraph_client = MagicMock()
+    c.msgraph_client.get_user_status = AsyncMock(side_effect=status) if isinstance(status, Exception) else AsyncMock(return_value=status)
     if isinstance(listing, Exception):
         c.msgraph_client.get_all_users = AsyncMock(side_effect=listing)
     else:
@@ -141,7 +143,7 @@ async def test_account_with_unknown_enabled_state_stays_saved() -> None:
 @pytest.mark.asyncio
 async def test_read_failure_of_stored_users_withdraws_nobody(caplog: pytest.LogCaptureFixture) -> None:
     c, stored = _connector(["a", "gone"], [_user("a")])
-    c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=RuntimeError("db down"))
+    c.data_entities_processor.get_app_user_links = AsyncMock(side_effect=RuntimeError("db down"))
     with caplog.at_level(logging.ERROR):
         await c._sync_users()
     c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
@@ -178,3 +180,78 @@ async def test_listing_that_may_be_cut_is_incomplete_but_returned(first: MagicMo
     users = await client.get_all_users()
     assert users.complete is False
     assert users[0].source_user_id == "a"
+
+
+@pytest.mark.asyncio
+async def test_listed_disabled_account_is_withdrawn_without_a_direct_read() -> None:
+    c, stored = _connector(["a", "b"], [_user("a"), _user("b", active=False)])
+    await c._sync_users()
+    assert set(stored) == {"a"}
+    c.msgraph_client.get_user_status.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stale_listing_with_a_matching_count_withdraws_nobody() -> None:
+    """A user created after the listing was served is absent from it, and Microsoft still finds it."""
+    c, stored = _connector(["a", "new"], [_user("a")], status="present")
+    await c._sync_users()
+    c.msgraph_client.get_user_status.assert_awaited_once_with("new")
+    c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+    assert set(stored) == {"a", "new"}
+
+
+@pytest.mark.asyncio
+async def test_absent_account_found_disabled_is_withdrawn() -> None:
+    c, stored = _connector(["a", "off"], [_user("a")], status="disabled")
+    await c._sync_users()
+    assert set(stored) == {"a"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [429, 500])
+async def test_absent_account_that_cannot_be_confirmed_keeps_access(status_code: int, caplog: pytest.LogCaptureFixture) -> None:
+    c, stored = _connector(["a", "x"], [_user("a")], status=RuntimeError(f"status {status_code}"))
+    with caplog.at_level(logging.ERROR):
+        await c._sync_users()
+    c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+    assert any("x" in r.message and r.levelno == logging.ERROR for r in caplog.records)
+    assert set(stored) == {"a", "x"}
+
+
+@pytest.mark.asyncio
+async def test_direct_reads_are_bounded_to_the_absent_accounts() -> None:
+    c, _ = _connector(["a", "b", "c", "d"], [_user("a"), _user("b", active=False)])
+    await c._sync_users()
+    assert c.msgraph_client.get_user_status.await_count == 2  # c and d only
+
+
+@pytest.mark.asyncio
+async def test_status_read_is_a_definite_404_or_it_raises() -> None:
+    from msgraph.generated.models.o_data_errors.o_data_error import ODataError
+
+    from app.connectors.sources.microsoft.common.msgraph_client import read_user_status
+
+    def graph_failing_with(code: int | None) -> MagicMock:
+        err = ODataError()
+        err.response_status_code = code
+        g = MagicMock()
+        g.users.by_user_id.return_value.get = AsyncMock(side_effect=err)
+        return g
+
+    assert await read_user_status(graph_failing_with(404), "u") == "gone"
+    for code in (429, 500, None):
+        with pytest.raises(ODataError):
+            await read_user_status(graph_failing_with(code), "u")
+    found = MagicMock()
+    found.users.by_user_id.return_value.get = AsyncMock(return_value=MagicMock(account_enabled=True))
+    assert await read_user_status(found, "u") == "present"
+    found.users.by_user_id.return_value.get = AsyncMock(return_value=MagicMock(account_enabled=False))
+    assert await read_user_status(found, "u") == "disabled"
+
+
+@pytest.mark.asyncio
+async def test_guest_accounts_follow_the_same_rule() -> None:
+    listed_guest = _user("g1").model_copy(update={"is_guest": True})
+    c, stored = _connector(["a", "g1", "g2"], [_user("a"), listed_guest])  # g2 is a guest that was deleted
+    await c._sync_users()
+    assert set(stored) == {"a", "g1"}

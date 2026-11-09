@@ -2674,20 +2674,34 @@ class OneDriveConnector(BaseConnector):
             self.logger.error("❌ Error checking if user has OneDrive: %s", e)
             raise
     
-    async def _withdraw_unlisted_app_users(self, enabled: list[AppUser]) -> None:
-        """Take the connector away from stored users the complete user read does not list as
-        enabled: disabled and deleted accounts. Only called after a complete read; an empty
-        list withdraws nobody (the directory always has users), and so does a failed read
-        of the stored users."""
+    async def _withdraw_unlisted_app_users(self, users: list[AppUser]) -> None:
+        """Take the connector away from stored users (guest accounts included) that the
+        complete user read lists as disabled, and from those it does not list that Microsoft
+        then confirms are gone (a 404 on the user itself) or disabled; a stale listing
+        cannot withdraw anyone, nor can a failed or throttled read of the user. Only called
+        after a complete read; an empty list withdraws nobody (the directory always has
+        users), and so does a failed read of the stored users."""
+        enabled = {u.source_user_id for u in users if u.is_active is not False}
         if not enabled:
             return
+        listed = {u.source_user_id for u in users}
         try:
-            stored = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
+            stored = await self.data_entities_processor.get_app_user_links(self.connector_id)
         except Exception as e:
             self.logger.error(f"Could not read the stored users; no user loses access this run: {e}")
             return
-        kept = {u.source_user_id for u in enabled}
-        gone = [u for u in stored if u.source_user_id and u.source_user_id not in kept]
+        gone = []
+        for u in stored:
+            if not u.source_user_id or u.source_user_id in enabled:
+                continue
+            if u.source_user_id not in listed:
+                try:
+                    if await self.msgraph_client.get_user_status(u.source_user_id) == "present":
+                        continue
+                except Exception as e:
+                    self.logger.error(f"Could not confirm user {u.source_user_id} is gone; keeping the access: {e}")
+                    continue
+            gone.append(u)
         if gone:
             await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
 
@@ -2703,7 +2717,7 @@ class OneDriveConnector(BaseConnector):
             enabled = [u for u in users if u.is_active is not False]
             await self.data_entities_processor.on_new_app_users(enabled)
             if getattr(users, "complete", True):
-                await self._withdraw_unlisted_app_users(enabled)
+                await self._withdraw_unlisted_app_users(users)
             else:
                 self.logger.warning("User listing is incomplete; no user loses access this run")
             self.logger.info(f"✅ Successfully synced {len(users)} users")
