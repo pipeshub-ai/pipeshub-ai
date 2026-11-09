@@ -683,7 +683,9 @@ class LangChainTransport(LLMTransport):
         if ai_message.tool_calls:
             return StopReason.TOOL_USE
         metadata = ai_message.response_metadata or {}
-        finish_reason = metadata.get("finish_reason") or metadata.get("stop_reason")
+        finish_reason = (
+            metadata.get("finish_reason") or metadata.get("stop_reason") or metadata.get("stopReason")
+        )
         if finish_reason in _STOP_REASON_TRUNCATED:
             return StopReason.MAX_TOKENS
         if finish_reason in _STOP_REASON_TOOL_CALLS:

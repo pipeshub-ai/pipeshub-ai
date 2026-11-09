@@ -390,7 +390,9 @@ def _recover_invalid_tool_call(call: dict[str, Any]) -> ToolCall:
 
 def _is_truncated(ai_message: AIMessage) -> bool:
     metadata = ai_message.response_metadata or {}
-    finish_reason = metadata.get("finish_reason") or metadata.get("stop_reason")
+    finish_reason = (
+        metadata.get("finish_reason") or metadata.get("stop_reason") or metadata.get("stopReason")
+    )
     if finish_reason in _TRUNCATION_FINISH_REASONS:
         return True
     incomplete_details = metadata.get("incomplete_details")
