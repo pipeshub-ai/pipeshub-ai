@@ -415,6 +415,37 @@ async def test_the_edge_rollup_by_file_prefix(repo: _Repo) -> None:
     assert rows, "the CALLS edge from a.py to b.py rolls up under the prefix"
 
 
+async def test_find_uncalled_blocks_anti_joins_in_the_database(repo: _Repo) -> None:
+    """caller() calls target(), target() calls helper(): only caller has no inbound CALLS."""
+    await _build(repo)
+    ids = list(repo.record_ids.values())
+    find = repo.graph.find_uncalled_blocks
+    kinds, calls = ["function", "method"], [RecordRelations.CALLS.value]
+    page, after = await find(repo.org_id, repo.connector_id, ids, kinds, calls, 10, raise_on_error=True)
+    assert [b["qualifiedName"] for b in page] == ["function:caller"] and after is None
+    assert page[0]["_key"] == repo.block("src/shop/a.py", "function:caller")
+    # scoped to b.py, whose functions are both called: nothing
+    only_b = [repo.record_ids["src/shop/b.py"]]
+    assert await find(repo.org_id, repo.connector_id, only_b, kinds, calls, 10, raise_on_error=True) == ([], None)
+    # a caller in an uncounted file does not make its callee called; one in a counted file still does
+    hidden_a = [repo.record_ids["src/shop/a.py"]]
+    page, _ = await find(repo.org_id, repo.connector_id, only_b, kinds, calls, 10,
+                         uncounted_caller_records=hidden_a, raise_on_error=True)
+    assert [b["qualifiedName"] for b in page] == ["function:target"]
+    # every function counts once the relation is one no edge has
+    everything, _ = await find(repo.org_id, repo.connector_id, ids, kinds, ["OVERRIDES"], 10, raise_on_error=True)
+    assert {b["qualifiedName"] for b in everything} == {"function:caller", "function:target", "function:helper"}
+    # paged in key order: a full page hands back where to go on, the last page None
+    keys = sorted(b["_key"] for b in everything)
+    first, after = await find(repo.org_id, repo.connector_id, ids, kinds, ["OVERRIDES"], 2, raise_on_error=True)
+    assert [b["_key"] for b in first] == keys[:2] and after == keys[1]
+    rest, end = await find(repo.org_id, repo.connector_id, ids, kinds, ["OVERRIDES"], 2, after, raise_on_error=True)
+    assert [b["_key"] for b in rest] == keys[2:] and end is None
+    # an empty scope asks nothing; another connector's blocks are never returned
+    assert await find(repo.org_id, repo.connector_id, [], kinds, calls, 10, raise_on_error=True) == ([], None)
+    assert await find(repo.org_id, "conn-other", ids, kinds, calls, 10, raise_on_error=True) == ([], None)
+
+
 async def test_the_exact_name_index_exists(repo: _Repo) -> None:
     if repo.backend == "arango":
         indexes = await repo.graph.http_client.get_indexes(BLOCKS)
