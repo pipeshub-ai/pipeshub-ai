@@ -436,6 +436,22 @@ class PgVectorService(IVectorDBService):
         db, _ = self._assert_connected()
         return await db.run(lambda tx: tx.fetchval("/* pipeshub:pgvector.fence_time */ SELECT clock_timestamp()"), idempotent=True, custom_plan=True)
 
+    async def group_clock_skew(self, org_id: str, *, min_ahead_seconds: float = 30.0) -> tuple[int, float]:
+        """``(rows, seconds)``: how many of the org's group rows were computed more than ``min_ahead_seconds`` after the database's clock, and by how
+        much the furthest is. A rewrite writes at the database's time and a group row is replaced only by a later one, so a row ahead of the clock
+        refuses every rewrite of its virtual record until the clock passes it.
+
+        shortcut: reads the org's group rows without an index on ``computed_at``; it is an operator command, so run it when asked, not per request."""
+        db, _ = self._assert_connected()
+        org = require_org(org_id)
+        with org_scope(org):
+            row = await db.run(lambda tx: tx.fetchrow(
+                """/* pipeshub:pgvector.group_clock_skew */
+                SELECT count(*) AS n, coalesce(extract(epoch FROM max(computed_at) - clock_timestamp()), 0) AS ahead
+                FROM retrieval.point_groups WHERE org_id = $1 AND computed_at > clock_timestamp() + make_interval(secs => $2::float8)""",
+                org, float(min_ahead_seconds)), idempotent=True, custom_plan=True)
+        return int(row["n"]), float(row["ahead"])
+
     async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
         db, catalog = self._assert_connected()
         org = _filter_org(count_filter)

@@ -97,6 +97,29 @@ async def test_sweep_exits_non_zero_only_when_a_connector_failed(monkeypatch) ->
     assert await scope_projection._main(["sweep", "--org", "o"]) == 1
 
 
+async def test_view_prints_the_lines_and_exits_non_zero_only_when_something_needs_attention(monkeypatch, capsys) -> None:
+    from app.services.vector_db.scope_view import ConnectorView, OrgView
+
+    container = MagicMock()
+    container.graph_provider = AsyncMock(return_value=MagicMock(disconnect=AsyncMock()))
+    monkeypatch.setattr("app.containers.indexing.IndexingAppContainer.init", lambda name: container)
+    monkeypatch.setattr("app.modules.indexing.vector_membership_backfill._resolve_indexing_pipeline", AsyncMock(return_value=None))
+    seen = {}
+
+    async def org_view(graph: object, org: str, vdb: object, **kw: object) -> OrgView:
+        seen.update(vdb=vdb, **kw)
+        return OrgView(org, [ConnectorView("a", current=False, attention=["pending_roots: 1 root(s)"])] if seen.get("bad") else [ConnectorView("a", True)])
+
+    monkeypatch.setattr("app.services.vector_db.scope_view.org_view", org_view)
+    assert await scope_projection._main(["view", "--org", "o", "--connector", "a"]) == 1      # no vector store: said, and needs attention
+    assert "vector_store_not_configured" in capsys.readouterr().out and seen["vdb"] is None and seen["connectors"] == ["a"]
+    seen["bad"] = True
+    assert await scope_projection._main(["view", "--org", "o"]) == 1 and "pending_roots" in capsys.readouterr().out
+    monkeypatch.setattr("app.modules.indexing.vector_membership_backfill._resolve_indexing_pipeline", AsyncMock(return_value=MagicMock()))
+    seen["bad"] = False
+    assert await scope_projection._main(["view", "--org", "o"]) == 0
+
+
 async def test_sweep_with_an_interval_goes_on_after_a_listing_that_fails(monkeypatch) -> None:
     import asyncio
 

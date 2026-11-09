@@ -3,6 +3,7 @@
     python -m app.scripts.scope_projection run    --org ORG --connector APP [--connector APP ...] [--restart] [--max-pages N] [--close-open-mark]
     python -m app.scripts.scope_projection status --org ORG --connector APP [--connector APP ...]
     python -m app.scripts.scope_projection sweep  --org ORG [--connector APP ...] [--interval SECONDS]
+    python -m app.scripts.scope_projection view   --org ORG [--connector APP ...]
 
 `run` refuses to start unless the scope fields are on (`ACL_SCOPE_FIELDS=on` in every service, so points written meanwhile carry
 them too). One run handles `--max-pages` pages and prints `running` when there are more: run it again. It resumes at its saved
@@ -12,6 +13,10 @@ position, so it can be stopped and repeated. Exit code 1 when a run failed or an
 pass, or again every ``--interval`` seconds until stopped (a listing that fails is logged and tried again at the next round). A connector that
 needs a full back-fill and was back-filled before gets a few pages of one per pass. Exit code 1 when a connector failed (it is retried after a
 growing wait, and the others go on).
+
+`view` shows, per connector, what keeps its stamps from being used and what will clear it: pending roots, writes that opened the connector and
+never closed it (and whether the sweep will close them), a failing sweep, a connector that needs the back-fill, and, on pgvector, group rows
+computed ahead of the database's clock. Read-only. Exit code 1 when anything needs attention.
 """
 
 from __future__ import annotations
@@ -44,6 +49,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--close-open-mark", action="store_true",
                      help="close an open unsafe mark (an unclassified write that never wrote its closing mark); only when no write of the organisation's connectors is still running")
     run.add_argument("--max-pages", type=_pages, default=20)
+    view = sub.add_parser("view")
+    view.add_argument("--org", required=True)
+    view.add_argument("--connector", action="append", help="only these connector instances (default: every connector with scope state)")
     sweep = sub.add_parser("sweep")
     sweep.add_argument("--org", required=True)
     sweep.add_argument("--connector", action="append", help="only these connector instances (default: every connector of the organisation)")
@@ -71,6 +79,17 @@ async def _sweep(args: argparse.Namespace, graph_provider: Any, pipeline: Any, l
     failed = await sweep_forever(sweep, orgs, args.interval or 0, log=logger, connectors=args.connector, report=report,
                                  rounds=None if args.interval else 1)
     return EXIT_FAILED if failed else 0
+
+
+async def _view(args: argparse.Namespace, graph_provider: Any, pipeline: Any) -> int:  # noqa: ANN401
+    from app.services.vector_db.scope_view import org_view
+
+    view = await org_view(graph_provider, args.org, pipeline.vector_db_service if pipeline else None, connectors=args.connector)
+    if pipeline is None:
+        view.notes.append("vector_store_not_configured: the group rows of the vector store were not checked")
+    for line in view.lines() or ["no connector of the organisation has scope state"]:
+        sys.stdout.write(line + "\n")
+    return EXIT_FAILED if view.needs_attention else 0
 
 
 async def _main(argv: list[str]) -> int:
@@ -101,6 +120,8 @@ async def _main(argv: list[str]) -> int:
                     code = EXIT_FAILED
             return code
         pipeline = await _resolve_indexing_pipeline(container)
+        if args.command == "view":
+            return await _view(args, graph_provider, pipeline)
         if pipeline is None:
             sys.stderr.write(json.dumps({"error": "no indexing pipeline (vector store not configured)"}) + "\n")
             return EXIT_FAILED
