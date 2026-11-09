@@ -306,6 +306,31 @@ describe('Enterprise Search Utils', () => {
       expect(conversationTitleFromQuery(query)).to.equal('only this')
     })
 
+    it('falls back to the wrapped raw query when excerpt and follow-up are empty', () => {
+      const query = `${QUOTED_SELECTION_HEADER}${QUOTED_SELECTION_FOOTER}`
+      expect(conversationTitleFromQuery(query)).to.equal(
+        query.replace(/\s+/g, ' ').trim().slice(0, 100),
+      )
+    })
+
+    it('treats a header without a closing footer as a plain query', () => {
+      const query = `${QUOTED_SELECTION_HEADER}no closing footer`
+      expect(conversationTitleFromQuery(query)).to.equal(
+        query.replace(/\s+/g, ' ').trim().slice(0, 100),
+      )
+    })
+
+    it('returns an empty title when the query is not a string', () => {
+      expect(conversationTitleFromQuery(null as unknown as string)).to.equal('')
+      expect(conversationTitleFromQuery(undefined as unknown as string)).to.equal('')
+    })
+
+    it('truncates a long follow-up to 100 characters', () => {
+      const question = 'q'.repeat(120)
+      const query = `${QUOTED_SELECTION_HEADER}excerpt${QUOTED_SELECTION_FOOTER}${question}`
+      expect(conversationTitleFromQuery(query)).to.equal(question.slice(0, 100))
+    })
+
     it('leaves a normal query unchanged aside from trimming', () => {
       expect(conversationTitleFromQuery('  Plain question  ')).to.equal('Plain question')
     })
