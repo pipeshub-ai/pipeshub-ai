@@ -1062,7 +1062,7 @@ class TestSharePointFullSync:
         connector.client_secret = "s"
         connector.client = MagicMock()
         connector.msgraph_client = MagicMock()
-        connector.msgraph_client.get_all_users = AsyncMock(return_value=[])
+        connector._sync_users = AsyncMock()  # the users are not what this run test is about
         connector.user_sync_point = MagicMock()
         connector.user_sync_point.read_sync_point = AsyncMock(return_value=None)
         _mock_container_sync_point(connector)
