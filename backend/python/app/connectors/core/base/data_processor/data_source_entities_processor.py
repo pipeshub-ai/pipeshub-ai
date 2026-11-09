@@ -47,7 +47,13 @@ from app.connectors.core.sync.full_sync_coverage import (
     PERMISSIONS_REWRITTEN,
     FullSyncSeen,
 )
-from app.connectors.core.sync.run_context import get_run_sync_id
+from app.connectors.core.sync.run_context import (
+    RecordOutcome,
+    SkipReason,
+    SyncRunStats,
+    current_run_stats,
+    get_run_sync_id,
+)
 from app.connectors.core.sql.graph_links import move_incoming_relations
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.exceptions.graph_db_exceptions import GraphMemoryLimitError, is_graph_memory_refusal
@@ -130,6 +136,23 @@ _NO_OLD_PATH = object()  # sentinel: "no pre-computed old_path supplied"
 _PENDING_FULL_SYNC_SEEN: contextvars.ContextVar[set[tuple[str, str, str]] | None] = (
     contextvars.ContextVar("pending_full_sync_seen", default=None)
 )
+
+# The record counts the writes inside one _sync_transaction add to the running sync,
+# folded into the enclosing transaction or the run only once this one commits: a
+# write that rolled back did not happen, and a retry counts it again from nothing.
+_PENDING_RUN_STATS: contextvars.ContextVar[SyncRunStats | None] = contextvars.ContextVar(
+    "pending_run_stats", default=None
+)
+
+
+def _stats_sink() -> SyncRunStats:
+    """Where a record outcome is counted: the open transaction's tally, else the run's; outside both, nowhere."""
+    return _PENDING_RUN_STATS.get() or current_run_stats() or SyncRunStats()
+
+
+def _count_deleted(result: dict | None) -> None:
+    """Count what a committed delete removed or trashed, descendants included; a no-op delete adds 0."""
+    _stats_sink().records[RecordOutcome.DELETED] += len((result or {}).get("deleted_records") or [])
 
 
 class RestoreRefused(Exception):
@@ -289,6 +312,30 @@ def _edge_source_record_id(edge: dict) -> str | None:
     if not source.startswith(prefix):
         return None
     return source[len(prefix):] or None
+
+
+def _not_stored(record: Record, reason: SkipReason) -> tuple[None, list]:
+    """``_process_record``'s answer for a record it leaves unwritten, counted as skipped (a placeholder is not counted)."""
+    if not record.is_placeholder:
+        _stats_sink().skipped[reason] += 1
+    return None, []
+
+
+def _write_outcome(
+    record: Record, existing_record: Record | None, *, restored: bool, renamed: bool,
+) -> RecordOutcome | None:
+    """What ``_process_record``'s write is for the running sync. A placeholder is a stand-in, not a
+    record, so it counts nothing and the real record that replaces it counts new. A rename onto a
+    new external id overwrites the record stored under its id, so it is a change."""
+    if record.is_placeholder:
+        return None
+    if renamed:
+        return RecordOutcome.UPDATED
+    if existing_record is None or existing_record.is_placeholder:
+        return RecordOutcome.NEW
+    if restored or record.external_revision_id != existing_record.external_revision_id:
+        return RecordOutcome.UPDATED
+    return RecordOutcome.UNCHANGED
 
 
 def _owned_elsewhere(doc: object, org_id: str | None, connector_id: str | None = None) -> bool:
@@ -476,12 +523,16 @@ class DataSourceEntitiesProcessor:
         full sync only once it has committed."""
         pending: set[tuple[str, str, str]] = set()
         token = _PENDING_FULL_SYNC_SEEN.set(pending)
+        pending_stats = SyncRunStats()
+        stats_token = _PENDING_RUN_STATS.set(pending_stats)
         try:
             options = {} if explicit is None else {"explicit": explicit}
             async with self.data_store_provider.transaction(**options) as tx_store:
                 yield tx_store
         finally:
             _PENDING_FULL_SYNC_SEEN.reset(token)
+            _PENDING_RUN_STATS.reset(stats_token)
+        _stats_sink().add(pending_stats)
         for connector_id, collection, node_id in pending:
             run = self._full_sync_run(connector_id)
             if run is not None:
@@ -967,7 +1018,6 @@ class DataSourceEntitiesProcessor:
                     record_group_type=record.record_group_type,
                     external_record_group_id=record.external_record_group_id,
                 )
-                self.logger.debug(f"parent_record: {parent_record}")
 
                 # Prepare record group BEFORE saving (so record_group_id is included in first save)
                 record_group_id = await self._handle_record_group(parent_record, tx_store)
@@ -2707,7 +2757,7 @@ class DataSourceEntitiesProcessor:
                 "Skipping %s (%s): its external id resolves to a record of another org",
                 record.record_name, existing_record.id,
             )
-            return None, []
+            return _not_stored(record, SkipReason.OWNED_ELSEWHERE)
         if record.is_placeholder:
             # Stubs are never published, so a stub left at the model's QUEUED
             # default (connector placeholder sweeps) would stay QUEUED forever.
@@ -2727,12 +2777,12 @@ class DataSourceEntitiesProcessor:
                     "Skipping %s (%s): its id belongs to a record of another connector or org",
                     record.record_name, record.id,
                 )
-                return None, []
+                return _not_stored(record, SkipReason.OWNED_ELSEWHERE)
             if same_id is not None and not is_live_record(same_id):
                 self.logger.info(
                     "Skipping %s (%s): its id belongs to a record in the trash", record.record_name, record.id
                 )
-                return None, []
+                return _not_stored(record, SkipReason.IN_TRASH)
             # Only a record not yet stored: one renamed onto such a name is still
             # updated, or it would keep its old parent and access edges.
             skip_reason = None if stored_under_its_id else _system_file_reason(record)
@@ -2740,7 +2790,7 @@ class DataSourceEntitiesProcessor:
                 self.logger.debug(
                     "Not storing %s (%s): %s", record.record_name, record.external_record_id, skip_reason
                 )
-                return None, []
+                return _not_stored(record, SkipReason.NOT_CONTENT)
         restored_from_trash = reindex_restored = False
         if existing_record is not None and not is_live_record(existing_record):
             # A user's delete holds until the purge even though the source still
@@ -2754,7 +2804,7 @@ class DataSourceEntitiesProcessor:
                     existing_record.id,
                     getattr(existing_record.delete_source, "value", existing_record.delete_source),
                 )
-                return None, []
+                return _not_stored(record, SkipReason.IN_TRASH)
             reindex_restored = self._reindexes_on_restore(record, existing_record)
             restore: dict = {"id": existing_record.id}
             if reindex_restored:
@@ -2820,8 +2870,12 @@ class DataSourceEntitiesProcessor:
             else await self._handle_record_group(record, tx_store)
         )
 
+        # Counted now, folded into the run only when this transaction commits.
+        if outcome := _write_outcome(
+            record, existing_record, restored=restored_from_trash, renamed=stored_under_its_id,
+        ):
+            _stats_sink().records[outcome] += 1
         if existing_record is None:
-            self.logger.debug("New record: %s", record)
             # A brand-new record must be stored NOT_STARTED, not the model's
             # QUEUED default. `_mark_queued_after_publish` is a CAS from
             # NOT_STARTED that runs only for records whose event was acked --
@@ -3075,7 +3129,6 @@ class DataSourceEntitiesProcessor:
             if not record:
                 self.logger.warning(f"Record {record_id} not found for status reset")
                 return
-            self.logger.debug(f"Record: {record}")
             # The document uses camelCase keys (indexingStatus), not snake_case attributes
             current_status = record.get("indexingStatus")
             if current_status == ProgressStatus.QUEUED.value:
@@ -3085,12 +3138,12 @@ class DataSourceEntitiesProcessor:
             await tx_store.batch_update_nodes(
                 [{"_key": record_id, "indexingStatus": ProgressStatus.QUEUED.value}], CollectionNames.RECORDS.value
             )
-            self.logger.debug(f"✅ Reset record {record_id} status from {current_status} to QUEUED")
+            self.logger.debug(f"Reset record {record_id} status from {current_status} to QUEUED")
         except Exception as e:
             if self._must_propagate(e, tx_store):
                 raise
             # Log but don't fail the main operation if status update fails
-            self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
+            self.logger.error(f"Failed to reset record {record_id} to QUEUED: {str(e)}")
 
     async def _mark_queued_after_publish(self, record_ids: list[str]) -> None:
         """
@@ -3113,7 +3166,7 @@ class DataSourceEntitiesProcessor:
             )
         except Exception as e:
             # Never fail a publish over a status write; the records are already on the topic.
-            self.logger.error(f"❌ Failed to mark {len(record_ids)} record(s) QUEUED: {str(e)}")
+            self.logger.error(f"Failed to mark {len(record_ids)} record(s) QUEUED: {str(e)}")
 
     async def _snapshot_old_paths(
         self,
@@ -3246,6 +3299,7 @@ class DataSourceEntitiesProcessor:
     def _quarantine_record(self, record: Record, error: SchemaValidationError) -> None:
         """Skip a record whose write the schema refused: it cannot succeed on a re-run."""
         self._report_schema_rejection(error)
+        _stats_sink().records[RecordOutcome.FAILED] += 1
         self.logger.error(
             "Record %s quarantined, skipped: write rejected by schema validation (collection=%s): %s",
             record.id, error.collection, error,
@@ -3258,6 +3312,8 @@ class DataSourceEntitiesProcessor:
         *,
         replace_permissions: bool = False,
     ) -> None:
+        # Records this attempt committed or quarantined: the rest count failed if it fails for good.
+        settled = 0
         try:
             if not records_with_permissions:
                 self.logger.warning("on_new_records received an empty list; skipping processing.")
@@ -3268,6 +3324,8 @@ class DataSourceEntitiesProcessor:
                 batch_slice = records_with_permissions[start:start + _RECORDS_PER_TRANSACTION]
                 try:
                     written = [await self._write_records_slice(batch_slice, narrowed_connectors, replace_permissions=replace_permissions)]
+                    # Right after the commit: a step that can raise must not come between.
+                    settled += len(batch_slice)
                 except SchemaValidationError:
                     # A permanent rejection must not hold the other records of the slice
                     # (or, through an unadvanced checkpoint, every later sync) hostage:
@@ -3278,7 +3336,9 @@ class DataSourceEntitiesProcessor:
                             one = await self._write_records_slice([item], narrowed_connectors, replace_permissions=replace_permissions)
                         except SchemaValidationError as e:
                             self._quarantine_record(item[0], e)
+                            settled += 1
                             continue
+                        settled += 1
                         # This record's transaction has committed: its post-commit work runs now,
                         # before the next record is written, so an error on a later record (a
                         # deadlock, say) cannot leave it unpublished with a re-run finding it unchanged.
@@ -3291,6 +3351,10 @@ class DataSourceEntitiesProcessor:
                         records_to_publish, pending_moves, moved_virtual_record_ids, title_changes
                     )
         except Exception as e:
+            if not will_retry(self, e):
+                # A retry re-runs the whole call, so after a partial commit this also counts
+                # records an earlier attempt stored (docs/logging.md, "Connector sync runs").
+                _stats_sink().records[RecordOutcome.FAILED] += len(records_with_permissions) - settled
             self._log_failure(f"Transaction on_new_records failed: {str(e)}", e)
             raise e
 
@@ -4161,6 +4225,7 @@ class DataSourceEntitiesProcessor:
                 orphans = await self._collect_orphans(tx_store, existing, record_id)
                 result = await tx_store.delete_single_record(record_id)
                 if not (result or {}).get("success", False):
+                    _stats_sink().records[RecordOutcome.FAILED] += 1
                     # The provider answers a failure rather than raising; raising
                     # rolls back the orphan edits already made in this transaction.
                     raise RuntimeError(
@@ -4180,6 +4245,7 @@ class DataSourceEntitiesProcessor:
                     f"Deleting record {record_id} failed: {(result or {}).get('reason')}"
                 )
             return False
+        _count_deleted(result)
         await self._publish_delete_events((result or {}).get("eventData"))
         # A record that was never indexed has no deleteRecord event, but has a title point.
         await self._publish_record_titles(deletes=[(record_id, existing.get("connectorId") or None)])
@@ -4456,6 +4522,9 @@ class DataSourceEntitiesProcessor:
                 "Deleting %d record(s) of %s failed: %s",
                 len(record_ids), connector_id, (result or {}).get("reason"),
             )
+            _stats_sink().records[RecordOutcome.FAILED] += len(record_ids)
+        else:
+            _count_deleted(result)
         if (result or {}).get("successfully_deleted"):
             # Before publishing: the transaction has committed, so the records are
             # already gone, and _publish_delete_events can fail. Invalidating
@@ -4588,6 +4657,7 @@ class DataSourceEntitiesProcessor:
         result = dict(result)
         result["deleted_records"] = result.get("soft_deleted_records", [])
         result["softDeleted"] = True
+        _count_deleted(result)
         unpublished = await self._finish_soft_delete(
             connector_id=connector_id,
             org_id=result.get("org_id"),
@@ -6555,7 +6625,7 @@ class DataSourceEntitiesProcessor:
 
             if not user_group:
                 self.logger.warning(
-                    f"❕ Group with external ID {external_group_id} not in database, skipping deletion"
+                    f"Group with external ID {external_group_id} not in database, skipping deletion"
                 )
                 return True
 
@@ -6746,7 +6816,7 @@ class DataSourceEntitiesProcessor:
 
         if migrated_count > 0 or skipped_count > 0:
             self.logger.debug(
-                f"✅ Permission migration complete for user {user_email}: "
+                f"Permission migration complete for user {user_email}: "
                 f"migrated {migrated_count}, skipped {skipped_count} duplicates"
             )
             return None
@@ -6803,7 +6873,7 @@ class DataSourceEntitiesProcessor:
             await tx_store.delete_user_group_by_id(group.id)
 
         await self._access_changed([connector_id])
-        self.logger.debug(f"✅ Completed migration and deleted group '{group.name}'")
+        self.logger.debug(f"Completed migration and deleted group '{group.name}'")
 
     @retry_on_deadlock()
     async def on_app_role_deleted(
@@ -7190,7 +7260,7 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             record = await tx_store.get_record_by_external_id(connector_id, external_id)
         if record is None:
-            self.logger.warning(f"⚠️ Record {external_id} not found for connector {connector_id}")
+            self.logger.warning(f"Record {external_id} not found for connector {connector_id}")
             return
         # The lookup finds a record in the trash too, and it goes like any other.
         result = await self.on_records_deleted_cascade(
