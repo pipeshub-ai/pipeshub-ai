@@ -237,7 +237,8 @@ new. Work the run hands to `loop.run_in_executor` (which does not copy the conte
 after `run_sync` returns, is not counted. On Neo4j with `NEO4J_EXPLICIT_TRANSACTIONS=false` the single-record updates
 (content, metadata, moves and permissions) commit each statement on their own, so one that fails part-way is not counted
 although some of it stayed; batch writes still run in a real transaction. Records a connector writes to the graph without
-the processor are not counted.
+the processor are not counted. A rename or move that the connector sends through `on_records_moved` rewrites the
+stored record in place and is not counted either, unless the old record is missing and the move falls back to a plain add.
 
 ## Agent loop events (Python)
 
