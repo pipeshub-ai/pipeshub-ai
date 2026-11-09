@@ -279,6 +279,11 @@ jobs:
         if: steps.changes.outputs.changed == 'true'
         run: bash deployment/docker-compose/tests/entrypoint_ownership_test.sh
 
+      # the move scripts are run against a stand-in `docker` that logs its calls: no containers, no network
+      - name: Document-store move script tests
+        if: steps.changes.outputs.changed == 'true'
+        run: bash deployment/docker-compose/tests/migrate_script_fence_test.sh
+
   workflow-lint:
     name: Lint GitHub Actions workflows
     runs-on: ubuntu-latest

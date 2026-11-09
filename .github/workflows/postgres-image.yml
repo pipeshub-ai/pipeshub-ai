@@ -17,6 +17,8 @@ on:
       - 'deployment/docker-compose/tests/pg_entrypoint_layout_test.sh'
       - 'deployment/docker-compose/tests/postgres_*_test.sh'
       - 'deployment/docker-compose/tests/pg_roles_script_test.sh'
+      - 'deployment/docker-compose/tests/migrate_script_containers_test.sh'
+      - 'deployment/docker-compose/scripts/**'
       - '.github/workflows/postgres-image.yml'
   workflow_dispatch:
 
@@ -69,6 +71,9 @@ jobs:
 
       - name: Migration job and the document-store override
         run: bash deployment/docker-compose/tests/postgres_migrate_test.sh
+
+      - name: The move script against real MongoDB, PostgreSQL and PgBouncer
+        run: bash deployment/docker-compose/tests/migrate_script_containers_test.sh
 
       - name: Server and pooler under the Helm chart's pod restrictions
         run: bash deployment/docker-compose/tests/postgres_nonroot_test.sh
