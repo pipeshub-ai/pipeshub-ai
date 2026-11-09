@@ -409,6 +409,17 @@ class TestHttpxSuccessFilter:
         record.msg, record.args = record.getMessage(), None
         assert self.filter.filter(record) is kept
 
+    def test_a_kept_rendered_line_has_its_url_redacted(self) -> None:
+        """A failure line another filter already rendered keeps no userinfo (a username-only token included) or query."""
+        record = _httpx_record(401)
+        record.args = ("POST", "http://TOKENVALUE@mcp.example/mcp?api_key=SECRET", "HTTP/1.1", 401, "Unauthorized")
+        record.msg, record.args = record.getMessage(), None
+        assert self.filter.filter(record) is True
+        assert "http://mcp.example/mcp" in record.msg
+        assert "TOKENVALUE" not in record.msg
+        assert "SECRET" not in record.msg
+        assert record.msg.endswith('"HTTP/1.1 401 Unauthorized"')
+
     # Flaky: httpx sometimes emits the pre-filter URL so SECRET leaks into
     # captured messages (CI: 1 fail / 53325 pass). Skip until the filter is
     # applied at the logger, not only on this test's handler.

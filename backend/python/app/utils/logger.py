@@ -327,7 +327,7 @@ class JsonFormatter(logging.Formatter):
         return "\n".join(parts)
 
 
-_HTTPX_RENDERED_STATUS = re.compile(r'HTTP Request: \S+ \S+ "HTTP/[\d.]+ (\d{3}) ')
+_HTTPX_RENDERED_STATUS = re.compile(r'HTTP Request: \S+ (\S+) "HTTP/[\d.]+ (\d{3}) ')
 
 
 class HttpxSuccessFilter(logging.Filter):
@@ -351,8 +351,14 @@ class HttpxSuccessFilter(logging.Filter):
         if not isinstance(record.args, (tuple, list)):
             # Another filter on this logger (litellm's SecretRedactionFilter) may already have rendered the
             # message and cleared args: read the status from the text instead.
-            status = _HTTPX_RENDERED_STATUS.match(record.msg) if isinstance(record.msg, str) else None
-            return not (status and 200 <= int(status.group(1)) < 300)
+            rendered = _HTTPX_RENDERED_STATUS.match(record.msg) if isinstance(record.msg, str) else None
+            if rendered is None:
+                return True
+            if 200 <= int(rendered.group(2)) < 300:
+                return False
+            start, end = rendered.span(1)  # the kept line's URL, redacted as the args path does
+            record.msg = record.msg[:start] + redact_url(rendered.group(1)) + record.msg[end:]
+            return True
         # args are (method, url, http_version, status_code, reason_phrase); scan
         # for the status rather than indexing, so a signature change downgrades
         # to "log it" instead of raising.
