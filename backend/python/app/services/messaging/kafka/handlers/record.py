@@ -1910,6 +1910,7 @@ class RecordEventHandler(BaseEventService):
 
             #Reconciliation
             vector_db_only = bool(payload.get("vectorDbOnly"))
+            embeddings_deleted = False
             if parse_now:
                 # Parsing to read, not to index: nothing is taken out of the vector store.
                 pass
@@ -1917,6 +1918,7 @@ class RecordEventHandler(BaseEventService):
                 await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
                     [virtual_record_id], org_id=payload.get("orgId") or None
                 )
+                embeddings_deleted = True
             elif not vector_db_only and event_type in (
                 EventTypes.UPDATE_RECORD.value,
                 EventTypes.REINDEX_RECORD.value,
@@ -1943,6 +1945,15 @@ class RecordEventHandler(BaseEventService):
             if already_indexed(event_type, payload, doc) and not (
                 stage_ingress is not None and await stage_ingress.handoff_lost(doc)
             ):
+                # The finally block releases queued copies from here. A delete marked while the
+                # embeddings were being deleted is seen before that, as at the connector check.
+                deleting_id = gating_connector_id(record) if embeddings_deleted else None
+                if deleting_id and connector_state(await self._read_gating_app(deleting_id)) is ConnectorState.DELETING:
+                    held_for_delete = True
+                    raise RecordHeldForDelete(
+                        f"connector {deleting_id} of record {record_id} is being deleted",
+                        delay_s=HELD_FOR_DELETE_DELAY_S,
+                    )
                 self.logger.info(f"🔍 Indexing already done for record {record_id} with virtual_record_id {virtual_record_id}")
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))

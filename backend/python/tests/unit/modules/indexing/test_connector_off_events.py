@@ -666,3 +666,33 @@ async def test_a_vector_rebuild_of_a_turned_off_connector_still_runs(monkeypatch
     _ = [e async for e in handler.process_event(REINDEX, dict(_payload(vectorDbOnly=True, forceReindex=True)))]
 
     assert rebuilt == ["r1"]
+
+
+@pytest.mark.parametrize(("flip", "held"), [("DELETING", True), ("off", False)])
+async def test_an_already_indexed_reindex_sees_a_delete_marked_while_embeddings_are_deleted(flip: str, held: bool) -> None:
+    """A non-forced reindex of an indexed record returns early, and the finally block then releases
+    its queued copies; a delete marked during the embedding delete holds it first. A connector turned
+    off meanwhile keeps the early return, as before."""
+    graph = FakeConnectorGraph()
+    graph.add_connector("conn-off", active=True)
+    graph.add_record("r1", "conn-off", indexingStatus=ProgressStatus.COMPLETED.value,
+                     extractionStatus=ProgressStatus.COMPLETED.value)
+    handler, event_processor = _handler(graph)
+
+    async def flipped_meanwhile(*_a: object, **_kw: object) -> None:
+        if flip == "DELETING":
+            graph.apps["conn-off"]["status"] = "DELETING"
+        else:
+            graph.set_active("conn-off", False)
+
+    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.side_effect = flipped_meanwhile
+    payload = dict(_payload(**_CLEARS_EMBEDDINGS_FIRST))
+
+    if held:
+        with pytest.raises(RecordHeldForDelete):
+            _ = [e async for e in handler.process_event(REINDEX, payload)]
+        assert _writes(graph) == {}
+    else:
+        events = [e.event async for e in handler.process_event(REINDEX, payload)]
+        assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+        assert graph.calls["update_queued_duplicates_status"] == 1
