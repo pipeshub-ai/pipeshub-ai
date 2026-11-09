@@ -1319,10 +1319,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                 # raised, so the item is not written without its grants and is read again next run.
                 if http_error.resp.status == HttpStatusCode.FORBIDDEN.value and not (
                     drive_error_reasons(http_error) & QUOTA_403_REASONS
-                ) and not (inherited_permissions_disabled and can_list_children):
+                ):
                     # A user who can only see a limited-access folder has no content access, and the grant would
-                    # pass to its children. One who can list its children is on it, so a refusal is a failed read.
-                    if user_email and not inherited_permissions_disabled:
+                    # pass to its children.
+                    if user_email and not (inherited_permissions_disabled and not can_list_children):
                         self.logger.info(
                             f"Added single user permission for file {resource_id}: {user_email}"
                         )
@@ -1344,9 +1344,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         # handled above. Record the access they demonstrably have instead of leaving a
         # record nobody can see. is_fallback=True keeps this from replacing a real ACL
         # that another user's sync already learned.
-        if not permissions and inherited_permissions_disabled:
-            if can_list_children:
-                raise RuntimeError(f"Empty permission list for limited-access folder {resource_id} a member can open")
+        if not permissions and inherited_permissions_disabled and not can_list_children:
             return ([], True, [])
         if not permissions and user_email:
             self.logger.info(
