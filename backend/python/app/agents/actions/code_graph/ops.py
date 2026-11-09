@@ -111,16 +111,33 @@ EDGE_LANGUAGES = frozenset(
 NAME_ONLY_LANGUAGES = frozenset(
     name for name, cfg in LANGUAGES.items() if cfg.call_types and not cfg.import_handler_name
 )
+# Calls and imports resolve and types have methods, but no INHERITS/IMPLEMENTS/OVERRIDES:
+# Go satisfies interfaces implicitly, so nothing in the source names the link. (C has no
+# methods, so it has nothing to miss.)
+NO_HERITAGE_LANGUAGES = frozenset(
+    name for name in EDGE_LANGUAGES
+    if LANGUAGES[name].method_types and not LANGUAGES[name].heritage_handler_name
+)
 
 
 def coverage_for(blocks: "Iterable[dict[str, Any]]") -> dict[str, Any] | None:
     """The coverage gap for these blocks' languages, or None when there is none."""
-    languages = {(b.get("language") or "").lower() for b in blocks} - {""} - EDGE_LANGUAGES
-    if not languages:
+    seen = {(b.get("language") or "").lower() for b in blocks} - {""}
+    languages = seen - EDGE_LANGUAGES
+    no_heritage = sorted(seen & NO_HERITAGE_LANGUAGES)
+    if not languages and not no_heritage:
         return None
     name_only = sorted(languages & NAME_ONLY_LANGUAGES)
     missing = sorted(languages - NAME_ONLY_LANGUAGES)
     parts = []
+    if no_heritage:
+        parts.append(
+            f"For {', '.join(n.capitalize() for n in no_heritage)}, calls and imports resolve, but "
+            "there are no INHERITS, IMPLEMENTS or OVERRIDES edges: nothing links a type to the "
+            "interface it satisfies, so impact does not step from an implementation to callers "
+            "that hold the interface, and entry_points may list a method called only through an "
+            "interface as uncalled."
+        )
     if name_only:
         parts.append(
             f"For {', '.join(name_only)}, CALLS edges are matched by name only "
@@ -134,9 +151,10 @@ def coverage_for(blocks: "Iterable[dict[str, Any]]") -> dict[str, Any] | None:
     parts.append("A missing caller or path here is not evidence -- confirm with search "
                  "and read_code.")
     return {
-        "cross_file_edges": False,
+        "cross_file_edges": not languages,
         "languages": sorted(languages),
         **({"name_matched_calls": name_only} if name_only else {}),
+        **({"no_heritage_edges": no_heritage} if no_heritage else {}),
         "note": " ".join(parts),
     }
 

@@ -214,6 +214,25 @@ async def test_only_a_path_free_text_search_builds_the_retrieval_service(blobs) 
     assert "path" in res.json()["error"]
 
 
+async def test_impact_route_takes_edge_types_and_names_a_bad_one(blobs, monkeypatch) -> None:
+    passed: list[object] = []
+    impact = routes.CodeGraph.impact
+
+    async def spy(self, **kwargs):  # noqa: ANN202
+        passed.append(kwargs.get("edge_types"))
+        return await impact(self, **kwargs)
+
+    monkeypatch.setattr(routes.CodeGraph, "impact", spy)
+    client = _client(Repos())
+    target = {"repo": "acme/admin", "file_path": MAIN, "qualified_name": "function:create_app"}
+    calls = client.post("/api/v1/code-graph/impact", json={**target, "edge_types": ["CALLS"]})
+    assert calls.status_code == 200, calls.text
+    assert "error" not in calls.json()
+    assert passed == [["CALLS"]]  # the route hands the filter on; the tool's tests cover applying it
+    bad = client.post("/api/v1/code-graph/impact", json={**target, "edge_types": ["CALLZ"]})
+    assert "unknown edge_types ['CALLZ']" in bad.json()["error"]
+
+
 async def test_read_by_search_hit_needs_no_repo(blobs) -> None:
     res = _client(Repos()).post("/api/v1/code-graph/read", json={"record_id": "rec-shop"})
     assert res.status_code == 200, res.text

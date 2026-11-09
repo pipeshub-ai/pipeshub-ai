@@ -1,11 +1,16 @@
 """CodeGraph toolset — read the code knowledge graph.
 
-Four tools over the blocks + recordLinks graph the indexing pipeline builds:
+Nine tools over the blocks + recordLinks graph the indexing pipeline builds:
 
   query_code_graph    — module structure, and the symbols a directory or file holds
   get_neighbour       — what reaches a file or symbol, and what it reaches
   read_code           — source for a symbol, a line range, or a whole file
   find_symbol_path    — how two same-language symbols are connected
+  search_code         — definitions by name, or lines by text or regex
+  search_semantic     — code by what it does, in plain words
+  outline             — a file's definitions with signatures and line ranges
+  impact              — what a change to a symbol can break, grouped by file
+  entry_points        — functions and methods nothing in the repo calls
 
 A symbol is addressed as ``(file_path, qualified_name)`` — written
 ``path/to/file.py#function:main`` where one argument has to carry both. Both
@@ -24,6 +29,7 @@ disclosure alongside connector toolsets. The toolset is only loaded when both
 """
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import re
@@ -35,6 +41,7 @@ from app.agent_loop_lib.tools.decorators import tool
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
+from app.telemetry.modules import code_graph_metrics
 
 from .neighbours import (
     DEFAULT_IMPACT_DEPTH,
@@ -95,7 +102,7 @@ CODE_GRAPH_TOOLSET_DESCRIPTION = (
 
 # ---------------------------------------------------------------------------
 # Shared ToolParameter fragments — avoids repeating the same field across
-# four tools that all take a connector_id and an include_tests flag.
+# the tools that take a connector_id and an include_tests flag.
 # ---------------------------------------------------------------------------
 
 _CONNECTOR_ID_DESC = (
@@ -210,6 +217,19 @@ _ENTRY_TAGS = [*_TAGS, _BEHAVIOUR, Tag(
     key="finds",
     value="entry points entrypoint main handlers routes cli jobs start starts",
 )]
+
+
+def _counted(method: Callable[..., Awaitable[tuple[bool, str]]]) -> Callable[..., Awaitable[tuple[bool, str]]]:
+    """Counts each call of a tool by its outcome; in-product agents and MCP both call through here."""
+    @functools.wraps(method)
+    async def counted(self: CodeGraph, *args: Any, **kwargs: Any) -> tuple[bool, str]:  # noqa: ANN401
+        ok = False  # an exception counts as an error, and still propagates
+        try:
+            ok, output = await method(self, *args, **kwargs)
+            return ok, output
+        finally:
+            code_graph_metrics.record_tool_call(method.__name__, ok=ok)
+    return counted
 
 
 # ---------------------------------------------------------------------------
@@ -471,7 +491,8 @@ class CodeGraph:
         path="/tools/codegraph/query_code_graph",
         short_description="Explore the code graph: what a directory holds, what a file defines",
         description=(
-            "Explore directory/file shape and the symbols under a path.\n\n"
+            "Use to see what a directory holds or what a file defines when you have a "
+            "path, not a symbol.\n\n"
             "Search the knowledge base FIRST — `connector_id` comes from a search "
             "result or Knowledge Sources. Paths are repo-relative and several repos "
             "can be indexed, so without it `src/main.py` is ambiguous.\n\n"
@@ -482,9 +503,10 @@ class CodeGraph:
             "Do not glob a tree to list every implementer of a type — that is inbound "
             "get_neighbour on the factory or base. One listing that names the families "
             "is enough; `truncated`/`scan_capped` means sample, not keep paging.\n\n"
-            "Results are ranked by `degree` — read the top of the list rather than "
-            "sampling it. Then get_neighbour the top few and read_code what you quote. "
-            "This tool cannot show an edge."
+            "Returns, for a directory, its subdirectories (most files first, with counts) "
+            "and its files (by path); for a file or glob, its symbols ranked by `degree` — "
+            "read the top of the list rather than sampling it. It shows no edges. Next: "
+            "get_neighbour or impact on the top few, read_code what you quote."
         ),
         parameters=[
             ToolParameter(
@@ -529,6 +551,7 @@ class CodeGraph:
         ],
         tags=_QUERY_TAGS,
     )
+    @_counted
     async def query_code_graph(
         self,
         connector_id: str,
@@ -558,24 +581,23 @@ class CodeGraph:
             "IMPLEMENTS, OVERRIDES, IMPORTS_FROM. A read shows none of these."
         ),
         description=(
-            "Walk edges of a file or symbol: METHOD/CONTAINS (its class), CALLS, "
-            "INDIRECT_CALL (passed as a callback or handler), "
-            "INHERITS/IMPLEMENTS, OVERRIDES, IMPORTS_FROM. A read shows none "
-            "of these.\n\n"
+            "Use for the structure one hop around a file or symbol: METHOD/CONTAINS (its "
+            "class), CALLS, INDIRECT_CALL, INHERITS/IMPLEMENTS, "
+            "OVERRIDES, IMPORTS_FROM. A read shows none of these. For what a change "
+            "breaks, use impact.\n\n"
             "Give it something you already hold — a `record_id`, a `file_path` on its "
-            "own, or `(file_path, qualified_name)`. Direction: 'inbound', 'outbound', "
-            "or 'any' (default). Omit `qualified_name` to walk every symbol in the "
-            "file. A bare name ('ConnectorFactory', 'BaseConnector') resolves across "
-            "the repo; several matches return `candidates`.\n\n"
-            "First call: omit `edge_types`, direction 'any'. Do not open with "
-            "`edge_types=['CALLS']` — that hides METHOD/CONTAINS/INHERITS and every "
-            "`chain`. Follow a neighbour with another get_neighbour; "
-            "read_code(lines=...) only for a body. Prefer another hop over raising "
-            "`depth`.\n\n"
-            "A set (\"what implements X\") starts here: the factory, registry, or "
-            "base type, then inbound heritage. Do not list directories. 'inbound' "
-            "has no substitute — callers leave no trace in the code you are reading.\n\n"
-            "If `truncated`, page with the `next` offset; do not raise `limit`."
+            "own, or `(file_path, qualified_name)`; omit `qualified_name` to walk every "
+            "symbol in the file. A bare name resolves across the repo (several matches "
+            "return `candidates`). Direction: 'inbound', 'outbound', or 'any' (default).\n\n"
+            "First call: omit `edge_types`. Do not open with `edge_types=['CALLS']` — "
+            "that hides METHOD/CONTAINS/INHERITS and every `chain`. Prefer another hop "
+            "over raising `depth`. A set (\"what implements X\") starts at the factory, "
+            "registry, or base type, then inbound heritage; do not list directories. "
+            "'inbound' has no substitute — callers leave no trace in the code you are "
+            "reading.\n\n"
+            "Returns rows with `relation`, `direction`, file and `line`. If `truncated`, "
+            "do what `next` (or `note`) says; do not raise `limit`. Next: get_neighbour a "
+            "row, or read_code(lines=...) for a body."
         ),
         parameters=[
             ToolParameter(
@@ -654,9 +676,8 @@ class CodeGraph:
             ToolParameter(
                 name="offset", type=ParameterType.INTEGER, required=False, default=0,
                 description=(
-                    "Skip this many neighbours first. When a result says "
-                    "`truncated: true`, its `next` line gives the offset to pass "
-                    "with the same arguments to get the following page."
+                    "Skip this many neighbours first. When a result's `next` gives "
+                    "an offset, pass it with the same arguments for the following page."
                 ),
             ),
             ToolParameter(
@@ -670,6 +691,7 @@ class CodeGraph:
         ],
         tags=_NEIGHBOUR_TAGS,
     )
+    @_counted
     async def get_neighbour(
         self,
         connector_id: str,
@@ -719,21 +741,20 @@ class CodeGraph:
         path="/tools/codegraph/read_code",
         short_description="Read source: one symbol, one line range, or a whole file",
         description=(
-            "Read source: one symbol, a line range, or a whole file. Do NOT use "
-            "fetch_full_record for code files. A bare path is enough — you never "
-            "need to list a file before reading it.\n\n"
+            "Use to read source once you have an address: one symbol, a line range, or "
+            "a whole file. Do NOT use fetch_full_record for code files. A bare path is "
+            "enough — you never need to list a file before reading it.\n\n"
             "Give `qualified_name` for one symbol, `lines` for a window ('380-420'), "
             "or neither for the whole file (bounded by `max_lines`; continue from "
             "the stop line until covered).\n\n"
             "Cost trade-offs: one file read beats five symbol reads, but a whole "
             "file fills context fast. Prefer `qualified_name` when you already know "
             "the definition; read the file when the answer depends on what else is "
-            "in it.\n\n"
-            "This does not resolve where calls go: identifiers in a body are "
-            "expressions, not addresses. Use get_neighbour instead of guessing "
-            "filenames. A read shows a body; only an edge walk shows what it is "
-            "wired to — get_neighbour that same `(file_path, qualified_name)` "
-            "before describing calls, imports, or heritage."
+            "in it. After impact, read only what it listed.\n\n"
+            "Returns the source with its line range. It does not resolve where calls "
+            "go: identifiers in a body are expressions, not addresses. Use "
+            "get_neighbour instead of guessing filenames. Next: get_neighbour that same "
+            "`(file_path, qualified_name)` before describing calls, imports, or heritage."
         ),
         parameters=[
             ToolParameter(
@@ -792,6 +813,7 @@ class CodeGraph:
         ],
         tags=_READ_TAGS,
     )
+    @_counted
     async def read_code(
         self,
         connector_id: str,
@@ -833,18 +855,17 @@ class CodeGraph:
         path="/tools/codegraph/find_symbol_path",
         short_description="Trace how two symbols in the same language are connected",
         description=(
-            "Trace how two symbols in the same language are connected. Walks every "
-            "edge type (calls, imports, inheritance, containment), not just calls, "
-            "and follows each the way it points: a path means the first symbol "
-            "reaches the second. If only the second reaches the first, that path is "
-            "returned with `reversed: true`. Each hop carries an `explain` "
-            "sentence.\n\n"
+            "Use when you hold both ends and ask how the first reaches the second. "
+            "Walks every edge type (calls, imports, inheritance, containment), not just "
+            "calls, each the way it points.\n\n"
+            "Returns the path hop by hop, each hop with an `explain` sentence. If only "
+            "the second reaches the first, that path is returned with `reversed: true`.\n\n"
             "Only edges the parser could prove — one language and one repository. "
             "Two layers talking over HTTP have no path here. Read the route handler "
             "instead.\n\n"
-            "Needs both ends addressed. With one end only, get_neighbour from it "
-            "(and from the far end) usually finds the same connection with less "
-            "setup."
+            "With one end only, get_neighbour from it (and from the far end) usually "
+            "finds the same connection with less setup. Next: read_code the hops you "
+            "cite."
         ),
         parameters=[
             ToolParameter(
@@ -900,6 +921,7 @@ class CodeGraph:
         ],
         tags=_PATH_TAGS,
     )
+    @_counted
     async def find_symbol_path(
         self,
         connector_id: str,
@@ -998,10 +1020,10 @@ class CodeGraph:
         path="/tools/codegraph/search_code",
         short_description="Find code by a symbol name, or by exact text or a regex in file bodies",
         description=(
-            "Find code without knowing its file.\n\n"
-            "`mode='identifier'` (default): every definition with that name, exactly "
-            "(case-insensitive), across the repo — `parse_config`, `Client.fetch` and "
-            "`method:Client.fetch` all match the `fetch`/`parse_config` definitions.\n\n"
+            "Use when you know a name or exact text but not its file.\n\n"
+            "`mode='identifier'` (default): the definitions with that bare name "
+            "(case-insensitive) across the repo — `Client.fetch` and `method:Client.fetch` "
+            "find every `fetch`; `truncated` says there may be more.\n\n"
             "`mode='text'` or `mode='regex'`: lines in file bodies that contain the text or "
             "match the regex — a string literal, a call site, a config key. With `path` (a "
             "directory, file or glob) they read the files it selects and stop after "
@@ -1012,7 +1034,8 @@ class CodeGraph:
             "`mode='external'`: who calls into a library — `pattern` is the module as "
             "imported (`requests`; `django.db` covers `django.db.models`), `name` narrows to "
             "one of its names; matches list their `external_refs`.\n\n"
-            "Results are addresses: read_code reads one, get_neighbour walks from one."
+            "Returns addresses. Next: read_code reads one; get_neighbour or impact walks "
+            "from one. For who calls a symbol, impact beats a text search."
         ),
         parameters=[
             ToolParameter(name="connector_id", type=ParameterType.STRING,
@@ -1038,6 +1061,7 @@ class CodeGraph:
         ],
         tags=_SEARCH_TAGS,
     )
+    @_counted
     async def search_code(
         self,
         connector_id: str,
@@ -1068,14 +1092,14 @@ class CodeGraph:
         path="/tools/codegraph/search_semantic",
         short_description="Find code by what it does, described in plain words",
         description=(
-            "Find the code behind a feature, a behaviour or something on screen when you "
-            "do not know its names: 'where a failed job is retried', "
+            "Use to find the code behind a feature, a behaviour or something on screen "
+            "when you do not know its names: 'where a failed job is retried', "
             "'what decides which config value wins'. Ranks symbols, classes and files by "
             "meaning, so near-synonyms match.\n\n"
-            "Results are addresses, best first: read_code reads one, get_neighbour and "
-            "impact walk from one. A file match (kind 'file') has the start of the file's "
-            "summary instead of a qualified name; outline lists what it defines. For a name "
-            "you already know, search_code is exact."
+            "Returns addresses, best first, each with a `score`. A file match (kind 'file') "
+            "has the start of the file's summary instead of a qualified name; outline lists "
+            "what it defines. Next: read_code reads one, get_neighbour and impact walk from "
+            "one. For a name you already know, search_code is exact."
         ),
         parameters=[
             ToolParameter(name="connector_id", type=ParameterType.STRING,
@@ -1091,6 +1115,7 @@ class CodeGraph:
         ],
         tags=_SEARCH_TAGS,
     )
+    @_counted
     async def search_semantic(
         self,
         connector_id: str,
@@ -1116,9 +1141,11 @@ class CodeGraph:
         path="/tools/codegraph/outline",
         short_description="A file's definitions with their signatures and line ranges",
         description=(
-            "What a file declares, without its bodies: each class, function and method "
-            "with its signature, decorators, first doc line and line range. Read this "
-            "before read_code to pick what to read."
+            "Use before read_code on a file you have not read, to pick what to read. "
+            "Returns what the file declares, without its bodies: each class, function "
+            "and method with its qualified name, signature, decorators, first doc line "
+            "and line range. Next: read_code one symbol or a line range; impact or "
+            "get_neighbour from a symbol."
         ),
         parameters=[
             ToolParameter(name="connector_id", type=ParameterType.STRING,
@@ -1135,6 +1162,7 @@ class CodeGraph:
         ],
         tags=_OUTLINE_TAGS,
     )
+    @_counted
     async def outline(
         self,
         connector_id: str,
@@ -1155,7 +1183,7 @@ class CodeGraph:
                 org_id=self._org_id, user_id=self._user_id, connector_id=connector_id,
                 file_path=path, include_tests=include_tests, repo=repo,
             ),
-            "Failed to outline the file",
+            "Failed to list the file's definitions",
         )
         return self._to_output(result)
 
@@ -1163,16 +1191,21 @@ class CodeGraph:
         path="/tools/codegraph/impact",
         short_description="What a change to a symbol can break, grouped by file",
         description=(
-            "The blast radius of changing a symbol: everything that calls it, passes it "
-            "as a callback or handler, imports it, or builds on it (inherits, implements, "
-            "overrides), followed backwards "
+            "Use first for \"who calls X\", \"what breaks if X changes\" or a rename: one "
+            "call instead of a grep per caller.\n\n"
+            "Returns the blast radius: everything that calls the symbol, passes it as a "
+            "callback or handler, imports it, or "
+            "builds on it (inherits, implements, overrides), followed backwards "
             f"up to `depth` hops (default {DEFAULT_IMPACT_DEPTH}), grouped by file with "
-            "the nearest hop. Symbols that build on it rather than call it are also named "
-            "in each file's `built_on`; `edge_types=['CALLS']` follows calls only (callers, "
-            "their callers, ...). Test code it reaches is affected too and is listed apart "
-            "in `impacted_tests`. Only edges the parser could prove; `coverage` says when a "
-            "language has none. Reads of a property or getter are not followed: a changed "
-            "`@property` or `get` accessor lists none of the code that reads it."
+            "the nearest hop (`impacted_files`). Symbols that build on it rather than call "
+            "it are also named in each file's `built_on`; `edge_types=['CALLS']` follows "
+            "calls only (callers, their callers, ...). Test code it reaches is listed apart "
+            "in `impacted_tests`; `include_tests=true` merges it into `impacted_files`. "
+            "Only edges the parser could prove; `coverage` says when a language has none. "
+            "Reads of a property or getter are not followed: a changed `@property` or `get` "
+            "accessor lists none of the code that reads it.\n\n"
+            "Next: read_code only what it lists; get_neighbour one symbol for its call-site "
+            "`line`."
         ),
         parameters=[
             ToolParameter(name="connector_id", type=ParameterType.STRING,
@@ -1201,6 +1234,7 @@ class CodeGraph:
         ],
         tags=_IMPACT_TAGS,
     )
+    @_counted
     async def impact(
         self,
         connector_id: str,
@@ -1225,7 +1259,7 @@ class CodeGraph:
                 qualified_name=qualified_name, depth=depth,
                 include_tests=include_tests, repo=repo, edge_types=edge_types,
             ),
-            "Failed to compute the impact",
+            "Failed to work out what the change can break",
         )
         if not edge_types or "CALLS" in edge_types:
             result = await self._with_unlinked_sites(result, connector_id, repo, qualified_name, set(),
@@ -1291,11 +1325,13 @@ class CodeGraph:
         path="/tools/codegraph/entry_points",
         short_description="Where control enters a repo: functions nothing in it calls",
         description=(
-            "Functions and methods no code in the repo calls — routes, CLIs, jobs, "
-            "framework hooks — with conventional names (main, handler, ...) and files "
-            "(main.py, routes/, ...) first. A place to start reading an unfamiliar repo. "
-            "Python, JavaScript, TypeScript and Java calls are resolved through imports; "
-            "other languages' calls are matched by name, and `coverage` says when that applies."
+            "Use to start reading an unfamiliar repo. Returns the functions and methods no code "
+            "in the repo calls — routes, CLIs, jobs, framework hooks — with conventional names "
+            "(main, handler, ...) and files (main.py, routes/, ...) first. "
+            "Python, JavaScript, TypeScript, Java, Go, C#, PHP, Rust, C and C++ calls are resolved "
+            "through imports; other languages' calls are matched by name, and `coverage` says when "
+            "that applies. Uncalled means no indexed call from a file you can read.\n\n"
+            "Next: outline or read_code an entry point; get_neighbour outbound to follow what it calls."
         ),
         parameters=[
             ToolParameter(name="connector_id", type=ParameterType.STRING,
@@ -1309,6 +1345,7 @@ class CodeGraph:
         ],
         tags=_ENTRY_TAGS,
     )
+    @_counted
     async def entry_points(
         self,
         connector_id: str,
