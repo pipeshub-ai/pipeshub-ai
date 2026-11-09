@@ -1,6 +1,6 @@
 """CodeGraph toolset — read the code knowledge graph.
 
-Nine tools over the blocks + recordLinks graph the indexing pipeline builds:
+Eleven tools over the blocks + recordLinks graph the indexing pipeline builds:
 
   query_code_graph    — module structure, and the symbols a directory or file holds
   get_neighbour       — what reaches a file or symbol, and what it reaches
@@ -11,6 +11,8 @@ Nine tools over the blocks + recordLinks graph the indexing pipeline builds:
   outline             — a file's definitions with signatures and line ranges
   impact              — what a change to a symbol can break, grouped by file
   entry_points        — functions and methods nothing in the repo calls
+  impact_of_diff      — what a unified diff can break, grouped by file
+  history             — the pull requests that changed a file, newest first
 
 A symbol is addressed as ``(file_path, qualified_name)`` — written
 ``path/to/file.py#function:main`` where one argument has to carry both. Both
@@ -43,6 +45,8 @@ from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
 from app.telemetry.modules import code_graph_metrics
 
+from .diff_impact import impact_of_diff_impl
+from .history import DEFAULT_HISTORY_LIMIT, history_impl
 from .neighbours import (
     DEFAULT_IMPACT_DEPTH,
     DEFAULT_NEIGHBOR_LIMIT,
@@ -1320,6 +1324,116 @@ class CodeGraph:
                 "by_base": through,
             }
         return result
+
+    @tool(
+        path="/tools/codegraph/impact_of_diff",
+        short_description="What a patch or PR diff changes and what that can break",
+        description=(
+            "Use to review a patch or pull request: give it a unified diff (`git diff` output) "
+            "for what it can break, in one call.\n\n"
+            "Returns the symbols the diff changes (`changed`: the innermost definition around "
+            "each changed line, plus the whole file for a module-level change or one no "
+            "definition holds), then impact on each: the files and tests that reach them, "
+            "merged by file (`impacted_files`, `impacted_tests`), and `untested_callers`, direct "
+            "callers that no test reaches within two hops. Lines are matched against the "
+            "indexed commit, so a patch made on another base can drift. New files are in "
+            "`added_files`; files the graph does not hold are in `not_indexed`.\n\n"
+            "Next: read_code only what it lists; for one symbol you already know, impact is the "
+            "same walk."
+        ),
+        parameters=[
+            ToolParameter(name="connector_id", type=ParameterType.STRING,
+                          description=_CONNECTOR_ID_DESC),
+            ToolParameter(name="patch", type=ParameterType.STRING,
+                          description="The unified diff, with its ---/+++ file headers."),
+            ToolParameter(name="depth", type=ParameterType.INTEGER, required=False,
+                          default=DEFAULT_IMPACT_DEPTH,
+                          description=f"Hops to follow backwards from each changed symbol, up to {MAX_IMPACT_DEPTH}."),
+            ToolParameter(name="include_tests", type=ParameterType.BOOLEAN, required=False,
+                          default=False, description=_INCLUDE_TESTS_DESC),
+            ToolParameter(name="repo", type=ParameterType.STRING, required=False, default=None,
+                          description=_REPO_DESC),
+        ],
+        tags=_IMPACT_TAGS,
+    )
+    @_counted
+    async def impact_of_diff(
+        self,
+        connector_id: str,
+        patch: str,
+        depth: int = DEFAULT_IMPACT_DEPTH,
+        *,
+        include_tests: bool = False,
+        repo: str | None = None,
+    ) -> tuple[bool, str]:
+        result = await self._run(
+            "impact_of_diff",
+            connector_id,
+            lambda: impact_of_diff_impl(
+                graph_provider=self._graph_provider, org_id=self._org_id, user_id=self._user_id,
+                connector_id=connector_id, patch=patch, depth=depth, include_tests=include_tests, repo=repo,
+            ),
+            "Failed to work out what the diff can break",
+        )
+        return self._to_output(result)
+
+    @tool(
+        path="/tools/codegraph/history",
+        short_description="The pull requests that changed a file, with people and tickets",
+        description=(
+            "Use for who changed a file and why.\n\n"
+            "Returns the pull or merge requests that modified it, merged newest first, each with "
+            "its title, link, author, the reviewers asked or assigned (`requested_reviewers`: not "
+            "necessarily who reviewed), who merged it and when, and the tickets it names "
+            "(`tickets`). Only indexed pull requests are known, and one is linked to the files it "
+            "changed when it is indexed. With `qualified_name` the list is still per file, and "
+            "`touches_symbol` says whether the pull request's diff names the symbol in a changed "
+            "line (null when not known).\n\n"
+            "Next: read_code the file; for what a change can break, impact or impact_of_diff."
+        ),
+        parameters=[
+            ToolParameter(name="connector_id", type=ParameterType.STRING,
+                          description=_CONNECTOR_ID_DESC),
+            ToolParameter(name="file_path", type=ParameterType.STRING, required=False,
+                          default=None, description="Repo-relative path of the file."),
+            ToolParameter(name="record_id", type=ParameterType.STRING, required=False,
+                          default=None,
+                          description="A code file's `Record ID` from a search result."),
+            ToolParameter(name="qualified_name", type=ParameterType.STRING, required=False,
+                          default=None, description=f"A symbol in the file. {_ADDRESS_RULE}"),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, required=False,
+                          default=DEFAULT_HISTORY_LIMIT, description="Most pull requests to list."),
+            ToolParameter(name="repo", type=ParameterType.STRING, required=False, default=None,
+                          description=_REPO_DESC),
+        ],
+        tags=_IMPACT_TAGS,
+    )
+    @_counted
+    async def history(
+        self,
+        connector_id: str,
+        file_path: str | None = None,
+        record_id: str | None = None,
+        qualified_name: str | None = None,
+        limit: int = DEFAULT_HISTORY_LIMIT,
+        *,
+        repo: str | None = None,
+    ) -> tuple[bool, str]:
+        path, repo, error = await self._anchor_path(connector_id, file_path, record_id, repo)
+        if error is not None:
+            return self._to_output(error)
+        result = await self._run(
+            "history",
+            connector_id,
+            lambda: history_impl(
+                graph_provider=self._graph_provider, org_id=self._org_id, user_id=self._user_id,
+                connector_id=connector_id, file_path=path, qualified_name=qualified_name,
+                limit=max(1, min(int(limit), 100)), repo=repo, blob_store=self._blob_store,
+            ),
+            "Failed to list the file's pull requests",
+        )
+        # PR and ticket titles are written by whoever opens them: data to read, never instructions.
+        return self._to_output(as_untrusted(result))
 
     @tool(
         path="/tools/codegraph/entry_points",
