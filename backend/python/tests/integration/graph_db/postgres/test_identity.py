@@ -340,3 +340,31 @@ async def test_an_address_is_lowered_by_the_database_alone_so_the_stored_and_the
     assert (len(nodes) == 1) is bool(same)
     assert (await w.p.get_user_by_email(b)).id == ("n1" if same else "n2")            # the lookup by address resolves as the batch did
     assert [r["id"] for r in await w.p.find_users(w.org, b)] == (["n1"] if same else ["n2"])
+
+
+async def test_a_withdrawn_user_gets_the_link_back_when_the_next_listing_shows_the_user(w: World) -> None:
+    """The self-healing the withdrawal relies on, through the real processor: save, withdraw, save again."""
+    import logging
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+    from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+
+    await member(w, "m", userId="um", email="m@x.com")
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), MagicMock())
+    processor.org_id = w.org
+    processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
+    listed = app_user("m@x.com", "m")
+
+    async def links() -> set[str]:
+        return {u.id for u in await processor.get_app_user_links(APP)}
+
+    await processor.on_new_app_users([listed])
+    assert await links() == {"m"}
+    await processor.withdraw_app_user_access(APP, [SimpleNamespace(id="m")])
+    assert await links() == set()
+    await processor.on_new_app_users([listed])                                  # the next listing shows the user again
+    assert await links() == {"m"}

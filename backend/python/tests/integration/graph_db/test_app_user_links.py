@@ -123,3 +123,79 @@ async def test_a_failed_read_raises_on_arango(arango_provider, monkeypatch: pyte
     monkeypatch.setattr(arango_provider.http_client, "execute_aql", boom)
     with pytest.raises(RuntimeError, match="db down"):
         await arango_provider.get_app_user_links("o", "a")
+
+
+# ---------------------------------------------------------------------------
+# A withdrawn link comes back through the real processor
+# ---------------------------------------------------------------------------
+
+async def _recover(graph, user_key: str, org: str, connector: str) -> tuple[set[str], set[str], set[str]]:
+    """Link a user to a connector through the processor, withdraw it, save the user again; the link ids seen at each step."""
+    import logging
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.config.constants.arangodb import Connectors
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+    from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+    from app.models.entities import AppUser
+
+    processor = DataSourceEntitiesProcessor(logging.getLogger("recovery-it"), GraphDataStore(logging.getLogger("recovery-it"), graph), MagicMock())
+    processor.org_id = org
+    processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
+    app_user = AppUser(app_name=Connectors.ONEDRIVE, connector_id=connector, source_user_id="src-recover",
+                       email=f"{user_key}@example.com", full_name="Recover")
+
+    async def links() -> set[str]:
+        return {u.id for u in await processor.get_app_user_links(connector)}
+
+    await processor.on_new_app_users([app_user])
+    linked = await links()
+    await processor.withdraw_app_user_access(connector, [SimpleNamespace(id=user_key)])
+    withdrawn = await links()
+    await processor.on_new_app_users([app_user])  # the next listing shows the user again
+    return linked, withdrawn, await links()
+
+
+async def test_neo4j_a_withdrawn_user_gets_the_link_back_when_the_next_listing_shows_the_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ..test_soft_delete_e2e import _connect_neo4j
+
+    graph = await _connect_neo4j(monkeypatch)
+    try:
+        t = uuid.uuid4().hex[:8]
+        org, user, connector = f"org-{t}", f"u-{t}", f"app-{t}"
+        q = graph.client.execute_query
+        await q("CREATE (:Organization {id: $o, isActive: true})", parameters={"o": org})
+        await q("CREATE (:User {id: $u, orgId: $o, email: $e, isActive: true})", parameters={"u": user, "o": org, "e": f"{user}@example.com"})
+        assert await _recover(graph, user, org, connector) == ({user}, set(), {user})
+    finally:
+        await graph.disconnect()
+
+
+async def test_arango_a_withdrawn_user_gets_the_link_back_when_the_next_listing_shows_the_user() -> None:
+    from ..test_soft_delete_e2e import _connect_arango
+
+    graph = await _connect_arango()
+    try:
+        t = uuid.uuid4().hex[:8]
+        org, user, connector = f"org-{t}", f"u-{t}", f"app-{t}"
+        from app.models.entities import Org
+        from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+        now = get_epoch_timestamp_in_ms()
+        await graph.batch_upsert_nodes([Org(id=org, name=org).to_arango_org()], collection="organizations")
+        await graph.batch_upsert_nodes(
+            [{"id": user, "userId": user, "orgId": org, "email": f"{user}@example.com", "fullName": "Recover",
+              "isActive": True, "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+            collection="users",
+        )
+        await graph.batch_upsert_nodes(
+            [{"id": connector, "name": "OneDrive", "type": "ONEDRIVE", "appGroup": "Microsoft 365", "scope": "team", "isActive": True,
+              "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+            collection="apps",
+        )
+        assert await _recover(graph, user, org, connector) == ({user}, set(), {user})
+    finally:
+        await graph.disconnect()
