@@ -2006,7 +2006,8 @@ async def test_members_only_counts_the_people_of_a_member_group_who_are_not_sync
 
     await ws.sync()
 
-    assert f1_people(ws) == {PARTNER, "mixed@example.com"}
+    # Bob's own sync adds his grant; Dana is a member only through the group and is not a synced user.
+    assert f1_people(ws) == {BOB, PARTNER, "mixed@example.com"}
 
 
 async def test_members_only_keeps_a_group_nested_in_a_member_group_whole(ws: Workspace) -> None:
