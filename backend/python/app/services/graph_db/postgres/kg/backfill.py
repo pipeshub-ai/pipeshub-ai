@@ -106,6 +106,7 @@ async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: in
                                                org, ghosts)
                         await w.links_delete([(r["parent_sk"], r["kind"], r["child_sk"]) for r in links])
                         await w.records_delete(ghosts)
+                        await w.scopes_delete(ghosts)
                 await modes.demote(tx, org, app_sk)
             await db.run(reset, write=True)
         while max_batches is None or done < max_batches:

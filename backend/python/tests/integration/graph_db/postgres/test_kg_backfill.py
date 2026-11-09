@@ -197,6 +197,37 @@ async def test_the_verify_names_a_row_no_node_explains(pg_db) -> None:
     assert not res.ok and any(m.startswith(f"r|{ghost}") for m in res.extra)
 
 
+async def test_a_restart_removes_a_row_no_node_explains_with_its_access_list(pg_db) -> None:
+    p, org = await shadowed(pg_db)
+    app = await sk_of(pg_db, org, ("apps", "app1"))
+    ghost = await KgWriterNodes.make(pg_db, org, ("records", "ghost"))
+
+    async def plant(tx, w) -> None:
+        await w.records_upsert([row(ghost, "ghost", app_sk=app, name="ghost")])
+        await w.scopes_set([(ghost, 3, app, True, False, False, False)])
+    await corrupt(pg_db, org, plant)
+
+    async def held(tx) -> tuple[int, int]:
+        return (await tx.fetchval("SELECT count(*) FROM kg.records WHERE org_id = $1 AND sk = $2", org, ghost), await tx.fetchval("SELECT count(*) FROM kg.scopes WHERE org_id = $1 AND sk = $2", org, ghost))
+    assert await run_in(pg_db, org, held) == (1, 1)
+    await bf.backfill(pg_db, org, "app1", page=4, restart=True)
+    assert await run_in(pg_db, org, held) == (0, 0)
+
+
+async def test_an_access_list_whose_record_row_is_gone_is_named_by_the_verify_and_hidden_from_a_reader(pg_db) -> None:
+    from app.services.graph_db.postgres.kg import restamp
+    p, org = await shadowed(pg_db)
+    app = await sk_of(pg_db, org, ("apps", "app1"))
+    orphan = await KgWriterNodes.make(pg_db, org, ("records", "orphan"))
+    await corrupt(pg_db, org, lambda tx, w: w.scopes_set([(orphan, 3, app, False, False, False, False)]))        # what an older process leaves when it deletes the record alone
+    res = await verify(pg_db, org, "app1")
+    assert not res.ok and any(m.startswith(f"sc|{orphan}") for m in res.extra)
+
+    async def visible(tx) -> set[int]:
+        return {r["sk"] for r in await tx.fetch("SELECT s.sk FROM kg.scopes s WHERE s.org_id = $1 AND NOT (" + restamp.HIDDEN_SCOPE + ")", org)}
+    assert orphan not in await run_in(pg_db, org, visible) and await run_in(pg_db, org, visible)             # the orphan is not counted; the others are
+
+
 class KgWriterNodes:
     @staticmethod
     async def make(db, org: str, key: tuple[str, str]) -> int:
