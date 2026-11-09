@@ -139,6 +139,10 @@ export class SlackActivityBuilder {
   private timeline: TimelineEntry[] = [];
   private openToolName: string | null = null;
 
+  getStatus(): string {
+    return this.statusMessage;
+  }
+
   setStatus(message: string): void {
     // Empty string clears the live status line after the run finishes.
     this.statusMessage = message.trim();
