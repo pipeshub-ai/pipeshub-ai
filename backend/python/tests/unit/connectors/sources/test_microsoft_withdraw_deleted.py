@@ -8,13 +8,18 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import Connectors
-from app.connectors.sources.microsoft.common.msgraph_client import MSGraphClient, UserListing
+from app.connectors.sources.microsoft.common.msgraph_client import (
+    MSGraphClient,
+    UserListing,
+)
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
 from app.models.entities import AppUser
-from app.sources.external.microsoft.users_groups.users_groups import UsersGroupsDataSource
+from app.sources.external.microsoft.users_groups.users_groups import (
+    UsersGroupsDataSource,
+)
 
 AUTO = "auto"  # the page's count is the number of users on it
 
