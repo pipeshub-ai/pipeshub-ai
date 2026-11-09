@@ -16,6 +16,7 @@ import sys
 from collections.abc import Callable
 from datetime import datetime, timezone
 
+import httpx2
 from httpx import URL
 
 from app.core import org_context
@@ -326,6 +327,9 @@ class JsonFormatter(logging.Formatter):
         return "\n".join(parts)
 
 
+_HTTPX_RENDERED_STATUS = re.compile(r'^HTTP Request: \S+ \S+ "HTTP/[\d.]+ (\d{3}) ')
+
+
 class HttpxSuccessFilter(logging.Filter):
     """Drop httpx's per-request INFO log for successful responses.
 
@@ -343,7 +347,10 @@ class HttpxSuccessFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         if not isinstance(record.args, (tuple, list)):
-            return True
+            # Another filter on this logger (litellm's SecretRedactionFilter) may already have rendered the
+            # message and cleared args: read the status from the text instead.
+            status = _HTTPX_RENDERED_STATUS.search(record.msg) if isinstance(record.msg, str) else None
+            return not (status and 200 <= int(status.group(1)) < 300)
         # args are (method, url, http_version, status_code, reason_phrase); scan
         # for the status rather than indexing, so a signature change downgrades
         # to "log it" instead of raising.
@@ -355,7 +362,7 @@ class HttpxSuccessFilter(logging.Filter):
                     return False
                 break
         record.args = tuple(
-            redact_url(str(arg)) if isinstance(arg, URL) else arg for arg in record.args
+            redact_url(str(arg)) if isinstance(arg, (URL, httpx2.URL)) else arg for arg in record.args
         )
         return True
 
@@ -548,8 +555,10 @@ _redact_all_handlers()
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 logging.getLogger("uvicorn.access").addFilter(AccessLogRedactionFilter())
 
-# httpx logs every outbound request at INFO. Keep the failures, drop the 2xx.
+# httpx logs every outbound request at INFO. Keep the failures, drop the 2xx. httpx2 (the MCP 2.x client) is a
+# second copy of httpx with its own logger and URL type.
 logging.getLogger("httpx").addFilter(HttpxSuccessFilter())
+logging.getLogger("httpx2").addFilter(HttpxSuccessFilter())
 
 
 def _provider_formatter(
