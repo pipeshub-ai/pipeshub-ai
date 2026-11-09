@@ -296,7 +296,8 @@ export const uploadFileToSignedUrl = async (
     const query = new URL(redirectUrl).searchParams;
     if (query.has('sv') && query.has('sig')) {
       headers['x-ms-blob-type'] = 'BlockBlob';
-      headers['Content-Type'] = mimetype || 'application/octet-stream';
+      headers['Content-Type'] =
+        mimetype !== '' ? mimetype : 'application/octet-stream';
     }
     const response = await fetch(redirectUrl, {
       method: 'PUT',
