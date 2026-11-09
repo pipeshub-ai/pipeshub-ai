@@ -299,6 +299,14 @@ async def test_unreached_entities_are_those_no_live_record_of_the_org_links_or_w
         assert await orgs[1].p.get_unreached_taxonomy_entities([{"id": "live", "type": "topic"}], orgs[1].org) == {("topic", "live")}
 
 
+async def test_unreached_for_another_org_raises_instead_of_reporting_every_entity_unreached(w: Org, orgs: tuple[Org, Org]) -> None:
+    await w.node(TOPICS, "t1")
+    await w.link("r", TOPICS, "t1")
+    with pytest.raises(OrgMismatch):
+        await w.p.get_unreached_taxonomy_entities([{"id": "t1", "type": "topic"}], orgs[1].org)
+    assert await w.p.get_unreached_taxonomy_entities([{"id": "t1", "type": "topic"}], w.org) == set()
+
+
 async def test_unreached_follows_the_transaction_and_never_answers_empty_for_a_failure(w: Org, monkeypatch: pytest.MonkeyPatch) -> None:
     await w.node(TOPICS, "t1")
     await w.link("r", TOPICS, "t1")
