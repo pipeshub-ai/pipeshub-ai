@@ -20,6 +20,7 @@ from app.models.record_metadata import RecordMetadata
 from app.modules.artifacts.models import WrittenRevision
 from app.modules.artifacts.store import ArtifactStoreError, NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter
+from app.modules.indexing.embed_resume import cleared_fields, current_attempt
 from app.modules.indexing.parse_now_marker import (
     ParseNowStatus,
     current_run,
@@ -272,8 +273,11 @@ class SinkOrchestrator(Transformer):
             ctx.settings[STORED_REV] = record_doc.get("contentRev") or None
             # One read of the settings picks the layout and mints the run; nothing below reads it again.
             ctx.settings[STORED_WRITE] = mint_stored_write(await artifact_settings(self.config_service))
-            with stage("images.describe"):
-                await self._describe_images(ctx)
+            attempt = current_attempt()
+            # The loaded blocks were described before the interrupted run stored them.
+            if attempt is None or not attempt.resume:
+                with stage("images.describe"):
+                    await self._describe_images(ctx)
             with stage("blob.write"):
                 await self.write_blob(ctx)
 
@@ -870,6 +874,8 @@ class SinkOrchestrator(Transformer):
             "processingStartedAt": None,
             "isDirty": False,
         }
+        if current_attempt() is not None:
+            status.update(cleared_fields())
         if ctx.settings.get(ENRICHMENT_FOLLOWS):
             if await is_classify_on_first_use_enabled(self.config_service):
                 # Decided here, once, so the status and the dispatch agree.

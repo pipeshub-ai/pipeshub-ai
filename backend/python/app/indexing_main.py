@@ -39,6 +39,7 @@ from app.modules.indexing.duplicate_reconcile import (
     DuplicateReconciler,
     retry_pending_duplicate_reconciles,
 )
+from app.modules.indexing.embed_resume import EMBED_DELIVERY_ID, RESUME_DELIVERY_ID_KEY
 from app.modules.indexing.entity_index_rebuild import run_entity_index_rebuild_loop
 from app.modules.indexing.lane_upkeep import last_lane_report, run_lane_upkeep
 from app.modules.indexing.named_entity_completion import (
@@ -436,6 +437,10 @@ async def recover_in_progress_records(
                         # Failures of every recovery of this version share one budget.
                         "_retry_tracking_id": tracking_id,
                     }
+                    if record.get(EMBED_DELIVERY_ID):
+                        # A recovered record continues the run that was interrupted, so an
+                        # embedding it left half done is resumed rather than started over.
+                        payload[RESUME_DELIVERY_ID_KEY] = record[EMBED_DELIVERY_ID]
 
                     # Determine event type - default to NEW_RECORD for recovery
                     # Only treat as REINDEX if version > 0 AND virtualRecordId exists
