@@ -51,7 +51,9 @@ from .ops import (
     _record_in_connector,
     _user_can_read,
     path_for_record,
+    record_repo_names,
     repo_names,
+    synced_commits,
 )
 from .path import DEFAULT_MAX_DEPTH, find_symbol_path_impl
 from .query import (
@@ -61,7 +63,13 @@ from .query import (
     query_code_graph_impl,
 )
 from .read import DEFAULT_MAX_LINES, outline_impl, read_code_impl
-from .results import as_untrusted, attach_graph_status, without_marker
+from .results import (
+    as_untrusted,
+    attach_graph_status,
+    attach_indexed_commit,
+    collecting_commits,
+    without_marker,
+)
 from .search import (
     _TEXT_SEARCH_FILES,
     DEFAULT_SEARCH_LIMIT,
@@ -269,16 +277,27 @@ class CodeGraph:
         denied = self._in_scope(connector_id or "")
         if denied:
             return denied
+        with collecting_commits() as commits:
+            try:
+                result = await call()
+            except AmbiguousRepoError as exc:
+                return {"error": str(exc), "repos": exc.repos}
+            except Exception:
+                # The exception text can name hosts, queries and internal paths;
+                # the model gets an id to quote, the log keeps the detail (S-9).
+                error_id = uuid4().hex[:12]
+                self._log.exception("codegraph %s failed (error id %s)", name, error_id)
+                return {"error": f"{failure} (error id {error_id})"}
+        graph, org = self._graph_provider, self._org_id
         try:
-            result = await call()
-        except AmbiguousRepoError as exc:
-            return {"error": str(exc), "repos": exc.repos}
+            result = await attach_indexed_commit(
+                result, commits,
+                repos_of=lambda records: record_repo_names(graph, org, records),
+                synced_commits=lambda groups: synced_commits(graph, org, groups),
+            )
         except Exception:
-            # The exception text can name hosts, queries and internal paths;
-            # the model gets an id to quote, the log keeps the detail (S-9).
-            error_id = uuid4().hex[:12]
-            self._log.exception("codegraph %s failed (error id %s)", name, error_id)
-            return {"error": f"{failure} (error id {error_id})"}
+            # The answer stands without its commit; it never mutates the result before its lookups.
+            self._log.warning("codegraph %s: indexed commit unavailable", name, exc_info=True)
         try:
             return await attach_graph_status(
                 result, self._graph_provider, self._org_id,

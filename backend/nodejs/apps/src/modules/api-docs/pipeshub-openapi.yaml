@@ -72129,6 +72129,9 @@ paths:
                         connector_id:
                           type: string
                           description: Id of that connector instance.
+                        indexed_commit:
+                          type: string
+                          description: The commit the connector last synced the repository to. Absent until a sync records it.
                         graph_status:
                           type: string
                           enum: [never_built, building, ready, stale, waiting_on_indexing, retrying, failed, too_large, unknown]

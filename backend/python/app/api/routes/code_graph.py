@@ -32,6 +32,7 @@ from app.agents.actions.code_graph.repos import (
     repo_for_record,
     repo_not_found_message,
 )
+from app.agents.actions.code_graph.results import with_repo_commit
 from app.api.connection_limit import groups_outside_limit
 from app.api.middlewares.auth import connection_limit, require_scopes
 from app.config.constants.service import OAuthScopes
@@ -255,6 +256,7 @@ async def _run(request: Request, body: RepoRef, record_id: str | None, call: Too
         return _response({"error": "graph unavailable"}, 503)
     if isinstance(result, dict) and "error" not in result:
         result.setdefault("repo", repo.name)
+        with_repo_commit(result, repo.synced_commit)
     return _response(result if isinstance(result, dict) else {"result": result})
 
 
@@ -278,6 +280,7 @@ async def code_repos(request: Request) -> JSONResponse:
             "source": r.connector_name,
             # Lets a connector's page show only its own repos.
             "connector_id": r.connector_id,
+            **({"indexed_commit": r.synced_commit} if r.synced_commit else {}),
         }
         try:
             state = await store.read(org_id, r.group_id)
