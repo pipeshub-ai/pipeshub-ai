@@ -117,7 +117,7 @@ class TestArango:
         p = _arango([1])
         await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], org_id="org-1")
         query = p.execute_query.await_args.args[0]
-        guard = query.index("FILTER LENGTH(fresh) > 0")
+        guard = query.index("LET needs_write = LENGTH(fresh) > 0")
         assert guard < query.index("UPDATE doc")
         assert "paired != LENGTH(stored_displays)" in query
         assert "paired != LENGTH(stored_normals)" in query
@@ -130,30 +130,28 @@ class TestArango:
         monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
         p = _arango()
         conflict = RuntimeError('Query failed (status=409): {"errorMessage":"write-write conflict","errorNum":1200}')
-        # Each attempt checks the node first, then merges.
-        p.execute_query = AsyncMock(side_effect=[[1], conflict, [1], conflict, [1], None])
+        p.execute_query = AsyncMock(side_effect=[conflict, conflict, [1]])
 
         await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], org_id="org-1")
 
-        assert p.execute_query.await_count == 6
+        assert p.execute_query.await_count == 3
 
-    async def test_add_aliases_waits_for_a_node_that_is_not_visible_yet(self, monkeypatch) -> None:
-        """A node a concurrent writer just created can be missing from the
-        UPDATE's view, which then matches nothing and reports success."""
+    async def test_add_aliases_retries_an_update_that_matched_no_node(self, monkeypatch) -> None:
+        """Next to concurrent updates the lookup can miss a node that exists;
+        the UPDATE then matches nothing and reports success."""
         from app.services.graph_db.arango import arango_http_provider as module
 
         monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
         p = _arango()
-        p.execute_query = AsyncMock(side_effect=[[0], [0], [1], None])
+        p.execute_query = AsyncMock(side_effect=[[], [], [1]])
 
         await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], org_id="org-1")
 
-        assert p.execute_query.await_count == 4
-        assert "UPDATE doc" in p.execute_query.await_args.args[0]
+        assert p.execute_query.await_count == 3
 
-        p.execute_query = AsyncMock(return_value=[0])
-        with pytest.raises(module._TaxonomyNodeNotVisible):
-            await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], org_id="org-1")
+        # A node of another org, or none, still ends quietly after the retries.
+        p.execute_query = AsyncMock(return_value=[])
+        await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], org_id="org-1")
         assert p.execute_query.await_count == module._WRITE_CONFLICT_ATTEMPTS
 
     async def test_add_aliases_gives_up_after_bounded_retries(self, monkeypatch) -> None:
@@ -161,23 +159,23 @@ class TestArango:
 
         monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
         p = _arango()
-        p.execute_query = AsyncMock(side_effect=[[1], RuntimeError('{"errorNum":1200}')] * 10)
+        p.execute_query = AsyncMock(side_effect=RuntimeError('{"errorNum":1200}'))
 
         with pytest.raises(RuntimeError):
             await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], org_id="org-1")
-        assert p.execute_query.await_count == 2 * module._WRITE_CONFLICT_ATTEMPTS
+        assert p.execute_query.await_count == module._WRITE_CONFLICT_ATTEMPTS
 
     async def test_add_aliases_does_not_retry_inside_a_transaction_or_other_errors(self) -> None:
         p = _arango()
-        p.execute_query = AsyncMock(side_effect=[[1], RuntimeError('{"errorNum":1200}')])
+        p.execute_query = AsyncMock(side_effect=RuntimeError('{"errorNum":1200}'))
         with pytest.raises(RuntimeError):
             await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], transaction="t1", org_id="org-1")
-        assert p.execute_query.await_count == 2
+        assert p.execute_query.await_count == 1
 
-        p.execute_query = AsyncMock(side_effect=[[1], RuntimeError('{"errorNum":1203}')])
+        p.execute_query = AsyncMock(side_effect=RuntimeError('{"errorNum":1203}'))
         with pytest.raises(RuntimeError):
             await p.add_taxonomy_aliases(TOPICS, "k1", ["A"], ["a"], org_id="org-1")
-        assert p.execute_query.await_count == 2
+        assert p.execute_query.await_count == 1
 
     async def test_add_aliases_noop_and_validation(self) -> None:
         p = _arango()

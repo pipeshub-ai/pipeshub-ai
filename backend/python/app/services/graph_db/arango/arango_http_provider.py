@@ -396,7 +396,7 @@ def _remove_opts(transaction: str | None) -> str:
 
 
 class _TaxonomyNodeNotVisible(Exception):
-    """A taxonomy node was not found where a concurrent writer just created it."""
+    """An alias UPDATE matched no node; retried, as the node may exist."""
 
 
 def _is_write_conflict(exc: Exception) -> bool:
@@ -22969,19 +22969,26 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 // A write locks the document even when it changes nothing, and
                 // popular nodes get alias writes from many records at once.
-                FILTER LENGTH(fresh) > 0
+                LET needs_write = LENGTH(fresh) > 0
                     OR paired != LENGTH(stored_displays)
                     OR paired != LENGTH(stored_normals)
-                UPDATE doc WITH {{
-                    aliases: SLICE(
-                        APPEND(displays, (FOR i IN fresh RETURN incoming_displays[i])),
-                        0, @max_aliases
-                    ),
-                    normalizedAliases: SLICE(
-                        APPEND(normals, (FOR i IN fresh RETURN incoming_normals[i])),
-                        0, @max_aliases
-                    )
-                }} IN {collection}
+                // Written in a subquery so a matched node returns a row even
+                // when nothing is written, and a missed one returns none.
+                LET written = (
+                    FILTER needs_write
+                    UPDATE doc WITH {{
+                        aliases: SLICE(
+                            APPEND(displays, (FOR i IN fresh RETURN incoming_displays[i])),
+                            0, @max_aliases
+                        ),
+                        normalizedAliases: SLICE(
+                            APPEND(normals, (FOR i IN fresh RETURN incoming_normals[i])),
+                            0, @max_aliases
+                        )
+                    }} IN {collection}
+                    RETURN 1
+                )
+                RETURN 1
         """
         bind_vars = {
             "key": key,
@@ -22990,29 +22997,30 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "normalized": [normalized for _, normalized in pairs],
             "max_aliases": max(1, max_aliases),
         }
+
         async def merge() -> None:
-            # A node another writer just created can be missing from the
-            # UPDATE's view; it then matches nothing and reports success, so
-            # the aliases are dropped without an error.
-            seen = await self.execute_query(
-                f"RETURN LENGTH(FOR doc IN {collection} FILTER doc._key == @key LIMIT 1 RETURN 1)",
-                bind_vars={"key": key}, transaction=transaction,
-            )
-            if not seen or not seen[0]:
+            # Next to concurrent updates of the same node, ArangoDB can answer
+            # the lookup with no node although it exists; the UPDATE then
+            # matches nothing and reports success, dropping the aliases.
+            if not await self.execute_query(query, bind_vars=bind_vars, transaction=transaction):
                 raise _TaxonomyNodeNotVisible(f"{collection}/{key} not found for add_taxonomy_aliases")
-            await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
 
         # Records resolving to one popular node add aliases to it at once, and
         # ArangoDB rejects all but one concurrent UPDATE of a document with
         # errorNum 1200 even outside a stream transaction. The merge is
         # idempotent, so a retry cannot double-apply anything.
-        await self._retry_write_conflicts(merge, transaction)
+        try:
+            await self._retry_write_conflicts(merge, transaction)
+        except _TaxonomyNodeNotVisible:
+            # shortcut: a node of another org, or none, ends here as before; a
+            # node that stays missed through every retry is lost the same way.
+            pass
 
     @staticmethod
     async def _retry_write_conflicts(
         write: Callable[[], Awaitable[_T]], transaction: str | None,
     ) -> _T:
-        """Run an idempotent single write, retrying errorNum 1200 (and a node not yet visible) with backoff.
+        """Run an idempotent single write, retrying errorNum 1200 (and a missed node) with backoff.
 
         Inside a caller's transaction the conflict has aborted it, so it is the
         caller's to handle and is raised at once."""

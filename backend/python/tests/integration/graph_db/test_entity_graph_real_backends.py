@@ -388,10 +388,10 @@ class TestArangoTaxonomyWritesUnderConcurrentTransactions:
             for txn in (t1, t2):
                 await provider.commit_transaction(txn)
 
-    async def test_an_alias_write_that_runs_before_the_node_is_visible_is_not_lost(self, arango) -> None:
-        """A writer whose insert found the key taken can run its alias UPDATE
-        before the creator's node is visible to it; the UPDATE then matches
-        nothing and used to report success."""
+    async def test_an_alias_update_that_matches_no_node_is_retried(self, arango) -> None:
+        """Under concurrent updates ArangoDB can answer the alias UPDATE's
+        lookup with no node; the UPDATE then matched nothing and reported
+        success. Here the node appears after the first attempt."""
         provider, org_id = arango
         key, node = _topic(org_id, "Standup")
 
