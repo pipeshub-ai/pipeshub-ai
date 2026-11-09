@@ -395,6 +395,10 @@ def _remove_opts(transaction: str | None) -> str:
     return "OPTIONS { ignoreErrors: true }" if transaction is None else ""
 
 
+class _TaxonomyNodeNotVisible(Exception):
+    """A taxonomy node was not found where a concurrent writer just created it."""
+
+
 def _is_write_conflict(exc: Exception) -> bool:
     """ArangoDB errorNum 1200: a write-write conflict or a lock timeout."""
     return bool(_WRITE_CONFLICT_RE.search(str(exc)))
@@ -22986,20 +22990,29 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "normalized": [normalized for _, normalized in pairs],
             "max_aliases": max(1, max_aliases),
         }
+        async def merge() -> None:
+            # A node another writer just created can be missing from the
+            # UPDATE's view; it then matches nothing and reports success, so
+            # the aliases are dropped without an error.
+            seen = await self.execute_query(
+                f"RETURN LENGTH(FOR doc IN {collection} FILTER doc._key == @key LIMIT 1 RETURN 1)",
+                bind_vars={"key": key}, transaction=transaction,
+            )
+            if not seen or not seen[0]:
+                raise _TaxonomyNodeNotVisible(f"{collection}/{key} not found for add_taxonomy_aliases")
+            await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
+
         # Records resolving to one popular node add aliases to it at once, and
         # ArangoDB rejects all but one concurrent UPDATE of a document with
         # errorNum 1200 even outside a stream transaction. The merge is
         # idempotent, so a retry cannot double-apply anything.
-        await self._retry_write_conflicts(
-            lambda: self.execute_query(query, bind_vars=bind_vars, transaction=transaction),
-            transaction,
-        )
+        await self._retry_write_conflicts(merge, transaction)
 
     @staticmethod
     async def _retry_write_conflicts(
         write: Callable[[], Awaitable[_T]], transaction: str | None,
     ) -> _T:
-        """Run an idempotent single write, retrying errorNum 1200 with backoff.
+        """Run an idempotent single write, retrying errorNum 1200 (and a node not yet visible) with backoff.
 
         Inside a caller's transaction the conflict has aborted it, so it is the
         caller's to handle and is raised at once."""
@@ -23012,7 +23025,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if (
                     transaction is not None
                     or attempt >= _WRITE_CONFLICT_ATTEMPTS
-                    or not _is_write_conflict(exc)
+                    or not (_is_write_conflict(exc) or isinstance(exc, _TaxonomyNodeNotVisible))
                 ):
                     raise
                 await asyncio.sleep(random.uniform(0.02, 0.1) * attempt)
