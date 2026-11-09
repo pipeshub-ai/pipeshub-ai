@@ -11,6 +11,7 @@ from app.models.blocks import (
     BlockType,
     CitationMetadata,
     DataFormat,
+    FileChangeMetadata,
     GroupSubType,
     GroupType,
     IndexRange,
@@ -839,3 +840,36 @@ class TestSummaryWithCaptions:
         assert summary_with_captions(None, ["A"]) == "A"
         assert summary_with_captions("", None) == ""
         assert summary_with_captions("S", []) == "S"
+
+
+class TestFileChangeMetadata:
+    """A PR's changed file as data beside its markdown: `data` stays the string readers expect."""
+
+    def _group(self, **change) -> BlockGroup:
+        return BlockGroup(index=0, type=GroupType.TEXT_SECTION, sub_type=GroupSubType.PR_FILE_CHANGE,
+                          data="[modified file]\n\nDiff: ...", file_change_metadata=FileChangeMetadata(**change))
+
+    def test_it_round_trips_through_a_blob(self) -> None:
+        group = self._group(path="src/b.py", previous_path="src/a.py", status="renamed", additions=3, deletions=1)
+        loaded = BlockGroup.model_validate_json(group.model_dump_json())
+        assert loaded.file_change_metadata == group.file_change_metadata
+        assert loaded.data == "[modified file]\n\nDiff: ..."
+
+    def test_gitlab_counts_are_unknown_not_zero(self) -> None:
+        meta = self._group(path="src/b.py", status="modified").file_change_metadata
+        assert (meta.additions, meta.deletions, meta.previous_path) == (None, None, None)
+
+    def test_a_blob_with_the_slot_loads_under_a_model_without_it(self) -> None:
+        """Rollback safety: an older BlockGroup ignores the unknown key (pydantic's default)."""
+        from pydantic import BaseModel
+
+        class OldBlockGroup(BaseModel):  # the fields an older reader declares, without the slot
+            index: int | None = None
+            data: object = None
+
+        blob = self._group(path="src/b.py", status="added", additions=2, deletions=0).model_dump(mode="json")
+        old = OldBlockGroup.model_validate(blob)
+        assert old.data == "[modified file]\n\nDiff: ..." and not hasattr(old, "file_change_metadata")
+
+    def test_other_groups_have_none(self) -> None:
+        assert BlockGroup(index=0, type=GroupType.TEXT_SECTION).file_change_metadata is None

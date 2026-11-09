@@ -1079,6 +1079,8 @@ record_group_schema = {
             "deletedAtSourceTimestamp": {"type": ["number", "null"]},
             "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
             "sourceLastModifiedTimestamp": {"type": ["number", "null"]},
+            # Code repository groups: the commit the git connector last synced the repo to.
+            "lastSyncedCommit": {"type": ["string", "null"]},
         },
         "required": [
             "groupName",
