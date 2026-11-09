@@ -3308,6 +3308,22 @@ export const embeddingRefusalMessage = (
     : EMBEDDING_MODEL_IN_USE_MESSAGE;
 };
 
+// Deleting the only embedding model hands embedding to the built-in model, a
+// different model, so clearing Labs is the wrong advice: adding the model that
+// should take over first (the same model from another provider keeps the
+// stored vectors) avoids re-embedding altogether.
+const LAST_EMBEDDING_MODEL_MESSAGE =
+  'This is the only embedding model, so deleting it would switch embedding to the built-in model, which cannot use the vectors already stored. Add the model that should take over first, then delete this one. The same model from another provider, at the same size, keeps your embeddings.';
+
+const lastEmbeddingModelRefusalMessage = (
+  response: AIServiceResponse | undefined,
+): string => {
+  const message = embeddingRefusalMessage(response);
+  return message === EMBEDDING_MODEL_IN_USE_MESSAGE
+    ? LAST_EMBEDDING_MODEL_MESSAGE
+    : message;
+};
+
 const takeoverRefusalMessage = (
   takeover: AIServiceResponse,
   fallback: string,
@@ -3887,17 +3903,22 @@ export const deleteAIModelProvider =
         targetModelType === 'embedding' &&
         activeEmbeddingModel(aiModels.embedding)?.modelKey === modelKey
       ) {
-        const takeover = await checkEmbeddingModelTakeover(
-          activeEmbeddingModel(
-            (aiModels.embedding as AIModelConfiguration[]).filter(
-              (config) => config.modelKey !== modelKey,
-            ),
+        const nextActive = activeEmbeddingModel(
+          (aiModels.embedding as AIModelConfiguration[]).filter(
+            (config) => config.modelKey !== modelKey,
           ),
+        );
+        const takeover = await checkEmbeddingModelTakeover(
+          nextActive,
           req,
           appConfig,
         );
         if (isEmbeddingInUseRefusal(takeover)) {
-          throw new BadRequestError(embeddingRefusalMessage(takeover));
+          throw new BadRequestError(
+            nextActive
+              ? embeddingRefusalMessage(takeover)
+              : lastEmbeddingModelRefusalMessage(takeover),
+          );
         }
         if (!takeover.data || takeover.statusCode !== 200) {
           res.status(takeover.statusCode).json({
