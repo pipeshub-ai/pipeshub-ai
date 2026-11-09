@@ -349,55 +349,139 @@ describe('AIServiceCommand', () => {
       expect(logged.called).to.equal(false)
     })
 
-    it('logs a stream request that got no answer at all', async () => {
-      fetchStub.rejects(new Error('stream network error'))
-      const logged = sinon.stub(Logger.prototype, 'error')
-
-      const cmd = new AIServiceCommand({
-        uri: 'http://ai.local/stream',
-        method: HttpMethod.POST,
-        headers: { 'content-type': 'application/json' },
-        body: { prompt: 'network fail' },
-        maxAttempts: 1,
+    describe('upstream.call.end', () => {
+      const STREAM_URI = 'http://ai.local/api/v1/chat/stream'
+      const command = () =>
+        new AIServiceCommand({
+          uri: STREAM_URI,
+          method: HttpMethod.POST,
+          headers: { 'content-type': 'application/json' },
+          body: { prompt: 'p' },
+        })
+      // On the shared prototype, and another file's timer may log meanwhile: count only the call lines.
+      const callLines = (stub: sinon.SinonStub) =>
+        stub.getCalls().filter((c) => c.args[0] === 'upstream.call.end').map((c) => c.args[1])
+      const level = () => ({
+        debug: sinon.stub(Logger.prototype, 'debug'),
+        info: sinon.stub(Logger.prototype, 'info'),
+        warn: sinon.stub(Logger.prototype, 'warn'),
+        error: sinon.stub(Logger.prototype, 'error'),
       })
-
-      try {
-        await cmd.executeStream()
-        expect.fail('Should have thrown')
-      } catch {
-        // expected
+      const ended = (readable: NodeJS.ReadableStream) =>
+        new Promise<unknown>((resolve) => {
+          readable.on('end', () => resolve(undefined))
+          readable.on('error', resolve)
+          readable.resume()
+        })
+      const streamResponse = () => {
+        let controller!: ReadableStreamDefaultController<Uint8Array>
+        const body = new ReadableStream<Uint8Array>({
+          start(c) {
+            controller = c
+          },
+        })
+        return { response: new Response(body, { status: 200 }), controller }
       }
-      expect(logged.calledWith('AI service streaming command failed')).to.equal(true)
-    })
 
-    it('logs the error itself, so a refused connection keeps its cause', async () => {
-      const refused = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8000'), {
-        code: 'ECONNREFUSED',
+      it('a stream that got no answer is a WARN line per attempt, with the network code, and no ERROR', async () => {
+        const refused = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8000'), { code: 'ECONNREFUSED' })
+        const failure = new TypeError('fetch failed', { cause: refused })
+        fetchStub.rejects(failure)
+        const logs = level()
+
+        let thrown: unknown
+        try {
+          await command().executeStream()
+        } catch (err) {
+          thrown = err
+        }
+        expect(thrown).to.equal(failure)
+        expect(callLines(logs.warn).map((m) => [m.attempt, m.error_class, m.network_code])).to.deep.equal([
+          [1, 'unavailable', 'ECONNREFUSED'],
+          [2, 'unavailable', 'ECONNREFUSED'],
+          [3, 'unavailable', 'ECONNREFUSED'],
+        ])
+        expect(callLines(logs.warn)[0]).to.include({ upstream: 'external', method: 'POST', route: 'ai.local' })
+        expect(logs.error.called).to.equal(false)
       })
-      const failure = new TypeError('fetch failed', { cause: refused })
-      fetchStub.rejects(failure)
-      const logged = sinon.stub(Logger.prototype, 'error')
 
-      const cmd = new AIServiceCommand({
-        uri: 'http://ai.local/stream',
-        method: HttpMethod.POST,
-        headers: { 'content-type': 'application/json' },
-        body: { prompt: 'refused' },
+      it('ends a stream when its body ends, at DEBUG, and logs nothing at INFO when it opens', async () => {
+        const { response, controller } = streamResponse()
+        fetchStub.resolves(response)
+        const logs = level()
+
+        const readable = await command().executeStream()
+        const done = ended(readable)
+        controller.enqueue(new TextEncoder().encode('data: {"i":0}\n\n'))
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        expect(callLines(logs.debug)).to.have.length(0)
+        controller.close()
+        await done
+
+        expect(callLines(logs.debug).map((m) => [m.status, m.outcome, m.attempt])).to.deep.equal([[200, 'success', 1]])
+        expect(logs.info.called).to.equal(false)
       })
 
-      try {
-        await cmd.executeStream()
-        expect.fail('Should have thrown')
-      } catch (err) {
-        expect(err).to.equal(failure)
-      }
-      // The stub is on the shared prototype and the retry backoff waits ~1.8 s of real time, so a
-      // timer another file left running can log in between: count only this command's line.
-      const failed = logged.getCalls().filter((call) => call.args[0] === 'AI service streaming command failed')
-      expect(failed).to.have.length(1)
-      const [, meta] = failed[0]!.args
-      expect(meta.error).to.equal(failure)
-      expect(meta.error.cause.code).to.equal('ECONNREFUSED')
+      it('a stream cut midway is a WARN unavailable line that keeps the 200', async () => {
+        const { response, controller } = streamResponse()
+        fetchStub.resolves(response)
+        const logs = level()
+
+        const readable = await command().executeStream()
+        const done = ended(readable)
+        controller.enqueue(new TextEncoder().encode('data: {"i":0}\n\n'))
+        const cut = new TypeError('terminated', {
+          cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }),
+        })
+        controller.error(cut)
+        expect(await done).to.equal(cut)
+
+        expect(callLines(logs.warn).map((m) => [m.status, m.error_class, m.outcome])).to.deep.equal([
+          [200, 'unavailable', 'failure'],
+        ])
+        expect(callLines(logs.warn)[0].network_code).to.equal(undefined)
+      })
+
+      it('a stream we abort is an INFO cancelled line', async () => {
+        const { response, controller } = streamResponse()
+        fetchStub.resolves(response)
+        const logs = level()
+
+        const readable = await command().executeStream()
+        const done = ended(readable)
+        controller.error(new DOMException('This operation was aborted', 'AbortError'))
+        await done
+
+        expect(callLines(logs.info).map((m) => m.error_class)).to.deep.equal(['cancelled'])
+      })
+
+      it('a 500 at the open is one WARN upstream_5xx line, and the error is left to the caller', async () => {
+        fetchStub.resolves(makeFetchResponse(500, { detail: 'boom for alice@example.com' }, 'Internal Server Error'))
+        const logs = level()
+
+        try {
+          await command().executeStream()
+          expect.fail('Should have thrown')
+        } catch (err: any) {
+          expect(err.response.status).to.equal(500)
+        }
+        expect(callLines(logs.warn).map((m) => [m.status, m.error_class])).to.deep.equal([[500, 'upstream_5xx']])
+        expect(logs.error.called).to.equal(false)
+        expect(JSON.stringify(logs.warn.args)).to.not.include('alice@example.com')
+      })
+
+      it('a 200 with no body still ends its call: one line', async () => {
+        fetchStub.resolves(makeFetchResponse(200, {}))
+        const logs = level()
+
+        try {
+          await command().executeStream()
+          expect.fail('Should have thrown')
+        } catch (err: any) {
+          expect(err.message).to.equal('Response body is null')
+        }
+        expect(callLines(logs.debug).map((m) => m.status)).to.deep.equal([200])
+      })
     })
 
     it('should throw an error with message field from JSON error response', async () => {
