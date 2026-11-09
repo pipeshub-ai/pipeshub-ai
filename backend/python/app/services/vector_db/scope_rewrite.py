@@ -28,6 +28,7 @@ them it is only read.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import logging
 import secrets
@@ -340,7 +341,8 @@ class ScopeRewriteJob:
                     break
             stale = sorted({*failed, *(unplaced if keys is not None else ())})
             if stale and not moved:      # fail closed: no stamp of these points admits (they are on the legacy filter) until they are written again
-                await self._mark_stale(org_id, connector_id, stale, epoch)
+                with contextlib.suppress(GenerationMoved):      # a connector that moved meanwhile is not current anyway
+                    await self._mark_stale(org_id, connector_id, stale, epoch)
         if keys is None:
             failed |= unplaced
             if moved:
@@ -487,18 +489,15 @@ class ScopeRewriteJob:
     async def _mark_stale(self, org_id: str, connector_id: str, vrids: Sequence[str], epoch: Epoch) -> None:
         """The legacy marker (version 0) on every point of these virtual records, so that no stamp of them admits. It is written whatever fence the
         points carry (unfenced; on pgvector at the database's time now, later than this round's own write) and read back: a marker a store refused
-        leaves the old stamp, which may admit, so that raises. A connector that moved meanwhile is not current anyway."""
+        leaves the old stamp, which may admit, so that raises, and so does a connector that moved before the write (`GenerationMoved`)."""
         marker, at = STALE_SCOPE.to_payload(), await self._now()
-        try:
-            for name in set(await self._locator.all_collections(fresh=True, strict=True)):
-                found = await self._scan(org_id, name, list(vrids))
-                await self._put(org_id, connector_id, name, dict.fromkeys(found, marker), epoch, None, at)
-                left = [pid for pid, payload in (await self._stored(name, list(found))).items() if not _holds(payload, marker)]
-                if left:
-                    raise RewriteIncomplete(f"the stale marker did not land on {len(left)} point(s) of {name} (a fence or a computed_at above this "
-                                            f"writer's): their stamp may still admit")
-        except GenerationMoved:
-            return
+        for name in set(await self._locator.all_collections(fresh=True, strict=True)):
+            found = await self._scan(org_id, name, list(vrids))
+            await self._put(org_id, connector_id, name, dict.fromkeys(found, marker), epoch, None, at)
+            left = [pid for pid, payload in (await self._stored(name, list(found))).items() if not _holds(payload, marker)]
+            if left:
+                raise RewriteIncomplete(f"the stale marker did not land on {len(left)} point(s) of {name} (a fence or a computed_at above this "
+                                        f"writer's): their stamp may still admit")
 
     async def mark_stale(self, org_id: str, connector_id: str, vrids: Sequence[str]) -> None:
         """The stale marker on these virtual records' points, read back (see `_mark_stale`). For the back-fill's own marker; raises when it did not

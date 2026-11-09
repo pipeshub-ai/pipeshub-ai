@@ -28,6 +28,7 @@ from app.services.vector_db.scope_backfill import (
     UnknownConnector,
     status,
 )
+from app.services.vector_db.scope_rewrite import GenerationMoved
 from tests.support.in_memory_vector_db import (
     InMemoryVectorDBService as InMemoryVectorDB,
 )
@@ -323,6 +324,48 @@ async def test_a_point_that_keeps_its_own_fields_because_the_marker_cannot_be_wr
     with caplog.at_level(logging.ERROR):
         p = await job.run_connector(ORG, app)
     assert state["stamped"] and p.state == FAILED and "could not be marked stale" in caplog.text
+
+
+async def test_a_connector_that_moves_while_the_marker_is_written_gets_the_marker_on_the_next_try(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(scope_backfill, "MARKER_DELAY_SECONDS", 0.0)
+    vdb, _, job, app = await setup()
+    calls = {"n": 0}
+
+    async def stale(*a, **k) -> ScopeFields:
+        return STALE_SCOPE
+
+    async def moved_every_other_call(connector: str, epoch: object) -> None:
+        calls["n"] += 1
+        if calls["n"] % 2:
+            raise GenerationMoved(connector)
+
+    async def nothing(*a, **k) -> set[str]:
+        return set()
+
+    monkeypatch.setattr(scope_backfill, "scope_fields_for_state", stale)
+    monkeypatch.setattr(job._membership, "_guard", moved_every_other_call)
+    monkeypatch.setattr(job._membership, "refresh_membership", nothing)
+    p = await job.run_connector(ORG, app)
+    assert p.state == DONE and p.stale > 0 and calls["n"] >= 2 * p.stale
+    assert all(point.payload.get("scopeFieldsVersion") == 0 for point in vdb.collections[COLL].values())
+
+
+async def test_a_connector_that_keeps_moving_fails_the_pass_and_counts_no_marker_it_did_not_write(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    monkeypatch.setattr(scope_backfill, "MARKER_DELAY_SECONDS", 0.0)
+    vdb, _, job, app = await setup()
+
+    async def stale(*a, **k) -> ScopeFields:
+        return STALE_SCOPE
+
+    async def always_moved(connector: str, epoch: object) -> None:
+        raise GenerationMoved(connector)
+
+    monkeypatch.setattr(scope_backfill, "scope_fields_for_state", stale)
+    monkeypatch.setattr(job._membership, "_guard", always_moved)
+    with caplog.at_level(logging.ERROR):
+        p = await job.run_connector(ORG, app)
+    assert p.state == FAILED and p.stale == 0 and "could not be marked stale" in caplog.text
+    assert not any(point.payload.get("scopeFieldsVersion") == 0 for point in vdb.collections[COLL].values())
 
 
 async def test_status_refuses_a_connector_of_another_organisation() -> None:
