@@ -1020,8 +1020,9 @@ postgres:
   auth:
     # Your own Secret instead of the chart's. Keys: admin-password, node-password, connectors-password, indexing-password,
     # query-password, kv-password, jobs-password, migrate-password, backup-password (letters, digits and . _ ~ - only), and the URLs
-    # node-url (postgresql://pipeshub_node_login:<pw>@<release>-postgres:6432/pipeshub), jobs-url (pipeshub_jobs, same host and port)
-    # and migrate-url (postgresql+psycopg://pipeshub_migrate:<pw>@<release>-postgres:5432/pipeshub). Required with external secrets.
+    # node-url (postgresql://pipeshub_node_login:<pw>@<fullname>-postgres:6432/pipeshub), jobs-url (pipeshub_jobs, same host and port)
+    # and migrate-url (postgresql+psycopg://pipeshub_migrate:<pw>@<fullname>-postgres:5432/pipeshub). <fullname> is the name of the
+    # application Service. Required with external secrets.
     existingSecret: ""
     # Required (no defaults) unless existingSecret is set: --set postgres.auth.passwords.<name>=<password>
     passwords:
