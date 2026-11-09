@@ -24,6 +24,18 @@ from app.sources.external.microsoft.users_groups.users_groups import (
 AUTO = "auto"  # the page's count is the number of users on it
 
 
+@pytest.fixture(autouse=True)
+def sleeps(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """The retry waits of ``read_user_status`` are recorded, not slept."""
+    from types import SimpleNamespace
+
+    from app.connectors.sources.microsoft.common import msgraph_client
+
+    sleep = AsyncMock()
+    monkeypatch.setattr(msgraph_client, "asyncio", SimpleNamespace(sleep=sleep))
+    return sleep
+
+
 def _app_user(sid: str, active: bool = True) -> AppUser:
     return AppUser(
         app_name=Connectors.OUTLOOK, connector_id="c1", source_user_id=sid,
@@ -218,7 +230,7 @@ async def test_outlook_absent_account_that_cannot_be_confirmed_keeps_access(fail
 async def test_outlook_direct_reads_are_bounded_to_the_absent_accounts() -> None:
     c, _ = _outlook(["a", "b", "c", "d"], [_page([_graph_user("a"), _graph_user("b", enabled=False)])])
     await c._sync_users()
-    assert c.external_users_client.client.users.by_user_id.return_value.get.await_count == 2  # c and d only
+    assert {call.args[0] for call in c.external_users_client.client.users.by_user_id.call_args_list} == {"c", "d"}  # no listed account is read
 
 
 # ------------------------------------------------------------- SharePoint
@@ -435,3 +447,58 @@ async def test_status_read_is_a_definite_404_or_it_raises() -> None:
     assert await read_user_status(found, "u") == "present"
     found.users.by_user_id.return_value.get = AsyncMock(return_value=MagicMock(account_enabled=False))
     assert await read_user_status(found, "u") == "disabled"
+
+
+def _graph_answering(*answers: object) -> MagicMock:
+    """A Graph client whose reads of one user answer in turn: an int is an ODataError with that status, anything else is returned."""
+    g = MagicMock()
+    g.users.by_user_id.return_value.get = AsyncMock(side_effect=[_odata_error(a) if isinstance(a, int) else a for a in answers])
+    return g
+
+
+@pytest.mark.asyncio
+async def test_a_404_is_read_again_after_2_then_4_seconds_before_it_is_gone(sleeps: AsyncMock) -> None:
+    from unittest.mock import call
+
+    from app.connectors.sources.microsoft.common.msgraph_client import read_user_status
+
+    g = _graph_answering(404, 404, 404)
+    assert await read_user_status(g, "u") == "gone"
+    assert g.users.by_user_id.return_value.get.await_count == 3
+    assert sleeps.await_args_list == [call(2), call(4)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answers", [(404, MagicMock(account_enabled=True)), (404, 404, MagicMock(account_enabled=True))])
+async def test_a_user_found_on_a_later_read_is_present(answers: tuple) -> None:
+    from app.connectors.sources.microsoft.common.msgraph_client import read_user_status
+
+    assert await read_user_status(_graph_answering(*answers), "u") == "present"
+
+
+@pytest.mark.asyncio
+async def test_a_404_then_a_server_error_raises() -> None:
+    from app.connectors.sources.microsoft.common.msgraph_client import read_user_status
+
+    with pytest.raises(ODataError):
+        await read_user_status(_graph_answering(404, 500), "u")
+
+
+@pytest.mark.asyncio
+async def test_outlook_a_404_then_found_keeps_access_and_three_404s_withdraw() -> None:
+    c, stored = _outlook(["a", "new"], [_page([_graph_user("a")])])
+    c.external_users_client.client.users.by_user_id.return_value.get = AsyncMock(side_effect=[_odata_error(404), MagicMock(account_enabled=True)])
+    await c._sync_users()
+    assert set(stored) == {"a", "new"}
+    c, stored = _outlook(["a", "gone"], [_page([_graph_user("a")])])
+    c.external_users_client.client.users.by_user_id.return_value.get = AsyncMock(side_effect=[_odata_error(404)] * 3)
+    await c._sync_users()
+    assert set(stored) == {"a"}
+
+
+@pytest.mark.asyncio
+async def test_outlook_a_404_then_a_server_error_keeps_access() -> None:
+    c, stored = _outlook(["a", "x"], [_page([_graph_user("a")])])
+    c.external_users_client.client.users.by_user_id.return_value.get = AsyncMock(side_effect=[_odata_error(404), _odata_error(500)])
+    await c._sync_users()
+    assert set(stored) == {"a", "x"}

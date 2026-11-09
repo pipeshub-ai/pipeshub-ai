@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 from dataclasses import dataclass
@@ -152,17 +153,26 @@ class UserListing(list):
 
 
 async def read_user_status(graph: GraphServiceClient, user_id: str) -> str:
-    """Read one user by id: ``gone`` only on a definite 404, ``disabled`` when the account
-    is found with ``accountEnabled`` false, ``present`` otherwise. Any other failure
-    (throttling, a server error) raises, so the caller keeps the user."""
+    """Read one user by id: ``gone`` only when it answers 404 three times, 2 s and then 4 s
+    apart, ``disabled`` when the account is found with ``accountEnabled`` false, ``present``
+    otherwise. Any other failure (throttling, a server error), on any attempt, raises, so the
+    caller keeps the user."""
     query = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(select=["id", "accountEnabled"])
-    try:
-        user = await graph.users.by_user_id(user_id).get(RequestConfiguration(query_parameters=query))
-    except ODataError as e:
-        if e.response_status_code == 404:
-            return "gone"
-        raise
-    return "disabled" if user is not None and user.account_enabled is False else "present"
+    for wait in (2, 4, None):
+        try:
+            user = await graph.users.by_user_id(user_id).get(RequestConfiguration(query_parameters=query))
+        except ODataError as e:
+            if e.response_status_code != 404:
+                raise
+            if wait is None:
+                return "gone"
+            # A just-created user can answer 404 from a lagging replica: wait, read again, double the wait.
+            # shortcut: this covers seconds of replication, not several minutes; an account withdrawn wrongly
+            # comes back on the next listing that shows it; upgrade to a two-sync confirmation if real
+            # deployments show this happening.
+            await asyncio.sleep(wait)
+            continue
+        return "disabled" if user is not None and user.account_enabled is False else "present"
 
 
 class MSGraphClient:
