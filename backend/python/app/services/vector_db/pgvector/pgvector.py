@@ -430,6 +430,23 @@ class PgVectorService(IVectorDBService):
             )
         return ScrollResult(points=points, next_offset=nxt)
 
+    async def fence_time(self) -> datetime:
+        """The database's clock: what the compare-and-set fence of the group rows is measured in for a writer that asks, so that the clocks of
+        the hosts that write do not have to agree."""
+        db, _ = self._assert_connected()
+        return await db.run(lambda tx: tx.fetchval("/* pipeshub:pgvector.fence_time */ SELECT clock_timestamp()"), idempotent=True, custom_plan=True)
+
+    async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
+        db, catalog = self._assert_connected()
+        org = _filter_org(count_filter)
+        coll = await catalog.require_collection(collection_name)
+        with org_scope(org):
+            space = await catalog.active_space(org, real_time=True)
+            if space is None:
+                return 0
+            compiled = compile_filter(count_filter, first_param=4)
+            return int(await db.run(lambda tx: reads.count_filtered(tx, org, coll.collection_id, space.space_id, compiled), custom_plan=True))
+
     async def retrieve_points(self, collection_name: str, ids: list[str]) -> list[VectorPoint]:
         """The points with these ids in the request's org, in the order asked; ids that name no point (or are no UUID) are left out.
         The interface carries no org: it is the request's."""
