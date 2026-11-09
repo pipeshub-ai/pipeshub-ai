@@ -17,7 +17,7 @@ an unknown `LOG_FORMAT` means `text`; each logs one warning. Values are read at 
 lifespan). Per-service files keep the format they were opened with.
 
 Without a `LOG_LEVELS` entry, `opensearch` stays at `WARNING` and, when `DATA_STORE=neo4j`, `neo4j.notifications` at `ERROR`.
-httpx's successful (2xx) request lines are always dropped; failures are kept, with credentials cut from the URL.
+The successful (2xx) request lines of httpx and httpx2 (the MCP 2.x client) are always dropped; failures are kept, with credentials cut from the URL.
 
 `LOG_LEVEL` does not reach first-party loggers named outside `app` (`agent_loop.events`, `sync_point`,
 `pipeshub.attachment_audit`, `parsing_main`, `extraction_main`, `docker_proxy`); name them in `LOG_LEVELS` until they are renamed.
