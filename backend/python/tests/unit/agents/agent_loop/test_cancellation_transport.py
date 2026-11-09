@@ -154,7 +154,6 @@ class TestStreamCancellationDuringProviderStall:
 
         assert inner.aclose_called is True
 
-
     @pytest.mark.parametrize("cancels", [1, 3])
     async def test_cancelling_the_consumer_closes_the_provider_read(self, cancels: int) -> None:
         """A client disconnect cancels the task iterating the stream, with no token fired, once

@@ -36,13 +36,13 @@ from app.agent_loop_lib.core.messages import (
 )
 from app.agent_loop_lib.core.responses import RunUsage, StopReason
 from app.agent_loop_lib.core.scope import RunScope, TurnScope
-from app.agent_loop_lib.core.tasks import wait_owned
 from app.agent_loop_lib.core.streaming import (
     StreamCompleteEvent,
     TextDeltaEvent,
     ThinkingDeltaEvent,
     ToolCallDeltaEvent,
 )
+from app.agent_loop_lib.core.tasks import wait_owned
 from app.agent_loop_lib.core.types import (
     AgentResult,
     AgentTurn,
