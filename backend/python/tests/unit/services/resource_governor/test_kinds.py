@@ -397,3 +397,22 @@ def test_the_docs_say_spawn_admission_charges_by_kind_unless_the_flat_figure_is_
     assert "each charged `GOVERNOR_LANE_WORKING_SET_GB`" not in lanes
     assert "each charged by its kind of job" in lanes
     assert kinds.explicit_lane_working_set_bytes({}) is None, "the flat figure is unset by default"
+
+
+def _kinds_section(doc: str) -> str:
+    return doc.split("**Memory charged by kind of job")[1].split("**The heavy permit")[0]
+
+
+def test_the_docs_say_what_a_waiting_growth_holds_and_that_the_flat_figure_covers_excel() -> None:
+    # Kills: a doc that says a refused growth holds only its lease (it also keeps the checked-out
+    # worker and its token, which the reaper cannot take), or that a permit-covered Excel load is
+    # never resident even when the flat figure is set.
+    doc = (Path(__file__).parents[6] / "docs" / "indexing-service.md").read_text(encoding="utf-8")
+    section = _kinds_section(doc)
+    assert "holding only its lease" not in section
+    assert "its checked-out worker and that worker's resident token" in section
+    assert "the reaper takes only idle workers" in section
+    flat = 700 * MIB
+    assert window_charge_bytes(ParseKind.EXCEL_LOAD, 0, True, flat_bytes=flat) == flat
+    assert lane_charge_bytes(ParseKind.EXCEL_LOAD, 0, True, flat_bytes=flat) == flat
+    assert "with an explicit `GOVERNOR_LANE_WORKING_SET_GB` it is charged that flat figure for both" in section
