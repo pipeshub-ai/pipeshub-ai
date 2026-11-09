@@ -1,7 +1,7 @@
 {
   "name": "pipeshub",
   "version": "0.1.0",
-  "engines": { "node": ">=22" },
+  "engines": { "node": ">=22.13.0" },
   "description": "PipesHub Desktop App",
   "author": "PipesHub",
   "homepage": "https://github.com/pipeshub-ai/pipeshub-ai",

@@ -125,6 +125,11 @@ jobs:
               exit 1
             fi
           done
+          # The base is published by hand, so it can lag the Node the backend is built with and needs.
+          if ! docker run --rm --entrypoint node "${BASE_IMAGE}:runtime" -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)'; then
+            echo "::error::${BASE_IMAGE}:runtime has Node older than 22, the backend's minimum. Build and publish it from Dockerfile.base first (see its header)."
+            exit 1
+          fi
 
       - name: Build and push candidate
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
