@@ -21,6 +21,7 @@ import copy
 import pytest
 
 from app.core.org_context import for_org
+from app.services.permissions.scope_fields import ScopeFields
 from app.services.vector_db.models import VectorPoint
 from tests.integration.vector_db.conftest import make_collection
 from tests.integration.vector_db.helpers import make_dense
@@ -28,12 +29,15 @@ from tests.permissions.model import Mutation as M
 from tests.permissions.rewrite_kit import Env, Killed, Log, Tap, held_up_writer
 from tests.permissions.scenario import WorldStore
 from tests.permissions.scope_corpus import SCENARIOS
+from tests.permissions.stamp_world import ORG
+from tests.permissions.store_harness import read_stamps
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(900), pytest.mark.asyncio(loop_scope="module")]
 
 OTHER_ORG = "cd" * 12
 PICKS = ("DRIVE-C-07", "CONF-C-03", "LIN-C-05", "SP-C-12", "OD-C-01")
 CHOSEN = [s for s in SCENARIOS if s.id in PICKS] or SCENARIOS[:4]
+CONF_C_03 = next(s for s in SCENARIOS if s.id == "CONF-C-03")      # a change that moves a stamp
 HR = WorldStore().world("golden/confluence_hr")
 
 
@@ -149,6 +153,25 @@ class TestOpenSearchRewrite(_Contract):
     @pytest.fixture
     async def vector_service(self, opensearch_service):
         return opensearch_service
+
+    async def test_a_point_indexed_but_not_yet_searchable_is_rewritten_too(self, vector_service) -> None:
+        """A point written a moment ago (OpenSearch searches it at the next refresh) is in neither the scroll nor the count: the job asks the
+        store to publish before it reads, or the root would be released with that point on its old stamp."""
+        env = await self.make(vector_service, CONF_C_03.world)
+        try:
+            await env.change(CONF_C_03.mutations)
+            assert env.changed
+            vrid = sorted(env.changed)[0]      # a record whose stamp the change changes
+            sibling = (await vector_service.retrieve_points(env.loaded.collection, env.loaded.points[vrid][:1]))[0].payload
+            pid = "00000000-0000-4000-8000-0000000000bb"
+            await in_org(ORG, vector_service.upsert_points(env.loaded.collection, [VectorPoint(id=pid, dense_vector=make_dense([1.0, 9.0]), payload=copy.deepcopy(sibling))]))
+            await env.settle()
+            assert not await env.problems()
+            after = (await read_stamps(vector_service, env.loaded))[vrid]
+            late = (await vector_service.retrieve_points(env.loaded.collection, [pid]))[0].payload
+            assert ScopeFields.from_payload(late) == after
+        finally:
+            await self.drop(vector_service, env)
 
 
 class TestRedisRewrite(_Contract):
