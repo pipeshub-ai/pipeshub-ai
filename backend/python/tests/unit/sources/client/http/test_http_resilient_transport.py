@@ -7,7 +7,11 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from app.connectors.core.sync.run_context import SyncRunStats, bind_run_stats, reset_run_stats
+from app.connectors.core.sync.run_context import (
+    SyncRunStats,
+    bind_run_stats,
+    reset_run_stats,
+)
 from app.sources.client.http.http_resilient_transport import ResilientHTTPTransport
 from app.sources.client.resilience import ResiliencePolicy
 
@@ -212,7 +216,7 @@ class TestRetryAfter:
         assert gate_while_backing_off[0] == pytest.approx(2.0, abs=0.5)
 
     @pytest.mark.asyncio
-    async def test_the_retry_after_wait_is_the_runs_backoff_wait(self, transport_factory):
+    async def test_the_retry_after_wait_is_the_runs_backoff_wait(self, transport_factory) -> None:
         policy = _policy(max_delay=10.0)  # base_delay=0: no jitter on top of Retry-After
         transport = transport_factory(
             policy, [_response(429, {"Retry-After": "0.05"}), _response(200)]
