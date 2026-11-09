@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import io
 import json
 from pathlib import Path
@@ -34,6 +35,8 @@ from app.models.blocks import (
 )
 from app.models.entities import Record
 from app.models.record_convert import convert_record_dict_to_record  # re-exported for existing importers
+from app.services.permissions.mode import scope_fields_enabled
+from app.services.permissions.structure_generation import leaving_vrid
 from app.modules.code_graph import enabled as code_graph_switch
 from app.modules.code_graph.block_projection import (
     BlockProjectionContext,
@@ -1852,16 +1855,20 @@ class Processor:
         """
         if not virtual_record_id:
             return
-        if not await self.graph_provider.update_node(
-            record_id, CollectionNames.RECORDS.value, {"virtualRecordId": None}
-        ):
-            raise DocumentProcessingError(
-                "Failed to detach the virtual record of a skipped file", doc_id=record_id
+        fenced = leaving_vrid(self.graph_provider, record_id, virtual_record_id, self.logger) if scope_fields_enabled() else contextlib.nullcontext()
+        # The cleanup runs inside the fence: the detach is durable once it is written, and a retry no longer has the id to clean up with.
+        async with fenced:
+            detached = await self.graph_provider.update_node(
+                record_id, CollectionNames.RECORDS.value, {"virtualRecordId": None}
             )
-        await self.indexing_pipeline.rewrite_or_delete_vector_membership(virtual_record_id)
-        await self.sink_orchestrator.blob_storage.delete_storage_docs_for_vrid(
-            org_id, virtual_record_id
-        )
+            if not detached:
+                raise DocumentProcessingError(
+                    "Failed to detach the virtual record of a skipped file", doc_id=record_id
+                )
+            await self.indexing_pipeline.rewrite_or_delete_vector_membership(virtual_record_id)
+            await self.sink_orchestrator.blob_storage.delete_storage_docs_for_vrid(
+                org_id, virtual_record_id
+            )
 
     async def _drop_code_blocks(self, record_id: str) -> None:
         """Remove a code file's previous blocks when it no longer has any.

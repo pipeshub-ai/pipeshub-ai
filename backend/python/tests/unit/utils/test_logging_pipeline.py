@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
+import numpy as np
 import pytest
 
 import app.utils.logger as L
@@ -370,6 +371,39 @@ def _quoting_vectors() -> list[tuple[object, str | None]]:
     return [tuple(json.loads(line)) for line in block.group(1).strip().splitlines()]
 
 
+# (key, value, masked): a number under a credential name follows the text pair rule in both formats.
+NUMERIC_CREDENTIAL_FIELDS = [
+    ("password", 73915528, True),
+    ("client_secret", 7391.5528, True),
+    ("api_key", 91827364551, True),
+    ("pin_password", -73915528, True),
+    ("client_secret", 1e16, True),  # text renders "1e+16", quoted
+    ("api_key", float("nan"), True),
+    ("token_count", 12345678, True),
+    ("token_ttl", -1, True),  # negative, even under a time name
+    ("token_limit", 1048576, True),  # 7 digits: the up-to-6-digit rule
+    ("client_secret", np.float64(7391.5528), True),  # a float subclass
+    ("token_expires_at", 1730000000, False),
+    ("refresh_token_expires_in", 7776000, False),
+    ("token_expires_at", 1730000000.5, False),
+    ("token_count", 12, False),
+    ("secret_count", 0, False),
+    ("has_access_token", True, False),
+    ("has_refresh_token", False, False),
+    ("record_count", 73915528, False),  # not a credential name
+    ("duration_ms", -73915528.5, False),
+]
+
+
+def _numeric_field_id(row: tuple[str, object, bool]) -> str:
+    return f"{row[0]}={row[1]!r}"
+
+
+numeric_credential_fields = pytest.mark.parametrize(
+    ("key", "value", "masked"), NUMERIC_CREDENTIAL_FIELDS, ids=[_numeric_field_id(r) for r in NUMERIC_CREDENTIAL_FIELDS],
+)
+
+
 class TestTextFields:
     def test_no_fields_is_todays_line(self) -> None:
         record = _record("hello %s", args=("x",))
@@ -415,6 +449,16 @@ class TestTextFields:
         assert L.log_record_fields(_record(token_count=12, secret_rotated=False, password=None)) == {
             "token_count": 12, "secret_rotated": False, "password": None,
         }
+
+    def test_a_numeric_secret_is_masked_in_the_shared_fields(self) -> None:
+        fields = L.log_record_fields(_record(password=73915528))
+        assert fields["password"] == "[REDACTED]"
+        assert "73915528" not in repr(fields)
+
+    @numeric_credential_fields
+    def test_numbers_under_credential_names(self, key: str, value: object, masked: bool) -> None:
+        line = TextFormatter("%(message)s").format(_record(**{key: value}))
+        assert (f'{key}="[REDACTED]"' if masked else f"{key}={L._text_value(value)}") in line
 
 
 class TestColour:
@@ -525,6 +569,19 @@ class TestJson:
         out = _json(_record(f"key {pem} password=hunter2", token="SENTINEL-tok", token_count=4, note="Bearer SENTINEL-b"))
         assert "SENTINEL" not in json.dumps(out) and "hunter2" not in out["message"]
         assert out["token"] == "[REDACTED]" and out["token_count"] == 4
+
+    @numeric_credential_fields
+    def test_numbers_under_credential_names(self, key: str, value: object, masked: bool) -> None:
+        out = _json(_record(**{key: value}))
+        if masked:
+            assert out[key] == "[REDACTED]"
+        else:
+            assert out[key] == value and type(out[key]) is type(value)
+
+    @numeric_credential_fields
+    def test_a_number_is_masked_in_json_when_text_masks_it(self, key: str, value: object, masked: bool) -> None:
+        line = TextFormatter("%(message)s").format(_record(**{key: value}))
+        assert ("[REDACTED]" in line) == (_json(_record(**{key: value}))[key] == "[REDACTED]")
 
     def test_unicode_is_kept(self) -> None:
         out = JsonFormatter().format(_record("caf\u00e9 \u2705", city="M\u00fcnchen"))
@@ -647,3 +704,11 @@ async def test_embedding_health_check_does_not_log_the_configs() -> None:
         await initialize_embedding_model(request, configs)
     line = TextFormatter("%(message)s").format(records[0])
     assert line == "Starting embedding health check | count=1"
+
+
+def test_a_number_under_a_non_credential_name_skips_the_redactor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The credential-name gate keeps the pair probe off the hot path (duration_ms, tokens_in on every log_event line)."""
+    spy = MagicMock(side_effect=L.redact_secrets_in_text)
+    monkeypatch.setattr(L, "redact_secrets_in_text", spy)
+    L.log_record_fields(_record(duration_ms=1834, tokens_in=48211, ratio=0.5))
+    spy.assert_not_called()

@@ -1473,6 +1473,11 @@
     "stopListening": "듣기 중지",
     "voiceInput": "음성 입력",
     "regenerateResponse": "응답 다시 생성",
+    "quoteSelection": "인용",
+    "quoteSelectionHint": "이 내용에 대해 묻기",
+    "quotedExcerpt": "인용됨",
+    "quotedExcerptTruncated": "인용됨 (잘림)",
+    "dismissQuote": "인용 제거",
     "editQuery": "질문 편집",
     "queryOptions": "질문 옵션",
     "models": "모델",
@@ -5871,5 +5876,107 @@
       "onTitle": "모두에 대해 데모 데이터를 다시 켰습니다",
       "errorTitle": "모두에 대한 데모 데이터를 변경하지 못했습니다"
     }
+  },
+  "graph": {
+    "status": {
+      "stale": "그래프를 업데이트하는 중이며 최근 변경 사항이 누락되었을 수 있습니다.",
+      "building": "그래프를 생성하는 중이므로 표시되는 내용이 불완전할 수 있습니다.",
+      "retrying": "그래프 생성 중 문제가 발생하여 다시 시도하는 중입니다.",
+      "failed": "마지막 그래프 생성이 실패하여 이 보기가 최신이 아닐 수 있습니다.",
+      "unknown": "이 그래프의 상태를 읽을 수 없습니다."
+    },
+    "empty": {
+      "neverBuilt": "이 저장소에는 아직 코드 그래프가 없습니다.",
+      "tooLarge": "이 저장소는 그래프로 만들기에 너무 큽니다."
+    },
+    "incomplete": "일부 연결이 누락되었을 수 있습니다. 엣지 유형이나 방향으로 범위를 좁혀 보세요.",
+    "simplified": "부드러운 이동을 위해 단순화된 보기입니다.",
+    "verify": {
+      "degraded": "지금은 접근 권한을 확인할 수 없습니다. 마지막으로 확인된 내용을 표시합니다.",
+      "blank": "몇 분 동안 접근 권한을 확인하지 못해 그래프를 지웠습니다. 다시 연결하는 중…"
+    },
+    "error": {
+      "unavailable": "지금은 불러올 수 없습니다. 다시 시도해 주세요.",
+      "notAvailable": "이 항목을 사용할 수 없습니다.",
+      "unexpected": "문제가 발생했습니다.",
+      "ambiguous": "이름이 같은 저장소가 여러 개입니다. 검색 상자에서 저장소를 선택하세요.",
+      "full": "이 보기가 가득 찼습니다. 노드를 열어 새 보기를 시작하세요.",
+      "revoked": "보고 있던 항목을 더 이상 사용할 수 없습니다."
+    },
+    "title": "코드 그래프",
+    "ui": {
+      "back": "뒤로",
+      "forward": "앞으로",
+      "fit": "화면에 맞추기",
+      "showTable": "표로 보기",
+      "showGraph": "그래프로 보기",
+      "direction": {
+        "any": "둘 다",
+        "inbound": "호출자",
+        "outbound": "피호출자"
+      },
+      "includeTests": "테스트 포함",
+      "showMore": "더 보기",
+      "expand": "확장",
+      "open": "열기",
+      "nothingSelected": "세부 정보를 보려면 노드를 선택하세요.",
+      "details": "세부 정보",
+      "links": "링크: {{n}}",
+      "table": {
+        "caption": "이 보기의 노드",
+        "name": "이름",
+        "kind": "종류",
+        "file": "파일",
+        "actions": "작업",
+        "moreRows": "행 더 보기",
+        "callersShown": "표시된 호출자",
+        "calleesShown": "표시된 피호출자",
+        "focus": "중심"
+      },
+      "emptyPrompt": "위에서 함수, 메서드 또는 클래스를 검색하여 무엇이 호출하고 무엇을 호출하는지 확인하세요.",
+      "disclosure": "접근할 수 있는 항목만 표시합니다.",
+      "legendInferred": "점선은 이름으로 추정한 링크입니다.",
+      "disabled": "코드 그래프가 사용 설정되어 있지 않습니다.",
+      "search": {
+        "repo": "저장소",
+        "repoPlaceholder": "저장소를 선택하세요",
+        "placeholder": "이름으로 함수, 메서드 또는 클래스 찾기",
+        "label": "코드 검색",
+        "results": "검색 결과",
+        "noRepos": "읽을 수 있는 코드 저장소가 없습니다.",
+        "noMatches": "일치하는 항목이 없습니다.",
+        "chooseFirst": "먼저 저장소를 선택하세요",
+        "minChars": "2자 이상 입력하세요.",
+        "more": "처음 일치 항목만 표시합니다. 검색을 좁히려면 더 입력하세요."
+      },
+      "action": {
+        "retry": "다시 시도",
+        "restore": "전체 품질 사용"
+      },
+      "loading": "불러오는 중…",
+      "legend": {
+        "functions": "함수와 메서드",
+        "classes": "클래스와 인터페이스",
+        "focus": "이 보기의 중심"
+      },
+      "openHint": "열기: 이것을 새 보기의 중심으로 만듭니다.",
+      "expandHint": "확장: 화면의 내용을 유지한 채 이웃을 여기에 표시합니다.",
+      "announce": {
+        "opened": "항목 {{n}}개를 표시하는 중입니다.",
+        "added": "항목 {{n}}개를 추가했습니다."
+      },
+      "canvasHint": "그래프 그림은 화면 낭독기에서 사용할 수 없습니다. 모든 노드를 읽고 사용하려면 ‘표로 보기’ 버튼을 사용하세요.",
+      "selectionGone": "선택한 항목을 더 이상 사용할 수 없습니다.",
+      "viewGraph": "그래프 보기",
+      "viewGraphOf": "{{repo}} 그래프 보기",
+      "fillerNode": "{{file}}의 {{kind}}"
+    },
+    "capped": "그림에는 이 보기의 일부만 표시됩니다. 표에는 모두 나열됩니다.",
+    "crowded": "이 보기가 복잡해지고 있습니다. 필터로 좁히세요.",
+    "hint": {
+      "testsOff": "테스트 파일은 숨겨져 있습니다. 항목이 테스트 코드에 있으면 “테스트 포함”을 켜세요."
+    },
+    "nothingNew": "이 노드에 더 표시할 항목이 없습니다.",
+    "tableOnly": "원활한 동작을 위해 표만 표시합니다."
   }
 }

@@ -6451,6 +6451,29 @@ components:
                 starts; absent on records not indexed since pipeline stages
                 were introduced.
               example: "78f3f276290c9f81"
+            parseNowStatus:
+              type: string
+              nullable: true
+              description: |
+                Outcome of the latest "parse now" request for the record:
+                QUEUED, IN_PROGRESS, STORED, FAILED, EMPTY, PASSWORD_PROTECTED,
+                FILE_TYPE_NOT_SUPPORTED or NEEDS_MULTIMODAL. STORED means the
+                parsed content is readable for the revision in parseNowRev.
+                Absent on records never asked for with parse now.
+              example: STORED
+            parseNowRev:
+              type: string
+              nullable: true
+              description: The contentRev that parseNowStatus applies to.
+            parseNowReason:
+              type: string
+              nullable: true
+              description: Why, for a parseNowStatus other than STORED.
+            parseNowAt:
+              type: integer
+              format: int64
+              nullable: true
+              description: When parseNowStatus was written, in epoch milliseconds (UTC).
             summaryDocumentId:
               type: string
               nullable: true
@@ -72288,6 +72311,9 @@ paths:
                         connector_id:
                           type: string
                           description: Id of that connector instance.
+                        indexed_commit:
+                          type: string
+                          description: The commit the connector last synced the repository to. Absent until a sync records it.
                         graph_status:
                           type: string
                           enum: [never_built, building, ready, stale, waiting_on_indexing, retrying, failed, too_large, unknown]
@@ -72714,9 +72740,16 @@ paths:
         - `tools/list` — List available tools
         - `tools/call` — Execute a tool (search, conversations, KB management, etc.)
 
-        The code-graph tools (`pipeshub_code_repos`, `pipeshub_code_symbols`, `pipeshub_code_read`
-        and the rest) are listed and callable only when the caller can read at least one indexed
-        code repository and, for an OAuth access token or personal access token, holds `code:read`.
+        The code-graph tools are `pipeshub_code_repos`, `pipeshub_code_symbols`,
+        `pipeshub_code_neighbours`, `pipeshub_code_read`, `pipeshub_code_path`,
+        `pipeshub_code_search`, `pipeshub_code_semantic_search`, `pipeshub_code_outline`,
+        `pipeshub_code_impact` and `pipeshub_code_entry_points`. `pipeshub_code_impact`'s optional
+        `edge_types` takes any of `CALLS`, `INDIRECT_CALL`, `IMPORTS_FROM`, `INHERITS`, `IMPLEMENTS` and
+        `OVERRIDES`; another value is refused. Their usage guidance (call `pipeshub_code_impact`
+        before grep for who-calls and what-breaks questions) is sent in the `initialize` result's
+        `instructions`. They are listed and callable only when the caller can read at least one
+        indexed code repository and, for an OAuth access token or personal access token, holds
+        `code:read`.
         The repository check fails open: when the query service answers it with an error other
         than `401` or `403`, times out or cannot be reached, the tools are listed anyway.
 

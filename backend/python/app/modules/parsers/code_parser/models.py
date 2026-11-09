@@ -37,6 +37,7 @@ class Relation:
 
     # Cross-file -- target is a bare name, deferred to the resolver.
     CALLS = "CALLS"
+    INDIRECT_CALL = "INDIRECT_CALL"
     IMPORTS = "IMPORTS"
     IMPORTS_FROM = "IMPORTS_FROM"
     RE_EXPORTS = "RE_EXPORTS"
@@ -103,6 +104,8 @@ class ParsedSymbol:
     parent: int | None = None
     # True when this container has members that tile it.
     is_container: bool = False
+    # A `@property`/`cached_property` method or a `get` accessor: `self.x` reads it, nothing is handed over.
+    is_accessor: bool = False
     # Type parameters the declaration takes (`class Foo<T, U>`: 2).
     type_param_count: int = 0
     # False for a JS/TS module-level value (`export const X = f()`): its initializer runs as module code, so
@@ -148,6 +151,8 @@ class PendingEdgeFact:
     # CALLS: "construct" for a C++ construction (`new Conn(..)`, `Conn c(..)`), which names a type, never a
     # function; "initializer" for a constructor's `: Name(..)`, which names a base or a member. IMPORTS:
     # "default" for a JS default import, whose local name is the importer's choice, not the module's.
+    # INDIRECT_CALL: the value position ("argument", "collection", "assignment", "return", "prop" for a JSX
+    # prop handler `onClick={f}`, "dispatch" for each value of a table called as `TABLE[k]()`).
     context: str | None = None
     # A type reference's type-argument count (`IHandler<int>`: 1), where the language reads it (C# bases).
     type_args: int | None = None

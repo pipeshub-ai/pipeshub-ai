@@ -226,6 +226,7 @@ app_schema = {
             # app.services.permissions.structure_generation: moves with every structural write of the connector
             "scopeProjectionGeneration": {"type": ["number", "null"]},  # incremented in AQL, which computes in doubles
             "scopeProjectionUnsafe": {"type": ["boolean", "number", "null"]},  # a mark: true (older code) or a time
+            "scopeProjectionPendingRoots": {"type": ["string", "null"]},  # {root: generation} awaiting a rewrite (see permissions.pending)
             "scopeProjectionOpened": {"type": ["number", "null"]},  # writes started that could not be undone, and finished (see unclosed_writes)
             "scopeProjectionClosed": {"type": ["number", "null"]},
             # app.services.vector_db.scope_backfill: the checkpoint of the permission scope-field back-fill
@@ -451,6 +452,12 @@ record_schema = {
             "propsGen": {"type": ["number", "null"]},
             "propsSrc": {"type": ["number", "null"]},
             "propsVer": {"type": ["number", "null"]},
+            # The parse-now marker (app.modules.indexing.parse_now_marker). A pattern, not an
+            # enum, for the same reason as entityExtractionStatus.
+            "parseNowStatus": {"type": ["string", "null"], "pattern": "^[A-Z_]{1,32}$"},
+            "parseNowRev": {"type": ["string", "null"]},
+            "parseNowReason": {"type": ["string", "null"]},
+            "parseNowAt": {"type": ["number", "null"]},
         },
         "required": [
             "recordName",
@@ -873,6 +880,7 @@ block_schema = {
             "typeParamCount": {"type": ["number", "null"]},
             "isBlockGroup": {"type": "boolean"},
             "isExternal": {"type": "boolean"},
+            "isAccessor": {"type": ["boolean", "null"]},
             "index": {"type": ["number", "null"]},
             "startLine": {"type": ["number", "null"]},
             "endLine": {"type": ["number", "null"]},
@@ -1082,6 +1090,8 @@ record_group_schema = {
             "deletedAtSourceTimestamp": {"type": ["number", "null"]},
             "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
             "sourceLastModifiedTimestamp": {"type": ["number", "null"]},
+            # Code repository groups: the commit the git connector last synced the repo to.
+            "lastSyncedCommit": {"type": ["string", "null"]},
         },
         "required": [
             "groupName",

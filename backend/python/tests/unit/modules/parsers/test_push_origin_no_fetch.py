@@ -19,7 +19,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import ExtensionTypes
-from app.connectors.sources.localKB.push.contract import PUSH_FORMAT, PUSH_ORIGIN_FIELD
+from app.connectors.sources.localKB.push.contract import (
+    PUSH_FORMAT,
+    PUSH_FORMAT_KEY,
+    PUSH_ORIGIN_FIELD,
+)
 from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import IndexingError
 from app.exceptions.non_retryable import NonRetryableError
@@ -406,6 +410,99 @@ class TestPushedContentTakesTheLightweightParsers:
                 for n in ast.walk(ast.parse(pathlib.Path(module.__file__).read_text()))
             ]
             assert not [n for n in names if "docling" in n.lower()]
+
+
+class TestThePushScanLoadsOnlyLightModules:
+    def test_the_group_scan_imports_no_docling_and_no_html_converter(self) -> None:
+        root = pathlib.Path(__file__).resolve().parents[4]
+        code = (
+            f"import sys; sys.path.insert(0, {str(root)!r})\n"
+            "import app.connectors.sources.localKB.push.images\n"
+            "bad = [m for m in sys.modules if m.startswith('app.') and ('docling' in m or 'selectolax' in m)]\n"
+            "assert not bad, bad\n"
+        )
+        done = subprocess.run(
+            [sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=240,
+            env={**os.environ, "PARSER_BACKEND": "docling"}, cwd=root,
+        )
+        assert done.returncode == 0, done.stderr[-2000:]
+
+
+# ---------------------------------------------------------------- from the push to the index
+
+
+def _pushed(group_data: str, fmt: str, tmp_path: pathlib.Path, name: str = "out") -> dict:
+    """The stored document of a push whose only content is one group, as indexing will read it."""
+    from app.connectors.sources.localKB.push import worker as W
+
+    body = json.dumps({
+        "recordName": "r", "mimeType": "application/blocks", "externalRecordId": "k1", "version": 1, "blocksFormat": 1,
+        "blocks": {"block_groups": [{"index": 0, "type": "text_section", "requires_processing": True, "format": fmt, "data": group_data}]},
+    }).encode()
+    out = tmp_path / name
+    W.validate_body(body, schema_id=None, schema=None, out_path=str(out))
+    return json.loads(out.read_bytes())
+
+
+class TestFromThePushToTheIndex:
+    @pytest.mark.parametrize(("fmt", "forms"), [("markdown", MARKDOWN_FORMS), ("html", HTML_FORMS)])
+    def test_every_form_of_the_corpus_is_refused_at_the_push(self, net: NetSpy, fmt: str, forms: list[str], tmp_path: pathlib.Path) -> None:
+        from app.connectors.sources.localKB.push.contract import PushRefusal
+
+        for form in forms:
+            with pytest.raises(PushRefusal) as e:
+                _pushed(f"intro\n\n{form}\n\nend" if fmt == "markdown" else f"<p>x</p>{form}", fmt, tmp_path)
+            assert e.value.reason == "IMAGE_REF_REFUSED", form
+        assert net.calls == []  # the push has no fetch code: refusing a URL never opens a connection
+
+    @pytest.mark.parametrize(
+        ("fmt", "data"),
+        [("markdown", f"# t\n\n![logo]({PIXEL})\n\ntext"), ("html", f'<p>t</p><img src="{PIXEL}" alt="logo">')],
+    )
+    async def test_an_accepted_push_indexes_with_zero_connections_and_keeps_its_image(
+        self, net: NetSpy, fmt: str, data: str, tmp_path: pathlib.Path
+    ) -> None:
+        doc = _pushed(data, fmt, tmp_path)
+        assert PUSH_FORMAT_KEY in doc
+        proc, pipeline, _ = _processor(_record())
+
+        for _ in range(2):  # first index, then a reindex
+            await _run_process_blocks(proc, doc)
+
+        images = [b for b in pipeline.applied[-1].record.block_containers.blocks if b.type == BlockType.IMAGE]
+        assert [b.data["uri"] for b in images] == [PIXEL]
+        assert net.calls == []
+
+    @pytest.mark.parametrize(("fmt", "forms"), [("markdown", MARKDOWN_FORMS), ("html", HTML_FORMS)])
+    async def test_control_scan_off_the_guard_alone_keeps_the_count_at_zero(
+        self, net: NetSpy, monkeypatch: pytest.MonkeyPatch, fmt: str, forms: list[str], tmp_path: pathlib.Path
+    ) -> None:
+        from app.connectors.sources.localKB.push import images as push_images
+
+        monkeypatch.setattr(push_images, "_check_group_images", lambda *a, **k: None)
+        proc, _, _ = _processor(_record())
+
+        for i, form in enumerate(forms):
+            doc = _pushed(f"intro\n\n{form}\n\nend" if fmt == "markdown" else f"<p>x</p>{form}", fmt, tmp_path, f"out{i}")
+            await _run_process_blocks(proc, doc)
+
+        assert net.calls == []
+
+    @pytest.mark.parametrize(("fmt", "forms"), [("markdown", MARKDOWN_FORMS), ("html", HTML_FORMS)])
+    async def test_control_scan_off_and_guard_off_the_same_bodies_make_connections(
+        self, net: NetSpy, monkeypatch: pytest.MonkeyPatch, fmt: str, forms: list[str], tmp_path: pathlib.Path
+    ) -> None:
+        from app.connectors.sources.localKB.push import images as push_images
+
+        monkeypatch.setattr(push_images, "_check_group_images", lambda *a, **k: None)
+        proc, _, _ = _processor(_record())
+
+        for i, form in enumerate(forms):
+            doc = _pushed(f"intro\n\n{form}\n\nend" if fmt == "markdown" else f"<p>x</p>{form}", fmt, tmp_path, f"out{i}")
+            doc.pop(PUSH_FORMAT_KEY)  # an ordinary record: nothing marks it as pushed
+            await _run_process_blocks(proc, doc)
+
+        assert any(kind == "PublicUrlFetcher.get" for kind, _ in net.calls), "the spy cannot see a fetch"
 
 
 class TestAssertImagesInline:

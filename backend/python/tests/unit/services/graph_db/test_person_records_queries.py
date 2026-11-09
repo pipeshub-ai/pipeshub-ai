@@ -41,7 +41,7 @@ def _arango(rows: list | None = None) -> ArangoHTTPProvider:
 class TestPersonQueryRef:
     def test_edges_are_kept_to_the_allow_list_of_their_direction(self) -> None:
         assert person_query_ref(PERSON_REF) == {
-            "userIds": ["u1", "u2"],
+            "userIds": ["u1", "u2"], "personIds": [],
             "outTypes": ["REPORTED_BY", "CREATED_BY"],
             "inTypes": ["MENTIONED_IN"],
         }
@@ -53,7 +53,7 @@ class TestPersonQueryRef:
         """A person entity from search carries only its id, and lists every
         record naming them; an explicit empty list still names none."""
         assert person_query_ref({"id": "u9", "type": "person"}) == {
-            "userIds": ["u9"],
+            "userIds": ["u9"], "personIds": [],
             "outTypes": list(PERSON_EDGES_TO_USER),
             "inTypes": list(PERSON_EDGES_FROM_USER),
         }

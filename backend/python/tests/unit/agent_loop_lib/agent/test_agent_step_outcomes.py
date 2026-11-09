@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -33,10 +33,17 @@ from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolP
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.utils.logger import log_record_fields
+from tests.unit.agents.adapter.support.provider_stall import (
+    ProviderStall,
+    pending_since,
+)
 from tests.unit.agents.adapter.support.scripted_transport import (
     ScriptedStep,
     ScriptedTransport,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 _GOAL = Goal(description="What changed this week?")
 
@@ -218,6 +225,26 @@ class TestStopGeneration:
         assert first_turn.tool_results[0].is_error is True
         assert result.cancelled is True
 
+    async def test_a_call_skipped_by_stop_still_has_its_end_line(self, caplog: pytest.LogCaptureFixture) -> None:
+        token = CancellationToken()
+        transport = ScriptedTransport().add_tool_call(ToolCall(id="n1", name="note", arguments={"text": "a"}))
+        agent, _ = _build(transport, tool=_NoteTool(), cancellation_token=token)
+
+        async def _cancel_after_model(ctx, next_fn) -> None:
+            token.cancel()
+            await next_fn()
+
+        _use(agent, HookEvent.POST_MODEL, _cancel_after_model)
+        with caplog.at_level(logging.DEBUG):
+            await agent.run(_GOAL)
+
+        (end,) = [r for r in caplog.records if r.getMessage() == "tool_call.end"]
+        assert end.levelno == logging.INFO
+        assert log_record_fields(end) == {
+            "outcome": "skipped", "reason": "cancelled_before_execution", "error_class": "cancelled",
+            "tool": "note", "tool_call_id": "n1",
+        }
+
 
 class TestGuardrails:
     async def test_input_guardrail_block_wins_over_a_slow_model_call(self) -> None:
@@ -266,6 +293,67 @@ class TestGuardrails:
         assert result.success is False
         assert result.output is None
         assert result.error == "Output guardrail blocked: answer leaks a secret"
+
+
+class _StallingTransport(ScriptedTransport):
+    """A model call that never answers: its stream reads a provider that stalls until cancelled."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stall = ProviderStall()
+
+    async def stream(self, *args: Any, **kwargs: Any) -> AsyncIterator[Any]:  # noqa: ANN401
+        await self.stall.read()
+        yield  # pragma: no cover - marks this as an async generator
+
+
+async def _cancel_streaming_run_once_started(agent: Agent, *started: asyncio.Event) -> None:
+    """Drive `agent.stream()` as the agent route does, and cancel it once every `started` event
+    is set (a client disconnect)."""
+    async def consume() -> None:
+        async for _ in agent.stream(_GOAL):
+            pass
+
+    consumer = asyncio.create_task(consume())
+    for event in started:
+        await event.wait()
+    consumer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await consumer
+
+
+class TestCancelledTurn:
+    """Cancelling the task that runs a turn (a client disconnect) stops its model call: no task
+    of the run keeps reading the provider after the turn is gone."""
+
+    async def test_the_model_call_is_cancelled_with_the_turn(self) -> None:
+        transport = _StallingTransport()
+        agent, _ = _build(transport)
+        before = asyncio.all_tasks()
+
+        await _cancel_streaming_run_once_started(agent, transport.stall.started)
+        await transport.stall.settle()
+
+        assert (transport.stall.cancels, transport.stall.closed) == (1, True)
+        assert await pending_since(before) == []
+
+    async def test_a_running_input_guardrail_is_cancelled_too(self) -> None:
+        transport = _StallingTransport()
+        agent, _ = _build(transport)
+        guard = ProviderStall()
+
+        async def _slow_guard(ctx, next_fn) -> None:
+            await guard.read()
+
+        _use(agent, HookEvent.GUARDRAIL_INPUT, _slow_guard)
+        before = asyncio.all_tasks()
+
+        await _cancel_streaming_run_once_started(agent, transport.stall.started, guard.started)
+        await guard.settle()
+        await transport.stall.settle()
+
+        assert guard.cancels == 1 and transport.stall.cancels == 1
+        assert await pending_since(before) == []
 
 
 class TestModelFailures:

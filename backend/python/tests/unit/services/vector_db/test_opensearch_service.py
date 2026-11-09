@@ -28,7 +28,11 @@ from app.services.vector_db.errors import OrgRequired
 
 pytest.importorskip("opensearchpy", reason="opensearch-py not installed")
 
-from app.services.vector_db.opensearch.opensearch import _MERGE_IF_ORG_SCRIPT, OpenSearchService
+from app.services.vector_db.opensearch.opensearch import (
+    _FENCED_MERGE_IF_ORG_SCRIPT,
+    _MERGE_IF_ORG_SCRIPT,
+    OpenSearchService,
+)
 from app.services.vector_db.opensearch.config import OpenSearchConfig
 from app.services.vector_db.opensearch.utils import OpenSearchUtils
 from app.services.vector_db.models import (
@@ -1912,6 +1916,40 @@ class TestUpdatePayloadByIds:
     async def test_a_missing_org_raises(self, connected_service, org) -> None:
         with pytest.raises(OrgRequired):
             await connected_service.update_payload_by_ids("entities", ["p1"], {"x": 1}, org_id=org)
+
+
+class TestUpdatePayloadsByIdsFence:
+    @pytest.mark.asyncio
+    async def test_without_a_fence_it_sends_what_update_payload_by_ids_sends(self, connected_service) -> None:
+        sent = []
+        for call in (
+            lambda: connected_service.update_payload_by_ids("entities", ["p1", "p2"], {"connectorIds": ["c1"]}, org_id="o1"),
+            lambda: connected_service.update_payloads_by_ids(
+                "entities", {"p1": {"connectorIds": ["c1"]}, "p2": {"connectorIds": ["c1"]}}, org_id="o1"),
+        ):
+            bulk = AsyncMock(return_value=(2, []))
+            with patch("app.services.vector_db.opensearch.opensearch.os_helpers.async_bulk", new=bulk):
+                await call()
+            sent.append((bulk.await_args.args[1], bulk.await_args.kwargs))
+        assert sent[0] == sent[1]
+
+    @pytest.mark.asyncio
+    async def test_a_fence_sends_the_fenced_script_with_the_org_and_the_fence(self, connected_service) -> None:
+        bulk = AsyncMock(return_value=(2, []))
+        with patch("app.services.vector_db.opensearch.opensearch.os_helpers.async_bulk", new=bulk):
+            await connected_service.update_payloads_by_ids("entities", {"p1": {"a": 1}, "p2": {"a": 2}}, org_id="o1", fence=7)
+        actions = bulk.await_args.args[1]
+        assert [(a["_id"], a["script"]["params"]) for a in actions] == [
+            ("p1", {"org": "o1", "doc": {"a": 1}, "fence": 7}), ("p2", {"org": "o1", "doc": {"a": 2}, "fence": 7})]
+        assert all(a["script"]["source"] == _FENCED_MERGE_IF_ORG_SCRIPT and a["retry_on_conflict"] == 3 for a in actions)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("org", [None, "", "  "])
+    async def test_a_missing_org_raises_with_a_fence(self, connected_service, org) -> None:
+        bulk = AsyncMock(return_value=(0, []))
+        with patch("app.services.vector_db.opensearch.opensearch.os_helpers.async_bulk", new=bulk), pytest.raises(OrgRequired):
+            await connected_service.update_payloads_by_ids("entities", {"p1": {"x": 1}}, org_id=org, fence=7)
+        bulk.assert_not_called()
 
 
 class TestRetrievePoints:

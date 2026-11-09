@@ -32,6 +32,7 @@ from app.agents.actions.code_graph.repos import (
     repo_for_record,
     repo_not_found_message,
 )
+from app.agents.actions.code_graph.results import with_repo_commit
 from app.api.connection_limit import groups_outside_limit
 from app.api.middlewares.auth import connection_limit, require_scopes
 from app.config.constants.service import OAuthScopes
@@ -118,6 +119,7 @@ class ImpactBody(RepoRef):
     record_id: str | None = None
     qualified_name: str | None = None
     depth: int = Field(default=DEFAULT_IMPACT_DEPTH, ge=1, le=MAX_IMPACT_DEPTH)
+    edge_types: list[str] | None = None
 
 
 class EntryPointsBody(RepoRef):
@@ -244,7 +246,8 @@ async def _run(request: Request, body: RepoRef, record_id: str | None, call: Too
     if isinstance(repo, JSONResponse):
         return repo
     try:
-        # Only the semantic search needs it, and building it costs an embedding-model lookup.
+        # Only searches through the vector store need it (semantic, text without a path): building it costs
+        # an embedding-model lookup.
         retrieval_service = await container.retrieval_service() if semantic else None
         toolset = _toolset(container, graph_provider, org_id, user_id, repo, retrieval_service)
         _ok, raw = await call(toolset, repo)
@@ -254,6 +257,7 @@ async def _run(request: Request, body: RepoRef, record_id: str | None, call: Too
         return _response({"error": "graph unavailable"}, 503)
     if isinstance(result, dict) and "error" not in result:
         result.setdefault("repo", repo.name)
+        with_repo_commit(result, repo.synced_commit)
     return _response(result if isinstance(result, dict) else {"result": result})
 
 
@@ -277,6 +281,7 @@ async def code_repos(request: Request) -> JSONResponse:
             "source": r.connector_name,
             # Lets a connector's page show only its own repos.
             "connector_id": r.connector_id,
+            **({"indexed_commit": r.synced_commit} if r.synced_commit else {}),
         }
         try:
             state = await store.read(org_id, r.group_id)
@@ -337,7 +342,7 @@ async def code_search(request: Request, body: SearchBody) -> JSONResponse:
     return await _run(request, body, None, lambda t, repo: t.search_code(
         connector_id=repo.connector_id, pattern=body.pattern, mode=body.mode, path=body.path,
         limit=body.limit, include_tests=body.include_tests, repo=repo.group_id, name=body.name,
-    ))
+    ), semantic=body.mode in ("text", "regex") and not body.path)  # path-free text search uses the keyword index
 
 
 @router.post("/semantic-search")
@@ -361,7 +366,7 @@ async def code_impact(request: Request, body: ImpactBody) -> JSONResponse:
     return await _run(request, body, body.record_id, lambda t, repo: t.impact(
         connector_id=repo.connector_id, file_path=body.file_path, record_id=body.record_id,
         qualified_name=body.qualified_name, depth=body.depth,
-        include_tests=body.include_tests, repo=repo.group_id,
+        include_tests=body.include_tests, repo=repo.group_id, edge_types=body.edge_types,
     ))
 
 

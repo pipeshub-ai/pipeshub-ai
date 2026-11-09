@@ -1405,6 +1405,11 @@
     "stopListening": "Dejar de escuchar",
     "voiceInput": "Entrada por voz",
     "regenerateResponse": "Regenerar la respuesta",
+    "quoteSelection": "Citar",
+    "quoteSelectionHint": "Preguntar por esto",
+    "quotedExcerpt": "Citado",
+    "quotedExcerptTruncated": "Citado (recortado)",
+    "dismissQuote": "Quitar cita",
     "editQuery": "Editar la consulta",
     "queryOptions": "Opciones de consulta",
     "models": "Modelos",
@@ -5978,5 +5983,107 @@
       "onTitle": "Datos de demostración reactivados para todos",
       "errorTitle": "No se han podido cambiar los datos de demostración para todos"
     }
+  },
+  "graph": {
+    "status": {
+      "stale": "El grafo se está actualizando; puede que falten cambios recientes.",
+      "building": "El grafo se está generando, así que lo que ves puede estar incompleto.",
+      "retrying": "La generación del grafo tuvo un problema y se está reintentando.",
+      "failed": "La última generación del grafo falló, por lo que esta vista puede estar desactualizada.",
+      "unknown": "No se pudo leer el estado de este grafo."
+    },
+    "empty": {
+      "neverBuilt": "Este repositorio aún no tiene un grafo de código.",
+      "tooLarge": "Este repositorio es demasiado grande para crear un grafo."
+    },
+    "incomplete": "Puede que falten algunos enlaces. Acota por tipo de arista o dirección.",
+    "simplified": "Vista simplificada para un movimiento fluido.",
+    "verify": {
+      "degraded": "Ahora mismo no se puede verificar el acceso. Se muestra lo último confirmado.",
+      "blank": "No se pudo verificar el acceso durante varios minutos, así que se vació el grafo. Reconectando…"
+    },
+    "error": {
+      "unavailable": "No se pudo cargar ahora. Inténtalo de nuevo.",
+      "notAvailable": "Este elemento no está disponible.",
+      "unexpected": "Algo salió mal.",
+      "ambiguous": "Hay más de un repositorio con ese nombre. Elige el repositorio en el cuadro de búsqueda.",
+      "full": "Esta vista está llena. Abre un nodo para empezar otra.",
+      "revoked": "El elemento que estabas viendo ya no está disponible."
+    },
+    "title": "Grafo de código",
+    "ui": {
+      "back": "Atrás",
+      "forward": "Adelante",
+      "fit": "Ajustar a la vista",
+      "showTable": "Mostrar como tabla",
+      "showGraph": "Mostrar como grafo",
+      "direction": {
+        "any": "Ambos",
+        "inbound": "Llamantes",
+        "outbound": "Llamados"
+      },
+      "includeTests": "Incluir pruebas",
+      "showMore": "Mostrar más",
+      "expand": "Expandir",
+      "open": "Abrir",
+      "nothingSelected": "Selecciona un nodo para ver sus detalles.",
+      "details": "Detalles",
+      "links": "Enlaces: {{n}}",
+      "table": {
+        "caption": "Nodos de esta vista",
+        "name": "Nombre",
+        "kind": "Tipo",
+        "file": "Archivo",
+        "actions": "Acciones",
+        "moreRows": "Mostrar más filas",
+        "callersShown": "Llamantes mostrados",
+        "calleesShown": "Llamados mostrados",
+        "focus": "Centro"
+      },
+      "emptyPrompt": "Busca arriba una función, método o clase para ver qué la llama y a qué llama.",
+      "disclosure": "Solo muestra lo que puedes consultar.",
+      "legendInferred": "Las líneas discontinuas son enlaces inferidos por el nombre.",
+      "disabled": "El grafo de código no está habilitado.",
+      "search": {
+        "repo": "Repositorio",
+        "repoPlaceholder": "Elige un repositorio",
+        "placeholder": "Busca una función, método o clase por nombre",
+        "label": "Buscar código",
+        "results": "Resultados de búsqueda",
+        "noRepos": "No hay repositorios de código que puedas leer.",
+        "noMatches": "Sin coincidencias.",
+        "chooseFirst": "Elige primero un repositorio",
+        "minChars": "Escribe al menos 2 caracteres.",
+        "more": "Se muestran las primeras coincidencias. Escribe más para acotar la búsqueda."
+      },
+      "action": {
+        "retry": "Reintentar",
+        "restore": "Usar calidad completa"
+      },
+      "loading": "Cargando…",
+      "legend": {
+        "functions": "Funciones y métodos",
+        "classes": "Clases e interfaces",
+        "focus": "Centro de esta vista"
+      },
+      "openHint": "Abrir: convierte esto en el centro de una vista nueva.",
+      "expandHint": "Expandir: muestra sus vecinos aquí, conservando lo que hay en pantalla.",
+      "announce": {
+        "opened": "Se muestran {{n}} elementos.",
+        "added": "Se añadieron {{n}} elementos."
+      },
+      "canvasHint": "La imagen del grafo no está disponible para lectores de pantalla. Usa el botón «Mostrar como tabla» para leer y usar cada nodo.",
+      "selectionGone": "El elemento que seleccionaste ya no está disponible.",
+      "viewGraph": "Ver grafo",
+      "viewGraphOf": "Ver grafo de {{repo}}",
+      "fillerNode": "{{kind}} en {{file}}"
+    },
+    "capped": "La imagen muestra solo una parte de esta vista. La tabla lo lista todo.",
+    "crowded": "Esta vista se está llenando. Acótala con filtros.",
+    "hint": {
+      "testsOff": "Los archivos de prueba están ocultos. Si el elemento está en código de prueba, activa «Incluir pruebas»."
+    },
+    "nothingNew": "No hay nada más que mostrar para este nodo.",
+    "tableOnly": "Se muestra solo la tabla para mantener la fluidez."
   }
 }
