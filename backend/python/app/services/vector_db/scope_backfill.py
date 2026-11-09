@@ -103,6 +103,10 @@ class OpenMarkNotClosed(RuntimeError):
     """The connector carries an open unsafe mark and the operator did not say the write behind it is over."""
 
 
+class StaleMarkerNotWritten(RuntimeError):
+    """The stale marker of a virtual record did not land after every try: the pass fails."""
+
+
 class UnknownConnector(ValueError):
     """The connector instance is not an app of this organisation."""
 
@@ -280,6 +284,8 @@ class ScopeBackfill:
                         return "done"
                 await self._mark(org_id, app_id, vrid)
                 return "stale"
+        except StaleMarkerNotWritten:
+            raise
         except Exception as exc:
             SCOPE_STAMP_FAILED.inc("backfill")
             self._log.warning("scope fields of %s not written: %s", vrid, type(exc).__name__)
@@ -301,7 +307,7 @@ class ScopeBackfill:
                 delay *= 2
         SCOPE_STAMP_FAILED.inc("marker")
         self._log.error("scope fields of virtual record %s may be wrong and could not be marked stale (%s); run the back-fill again", vrid, type(last).__name__)
-        raise last
+        raise StaleMarkerNotWritten(vrid) from last
 
     async def _write(self, collections: list[str] | tuple[str, ...], org_id: str, vrid: str, fields: ScopeFields) -> None:
         flt = await self._vdb.filter_collection(must={"orgId": org_id, "virtualRecordId": vrid})

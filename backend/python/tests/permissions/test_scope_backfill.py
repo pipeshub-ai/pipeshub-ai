@@ -283,6 +283,26 @@ async def test_the_stale_marker_write_is_tried_again_and_a_marker_that_never_lan
     assert again.state == FAILED and "could not be marked stale" in caplog.text  # a marker that never lands fails the pass, it does not end it current
 
 
+async def test_a_marker_that_never_lands_is_tried_and_reported_once_per_record(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    monkeypatch.setattr(scope_backfill, "MARKER_DELAY_SECONDS", 0.0)
+    _, _, job, app = await setup()
+    tries: dict[str, int] = {}
+
+    async def stale(*a, **k) -> ScopeFields:
+        return STALE_SCOPE
+
+    async def never(org: str, connector: str, vrids: list[str]) -> None:
+        tries[vrids[0]] = tries.get(vrids[0], 0) + 1
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(scope_backfill, "scope_fields_for_state", stale)
+    monkeypatch.setattr(job._membership, "mark_stale", never)
+    with caplog.at_level(logging.ERROR):
+        p = await job.run_connector(ORG, app)
+    assert p.state == FAILED and tries and set(tries.values()) == {scope_backfill.MARKER_ATTEMPTS}
+    assert caplog.text.count("could not be marked stale") == len(tries)
+
+
 async def test_a_point_that_keeps_its_own_fields_because_the_marker_cannot_be_written_is_reported(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     monkeypatch.setattr(scope_backfill, "MARKER_DELAY_SECONDS", 0.0)
     vdb, loaded, job, app = await setup()
