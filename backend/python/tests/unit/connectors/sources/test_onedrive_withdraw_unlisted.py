@@ -173,7 +173,7 @@ async def test_listing_matching_the_directory_count_is_complete() -> None:
 @pytest.mark.parametrize("first, rest", [
     (_result([_graph_user("a")], count=3), []),  # shorter than the count
     (_result([_graph_user("a")], count=None), []),  # no count
-    (_result([_graph_user("a")], "https://next", count=2), [_result([], "https://next2"), _result([_graph_user("b")])]),  # empty page with a next link
+    (_result([_graph_user("a")], "https://next", count=3), [_result([], "https://next2"), _result([_graph_user("b")])]),  # empty page with a next link
     (_result([_graph_user("a")], "https://next", count=2), [None]),  # next page with no data
 ])
 async def test_listing_that_may_be_cut_is_incomplete_but_returned(first: MagicMock, rest: list) -> None:
@@ -307,3 +307,16 @@ async def test_a_404_then_a_server_error_raises() -> None:
 
     with pytest.raises(ODataError):
         await read_user_status(_graph_answering(404, 500), "u")
+
+
+@pytest.mark.asyncio
+async def test_listing_with_an_empty_page_then_users_and_a_matching_count_is_complete() -> None:
+    client, _ = _client(_result([_graph_user("a")], "https://next", count=2), _result([], "https://next2"), _result([_graph_user("b")]))
+    users = await client.get_all_users()
+    assert [u.source_user_id for u in users] == ["a", "b"] and users.complete is True
+
+
+@pytest.mark.asyncio
+async def test_listing_with_an_empty_page_and_lost_users_is_incomplete_through_the_count() -> None:
+    client, _ = _client(_result([_graph_user("a")], "https://next", count=3), _result([], "https://next2"), _result([_graph_user("b")]))
+    assert (await client.get_all_users()).complete is False
