@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import shutil
@@ -413,6 +414,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._group_people: dict[str, set[str] | None] = {}
         self._warned_groups: set[tuple[str, str]] = set()
         self._hidden_groups: dict[str, set[str]] = {}
+        self._group_digests: dict[str, dict[str, str]] = {}
         self._account_domains: set[str] | None = None
         self._refreshed_folders: set[str] = set()
         self._group_members_cache: dict[str, set[str] | None] = {}
@@ -653,6 +655,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._group_people = {}
             self._warned_groups = set()
             self._hidden_groups = {}
+            self._group_digests = {}
             self._account_domains = None
             self._refreshed_folders = set()
             self._group_members_cache = {}
@@ -1478,6 +1481,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                         )
                         await self._mark_drive_hidden_group(drive_id, group)
                     continue
+                await self._note_group_people(drive_id, group, people)
                 # A member group's people are drive members whoever the directory lists them as.
                 passing = sorted(e for e in people if domain_ok(e) and (group in groups or not members_only or e in users))
                 if len(passing) == len(people):
@@ -1531,6 +1535,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     )
                     await self._mark_drive_hidden_group(drive_id, group)
                     continue
+                await self._note_group_people(drive_id, group, members)
                 users |= members
             self._drive_principals[drive_id] = (users, groups)
         return self._drive_principals[drive_id]
@@ -1548,21 +1553,45 @@ class GoogleDriveTeamConnector(BaseConnector):
         key = f"{DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX}{drive_id}"
         stored = await self.drive_delta_sync_point.read_sync_point(key)
         hidden = [str(g) for g in ((stored or {}).get("hidden_groups") or [])]
+        seen = dict(str(e).rpartition("|")[::2] for e in ((stored or {}).get("group_hashes") or []))
         relist = now != self._restriction_flags(stored)
         for group in hidden:
             if relist:
                 break
             # Relist only when it can help: a group hidden earlier can be read now.
             relist = await self._group_member_emails(group) is not None
+        for group, digest in seen.items():
+            if relist:
+                break
+            # The grants written for the drive depend on who is in these groups. One that cannot be read now is
+            # not a change: it is hidden, and remembered as such when the run consults it.
+            people = await self._group_member_emails(group)
+            relist = people is not None and self._people_digest(people) != digest
         if not relist:
             self._hidden_groups[drive_id] = set(hidden)
+            self._group_digests[drive_id] = seen
             return
         for user in self.synced_users:
             await self.drive_delta_sync_point.delete_sync_point(
                 generate_record_sync_point_key(RecordType.DRIVE.value, "drives", f"{user.source_user_id}_{drive_id}")
             )
-        await self.drive_delta_sync_point.update_sync_point(key, {**now, "hidden_groups": []})
+        await self.drive_delta_sync_point.update_sync_point(key, {**now, "hidden_groups": [], "group_hashes": []})
         self._hidden_groups[drive_id] = set()
+        self._group_digests[drive_id] = {}
+
+    @staticmethod
+    def _people_digest(people: set[str]) -> str:
+        return hashlib.sha256("\n".join(sorted(people)).encode()).hexdigest()[:16]
+
+    async def _save_group_marks(self, drive_id: str) -> None:
+        # Flat lists of strings: the graph stores refuse nested maps.
+        await self.drive_delta_sync_point.update_sync_point(
+            f"{DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX}{drive_id}",
+            {
+                "hidden_groups": sorted(self._hidden_groups.get(drive_id, ())),
+                "group_hashes": sorted(f"{g}|{d}" for g, d in self._group_digests.get(drive_id, {}).items()),
+            },
+        )
 
     async def _mark_drive_hidden_group(self, drive_id: str, group: str) -> None:
         """Grants were written with a group the directory could not list hidden. The change feed will not
@@ -1571,9 +1600,17 @@ class GoogleDriveTeamConnector(BaseConnector):
         hidden = self._hidden_groups.setdefault(drive_id, set())
         if group not in hidden:
             hidden.add(group)
-            await self.drive_delta_sync_point.update_sync_point(
-                f"{DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX}{drive_id}", {"hidden_groups": sorted(hidden)}
-            )
+            await self._save_group_marks(drive_id)
+
+    async def _note_group_people(self, drive_id: str, group: str, people: set[str]) -> None:
+        """The grants written for a restricted drive depend on who is in the groups consulted. The change
+        feed reports nothing when a group changes, so the people are remembered and the drive is listed in
+        full on the run that finds them different."""
+        digests = self._group_digests.setdefault(drive_id, {})
+        digest = self._people_digest(people)
+        if digests.get(group) != digest:
+            digests[group] = digest
+            await self._save_group_marks(drive_id)
 
     async def _create_and_sync_shared_drive_record_group(self, drive: Dict) -> None:
         """

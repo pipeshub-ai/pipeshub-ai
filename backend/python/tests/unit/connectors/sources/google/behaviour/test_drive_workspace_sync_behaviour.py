@@ -1918,7 +1918,7 @@ async def test_a_restriction_that_does_not_change_does_not_relist_the_drive(ws: 
     await ws.sync()
     await ws.sync()
     assert f1_people(ws) == MEMBERS
-    assert len([k for k, _ in ws.sync_points.writes if "shared_drive_restrictions_sd-1" in k]) == 1
+    assert len([k for k, w in ws.sync_points.writes if "shared_drive_restrictions_sd-1" in k and "driveMembersOnly" in w]) == 1
 
 
 async def test_restrictions_left_out_of_the_listing_are_asked_for_directly(ws: Workspace) -> None:
@@ -2188,3 +2188,77 @@ async def test_two_hidden_groups_one_recovers_then_the_other(ws: Workspace) -> N
     await ws.sync()
     assert drive_listings(ws, before) > 0
     assert ws.grants("f1") == {("a@example.com", "GROUP", "WRITE"), ("b@example.com", "GROUP", "WRITE")}
+
+
+def join_group(ws: Workspace, group: str, email: str) -> None:
+    ws.world.groups[group]["members"].append(email)
+
+
+def leave_group(ws: Workspace, group: str, email: str) -> None:
+    ws.world.groups[group]["members"].remove(email)
+
+
+async def relisted(ws: Workspace) -> bool:
+    before = len(ws.http.requests)
+    await ws.sync()
+    return drive_listings(ws, before) > 0
+
+
+async def test_an_outsider_joining_a_group_kept_whole_loses_the_group_grant_on_the_next_run(ws: Workspace) -> None:
+    domain_drive(ws, {"team@example.com": [BOB, CAROL]})
+    await ws.sync()
+    assert ws.grants("f1") == {("team@example.com", "GROUP", "WRITE")}
+
+    join_group(ws, "team@example.com", PARTNER)
+
+    assert await relisted(ws)
+    assert ws.grants("f1") == {(BOB, "USER", "WRITE"), (CAROL, "USER", "WRITE")}
+
+
+async def test_a_person_leaving_an_expanded_group_loses_their_individual_grant(ws: Workspace) -> None:
+    domain_drive(ws, {"mixed@example.com": [BOB, CAROL, PARTNER]})
+    await ws.sync()
+    assert ws.grants("f1") == {(BOB, "USER", "WRITE"), (CAROL, "USER", "WRITE")}
+
+    leave_group(ws, "mixed@example.com", CAROL)
+
+    assert await relisted(ws)
+    assert ws.grants("f1") == {(BOB, "USER", "WRITE")}
+
+
+async def test_a_person_leaving_a_member_group_loses_their_direct_share(ws: Workspace) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_group("eng@example.com", [BOB, CAROL])
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", "eng@example.com": "writer"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        {"type": "user", "role": "writer", "emailAddress": BOB},
+        {"type": "user", "role": "writer", "emailAddress": CAROL},
+    ])
+    await ws.sync()
+    assert f1_people(ws) == {BOB, CAROL}
+
+    leave_group(ws, "eng@example.com", CAROL)
+
+    assert await relisted(ws)
+    assert f1_people(ws) == {BOB}
+
+
+async def test_groups_that_did_not_change_cost_no_relist(ws: Workspace) -> None:
+    domain_drive(ws, {"team@example.com": [BOB, CAROL]})
+    await ws.sync()
+    assert not await relisted(ws)
+    assert not await relisted(ws)
+    assert ws.grants("f1") == {("team@example.com", "GROUP", "WRITE")}
+
+
+async def test_an_unrestricted_drive_records_nothing_about_its_groups(ws: Workspace) -> None:
+    ws.world.add_group("team@example.com", [BOB, CAROL])
+    ws.world.add_user(CAROL)
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", BOB: "writer"})
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        {"type": "group", "role": "writer", "emailAddress": "team@example.com"},
+    ])
+    await ws.sync()
+    join_group(ws, "team@example.com", PARTNER)
+    assert not await relisted(ws)
+    assert not [w for k, w in ws.sync_points.writes if "shared_drive_restrictions_sd-1" in k and w.get("group_hashes")]
