@@ -1563,10 +1563,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         for group, digest in seen.items():
             if relist:
                 break
-            # The grants written for the drive depend on who is in these groups. One that cannot be read now is
-            # not a change: it is hidden, and remembered as such when the run consults it.
+            # The grants written for the drive depend on who is in these groups. One that cannot be read now has
+            # changed too: the relist hides it, and it is then remembered as hidden, so this happens once.
             people = await self._group_member_emails(group)
-            relist = people is not None and self._people_digest(people) != digest
+            relist = people is None or self._people_digest(people) != digest
         if not relist:
             self._hidden_groups[drive_id] = set(hidden)
             self._group_digests[drive_id] = seen

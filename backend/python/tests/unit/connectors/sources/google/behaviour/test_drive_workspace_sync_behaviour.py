@@ -2150,6 +2150,22 @@ async def test_a_group_that_stays_unreadable_does_not_relist_the_drive_every_run
     assert ws.grants("f1") == set()
 
 
+async def test_a_group_that_becomes_unreadable_relists_once_and_its_grant_is_hidden(ws: Workspace) -> None:
+    domain_drive(ws, {"team@example.com": [BOB, CAROL]})
+    await ws.sync()
+    assert ws.grants("f1") == {("team@example.com", "GROUP", "WRITE")}
+
+    ws.world.unlistable_groups["team@example.com"] = 403
+    before = len(ws.http.requests)
+    await ws.sync()
+    assert drive_listings(ws, before) > 0
+    assert ws.grants("f1") == set()
+
+    before = len(ws.http.requests)
+    await ws.sync()
+    assert drive_listings(ws, before) == 0
+
+
 async def test_a_hidden_group_that_becomes_readable_relists_once_and_access_returns(ws: Workspace) -> None:
     domain_drive(ws, {"team@example.com": [BOB, CAROL]})
     ws.world.unlistable_groups["team@example.com"] = 404
