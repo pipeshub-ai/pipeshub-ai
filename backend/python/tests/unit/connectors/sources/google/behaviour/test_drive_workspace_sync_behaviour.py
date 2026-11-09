@@ -1996,6 +1996,19 @@ async def test_members_only_replaces_a_group_that_is_not_a_member_with_its_membe
     assert ws.grants("f1") == {(BOB, "USER", "WRITE")}
 
 
+async def test_members_only_counts_the_people_of_a_member_group_who_are_not_synced_users(ws: Workspace) -> None:
+    ws.world.add_group("eng@example.com", [BOB, PARTNER])
+    ws.world.add_group("mixed@example.com", [BOB, PARTNER])
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", "eng@example.com": "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        reader(PARTNER), {"type": "group", "role": "reader", "emailAddress": "mixed@example.com"},
+    ])
+
+    await ws.sync()
+
+    assert f1_people(ws) == {PARTNER, "mixed@example.com"}
+
+
 async def test_members_only_keeps_a_group_nested_in_a_member_group_whole(ws: Workspace) -> None:
     ws.world.add_user(CAROL)
     ws.world.add_group("inner@example.com", [BOB])

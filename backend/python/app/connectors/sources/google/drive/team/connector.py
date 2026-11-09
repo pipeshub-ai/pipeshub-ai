@@ -1523,7 +1523,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 elif permission.entity_type == EntityType.GROUP and permission.external_id:
                     groups.add(permission.external_id.lower())
             for group in sorted(groups):
-                members = await self._synced_group_members(group)
+                members = await self._group_member_emails(group)
                 if members is None:
                     self.logger.warning(
                         f"Shared drive {drive_id} is restricted to its members and the members of {group} cannot be "
