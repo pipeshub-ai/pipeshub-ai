@@ -135,7 +135,7 @@ async def test_outlook_restored_account_gets_access_back() -> None:
 @pytest.mark.parametrize("pages", [
     [_page([_graph_user("a")], "https://next", count=3), _page([], "https://next2"), _page([_graph_user("b")])],  # empty page with a token
     [_page([_graph_user("a")], "https://next", count=3), MagicMock(success=True, data=None)],  # page without data
-    [_page([], "https://next", count=2), _page([_graph_user("a"), _graph_user("b")])],  # first page empty with a token
+    [_page([], "https://next", count=3), _page([_graph_user("a"), _graph_user("b")])],  # first page empty with a token, users lost (2 of 3)
     [_page([_graph_user("a")], count=3)],  # the directory counts more users than the list holds (next link dropped)
     [_page([_graph_user("a")], count=None)],  # no count at all
 ])
@@ -380,7 +380,7 @@ async def test_graph_listing_matching_the_directory_count_is_complete() -> None:
 @pytest.mark.parametrize("first, rest", [
     (_result([_graph_user("a")], count=3), []),  # shorter than the count
     (_result([_graph_user("a")], count=None), []),  # no count
-    (_result([_graph_user("a")], "https://next", count=2), [_result([], "https://next2"), _result([_graph_user("b")])]),  # empty page with a next link
+    (_result([_graph_user("a")], "https://next", count=3), [_result([], "https://next2"), _result([_graph_user("b")])]),  # empty page with a next link
     (_result([_graph_user("a")], "https://next", count=2), [None]),  # next page with no data
 ])
 async def test_graph_listing_that_may_be_cut_is_incomplete_but_returned(first: MagicMock, rest: list) -> None:
@@ -682,3 +682,30 @@ async def test_sharepoint_the_disabled_set_is_saved_only_from_a_trusted_listing(
     await c._sync_users()
     await c._sync_azure_ad_groups()
     assert c.user_sync_point.update_sync_point.await_count == (1 if saved else 0)
+
+
+@pytest.mark.asyncio
+async def test_graph_listing_with_an_empty_page_then_users_and_a_matching_count_is_complete() -> None:
+    client, _ = _client(_result([_graph_user("a")], "https://next", count=2), _result([], "https://next2"), _result([_graph_user("b")]))
+    users = await client.get_all_users()
+    assert [u.source_user_id for u in users] == ["a", "b"] and users.complete is True
+
+
+@pytest.mark.asyncio
+async def test_graph_listing_with_an_empty_page_and_lost_users_is_incomplete_through_the_count() -> None:
+    client, _ = _client(_result([_graph_user("a")], "https://next", count=3), _result([], "https://next2"), _result([_graph_user("b")]))
+    assert (await client.get_all_users()).complete is False
+
+
+@pytest.mark.asyncio
+async def test_outlook_empty_page_then_users_with_a_matching_count_is_complete_and_withdrawals_proceed() -> None:
+    c, stored = _outlook(["a", "gone"], [_page([_graph_user("a")], "https://next", count=2), _page([], "https://next2"), _page([_graph_user("b")])])
+    await c._sync_users()
+    assert set(stored) == {"a"} and c._users_trusted is True
+
+
+@pytest.mark.asyncio
+async def test_outlook_empty_page_with_lost_users_is_untrusted_through_the_count() -> None:
+    c, stored = _outlook(["a", "gone"], [_page([_graph_user("a")], "https://next", count=3), _page([], "https://next2"), _page([_graph_user("b")])])
+    await c._sync_users()
+    assert set(stored) == {"a", "gone"} and c._users_trusted is False

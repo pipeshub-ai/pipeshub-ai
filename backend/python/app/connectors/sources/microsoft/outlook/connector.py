@@ -757,8 +757,6 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
 
                 # response.data is UserCollectionResponse with .value containing list[User]
                 user_data = response.data.value if response.data.value else []
-                if not user_data and response.data.odata_next_link:
-                    complete = False    # an empty page with a next link lost its users
 
                 for user in user_data:
                     listed_ids.add(user.id)

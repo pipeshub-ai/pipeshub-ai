@@ -272,7 +272,7 @@ class MSGraphClient:
 
         Returns:
             The users with their details. ``complete`` is False when the list may be cut
-            (an empty page with a next link, a next page with no data, fewer users than the
+            (a next page with no data, fewer users than the
             directory counts, or no count at all); callers then must not withdraw anyone.
         """
         try:
@@ -299,8 +299,6 @@ class MSGraphClient:
             while result:
                 if result.value:
                     users.extend(result.value)
-                elif getattr(result, 'odata_next_link', None):
-                    complete = False    # an empty page with a next link lost its users
 
                 if hasattr(result, 'odata_next_link') and result.odata_next_link:
                     async with self.rate_limiter:
