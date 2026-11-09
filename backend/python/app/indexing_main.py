@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import logging
+import math
 import os
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -1463,18 +1464,14 @@ def _republishes_since_queued(record: dict[str, Any], enabled_at: object = None)
     was turned on again, which puts the record in line again without moving
     its queuedAtTimestamp.
     """
-    try:
-        last_republished_at = float(record.get("lastRepublishedAt"))
-    except (TypeError, ValueError):
+    if not _is_clock(record.get("lastRepublishedAt")):
         return 0
+    last_republished_at = float(record["lastRepublishedAt"])
     for put_in_line_at in (record.get("queuedAtTimestamp"), enabled_at):
-        try:
-            if float(put_in_line_at) > last_republished_at:
-                # Put in line again since: an earlier wait's re-sends say
-                # nothing about this one.
-                return 0
-        except (TypeError, ValueError):
-            continue
+        if _is_clock(put_in_line_at) and float(put_in_line_at) > last_republished_at:
+            # Put in line again since: an earlier wait's re-sends say
+            # nothing about this one.
+            return 0
     try:
         count = int(record.get("republishCount") or 0)
     except (TypeError, ValueError):
@@ -1484,12 +1481,11 @@ def _republishes_since_queued(record: dict[str, Any], enabled_at: object = None)
 
 
 def _is_clock(value: object) -> bool:
-    """Whether a stored timestamp can be read as epoch milliseconds."""
+    """Whether a stored timestamp can be read as epoch milliseconds: not "inf" or "nan", which parse but order nothing."""
     try:
-        float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+        return math.isfinite(float(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
         return False
-    return True
 
 
 def _republish_wait_ms(after_seconds: float, republishes: int) -> float:
@@ -1845,19 +1841,18 @@ async def _republish_stranded_records(
                 # would reach the consumer twice. Its own clocks are of the
                 # park, often hours older.
                 queued_at = record.get("queuedAtTimestamp")
-                clocks: list[float] = []
-                for value in (
-                    queued_at,
-                    None if _is_clock(queued_at)
-                    else record.get("updatedAtTimestamp") or record.get("createdAtTimestamp"),
-                    record.get("lastRepublishedAt"),
-                    enabled_at.get(connector_id) if parked_while_off else None,
-                ):
-                    try:
-                        clocks.append(float(value))
-                    except (TypeError, ValueError):
-                        # Unset or malformed: one bad clock must not hide the others.
-                        continue
+                # Unset or malformed: one bad clock must not hide the others.
+                clocks = [
+                    float(value)
+                    for value in (
+                        queued_at,
+                        None if _is_clock(queued_at)
+                        else record.get("updatedAtTimestamp") or record.get("createdAtTimestamp"),
+                        record.get("lastRepublishedAt"),
+                        enabled_at.get(connector_id) if parked_while_off else None,
+                    )
+                    if _is_clock(value)
+                ]
                 if not clocks:
                     continue
                 last_touched_at = max(clocks)
