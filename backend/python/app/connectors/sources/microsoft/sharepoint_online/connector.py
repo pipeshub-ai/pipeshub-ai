@@ -697,6 +697,8 @@ class SharePointConnector(BaseConnector):
         self._rewrite_all_items = False
         # Set for a run that has to read every Entra group's members again.
         self._refresh_all_groups = False
+        # Set for a run whose user listing is not trusted and that has no earlier disabled set to fall back on.
+        self._disabled_set_unknown = False
 
         self.tenant_region: str = None
         self.sync_filters: FilterCollection = FilterCollection()
@@ -3673,6 +3675,7 @@ class SharePointConnector(BaseConnector):
             self._inactive_emails = {user.email.lower() for user in users if user.email and user.is_active is False}
             # Saved once every group has been read with the new set (_sync_azure_ad_groups).
             self._refresh_all_groups = stored_emails != self._inactive_emails
+            self._disabled_set_unknown = False
             await self.data_entities_processor.on_new_user_groups(
                 everyone_groups(self.connector_name, self.connector_id, users)
             )
@@ -3681,6 +3684,9 @@ class SharePointConnector(BaseConnector):
             self.logger.warning("User listing is not trusted; no user loses access and the claim groups keep their members this run")
             self._inactive_emails = stored_emails
             self._refresh_all_groups = False
+            # Without an earlier set nobody is known to be enabled either: no group is read until a trusted listing.
+            self._disabled_set_unknown = stored is None
+            self._health.skipped("user listing", "not trusted; the claim groups and the disabled set were not rewritten")
         self.logger.info(f"✅ Successfully synced {len(users)} users")
 
     # Record update handling
@@ -3805,7 +3811,10 @@ class SharePointConnector(BaseConnector):
             await self._sync_users()
 
             sites = await self._get_all_sites()
-            await self._sync_user_groups(sites)
+            if self._disabled_set_unknown:
+                self.logger.warning("The disabled accounts are not known yet; no group is read until a trusted user listing")
+            else:
+                await self._sync_user_groups(sites)
             await self._remove_deleted_sites()
             await self._remove_filtered_out(FILTERED_SITES_SYNC_POINT_KEY, self._filtered_out_site_ids, self._forget_site)
 

@@ -16,6 +16,9 @@ from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
+from app.connectors.sources.microsoft.sharepoint_online.sync_health import (
+    SharePointSyncIncomplete,
+)
 from app.models.entities import AppUser
 from app.sources.external.microsoft.users_groups.users_groups import (
     UsersGroupsDataSource,
@@ -624,3 +627,43 @@ async def test_outlook_a_cut_refresh_does_not_replace_the_last_good_cache() -> N
     c._user_cache = {"old@x.com": "old"}
     await c._populate_user_cache()
     assert c._user_cache == {"old@x.com": "old"}
+
+
+@pytest.mark.asyncio
+async def test_sharepoint_untrusted_listing_without_an_earlier_disabled_set_reads_no_group() -> None:
+    """No earlier set means nobody is known to be enabled: the Entra and site groups wait for a trusted listing."""
+    c, _ = _sharepoint(["a", "b"], [_app_user("a")], complete=False)
+    _sharepoint_sync_point(c, None)
+    await c._sync_users()
+    assert c._disabled_set_unknown is True and not c._health.complete
+    c.msgraph_client.get_all_users = AsyncMock(return_value=UserListing([_app_user("a"), _app_user("b")]))
+    await c._sync_users()
+    assert c._disabled_set_unknown is False  # a trusted listing clears it
+
+
+@pytest.mark.asyncio
+async def test_sharepoint_untrusted_listing_with_an_earlier_set_keeps_reading_groups_with_it() -> None:
+    c, _ = _sharepoint(["a", "b"], [_app_user("a")], complete=False)
+    _sharepoint_sync_point(c, ["old@x.com"])
+    await c._sync_users()
+    assert c._disabled_set_unknown is False and c._inactive_emails == {"old@x.com"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("sync_point", "reads_groups"), [(None, False), (["old@x.com"], True)])
+async def test_sharepoint_run_reads_no_group_while_the_disabled_set_is_unknown(sync_point: list[str] | None, reads_groups: bool) -> None:
+    from unittest.mock import patch
+
+    c, _ = _sharepoint(["a", "b"], [_app_user("a")], complete=False)
+    _sharepoint_sync_point(c, sync_point)
+    for name in ("_reinitialize_credential_if_needed", "_report_missing_graph_permission", "_remove_deleted_sites", "_remove_filtered_out"):
+        setattr(c, name, AsyncMock())
+    c._reset_permission_caches = MagicMock()
+    c._get_all_sites = AsyncMock(return_value=[])
+    c._sync_user_groups = AsyncMock()
+    c.drive_delta_sync_point = MagicMock(read_sync_point=AsyncMock(return_value=None))
+    with patch("app.connectors.sources.microsoft.sharepoint_online.connector.load_connector_filters",
+               AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        with pytest.raises(SharePointSyncIncomplete):  # an untrusted listing leaves the run incomplete, which a sync reports
+            await c.run_sync()
+    assert c._sync_user_groups.await_count == (1 if reads_groups else 0)
