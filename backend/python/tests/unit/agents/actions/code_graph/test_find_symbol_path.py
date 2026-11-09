@@ -141,6 +141,31 @@ class TestUnprovenMiss:
         note = (await _path(graph, b=PANEL))["note"]
         assert note.startswith("No chain of linked calls joins them")
 
+    async def test_a_target_only_handed_over_as_a_value_says_so(self, graph) -> None:
+        graph.edges.append({"_from": f"{BLOCKS}/k_client", "_to": f"{BLOCKS}/k_panel",
+                            "relationshipType": "INDIRECT_CALL"})
+        note = (await _path(graph, b=PANEL))["note"]
+        assert note.startswith("Nothing in the graph calls the second symbol directly, but it is handed over")
+
+    async def test_a_handover_from_a_file_the_caller_cannot_read_is_not_counted(self) -> None:
+        graph = FakeGraphProvider(deny_records=["rec-d"])
+        graph.edges.append({"_from": f"{BLOCKS}/k_client", "_to": f"{BLOCKS}/k_panel",
+                            "relationshipType": "INDIRECT_CALL"})
+        note = (await _path(graph, b=PANEL))["note"]
+        assert note.startswith("Nothing in the graph calls the second symbol, so")
+
+    async def test_unreadable_handovers_filling_the_scan_limit_leave_it_open(self, monkeypatch) -> None:
+        """A scan spent on handovers the caller cannot read proves neither a handover nor its absence."""
+        monkeypatch.setattr(path_mod, "_CALLER_PROBE", 2)
+        monkeypatch.setattr(path_mod, "_CALLER_SCAN_LIMIT", 2)
+        graph = FakeGraphProvider(deny_records=["rec-d"])
+        for i in range(3):  # k_client's file, rec-d, is unreadable
+            graph.blocks[f"k_hidden{i}"] = {**graph.blocks["k_client"], "_key": f"k_hidden{i}"}
+            graph.edges.append({"_from": f"{BLOCKS}/k_hidden{i}", "_to": f"{BLOCKS}/k_panel",
+                                "relationshipType": "INDIRECT_CALL"})
+        note = (await _path(graph, b=PANEL))["note"]
+        assert note.startswith("Nothing in the graph calls the second symbol directly, and the scan limit")
+
     async def test_a_caller_in_a_file_the_caller_cannot_read_is_not_counted(self) -> None:
         """"Something calls it" from a hidden file would reveal that the file calls it."""
         graph = FakeGraphProvider(deny_records=["rec-d"])
@@ -195,8 +220,9 @@ class TestDirectedWalkAsksOnlyForEdgesItCanTake:
         assert {d for d, _, _ in graph.asked} == {"outbound", "inbound"}
         inbound_calls = [(r, n) for d, r, n in graph.asked
                          if d == "inbound" and not set(r) <= set(STRUCTURAL_RELATIONS)]
-        # The miss's note probes the target's callers once, bounded; the walk asks for none.
-        assert inbound_calls == [(("CALLS",), path_mod._CALLER_PROBE)]
+        # The miss's note probes the target's callers, then (none found) its handovers, each bounded; the walk
+        # asks for none.
+        assert inbound_calls == [(("CALLS",), path_mod._CALLER_PROBE), (("INDIRECT_CALL",), path_mod._CALLER_PROBE)]
 
 
 class TestCallsToFollow:

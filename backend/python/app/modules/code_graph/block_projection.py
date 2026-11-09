@@ -175,6 +175,8 @@ def serialize_block_for_graph(
         "subType": item.sub_type.value if item.sub_type is not None else None,
         "kind": ((meta.kind or "").lower() or None) if meta else None,
         "modifiers": (meta.modifiers or None) if meta else None,
+        # The edge builder drops a member value landing on one: `self.text` reads a property.
+        "isAccessor": True if meta and meta.is_accessor else None,
         "qualifiedName": meta.qualified_name if meta else None,
         "typeParamCount": (meta.type_param_count or None) if meta else None,
         "startLine": meta.start_line if meta else None,
