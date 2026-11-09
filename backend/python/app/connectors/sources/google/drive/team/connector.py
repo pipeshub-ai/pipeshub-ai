@@ -1187,6 +1187,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         *,
         inherited_permissions_disabled: bool = False,
         inherits_from_drive: bool = True,
+        can_list_children: bool = False,
     ) -> Tuple[List[Permission], bool, List[str]]:
         """
         Fetch all permissions for a Google Drive resource (file or shared drive) with pagination.
@@ -1318,9 +1319,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                 # raised, so the item is not written without its grants and is read again next run.
                 if http_error.resp.status == HttpStatusCode.FORBIDDEN.value and not (
                     drive_error_reasons(http_error) & QUOTA_403_REASONS
-                ):
+                ) and not (inherited_permissions_disabled and can_list_children):
                     # A user who can only see a limited-access folder has no content access, and the grant would
-                    # pass to its children.
+                    # pass to its children. One who can list its children is on it, so a refusal is a failed read.
                     if user_email and not inherited_permissions_disabled:
                         self.logger.info(
                             f"Added single user permission for file {resource_id}: {user_email}"
@@ -1344,6 +1345,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         # record nobody can see. is_fallback=True keeps this from replacing a real ACL
         # that another user's sync already learned.
         if not permissions and inherited_permissions_disabled:
+            if can_list_children:
+                raise RuntimeError(f"Empty permission list for limited-access folder {resource_id} a member can open")
             return ([], True, [])
         if not permissions and user_email:
             self.logger.info(
@@ -2803,6 +2806,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     drive_data_source=drive_data_source,
                     inherited_permissions_disabled=limited_access,
                     inherits_from_drive=not item_drive_id or file_record.external_record_group_id == item_drive_id,
+                    can_list_children=bool((metadata.get("capabilities") or {}).get("canListChildren")),
                 )
 
                 if is_fallback_permissions:

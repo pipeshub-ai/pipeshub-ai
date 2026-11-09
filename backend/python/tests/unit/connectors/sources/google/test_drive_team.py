@@ -425,6 +425,44 @@ class TestFetchPermissions:
                 inherited_permissions_disabled=True,
             )
 
+    async def test_empty_list_for_a_member_of_a_limited_folder_fails_the_read(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
+
+        with pytest.raises(RuntimeError):
+            await connector._fetch_permissions(
+                "folder-1", is_drive=False, user_email="member@example.com",
+                inherited_permissions_disabled=True, can_list_children=True,
+            )
+
+    async def test_403_for_a_member_of_a_limited_folder_fails_the_read(self, connector) -> None:
+        from googleapiclient.errors import HttpError
+
+        mock_resp = MagicMock()
+        mock_resp.status = HttpStatusCode.FORBIDDEN.value
+        http_error = HttpError(mock_resp, b"forbidden")
+        http_error.error_details = [{"reason": "insufficientFilePermissions"}]
+        connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_error)
+
+        with pytest.raises(HttpError):
+            await connector._fetch_permissions(
+                "folder-1", is_drive=False, user_email="member@example.com",
+                inherited_permissions_disabled=True, can_list_children=True,
+            )
+
+    async def test_limited_folder_is_read_again_once_the_list_works(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(side_effect=[
+            {"permissions": []},
+            {"permissions": [{"id": "p1", "role": "reader", "type": "user", "emailAddress": "member@example.com"}]},
+        ])
+        kwargs = {"is_drive": False, "user_email": "member@example.com",
+                  "inherited_permissions_disabled": True, "can_list_children": True}
+
+        with pytest.raises(RuntimeError):
+            await connector._fetch_permissions("folder-1", **kwargs)
+        perms, is_fallback, _ = await connector._fetch_permissions("folder-1", **kwargs)
+        assert is_fallback is False
+        assert [p.email for p in perms] == ["member@example.com"]
+
     async def test_user_on_limited_folder_writes_the_real_grants(self, connector) -> None:
         connector.drive_data_source.permissions_list = AsyncMock(return_value={
             "permissions": [{"id": "p1", "role": "reader", "type": "user", "emailAddress": "member@example.com"}],
