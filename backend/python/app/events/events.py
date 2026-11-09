@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -77,6 +78,8 @@ from app.services.messaging.config import (
 from app.services.messaging.error_classifier import is_expected_outcome
 from app.services.parsing.client import ParsingClient
 from app.services.parsing.interface import ParserProvider
+from app.services.permissions.mode import scope_fields_enabled
+from app.services.permissions.structure_generation import leaving_vrid
 from app.services.resource_governor import classify
 from app.services.vector_db.strategies.single import SingleCollectionStrategy
 from app.services.vector_db.strategy import (
@@ -617,20 +620,30 @@ class EventProcessor:
         record_id = _record_key(doc) or "unknown"
         # In a parse-now run the status fields become the marker (see parse_now_marker).
         fields = shape_status_write(fields)
+        left_vrid = doc.get("virtualRecordId") if "virtualRecordId" in fields else None
+        leaving = bool(left_vrid) and left_vrid != fields["virtualRecordId"] and scope_fields_enabled()
         doc.update(fields)
         if not fields:
             return True
-        success = await self.graph_provider.update_node(
-            record_id,
-            CollectionNames.RECORDS.value,
-            fields,
-        )
+        # Records that keep sharing the id being left are fenced around the write (see leaving_vrid)
+        success = False
+        try:
+            async with leaving_vrid(self.graph_provider, record_id, left_vrid, self.logger) if leaving else contextlib.nullcontext():
+                success = await self.graph_provider.update_node(
+                    record_id,
+                    CollectionNames.RECORDS.value,
+                    fields,
+                )
+        except Exception as e:
+            if not success:
+                raise
+            # The write landed, so a retry sees the new id and cannot redo this; the failed connector stays not current, and the caller still owes the old id's clean-up.
+            self.logger.error("Could not register the records still sharing VRID %s after updating %s: %s", left_vrid, record_id, e)
         if not success:
             self.logger.warning(
                 f"❌ Failed to update record {record_id} fields {tuple(fields)}"
             )
             return False
-        
         return True
 
     def _require_persisted(self, success: bool, what: str, doc: dict[str, Any]) -> None:
@@ -1271,6 +1284,7 @@ class EventProcessor:
         attached_vrid: str | None,
     ) -> None:
         """Best effort: the event is already failing, and its retry redoes the attach."""
+        restored = False
         try:
             current = await self.graph_provider.get_document(
                 record_key, CollectionNames.RECORDS.value, raise_on_error=True
@@ -1282,19 +1296,32 @@ class EventProcessor:
                 # attach is complete; taking its identity away now would leave
                 # a finished record with no VRID and nothing to retry it.
                 return
-            if not await self.graph_provider.update_node(
-                record_key, CollectionNames.RECORDS.value, prior_identity
-            ):
+            left_vrid = (current or {}).get("virtualRecordId")
+            leaving = bool(left_vrid) and "virtualRecordId" in prior_identity and left_vrid != prior_identity["virtualRecordId"] and scope_fields_enabled()
+            # The record leaves the virtual record it attached to: fenced like any other move off a shared one (see leaving_vrid)
+            async with leaving_vrid(self.graph_provider, record_key, left_vrid, self.logger) if leaving else contextlib.nullcontext():
+                restored = await self.graph_provider.update_node(
+                    record_key, CollectionNames.RECORDS.value, prior_identity
+                )
+            if not restored:
                 raise IndexingError("record no longer exists")
         except Exception as e:
+            if not restored:
+                self.logger.error(
+                    "Could not restore the previous content identity of %s after a failed "
+                    "duplicate attach; it may still hold VRID %s until its retry: %s",
+                    record_key,
+                    attached_vrid,
+                    e,
+                )
+                return
+            # The identity is back and only the fence failed, which leaves the connector not current: the re-sync is still owed.
             self.logger.error(
-                "Could not restore the previous content identity of %s after a failed "
-                "duplicate attach; it may still hold VRID %s until its retry: %s",
+                "Restored the previous content identity of %s, but could not register the "
+                "records still sharing its VRID: %s",
                 record_key,
-                attached_vrid,
                 e,
             )
-            return
         if not attached_vrid:
             return
         try:

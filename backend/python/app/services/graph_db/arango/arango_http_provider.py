@@ -4991,6 +4991,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 filePath: path,
                 referencedNames: codeFile.referencedNames,
                 changedNames: codeFile.changedNames,
+                commitSha: codeFile.commitSha,
                 hasCodeFile: codeFile != null
             }}
         """
@@ -5006,6 +5007,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     referenced_names=tuple(row.get("referencedNames") or ()),
                     changed_names=tuple(row.get("changedNames") or ()),
                     has_code_file=bool(row.get("hasCodeFile")),
+                    commit_sha=row.get("commitSha") or None,
                 )
                 for row in rows
                 if row.get("recordId") and row.get("filePath")
