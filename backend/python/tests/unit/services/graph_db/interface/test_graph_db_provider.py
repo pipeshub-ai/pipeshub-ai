@@ -334,6 +334,7 @@ class TestAbstractMethodInventory:
         "get_connector_stats",
         "get_users",
         "get_app_user_by_email",
+        "get_app_user_links",
         "get_app_users",
         "list_user_knowledge_bases",
         "get_kb_children",
