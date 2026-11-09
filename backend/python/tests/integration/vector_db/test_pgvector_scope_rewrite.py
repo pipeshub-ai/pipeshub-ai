@@ -133,9 +133,9 @@ class TestPgVectorClock:
         async def stale(*a: Any, **k: Any) -> Any:
             return STALE_SCOPE      # every stamp is "cannot be computed": the pass writes the marker for all
 
-        monkeypatch.setattr(scope_backfill, "scope_fields_for_state", stale)
-        monkeypatch.setattr(scope_backfill, "MARKER_DELAY_SECONDS", 0.0)
         env = await self.make(vector_service, WorldStore().world("golden/confluence_hr"))
+        monkeypatch.setattr(scope_backfill, "scope_fields_for_state", stale)      # (after the world is stamped: it starts clean)
+        monkeypatch.setattr(scope_backfill, "MARKER_DELAY_SECONDS", 0.0)
         try:
             await ahead_of_the_database_clock(vector_service, 300)
             with caplog.at_level(logging.ERROR):
