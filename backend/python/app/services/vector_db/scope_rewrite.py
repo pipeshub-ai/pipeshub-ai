@@ -467,7 +467,7 @@ class ScopeRewriteJob:
     async def _not_shown(self, org_id: str, name: str, ids: list[str], plans: Mapping[str, _Plan],
                          written: Mapping[tuple[str, str], str]) -> tuple[set[str], int]:
         """Stored first (a write that was refused, lost or overwritten), then searched: a store that searches an older view than it stores
-        (OpenSearch between refreshes) is asked to publish, and polled. Also the highest fence on a point that did not take the write."""
+        (OpenSearch between refreshes) is asked to publish (by the scan), and polled. Also the highest fence on a point that did not take the write."""
         stored = await self._stored(name, ids)
         refused = {pid for pid, payload in stored.items() if not _holds(payload, plans[written[(name, pid)]].payload)}
         bad = {written[(name, pid)] for pid in refused}
@@ -476,7 +476,6 @@ class ScopeRewriteJob:
         vrids = sorted({written[(name, pid)] for pid in wanted})
         deadline, delay = time.monotonic() + self._settle, 0.05
         while wanted:
-            await self._vdb.make_searchable(name)
             view = await self._scan(org_id, name, vrids, (*SCOPE_KEYS, *MEMBERSHIP_KEYS))
             lagging = {pid for pid, want in wanted.items() if pid not in view or not _holds(view[pid], want)}
             if not lagging or time.monotonic() >= deadline:
@@ -535,21 +534,20 @@ class ScopeRewriteJob:
         flt = await self._vdb.filter_collection(must={"orgId": org_id, "virtualRecordId": vrids})
         for attempt in range(SCAN_ATTEMPTS):
             got: dict[str, dict[str, Any]] = {}
-            problem = None
             try:
+                await self._vdb.make_searchable(collection)      # a point written a moment ago is in neither the scroll nor the count (OpenSearch)
                 offset: str | None = None
                 while True:
                     page = await self._vdb.scroll(collection, flt, 500, offset, with_payload=["metadata.virtualRecordId", *keys])
                     got.update({str(p.id): p.payload for p in page.points})
                     if not (offset := page.next_offset):
                         break
-            except PartialResult as exc:
-                problem = str(exc)
-            if problem is None:
                 counted = await self._vdb.count_points(collection, flt)
                 if len(got) == counted:
                     return got
                 problem = f"the scroll saw {len(got)} points and the store counts {counted}"
+            except PartialResult as exc:
+                problem = str(exc)
             if attempt + 1 == SCAN_ATTEMPTS:
                 raise PartialResult(f"{collection}: {problem}")
             await asyncio.sleep(SCAN_RETRY_SECONDS * (attempt + 1))
