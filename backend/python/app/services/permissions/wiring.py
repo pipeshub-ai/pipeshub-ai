@@ -40,7 +40,11 @@ async def register_scope_generation(config_service: ConfigurationService, logger
     """Move the scope generation when the scope fields were switched on after being off (see `generation`). With the fields off and
     never enabled this reads one config key and writes nothing."""
     from .generation import init_scope_generation
+    from .mode import scope_fields_enabled
+    from .pending import require_filter_terms
 
+    if scope_fields_enabled():
+        require_filter_terms()  # raises: a service must not start registering roots that no filter can hide
     await init_scope_generation(config_service, logger)
 
 

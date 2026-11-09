@@ -17,11 +17,13 @@ import contextlib
 import logging
 import uuid
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
 
 from app.agents.actions.code_graph.neighbours import impact_impl
+from app.agents.actions.code_graph.ops import synced_commits
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -29,7 +31,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
-from app.models.entities import CodeFileRecord, RecordType
+from app.models.entities import CodeFileRecord, RecordGroupType, RecordType
 from app.modules.code_graph import deleted_files
 from app.modules.code_graph.block_projection import (
     BlockProjectionContext,
@@ -42,6 +44,10 @@ from app.modules.code_graph.edge_builder import (
     build_code_graph_edges,
 )
 from app.modules.code_graph.facts_source import facts_from_blob_record
+from app.modules.code_graph.synced_commit import (
+    LAST_SYNCED_COMMIT,
+    record_synced_commit,
+)
 from app.modules.parsers.code_parser import CodeFileParser
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import (
@@ -67,6 +73,7 @@ FILES = {
     "src/shop/b.py": "def target(x):\n    return helper(x)\n\n\ndef helper(x):\n    return x\n",
     "src/shop/a.py": "from shop.b import target\n\n\ndef caller():\n    return target(1)\n",
 }
+COMMIT = "0123456789abcdef0123456789abcdef01234567"  # the commit the git connector stores per file
 
 logger = logging.getLogger("code-graph-real-backends-it")
 
@@ -123,7 +130,7 @@ async def _write_repo(graph: IGraphDBProvider, org_id: str, connector_id: str, g
             version=1, origin=OriginTypes.CONNECTOR, connector_name=Connectors.GITHUB,
             connector_id=connector_id, mime_type=language(path)[1], extension=language(path)[2],
             file_path=path, file_hash=uuid.uuid4().hex, language=language(path)[0],
-            indexing_status=ProgressStatus.COMPLETED.value, file_role=(roles or {}).get(path),
+            indexing_status=ProgressStatus.COMPLETED.value, file_role=(roles or {}).get(path), commit_sha=COMMIT,
         )
         for path in files
     ]
@@ -349,7 +356,35 @@ async def test_records_updated_since_and_file_paths(repo: _Repo) -> None:
         repo.org_id, list(repo.record_ids.values()), raise_on_error=True,
     )
     assert {info.file_path for info in paths.values()} == set(FILES)
+    assert {info.commit_sha for info in paths.values()} == {COMMIT}  # read back for indexed_commit
 
+
+
+async def test_a_code_group_is_stamped_with_its_synced_commit_and_read_back(repo: _Repo) -> None:
+    """The strict record-group schema accepts the stamp, the patch keeps the group's other fields, and the
+    tools read it back for the caller's org only."""
+    groups = CollectionNames.RECORD_GROUPS.value
+    await repo.graph.batch_upsert_nodes([{
+        "id": repo.group_id, "orgId": repo.org_id, "connectorId": repo.connector_id, "groupName": "acme/shop",
+        "groupType": RecordGroupType.PROJECT.value, "connectorName": Connectors.GITHUB.value,
+        "externalGroupId": "101-code-repository", "createdAtTimestamp": 1,
+    }], groups)
+    try:
+        processor = SimpleNamespace(
+            get_record_group_by_external_id=lambda *_: asyncio.sleep(0, SimpleNamespace(id=repo.group_id)),
+            batch_update_nodes=repo.graph.batch_update_nodes,
+        )
+        assert await record_synced_commit(processor, repo.connector_id, "101-code-repository", COMMIT)
+
+        assert await synced_commits(repo.graph, repo.org_id, [repo.group_id]) == {repo.group_id: COMMIT}
+        assert await synced_commits(repo.graph, f"{repo.org_id}-other", [repo.group_id]) == {}
+        stored = await repo.graph.get_nodes_by_field_in(
+            collection=groups, field_name="_key", field_values=[repo.group_id],
+            return_fields=["groupName", LAST_SYNCED_COMMIT], raise_on_error=True,
+        )
+        assert [(g["groupName"], g[LAST_SYNCED_COMMIT]) for g in stored] == [("acme/shop", COMMIT)]
+    finally:
+        await repo.graph.delete_nodes_and_edges([repo.group_id], groups)
 
 async def test_path_prefix_and_name_lookups(repo: _Repo) -> None:
     files = await repo.graph.get_nodes_by_field_prefix(

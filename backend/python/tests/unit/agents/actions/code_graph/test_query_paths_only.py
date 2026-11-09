@@ -18,14 +18,17 @@ CTX = {"graph_provider": None, "org_id": "org-1", "user_id": "user-1", "connecto
 @pytest.fixture
 def query_graph() -> object:
     """One source file holding one method — enough to reach `_degrees`."""
+    return _one_file_graph("app/events/events.py")
 
+
+def _one_file_graph(path: str) -> object:
     class _Graph:
         async def get_nodes_by_field_prefix(self, collection, field_name, prefix,
                                             filters=None, limit=None, raise_on_error=False,
                                             return_fields=None) -> list[dict]:
-            if collection != CollectionNames.CODE_FILES.value:
+            if collection != CollectionNames.CODE_FILES.value or not path.startswith(prefix):
                 return []
-            return [{"_key": "rec-1", "filePath": "app/events/events.py", "fileRole": "source"}]
+            return [{"_key": "rec-1", "filePath": path, "fileRole": "source"}]
 
         async def get_nodes_by_field_in(self, collection, field_name, field_values,
                                         return_fields=None, raise_on_error=False) -> list[dict]:
@@ -50,7 +53,7 @@ def query_graph() -> object:
 
         async def get_file_paths_for_records(self, org_id, record_ids, transaction=None,
                                              raise_on_error=False) -> dict:
-            return {"rec-1": CodeFileInfo(file_path="app/events/events.py", referenced_names=())}
+            return {"rec-1": CodeFileInfo(file_path=path, referenced_names=())}
 
     return _Graph()
 
@@ -181,6 +184,18 @@ class TestFileSelectRunsEndToEnd:
         assert r["nodes"][0]["qualified_name"] == "method:EventProcessor.on_event"
         assert "edges" not in r, "the tool no longer returns relationships"
         assert "get_neighbour" in r["next"], "must say where edge work moved"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["main.go", "Main.java", "lib.rs", "app.rb", "util.c", "setup.py"])
+    async def test_a_top_level_file_in_any_indexed_language_is_a_file(self, path) -> None:
+        """A slash-free name is a file only by its extension; one the parser
+        indexes but this list missed was tried as a directory and refused."""
+        r = await query_code_graph_impl(
+            graph_provider=_one_file_graph(path), org_id="org-1", user_id="user-1",
+            connector_id="conn-1", select=path,
+        )
+        assert "error" not in r, r.get("error")
+        assert r["matches"] == 1
 
 
 @pytest.mark.asyncio

@@ -76,6 +76,31 @@ def test_coverage_says_which_languages_are_name_matched() -> None:
     assert coverage_for([{"language": "python"}]) is None
 
 
+def test_coverage_says_go_has_no_heritage_edges() -> None:
+    """Go calls and imports resolve, but nothing records which types satisfy an
+    interface, so a caller through one is missing and impact cannot step to it."""
+    gap = coverage_for([{"language": "go"}, {"language": "python"}])
+    assert gap["cross_file_edges"] is True, "Go's calls and imports do cross files"
+    assert gap["languages"] == [], "`languages` means no cross-file edges, which is not Go"
+    assert gap["no_heritage_edges"] == ["go"]
+    assert "INHERITS, IMPLEMENTS or OVERRIDES" in gap["note"] and "interface" in gap["note"]
+    assert gap["note"].startswith("For Go,"), "a language is named the way a person writes it"
+    assert "entry_points may list a method called only through an interface" in gap["note"]
+    assert "name_matched_calls" not in gap
+
+
+def test_coverage_keeps_both_gaps_when_languages_mix() -> None:
+    gap = coverage_for([{"language": "go"}, {"language": "ruby"}])
+    assert gap["cross_file_edges"] is False, "ruby has none"
+    assert gap["languages"] == ["ruby"]
+    assert gap["name_matched_calls"] == ["ruby"] and gap["no_heritage_edges"] == ["go"]
+
+
+def test_a_language_without_methods_has_no_heritage_to_miss() -> None:
+    """C resolves calls and includes and has no types with methods: no caveat to add."""
+    assert coverage_for([{"language": "c"}]) is None
+
+
 def test_a_go_method_is_named_for_its_receiver_and_a_cpp_member_for_its_class() -> None:
     """Without the owner, every edge into `Server.handleGet` named a `handleGet` that
     does not exist (P-3)."""

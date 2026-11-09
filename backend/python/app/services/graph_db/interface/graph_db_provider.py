@@ -459,11 +459,14 @@ class CodeFileInfo:
         in recent projections, so a build re-resolves the files referencing them
     has_code_file: False for a source file with no codeFiles node (a .py
         uploaded to a KB), which records neither list
+    commit_sha: the commit the file was synced at (codeFiles.commitSha, written
+        by the git connectors); None for a file with no commit
     """
     file_path: str
     referenced_names: tuple[str, ...] = ()
     changed_names: tuple[str, ...] = ()
     has_code_file: bool = True
+    commit_sha: str | None = None
 
 
 class IGraphDBProvider(ABC):

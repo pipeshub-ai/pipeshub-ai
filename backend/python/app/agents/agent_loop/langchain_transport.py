@@ -52,6 +52,7 @@ from app.agent_loop_lib.core.streaming import (
     ThinkingDeltaEvent,
     ToolCallDeltaEvent,
 )
+from app.agent_loop_lib.core.tasks import wait_owned
 from app.agent_loop_lib.transport.base import LLMTransport
 from app.agent_loop_lib.transport.content_filter import (
     CONTENT_FILTER_STOP_REASONS,
@@ -957,7 +958,7 @@ class LangChainTransport(LLMTransport):
                         {next_chunk_task} if cancel_task is None
                         else {next_chunk_task, cancel_task}
                     )
-                    await asyncio.wait(wait_set, return_when=asyncio.FIRST_COMPLETED)
+                    await wait_owned(wait_set, return_when=asyncio.FIRST_COMPLETED)
                     if self._cancellation_token is not None and self._cancellation_token.is_cancelled:
                         # `cancel_task` (racing `CancellationToken.wait()` against
                         # the next chunk) is what makes this fire even when the

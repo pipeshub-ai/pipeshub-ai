@@ -7,6 +7,7 @@ A connector's stamps are current only while ALL of these hold on its app documen
   read any record: a structural change (a restriction, a move, a break or restore of inheritance, a delete) moves the generation in the
   transaction that writes it, so the connector is not current from the instant the change commits;
 * the unsafe mark (a change that could not move the generation) is the one the pass read: a mark written since makes it not current;
+* its pending-roots list (`pending.py`) reads: a value that does not parse is never "no roots";
 * no write that could not be undone and whose connector was not known is in flight (`unclosed_writes`): its opening step has run and its closing step has not.
 
 Anything that is missing or does not parse is *not* current. Everything else is read with the legacy filter and the post-check.
@@ -21,11 +22,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import CollectionNames
+from app.services.permissions.pending import parse
 from app.services.permissions.scope_fields import (
     SCOPE_FIELDS_VERSION,
     current_scope_generation,
 )
 from app.services.permissions.structure_generation import (
+    PENDING_KEY,
     UNSAFE_KEY,
     same_mark,
     structure_generation_of,
@@ -50,8 +53,9 @@ def app_is_current(app: Mapping[str, object] | None) -> bool:
         return False
     keys = BACKFILL_KEYS
     try:
+        parse(app.get(PENDING_KEY))
         held_mark, recorded_mark = unsafe_mark(app.get(UNSAFE_KEY)), unsafe_mark(app.get(keys["unsafe"]))
-    except ValueError:
+    except ValueError:  # PendingUnreadable is a ValueError
         return False
     # the pass covers the mark it read (it read the graph after the change that wrote it); a mark written since is another value
     if not same_mark(held_mark, recorded_mark):
