@@ -1,6 +1,8 @@
 """Unit tests for app.utils.citations (new markdown-link citation format)."""
 
+import random
 import re
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -2676,3 +2678,80 @@ class TestBadgeUrl:
             "Python 3.0 shipped in 2008 "
             "[1](https://en.wikipedia.org/wiki/Python_%28programming_language%29#:~:text=a)."
         )
+
+
+# The patterns as they were before their scans were bounded, kept as the reference
+# for what must not change.
+_LEGACY_LABEL_RE = re.compile(
+    r'^\s*(?:(?:sources?|refs?|links?|citations?)\s*#?\s*\d*|\d+(?:\s*[,;]\s*\d+)*)?\s*$', re.IGNORECASE,
+)
+_LEGACY_LINK_PATTERNS = {
+    "_MD_LINK_PATTERN": r'\[([^\]]*?)\]\((ref\d+|https?://[^)]+)\)',
+    "_ANY_MD_LINK": r'\[[^\]]*?\]\([^)\n]*\)',
+    "_CITED_LINK_START_RE": r'(\[*)\[[^\[\]\n]*\]\(',
+    "_UNRESOLVED_REF_LINK_RE": r'\[([^\]]*?)\]\(' + citations_mod._REF_TOKEN + r'\)',
+    "_TRAILING_PAREN_URL_RE": (
+        r'(\[[^\]]+\]\((ref\d+|https?://[^)]+)\))\s*\((https?://[^\s)]+|ref\d+)\)'
+    ),
+    "_CONSECUTIVE_MD_LINKS_RE": (
+        r'(\[[^\]]+\]\((ref\d+|https?://[^)]+)\))(\s*)(\[[^\]]+\]\((ref\d+|https?://[^)]+)\))'
+    ),
+    "_MULTI_REF_IN_LINK_RE": (
+        r'\[([^\]]*?)\]\(((?:ref\d+|https?://[^\s,)]+)(?:(?:\s*,\s*|\s+)(?:ref\d+|https?://[^\s,)]+))+)\)'
+    ),
+}
+_SCAN_LIMIT = 50_000
+
+
+class TestCitationScansAreBounded:
+    """Answers carry model output, so no shape of link text may make normalizing it superlinear."""
+
+    @pytest.mark.parametrize("text", [
+        pytest.param("[" + " " * _SCAN_LIMIT + "x](ref1)", id="spaces-in-label"),
+        pytest.param("[source" + " " * _SCAN_LIMIT + "x](ref1)", id="spaces-after-label-word"),
+        pytest.param("[ref" + " " * 25_000 + "#" + " " * 25_000 + "x](ref1)", id="spaces-around-hash"),
+        pytest.param("[" + "\t" * _SCAN_LIMIT + "x](ref1)", id="tabs-in-label"),
+        pytest.param("[" * _SCAN_LIMIT, id="open-brackets"),
+        pytest.param("[" * _SCAN_LIMIT + "](", id="open-brackets-then-target"),
+        pytest.param("[ref" * (_SCAN_LIMIT // 4), id="open-bracketed-refs"),
+        pytest.param("[a](" * 50_000, id="unclosed-link-targets"),
+        pytest.param("[a](https://b " * 14_000, id="unclosed-url-targets"),
+        pytest.param("[a](https://b" * 16_000, id="unclosed-url-list-targets"),
+    ])
+    def test_normalizing_stays_fast(self, text: str) -> None:
+        started = time.perf_counter()
+        citations_mod.normalize_citations_and_chunks(text, [])
+        assert time.perf_counter() - started < 3.0
+
+    @pytest.mark.parametrize("seed", range(4))
+    def test_label_check_accepts_what_it_always_did(self, seed: int) -> None:
+        tokens = [
+            " ", "  ", "\t", "\n", " ", " ", "\x1c", "#", "1", "23", ",", ";", ", ", "source", "Sources",
+            "REF", "refs", "link", "links", "citation", "Citations", "x", "s", "ref1", "-", ".", "(", "]", "é", "١",
+        ]
+        rng = random.Random(seed)
+        for _ in range(20_000):
+            text = "".join(rng.choice(tokens) for _ in range(rng.randint(0, 8)))
+            assert bool(citations_mod._CITATION_LABEL_RE.fullmatch(text.strip())) == bool(_LEGACY_LABEL_RE.match(text)), repr(text)
+
+    @pytest.mark.parametrize("name", sorted(_LEGACY_LINK_PATTERNS))
+    @pytest.mark.parametrize("seed", range(3))
+    def test_link_patterns_match_what_they_always_did(self, name: str, seed: int) -> None:
+        tokens = [
+            "[", "[", "]", "](", ")", "(", " ", "\n", ",", "source", "Title", "ref1", "ref2", "https://a.io/b",
+            "https://ref3.xyz", "ref444d5fad-0bf9-4daa-8c29-cc133ca4a3a6", "1", "x",
+        ]
+        current = getattr(citations_mod, name)
+        current = re.compile(current) if isinstance(current, str) else current
+        legacy = re.compile(_LEGACY_LINK_PATTERNS[name])
+        rng = random.Random(seed)
+        for _ in range(8_000):
+            # Too few tokens to put more "[" inside a link than these scans allow.
+            text = "".join(rng.choice(tokens) for _ in range(rng.randint(0, 9)))
+            found = [(m.span(), m.groups()) for m in current.finditer(text)]
+            assert found == [(m.span(), m.groups()) for m in legacy.finditer(text)], repr(text)
+
+    def test_a_long_citation_title_is_still_a_citation(self) -> None:
+        title = "A very long document title " * 500
+        out = citations_mod._strip_unresolved_ref_citations(f"See [{title}](ref1).")
+        assert out == f"See {title.strip()}."
