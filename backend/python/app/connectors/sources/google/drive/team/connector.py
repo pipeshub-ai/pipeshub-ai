@@ -412,6 +412,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._drive_principals: dict[str, tuple[set[str], set[str]]] = {}
         self._group_people: dict[str, set[str] | None] = {}
         self._warned_groups: set[tuple[str, str]] = set()
+        self._hidden_groups: dict[str, set[str]] = {}
         self._account_domains: set[str] | None = None
         self._refreshed_folders: set[str] = set()
         self._group_members_cache: dict[str, set[str] | None] = {}
@@ -651,6 +652,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._drive_principals = {}
             self._group_people = {}
             self._warned_groups = set()
+            self._hidden_groups = {}
             self._account_domains = None
             self._refreshed_folders = set()
             self._group_members_cache = {}
@@ -1474,7 +1476,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                             f"Shared drive {drive_id} is restricted and the members of {group} cannot be listed; "
                             f"access through {group} is hidden until they can be"
                         )
-                        await self._mark_drive_unsettled(drive_id)
+                        await self._mark_drive_hidden_group(drive_id, group)
                     continue
                 # A member group's people are drive members whoever the directory lists them as.
                 passing = sorted(e for e in people if domain_ok(e) and (group in groups or not members_only or e in users))
@@ -1527,7 +1529,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                         f"Shared drive {drive_id} is restricted to its members and the members of {group} cannot be "
                         f"listed; people who are members only through {group} lose their direct shares until they can be"
                     )
-                    await self._mark_drive_unsettled(drive_id)
+                    await self._mark_drive_hidden_group(drive_id, group)
                     continue
                 users |= members
             self._drive_principals[drive_id] = (users, groups)
@@ -1545,20 +1547,33 @@ class GoogleDriveTeamConnector(BaseConnector):
         now = await self._drive_restrictions_of(drive_id)
         key = f"{DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX}{drive_id}"
         stored = await self.drive_delta_sync_point.read_sync_point(key)
-        if now == self._restriction_flags(stored) and not (stored or {}).get("unsettled"):
+        hidden = [str(g) for g in ((stored or {}).get("hidden_groups") or [])]
+        relist = now != self._restriction_flags(stored)
+        for group in hidden:
+            if relist:
+                break
+            # Relist only when it can help: a group hidden earlier can be read now.
+            relist = await self._group_member_emails(group) is not None
+        if not relist:
+            self._hidden_groups[drive_id] = set(hidden)
             return
         for user in self.synced_users:
             await self.drive_delta_sync_point.delete_sync_point(
                 generate_record_sync_point_key(RecordType.DRIVE.value, "drives", f"{user.source_user_id}_{drive_id}")
             )
-        await self.drive_delta_sync_point.update_sync_point(key, {**now, "unsettled": False})
+        await self.drive_delta_sync_point.update_sync_point(key, {**now, "hidden_groups": []})
+        self._hidden_groups[drive_id] = set()
 
-    async def _mark_drive_unsettled(self, drive_id: str) -> None:
-        """Grants were written with a group the directory could not list hidden, and the change feed will not
-        report those items again once it can, so the next run lists the drive in full."""
-        await self.drive_delta_sync_point.update_sync_point(
-            f"{DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX}{drive_id}", {"unsettled": True}
-        )
+    async def _mark_drive_hidden_group(self, drive_id: str, group: str) -> None:
+        """Grants were written with a group the directory could not list hidden. The change feed will not
+        report those items again once it can, so the group is remembered and the drive is listed in full on
+        the run that finds it readable."""
+        hidden = self._hidden_groups.setdefault(drive_id, set())
+        if group not in hidden:
+            hidden.add(group)
+            await self.drive_delta_sync_point.update_sync_point(
+                f"{DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX}{drive_id}", {"hidden_groups": sorted(hidden)}
+            )
 
     async def _create_and_sync_shared_drive_record_group(self, drive: Dict) -> None:
         """

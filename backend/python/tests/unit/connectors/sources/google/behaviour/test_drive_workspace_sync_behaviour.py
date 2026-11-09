@@ -2114,3 +2114,63 @@ async def test_a_group_hidden_because_it_could_not_be_listed_comes_back_once_it_
     del ws.world.unlistable_groups["team@example.com"]
     await ws.sync()
     assert ws.grants("f1") == {("team@example.com", "GROUP", "WRITE")}
+
+
+def drive_listings(ws: Workspace, since: int) -> int:
+    return len([
+        r for r in ws.http.requests[since:]
+        if r.path == "/drive/v3/files" and r.query.get("corpora") == "drive" and r.query.get("driveId") == "sd-1"
+    ])
+
+
+async def test_a_group_that_stays_unreadable_does_not_relist_the_drive_every_run(ws: Workspace) -> None:
+    domain_drive(ws, {"team@example.com": [BOB, CAROL]})
+    ws.world.unlistable_groups["team@example.com"] = 404
+    await ws.sync()
+    assert drive_listings(ws, 0) > 0
+
+    for _ in range(2):
+        before = len(ws.http.requests)
+        await ws.sync()
+        assert drive_listings(ws, before) == 0
+    assert ws.grants("f1") == set()
+
+
+async def test_a_hidden_group_that_becomes_readable_relists_once_and_access_returns(ws: Workspace) -> None:
+    domain_drive(ws, {"team@example.com": [BOB, CAROL]})
+    ws.world.unlistable_groups["team@example.com"] = 404
+    await ws.sync()
+
+    del ws.world.unlistable_groups["team@example.com"]
+    before = len(ws.http.requests)
+    await ws.sync()
+    assert drive_listings(ws, before) > 0
+    assert ws.grants("f1") == {("team@example.com", "GROUP", "WRITE")}
+
+    before = len(ws.http.requests)
+    await ws.sync()
+    assert drive_listings(ws, before) == 0
+
+
+async def test_two_hidden_groups_one_recovers_then_the_other(ws: Workspace) -> None:
+    domain_drive(ws, {"a@example.com": [BOB], "b@example.com": [CAROL]})
+    ws.world.unlistable_groups.update({"a@example.com": 404, "b@example.com": 403})
+    await ws.sync()
+    assert ws.grants("f1") == set()
+
+    del ws.world.unlistable_groups["a@example.com"]
+    before = len(ws.http.requests)
+    await ws.sync()
+    assert drive_listings(ws, before) > 0
+    assert ws.grants("f1") == {("a@example.com", "GROUP", "WRITE")}
+
+    before = len(ws.http.requests)
+    await ws.sync()
+    assert drive_listings(ws, before) == 0  # b is still unreadable and still remembered
+    assert ws.grants("f1") == {("a@example.com", "GROUP", "WRITE")}
+
+    del ws.world.unlistable_groups["b@example.com"]
+    before = len(ws.http.requests)
+    await ws.sync()
+    assert drive_listings(ws, before) > 0
+    assert ws.grants("f1") == {("a@example.com", "GROUP", "WRITE"), ("b@example.com", "GROUP", "WRITE")}
