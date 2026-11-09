@@ -39,6 +39,10 @@ from app.exceptions.indexing_exceptions import (
 from app.models.entities import Record
 from app.modules.indexing.embed_resume import (
     DELIVERY_ID_KEY,
+    EMBED_DELIVERY_ID,
+    EMBED_DONE,
+    EMBED_SECONDS,
+    EMBED_UNCOUNTED,
     EMBED_VRID,
     EmbedAttempt,
     begin_attempt,
@@ -54,6 +58,7 @@ from app.modules.indexing.parse_now_marker import (
     shape_status_write,
     store_only_active,
 )
+from app.modules.indexing.record_progress import carried_counters, current_progress
 from app.modules.parsers.code_parser.file_role import is_generated_file_name
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
 from app.modules.parsers.code_parser.secret_scan import redact_secrets_bytes
@@ -104,6 +109,7 @@ from app.utils.cpu_offload import offload_if_large
 from app.utils.file_signatures import match_metadata_file_signature
 from app.utils.indexing_timing import stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_errors import RETRY_SCHEDULED
 
 
 def _record_key(doc: dict[str, Any] | None) -> str | None:
@@ -644,6 +650,44 @@ class EventProcessor:
             event=IndexingEvent.INDEXING_COMPLETE,
             data=PipelineEventData(record_id=record_id),
         )
+
+    def _cut_writer(self, record_id: str, delivery_id: str) -> Callable[[float, int], Awaitable[bool]]:
+        """The one conditional write that hands a cut record back to its queue.
+
+        It applies only while the node still names this delivery and is still IN_PROGRESS, so a
+        record that finished, was taken over or was restarted since is left alone.
+        """
+
+        async def write(embed_seconds: float, uncounted: int) -> bool:
+            current = await self.graph_provider.get_document(record_id, CollectionNames.RECORDS.value) or {}
+            updates: dict[str, Any] = {
+                "indexingStatus": ProgressStatus.QUEUED.value,
+                "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "processingStartedAt": None,
+                "reason": RETRY_SCHEDULED,
+                EMBED_SECONDS: embed_seconds,
+                EMBED_UNCOUNTED: uncounted,
+            }
+            if current.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
+                updates["parsingStatus"] = ProgressStatus.NOT_STARTED.value
+            if current.get("extractionStatus") != ProgressStatus.COMPLETED.value:
+                updates["extractionStatus"] = ProgressStatus.NOT_STARTED.value
+            return bool(
+                await self.graph_provider.update_node_fields_if_match(
+                    record_id,
+                    CollectionNames.RECORDS.value,
+                    updates,
+                    {EMBED_DELIVERY_ID: delivery_id, "indexingStatus": ProgressStatus.IN_PROGRESS.value},
+                )
+            )
+
+        return write
+
+    def _display_writer(self, record_id: str) -> Callable[[int], Awaitable[None]]:
+        async def write(done: int) -> None:
+            await self.graph_provider.update_node(record_id, CollectionNames.RECORDS.value, {EMBED_DONE: done})
+
+        return write
 
     async def update_record_fields(self, doc: dict[str, Any], fields: dict[str, Any]) -> bool:
         """Persist a partial record update or fail the current attempt."""
@@ -1785,6 +1829,17 @@ class EventProcessor:
                     prior=embed_marker,
                     resume=checkpoint is not None,
                 ))
+                progress = current_progress()
+                if progress is not None:
+                    prior_seconds, prior_uncounted = carried_counters(embed_marker, str(delivery_id))
+                    progress.bind(
+                        record_id=record_id,
+                        delivery_id=str(delivery_id),
+                        prior_seconds=prior_seconds,
+                        prior_uncounted=prior_uncounted or 0,
+                        commit=self._cut_writer(record_id, str(delivery_id)),
+                        display=self._display_writer(record_id),
+                    )
             else:
                 end_attempt()
                 if embed_marker:

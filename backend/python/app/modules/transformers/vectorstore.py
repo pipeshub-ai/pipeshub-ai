@@ -55,10 +55,13 @@ from app.models.entities import Record
 from app.modules.indexing.embed_resume import (
     EMBED_DELIVERY_ID,
     EMBED_DIGEST,
+    EMBED_DONE,
     EMBED_KEY,
     EMBED_REV,
+    EMBED_SECONDS,
     EMBED_STARTED_MS,
     EMBED_TOTAL,
+    EMBED_UNCOUNTED,
     EMBED_VRID,
     POINT_KEY,
     POINT_REV,
@@ -66,6 +69,7 @@ from app.modules.indexing.embed_resume import (
     current_attempt,
     digest_of,
 )
+from app.modules.indexing.record_progress import carried_counters, current_progress
 from app.modules.parsers.link_text import anchor_text_only
 from app.modules.parsers.table_titles import table_titles
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
@@ -1125,6 +1129,12 @@ class _RecordPresence:
             return record_doc is not None
 
 
+def _unknown_clock_seconds() -> float:
+    from app.services.messaging.config import messaging_env
+
+    return messaging_env.embed_record_ceiling_seconds
+
+
 class VectorStore(Transformer):
     # The embedding model's input window, once known; None until then and under policy A.
     model_window: _Window | None = None
@@ -2144,7 +2154,15 @@ class VectorStore(Transformer):
                 f"(record {record_id}); retrying in {delay:.1f}s: "
                 f"{format_exception_chain(last_error)}"
             )
-            await asyncio.sleep(delay)
+            # A failing provider is not a stalled record: the stall timer waits out the retry.
+            progress = current_progress()
+            if progress is not None:
+                progress.pause()
+            try:
+                await asyncio.sleep(delay)
+            finally:
+                if progress is not None:
+                    progress.resume()
 
         raise EmbeddingError(
             f"Dense embedding failed after {_EMBEDDING_BATCH_MAX_ATTEMPTS} attempts "
@@ -2211,6 +2229,10 @@ class VectorStore(Transformer):
             await self.vector_db_service.upsert_points(
                 collection_name=collection_name, points=points
             )
+        progress = current_progress()
+        if progress is not None:
+            progress.beat(len(points))
+            await progress.report()
 
     async def _process_document_chunks(
         self,
@@ -2356,6 +2378,11 @@ class VectorStore(Transformer):
                 record_id, prior.get(EMBED_DIGEST), digest, prior.get(EMBED_KEY), key,
             )
         attempt.stamp = {POINT_REV: attempt.rev, POINT_KEY: key}
+        # The same event keeps its embedding clock even when its points have to be discarded; a
+        # clock that cannot be read is treated as spent, so an unknown chain is never given a new one.
+        carried_seconds, carried_uncounted = carried_counters(attempt.prior, attempt.delivery_id)
+        restarted = not resuming and bool(attempt.prior) and attempt.prior.get(EMBED_DELIVERY_ID) == attempt.delivery_id
+        progress = current_progress()
 
         if not resuming:
             await self._write_embed_marker(record_id, {
@@ -2366,10 +2393,14 @@ class VectorStore(Transformer):
                 EMBED_TOTAL: len(set(point_ids)),
                 EMBED_DELIVERY_ID: attempt.delivery_id,
                 EMBED_STARTED_MS: int(time.time() * 1000),
+                EMBED_SECONDS: carried_seconds if carried_seconds is not None else float(_unknown_clock_seconds()),
+                EMBED_UNCOUNTED: carried_uncounted or 0,
+                EMBED_DONE: 0,
             })
             with stage("vector.delete"):
                 await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
             todo = documents
+            present = set()
         else:
             with stage("vector.exists"):
                 present = await self._existing_ids(collection_name, list(dict.fromkeys(point_ids)))
@@ -2378,6 +2409,10 @@ class VectorStore(Transformer):
                 "Record %s: resuming embedding, %d of %d points exist, %d to embed",
                 record_id, len(present), len(set(point_ids)), len(todo),
             )
+
+        if progress is not None:
+            progress.plan(len(set(point_ids)), len(present), restarted=restarted)
+            await progress.report(force=True)
 
         if todo:
             await self._process_document_chunks(todo, record_id, collection_name)

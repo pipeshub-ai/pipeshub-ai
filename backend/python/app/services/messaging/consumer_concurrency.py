@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Coroutine, Mapping
     from logging import Logger
 
+    from app.modules.indexing.record_progress import RecordProgress
     from app.services.distributed.interface import (
         IDistributedLeaseManager,
         IRetryTracker,
@@ -1164,6 +1165,41 @@ class RequeueWithoutAttempt(Exception):
         super().__init__(message)
         # How long the broker holds it before redelivery; None for the first retry backoff.
         self.delay_s = delay_s
+
+
+class ProgressRequeue(RequeueWithoutAttempt):
+    """A record's attempt ran out of time after embedding part of it: it resumes where it stopped.
+
+    Not a failure and not queue time, so it is not counted as an attempt, and it does not count
+    toward the delivery backstop either: what bounds it is the embedding time kept on the record.
+    """
+
+    counts_toward_backstop = False
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, delay_s=messaging_env.embed_cut_requeue_delay_seconds)
+
+
+async def requeue_after_productive_cut(
+    host: ConcurrencyHost,
+    progress: "RecordProgress | None",
+    lease_handle: "LeaseHandle | None",
+    message_id: str,
+) -> None:
+    """Raise ``ProgressRequeue`` when the attempt's timeout ended it after progress; otherwise return.
+
+    Called from the ``except TimeoutError`` of a consumer, after the handler has unwound. The
+    decision is made here and not in the handler because only the consumer knows why the handler
+    stopped: a shutdown or a lost lease cancels it too, and neither is a reason to requeue.
+    """
+    if progress is None:
+        return
+    lease_intact = lease_handle is None or not lease_handle.lost.is_set()
+    counted = await progress.settle_cut(lease_intact=lease_intact, running=bool(host.running))
+    if counted is None:
+        raise ProgressRequeue(
+            f"{message_id} ran out of time at {progress.done} of {progress.total} points and resumes"
+        )
 
 
 class ParseAdmissionTimeout(RequeueWithoutAttempt):
