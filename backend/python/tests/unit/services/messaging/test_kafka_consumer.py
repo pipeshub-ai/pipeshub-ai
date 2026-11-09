@@ -20,6 +20,7 @@ import pytest
 from app.services.messaging.config import StreamMessage
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.consumer import KafkaMessagingConsumer
+from tests.unit.services.messaging.message_log_helpers import in_delivery
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -258,7 +259,7 @@ class TestProcessMessage:
             offset=10,
         )
 
-        result = await consumer._KafkaMessagingConsumer__process_message(msg)
+        result = await in_delivery(consumer._KafkaMessagingConsumer__process_message(msg))
         assert result == (True, None)
         handler.assert_awaited_once()
         called_arg = handler.call_args[0][0]
@@ -273,7 +274,7 @@ class TestProcessMessage:
 
         msg = _make_message(value='{"eventType": "test", "payload": {"key": "val"}}', offset=11)
 
-        result = await consumer._KafkaMessagingConsumer__process_message(msg)
+        result = await in_delivery(consumer._KafkaMessagingConsumer__process_message(msg))
         assert result == (True, None)
         handler.assert_awaited_once()
         called_arg = handler.call_args[0][0]
@@ -289,7 +290,7 @@ class TestProcessMessage:
         double_encoded = json.dumps(inner)  # string wrapping JSON
         msg = _make_message(value=double_encoded.encode("utf-8"), offset=12)
 
-        result = await consumer._KafkaMessagingConsumer__process_message(msg)
+        result = await in_delivery(consumer._KafkaMessagingConsumer__process_message(msg))
         assert result == (True, None)
         handler.assert_awaited_once()
         called_arg = handler.call_args[0][0]
@@ -304,7 +305,7 @@ class TestProcessMessage:
 
         msg = _make_message(value=b"not-valid-json{{", offset=13)
 
-        result = await consumer._KafkaMessagingConsumer__process_message(msg)
+        result = await in_delivery(consumer._KafkaMessagingConsumer__process_message(msg))
         assert result[0] is False
         handler.assert_not_awaited()
 
@@ -316,12 +317,12 @@ class TestProcessMessage:
 
         msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"a": 1}}).encode("utf-8"), offset=14)
 
-        result1 = await consumer._KafkaMessagingConsumer__process_message(msg)
+        result1 = await in_delivery(consumer._KafkaMessagingConsumer__process_message(msg))
         assert result1 == (True, None)
 
         consumer._KafkaMessagingConsumer__mark_message_processed("test-topic-0-14")
 
-        result2 = await consumer._KafkaMessagingConsumer__process_message(msg)
+        result2 = await in_delivery(consumer._KafkaMessagingConsumer__process_message(msg))
         assert result2 == (True, None)
         assert handler.await_count == 1
 
@@ -333,7 +334,7 @@ class TestProcessMessage:
 
         msg = _make_message(value=12345, offset=15)
 
-        result = await consumer._KafkaMessagingConsumer__process_message(msg)
+        result = await in_delivery(consumer._KafkaMessagingConsumer__process_message(msg))
         assert result[0] is False
 
     @pytest.mark.asyncio
@@ -343,7 +344,7 @@ class TestProcessMessage:
 
         msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"a": 1}}).encode("utf-8"), offset=16)
 
-        result = await consumer._KafkaMessagingConsumer__process_message(msg)
+        result = await in_delivery(consumer._KafkaMessagingConsumer__process_message(msg))
         assert result[0] is False
 
     @pytest.mark.asyncio
@@ -354,7 +355,7 @@ class TestProcessMessage:
 
         msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"a": 1}}).encode("utf-8"), offset=17)
 
-        result = await consumer._KafkaMessagingConsumer__process_message(msg)
+        result = await in_delivery(consumer._KafkaMessagingConsumer__process_message(msg))
         assert result[0] is False
 
     @pytest.mark.asyncio
@@ -366,7 +367,7 @@ class TestProcessMessage:
         # Invalid UTF-8 sequence
         msg = _make_message(value=b"\xff\xfe", offset=18)
 
-        result = await consumer._KafkaMessagingConsumer__process_message(msg)
+        result = await in_delivery(consumer._KafkaMessagingConsumer__process_message(msg))
         assert result[0] is False
 
     @pytest.mark.asyncio
@@ -376,7 +377,7 @@ class TestProcessMessage:
         consumer.message_handler = handler
 
         msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"a": 1}}).encode("utf-8"), offset=19)
-        result = await consumer._KafkaMessagingConsumer__process_message(msg)
+        result = await in_delivery(consumer._KafkaMessagingConsumer__process_message(msg))
 
         assert result[0] is False
         assert (

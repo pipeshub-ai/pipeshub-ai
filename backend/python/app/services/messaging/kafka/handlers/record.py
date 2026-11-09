@@ -1569,7 +1569,6 @@ class RecordEventHandler(BaseEventService):
                 # consumer reports as "Handler ended without INDEXING_COMPLETE"
                 # and classifies as transient — three deliveries of something no
                 # retry can fix.
-                self.logger.error(f"Missing event_type in message {payload}")
                 raise ProcessingError(
                     "Message has no eventType; cannot be routed",
                     details={"payload_keys": sorted(payload.keys())},
@@ -1746,7 +1745,6 @@ class RecordEventHandler(BaseEventService):
             if not record_id:
                 # As above: malformed payload, surfaced via the dead-letter queue
                 # in one attempt rather than three.
-                self.logger.error(f"Missing record_id in message {payload}")
                 raise ProcessingError(
                     f"Message of type {event_type} has no recordId",
                     details={"event_type": event_type},

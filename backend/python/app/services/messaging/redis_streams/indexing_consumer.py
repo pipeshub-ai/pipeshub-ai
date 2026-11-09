@@ -17,11 +17,10 @@ from pydantic import ValidationError
 
 from app.core.envelope import EnvelopeRejected, ctx_of, open_stream_message
 from app.core.org_context import bind_optional, spawn_detached
-from app.core.org_context import pop as pop_org
-from app.core.org_context import push as push_org
 from app.modules.indexing.embed_resume import stamp_delivery_id
 from app.services.distributed.interface import IDistributedLeaseManager, IRetryTracker
 from app.services.messaging import consumer_concurrency as concurrency
+from app.services.messaging.message_log import bound_message
 from app.services.messaging.config import (
     IndexingEvent,
     IndexingMessageHandler,
@@ -85,10 +84,9 @@ from app.telemetry.modules import scheduling_metrics as metrics
 from app.utils import indexing_timing as timing
 from app.utils.cpu_offload import offload_if_large
 from app.utils.loop_lag_monitor import LoopLagMonitor, loop_lag_monitor_from_env
+from app.utils.logging_fields import log_fields
 from app.utils.request_context import (
-    bind_context,
     context_from_envelope,
-    reset_context,
     run_in_context,
 )
 
@@ -1190,26 +1188,27 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return False
         try:
             parsed_message = await self._parse_message(message_id, fields, topic)
-            stable_message_id = self._get_stable_message_id(message_id, parsed_message)
-            if await self._should_dead_letter(
-                topic, message_id, stable_message_id, parsed_message
-            ):
-                return False
-            if owned:
-                await self.__reclaim_for_dispatch(topic, message_id)
-            self.logger.info(
-                "Recovering %spending message: stream=%s, id=%s",
-                prefix,
-                topic,
-                message_id,
-            )
-            # Acknowledges an unparseable envelope, as a fresh read does;
-            # left pending it would sit at the head of this lane's recovery
-            # for good, since reclaiming never counts a delivery.
-            await self.__enqueue_parsed(topic, message_id, fields, parsed_message)
-            if parsed_message is None:
-                return True
-            return self.__already_held(message_id, topic)
+            with log_fields(topic=topic, message_id=message_id), bound_message(parsed_message):
+                stable_message_id = self._get_stable_message_id(message_id, parsed_message)
+                if await self._should_dead_letter(
+                    topic, message_id, stable_message_id, parsed_message
+                ):
+                    return False
+                if owned:
+                    await self.__reclaim_for_dispatch(topic, message_id)
+                self.logger.info(
+                    "Recovering %spending message: stream=%s, id=%s",
+                    prefix,
+                    topic,
+                    message_id,
+                )
+                # Acknowledges an unparseable envelope, as a fresh read does;
+                # left pending it would sit at the head of this lane's recovery
+                # for good, since reclaiming never counts a delivery.
+                await self.__enqueue_parsed(topic, message_id, fields, parsed_message)
+                if parsed_message is None:
+                    return True
+                return self.__already_held(message_id, topic)
         except Exception as e:
             self.logger.error(
                 "Error recovering %spending message %s: %s", prefix, message_id, e
@@ -2555,27 +2554,30 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         ``StreamMessage`` validation. Such entries can never become valid on
         retry, so the caller drops them (see ``_process_message_wrapper``).
         """
-        if _MESSAGE_VALUE_FIELD not in fields:
-            self.logger.debug(
-                "Message %s has no value field (likely init message); treating as unparseable",
-                message_id,
-            )
-            return None
+        with log_fields(topic=stream_name, message_id=message_id):
+            if _MESSAGE_VALUE_FIELD not in fields:
+                self.logger.debug(
+                    "Message %s has no value field (likely init message); treating as unparseable",
+                    message_id,
+                )
+                return None
 
-        try:
-            value_str = fields[_MESSAGE_VALUE_FIELD]
-            # Offloaded above a size threshold: a connector can emit a record
-            # whose whole body rides in the envelope, and parsing it inline
-            # blocks every other in-flight record on this one worker loop.
-            raw = await offload_if_large(_loads_possibly_double_encoded, value_str)
-            return await open_stream_message(stream_name, raw, StreamMessage)
-        except EnvelopeRejected as e:
-            self.logger.error("Envelope rejected for %s on %s: %s", message_id, stream_name, e.reason)
-        except (json.JSONDecodeError, ValidationError, TypeError) as e:
-            self.logger.error(
-                "Failed to parse message %s as StreamMessage: %s", message_id, e
-            )
-            return None
+            try:
+                value_str = fields[_MESSAGE_VALUE_FIELD]
+                # Offloaded above a size threshold: a connector can emit a record
+                # whose whole body rides in the envelope, and parsing it inline
+                # blocks every other in-flight record on this one worker loop.
+                raw = await offload_if_large(_loads_possibly_double_encoded, value_str)
+                return await open_stream_message(stream_name, raw, StreamMessage)
+            except EnvelopeRejected as e:
+                self.logger.error("Envelope rejected for %s on %s: %s", message_id, stream_name, e.reason)
+            except (json.JSONDecodeError, ValidationError, TypeError) as e:
+                # The type only: a ValidationError's text quotes the payload's values.
+                self.logger.error(
+                    "Failed to parse message %s as StreamMessage", message_id,
+                    extra={"error_type": type(e).__name__, "size_bytes": len(value_str)},
+                )
+                return None
 
     async def _start_processing_task(
         self,
@@ -2914,6 +2916,28 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         waiter_token: "concurrency.GateWaiterToken | None" = None,
         parsed_message: "StreamMessage | None" = None,
     ) -> bool:
+        """Process a message with its root, org and ids bound for the whole run, so the lines
+        after the handler (re-queue, dead-letter, the timing summary) carry them too."""
+        with log_fields(topic=stream_name, message_id=message_id):
+            # Reuses the caller's parse when the read/dispatch split (or PEL
+            # recovery) already did it -- avoids a second full json.loads (and,
+            # above the offload threshold, a second thread hop) on the same
+            # envelope.
+            if parsed_message is None:
+                parsed_message = await self._parse_message(message_id, fields, stream_name)
+            with bound_message(parsed_message):
+                return await self._process_bound_message(
+                    stream_name, message_id, fields, waiter_token, parsed_message
+                )
+
+    async def _process_bound_message(
+        self,
+        stream_name: str,
+        message_id: str,
+        fields: dict[str, str],
+        waiter_token: "concurrency.GateWaiterToken | None",
+        parsed_message: "StreamMessage | None",
+    ) -> bool:
         """Process a message under bounded pipeline and parsing concurrency.
 
         Semaphore lifecycle:
@@ -2958,16 +2982,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self.logger.error("Concurrency gates not initialized for %s", message_id)
             return False
 
-        # Parse (and, for re-queued messages, wait out any backoff) before
+        # Parsed (and, for re-queued messages, any backoff waited out) before
         # acquiring the parsing semaphore, so a retry waiting for a downed
         # service to recover only occupies a pending-task slot (counted
         # against backpressure), never a parsing/indexing concurrency slot.
-        # Reuses the caller's parse when the read/dispatch split (or PEL
-        # recovery) already did it -- avoids a second full json.loads (and,
-        # above the offload threshold, a second thread hop) on the same
-        # envelope.
-        if parsed_message is None:
-            parsed_message = await self._parse_message(message_id, fields, stream_name)
         if parsed_message is None:
             self.logger.warning(
                 "Unparseable message %s from stream %s (%d byte payload); "
@@ -3158,20 +3176,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             parsed_message.is_final_failure = will_be_final_on_failure
 
             if self.message_handler:
-                token = bind_context(
-                    context_from_envelope(
-                        {
-                            "requestId": parsed_message.requestId,
-                            "orgId": parsed_message.orgId,
-                        }
-                    )
-                )
                 record_kind = concurrency.record_parse_kind(parsed_message.payload)
                 processing_timeout = messaging_env.record_processing_timeout_for(
                     parsed_message.payload.get("extension"),
                     parsed_message.payload.get("mimeType"),
                 )
-                org_token = push_org(ctx_of(parsed_message))
 
                 async def consume_handler_events() -> None:
                     nonlocal download_admission, memory_admission, parsing_held, indexing_held, indexing_complete, shutting_down, parsing_admission, parse_lease_pool
@@ -3341,8 +3350,6 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         renewal_task.cancel()
                         await asyncio.gather(renewal_task, return_exceptions=True)
                         renewal_task = None
-                    pop_org(org_token)
-                    reset_context(token)
 
                 if shutting_down:
                     # Consumer stopped while waiting for the parsing slot:

@@ -135,7 +135,8 @@ if log_once(f"envelope:stripped:{topic}", 30): ...          # bounded keys only,
 
 - Bindable ids (`LOG_FIELD_NAMES`): `conversation_id`, `agent_id`, `run_id`, `parent_run_id`, `attempt`, `connector_id`,
   `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`, `mcp_server_id`, `toolset_id`, `job`, and for credential
-  refresh `refresh_kind`, `trigger`, `provider`, `scheduled_by`. A module that needs another adds it there and here. A name with
+  refresh `refresh_kind`, `trigger`, `provider`, `scheduled_by`, and for broker messages `topic`, `message_id`, `event_type`.
+  A module that needs another adds it there and here. A name with
   a credential word in it (`token`, `secret`, `credential`, …) is masked like a secret, so ids never use one. Another key, or `org_id`/`user_id`, raises `ValueError`. `None` values are skipped. Pass literal keyword
   arguments, not a `**dict`. Do not hold `log_fields` across `yield` in an async generator.
 - `log_event(logger, event, /, *, level=logging.INFO, **fields)`: message = the event name; `None` values, identity names and record
@@ -239,6 +240,41 @@ after `run_sync` returns, is not counted. On Neo4j with `NEO4J_EXPLICIT_TRANSACT
 although some of it stayed; batch writes still run in a real transaction. Records a connector writes to the graph without
 the processor are not counted. A rename or move that the connector sends through `on_records_moved` rewrites the
 stored record in place and is not counted either, unless the old record is missing and the move falls back to a plain add.
+
+## Messaging consumers
+
+The Redis Streams and Kafka consumers handle each delivery inside `message_log.delivery`
+(`app/services/messaging/message_log.py`). It binds `topic` (the Kafka topic or Redis stream) and `message_id` (the Redis entry id,
+or `<topic>-<partition>-<offset>` on Kafka); then the producer's request id, before the envelope is checked; then, once it is
+verified, the envelope's org and user, `event_type`, and the payload's `record_id` and `connector_id`. Every line of the delivery
+carries them: the handler's own, and the ack, retry or dead-letter decision. Before verification, and on a rejected envelope,
+`org_id` is the org the producer claims, not a verified one. The indexing consumers bind the same for a record's whole run
+(`message_log.bound_message`), the main-loop recovery and dead-letter path included; their end line is the indexing summary.
+
+| Event | Level | Fields |
+| --- | --- | --- |
+| `message.end` | INFO for `success` and `skipped`; WARNING when the message will be retried; ERROR when it is dead-lettered (acknowledged or committed and dropped: nothing else records it); a retried `internal` or `misconfigured` failure is ERROR; a cancelled delivery INFO | `outcome`, `disposition` (`ack`, `retry`, `dead_letter`), `reason`, `code`, `attempt`, `duration_ms`, `size_bytes`; when an exception ended it, `error_class` and `error_type`, and `error_message` except for an unparseable message or a failure the handler already logged |
+
+- Exactly one `message.end` per delivery, written after the broker call (XACK, commit, seek) that carries out the decision. A
+  delivery that ends any other way (an error in the ack, a stop mid-handler) is `failure` with `disposition=retry`: the entry stays
+  pending, the offset is read again. A redelivery is a new delivery with its own line.
+- `attempt` is the number of this delivery: 1 for a new message; after failures, the failure count with a retry tracker, or Redis's
+  delivery count (`times_delivered`) without one.
+- Kafka with no retry tracker commits a failed message: `disposition=dead_letter`. Redis with none leaves it pending: `retry`.
+- `reason`: `duplicate` (the envelope was already handled), `already_settled` (Kafka: the offset was settled before), `no_value`,
+  `handler_false` (the handler returned false; it logged why), `exception`, `unparseable` (not JSON, not an envelope, or not a valid
+  message), `envelope_rejected` with `code` (`bad_signature`, `stale`, `malformed`, `org_mismatch`, `no_key`, …),
+  `attempts_exhausted` (dead-lettered before running again), `no_handler`, `cancelled`. A rejected envelope is ERROR with no stack:
+  most codes are our own configuration (a key rotation, a backlog older than the age limit), and each drops every message on the topic.
+- A handler logs its own failure once (`entity_event.failed`, `entity_event.step_failed` with `step`, `message.handler_failed`,
+  `ai_config.refresh_failed`) and returns false or raises; `message.end` does not repeat its text. A user event's failure carries
+  `target_user_id`, the user the event is about (`user_id` is who sent it). `target_user_id` is not passed through the provider's
+  `log_identity`.
+- The message value, its payload and any part of them are never logged. A message that cannot be parsed logs its `size_bytes`; a
+  validation error's text is left out (it quotes the payload's values).
+- Work a handler starts in its own context (the sync task manager) keeps the message's ids; `message.end` is written when the
+  delivery ends, not when that work does. The connector link passes started by `userAdded` run as an org job instead
+  (`ctx_kind=job ctx_source=job:connector_link`), with only `connector_id`.
 
 ## Agent loop events (Python)
 
@@ -356,8 +392,9 @@ safety net; it cannot recognise content, so the rules below still apply.
 - **Event names** are dotted lowercase: `sync_run.end`, `tool_call.end`, `http.request.end`.
 - **Field names** are snake_case and the same in Python and Node: `org_id`, `user_id`, `request_id`, `conversation_id`, `agent_id`,
   `run_id`, `parent_run_id`, `attempt`, `connector_id`, `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`,
-  `mcp_server_id`, `toolset_id`, `job`, `workload`, `duration_ms`, `status`, `error_class`, `error_type`, `outcome`. Python also has
-  `ctx_kind`, `ctx_source` and `error_message`; Node's `error` is an object (`error.message`).
+  `mcp_server_id`, `toolset_id`, `job`, `workload`, `duration_ms`, `status`, `error_class`, `error_type`, `outcome`, `topic`,
+  `message_id`, `event_type`, `disposition`, `target_user_id`. Python also has `ctx_kind`, `ctx_source` and `error_message`; Node's
+  `error` is an object (`error.message`).
 - **Fields are scalars**: ids, sizes, counts, enums. Never pass a config, a request, a response or a document as a field.
 - **Log an error once**, at the layer that handles it, with `error_class.log_failure` (see "Failures"). Lower layers raise
   (`raise … from e`), they do not log and re-raise.

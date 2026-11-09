@@ -175,7 +175,7 @@ class RetryManager(IRetryTracker):
         should_dead_letter = count >= max_attempts
 
         if should_dead_letter:
-            self.logger.warning(
+            self.logger.debug(
                 "RetryManager: Message %s reached max attempts (%d/%d), will dead-letter",
                 message_id,
                 count,
