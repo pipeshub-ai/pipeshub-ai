@@ -14,12 +14,16 @@ export interface ReindexEventPayload {
   statusFilters: string[];
 }
 
+/** What asked for a sync; the connector service shows it in the run history. */
+export type SyncTrigger = 'manual' | 'schedule';
+
 export interface ConnectorSyncEvent {
   orgId: string;
   connector: string;
   connectorId: string;
   origin: string;
   syncedBy?: string;
+  trigger?: SyncTrigger;
   createdAtTimestamp: string;
   updatedAtTimestamp: string;
   sourceCreatedAtTimestamp: string;
@@ -31,6 +35,7 @@ export interface BaseSyncEvent {
   connectorId: string;
   origin: string;
   syncedBy?: string;
+  trigger?: SyncTrigger;
   fullSync?: boolean;
   createdAtTimestamp: string;
   updatedAtTimestamp: string;

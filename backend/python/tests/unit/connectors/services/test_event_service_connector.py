@@ -1414,6 +1414,7 @@ class TestHandleReindex:
         # A short batch ends the walk without a second fetch.
         assert service.graph_provider.get_records_by_status.await_count == 1
 
+
     @pytest.mark.asyncio
     async def test_run_reindex_stops_as_a_failure_when_a_page_cannot_be_read(self, service):
         """A failed page must not look like "reached the end".

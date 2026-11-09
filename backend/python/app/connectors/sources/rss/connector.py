@@ -415,6 +415,7 @@ class RSSConnector(BaseConnector):
             # Step 2: Process each feed
             total_articles = 0
             failed_feeds: dict[str, str] = {}
+            self.progress.set_units("feed", 0, len(self.feed_urls))
             for feed_url in self.feed_urls:
                 try:
                     count = await self._process_feed(feed_url, app_users)
@@ -427,6 +428,7 @@ class RSSConnector(BaseConnector):
                         f"❌ Error processing feed {redact_url(feed_url)}: {e}", exc_info=True
                     )
                     failed_feeds[feed_url] = "it could not be saved"
+                self.progress.advance_units("feed")
 
             await self._remove_unconfigured_feeds()
 

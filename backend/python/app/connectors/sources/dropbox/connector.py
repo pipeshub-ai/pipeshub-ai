@@ -479,9 +479,12 @@ class DropboxConnector(BaseConnector):
                     parents.note_gone(entry.path_lower)
                 return None
 
-            if not (self._pass_date_filters(entry, modified_after, modified_before, created_after, created_before)
-                    and self._pass_extension_filter(entry)):
+            in_date_range = self._pass_date_filters(
+                entry, modified_after, modified_before, created_after, created_before
+            )
+            if not (in_date_range and self._pass_extension_filter(entry)):
                 self.logger.debug(f"Skipping item {entry.name} (ID: {entry.id}): outside the sync filters.")
+                self.progress.note_filtered("date" if not in_date_range else "extension")
                 self._note_delete_outcome(await apply_out_of_scope_entry(
                     self.data_entities_processor, self.connector_id, entry.id, self.logger,
                 ))
@@ -1127,6 +1130,7 @@ class DropboxConnector(BaseConnector):
             known_shared_folders = frozenset(plan)
 
             # Process users in concurrent batches
+            self.progress.set_units("user", 0, len(users_to_sync))
             for i in range(0, len(users_to_sync), self.max_concurrent_batches):
                 batch = users_to_sync[i:i + self.max_concurrent_batches]
 
@@ -1143,6 +1147,8 @@ class DropboxConnector(BaseConnector):
                     if isinstance(result, BaseException):
                         self.logger.error(f"Sync of {user.email}'s Dropbox failed: {result}", exc_info=result)
                         self._health.skipped(f"files of {user.email}", result)
+                # Counted before the auth check below: these users were attempted.
+                self.progress.advance_units("user", len(batch))
                 if self._health.auth_error is not None:
                     return
 

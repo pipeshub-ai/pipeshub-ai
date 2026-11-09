@@ -448,9 +448,12 @@ class DropboxIndividualConnector(BaseConnector):
                     parents.note_gone(entry.path_lower)
                 return None
 
-            if not (self._pass_date_filters(entry, modified_after, modified_before, created_after, created_before)
-                    and self._pass_extension_filter(entry)):
+            in_date_range = self._pass_date_filters(
+                entry, modified_after, modified_before, created_after, created_before
+            )
+            if not (in_date_range and self._pass_extension_filter(entry)):
                 self.logger.debug(f"Skipping item {entry.name} (ID: {entry.id}): outside the sync filters.")
+                self.progress.note_filtered("date" if not in_date_range else "extension")
                 self._note_delete_outcome(await apply_out_of_scope_entry(
                     self.data_entities_processor, self.connector_id, entry.id, self.logger,
                 ))

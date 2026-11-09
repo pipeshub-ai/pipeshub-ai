@@ -346,6 +346,9 @@ class Record(BaseModel):
     source_timestamp_origin: str | None = Field(default=None, description="Knowledge-base uploads only: what set the source timestamps (app.models.source_dates.SourceTimestampOrigin)")
     processing_started_at: int | None = Field(default=None, description="Epoch ms when parse/index processing began for the current attempt; null when idle")
     queued_at: int | None = Field(default=None, description="Epoch ms the platform last put this record in line for indexing. Platform-owned, unlike updated_at, which connectors may fill with source-system time; the stranded-record sweep ages on it")
+    # Write-time only, never stored. Set by the processor on a record whose stored
+    # indexing state is kept as it is, so no indexing event is published for it.
+    keeps_indexing_state: bool = Field(default=False, exclude=True)
 
     # Source information
     weburl: str | None = None

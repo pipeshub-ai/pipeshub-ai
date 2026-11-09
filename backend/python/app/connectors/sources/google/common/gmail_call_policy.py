@@ -19,6 +19,7 @@ import random
 import time
 from typing import TYPE_CHECKING, TypeVar
 
+from app.connectors.core.sync.sync_progress import report_throttled
 from app.connectors.sources.google.common.gmail_errors import (
     GmailFailure,
     classify,
@@ -90,6 +91,8 @@ class GmailCallPolicy:
                     self.logger.warning(f"Gmail {what}: still failing after {spent:.0f}s of retries ({failure.value})")
                     raise
                 self.logger.info(f"Gmail {what}: {failure.value}; retrying in {delay:.1f}s")
+                if failure is GmailFailure.RATE_LIMITED:
+                    report_throttled(delay)
                 await self._sleep(delay)
                 spent += delay
                 self.waited_s += delay

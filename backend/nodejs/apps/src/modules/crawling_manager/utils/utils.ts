@@ -19,6 +19,7 @@ export const constructSyncConnectorEvent = (
     connector: connector,
     connectorId: connectorId,
     syncedBy: userId,
+    trigger: 'schedule',
     createdAtTimestamp: Date.now().toString(),
     updatedAtTimestamp: Date.now().toString(),
     sourceCreatedAtTimestamp: Date.now().toString(),

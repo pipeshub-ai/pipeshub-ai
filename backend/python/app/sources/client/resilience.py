@@ -45,6 +45,20 @@ RETRYABLE_NETWORK_ERRORS = (
 _GATE_WAKE_JITTER = 0.25
 
 
+def report_source_throttled(status: int, delay: float) -> None:
+    """Tell the running sync, if any, that the source asked it to wait.
+
+    Only for a 429 or 503: other retries are this side's network trouble, and a
+    pause for those is not the source's doing. Imported late, as the sync
+    package sits above this client layer.
+    """
+    if status not in (429, 503):
+        return
+    from app.connectors.core.sync.sync_progress import report_throttled
+
+    report_throttled(delay)
+
+
 class ResiliencePolicy:
     """Rate limit, backoff gate, and retry knobs shared by one connector.
 
@@ -261,6 +275,7 @@ class ResiliencePolicy:
                 if attempt >= self.max_retries:
                     break
                 delay = self.note_retry(attempt, parse_retry_after(exc.response.headers))
+                report_source_throttled(exc.response.status_code, delay)
                 self.logger.warning(
                     "%sHTTP %s (attempt %s/%s) — retrying in %.2fs",
                     prefix, exc.response.status_code, attempt + 1, self.max_retries + 1, delay,

@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.interfaces.sync_point.isync_point import ISyncPoint
+from app.connectors.core.sync.sync_progress import current_sync_progress
 from app.utils.encryption.encryption_service import EncryptionService
 
 
@@ -176,7 +177,13 @@ class SyncPoint(ISyncPoint):
             return decrypted_data
 
     async def update_sync_point(self, sync_point_key: str, sync_point_data: Dict[str, Any], encrypt_fields: Optional[List[str]] = None) -> Dict[str, Any]:
-        return await self.create_sync_point(sync_point_key, sync_point_data, encrypt_fields)
+        result = await self.create_sync_point(sync_point_key, sync_point_data, encrypt_fields)
+        # A saved checkpoint is headway even when no record changed, which is
+        # what tells a long quiet stretch from a stalled sync.
+        progress = current_sync_progress(self.connector_id)
+        if progress is not None:
+            progress.touch()
+        return result
 
     async def delete_sync_point(self, sync_point_key: str) -> Dict[str, Any]:
         full_sync_point_key = self._get_full_sync_point_key(sync_point_key)
