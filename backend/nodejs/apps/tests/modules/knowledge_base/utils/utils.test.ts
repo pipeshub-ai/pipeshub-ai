@@ -255,6 +255,25 @@ describe('Knowledge Base Utils', () => {
       expect(scope.isDone()).to.equal(true)
     })
 
+    it('should not send Azure or content-type headers to an S3 presigned URL', async () => {
+      const { uploadFileToSignedUrl } = require('../../../../src/modules/knowledge_base/utils/utils')
+      const scope = nock('https://bucket.s3.amazonaws.com', {
+        badheaders: ['x-ms-blob-type', 'content-type'],
+      })
+        .put('/doc.pdf')
+        .query(true)
+        .reply(200)
+
+      await uploadFileToSignedUrl(
+        Buffer.from('test'),
+        'application/pdf',
+        'https://bucket.s3.amazonaws.com/doc.pdf?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=x',
+        'doc-s3',
+        'doc.pdf',
+      )
+      expect(scope.isDone()).to.equal(true)
+    })
+
     it('should resolve on successful upload (status 201)', async () => {
       const { uploadFileToSignedUrl } = require('../../../../src/modules/knowledge_base/utils/utils')
       nock('https://storage.example.com')
