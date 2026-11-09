@@ -1316,12 +1316,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                 # A refusal that lasts (this user may open the file but not read its sharing) leaves the
                 # grant this user demonstrably has. A rate limit or an outage is not an empty ACL: it is
                 # raised, so the item is not written without its grants and is read again next run.
-                # A limited-access folder is the exception: a user who can only see it has no content access, and the
-                # grant would pass to its children, so the read fails and is retried.
                 if http_error.resp.status == HttpStatusCode.FORBIDDEN.value and not (
                     drive_error_reasons(http_error) & QUOTA_403_REASONS
-                ) and not inherited_permissions_disabled:
-                    if user_email:
+                ):
+                    # A user who can only see a limited-access folder has no content access, and the grant would
+                    # pass to its children.
+                    if user_email and not inherited_permissions_disabled:
                         self.logger.info(
                             f"Added single user permission for file {resource_id}: {user_email}"
                         )
@@ -1344,7 +1344,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         # record nobody can see. is_fallback=True keeps this from replacing a real ACL
         # that another user's sync already learned.
         if not permissions and inherited_permissions_disabled:
-            raise RuntimeError(f"Empty permission list for limited-access folder {resource_id}")
+            return ([], True, [])
         if not permissions and user_email:
             self.logger.info(
                 f"Empty permission list for file {resource_id}; "
