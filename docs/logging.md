@@ -9,7 +9,7 @@ follows. The Python side is `backend/python/app/utils/logger.py`; Node mirrors t
 | --- | --- | --- | --- |
 | `LOG_LEVEL` | `debug`, `info`, `warn`/`warning`, `error`, `critical` (any case) | `info` | Level of the `app` logger, of every `create_logger` logger, and of the root logger. Root never goes below `info`, so third-party libraries never log at debug by accident (some log whole requests, prompts and bodies there). Use `debug`, `info`, `warn` or `error`: Node reads the same variable. |
 | `LOG_LEVELS` | `name=LEVEL,name=LEVEL` | empty | Per-logger levels, applied last. Any logger can be named, `root` included. `LOG_LEVELS=app.services.graph_db=DEBUG,aiokafka=WARNING`. `LOG_LEVELS=root=DEBUG` opens third-party debug output on purpose. |
-| `LOG_FORMAT` | `text`, `json` | `text` | Python only (Node keeps its own format). |
+| `LOG_FORMAT` | `text`, `json` | `text` | Both runtimes: Node reads it at start-up (`Logger.applyEnv`) with the same line shape. |
 
 A bad value never stops a service: an unknown `LOG_LEVEL` (or `notset`) means `info`, a malformed `LOG_LEVELS` entry is skipped,
 an unknown `LOG_FORMAT` means `text`; each logs one warning. Values are read at import and again whenever they change before a
@@ -329,6 +329,45 @@ quote the refresh token in prose no redactor recognises. When the exception chai
 a refresh service (`log_refresh_failure`) leaves the text out of `error_message` and the stack (each exception shows as
 `Type: <message omitted>`) and logs `http_status` and `oauth_error` instead.
 
+## Upstream calls (Node)
+
+Every HTTP request the Node gateway sends writes one `upstream.call.end` line **per attempt**, from
+`backend/nodejs/apps/src/libs/http/upstream-call.ts`. That covers the service commands in `libs/commands` (through
+`upstreamFetch`) and every call on an instrumented axios instance (`installUpstreamLogging`: the default instance, in
+`index.ts`, and the knowledge base's own instance). A retry, `fetchWithRetry`'s or axios-retry's, is a new line.
+
+| Field | Value |
+| --- | --- |
+| `upstream` | `query`, `connector`, `indexing`, `nodejs` (Node's own services over HTTP), or `external`. Named from the URLs `loadAppConfig` reads; a registered base matches by exact origin and whole path segments. Not `service`: that key names the logger. |
+| `method`, `status` | `status` only when an answer came |
+| `route` | a PipesHub service: the path with every id-like segment (ids, numbers, encoded text, emails, file names, anything upper-case) as `:id`. Anything else: the host only. |
+| `duration_ms` | the attempt's start to the answer's headers. A chat stream (`AIServiceCommand.executeStream`): to the stream's end. Any other stream, axios `responseType: 'stream'` included, ends at its headers; a failure midway there is reported by the request's own lines. |
+| `attempt` | 1-based |
+| `outcome`, `error_class` | `success`, or `failure` with the class (`classifyError`): an answer by its status, no answer by the error |
+| `network_code` | no answer only: the first string `code` in the error's cause chain, or axios's own (`ECONNREFUSED`, `ENOTFOUND`, `UND_ERR_SOCKET`, `ECONNABORTED`) |
+
+- **Levels.** Success is DEBUG: the access line is the request's INFO line, and the service's own end line has the same
+  request id. A failure takes `levelFor(error_class)`: WARNING for an upstream 4xx, 5xx, timeout or outage, INFO when we
+  cancelled it, ERROR when the request could not be made (our bug). A path with a `health` segment (`/health`,
+  `/health/graph-db`) is a probe and DEBUG whatever its outcome, for internal and external targets alike. Unlike
+  `llm_call.end`, a failed attempt is not lowered to DEBUG: the axios adapter cannot know whether axios-retry will try again,
+  so both transports report each attempt at its class's level.
+- **What it never has:** the URL, the query string, headers, bodies, or the error's message. The line is a fact about the
+  call, not the error report: the request's `http.request.error` still logs the failure once. `handleBackendError` logs
+  nothing; a 5xx it maps carries `{ status }` as its cause, so an upstream 500 is `upstream_5xx` (WARNING) on the request's
+  lines too, and a 4xx it passes on keeps the service's words in its message. A 5xx's own detail stays in the service's log.
+  About 30 controller catch blocks still log `error.response?.data` themselves; they are being removed module by module.
+- **Request id.** A call to a PipesHub service always carries the request's sanitised root id, replacing an `x-request-id`
+  copied from the client (`injectRequestHeaders`, and the axios adapter). A third party never gets one.
+- **Streams.** The chat stream's line is written when the body ends (DEBUG), fails midway (`unavailable`, with the 200), or
+  is aborted by us (`cancelled`, INFO). A consumer that destroys the stream without aborting the call does not end it early:
+  the line is written when the service ends the body.
+- **Known gaps.** A timed-out `AIServiceCommand` call is retried on its already-aborted signal, so it writes 3 `timeout`
+  lines though only the first reached the wire. A caller that expects a 404 (an existence check) still gets a WARNING
+  `not_found` line: the transport cannot know what the caller expects.
+- **New calls** use a command or axios, so they get the line; do not log the call again at the call site. A new raw `fetch`
+  goes through `upstreamFetch` with `injectRequestHeaders`.
+
 ## Redaction
 
 Both formats redact: the whole text line (message, fields, traceback), and in JSON every string value. Credentials (bearer and
@@ -357,7 +396,8 @@ safety net; it cannot recognise content, so the rules below still apply.
 - **Field names** are snake_case and the same in Python and Node: `org_id`, `user_id`, `request_id`, `conversation_id`, `agent_id`,
   `run_id`, `parent_run_id`, `attempt`, `connector_id`, `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`,
   `mcp_server_id`, `toolset_id`, `job`, `workload`, `duration_ms`, `status`, `error_class`, `error_type`, `outcome`. Python also has
-  `ctx_kind`, `ctx_source` and `error_message`; Node's `error` is an object (`error.message`).
+  `ctx_kind`, `ctx_source` and `error_message`; Node's `error` is an object (`error.message`). Node also has `upstream` and
+  `network_code` (on `upstream.call.end`).
 - **Fields are scalars**: ids, sizes, counts, enums. Never pass a config, a request, a response or a document as a field.
 - **Log an error once**, at the layer that handles it, with `error_class.log_failure` (see "Failures"). Lower layers raise
   (`raise … from e`), they do not log and re-raise.
