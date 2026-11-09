@@ -67,8 +67,10 @@ def graph_error(status: int, code: str, message: str = "error", headers: dict[st
     return json_response({"error": {"code": code, "message": message}}, status=status, headers=headers)
 
 
-def page(values: list, *, next_link: str | None = None, delta_link: str | None = None) -> dict[str, Any]:
+def page(values: list, *, next_link: str | None = None, delta_link: str | None = None, count: int | None = None) -> dict[str, Any]:
     body: dict[str, Any] = {"value": values}
+    if count is not None:
+        body["@odata.count"] = count
     if next_link:
         body["@odata.nextLink"] = next_link
     if delta_link:
@@ -452,6 +454,16 @@ class FakeRecordsDb:
 
     async def on_new_app_users(self, users: list[Any]) -> None:
         self.app_users.extend(users)
+
+    async def get_all_app_users(self, connector_id: str, **_: object) -> list[Any]:
+        return list(self.app_users)
+
+    async def get_app_user_links(self, connector_id: str) -> list[Any]:
+        return list(self.app_users)
+
+    async def withdraw_app_user_access(self, connector_id: str, users: list[Any]) -> None:
+        gone = {u.source_user_id for u in users}
+        self.app_users = [u for u in self.app_users if u.source_user_id not in gone]
 
     async def get_all_active_users(self) -> list[Any]:
         return list(self.active_users)

@@ -5,6 +5,7 @@ import uuid
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Iterable, NamedTuple, Optional
 
 from app.config.configuration_service import ConfigurationService
@@ -5995,6 +5996,14 @@ class DataSourceEntitiesProcessor:
             return await tx_store.get_app_users(
                 self.org_id, connector_id, raise_on_error=raise_on_error
             )
+
+    async def get_app_user_links(self, connector_id: str) -> list[SimpleNamespace]:
+        """The users of this org linked to the connector with a source user id, guests
+        included, as ``id`` / ``source_user_id`` items for ``withdraw_app_user_access``. A
+        failed read raises."""
+        async with self.data_store_provider.transaction() as tx_store:
+            links = await tx_store.get_app_user_links(self.org_id, connector_id)
+        return [SimpleNamespace(id=link["id"], source_user_id=link["sourceUserId"]) for link in links]
 
     async def get_all_user_groups(self, connector_id: str, *, raise_on_error: bool = False) -> list[AppUserGroup]:
         async with self.data_store_provider.transaction() as tx_store:

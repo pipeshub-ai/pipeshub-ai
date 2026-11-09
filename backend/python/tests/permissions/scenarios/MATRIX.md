@@ -14,7 +14,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `atlassian/jira_data_center` | jira | intersection | projects without levels | `app/connectors/sources/atlassian/jira_data_center/connector.py:4868` | writer read |
 | `atlassian/jira_cloud_personal` | container | container | the whole app | `app/connectors/sources/atlassian/jira_cloud_personal/connector.py:97` | writer read |
 | `atlassian/jira_data_center_personal` | container | container | the whole app | `app/connectors/sources/atlassian/jira_data_center_personal/connector.py:66` | writer read |
-| `microsoft/sharepoint_online` | sharepoint | override | - | `app/connectors/sources/microsoft/sharepoint_online/connector.py:1680` | writer read |
+| `microsoft/sharepoint_online` | sharepoint | override | - | `app/connectors/sources/microsoft/sharepoint_online/connector.py:1685` | writer read |
 | `microsoft/onedrive` | onedrive | override | - | `app/connectors/sources/microsoft/onedrive/connector.py:1060` | writer read |
 | `google/drive/team` | drive | union | shared drives whose items are neither shared nor limited | `app/connectors/sources/google/drive/team/drive_access.py:64` | writer read |
 | `google/drive/individual` | container | container | the whole app | `app/connectors/sources/google/drive/individual/connector.py:185` | writer read |
@@ -23,7 +23,7 @@ A cell is covered when a scenario carries the tag `cell:<group>/<kind>`. Gaps ar
 | `slack/individual` | container | container | the whole app | `app/connectors/sources/slack/individual/connector.py:332` | writer read |
 | `google/gmail/team` | container | container | mailboxes (labels inherit the mailbox) | `app/connectors/sources/google/gmail/team/connector.py:1787` | writer read |
 | `google/gmail/individual` | container | container | the whole app | `app/connectors/sources/google/gmail/individual/connector.py:131` | writer read |
-| `microsoft/outlook` | container | container | mailboxes | `app/connectors/sources/microsoft/outlook/connector.py:1119` | writer read |
+| `microsoft/outlook` | container | container | mailboxes | `app/connectors/sources/microsoft/outlook/connector.py:1190` | writer read |
 | `microsoft/outlook_individual` | container | container | the whole app | `app/connectors/sources/microsoft/outlook_individual/connector.py:167` | writer read |
 | `github_teams` | container | container | repositories and projects | `app/connectors/sources/github_teams/projects.py:526` | writer read |
 | `github` | container | container | the whole app | `app/connectors/sources/github/connector.py:178` | writer read |
