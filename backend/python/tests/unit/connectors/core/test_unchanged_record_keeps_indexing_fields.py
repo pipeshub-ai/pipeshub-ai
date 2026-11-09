@@ -26,7 +26,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
     _requests_index_event,
 )
-from app.models.entities import FileRecord, Record, RecordType
+from app.models.entities import CodeFileRecord, FileRecord, Record, RecordType
 
 pytestmark = pytest.mark.asyncio
 
@@ -223,3 +223,27 @@ async def test_same_revision_and_type_keeps_the_verdict() -> None:
     processed, _ = await _processor()._process_record(incoming, [], _store(stored))
 
     assert processed.indexing_status == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
+
+
+def _code_file(**overrides) -> CodeFileRecord:
+    fields = {
+        "id": "stored-code-1", "org_id": "org-1", "record_name": "app.py", "record_type": RecordType.CODE_FILE,
+        "external_record_id": "/7/blob/src/app.py", "external_revision_id": "sha-1", "version": 1,
+        "origin": OriginTypes.CONNECTOR, "connector_name": Connectors.GOOGLE_DRIVE, "connector_id": "c1",
+        "mime_type": "text/x-python", "file_path": "src/app.py",
+    }
+    fields.update(overrides)
+    return CodeFileRecord(**fields)
+
+
+async def test_unchanged_code_file_keeps_its_outcome_and_publishes_nothing() -> None:
+    """The stored row a save reads is a base Record, without the code file's path: compared
+    with it, every code file looked renamed and was indexed again on every sync."""
+    stored = Record.from_arango_base_record(
+        _code_file(indexing_status=ProgressStatus.COMPLETED.value).to_arango_base_record()
+    )
+    incoming = _code_file(id="incoming-1", version=0)
+    processed, _ = await _processor()._process_record(incoming, [], _store(stored))
+
+    assert processed.indexing_status == ProgressStatus.COMPLETED.value
+    assert not _requests_index_event(processed)

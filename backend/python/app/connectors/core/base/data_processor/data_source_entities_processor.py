@@ -2148,13 +2148,15 @@ class DataSourceEntitiesProcessor:
 
         A new revision, but also the same bytes read as another file type (a GCS
         object whose Content-Type changed keeps its MD5 revision; a rename to
-        another extension keeps a Drive revision) or a code file at another path,
-        which is part of what was embedded. The save and a move decide on it alike.
+        another extension keeps a Drive revision). The save and a move decide on
+        it alike. A code file's path is not compared here: it is part of its
+        external id, so a save (matched on that id) cannot change it, and the
+        stored row a save reads is a base Record with no file_path, which would
+        read as a new path on every sync. A move compares it (_code_path_changed).
         """
         return (
             new_record.external_revision_id != old_record.external_revision_id
             or cls._file_type_changed(new_record, old_record)
-            or cls._code_path_changed(new_record, old_record)
         )
 
     @classmethod
@@ -3777,7 +3779,9 @@ class DataSourceEntitiesProcessor:
                     content_changed = (
                         new_record.external_revision_id != old_record.external_revision_id
                     )
-                    needs_reindex = self._content_changed(new_record, old_record)
+                    needs_reindex = self._content_changed(
+                        new_record, old_record
+                    ) or self._code_path_changed(new_record, old_record)
 
                     is_kb_item = new_record.origin == OriginTypes.UPLOAD
                     if not is_kb_item:
