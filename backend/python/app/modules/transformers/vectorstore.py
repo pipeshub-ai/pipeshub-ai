@@ -2463,7 +2463,7 @@ class VectorStore(Transformer):
                     "Failed to store documents in vector store",
                     details={"error": str(e)},
                 ) from e
-            self.logger.info(f"✅ Embeddings created and stored for record '{record_id}'")
+            self.logger.info(f"Embeddings created and stored for record '{record_id}'")
             return
 
         # Delete existing embeddings first (full replace, non-reconciliation path)

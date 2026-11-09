@@ -38,6 +38,7 @@ from app.models.entities import Record
 from app.models.record_convert import convert_record_dict_to_record  # re-exported for existing importers
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.structure_generation import leaving_vrid
+from app.modules.artifacts.reader import LegacyRecordArtifactReader
 from app.modules.code_graph import enabled as code_graph_switch
 from app.modules.code_graph.block_projection import (
     BlockProjectionContext,
@@ -176,7 +177,9 @@ class Processor:
             if not lookup or lookup.get("storedRev") != rev:
                 self.logger.info("No stored blocks of this revision for %s; parsing again", virtual_record_id)
                 return None
-            blob = await blob_storage.get_record_from_storage(virtual_record_id, org_id, lookup)
+            # The stored record itself, not the configured reader: the checkpoint must be the exact
+            # document this revision wrote, and an artifact fallback would weaken that check.
+            blob = await LegacyRecordArtifactReader(blob_storage).read_record(virtual_record_id, org_id, lookup=lookup)
             containers = blob.get("block_containers") if isinstance(blob, dict) else None
             if not isinstance(containers, dict) or not (containers.get("blocks") or containers.get("block_groups")):
                 return None

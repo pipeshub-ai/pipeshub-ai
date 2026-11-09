@@ -98,7 +98,9 @@ class TestLoadCheckpoint:
         await processor.load_checkpoint("v-1", "org-1", REV)
         storage = processor.sink_orchestrator.blob_storage
         storage.get_document_id_by_virtual_record_id.assert_awaited_once_with("v-1")
-        storage.get_record_from_storage.assert_awaited_once_with("v-1", "org-1", {"record_doc_id": "doc-1", "storedRev": REV})
+        storage.get_record_from_storage.assert_awaited_once_with(
+            "v-1", "org-1", lookup_result={"record_doc_id": "doc-1", "storedRev": REV}
+        )
 
 
 @pytest.mark.asyncio

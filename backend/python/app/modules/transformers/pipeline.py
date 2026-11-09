@@ -83,7 +83,7 @@ class IndexingPipeline:
                 if attempt is not None and attempt.resume:
                     # The points already written by the interrupted run are what a resume keeps.
                     logger.info(
-                        f"📊 Resuming the first reconciliation pass of {record.virtual_record_id}; "
+                        f"Resuming the first reconciliation pass of {record.virtual_record_id}; "
                         f"not purging its vectors"
                     )
                     return ReconciliationContext(new_metadata=new_metadata.to_dict())
