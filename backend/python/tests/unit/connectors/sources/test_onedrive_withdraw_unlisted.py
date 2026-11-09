@@ -6,7 +6,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import Connectors
-from app.connectors.sources.microsoft.common.msgraph_client import MSGraphClient, UserListing
+from app.connectors.sources.microsoft.common.msgraph_client import (
+    MSGraphClient,
+    UserListing,
+)
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.models.entities import AppUser
 
