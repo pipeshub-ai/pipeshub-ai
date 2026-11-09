@@ -72,6 +72,8 @@ def _raw_identity_and_fresh_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.utils.logger.get_provider", lambda: DefaultLoggingProvider())
     monkeypatch.setattr(logging_fields, "_log_once_last", {})
     monkeypatch.setattr(trs, "CREDENTIAL_SAVE_RETRY_DELAY_SECONDS", 0)
+    # Importing any *_main module sets a process-wide suffix on request_id (not on scheduled_by, a bare root).
+    monkeypatch.setattr(rc, "_service_suffix", "")
 
 
 @pytest.fixture

@@ -99,6 +99,8 @@ def _raw_identity_fresh_gate_and_no_waits(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr("app.utils.logger.get_provider", lambda: DefaultLoggingProvider())
     monkeypatch.setattr(logging_fields, "_log_once_last", {})
     monkeypatch.setattr(ttrs, "INITIAL_RETRY_DELAY", 0)
+    # Importing any *_main module sets a process-wide suffix on request_id (not on scheduled_by, a bare root).
+    monkeypatch.setattr(rc, "_service_suffix", "")
     # A due token's timer fires at once instead of after the 1 s re-check and the 10 s cooldown.
     monkeypatch.setattr(ttrs, "MIN_IMMEDIATE_RECHECK_DELAY", 0)
     monkeypatch.setattr(ttrs, "REFRESH_COOLDOWN", 0)
