@@ -14,6 +14,7 @@ from app.exceptions.indexing_exceptions import RecordDeletedError
 from app.models.blocks import BlocksContainer
 from app.modules.parsers.json.json_parser import JSONParser
 from app.modules.transformers.blob_storage import (
+    BlobStorage,
     StorageDocumentNotFoundError,
     StoredRecordTooLargeError,
 )
@@ -99,8 +100,24 @@ class TestLoadCheckpoint:
         storage = processor.sink_orchestrator.blob_storage
         storage.get_document_id_by_virtual_record_id.assert_awaited_once_with("v-1")
         storage.get_record_from_storage.assert_awaited_once_with(
-            "v-1", "org-1", lookup_result={"record_doc_id": "doc-1", "storedRev": REV}
+            "v-1", "org-1", lookup_result={"record_doc_id": "doc-1", "storedRev": REV}, relookup=False
         )
+
+    async def test_a_document_gone_with_the_mapping_moved_on_is_not_read_from_the_new_document(self) -> None:
+        # Kills: the reader re-resolving the mapping after a 404 and returning another revision's blocks.
+        blob_storage = BlobStorage(logger=MagicMock(), config_service=AsyncMock(), graph_provider=AsyncMock())
+        blob_storage._get_auth_and_config = AsyncMock(return_value=({}, "http://node", "azureBlob"))
+        old = {"record_doc_id": "doc-old", "storedRev": REV}
+        newer = {"record_doc_id": "doc-new", "storedRev": "rev-2"}
+        blob_storage.get_document_id_by_virtual_record_id = AsyncMock(side_effect=[old, newer])
+        read = AsyncMock(side_effect=[StorageDocumentNotFoundError("gone"), await _stored()])
+        blob_storage._read_stored_document = read
+        processor = _processor()
+        processor.sink_orchestrator.blob_storage = blob_storage
+
+        assert await processor.load_checkpoint("v", "o", REV) is None
+        assert read.await_count == 1
+        assert blob_storage.get_document_id_by_virtual_record_id.await_count == 1
 
 
 @pytest.mark.asyncio

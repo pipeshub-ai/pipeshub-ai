@@ -179,7 +179,9 @@ class Processor:
                 return None
             # The stored record itself, not the configured reader: the checkpoint must be the exact
             # document this revision wrote, and an artifact fallback would weaken that check.
-            blob = await LegacyRecordArtifactReader(blob_storage).read_record(virtual_record_id, org_id, lookup=lookup)
+            blob = await LegacyRecordArtifactReader(blob_storage).read_record(
+                virtual_record_id, org_id, lookup=lookup, exact=True
+            )
             containers = blob.get("block_containers") if isinstance(blob, dict) else None
             if not isinstance(containers, dict) or not (containers.get("blocks") or containers.get("block_groups")):
                 return None

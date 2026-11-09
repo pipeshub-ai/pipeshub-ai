@@ -437,6 +437,30 @@ class TestConvergence:
 
 
 @pytest.mark.asyncio
+class TestWithoutTheFenceIndexes:
+    async def test_a_resume_on_a_collection_whose_fence_is_not_ready_takes_the_full_path(self) -> None:
+        # Kills: resuming, then failing on every retry in the fence query of an unindexed field.
+        chain = await Chain().start()
+        chain.store.collection_registry.fence_ready = MagicMock(return_value=False)
+        with pytest.raises(Cut):
+            await chain.attempt(cut_after=3)
+        filters: list[Any] = []
+        real = chain.db.filter_collection
+
+        async def spy(*args: Any, **kw: Any) -> Any:  # noqa: ANN401
+            filters.append(kw)
+            return await real(*args, **kw)
+
+        chain.db.filter_collection = spy  # type: ignore[method-assign]
+        before = chain.embedder.texts
+        await chain.attempt()
+        wanted = await chain.wanted_ids()
+        assert chain.ids() == wanted
+        assert chain.embedder.texts - before == len(wanted)
+        assert not [f for f in filters if "must_not" in f]
+        chain.store.collection_registry.fence_ready.assert_called_with(COLL)
+
+
 class TestFailuresDeleteNothing:
     async def test_an_existence_error_on_a_resumed_attempt_fails_it_and_keeps_every_point(self) -> None:
         # Kills: the destructive fallback ("any doubt: replace").

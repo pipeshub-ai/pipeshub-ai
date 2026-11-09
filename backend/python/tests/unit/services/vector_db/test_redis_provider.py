@@ -1588,3 +1588,20 @@ class TestRedisExistingPointIds:
         mock_redis_client.pipeline = MagicMock()
         assert await service.existing_point_ids("coll", []) == set()
         mock_redis_client.pipeline.assert_not_called()
+
+
+class TestRedisCreateIndex:
+    SCHEMA = {"type": "keyword"}
+
+    @pytest.mark.asyncio
+    async def test_a_failure_that_is_not_a_duplicate_is_raised(self, service, mock_redis_client) -> None:
+        # Kills: swallowing the error, which let the registry treat an unindexed field as indexed.
+        mock_redis_client.execute_command = AsyncMock(side_effect=RuntimeError("ERR unknown command 'FT.ALTER'"))
+        with pytest.raises(RuntimeError):
+            await service.create_index("c", "metadata.contentRev", self.SCHEMA)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("message", ["Field already exists", "Duplicate field in schema"])
+    async def test_a_field_already_in_the_schema_returns_quietly(self, service, mock_redis_client, message) -> None:
+        mock_redis_client.execute_command = AsyncMock(side_effect=RuntimeError(message))
+        await service.create_index("c", "metadata.contentRev", self.SCHEMA)

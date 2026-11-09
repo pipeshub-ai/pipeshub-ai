@@ -547,7 +547,9 @@ class RedisVectorService(IVectorDBService):
 
         field_name uses ``metadata.`` prefix convention (e.g. ``metadata.orgId``).
         We convert ``metadata.x`` → ``metadata_x`` for the Redis hash field alias.
-        No JSONPath prefix is needed for ON HASH indexes.
+        No JSONPath prefix is needed for ON HASH indexes. A failure other than
+        "already in the schema" is raised so the caller knows the field is not
+        searchable.
         """
         self._assert_connected()
         idx = self._index_name(collection_name)
@@ -569,7 +571,7 @@ class RedisVectorService(IVectorDBService):
             # "duplicate field in schema".
             if "already exists" in err or "duplicate field" in err:
                 return
-            logger.warning(f"FT.ALTER failed for field '{field_name}': {e}")
+            raise
 
     # ------------------------------------------------------------------
     # Filter construction

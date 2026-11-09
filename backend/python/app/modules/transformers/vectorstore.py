@@ -2343,6 +2343,12 @@ class VectorStore(Transformer):
             and prior.get(EMBED_DIGEST) == digest
             and prior.get(EMBED_KEY) == key
         )
+        if resuming and not self.collection_registry.fence_ready(collection_name):
+            self.logger.warning(
+                "Record %s: the revision and setup fields of collection %s are not indexed; "
+                "embedding everything again", record_id, collection_name,
+            )
+            resuming = False
         if attempt.resume and not resuming:
             self.logger.warning(
                 "Record %s: the stored blocks or the embedding setup differ from the interrupted run "
