@@ -458,6 +458,9 @@ class FakeRecordsDb:
     async def get_all_app_users(self, connector_id: str, **_: object) -> list[Any]:
         return list(self.app_users)
 
+    async def get_app_user_links(self, connector_id: str) -> list[Any]:
+        return list(self.app_users)
+
     async def withdraw_app_user_access(self, connector_id: str, users: list[Any]) -> None:
         gone = {u.source_user_id for u in users}
         self.app_users = [u for u in self.app_users if u.source_user_id not in gone]

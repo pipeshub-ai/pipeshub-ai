@@ -3609,19 +3609,31 @@ class SharePointConnector(BaseConnector):
             return PermissionType.READ
 
     async def _withdraw_unlisted_app_users(self, listed: list[AppUser]) -> None:
-        """Take the connector away from stored users the complete user read no longer lists
-        (deleted accounts). Only called after a complete read; an empty list withdraws nobody
-        (the directory always has users), and so does a failed read of the stored users.
+        """Take the connector away from stored users (guest accounts included) the complete
+        user read no longer lists and that Microsoft confirms are gone (a 404 on the user
+        itself): a stale listing cannot withdraw anyone, nor can a failed or throttled read
+        of the user. Only called after a complete read; an empty list withdraws nobody (the
+        directory always has users), and so does a failed read of the stored users.
         Restoring the account saves the user again."""
         if not listed:
             return
         try:
-            stored = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
+            stored = await self.data_entities_processor.get_app_user_links(self.connector_id)
         except Exception as e:
             self.logger.error(f"Could not read the stored users; no user loses access this run: {e}")
             return
         kept = {u.source_user_id for u in listed}
-        gone = [u for u in stored if u.source_user_id and u.source_user_id not in kept]
+        gone = []
+        for u in stored:
+            if not u.source_user_id or u.source_user_id in kept:
+                continue
+            try:
+                if await self.msgraph_client.get_user_status(u.source_user_id) != "gone":
+                    continue
+            except Exception as e:
+                self.logger.error(f"Could not confirm user {u.source_user_id} is gone; keeping the access: {e}")
+                continue
+            gone.append(u)
         if gone:
             await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
 

@@ -86,7 +86,11 @@ from app.connectors.sources.microsoft.common.apps import OutlookApp
 from app.connectors.sources.microsoft.common.content_type_utils import (
     attachment_metadata_from_graph,
 )
-from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+from app.connectors.sources.microsoft.common.msgraph_client import (
+    RecordUpdate,
+    UserListing,
+    read_user_status,
+)
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.microsoft.common.outlook_constants import (
     MessagesDeltaResult,
@@ -167,6 +171,14 @@ MAILBOX_GROUP_PREFIX = "mailbox:"
 
 class AttachmentListingError(Exception):
     """A mail's attachment list could not be read: the mail must be retried, not half-saved."""
+
+
+class OutlookUserListing(UserListing):
+    """The users of one read. The id sets are filled only when the read was complete, so a
+    withdrawal that uses them can never act on a cut list."""
+
+    listed_ids: frozenset[str] | set[str] = frozenset()
+    disabled_ids: frozenset[str] | set[str] = frozenset()
 
 
 @ConnectorBuilder(OutlookConnectorNames.TEAM)\
@@ -332,8 +344,6 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
         self._user_cache_ttl: int = 3600  # 1 hour TTL in seconds
 
         # Group cache for web URL construction
-        self._disabled_user_ids: set[str] = set()  # accountEnabled false, from the last /users read
-        self._listed_user_ids: set[str] = set()  # every account of the last complete /users read
         self._group_cache: dict[str, dict[str, str]] = {}  # group_id -> {'mail': ..., 'mailNickname': ...}
 
         self.email_delta_sync_point = SyncPoint(
@@ -646,7 +656,7 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
 
             # Sync all enterprise users to database
             await self.data_entities_processor.on_new_app_users(all_enterprise_users)
-            await self._withdraw_disabled_app_users()
+            await self._withdraw_disabled_app_users(all_enterprise_users)
 
             self.logger.info(f"✅ Synced {len(all_enterprise_users)} enterprise users, {len(users_to_sync)} active users to process")
 
@@ -656,33 +666,46 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             self.logger.error(f"Error syncing users: {e}")
             raise
 
-    async def _withdraw_disabled_app_users(self) -> None:
-        """Take the connector away from stored users whose account is disabled or no longer in
-        the complete user read, so no mailbox or group grant reaches them. Enabling or restoring
-        the account saves the user, and the access, again. The sets are empty unless the last
-        read was complete, so an incomplete or empty one withdraws nobody (the directory always
-        has users), and so does a failed read of the stored users."""
-        listed, disabled = self._listed_user_ids, self._disabled_user_ids
+    async def _withdraw_disabled_app_users(self, listing: OutlookUserListing) -> None:
+        """Take the connector away from stored users (guest accounts included) whose account
+        is disabled, and from those the complete user read of this sync does not list that
+        Microsoft confirms are gone (a 404 on the user itself) or disabled. Enabling or
+        restoring the account saves the user, and the access, again. The id sets are those of
+        this sync's own read and are empty unless it was complete, so an incomplete or empty
+        read withdraws nobody (the directory always has users); neither does a stale listing,
+        a failed or throttled read of the user, or a failed read of the stored users."""
+        listed, disabled = listing.listed_ids, listing.disabled_ids
         if not listed:
             self.logger.warning("User listing is incomplete or empty; no user loses access this run")
             return
         try:
-            stored = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
+            stored = await self.data_entities_processor.get_app_user_links(self.connector_id)
         except Exception as e:
             self.logger.error(f"Could not read the stored users; no user loses access this run: {e}")
             return
-        gone = [u for u in stored if u.source_user_id and (u.source_user_id in disabled or u.source_user_id not in listed)]
+        gone = []
+        for u in stored:
+            sid = u.source_user_id
+            if not sid or (sid in listed and sid not in disabled):
+                continue
+            if sid not in listed:
+                try:
+                    if await read_user_status(self.external_users_client.client, sid) == "present":
+                        continue
+                except Exception as e:
+                    self.logger.error(f"Could not confirm user {sid} is gone; keeping the access: {e}")
+                    continue
+            gone.append(u)
         if gone:
             await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
 
-    async def _get_all_users_external(self) -> list[AppUser]:
+    async def _get_all_users_external(self) -> OutlookUserListing:
         """Get all users using external Users Groups API with pagination."""
         try:
             if not self.external_users_client:
                 raise Exception("External Users Groups client not initialized")
 
             all_users = []
-            # Local until the read is complete: the cache refresh can run at the same time.
             disabled_ids: set[str] = set()
             listed_ids: set[str] = set()
             complete = True
@@ -762,11 +785,13 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
             # A missing count cannot confirm the list, so it is not complete either.
             if not isinstance(expected, int) or len(listed_ids) < expected:
                 complete = False
-            self._listed_user_ids = listed_ids if complete else set()
-            self._disabled_user_ids = disabled_ids if complete else set()
+            listing = OutlookUserListing(all_users)
+            listing.complete = complete
+            listing.listed_ids = listed_ids if complete else set()
+            listing.disabled_ids = disabled_ids if complete else set()
 
             self.logger.info(f"Retrieved {len(all_users)} total users across {page_num} page(s) (complete: {complete})")
-            return all_users
+            return listing
 
         except Exception as e:
             # Propagate instead of returning [] — a swallowed failure here makes a dead

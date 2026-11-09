@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from app.config.constants.arangodb import Connectors
 from app.connectors.sources.microsoft.common.msgraph_client import (
@@ -38,7 +39,8 @@ def _processor(stored_ids: list[str]) -> tuple[MagicMock, dict]:
     proc.on_new_app_users = AsyncMock()
     proc.on_new_user_groups = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
-    proc.get_all_app_users = AsyncMock(side_effect=lambda *a, **k: list(stored.values()))
+    proc.get_app_user_links = AsyncMock(side_effect=lambda *a, **k: list(stored.values()))
+    proc.get_all_app_users = AsyncMock(side_effect=AssertionError("the member-only read must not pick candidates"))
 
     async def withdraw(_cid: str, users: list[AppUser]) -> None:
         for u in users:
@@ -67,11 +69,27 @@ def _page(values: list, next_link: str | None = None, success: bool = True, coun
 
 # ---------------------------------------------------------------- Outlook
 
-def _outlook(stored_ids: list[str], pages: list) -> tuple[OutlookConnector, dict]:
+def _odata_error(code: int) -> ODataError:
+    err = ODataError()
+    err.response_status_code = code
+    return err
+
+
+def _direct_read(status: object) -> AsyncMock:
+    """What reading one user by id answers: gone (404), present, disabled, or an error."""
+    if status == "gone":
+        return AsyncMock(side_effect=_odata_error(404))
+    if status in ("present", "disabled"):
+        return AsyncMock(return_value=MagicMock(account_enabled=status == "present"))
+    return AsyncMock(side_effect=status)
+
+
+def _outlook(stored_ids: list[str], pages: list, status: object = "gone") -> tuple[OutlookConnector, dict]:
     proc, stored = _processor(stored_ids)
     c = OutlookConnector(logging.getLogger("t"), proc, MagicMock(), MagicMock(), "c1", "team", "creator")
     c.external_users_client = MagicMock()
     c.external_users_client.users_user_list_user = AsyncMock(side_effect=pages)
+    c.external_users_client.client.users.by_user_id.return_value.get = _direct_read(status)
     return c, stored
 
 
@@ -144,7 +162,7 @@ async def test_outlook_user_without_source_id_is_not_withdrawn() -> None:
 @pytest.mark.asyncio
 async def test_outlook_read_failure_of_stored_users_withdraws_nobody(caplog: pytest.LogCaptureFixture) -> None:
     c, stored = _outlook(["a", "gone"], [_page([_graph_user("a")])])
-    c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=RuntimeError("db down"))
+    c.data_entities_processor.get_app_user_links = AsyncMock(side_effect=RuntimeError("db down"))
     with caplog.at_level(logging.ERROR):
         await c._sync_users()
     c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
@@ -153,39 +171,67 @@ async def test_outlook_read_failure_of_stored_users_withdraws_nobody(caplog: pyt
 
 
 @pytest.mark.asyncio
-async def test_outlook_half_read_listing_cannot_withdraw_while_another_read_runs() -> None:
-    """The cache refresh reads the users at the same time as the sync: the sets a withdrawal
-    uses are only replaced once a read is complete."""
-    c, stored = _outlook(["a", "b", "c"], [])
-    reached_second_page, release = asyncio.Event(), asyncio.Event()
+async def test_outlook_withdrawal_uses_the_syncs_own_listing_not_an_overlapping_refresh() -> None:
+    """The user-cache refresh reads the users at the same time as the sync. An incomplete
+    refresh that finishes before the withdrawal runs must not change what the sync withdraws."""
+    c, stored = _outlook(["a", "gone"], [_page([_graph_user("a")]), _page([_graph_user("a")], count=5)])
+    syncs_listing = await c._get_all_users_external()
+    refresh = await c._get_all_users_external()  # incomplete: no user loses access on this one
+    assert refresh.complete is False and not refresh.listed_ids
+    await c._withdraw_disabled_app_users(syncs_listing)
+    assert set(stored) == {"a"}
 
-    async def pages(next_url: str | None = None, **_: object) -> MagicMock:
-        if next_url is None:
-            return _page([_graph_user("a")], "https://next", count=3)
-        reached_second_page.set()
-        await release.wait()
-        return _page([_graph_user("b"), _graph_user("c")])
 
-    c.external_users_client.users_user_list_user = AsyncMock(side_effect=pages)
-    reading = asyncio.create_task(c._get_all_users_external())
-    await reached_second_page.wait()
-    await c._withdraw_disabled_app_users()  # runs while only "a" has been listed
-    c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
-    release.set()
-    await reading
-    assert set(stored) == {"a", "b", "c"}
-    assert c._listed_user_ids == {"a", "b", "c"}
+@pytest.mark.asyncio
+async def test_outlook_an_incomplete_listing_hands_the_withdrawal_no_ids() -> None:
+    c, stored = _outlook(["a", "gone"], [_page([_graph_user("a")], count=5)])
+    listing = await c._get_all_users_external()
+    assert not listing.listed_ids and not listing.disabled_ids
+    await c._withdraw_disabled_app_users(listing)
+    assert set(stored) == {"a", "gone"}
+
+
+@pytest.mark.asyncio
+async def test_outlook_stale_listing_with_a_matching_count_withdraws_nobody() -> None:
+    c, stored = _outlook(["a", "new"], [_page([_graph_user("a")])], status="present")
+    await c._sync_users()
+    assert set(stored) == {"a", "new"}
+
+
+@pytest.mark.asyncio
+async def test_outlook_absent_account_found_disabled_is_withdrawn() -> None:
+    c, stored = _outlook(["a", "off"], [_page([_graph_user("a")])], status="disabled")
+    await c._sync_users()
+    assert set(stored) == {"a"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [_odata_error(429), _odata_error(500), RuntimeError("down")])
+async def test_outlook_absent_account_that_cannot_be_confirmed_keeps_access(failure: Exception, caplog: pytest.LogCaptureFixture) -> None:
+    c, stored = _outlook(["a", "x"], [_page([_graph_user("a")])], status=failure)
+    with caplog.at_level(logging.ERROR):
+        await c._sync_users()
+    assert set(stored) == {"a", "x"}
+    assert any("x" in r.message and r.levelno == logging.ERROR for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_outlook_direct_reads_are_bounded_to_the_absent_accounts() -> None:
+    c, _ = _outlook(["a", "b", "c", "d"], [_page([_graph_user("a"), _graph_user("b", enabled=False)])])
+    await c._sync_users()
+    assert c.external_users_client.client.users.by_user_id.return_value.get.await_count == 2  # c and d only
 
 
 # ------------------------------------------------------------- SharePoint
 
-def _sharepoint(stored_ids: list[str], listing: object, complete: bool = True) -> tuple[SharePointConnector, dict]:
+def _sharepoint(stored_ids: list[str], listing: object, complete: bool = True, status: object = "gone") -> tuple[SharePointConnector, dict]:
     proc, stored = _processor(stored_ids)
     c = SharePointConnector(logging.getLogger("t"), proc, MagicMock(), MagicMock(), "c1", "team", "creator")
     c.msgraph_client = MagicMock()
     c.user_sync_point = MagicMock()
     c.user_sync_point.read_sync_point = AsyncMock(return_value=None)
     c.notify = AsyncMock()
+    c.msgraph_client.get_user_status = AsyncMock(side_effect=status) if isinstance(status, Exception) else AsyncMock(return_value=status)
     if isinstance(listing, Exception):
         c.msgraph_client.get_all_users = AsyncMock(side_effect=listing)
     else:
@@ -200,6 +246,31 @@ async def test_sharepoint_deleted_account_is_withdrawn_blocked_one_listed_stays(
     c, stored = _sharepoint(["a", "gone", "blocked"], [_app_user("a"), _app_user("blocked", active=False)])
     await c._sync_users()
     assert set(stored) == {"a", "blocked"}
+
+
+@pytest.mark.asyncio
+async def test_sharepoint_stale_listing_with_a_matching_count_withdraws_nobody() -> None:
+    c, stored = _sharepoint(["a", "new"], [_app_user("a")], status="present")
+    await c._sync_users()
+    c.msgraph_client.get_user_status.assert_awaited_once_with("new")
+    assert set(stored) == {"a", "new"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [_odata_error(429), _odata_error(500)])
+async def test_sharepoint_absent_account_that_cannot_be_confirmed_keeps_access(failure: Exception, caplog: pytest.LogCaptureFixture) -> None:
+    c, stored = _sharepoint(["a", "x"], [_app_user("a")], status=failure)
+    with caplog.at_level(logging.ERROR):
+        await c._sync_users()
+    assert set(stored) == {"a", "x"}
+    assert any("x" in r.message and r.levelno == logging.ERROR for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_sharepoint_direct_reads_are_bounded_to_the_absent_accounts() -> None:
+    c, _ = _sharepoint(["a", "b", "c", "d"], [_app_user("a"), _app_user("b", active=False)])
+    await c._sync_users()
+    assert c.msgraph_client.get_user_status.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -251,7 +322,7 @@ async def test_sharepoint_user_without_source_id_is_not_withdrawn() -> None:
 @pytest.mark.asyncio
 async def test_sharepoint_read_failure_of_stored_users_withdraws_nobody(caplog: pytest.LogCaptureFixture) -> None:
     c, stored = _sharepoint(["a", "gone"], [_app_user("a")])
-    c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=RuntimeError("db down"))
+    c.data_entities_processor.get_app_user_links = AsyncMock(side_effect=RuntimeError("db down"))
     with caplog.at_level(logging.ERROR):
         await c._sync_users()
     c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
@@ -328,3 +399,40 @@ async def test_datasource_sends_no_count_unless_asked() -> None:
     await UsersGroupsDataSource(wrapper).users_user_list_user(select=["id"])
     config = graph.users.get.await_args.kwargs["request_configuration"]
     assert not config.query_parameters.count
+
+
+@pytest.mark.asyncio
+async def test_sharepoint_guest_accounts_follow_the_same_rule() -> None:
+    listed_guest = _app_user("g1").model_copy(update={"is_guest": True})
+    c, stored = _sharepoint(["a", "g1", "g2"], [_app_user("a"), listed_guest])  # g2 is a guest that was deleted
+    await c._sync_users()
+    assert set(stored) == {"a", "g1"}
+
+
+@pytest.mark.asyncio
+async def test_outlook_a_deleted_guest_loses_access_and_a_listed_one_keeps_it() -> None:
+    guest = _graph_user("g1")
+    guest.user_type = "Guest"
+    c, stored = _outlook(["a", "g1", "g2"], [_page([_graph_user("a"), guest])])  # g2 is a guest that was deleted
+    await c._sync_users()
+    assert set(stored) == {"a", "g1"}
+
+
+@pytest.mark.asyncio
+async def test_status_read_is_a_definite_404_or_it_raises() -> None:
+    from app.connectors.sources.microsoft.common.msgraph_client import read_user_status
+
+    def graph_failing_with(code: int | None) -> MagicMock:
+        g = MagicMock()
+        g.users.by_user_id.return_value.get = AsyncMock(side_effect=_odata_error(code))
+        return g
+
+    assert await read_user_status(graph_failing_with(404), "u") == "gone"
+    for code in (429, 500):
+        with pytest.raises(ODataError):
+            await read_user_status(graph_failing_with(code), "u")
+    found = MagicMock()
+    found.users.by_user_id.return_value.get = AsyncMock(return_value=MagicMock(account_enabled=True))
+    assert await read_user_status(found, "u") == "present"
+    found.users.by_user_id.return_value.get = AsyncMock(return_value=MagicMock(account_enabled=False))
+    assert await read_user_status(found, "u") == "disabled"
