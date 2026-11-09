@@ -355,7 +355,7 @@ class ScopeFilter:
     def of(cls, scopes: ViewerScopes, current_connectors: Iterable[str] | Mapping[str, int], *, version: int, generation: int,
            blocked: Iterable[str] = ()) -> ScopeFilter:
         return cls(frozenset(current_connectors), scopes.open_apps, scopes.readable_groups, scopes.readable_scopes,
-                   scopes.unreadable_restricted, version, generation, scopes.pending, frozenset(blocked))
+                   scopes.unreadable_restricted, version, generation, scopes.pending, frozenset(blocked) | scopes.blocked)
 
     @property
     def reach(self) -> frozenset[str]:

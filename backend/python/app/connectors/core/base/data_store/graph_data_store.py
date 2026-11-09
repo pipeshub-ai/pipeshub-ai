@@ -292,6 +292,38 @@ class _GuardedProvider:
         setattr(self._provider, name, value)
 
 
+class StructuralMarks(set):
+    """The connectors a transaction changed structurally. ``add(connector, root)`` says the change reaches only the subtree of one record
+    (its own place, inheritance, group, rule or first/last grant); ``add(connector)`` says it reaches the connector as a whole (a delete, a
+    group, a writer that names no node). One whole-connector change makes the connector's change a whole one, whatever else was added."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.roots: dict[str, set[str]] = {}
+        self.whole: set[str] = set()
+
+    def add(self, connector: str, root: str | None = None) -> None:  # type: ignore[override]
+        super().add(connector)
+        if root is None:
+            self.whole.add(connector)
+        else:
+            self.roots.setdefault(connector, set()).add(root)
+
+    def update(self, *others) -> None:  # noqa: ANN002
+        for connectors in others:
+            for connector in connectors:
+                self.add(connector)
+
+    def clear(self) -> None:
+        super().clear()
+        self.roots.clear()
+        self.whole.clear()
+
+    def subtree_roots(self, connector: str) -> set[str] | None:
+        """The roots whose subtrees were changed; None when the change reaches more than subtrees."""
+        return None if connector in self.whole or not self.roots.get(connector) else set(self.roots[connector])
+
+
 class GraphTransactionStore(TransactionStore):
     """
     Graph database transaction-aware data store using IGraphDBProvider.
@@ -317,7 +349,7 @@ class GraphTransactionStore(TransactionStore):
         self._memo: dict[tuple, object] = {}
         # Connectors whose structure or permissions this transaction changes (see `_STRUCTURAL_WRITERS`); each gets one bump of
         # its scope generation, in this transaction, at the end of the block.
-        self.structural_connectors: set[str] = set()
+        self.structural_connectors = StructuralMarks()
         self._connector_of: dict[tuple[str, str], str | None] = {}
         # nodes this transaction created: no stamp can be stale for them, whatever edges it then gives them
         self.new_nodes: set[tuple[str, str]] = set()
@@ -368,10 +400,11 @@ class GraphTransactionStore(TransactionStore):
                 self._connector_of[(collection, node_id)] = by_id.get(node_id)
         return {t: str(c) for t in targets if t[1] and (c := self._connector_of.get((t[0], t[1])))}
 
-    async def _touch(self, targets: list[tuple[str, str | None]]) -> None:
+    async def _touch(self, targets: list[tuple[str, str | None]], *, subtrees: bool = False) -> None:
         """This transaction is about to change the structure under these nodes (collection, id); remember their connectors.
-        Resolved now, before a delete removes the node."""
-        self.structural_connectors.update((await self._connectors_of(targets)).values())
+        Resolved now, before a delete removes the node. With ``subtrees`` a record is registered as a root, not its connector as a whole."""
+        for (collection, node_id), connector in (await self._connectors_of(targets)).items():
+            self.structural_connectors.add(connector, node_id if subtrees and collection == _R else None)
 
     async def _stored(self, collection: str, ids: list[str]) -> dict[str, dict]:
         """The stored documents of these nodes (the ones that exist), one query; a failed read fails the block."""
@@ -403,7 +436,7 @@ class GraphTransactionStore(TransactionStore):
         token = _CLASSIFIED_SCOPE.set("flush_scope_generation")
         try:
             for connector_id in sorted(self.structural_connectors):
-                await bump_generation_in(self, connector_id)
+                await bump_generation_in(self, connector_id, self.structural_connectors.subtree_roots(connector_id))
         finally:
             _CLASSIFIED_SCOPE.reset(token)
         self.structural_connectors.clear()
@@ -715,11 +748,14 @@ class GraphTransactionStore(TransactionStore):
         from_id: str,
         from_collection: str,
         collection: str,
-        relationship_types: list[str]
+        relationship_types: list[str],
+        *,
+        raise_on_error: bool = False,
     ) -> int:
         """Delete edges by relationship types from a record."""
         return await self.graph_provider.delete_edges_by_relationship_types(
-            from_id, from_collection, collection, relationship_types, transaction=self.txn
+            from_id, from_collection, collection, relationship_types, transaction=self.txn,
+            raise_on_error=raise_on_error,
         )
 
     async def delete_nodes_and_edges(self, keys: list[str], collection: str) -> None:
@@ -827,6 +863,9 @@ class GraphTransactionStore(TransactionStore):
             AppUser.from_arango_user(user_dict) for user_dict in app_users_dict
             if user_dict is not None and user_dict.get("sourceUserId")
         ]
+
+    async def get_app_user_links(self, org_id: str, connector_id: str) -> list[dict]:
+        return await self.graph_provider.get_app_user_links(org_id, connector_id, transaction=self.txn)
 
     async def get_user_groups(
         self, connector_id: str, org_id: str, *, raise_on_error: bool = False
@@ -1462,11 +1501,12 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.filter_linked_record_ids(record_ids, transaction=self.txn)
 
     async def get_nodes_by_field_in(
-        self, collection: str, field: str, values: list, return_fields: list[str] = None
+        self, collection: str, field: str, values: list, return_fields: list[str] = None,
+        *, raise_on_error: bool = False,
     ) -> list[dict]:
         """Get nodes where field value is in list"""
         return await self.graph_provider.get_nodes_by_field_in(
-            collection, field, values, return_fields, transaction=self.txn
+            collection, field, values, return_fields, transaction=self.txn, raise_on_error=raise_on_error
         )
 
     async def remove_nodes_by_field(self, collection: str, field: str, value) -> int:
@@ -1891,7 +1931,7 @@ async def _note_removed_at_parent_end(self: GraphTransactionStore, name: str, ar
             continue
         ends.append((coll or _R, key or None))
     if ends:
-        await self._touch([(named_collection, named_id), *ends])
+        await self._touch([(named_collection, named_id), *ends], subtrees=True)
 
 
 def _wrap_structural(name: str, targets: Callable[[dict], list[tuple[str, str | None]]]) -> None:
@@ -1932,7 +1972,8 @@ def _wrap_structural(name: str, targets: Callable[[dict], list[tuple[str, str | 
         after = await self._structures_of(list(existing))
         for t, connector in existing.items():
             if t[1] in created or after[t] != before[t]:
-                self.structural_connectors.add(connector)
+                # the target is the node whose own place or access changed, so a record's change reaches its subtree only
+                self.structural_connectors.add(connector, t[1] if t[0] == _R else None)
         return result
 
     setattr(GraphTransactionStore, name, wrapper)
@@ -1992,6 +2033,12 @@ def _differs(stored: dict, key: str, new: object) -> bool:
     return _norm(key, stored.get(key)) != _norm(key, new)
 
 
+def _subtree_only(collection: str, changed: set[str]) -> bool:
+    """A record's own rule or parent pointer reaches the record and what hangs below it. A deletion or placeholder mark, and anything on a
+    group, is left to a full pass."""
+    return collection == _R and changed <= {"accessRule", "externalParentId"}
+
+
 def _wrap_upsert(name: str, collection: str, fields: dict[str, str], items_arg: str) -> None:
     """An upsert that changes the access rule (or model) of an existing node: compare with what is stored, read for the whole batch with
     one query. ``fields`` maps the stored key to the model attribute."""
@@ -2010,9 +2057,8 @@ def _wrap_upsert(name: str, collection: str, fields: dict[str, str], items_arg: 
             doc = stored.get(item.id)
             if doc is None:
                 self.new_nodes.add((collection, item.id))
-            elif str(item.connector_id) not in self.structural_connectors and any(
-                    _differs(doc, key, getattr(item, attr)) for key, attr in fields.items() if hasattr(item, attr)):
-                self.structural_connectors.add(str(item.connector_id))
+            elif changed := {key for key, attr in fields.items() if hasattr(item, attr) and _differs(doc, key, getattr(item, attr))}:
+                self.structural_connectors.add(str(item.connector_id), item.id if _subtree_only(collection, changed) else None)
         return await original(self, *args, **kwargs)
 
     setattr(GraphTransactionStore, name, wrapper)
@@ -2040,8 +2086,8 @@ def _wrap_patch(name: str) -> None:
                 doc = stored.get(node_id)
                 if doc is None:
                     self.new_nodes.add((collection, node_id))
-                elif doc.get("connectorId") and any(_differs(doc, k, node[k]) for k in _RULE_FIELDS if k in node):
-                    self.structural_connectors.add(str(doc["connectorId"]))
+                elif doc.get("connectorId") and (changed := {k for k in _RULE_FIELDS if k in node and _differs(doc, k, node[k])}):
+                    self.structural_connectors.add(str(doc["connectorId"]), node_id if _subtree_only(collection, changed) else None)
         return await original(self, *args, **kwargs)
 
     setattr(GraphTransactionStore, name, wrapper)

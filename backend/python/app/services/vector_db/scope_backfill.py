@@ -45,6 +45,7 @@ from app.services.permissions.structure_generation import (
     GENERATION_KEY,
     OPENED_KEY,
     UNSAFE_KEY,
+    clear_pending_covered,
     new_unsafe_mark,
     same_mark,
     structure_generation_of,
@@ -217,6 +218,7 @@ class ScopeBackfill:
                         "service, which applies the schema at start, and run again. Nothing was written."
                     ) from exc
             if p.state == DONE:
+                await clear_pending_covered(self._graph, app_id, p.structure_generation)
                 return p
             p.state, p.error = RUNNING, None
             try:
@@ -238,6 +240,8 @@ class ScopeBackfill:
                 SCOPE_STAMP_FAILED.inc("backfill")
                 self._log.warning("scope back-fill of %s stopped at %s: %s", app_id, p.after, p.error)
             await self._checkpoints.save(app_id, p)
+            if p.state == DONE:  # the pass wrote every stamp from the graph as of its generation, so it covers the roots registered up to it
+                await clear_pending_covered(self._graph, app_id, p.structure_generation)
             return p
 
     async def _stamp(self, org_id: str, vrid: str) -> str:

@@ -7,6 +7,7 @@ from collections.abc import Callable
 from unittest.mock import MagicMock, patch
 
 import httpx
+import httpx2
 import pytest
 
 from app.utils.logger import (
@@ -365,6 +366,59 @@ class TestHttpxSuccessFilter:
         assert "https://bucket.example/pack.zip" in message
         assert "SECRET" not in message
         assert "hunter2" not in message
+
+    def test_kept_httpx2_line_carries_no_url_credentials(self) -> None:
+        """httpx2 (the MCP 2.x client) passes its own URL type; it is redacted like httpx's."""
+        record = _httpx_record(404)
+        record.name = "httpx2"
+        record.args = ("POST", httpx2.URL("http://user:hunter2@mcp.example/mcp?api_key=SECRET"), "HTTP/1.1", 404, "Not Found")
+        assert self.filter.filter(record) is True
+        message = record.getMessage()
+        assert "http://mcp.example/mcp" in message
+        assert "SECRET" not in message
+        assert "hunter2" not in message
+
+    @pytest.mark.parametrize(("name", "status", "kept"), [
+        ("httpx", 200, False), ("httpx", 404, True), ("httpx2", 200, False), ("httpx2", 404, True),
+    ])
+    def test_both_httpx_loggers_drop_2xx_and_keep_failures(self, name: str, status: int, kept: bool) -> None:
+        """The filter is installed on both loggers at import: a 2xx line from either never reaches a handler."""
+        seen: list[logging.LogRecord] = []
+
+        class _Collect(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                seen.append(record)
+
+        lg = logging.getLogger(name)
+        handler, level = _Collect(), lg.level
+        lg.addHandler(handler)
+        lg.setLevel(logging.INFO)
+        try:
+            record = _httpx_record(status)
+            record.name = name
+            lg.handle(record)
+        finally:
+            lg.removeHandler(handler)
+            lg.setLevel(level)
+        assert bool(seen) is kept
+
+    @pytest.mark.parametrize(("status", "kept"), [(200, False), (204, False), (404, True), (503, True)])
+    def test_an_already_rendered_line_is_judged_by_its_text(self, status: int, kept: bool) -> None:
+        """litellm's SecretRedactionFilter, when it runs first on the httpx logger, renders the message and clears args."""
+        record = _httpx_record(status)
+        record.msg, record.args = record.getMessage(), None
+        assert self.filter.filter(record) is kept
+
+    def test_a_kept_rendered_line_has_its_url_redacted(self) -> None:
+        """A failure line another filter already rendered keeps no userinfo (a username-only token included) or query."""
+        record = _httpx_record(401)
+        record.args = ("POST", "http://TOKENVALUE@mcp.example/mcp?api_key=SECRET", "HTTP/1.1", 401, "Unauthorized")
+        record.msg, record.args = record.getMessage(), None
+        assert self.filter.filter(record) is True
+        assert "http://mcp.example/mcp" in record.msg
+        assert "TOKENVALUE" not in record.msg
+        assert "SECRET" not in record.msg
+        assert record.msg.endswith('"HTTP/1.1 401 Unauthorized"')
 
     # Flaky: httpx sometimes emits the pre-filter URL so SECRET leaks into
     # captured messages (CI: 1 fail / 53325 pass). Skip until the filter is

@@ -98,6 +98,8 @@ export const extractModelInfo = (
   };
 };
 
+export { conversationTitleFromQuery } from './quoted-selection';
+
 export const buildUserQueryMessage = (
   query: string,
   appliedFilters?: IAppliedFilters,

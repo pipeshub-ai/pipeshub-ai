@@ -29,6 +29,7 @@ from app.core.envelope import (
 from app.core.org_context import bind_optional, spawn_detached
 from app.core.org_context import pop as pop_org
 from app.core.org_context import push as push_org
+from app.modules.indexing.embed_resume import stamp_delivery_id
 from app.services.messaging.config import (
     IndexingEvent,
     MessageHandler,
@@ -480,6 +481,8 @@ class PgMessagingConsumer(IMessagingConsumer):
                 if parsed is None:
                     return False, True, None, "unparseable message"
                 parsed.is_final_failure = final
+                # A hand-back is a nack of the same row, so the row names the event across its retries.
+                stamp_delivery_id(parsed.payload, f"{d.topic}:{d.message_id}")
                 await self._drive_indexing(parsed, f"message:{d.message_id}")
                 return True, False, parsed, ""
             try:

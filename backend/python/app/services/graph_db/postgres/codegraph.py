@@ -465,8 +465,36 @@ class CodeGraphMixin(PgBase):
             path = cf.get("filePath") or r["name"]
             if path:
                 out[r["rid"]] = CodeFileInfo(file_path=path, referenced_names=tuple(cf.get("referencedNames") or ()),
-                                             changed_names=tuple(cf.get("changedNames") or ()), has_code_file=bool(cf))
+                                             changed_names=tuple(cf.get("changedNames") or ()), has_code_file=bool(cf),
+                                             commit_sha=cf.get("commitSha") or None)
         return out
+
+    async def find_uncalled_blocks(self, org_id: str, connector_id: str, record_ids: list[str], kinds: list[str], relations: list[str],
+                                   limit: int, after_key: str | None = None, uncounted_caller_records: list[str] | None = None,
+                                   transaction: str | None = None, *, raise_on_error: bool = False) -> tuple[list[dict[str, Any]], str | None]:
+        org = current_org_id()
+        if not record_ids:
+            return [], None
+        try:
+            # The caller's record: a block's recordId, or the record itself for a link that starts at one.
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.find_uncalled_blocks */ SELECT b.doc FROM graph.nodes b
+                WHERE b.org_id = $1 AND b.coll = 'blocks' AND b.doc->>'orgId' = $2 AND b.doc->>'connectorId' = $3
+                  AND b.doc->>'kind' = ANY($4::text[]) AND b.doc->>'recordId' = ANY($5::text[])
+                  AND ($6::text IS NULL OR b.id COLLATE "C" > $6::text)
+                  AND NOT EXISTS (SELECT 1 FROM graph.edges e
+                    WHERE e.org_id = $1 AND e.coll = ANY($7::text[]) AND e.to_coll = 'blocks' AND e.to_id = b.id
+                      AND coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) = ANY($8::text[])
+                      AND NOT coalesce(CASE WHEN e.from_coll = 'blocks' THEN (SELECT c.doc->>'recordId' FROM graph.nodes c
+                            WHERE c.org_id = $1 AND c.coll = 'blocks' AND c.id = e.from_id) ELSE e.from_id END, '') = ANY($9::text[]))
+                ORDER BY b.id COLLATE "C" LIMIT $10""", org, org_id, connector_id, kinds, record_ids, after_key, _LINK_COLLS, relations,
+                                                      uncounted_caller_records or [], limit), transaction)
+        except Exception:
+            if raise_on_error:
+                raise
+            self.logger.exception("find_uncalled_blocks failed")
+            return [], None
+        page = [_arango(_doc(r["doc"]), _BLOCKS) for r in rows]
+        return page, (page[-1]["_key"] if len(page) == limit else None)
 
     # ---- blocks --------------------------------------------------------------------------------------------------
     async def delete_blocks_for_records(self, record_ids: list[str], transaction: str | None = None) -> int:

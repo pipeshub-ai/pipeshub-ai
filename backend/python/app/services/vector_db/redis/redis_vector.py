@@ -62,7 +62,7 @@ from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     SCOPE_KEYWORD_INDEXES,
 )
-from app.services.vector_db.errors import OrgRequired
+from app.services.vector_db.errors import OrgRequired, PartialResult
 from app.services.vector_db.filters import (
     ScopeFilterTooLarge,
     build_generic_conditions,
@@ -547,7 +547,9 @@ class RedisVectorService(IVectorDBService):
 
         field_name uses ``metadata.`` prefix convention (e.g. ``metadata.orgId``).
         We convert ``metadata.x`` → ``metadata_x`` for the Redis hash field alias.
-        No JSONPath prefix is needed for ON HASH indexes.
+        No JSONPath prefix is needed for ON HASH indexes. A failure other than
+        "already in the schema" is raised so the caller knows the field is not
+        searchable.
         """
         self._assert_connected()
         idx = self._index_name(collection_name)
@@ -569,7 +571,7 @@ class RedisVectorService(IVectorDBService):
             # "duplicate field in schema".
             if "already exists" in err or "duplicate field" in err:
                 return
-            logger.warning(f"FT.ALTER failed for field '{field_name}': {e}")
+            raise
 
     # ------------------------------------------------------------------
     # Filter construction
@@ -1016,6 +1018,15 @@ class RedisVectorService(IVectorDBService):
                 f"First error: {results[failed[0]]}"
             )
 
+    async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
+        self._assert_connected()
+        counted = await self.client.execute_command(  # type: ignore
+            "FT.SEARCH", self._index_name(collection_name), filter_expression_to_redis_query(count_filter), "NOCONTENT", "LIMIT", "0", "0", *_NO_TIMEOUT,
+        )
+        if not isinstance(counted, (list, tuple)) or not counted:
+            raise PartialResult(f"{collection_name}: unexpected count reply {counted!r}")
+        return int(counted[0])
+
     async def scroll(
         self,
         collection_name: str,
@@ -1149,6 +1160,22 @@ class RedisVectorService(IVectorDBService):
             if doc:
                 points.append(VectorPoint(id=point_id, payload=hash_doc_to_payload(doc)))
         return points
+
+    async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
+        self._assert_connected()
+        if not ids:
+            return set()
+        pipeline = self.client.pipeline(transaction=False)  # type: ignore
+        for point_id in ids:
+            pipeline.execute_command("EXISTS", self._key(collection_name, point_id))
+        replies = await pipeline.execute()
+        found: set[str] = set()
+        for point_id, reply in zip(ids, replies):
+            if isinstance(reply, Exception):
+                raise reply
+            if reply:
+                found.add(point_id)
+        return found
 
     async def query_nearest_points(
         self,

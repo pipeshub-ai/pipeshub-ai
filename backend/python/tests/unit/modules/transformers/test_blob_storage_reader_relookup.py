@@ -93,6 +93,16 @@ class TestGatewayNotFound:
         assert bs.get_document_id_by_virtual_record_id.await_count == 1
         assert _count("served", "not_found") == before + 1
 
+    async def test_exact_mode_raises_the_first_error_and_never_looks_up_again(self) -> None:
+        bs = _bs(_lookup("new"))
+        asked = _envelopes(bs, {"old": StorageDocumentNotFoundError("gone"), "new": {"record": {"x": 1}}})
+
+        with pytest.raises(StorageDocumentNotFoundError):
+            await bs.get_record_from_storage(VRID, ORG, lookup_result=_lookup("old"), relookup=False)
+
+        assert asked == ["old"]
+        bs.get_document_id_by_virtual_record_id.assert_not_awaited()
+
     async def test_t12_control_the_same_document_stays_a_404(self) -> None:
         bs = _bs(_lookup("old"))
         asked = _envelopes(bs, {"old": StorageDocumentNotFoundError("gone")})

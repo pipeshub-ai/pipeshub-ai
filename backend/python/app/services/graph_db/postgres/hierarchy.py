@@ -129,7 +129,7 @@ class HierarchyMixin(PgBase):
                                                   org, colls, from_collection, from_id, to_collection, kind), transaction, write=True)
 
     async def delete_edges_by_relationship_types(self, from_id: str, from_collection: str, collection: str, relationship_types: list[str],
-                                                 transaction: str | None = None) -> int:
+                                                 transaction: str | None = None, *, raise_on_error: bool = False) -> int:
         """``nodeRelations`` is the hierarchy and the links, ``recordLinks`` the links only (Neo4j's ``NODE_RELATION|RECORD_LINK`` and ``RECORD_LINK``)."""
         org = current_org_id()
         colls, kind = _edge_scope(collection)
@@ -139,6 +139,8 @@ class HierarchyMixin(PgBase):
                 SELECT count(*) FROM d""", org, colls, from_collection, from_id, relationship_types, kind), transaction, write=True)
         except Exception as e:
             self.logger.error(f"❌ Delete edges by relationship types failed: {e}")
+            if raise_on_error:
+                raise
             return 0
 
     async def delete_parent_child_edge_to_record(self, record_id: str, transaction: str | None = None) -> bool:

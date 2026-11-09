@@ -24,3 +24,13 @@ def test_a_finished_build_reports_what_it_did() -> None:
                  'pipeshub_code_graph_owed_builds{state="due"} 3.0',
                  'pipeshub_code_graph_owed_builds{state="waiting"} 4.0'):
         assert line in out, line
+
+
+def test_tool_calls_are_counted_by_tool_and_outcome() -> None:
+    METRICS_BACKEND.reset()
+    code_graph_metrics.record_tool_call("impact", ok=True)
+    code_graph_metrics.record_tool_call("impact", ok=True)
+    code_graph_metrics.record_tool_call("impact", ok=False)
+    out = METRICS_BACKEND.serialize()
+    assert 'pipeshub_code_graph_tool_calls_total{outcome="ok",tool="impact"} 2.0' in out
+    assert 'pipeshub_code_graph_tool_calls_total{outcome="error",tool="impact"} 1.0' in out
