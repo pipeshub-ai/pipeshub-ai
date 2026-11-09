@@ -17,19 +17,26 @@ import re
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import anyio
 import pytest
+from langchain_core.messages import AIMessageChunk
 
 from app.agent_loop_lib.core.responses import TokenUsage
 from app.agent_loop_lib.core.types import AgentResult, Goal
 from app.agent_loop_lib.events.base import AgentEvent, EventType, RunContext
+from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.agents.agent_loop.stream_bridge import run_agent_loop_stream
 from app.agents.agent_loop.tool_approvals import _PENDING_IN_RUN
+from app.agents.agent_loop.usage_transport import UsageReportingTransport
 from app.utils.logger import log_record_fields
 from app.utils.pattern_match import await_pattern_match
 from app.utils.stage_timer import StageTimer
+from tests.unit.agent_loop_lib.agent.test_agent_step_outcomes import _build
+from tests.unit.agents.adapter.support.provider_stall import pending_since
+from tests.unit.agents.adapter.test_langchain_transport import _StallingModel
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 
     from app.agents.agent_loop.context import AgentContext
 
@@ -125,6 +132,8 @@ async def _run(
     disconnect_after_first_frame: bool = False,
     clarifying_questions: list[Any] | None = None,
     build_state: dict[str, Any] | None = None,
+    goal: Goal | None = None,
+    drive: Callable[[AsyncGenerator[str, None]], Awaitable[list[str]]] | None = None,
 ) -> list[str]:
     make_agent = make_agent or _two_turn_agent
 
@@ -132,7 +141,7 @@ async def _run(
         self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None,
     ):
         await context.event_sink.write({"event": "status", "data": {"status": "planning"}})
-        return make_agent(context), MagicMock(), MagicMock(description="g"), clarifying_questions or []
+        return make_agent(context), MagicMock(), goal or MagicMock(description="g"), clarifying_questions or []
 
     async def _fake_finalizer_run(self, *, event_sink, **kwargs) -> None:
         await event_sink.write({"event": "complete", "data": {"answer": "42"}})
@@ -162,7 +171,9 @@ async def _run(
             config_service=MagicMock(), model_name="gpt-4",
             stage_timer=stage_timer,
         )
-        if disconnect_after_first_frame:
+        if drive is not None:
+            chunks = await drive(stream)
+        elif disconnect_after_first_frame:
             chunks = [await stream.__anext__()]
             await asyncio.sleep(0.05)  # let the agent reach its tool call
             await stream.aclose()  # the client goes away
@@ -399,3 +410,86 @@ class TestTheClientGoingAway:
         assert [r.getMessage() for r in caplog.records if r.name == "app.agents.agent_loop.turn_log"] == [
             "agent_turn.end failed",
         ]
+
+
+class TestADisconnectStopsTheModelCall:
+    """A real `Agent` whose main model call (the real `UsageReportingTransport` over the real
+    `LangChainTransport`) is still streaming when the client goes away. An intent call already
+    finished. The provider read gets exactly one cancel and closes, the finished call stays
+    counted, and the cut-off call logs only its DEBUG `llm_call.end`."""
+
+    @staticmethod
+    def _agent_mid_model_call(model: _StallingModel) -> Callable[[AgentContext], Any]:
+        def make(context: AgentContext) -> Any:  # noqa: ANN401
+            context.usage_ledger.add("single_shot:intent", TokenUsage(input_tokens=120, output_tokens=7))
+            transport = UsageReportingTransport(
+                LangChainTransport(model, cancellation_token=context.cancellation_token), context.usage_ledger.add,
+            )
+            agent, _ = _build(transport)
+            return agent
+
+        return make
+
+    @staticmethod
+    def _assert_the_turn_logged_one_end_and_no_late_call(caplog: pytest.LogCaptureFixture) -> None:
+        fields = _end_fields(caplog)
+        assert (fields["stop_reason"], fields["llm_calls"], fields["tokens_in"], fields["tokens_out"]) == (
+            "client_disconnect", 1, 120, 7,
+        )
+        [call_end] = [r for r in caplog.records if r.getMessage() == "llm_call.end"]
+        call = log_record_fields(call_end)
+        assert (call_end.levelno, call["source"], call["outcome"], call["error_class"]) == (
+            logging.DEBUG, "main", "failure", "cancelled",
+        )
+        assert [r for r in caplog.records if r.exc_info] == []
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING and (
+            r.name.startswith(("app.agent", _LOG.name))
+        )] == []
+
+    async def test_closing_the_stream_cancels_the_provider_read_before_the_close_returns(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        model = _StallingModel([AIMessageChunk(content="partial")])
+
+        async def close_once_the_model_streams(stream: AsyncGenerator[str, None]) -> list[str]:
+            chunks = [await stream.__anext__()]
+            await model.stall.started.wait()
+            await stream.aclose()
+            assert (model.stall.cancels, model.stall.closed) == (1, True)
+            return chunks
+
+        before = asyncio.all_tasks()
+        await _run(None, make_agent=self._agent_mid_model_call(model), goal=Goal(description="g"),
+                   drive=close_once_the_model_streams)
+
+        self._assert_the_turn_logged_one_end_and_no_late_call(caplog)
+        assert await pending_since(before) == []
+
+    async def test_a_starlette_cancel_scope_reaches_the_provider_read_once(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Starlette's `StreamingResponse` cancels its task group on `http.disconnect`. anyio
+        re-cancels the response task on every loop iteration while it unwinds, and the bridge's
+        and `Agent.stream()`'s `gather`s forward each re-cancel down the turn."""
+        model = _StallingModel([AIMessageChunk(content="partial")])
+
+        async def cancel_like_starlette(stream: AsyncGenerator[str, None]) -> list[str]:
+            async def send() -> None:
+                async with contextlib.aclosing(stream):
+                    async for _ in stream:
+                        pass
+
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(send)
+                await model.stall.started.wait()
+                tg.cancel_scope.cancel()
+            return []
+
+        before = asyncio.all_tasks()
+        await _run(None, make_agent=self._agent_mid_model_call(model), goal=Goal(description="g"),
+                   drive=cancel_like_starlette)
+        await model.stall.settle()
+
+        assert (model.stall.cancels, model.stall.closed, model.aclose_called) == (1, True, True)
+        self._assert_the_turn_logged_one_end_and_no_late_call(caplog)
+        assert await pending_since(before) == []

@@ -22,6 +22,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, RecordRelations
+from app.modules.parsers.code_parser.lang_config import SUPPORTED_CODE_EXTENSIONS
 from app.modules.parsers.code_parser.models import FILLER_KINDS
 
 from .ops import (
@@ -38,8 +39,10 @@ from .ops import (
     attach_file_paths,
     coverage_for,
     get_record_roles,
+    name_repos_of_shared_paths,
     repo_names,
 )
+from .results import saw_commit
 
 if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -88,7 +91,8 @@ _SELECT_SCAN_LIMIT = 400
 _PATH_FANOUT_FILES = 60
 # Files a directory listing may scan before it reports itself truncated.
 _LIST_SCAN_LIMIT = 2000
-_CODE_EXTENSIONS = (".py", ".ts", ".tsx", ".js", ".jsx")
+# What the parser indexes: a top-level `main.go` has only its extension to say it is a file.
+_CODE_EXTENSIONS = tuple(f".{ext}" for ext in SUPPORTED_CODE_EXTENSIONS)
 
 
 def _looks_like_path(select: str) -> bool:
@@ -138,11 +142,13 @@ def path_matches(path: str, pattern: str) -> bool:
 
 async def files_by_pattern(
     graph_provider: IGraphDBProvider, org_id: str, pattern: str, *, scan_limit: int | None = None,
-) -> tuple[dict[str, str], bool]:
-    """``(record id -> path, scan_capped)`` for the code files a glob, file or directory matches.
+) -> tuple[dict[str, str], bool, dict[str, str | None]]:
+    """``(record id -> path, scan_capped, record id -> commit)`` for the code files a glob, file or directory
+    matches.
 
     Matched against ``codeFiles``, one row per file. Neither connector nor
-    access is applied here: callers re-apply both.
+    access is applied here: callers re-apply both, and note the commits of
+    only the files they keep.
     """
     # Anchor the DB-side filter on the pattern's literal prefix so the index does
     # the work; the glob itself is applied in Python.
@@ -155,9 +161,10 @@ async def files_by_pattern(
         filters={"orgId": org_id},
         limit=scan_limit,
         raise_on_error=True,
-        return_fields=["_key", "filePath"],
+        return_fields=["_key", "filePath", "commitSha"],
     )
     paths: dict[str, str] = {}
+    commits: dict[str, str | None] = {}
     for raw in files or []:
         row = _unwrap(raw)
         key = row.get("_key") or row.get("id")
@@ -165,7 +172,8 @@ async def files_by_pattern(
         if not key or not path or not path_matches(path, pattern):
             continue
         paths[key] = path
-    return paths, len(files or []) >= scan_limit
+        commits[key] = row.get("commitSha")
+    return paths, len(files or []) >= scan_limit, commits
 
 
 async def _select_by_path(
@@ -181,7 +189,7 @@ async def _select_by_path(
     caller counts what it got and would report a clean ``truncated: false``
     for a prefix that was cut short.
     """
-    paths, files_capped = await files_by_pattern(graph_provider, org_id, pattern)
+    paths, files_capped, _ = await files_by_pattern(graph_provider, org_id, pattern)
     if not paths:
         return [], False
 
@@ -250,6 +258,8 @@ async def _list_children(
     prefix: str,
     connector_id: str,
     limit: int,
+    *,
+    include_tests: bool,
 ) -> dict[str, Any]:
     """Immediate files and subdirectories under a directory prefix.
 
@@ -278,7 +288,7 @@ async def _list_children(
         graph_provider, org_id, user_id, connector_id,
         {key for row in rows if (key := (row.get("_key") or row.get("id")))},
     )
-    files: list[dict[str, Any]] = []
+    files: list[tuple[dict[str, Any], str, str | None]] = []  # (row, record id, commit)
     dirs: dict[str, int] = {}
     for row in rows:
         path = row.get("filePath")
@@ -291,19 +301,26 @@ async def _list_children(
             child = rest.split("/", 1)[0]
             dirs[child] = dirs.get(child, 0) + 1
             continue
-        files.append({
+        files.append(({
             "path": path,
             "language": row.get("language"),
             "role": row.get("fileRole"),
             "select": path,
-        })
+        }, row.get("_key") or row.get("id"), row.get("commitSha")))
+    shown = sorted(files, key=lambda f: f[0]["path"])[:limit]
+    if not include_tests:
+        shown = [f for f in shown if f[0].get("role") != TEST_ROLE]
+    # Only the listed files: a cut or hidden file sharing a listed path must not blank its commit.
+    for row, record_id, commit in shown:
+        saw_commit(row["path"], record_id, commit)
+    await name_repos_of_shared_paths(graph_provider, org_id, ((rid, row) for row, rid, _ in shown), "path")
     scanned = len(rows)
     return {
         "directories": [
             {"path": f"{prefix}{name}", "files": n, "select": f"{prefix}{name}/"}
             for name, n in sorted(dirs.items(), key=lambda kv: (-kv[1], kv[0]))
         ][:limit],
-        "files": sorted(files, key=lambda f: f["path"])[:limit],
+        "files": [row for row, _, _ in shown],
         "truncated": scanned >= _LIST_SCAN_LIMIT or len(files) > limit or len(dirs) > limit,
     }
 
@@ -364,13 +381,11 @@ async def query_code_graph_impl(
 
     if _looks_like_directory(select):
         listing = await _list_children(
-            graph_provider, org_id, user_id, select, connector_id, limit
+            graph_provider, org_id, user_id, select, connector_id, limit, include_tests=include_tests,
         )
         # An empty listing means this was never a directory. `conversations/
         # stream` is a URL fragment; answering it with "no such directory" is a
         # dead end for something free text finds.
-        if not include_tests:
-            listing["files"] = [f for f in listing["files"] if f.get("role") != TEST_ROLE]
         if listing["directories"] or listing["files"]:
             return {
                 "select": select,
