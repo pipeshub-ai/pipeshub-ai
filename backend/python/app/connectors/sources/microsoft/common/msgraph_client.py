@@ -151,7 +151,7 @@ class UserListing(list):
     complete: bool = True
 
 
-async def read_user_status(graph: Any, user_id: str) -> str:
+async def read_user_status(graph: GraphServiceClient, user_id: str) -> str:
     """Read one user by id: ``gone`` only on a definite 404, ``disabled`` when the account
     is found with ``accountEnabled`` false, ``present`` otherwise. Any other failure
     (throttling, a server error) raises, so the caller keeps the user."""
