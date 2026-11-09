@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from unittest.mock import AsyncMock, MagicMock
 
 from app.scripts import scope_projection
@@ -57,3 +58,76 @@ async def test_run_exits_non_zero_when_the_scope_generation_is_unavailable(monke
     finally:
         set_resolved_generation(None)
     graph.permission_stamp_graph.assert_not_called()
+
+
+def _sweep_env(monkeypatch, rows) -> list:
+    container = MagicMock()
+    container.graph_provider = AsyncMock(return_value=MagicMock(disconnect=AsyncMock()))
+    monkeypatch.setattr("app.containers.indexing.IndexingAppContainer.init", lambda name: container)
+    monkeypatch.setattr("app.modules.indexing.vector_membership_backfill._resolve_indexing_pipeline", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr("app.services.permissions.wiring.register_scope_generation", AsyncMock())
+    calls: list = []
+
+    class Sweep:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def run_once(self, org: str, connectors: object) -> list:
+            calls.append((org, connectors))
+            return rows
+
+    monkeypatch.setattr("app.services.vector_db.scope_sweep.ScopeSweep", Sweep)
+    return calls
+
+
+async def test_sweep_refuses_while_the_scope_fields_are_off(monkeypatch) -> None:
+    monkeypatch.delenv("ACL_SCOPE_FIELDS", raising=False)
+    monkeypatch.delenv("ACL_FILTER_MODE", raising=False)
+    calls = _sweep_env(monkeypatch, [])
+    assert await scope_projection._main(["sweep", "--org", "o"]) == 1 and not calls
+
+
+async def test_sweep_exits_non_zero_only_when_a_connector_failed(monkeypatch) -> None:
+    from app.services.vector_db.scope_sweep import SweepRow
+
+    monkeypatch.setenv("ACL_SCOPE_FIELDS", "on")
+    calls = _sweep_env(monkeypatch, [SweepRow("a", "done"), SweepRow("b", "idle")])
+    assert await scope_projection._main(["sweep", "--org", "o", "--connector", "a"]) == 0 and calls == [("o", ["a"])]
+    _sweep_env(monkeypatch, [SweepRow("a", "done"), SweepRow("b", "failed", "boom")])
+    assert await scope_projection._main(["sweep", "--org", "o"]) == 1
+
+
+async def test_sweep_with_an_interval_goes_on_after_a_listing_that_fails(monkeypatch) -> None:
+    import asyncio
+
+    from app.services.vector_db.scope_sweep import SweepRow
+
+    monkeypatch.setenv("ACL_SCOPE_FIELDS", "on")
+    _sweep_env(monkeypatch, [])
+    runs: list[int] = []
+
+    class Sweep:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def run_once(self, org: str, connectors: object) -> list:
+            runs.append(1)
+            if len(runs) == 1:
+                raise RuntimeError("connection reset")
+            return [SweepRow("a", "done")]
+
+    class Stop(BaseException):
+        pass
+
+    waits: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        waits.append(seconds)
+        if len(waits) == 2:
+            raise Stop
+
+    monkeypatch.setattr("app.services.vector_db.scope_sweep.ScopeSweep", Sweep)
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    with contextlib.suppress(Stop):
+        await scope_projection._main(["sweep", "--org", "o", "--interval", "5"])
+    assert len(runs) == 2 and waits == [5, 5]      # the first round's error did not end the loop

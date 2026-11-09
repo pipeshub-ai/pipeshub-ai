@@ -97,3 +97,32 @@ async def test_a_second_rewriter_is_refused_until_the_lease_runs_out(backend) ->
     clock.now += REWRITE_LEASE_SECONDS + 1
     results = await asyncio.gather(*(RewriteLease(backend.provider, conn, clock=clock).acquire() for _ in range(4)))
     assert results.count(True) == 1                                             # of several that find it free, exactly one takes it
+
+
+async def test_the_sweep_records_a_failure_with_its_backoff_and_forgets_it_when_the_connector_is_fine(backend, monkeypatch) -> None:
+    from unittest.mock import MagicMock
+
+    from app.services.vector_db.scope_sweep import (
+        BACKOFF_FIRST_SECONDS,
+        SWEEP_KEY,
+        ScopeSweep,
+        read_state,
+    )
+
+    _, conn, *_ = await _world(backend)
+    clock = Clock()
+    sweep = ScopeSweep(backend.provider, MagicMock(), MagicMock(), clock=clock)
+    await backend.provider.update_node(conn, CollectionNames.APPS.value, {PENDING_KEY: "{nope"})           # a pending value that does not parse
+    org = (await app_of(backend, conn))["orgId"]
+
+    async def get_org_apps(*a, **kw) -> list:      # (the seeded app has no organisation edge for the real listing to follow)
+        return [await app_of(backend, conn)]
+
+    monkeypatch.setattr(backend.provider, "get_org_apps", get_org_apps)
+    row = next(r for r in await sweep.run_once(org, [conn]) if r.connector_id == conn)
+    state = read_state((await app_of(backend, conn))[SWEEP_KEY])
+    assert row.action == "failed" and state.failures == 1 and state.retry_at == int(clock.now) + BACKOFF_FIRST_SECONDS
+    assert next(r for r in await sweep.run_once(org, [conn]) if r.connector_id == conn).action == "waiting"
+    await backend.provider.update_node(conn, CollectionNames.APPS.value, {PENDING_KEY: None})
+    assert next(r for r in await sweep.run_once(org, [conn]) if r.connector_id == conn).action == "idle"
+    assert not (await app_of(backend, conn)).get(SWEEP_KEY)
