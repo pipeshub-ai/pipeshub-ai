@@ -331,11 +331,10 @@ function ChatContent() {
       const leaving = store.activeSlotId ? store.slots[store.activeSlotId] : null;
       if (leaving?.isTemporaryChat && leaving.convId) {
         clearTemporaryChatSession();
-        clearTemporaryChatPurgePending();
+        clearTemporaryChatPurgePending(leaving.convId);
         void ChatApi.purgeTemporaryConversation(leaving.convId).catch(() => undefined);
       } else if (leaving?.isTemporaryChat) {
         clearTemporaryChatSession();
-        clearTemporaryChatPurgePending();
       }
 
       // 1. Detach visible thread only — background streams keep running (parallel chats)
@@ -557,7 +556,7 @@ function ChatContent() {
     });
     if (leavingTempId) {
       clearTemporaryChatSession();
-      clearTemporaryChatPurgePending();
+      clearTemporaryChatPurgePending(leavingTempId);
       void ChatApi.purgeTemporaryConversation(leavingTempId).catch(() => undefined);
     }
 
@@ -1154,18 +1153,20 @@ function ChatContent() {
   // hide; on the next load, sessionStorage still present means F5 (cancel),
   // empty means the tab closed (hard-delete).
   useEffect(() => {
-    const pendingId = consumeTemporaryChatPurgePending();
-    if (pendingId) {
+    const pendingIds = consumeTemporaryChatPurgePending();
+    if (pendingIds.length > 0) {
       const token =
         useAuthStore.getState().accessToken ??
         (typeof window !== 'undefined'
           ? window.localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY)
           : null);
-      if (token) {
-        ChatApi.purgeTemporaryConversationOnExit(pendingId, token);
-      } else {
-        // Auth not ready — keep the marker for a later visit rather than drop it.
-        markTemporaryChatPurgePending(pendingId);
+      for (const pendingId of pendingIds) {
+        if (token) {
+          ChatApi.purgeTemporaryConversationOnExit(pendingId, token);
+        } else {
+          // Auth not ready — keep the marker for a later visit rather than drop it.
+          markTemporaryChatPurgePending(pendingId);
+        }
       }
     }
 

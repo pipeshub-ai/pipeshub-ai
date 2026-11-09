@@ -90,55 +90,60 @@ export function temporaryChatIdToPurgeOnNavigate(opts: {
   return null;
 }
 
-/** Remember a temporary chat to delete after the tab is gone (not on F5). */
-export function markTemporaryChatPurgePending(conversationId: string): void {
-  if (!conversationId) return;
+function readPending(): PendingPurge[] {
+  let raw: string | null = null;
   try {
-    localStore()?.setItem(
-      PENDING_PURGE_KEY,
-      JSON.stringify({ conversationId, ts: Date.now() } satisfies PendingPurge),
+    raw = localStore()?.getItem(PENDING_PURGE_KEY) ?? null;
+  } catch {
+    return [];
+  }
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    // A single object is the shape older builds wrote.
+    const list = Array.isArray(parsed) ? parsed : [parsed];
+    return list.filter(
+      (p): p is PendingPurge =>
+        !!p && typeof p.conversationId === 'string' && p.conversationId !== '',
     );
+  } catch {
+    return [];
+  }
+}
+
+function writePending(list: PendingPurge[]): void {
+  try {
+    if (list.length === 0) localStore()?.removeItem(PENDING_PURGE_KEY);
+    else localStore()?.setItem(PENDING_PURGE_KEY, JSON.stringify(list));
   } catch {
     // Best-effort marker; missing it only delays cleanup until leave/sweep.
   }
 }
 
-export function clearTemporaryChatPurgePending(): void {
-  try {
-    localStore()?.removeItem(PENDING_PURGE_KEY);
-  } catch {
-    // Ignore — consume path tolerates a stale marker.
-  }
+/** Remember a temporary chat to delete after the tab is gone (not on F5). One entry per chat, so two tabs do not overwrite each other. */
+export function markTemporaryChatPurgePending(conversationId: string): void {
+  if (!conversationId) return;
+  const rest = readPending().filter((p) => p.conversationId !== conversationId);
+  writePending([...rest, { conversationId, ts: Date.now() }]);
+}
+
+/** Drops one chat's marker, or every marker when no id is given. */
+export function clearTemporaryChatPurgePending(conversationId?: string): void {
+  writePending(
+    conversationId
+      ? readPending().filter((p) => p.conversationId !== conversationId)
+      : [],
+  );
 }
 
 /**
- * If the tab refreshed, sessionStorage still holds the id — cancel.
- * If the tab closed, sessionStorage is empty — return the id to hard-delete.
+ * Takes every pending marker. A chat whose id this tab's sessionStorage still
+ * holds was refreshed — cancel it. The rest belong to closed tabs: return their
+ * ids to hard-delete.
  */
-export function consumeTemporaryChatPurgePending(): string | null {
-  let raw: string | null = null;
-  try {
-    raw = localStore()?.getItem(PENDING_PURGE_KEY) ?? null;
-  } catch {
-    return null;
-  }
-  if (!raw) return null;
-  let pending: PendingPurge | null = null;
-  try {
-    pending = JSON.parse(raw) as PendingPurge;
-  } catch {
-    clearTemporaryChatPurgePending();
-    return null;
-  }
-  if (!pending || typeof pending.conversationId !== 'string' || !pending.conversationId) {
-    clearTemporaryChatPurgePending();
-    return null;
-  }
-  const session = readTemporaryChatSession();
-  if (session?.conversationId === pending.conversationId) {
-    clearTemporaryChatPurgePending();
-    return null;
-  }
+export function consumeTemporaryChatPurgePending(): string[] {
+  const pending = readPending();
   clearTemporaryChatPurgePending();
-  return pending.conversationId;
+  const own = readTemporaryChatSession()?.conversationId;
+  return pending.map((p) => p.conversationId).filter((id) => id !== own);
 }

@@ -143,6 +143,8 @@ export class TtlSweeper {
     private readonly intervalMs: number = DEFAULT_INTERVAL_MS,
     private readonly clock: () => Date = () => new Date(),
     private readonly appConfig?: AppConfig,
+    /** False on Mongo: the jobs-role tables exist only on PostgreSQL, so only the temporary-chat pass runs. */
+    private readonly sweepJobsTables: boolean = true,
   ) {}
 
   start(): void {
@@ -168,7 +170,7 @@ export class TtlSweeper {
     const removed: Record<string, number> = {};
     try {
       const now = this.clock();
-      for (const t of TARGETS) {
+      for (const t of this.sweepJobsTables ? TARGETS : []) {
         await this.guarded(t.name, removed, async () => {
           let n: number;
           let total = 0;

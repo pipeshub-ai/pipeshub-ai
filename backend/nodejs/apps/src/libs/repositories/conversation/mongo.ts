@@ -1087,6 +1087,7 @@ export class MongoConversationRepository implements ConversationRepository {
       expiresAt: { $lte: now },
     })
       .select('_id orgId userId')
+      .sort({ expiresAt: 1 })
       .limit(Math.max(1, limit))
       .lean()
       .exec();

@@ -340,6 +340,21 @@ describe('es_controller temporary chat', () => {
     await sweeper.stop()
   })
 
+  it('with sweepJobsTables off sweepOnce skips the jobs-role tables and runs only the temporary-chat pass', async () => {
+    const repo = getConversationRepository()
+    sinon.stub(repo, 'isConnected').returns(true)
+    const list = sinon.stub(repo, 'listExpiredTemporary').resolves([])
+    const sweeper = new TtlSweeper(
+      { info() {}, error() {} } as never,
+      1000,
+      undefined,
+      undefined,
+      false,
+    )
+    expect(await sweeper.sweepOnce()).to.deep.equal({ temporary_chats_store: 0 })
+    expect(list.calledOnce).to.equal(true)
+  })
+
   it('sweepExpiredTemporaryChats deletes expired rows when the store is connected', async () => {
     const repo = getConversationRepository()
     sinon.stub(repo, 'isConnected').returns(true)

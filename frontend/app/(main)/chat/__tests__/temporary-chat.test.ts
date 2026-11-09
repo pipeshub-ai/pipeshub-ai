@@ -150,7 +150,7 @@ describe('temporary chat store and API', () => {
     localStorage.clear();
     writeTemporaryChatSession('temp-1');
     markTemporaryChatPurgePending('temp-1');
-    expect(consumeTemporaryChatPurgePending()).toBeNull();
+    expect(consumeTemporaryChatPurgePending()).toEqual([]);
     expect(readTemporaryChatSession()).toEqual({ conversationId: 'temp-1' });
   });
 
@@ -159,8 +159,47 @@ describe('temporary chat store and API', () => {
     localStorage.clear();
     markTemporaryChatPurgePending('temp-1');
     clearTemporaryChatSession();
-    expect(consumeTemporaryChatPurgePending()).toBe('temp-1');
-    expect(consumeTemporaryChatPurgePending()).toBeNull();
+    expect(consumeTemporaryChatPurgePending()).toEqual(['temp-1']);
+    expect(consumeTemporaryChatPurgePending()).toEqual([]);
+  });
+
+  it('keeps a marker per chat so a second tab does not overwrite the first', () => {
+    sessionStorage.clear();
+    localStorage.clear();
+    markTemporaryChatPurgePending('temp-a');
+    markTemporaryChatPurgePending('temp-b');
+    markTemporaryChatPurgePending('temp-b');
+    expect(consumeTemporaryChatPurgePending()).toEqual(['temp-a', 'temp-b']);
+  });
+
+  it('cancels only the chat of this tab and returns the others', () => {
+    sessionStorage.clear();
+    localStorage.clear();
+    writeTemporaryChatSession('temp-a');
+    markTemporaryChatPurgePending('temp-a');
+    markTemporaryChatPurgePending('temp-b');
+    expect(consumeTemporaryChatPurgePending()).toEqual(['temp-b']);
+  });
+
+  it('clears one marker and leaves the rest, or all when no id is given', () => {
+    localStorage.clear();
+    markTemporaryChatPurgePending('temp-a');
+    markTemporaryChatPurgePending('temp-b');
+    clearTemporaryChatPurgePending('temp-a');
+    expect(consumeTemporaryChatPurgePending()).toEqual(['temp-b']);
+    markTemporaryChatPurgePending('temp-c');
     clearTemporaryChatPurgePending();
+    expect(consumeTemporaryChatPurgePending()).toEqual([]);
+  });
+
+  it('reads the single-object marker older builds wrote and ignores garbage', () => {
+    sessionStorage.clear();
+    localStorage.setItem(
+      'pipeshub-temporary-chat-pending-purge',
+      JSON.stringify({ conversationId: 'temp-old', ts: 1 }),
+    );
+    expect(consumeTemporaryChatPurgePending()).toEqual(['temp-old']);
+    localStorage.setItem('pipeshub-temporary-chat-pending-purge', '{not json');
+    expect(consumeTemporaryChatPurgePending()).toEqual([]);
   });
 });
