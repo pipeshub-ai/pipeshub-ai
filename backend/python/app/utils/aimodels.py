@@ -808,10 +808,12 @@ def _get_embedding_model_impl(provider: str, config: dict[str, Any], model_name:
         ollama_embedding_url = configuration.get("endpoint") or os.getenv(
             "OLLAMA_API_URL", "http://localhost:11434"
         )
-        return _guard_clients(OllamaEmbeddings(
-            model=model_name,
-            base_url=ollama_embedding_url,
-        ), _OWN_CLIENTS, ollama_embedding_url)
+        ollama_kwargs: dict[str, Any] = {
+            "model": model_name,
+            "base_url": ollama_embedding_url,
+        }
+        _set_embedding_dimensions_kwarg(ollama_kwargs, dimensions)
+        return _guard_clients(OllamaEmbeddings(**ollama_kwargs), _OWN_CLIENTS, ollama_embedding_url)
 
     elif provider == EmbeddingProvider.OPENAI.value:
         from langchain_openai.embeddings import OpenAIEmbeddings

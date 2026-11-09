@@ -825,6 +825,20 @@ class TestGetEmbeddingModel:
         mock_cls.assert_called_once()
         assert result is mock_cls.return_value
 
+    @patch("langchain_ollama.OllamaEmbeddings")
+    def test_ollama_passes_configured_dimensions(self, mock_cls) -> None:
+        mock_cls.return_value = MagicMock()
+        config = self._base_config()
+        config["configuration"]["dimensions"] = 512
+        get_embedding_model(EmbeddingProvider.OLLAMA.value, config)
+        assert mock_cls.call_args.kwargs["dimensions"] == 512
+
+    @patch("langchain_ollama.OllamaEmbeddings")
+    def test_ollama_omits_dimensions_when_unset(self, mock_cls) -> None:
+        mock_cls.return_value = MagicMock()
+        get_embedding_model(EmbeddingProvider.OLLAMA.value, self._base_config())
+        assert "dimensions" not in mock_cls.call_args.kwargs
+
     @patch("langchain_openai.embeddings.OpenAIEmbeddings")
     def test_openai(self, mock_cls):
         mock_cls.return_value = MagicMock()
