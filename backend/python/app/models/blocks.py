@@ -198,6 +198,8 @@ class CodeMetadata(BaseModel):
     signature: Optional[str] = None
     docstring: Optional[str] = None
     decorators: Optional[list[str]] = None
+    # A property / getter: naming it on `self`/`this` reads it rather than handing it over.
+    is_accessor: Optional[bool] = None
     # Words resolution reads (C/C++: "declaration" for no body, "static", "returns:<Class>"; C#: "declaration",
     # "partial", "extension", "this:<Type>", "explicit:<Interface>").
     modifiers: Optional[list[str]] = None
