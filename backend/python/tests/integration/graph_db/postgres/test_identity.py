@@ -140,6 +140,36 @@ async def test_the_people_behind_an_app_are_the_orgs_members_linked_to_it(w: Wor
     assert await w.p.get_app_users(_org(), APP) == []
 
 
+async def test_the_app_user_links_include_guests_but_not_another_orgs_or_connectors(w: World, org_ctx, pg_db) -> None:
+    await member(w, "m", userId="um", email="m@x.com")
+    await w.nodes("users", {"_key": "guest", "userId": "ug", "email": "g@x.com"}, {"_key": "unnamed"}, {"_key": "elsewhere"})       # a guest has no org edge
+    await w.nodes("apps", {"_key": "app2", "type": "JIRA", "isActive": True})
+    await w.edge("userAppRelation", ("users", "m"), ("apps", APP), sourceUserId="src-m")
+    await w.edge("userAppRelation", ("users", "guest"), ("apps", APP), sourceUserId="src-guest")
+    await w.edge("userAppRelation", ("users", "unnamed"), ("apps", APP))                                    # a link the source names no user for
+    await w.edge("userAppRelation", ("users", "elsewhere"), ("apps", "app2"), sourceUserId="src-else")     # another connector
+    other = _org()
+    token = org_context.push(None)
+    try:
+        with org_ctx(other):
+            theirs = World(w.p, other)
+            await theirs.nodes("users", {"_key": "stranger"})
+            await theirs.nodes("apps", {"_key": APP, "type": "JIRA", "isActive": True})
+            await theirs.edge("userAppRelation", ("users", "stranger"), ("apps", APP), sourceUserId="src-stranger")      # another org
+    finally:
+        org_context.pop(token)
+    assert {link["id"]: link["sourceUserId"] for link in await w.p.get_app_user_links(w.org, APP)} == {"m": "src-m", "guest": "src-guest"}
+    assert {u["_key"] for u in await w.p.get_app_users(w.org, APP)} == {"m"}                                  # the members-only read is as it was
+    assert await w.p.get_app_user_links(_org(), APP) == []
+    token = org_context.push(None)                                                                            # the other org's rows go too
+    try:
+        with org_ctx(other):
+            await pg_db.run(lambda tx: tx.execute("DELETE FROM graph.edges WHERE org_id = $1", other), write=True)
+            await pg_db.run(lambda tx: tx.execute("DELETE FROM graph.nodes WHERE org_id = $1", other), write=True)
+    finally:
+        org_context.pop(token)
+
+
 def app_user(email: str, key: str, *, guest: bool = False, active: bool = False) -> AppUser:
     return AppUser(app_name=Connectors.JIRA, connector_id=APP, id=key, source_user_id=f"src-{key}", email=email, full_name=key, is_guest=guest, is_active=active)
 
@@ -251,7 +281,7 @@ async def test_what_identity_writes_feeds_the_access_check(w: World) -> None:
 CALLS = [
     ("get_user_by_user_id", ("u",)), ("get_user_by_email", ("a@b.c",)), ("get_users_by_emails", (["a@b.c"],)), ("get_org_apps", ("o",)), ("get_account_type", ("o",)), ("get_users", ("o",)),
     ("get_organization_users", ("o",)), ("find_users", ("o", "x")), ("get_graph_user_keys_by_mongo_user_ids", (["u"],)), ("get_user_by_source_id", ("s", "c")),
-    ("get_app_users", ("o", "c")), ("batch_upsert_app_users", ([app_user("a@b.c", "k")],)), ("get_user_group_by_external_id", ("c", "e")),
+    ("get_app_users", ("o", "c")), ("get_app_user_links", ("o", "c")), ("batch_upsert_app_users", ([app_user("a@b.c", "k")],)), ("get_user_group_by_external_id", ("c", "e")),
     ("get_user_groups", ("c", "o")), ("get_user_directory_groups", ("u", "o")), ("get_app_role_by_external_id", ("c", "e")),
     ("batch_upsert_user_groups", ([AppUserGroup(app_name=Connectors.JIRA, connector_id="c", source_user_group_id="e", name="G")],)),
     ("delete_edges_to_groups", ("u", "users", "permission")), ("ensure_app_membership", ("u", "users", "c")),
