@@ -61,7 +61,7 @@ def test_lane_lease_cost_against_heavy_slot_cost(tmp_path: Path) -> None:
 
 
 def test_ledger_read_and_write_under_no_contention(tmp_path: Path) -> None:
-    """An uncontended ledger read or write costs no more than a heavy slot, which takes the same kind of file lock.
+    """An uncontended ledger read or write costs at most three heavy slots, which take the same kind of file lock.
 
     The median, against a baseline measured in the same run: a stalled host moves a tail figure
     (an absolute p99 bound failed at 3.2 ms on a busy runner) but not the typical call, while a
