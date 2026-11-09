@@ -987,6 +987,38 @@ class TestUpdatePayloadByIds:
         connected_service.client.set_payload.assert_not_called()
 
 
+class TestUpdatePayloadsByIdsFence:
+    @pytest.mark.asyncio
+    async def test_without_a_fence_it_sends_what_update_payload_by_ids_sends(self, connected_service) -> None:
+        await connected_service.update_payload_by_ids("entities", ["p1", "p2"], {"connectorIds": ["c1"]}, org_id="o1")
+        single = connected_service.client.set_payload.await_args.kwargs
+        connected_service.client.set_payload.reset_mock()
+        await connected_service.update_payloads_by_ids("entities", {"p1": {"connectorIds": ["c1"]}, "p2": {"connectorIds": ["c1"]}}, org_id="o1")
+        assert connected_service.client.set_payload.await_args.kwargs == single
+        connected_service.client.batch_update_points.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_fence_makes_each_point_a_conditional_operation_pinned_to_the_org(self, connected_service) -> None:
+        await connected_service.update_payloads_by_ids("entities", {"p1": {"a": 1}, "p2": {"a": 2}}, org_id="o1", fence=7)
+        kwargs = connected_service.client.batch_update_points.await_args.kwargs
+        assert kwargs["wait"] is True
+        ops = [o.set_payload for o in kwargs["update_operations"]]
+        assert [o.payload for o in ops] == [{"a": 1, "scopeFence": 7}, {"a": 2, "scopeFence": 7}]
+        for op, point_id in zip(ops, ["p1", "p2"]):
+            by_id, by_org = op.filter.must
+            assert by_id.has_id == [point_id] and (by_org.key, by_org.match.value) == ("metadata.orgId", "o1")
+            (newer,) = op.filter.must_not
+            assert (newer.key, newer.range.gt) == ("scopeFence", 7)
+        connected_service.client.set_payload.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("org", [None, "", "  "])
+    async def test_a_missing_org_raises_with_a_fence(self, connected_service, org) -> None:
+        with pytest.raises(OrgRequired):
+            await connected_service.update_payloads_by_ids("entities", {"p1": {"x": 1}}, org_id=org, fence=7)
+        connected_service.client.batch_update_points.assert_not_called()
+
+
 class TestRetrievePoints:
     @pytest.mark.asyncio
     async def test_retrieves_by_id_without_vectors(self, connected_service):

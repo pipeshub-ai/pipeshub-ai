@@ -12,6 +12,8 @@ from app.agents.mcp.errors import (
     MCPConnectionError,
     MCPInsufficientScopeError,
     MCPLaunchRefusedError,
+    MCPToolChangedError,
+    MCPToolNotOfferedError,
     MCPUrlBlockedError,
     first_leaf,
     is_http_unauthorized,
@@ -21,7 +23,9 @@ from app.agents.mcp.token_refresh import (
     MCPRefreshLockTimeoutError,
     MCPTokenRefreshError,
 )
+from app.utils import error_class
 from app.utils.oauth_errors import is_transient_status
+from mcp.shared.exceptions import MCPError
 
 
 class MCPFailureReason(str, Enum):
@@ -74,3 +78,31 @@ def classify_mcp_failure(exc: BaseException) -> MCPFailureReason:
     if any(isinstance(e, (MCPConnectionError, httpx.HTTPError, httpx2.HTTPError, OSError)) for e in candidates):
         return MCPFailureReason.UNREACHABLE
     return MCPFailureReason.ERROR
+
+
+# For a failure `classify_error` can only call internal: what the MCP reason means.
+_ERROR_CLASS_FALLBACK = {
+    MCPFailureReason.AUTH_EXPIRED: "auth_expired",
+    MCPFailureReason.UNAUTHORIZED: "auth_expired",
+    MCPFailureReason.NEEDS_PERMISSION: "forbidden",
+    MCPFailureReason.BLOCKED: "forbidden",
+    MCPFailureReason.TIMEOUT: "timeout",
+    MCPFailureReason.UNREACHABLE: "unavailable",
+}
+_JSONRPC_REQUEST_ERRORS = frozenset({-32600, -32601, -32602})  # invalid request, method not found, invalid params
+
+
+def mcp_error_class(exc: BaseException, reason: MCPFailureReason | None = None) -> str:
+    """The log `error_class` of an MCP failure (`app.utils.error_class.ERROR_CLASSES`).
+    `reason` is `classify_mcp_failure(exc)` when the caller already has it."""
+    leaf = first_leaf(exc)
+    if isinstance(leaf, MCPToolChangedError):  # before its base class
+        return "conflict"
+    if isinstance(leaf, MCPToolNotOfferedError):  # the turn's cached tool list is stale
+        return "not_found"
+    if isinstance(leaf, MCPError):  # the server's own JSON-RPC error
+        return "bad_request" if leaf.code in _JSONRPC_REQUEST_ERRORS else "upstream_5xx"
+    found = error_class.classify_error(leaf)
+    if found != "internal":
+        return found
+    return _ERROR_CLASS_FALLBACK.get(reason or classify_mcp_failure(exc), "internal")

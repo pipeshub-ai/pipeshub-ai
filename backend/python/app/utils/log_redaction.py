@@ -18,7 +18,7 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from app.utils.sensitive_names import is_credential_name
+from app.utils.sensitive_names import is_credential_name, name_words
 from app.utils.url_redaction import redact_sensitive_query_params, redact_url
 
 REDACTED = "[REDACTED]"
@@ -35,7 +35,8 @@ _ENV_NOT_SECRET_WORDS = frozenset({
 })
 # Shorter values would mask ordinary words and numbers all over the logs.
 _MIN_ENV_SECRET_LENGTH = 8
-_NOT_SECRET_VALUES = frozenset({"true", "false", "none", "null", "undefined", "changeme", "password"})
+_NO_VALUE_WORDS = frozenset({"true", "false", "none", "null", "undefined"})
+_NOT_SECRET_VALUES = _NO_VALUE_WORDS | {"changeme", "password"}
 
 _env_secrets: list[str] = []
 
@@ -122,6 +123,18 @@ _PAIR_TRIGGERS = ("pass", "pwd", "secret", "token", "sig", "credential", "api", 
 _AUTH_SCHEME_WORDS = frozenset({"bearer", "basic", "token"})
 # Counts, ports and limits next to a credential word (`token_limit=4096`).
 _SHORT_NUMBER = re.compile(r"\d{1,6}")
+# Bare pair values that say whether a credential is there, not what it is (`refresh_token=None`, `access_token=present`).
+_PRESENCE_WORDS = _NO_VALUE_WORDS | {"present", "missing"}
+# The name holds a time when no credential word follows its last time word: token_expires_at, not updated_password.
+_TIME_NAME_WORDS = frozenset({
+    "expires", "expire", "expiry", "expiration", "exp", "ttl", "timeout", "issued", "created", "updated", "refreshed",
+})
+_TIME_VALUE = re.compile(r"\d[\d.:+\-TZ]*")
+# OAuth endpoints, public by design. Other *_url names stay masked: a reset link or a webhook holds its secret in the
+# path. authorize_url, revocation_endpoint, jwks_uri and the like are not credential names, so they are never masked.
+_OAUTH_ENDPOINT_NAMES = frozenset({"token_url", "token_uri", "token_endpoint", "authorization_url", "authorization_endpoint"})
+# Scheme, host and path only: no userinfo, query, fragment, pair or escape that could carry a secret.
+_PUBLIC_URL = re.compile(r"(?i:https?)://[^\s'\"\\?#@=;&%]+")
 _QUOTED = re.compile(r"(b?)(['\"])")
 
 # The URL redactor is not linear in the length of a URL, so a longer one, or
@@ -170,6 +183,17 @@ def _redact_pairs(text: str) -> str:
     return "".join(out)
 
 
+def _is_time(words: list[str], value: str) -> bool:
+    if not _TIME_VALUE.fullmatch(value):
+        return False
+    last = max((i for i, w in enumerate(words) if w in _TIME_NAME_WORDS), default=-1)
+    return last >= 0 and not is_credential_name("_".join(words[last + 1 :]))
+
+
+def _is_oauth_endpoint(words: list[str], value: str) -> bool:
+    return "_".join(words) in _OAUTH_ENDPOINT_NAMES and _PUBLIC_URL.fullmatch(value) is not None
+
+
 def _redact_pairs_in(text: str, *, literals_only: bool = False) -> str:
     """``literals_only`` is for a traceback's source line, which is code: a
     pair there is masked only when its value is a non-empty ``"..."``,
@@ -182,6 +206,7 @@ def _redact_pairs_in(text: str, *, literals_only: bool = False) -> str:
     scanned = 0
     double = single = 0
     comment = False
+    url_end = 0
     for head in _PAIR_HEAD.finditer(text):
         if head.start() < pos or not is_credential_name(head.group(1)):
             continue
@@ -200,17 +225,23 @@ def _redact_pairs_in(text: str, *, literals_only: bool = False) -> str:
         if value is None:
             continue
         raw = value.group()
-        if raw.lower() in _AUTH_SCHEME_WORDS or _SHORT_NUMBER.fullmatch(raw):
+        lowered = raw.lower()
+        if lowered in _AUTH_SCHEME_WORDS or lowered in _PRESENCE_WORDS or _SHORT_NUMBER.fullmatch(raw):
             continue
         opening = _QUOTED.match(raw)
         if in_code and len(raw) <= len(opening.group()) + 1:
             continue
-        out.append(text[pos : head.end()])
-        if opening:
-            closing = opening.group(2) if len(raw) > len(opening.group()) and raw.endswith(opening.group(2)) else ""
-            out.append(f"{opening.group()}{REDACTED}{closing}")
-        else:
-            out.append(REDACTED)
+        prefix = opening.group() if opening else ""
+        closing = opening.group(2) if opening and len(raw) > len(prefix) and raw.endswith(opening.group(2)) else ""
+        content = raw[len(prefix) : len(raw) - len(closing)]
+        words = name_words(head.group(1))
+        if _is_time(words, content):
+            continue
+        # Heads inside a kept URL are not skipped, so one there that kept the rest of the run too would make this quadratic.
+        if head.start() >= url_end and _is_oauth_endpoint(words, content):
+            url_end = value.end()
+            continue
+        out.append(f"{text[pos : head.end()]}{prefix}{REDACTED}{closing}")
         pos = value.end()
     if not out:
         return text
@@ -249,6 +280,13 @@ def redact_secrets_in_text(text: str) -> str:
     env values, known key shapes (``phpat_``, ``sk-``, ``AKIA``, ``xox*-``,
     ``AIza``, GitHub tokens, JWTs), credential-named ``name: value`` pairs,
     ``Bearer``/``Basic`` credentials, and URL passwords and query secrets.
+
+    A pair value that only describes the credential is kept: a bare presence
+    word (``None``, ``true``, ``missing``, ...), a time under a name whose
+    last time word no credential word follows (``token_expires_at=1730000000``),
+    and an ``http(s)`` scheme, host and path under an OAuth endpoint name
+    (``token_url``, ``tokenUri``, ``authorization_endpoint``, ...; a dotted
+    ``oauth.tokenUrl`` stays masked).
 
     On a traceback's source lines a pair in code is masked only when its value
     is a string literal, so ``token = await f()`` stays readable. A bare value

@@ -14,6 +14,7 @@ import base64
 import struct
 import zlib
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -198,6 +199,16 @@ class TestFlattenedResultsMissingBlocks:
         assert only["block_type"] == "record_summary" and only["block_index"] is None
         assert only["metadata"]["webUrl"] == "https://drive.test/r1"
 
+    async def test_a_code_residue_hit_is_left_out_without_a_metadata_fetch(self) -> None:
+        """A file's residue unit is for keyword search: it has no block to render or cite."""
+        store = InMemoryBlobStore({"v1": blob("v1", [text(0, "a")])})
+        store.get_reconciliation_metadata = AsyncMock(return_value=None)
+        residue = {"metadata": {"virtualRecordId": "v1", "blockId": "v1_code_residue", "isBlock": False,
+                                "isBlockGroup": False, "unitKind": "residue"}, "content": "import os", "score": 0.9}
+        results, _ = await flatten(store, [residue, hit("v1", 0)], {"v1": graph_record("r1")})
+        assert [r["content"] for r in results] == ["a"]
+        store.get_reconciliation_metadata.assert_not_awaited()
+
 
 class TestFlattenedResultsIncompleteGraphRecords:
     async def test_null_connector_and_missing_version_do_not_fail_the_search(self) -> None:
@@ -231,6 +242,41 @@ class TestFlattenedResultsBlockKinds:
         (result,), _ = await flatten(store, [hit("v1", 0)], {"v1": graph_record("r1")})
         assert result["block_type"] == "code"
         assert "def f(): pass" in result["content"]
+
+    def _class_hit_record(self) -> tuple[dict, str]:
+        """A class too big to show, as its blob stores it, and the header unit its point embedded."""
+        from app.modules.parsers.code_parser import CodeFileParser
+        from app.modules.transformers.vectorstore import code_documents_for_record
+
+        methods = "".join(f"    def method_{i}(self, value):\n        return value + {i}  # BODY_{i}\n\n"
+                          for i in range(600))
+        container = CodeFileParser().parse_to_blocks(
+            f'class Huge:\n    """Holds everything."""\n\n{methods}'.encode(), "huge.py", "src/huge.py", "python")
+        (unit,) = [d for d in code_documents_for_record(
+            [b for b in container.blocks if b.type.value == "code"], container.block_groups, "v1", "org-1")
+            if d.metadata.get("unitKind") == "class"]
+        dump = container.model_dump(mode="json")
+        return blob("v1", dump["blocks"], dump["block_groups"]), unit.page_content
+
+    async def test_a_class_hit_renders_its_bounded_header_unit_not_the_class_body(self) -> None:
+        from app.modules.transformers.code_units import UNIT_TOKENS
+        from app.modules.transformers.vectorstore import _token_len
+
+        record, header = self._class_hit_record()
+        store = InMemoryBlobStore({"v1": record})
+        class_hit = hit("v1", group=True, blockGroupIndex=0, unitKind="class", content=header)
+        (result,), _ = await flatten(store, [class_hit], {"v1": graph_record("r1")}, from_retrieval_service=True)
+        assert result["content"] == header
+        assert _token_len(result["content"]) <= UNIT_TOKENS
+        assert "BODY_" not in result["content"]
+        assert result["qualified_name"] == "class:Huge"
+
+    async def test_a_class_hit_without_its_text_shows_only_the_signature(self) -> None:
+        record, _ = self._class_hit_record()
+        store = InMemoryBlobStore({"v1": record})
+        bare = hit("v1", group=True, blockGroupIndex=0, unitKind="class")
+        (result,), _ = await flatten(store, [bare], {"v1": graph_record("r1")}, from_retrieval_service=True)
+        assert result["content"] == "class Huge:"
 
     async def test_images(self) -> None:
         image = {"index": 0, "type": "image", "data": {"uri": PNG},

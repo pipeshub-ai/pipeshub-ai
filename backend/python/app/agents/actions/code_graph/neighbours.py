@@ -595,6 +595,8 @@ async def get_neighbour_impl(
 # and overrides built on it -- followed backwards.
 IMPACT_RELATIONS = [
     RecordRelations.CALLS.value,
+    # Whoever registers a handler or passes a callback runs it, later.
+    RecordRelations.INDIRECT_CALL.value,
     RecordRelations.IMPORTS_FROM.value,
     RecordRelations.INHERITS.value,
     RecordRelations.IMPLEMENTS.value,

@@ -62,7 +62,12 @@ from .query import (
 )
 from .read import DEFAULT_MAX_LINES, outline_impl, read_code_impl
 from .results import as_untrusted, attach_graph_status, without_marker
-from .search import DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, search_code_impl
+from .search import (
+    _TEXT_SEARCH_FILES,
+    DEFAULT_SEARCH_LIMIT,
+    MAX_SEARCH_LIMIT,
+    search_code_impl,
+)
 from .semantic import DEFAULT_SEMANTIC_LIMIT, search_semantic_impl
 
 if TYPE_CHECKING:
@@ -530,11 +535,12 @@ class CodeGraph:
     @tool(
         path="/tools/codegraph/get_neighbour",
         short_description=(
-            "Walk a symbol's edges: CALLS, METHOD/CONTAINS, INHERITS/"
+            "Walk a symbol's edges: CALLS, INDIRECT_CALL, METHOD/CONTAINS, INHERITS/"
             "IMPLEMENTS, OVERRIDES, IMPORTS_FROM. A read shows none of these."
         ),
         description=(
             "Walk edges of a file or symbol: METHOD/CONTAINS (its class), CALLS, "
+            "INDIRECT_CALL (passed as a callback or handler), "
             "INHERITS/IMPLEMENTS, OVERRIDES, IMPORTS_FROM. A read shows none "
             "of these.\n\n"
             "Give it something you already hold — a `record_id`, a `file_path` on its "
@@ -978,9 +984,12 @@ class CodeGraph:
             "(case-insensitive), across the repo — `parse_config`, `Client.fetch` and "
             "`method:Client.fetch` all match the `fetch`/`parse_config` definitions.\n\n"
             "`mode='text'` or `mode='regex'`: lines in file bodies that contain the text or "
-            "match the regex — a string literal, a call site, a config key. These read "
-            "file contents, so they need `path` (a directory, file or glob) and stop after "
-            "100 files.\n\n"
+            "match the regex — a string literal, a call site, a config key. With `path` (a "
+            "directory, file or glob) they read the files it selects and stop after "
+            f"{_TEXT_SEARCH_FILES} files. Without it, the keyword index proposes the files "
+            "holding the pattern's rarest whole word; a regex needs a whole word to look up. "
+            "`complete: false` says a match may be missing, and the note says why; then give "
+            "`path` to read in full.\n\n"
             "`mode='external'`: who calls into a library — `pattern` is the module as "
             "imported (`requests`; `django.db` covers `django.db.models`), `name` narrows to "
             "one of its names; matches list their `external_refs`.\n\n"
@@ -998,8 +1007,9 @@ class CodeGraph:
             ToolParameter(name="name", type=ParameterType.STRING, required=False, default=None,
                           description="'external' only: one name of the module, e.g. 'get'."),
             ToolParameter(name="path", type=ParameterType.STRING, required=False, default=None,
-                          description=("Directory, file or glob to search in. Required for "
-                                       "'text' and 'regex'; narrows 'identifier'.")),
+                          description=("Directory, file or glob to search in. Optional: "
+                                       "without it, 'text' and 'regex' search the whole repo "
+                                       "through the keyword index; narrows 'identifier'.")),
             ToolParameter(name="limit", type=ParameterType.INTEGER, required=False,
                           default=DEFAULT_SEARCH_LIMIT, description="Maximum matches."),
             ToolParameter(name="include_tests", type=ParameterType.BOOLEAN, required=False,
@@ -1026,6 +1036,7 @@ class CodeGraph:
             connector_id,
             lambda: search_code_impl(
                 graph_provider=self._graph_provider, blob_store=self._blob_store,
+                retrieval_service=self._state.get("retrieval_service"),
                 org_id=self._org_id, user_id=self._user_id, connector_id=connector_id,
                 pattern=pattern, mode=mode, path=path, limit=limit,
                 include_tests=include_tests, repo=repo, name=name,
@@ -1040,10 +1051,12 @@ class CodeGraph:
         description=(
             "Find the code behind a feature, a behaviour or something on screen when you "
             "do not know its names: 'where a failed job is retried', "
-            "'what decides which config value wins'. Ranks symbols by meaning, "
-            "so near-synonyms match.\n\n"
+            "'what decides which config value wins'. Ranks symbols, classes and files by "
+            "meaning, so near-synonyms match.\n\n"
             "Results are addresses, best first: read_code reads one, get_neighbour and "
-            "impact walk from one. For a name you already know, search_code is exact."
+            "impact walk from one. A file match (kind 'file') has the start of the file's "
+            "summary instead of a qualified name; outline lists what it defines. For a name "
+            "you already know, search_code is exact."
         ),
         parameters=[
             ToolParameter(name="connector_id", type=ParameterType.STRING,
@@ -1131,14 +1144,16 @@ class CodeGraph:
         path="/tools/codegraph/impact",
         short_description="What a change to a symbol can break, grouped by file",
         description=(
-            "The blast radius of changing a symbol: everything that calls it, imports "
-            "it, or builds on it (inherits, implements, overrides), followed backwards "
+            "The blast radius of changing a symbol: everything that calls it, passes it "
+            "as a callback or handler, imports it, or builds on it (inherits, implements, "
+            "overrides), followed backwards "
             f"up to `depth` hops (default {DEFAULT_IMPACT_DEPTH}), grouped by file with "
             "the nearest hop. Symbols that build on it rather than call it are also named "
             "in each file's `built_on`; `edge_types=['CALLS']` follows calls only (callers, "
             "their callers, ...). Test code it reaches is affected too and is listed apart "
             "in `impacted_tests`. Only edges the parser could prove; `coverage` says when a "
-            "language has none."
+            "language has none. Reads of a property or getter are not followed: a changed "
+            "`@property` or `get` accessor lists none of the code that reads it."
         ),
         parameters=[
             ToolParameter(name="connector_id", type=ParameterType.STRING,

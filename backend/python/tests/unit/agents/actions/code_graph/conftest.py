@@ -125,6 +125,11 @@ class FakeGraphProvider:
             docs = self.blocks.values()
         return [d for d in docs if d.get(field_name) in wanted]
 
+    async def has_nodes_by_filters(self, collection, filters=None, in_filters=None, transaction=None) -> bool:
+        docs = self.records.values() if collection == RECORDS else self.blocks.values()
+        return any(all(d.get(k) == v for k, v in (filters or {}).items())
+                   and all(d.get(k) in vs for k, vs in (in_filters or {}).items()) for d in docs)
+
     async def get_document(self, document_key, collection, raise_on_error=False) -> dict | None:
         return self.records.get(document_key)
 
