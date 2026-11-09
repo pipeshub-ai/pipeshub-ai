@@ -62,6 +62,7 @@ export type ConnectorType =
   // Project & Issue Tracking
   | 'jira'
   | 'linear'
+  | 'monday'
   | 'gitlab'
   | 'github'
   | 'servicenow'
@@ -171,6 +172,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'gitlab': { svg: svg('gitlab'), fallback: 'code' },
   'jira': { svg: svg('jira'), fallback: 'bug_report' },
   'linear': { svg: svg('linear'), fallback: 'view_kanban', needDarkModeInvert: true },
+  'monday': { svg: svg('monday'), fallback: 'view_kanban' },
   'servicenow': { svg: svg('servicenow'), fallback: 'build' },
   'zendesk': { svg: svg('zendesk'), fallback: 'support' },
   'zammad': { svg: svg('zammad'), fallback: 'support_agent' },
@@ -255,6 +257,7 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['cifs', 'cifs'],
   // Dev tools & project tracking
   ['linear', 'linear'],
+  ['monday.com', 'monday'],
   ['jira', 'jira'], ['confluence', 'confluence'],
   ['gitlab', 'gitlab'], ['slack', 'slack'],
   ['servicenow', 'servicenow'], ['service-now', 'servicenow'],
