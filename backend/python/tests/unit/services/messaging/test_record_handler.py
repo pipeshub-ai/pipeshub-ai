@@ -6068,6 +6068,24 @@ class TestStageRedrive:
         assert {c[0] for c in gp.mock_calls} == {"get_document"}
 
     @pytest.mark.asyncio
+    async def test_a_failed_connector_read_on_a_retrys_last_attempt_never_writes_the_records_statuses(self) -> None:
+        """The delete hold reads a connector record's app before the stage branch runs; that read
+        failing on the last attempt is still a stage re-run's failure, which owns no record status."""
+        handler, gp, ingress = self._handler(["vr1:rev-1:classify@1"])
+        record = {**gp.get_document.return_value, "origin": OriginTypes.CONNECTOR.value, "connectorId": "c1"}
+
+        async def get_document(doc_id, collection, **_kw) -> dict:
+            if collection == CollectionNames.APPS.value:
+                raise ConnectionError("graph unavailable")
+            return record
+
+        gp.get_document = AsyncMock(side_effect=get_document)
+        with pytest.raises(ConnectionError):
+            await _collect_events(handler, EventTypes.REINDEX_RECORD.value, self._payload(is_final_failure=True))
+        ingress.redrive.assert_not_awaited()
+        assert {c[0] for c in gp.mock_calls} == {"get_document"}
+
+    @pytest.mark.asyncio
     async def test_a_revision_the_runtime_never_saw_is_reindexed_in_full(self) -> None:
         handler, gp, ingress = self._handler(None)
         # The full path ends by promoting the record's queued copies; it has none.

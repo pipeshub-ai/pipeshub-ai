@@ -1852,8 +1852,15 @@ class RecordEventHandler(BaseEventService):
             # record events are held before anything is written: a stage redrive's states, a vector
             # rebuild (vectorDbOnly), the embeddings taken out below. This read decides only that:
             # the connector check further on reads the app again, since it can change meanwhile.
-            # Known before the read below: the finally block keys on it if that read fails.
+            # Known before the read below, as is whether this is a stage re-run: the finally block
+            # keys on both if that read fails.
             resuming_enrichment = record_resuming_enrichment(record)
+            stages = payload.get("stages")
+            stage_ingress = self.event_processor.stage_ingress
+            stage_redrive = bool(
+                event_type == EventTypes.REINDEX_RECORD.value
+                and isinstance(stages, list) and stages and stage_ingress is not None
+            )
             if event_type in _HELD_FOR_DELETE_EVENTS:
                 deleting_id = gating_connector_id(record)
                 if deleting_id and connector_state(await self._read_gating_app(deleting_id)) is ConnectorState.DELETING:
@@ -1863,10 +1870,7 @@ class RecordEventHandler(BaseEventService):
                         delay_s=HELD_FOR_DELETE_DELAY_S,
                     )
 
-            stages = payload.get("stages")
-            stage_ingress = self.event_processor.stage_ingress
-            if event_type == EventTypes.REINDEX_RECORD.value and isinstance(stages, list) and stages and stage_ingress is not None:
-                stage_redrive = True
+            if stage_redrive:
                 stage_rev = payload.get("stageRev")
                 # A null stageRev is a record selected before it had a revision.
                 if "stageRev" in payload and (record.get("contentRev") or None) != (stage_rev or None):
