@@ -23009,12 +23009,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # ArangoDB rejects all but one concurrent UPDATE of a document with
         # errorNum 1200 even outside a stream transaction. The merge is
         # idempotent, so a retry cannot double-apply anything.
-        try:
+        # shortcut: a node of another org, or none, ends here as before; a
+        # node that stays missed through every retry is lost the same way.
+        with contextlib.suppress(_TaxonomyNodeNotVisible):
             await self._retry_write_conflicts(merge, transaction)
-        except _TaxonomyNodeNotVisible:
-            # shortcut: a node of another org, or none, ends here as before; a
-            # node that stays missed through every retry is lost the same way.
-            pass
 
     @staticmethod
     async def _retry_write_conflicts(
