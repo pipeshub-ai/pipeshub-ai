@@ -748,11 +748,14 @@ class GraphTransactionStore(TransactionStore):
         from_id: str,
         from_collection: str,
         collection: str,
-        relationship_types: list[str]
+        relationship_types: list[str],
+        *,
+        raise_on_error: bool = False,
     ) -> int:
         """Delete edges by relationship types from a record."""
         return await self.graph_provider.delete_edges_by_relationship_types(
-            from_id, from_collection, collection, relationship_types, transaction=self.txn
+            from_id, from_collection, collection, relationship_types, transaction=self.txn,
+            raise_on_error=raise_on_error,
         )
 
     async def delete_nodes_and_edges(self, keys: list[str], collection: str) -> None:
@@ -1498,11 +1501,12 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.filter_linked_record_ids(record_ids, transaction=self.txn)
 
     async def get_nodes_by_field_in(
-        self, collection: str, field: str, values: list, return_fields: list[str] = None
+        self, collection: str, field: str, values: list, return_fields: list[str] = None,
+        *, raise_on_error: bool = False,
     ) -> list[dict]:
         """Get nodes where field value is in list"""
         return await self.graph_provider.get_nodes_by_field_in(
-            collection, field, values, return_fields, transaction=self.txn
+            collection, field, values, return_fields, transaction=self.txn, raise_on_error=raise_on_error
         )
 
     async def remove_nodes_by_field(self, collection: str, field: str, value) -> int:

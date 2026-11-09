@@ -563,7 +563,8 @@ class GoogleDriveDataSource:
     async def drives_get(
         self,
         driveId: str,
-        useDomainAdminAccess: Optional[bool] = None
+        useDomainAdminAccess: Optional[bool] = None,
+        fields: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Google Drive API: Gets a shared drive's metadata by ID. For more information, see [Manage shared drives](https://developers.google.com/workspace/drive/api/guides/manage-shareddrives).
 
@@ -581,6 +582,8 @@ class GoogleDriveDataSource:
             kwargs['driveId'] = driveId
         if useDomainAdminAccess is not None:
             kwargs['useDomainAdminAccess'] = useDomainAdminAccess
+        if fields is not None:
+            kwargs['fields'] = fields
 
         request = self.client.drives().get(**kwargs) # type: ignore
         return await self._execute(request)

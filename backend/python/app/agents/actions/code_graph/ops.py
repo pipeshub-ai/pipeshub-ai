@@ -39,6 +39,7 @@ __all__ = [
     "SymbolRef",
     "attach_file_paths",
     "get_record_roles",
+    "nodes_in_org",
     "repo_names",
     "resolve_symbol",
 ]

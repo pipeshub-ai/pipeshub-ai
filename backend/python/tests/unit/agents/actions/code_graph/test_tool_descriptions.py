@@ -45,6 +45,8 @@ HANDOFFS = [
     ("outline", ["read_code", "impact", "get_neighbour"]),
     ("impact", ["read_code", "get_neighbour"]),
     ("entry_points", ["outline", "read_code", "get_neighbour"]),
+    ("impact_of_diff", ["read_code", "impact"]),
+    ("history", ["read_code", "impact", "impact_of_diff"]),
 ]
 
 

@@ -18943,7 +18943,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         from_collection: str,
         collection: str,
         relationship_types: list[str],
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> int:
         """Delete edges by relationship types."""
         try:
@@ -18963,6 +18965,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return sum(row.get("deleted_count", 0) for row in results) if results else 0
         except Exception as e:
             self.logger.error(f"❌ Delete edges by relationship types failed: {str(e)}")
+            if raise_on_error:
+                raise
             return 0
 
     async def delete_parent_child_edge_to_record(
