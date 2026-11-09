@@ -151,6 +151,20 @@ class UserListing(list):
     complete: bool = True
 
 
+async def read_user_status(graph: Any, user_id: str) -> str:
+    """Read one user by id: ``gone`` only on a definite 404, ``disabled`` when the account
+    is found with ``accountEnabled`` false, ``present`` otherwise. Any other failure
+    (throttling, a server error) raises, so the caller keeps the user."""
+    query = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(select=["id", "accountEnabled"])
+    try:
+        user = await graph.users.by_user_id(user_id).get(RequestConfiguration(query_parameters=query))
+    except ODataError as e:
+        if e.response_status_code == 404:
+            return "gone"
+        raise
+    return "disabled" if user is not None and user.account_enabled is False else "present"
+
+
 class MSGraphClient:
     def __init__(self, app_name: str, connector_id: str, client: GraphServiceClient, logger: Logger, max_requests_per_second: int = 10) -> None:
         """
@@ -234,6 +248,11 @@ class MSGraphClient:
             if raise_on_error:
                 raise
             return []
+
+    async def get_user_status(self, user_id: str) -> str:
+        """See ``read_user_status``."""
+        async with self.rate_limiter:
+            return await read_user_status(self.client, user_id)
 
     async def get_all_users(self) -> "UserListing":
         """
