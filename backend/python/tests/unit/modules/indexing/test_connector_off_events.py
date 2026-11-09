@@ -17,6 +17,7 @@ from app.modules.indexing.connector_off_events import (
     ConnectorState,
     GraphConnectorOffFilter,
     ReadTimeOutcome,
+    RecordHeldForDelete,
     connector_off_updates,
     connector_state,
     read_time_outcome,
@@ -255,9 +256,10 @@ def _filter(graph: FakeConnectorGraph, clock: list[float] | None = None) -> Grap
 
 class TestGraphConnectorOffFilter:
     @pytest.mark.parametrize("active", [False, True])
-    async def test_a_connector_being_deleted_is_settled_without_a_write(self, active: bool) -> None:
+    async def test_a_connector_being_deleted_is_left_to_the_handler_without_a_write(self, active: bool) -> None:
         """The delete publishes appDisabled after marking the app DELETING, so the app can be off
-        too; writing AUTO_INDEX_OFF then would be a write to records the delete is removing."""
+        too; writing AUTO_INDEX_OFF then would be a write to records the delete is removing. It is
+        not settled either: the delete may be put back, and the handler holds the event until then."""
         graph = FakeConnectorGraph()
         graph.add_connector("conn-off", active=active)
         graph.apps["conn-off"]["status"] = "DELETING"
@@ -266,7 +268,7 @@ class TestGraphConnectorOffFilter:
 
         result = await connector_filter.settle([_message()])
 
-        assert result.settled == frozenset({0})
+        assert result.settled == frozenset()
         assert graph.batch_updates == []
         assert graph.records["r1"]["indexingStatus"] == ProgressStatus.QUEUED.value
         assert not connector_filter._known_active("conn-off")
@@ -521,13 +523,53 @@ class TestAConnectorTurnedBackOnDuringTheWrite:
 
 
 @pytest.mark.parametrize("is_active", [True, False])
-def test_a_connector_being_deleted_is_already_removed(is_active: bool) -> None:
-    """Its records are the delete's: indexing one makes the delete's batch lose a write conflict on ArangoDB."""
+def test_a_connector_being_deleted_is_its_own_state_and_is_never_settled_at_read_time(is_active: bool) -> None:
+    """Not removed: a delete can be put back, so its events must not be dropped."""
     app = {"_key": "conn-off", "isActive": is_active, "status": "DELETING"}
 
-    assert connector_state(app) is ConnectorState.REMOVED
-    state = connector_state(app)
-    assert read_time_outcome(NEW, _payload(), _record(), lambda _c: state) is ReadTimeOutcome.SETTLE
+    assert connector_state(app) is ConnectorState.DELETING
+    deleting = _states(**{"conn-off": ConnectorState.DELETING})
+    assert read_time_outcome(NEW, _payload(), _record(), deleting) is ReadTimeOutcome.PASS
+    assert read_time_outcome(NEW, _payload(), None, deleting) is ReadTimeOutcome.PASS
+
+
+def _deleting_graph(**record_fields: object) -> FakeConnectorGraph:
+    graph = FakeConnectorGraph()
+    graph.add_connector("conn-off", active=False)
+    graph.apps["conn-off"]["status"] = "DELETING"
+    graph.add_record("r1", "conn-off", **record_fields)
+    return graph
+
+
+def _writes(graph: FakeConnectorGraph) -> dict:
+    return {k: v for k, v in graph.calls.items() if not k.startswith(("get_document", "get_nodes_by_field_in"))}
+
+
+@pytest.mark.parametrize(
+    ("event_type", "payload_extra", "record_fields"),
+    [
+        pytest.param(NEW, {}, {}, id="new"),
+        pytest.param(UPDATE, {}, {"indexingStatus": ProgressStatus.COMPLETED.value}, id="update-clears-embeddings-first"),
+        pytest.param(REINDEX, {"forceReindex": True}, {"indexingStatus": ProgressStatus.COMPLETED.value},
+                     id="forced-reindex-of-a-completed-record"),
+        pytest.param(NEW, {}, {"indexingStatus": ProgressStatus.COMPLETED.value,
+                               "extractionStatus": ProgressStatus.IN_PROGRESS.value}, id="resuming-enrichment"),
+    ],
+)
+async def test_the_handler_holds_an_event_of_a_connector_being_deleted_and_writes_nothing(
+    event_type: str, payload_extra: dict, record_fields: dict,
+) -> None:
+    """Handed back before any write and before embeddings are deleted: once the delete sticks the
+    record is gone, and after a revert the event is indexed as it would have been."""
+    graph = _deleting_graph(**record_fields)
+    handler, event_processor = _handler(graph)
+
+    with pytest.raises(RecordHeldForDelete) as held:
+        _ = [e async for e in handler.process_event(event_type, dict(_payload(**payload_extra)))]
+
+    assert held.value.counts_toward_backstop is False and held.value.pauses_consumer is False
+    assert _writes(graph) == {}
+    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
 
 
 def test_a_live_connector_with_another_status_is_still_active() -> None:

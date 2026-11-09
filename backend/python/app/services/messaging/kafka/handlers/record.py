@@ -44,7 +44,9 @@ from app.modules.code_graph.build_state import (
     request_is_stale,
 )
 from app.modules.indexing.connector_off_events import (
+    HELD_FOR_DELETE_DELAY_S,
     ConnectorState,
+    RecordHeldForDelete,
     already_indexed,
     clears_embeddings_first,
     connector_gated_event,
@@ -731,6 +733,12 @@ class RecordEventHandler(BaseEventService):
                 payload=payload,
                 key=str(record_id),
             ),
+        )
+
+    async def _read_gating_app(self, connector_id: str) -> dict | None:
+        # Raising, as the connector check does: an unreadable graph must not look like a deleted connector.
+        return await self.event_processor.graph_provider.get_document(
+            connector_id, CollectionNames.APPS.value, raise_on_error=True
         )
 
     async def _end_enrichment_without_running(
@@ -1528,6 +1536,8 @@ class RecordEventHandler(BaseEventService):
         error_msg = None
         last_exception: Exception | None = None
         cancelled = False
+        # Handed back because the record's connector is being deleted: nothing of it is written.
+        held_for_delete = False
         record = None
         resuming_enrichment = False
         source_name: str | None = None
@@ -1872,6 +1882,25 @@ class RecordEventHandler(BaseEventService):
                 # The runtime never saw this revision: a full reindex dispatches every stage.
                 stage_redrive = False
 
+            # The record's embeddings are taken out below, before the connector check. A connector
+            # being deleted owns its records and the delete may yet be put back, so such an event
+            # is held first, with the app read kept for that check.
+            gating_app: tuple[str, dict | None] | None = None
+            if (
+                not parse_now
+                and clears_embeddings_first(event_type, payload)
+                and connector_gated_event(event_type, payload)
+            ):
+                deleting_id = gating_connector_id(record)
+                if deleting_id:
+                    gating_app = (deleting_id, await self._read_gating_app(deleting_id))
+                    if connector_state(gating_app[1]) is ConnectorState.DELETING:
+                        held_for_delete = True
+                        raise RecordHeldForDelete(
+                            f"connector {deleting_id} of record {record_id} is being deleted",
+                            delay_s=HELD_FOR_DELETE_DELAY_S,
+                        )
+
             #Reconciliation
             vector_db_only = bool(payload.get("vectorDbOnly"))
             if parse_now:
@@ -1925,17 +1954,28 @@ class RecordEventHandler(BaseEventService):
             if connector_gated_event(event_type, payload):
                 connector_id = gating_connector_id(record)
                 if connector_id:
-                    connector_instance = await self.event_processor.graph_provider.get_document(
-                        connector_id,
-                        CollectionNames.APPS.value,
-                        # Same reason as the record read above: the two yields
-                        # below ack the message and leave the record QUEUED, so
-                        # an unreadable graph must not reach them by looking
-                        # like a deleted connector.
-                        raise_on_error=True,
-                    )
+                    if gating_app is not None and gating_app[0] == connector_id:
+                        connector_instance = gating_app[1]
+                    else:
+                        connector_instance = await self.event_processor.graph_provider.get_document(
+                            connector_id,
+                            CollectionNames.APPS.value,
+                            # Same reason as the record read above: the two yields
+                            # below ack the message and leave the record QUEUED, so
+                            # an unreadable graph must not reach them by looking
+                            # like a deleted connector.
+                            raise_on_error=True,
+                        )
                     state = connector_state(connector_instance)
                     source_name = (connector_instance or {}).get("name") or None
+                    if state is ConnectorState.DELETING:
+                        # Before anything is written: the delete may yet be put back, so the event is
+                        # held rather than dropped, a forced re-index included.
+                        held_for_delete = True
+                        raise RecordHeldForDelete(
+                            f"connector {connector_id} of record {record_id} is being deleted",
+                            delay_s=HELD_FOR_DELETE_DELAY_S,
+                        )
                     if resuming_enrichment and state is not ConnectorState.ACTIVE:
                         # Stays searchable: only the enrichment is given up. Its
                         # end lets the finally block promote the QUEUED copies.
@@ -2385,6 +2425,10 @@ class RecordEventHandler(BaseEventService):
             error_msg = str(ie)
             last_exception = ie
             raise  # preserve DocumentProcessingError and other IndexingError subtypes
+        except RecordHeldForDelete:
+            # Not a failure: the consumer hands the message back, and nothing is written for it.
+            self.logger.info(f"Record {record_id} held: its connector is being deleted")
+            raise
         except Exception as e:
             error_occurred = True
             error_msg = str(e)
@@ -2402,9 +2446,10 @@ class RecordEventHandler(BaseEventService):
                 f"Success: {not error_occurred}"
             )
 
-            if stage_redrive:
+            if stage_redrive or held_for_delete:
                 # A stage re-run owns none of the record's bookkeeping (statuses, queued
                 # duplicates, index notifications); its stage state records the outcome.
+                # A held event has done nothing yet, and its record is the delete's.
                 pass
             elif error_occurred and record_id:
                 if parse_now and current_run() is None:
@@ -2606,7 +2651,7 @@ class RecordEventHandler(BaseEventService):
             # stays IN_PROGRESS for redelivery, so the repo is not drained and
             # this would be graph I/O during an unwind. Skipped for a record in
             # the trash too, which is drained like a missing one.
-            if not cancelled and not in_trash and not parse_now_refused and not store_only:
+            if not cancelled and not held_for_delete and not in_trash and not parse_now_refused and not store_only:
                 await self._request_code_edge_build_if_repo_drained(record_id, record)
 
             # Last, so every status write above is shaped by the run.
