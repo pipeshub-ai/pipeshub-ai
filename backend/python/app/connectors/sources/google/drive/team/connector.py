@@ -1205,6 +1205,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         *,
         inherited_permissions_disabled: bool = False,
         inherits_from_drive: bool = True,
+        can_list_children: bool = False,
         item_drive_id: str | None = None,
     ) -> Tuple[List[Permission], bool, List[str]]:
         """
@@ -1342,7 +1343,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                 if http_error.resp.status == HttpStatusCode.FORBIDDEN.value and not (
                     drive_error_reasons(http_error) & QUOTA_403_REASONS
                 ):
-                    if user_email:
+                    # A user who can only see a limited-access folder has no content access, and the grant would
+                    # pass to its children.
+                    if user_email and not (inherited_permissions_disabled and not can_list_children):
                         self.logger.info(
                             f"Added single user permission for file {resource_id}: {user_email}"
                         )
@@ -1364,6 +1367,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         # handled above. Record the access they demonstrably have instead of leaving a
         # record nobody can see. is_fallback=True keeps this from replacing a real ACL
         # that another user's sync already learned.
+        if not permissions and inherited_permissions_disabled and not can_list_children:
+            return ([], True, [])
         if not permissions and user_email:
             self.logger.info(
                 f"Empty permission list for file {resource_id}; "
@@ -3042,6 +3047,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     drive_data_source=drive_data_source,
                     inherited_permissions_disabled=limited_access,
                     inherits_from_drive=not item_drive_id or file_record.external_record_group_id == item_drive_id,
+                    can_list_children=bool((metadata.get("capabilities") or {}).get("canListChildren")),
                     item_drive_id=item_drive_id,
                 )
 
