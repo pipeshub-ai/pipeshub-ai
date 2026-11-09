@@ -203,8 +203,18 @@ FILTER_CLEANUP_SYNC_POINT_KEY = "filter_cleanup"
 SYNCED_SHARED_DRIVES_SYNC_POINT_KEY = "synced_shared_drives"
 DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX = "shared_drive_restrictions_"
 DRIVE_RESTRICTION_FLAGS = ("driveMembersOnly", "domainUsersOnly")
+# Set once a full read has written the audience grants (discoverable domain and "anyone" shares).
+DISCOVERABLE_SHARES_SYNC_POINT_KEY = "discoverable_shares_read"
+# Groups holding the enabled people a discoverable share is open to. Ids have no "@", so they are never
+# mistaken for a Workspace group.
+ALL_MEMBERS_GROUP_ID = "workspace-members"
+DOMAIN_MEMBERS_GROUP_PREFIX = "domain-members:"
 FILTER_CLEANUP_PAGE_SIZE = 500
 
+
+
+def _is_audience_group(group_id: str | None) -> bool:
+    return bool(group_id) and (group_id == ALL_MEMBERS_GROUP_ID or group_id.startswith(DOMAIN_MEMBERS_GROUP_PREFIX))
 
 
 def _delegated_scopes() -> list[str]:
@@ -454,6 +464,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Store synced users for use in batch processing
         self.synced_users: List[AppUser] = []
         self.synced_user_emails: set[str] = set() # to filter out non workspace emails during shared drive file share processing
+        # Audience groups written by the last user listing; a discoverable share grants only these.
+        self._audience_groups: set[str] = set()
+        self._audience_loaded = False
 
     async def init(self) -> bool:
         """Initialize the Google Drive enterprise connector with service account credentials and services."""
@@ -661,6 +674,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._hidden_groups = {}
             self._group_digests = {}
             self._account_domains = None
+            self._audience_groups = set()
+            self._audience_loaded = False
             self._refreshed_folders = set()
             self._group_members_cache = {}
             self._deployment_emails = None
@@ -833,6 +848,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.synced_users = all_users
             self.synced_user_emails = {user.email.lower() for user in all_users if user.email}
             await self._apply_user_status(all_users)
+            await self._write_audience_groups()
 
             self.logger.info(f"✅ Successfully synced {len(all_users)} users")
 
@@ -855,11 +871,79 @@ class GoogleDriveTeamConnector(BaseConnector):
             removed = await self.data_entities_processor.remove_user_access_to_connector(self.connector_id, email)
             self.logger.info(f"{email} can no longer sign in to Google Workspace; removed {removed} grant(s)")
 
+    async def _write_audience_groups(self) -> None:
+        """The groups a discoverable share grants: every enabled person, and the enabled people of each domain.
+
+        Groups, not an organization grant, because an organization grant also reaches guests and accounts
+        that cannot sign in. A domain whose people are all gone is written empty, so no one keeps its access.
+        shortcut: a domain is matched by the primary address of a synced person, so a share with a secondary
+        or alias domain that nobody has as a primary domain grants nothing; upgrade by reading domains.list.
+        """
+        enabled = [u for u in self.synced_users if u.is_active and not self._is_inactive_email(u.email)]
+        by_domain: dict[str, list[AppUser]] = {}
+        for user in enabled:
+            by_domain.setdefault(user.email.lower().rpartition("@")[2], []).append(user)
+        audiences = {ALL_MEMBERS_GROUP_ID: ("Workspace members", enabled)}
+        audiences.update({DOMAIN_MEMBERS_GROUP_PREFIX + d: (f"Members of {d}", us) for d, us in by_domain.items()})
+        try:
+            for stored in await self.data_entities_processor.get_all_user_groups(self.connector_id, raise_on_error=True):
+                gone = stored.source_user_group_id or ""
+                if gone.startswith(DOMAIN_MEMBERS_GROUP_PREFIX) and gone not in audiences:
+                    audiences[gone] = (stored.name, [])
+            await self.data_entities_processor.on_new_user_groups([
+                (
+                    AppUserGroup(
+                        source_user_group_id=group_id,
+                        app_name=self.connector_name,
+                        connector_id=self.connector_id,
+                        name=name,
+                        description="Enabled people a discoverable share is open to",
+                    ),
+                    members,
+                )
+                for group_id, (name, members) in audiences.items()
+            ])
+        except Exception as e:
+            # Like a group that failed in the listing: the stored groups stay as they were, grants are still
+            # written to them, and the run is reported incomplete so the write is tried again.
+            self._sync_ledger.note_incomplete()
+            self.logger.error(f"Error writing the discoverable-share groups; the stored ones are kept: {e}", exc_info=True)
+            return
+        self._audience_groups = set(audiences)
+        self._audience_loaded = True
+
+    async def _load_audience_groups(self) -> None:
+        """The audience groups the store holds, when this process has not written them (a reindex or a failed
+        write). Permissions are never written without knowing them: that would drop a stored audience grant."""
+        if self._audience_loaded:
+            return
+        stored = await self.data_entities_processor.get_all_user_groups(self.connector_id, raise_on_error=True)
+        self._audience_groups = {
+            g.source_user_group_id for g in stored if _is_audience_group(g.source_user_group_id)
+        }
+        self._audience_loaded = True
+
+    def _discoverable_audience(self, share: dict) -> str | None:
+        """The group a discoverable domain or "anyone" share grants, or None. A link-only share is found by
+        nobody without the URL, and a domain that is not one of the account's people's domains is not ours."""
+        if share.get("allowFileDiscovery") is not True:
+            return None
+        kind = (share.get("type") or "").lower()
+        if kind == "anyone":
+            group = ALL_MEMBERS_GROUP_ID
+        elif kind == "domain":
+            group = DOMAIN_MEMBERS_GROUP_PREFIX + (share.get("domain") or "").lower()
+        else:
+            return None
+        return group if group in self._audience_groups else None
+
     async def _restore_returning_users(self) -> None:
         """An account active again lost its grants while it was not; reading its listings from the start
-        writes them back."""
+        writes them back. The first run after discoverable shares began to be stored reads everyone's, since
+        an item already stored has no grant for them until it is read again."""
+        read_all = not await self.drive_delta_sync_point.read_sync_point(DISCOVERABLE_SHARES_SYNC_POINT_KEY)
         for user in self.synced_users:
-            if (user.email or "").lower() not in self._returning_emails:
+            if not read_all and (user.email or "").lower() not in self._returning_emails:
                 continue
             keys = [generate_record_sync_point_key(RecordType.DRIVE.value, "users", user.source_user_id)]
             keys += [
@@ -868,7 +952,10 @@ class GoogleDriveTeamConnector(BaseConnector):
             ]
             for key in keys:
                 await self.drive_delta_sync_point.delete_sync_point(key)
-            self.logger.info(f"{user.email} is active again; their Drive is read in full this run")
+            self.logger.info(f"{user.email}: their Drive is read in full this run")
+        if read_all:
+            # Without a checkpoint a user's read starts over until it completes, so marking it now is enough.
+            await self.drive_delta_sync_point.update_sync_point(DISCOVERABLE_SHARES_SYNC_POINT_KEY, {"done": True})
         await self._user_status.save()
 
     def _is_inactive_email(self, email: str | None) -> bool:
@@ -1227,6 +1314,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             list of user emails that have a direct "file"-type grant per `permissionDetails` - only
             populated for items inside a Shared Drive, since Google omits `permissionDetails` elsewhere)
         """
+        await self._load_audience_groups()
         permissions: List[Permission] = []
         direct_permissions: list[Permission] = []
         organizer_permissions: list[Permission] = []
@@ -1254,7 +1342,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     # nextPageToken must be asked for: a partial response leaves out every field it does not
                     # name, and without it only the first page of a long list was ever read.
                     "fields": "nextPageToken, permissions(id, displayName, type, role, domain, emailAddress, "
-                              "deleted, permissionDetails)"
+                              "deleted, allowFileDiscovery, permissionDetails)"
                 }
 
                 # Only use domain admin access for shared drives
@@ -1281,15 +1369,23 @@ class GoogleDriveTeamConnector(BaseConnector):
                         # Link sharing names no grantee, so it is not stored as a
                         # grant. It still becomes a direct grant for the syncing
                         # user, below.
-                        if perm_type.lower() in ("anyone", "anyonewithlink", "anyone_with_link"):
+                        is_anyone = perm_type.lower() in ("anyone", "anyonewithlink", "anyone_with_link")
+                        if is_anyone:
                             anyone_with_link_permission_type = permission_type
-                            continue
 
-                        entity_type = self._map_drive_permission_type_to_entity_type(perm_type)
-                        if entity_type is None:
-                            continue
-
-                        email = perm_data.get("emailAddress")
+                        # A discoverable share is found in Drive search by its whole audience, so it is a grant
+                        # to the audience's people (a group); a link-only one is found by nobody.
+                        audience = None if is_drive else self._discoverable_audience(perm_data)
+                        if audience:
+                            entity_type = EntityType.GROUP
+                            email = audience
+                        else:
+                            if is_anyone:
+                                continue
+                            entity_type = self._map_drive_permission_type_to_entity_type(perm_type)
+                            if entity_type is None:
+                                continue
+                            email = perm_data.get("emailAddress")
                         external_id = perm_data.get("id")
                         if entity_type == EntityType.USER and self._is_inactive_email(email):
                             continue
@@ -1479,6 +1575,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             out: list[Permission] = []
             seen: set[tuple[str, str]] = set()
             for p in perms:
+                if _is_audience_group(p.external_id):
+                    # Its people are the account's own, so a domain restriction keeps it; a members-only
+                    # drive is read by its members alone.
+                    if not members_only:
+                        out.append(p)
+                    continue
                 if p.entity_type != EntityType.GROUP:
                     if email_ok(p.email or ""):
                         out.append(p)
@@ -2436,6 +2538,13 @@ class GoogleDriveTeamConnector(BaseConnector):
         caller can tell "nobody synced is in it" from "can't say". Read once per run;
         any other failed read raises, so the change is read again next sync.
         """
+        if _is_audience_group(group_email):
+            # Known here, not in the directory: the synced people of the whole Workspace or of one domain.
+            synced = await self._synced_user_emails()
+            if group_email == ALL_MEMBERS_GROUP_ID:
+                return set(synced)
+            domain = group_email[len(DOMAIN_MEMBERS_GROUP_PREFIX):]
+            return {e for e in synced if e.rpartition("@")[2] == domain}
         if group_email in self._group_members_cache:
             return self._group_members_cache[group_email]
         try:
@@ -4945,6 +5054,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.warning(f"Could not read the groups granted on record {record.id}: {e}")
             return candidates
         for group in groups:
+            if _is_audience_group(group.source_user_group_id):
+                continue  # not a Workspace group: the directory has nothing to list, and the owner is granted too
             try:
                 members = await self._fetch_group_members(group.source_user_group_id, include_derived=True)
             except Exception as e:

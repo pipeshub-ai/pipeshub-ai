@@ -194,7 +194,9 @@ async def test_users_and_groups_are_read_to_the_last_page(ws: Workspace) -> None
     assert {m.email for m in ws.records.user_groups["eng@example.com"][1]} == {
         ALICE, BOB, "extra0@example.com", "extra1@example.com", "extra2@example.com"
     }
-    assert set(ws.records.user_groups) == {"eng@example.com", "ops@example.com", "empty-ish@example.com"}
+    assert set(ws.records.user_groups) == {
+        "eng@example.com", "ops@example.com", "empty-ish@example.com", "workspace-members", "domain-members:example.com"
+    }
 
 
 async def test_a_failed_group_member_read_leaves_the_stored_group_alone(ws: Workspace) -> None:
@@ -274,6 +276,87 @@ async def test_user_group_domain_and_link_sharing_is_mapped(ws: Workspace) -> No
     assert ws.grants("linked") == {(ALICE, "USER", "OWNER"), (BOB, "USER", "WRITE")}, (
         "link sharing names nobody, so it is not stored as a grant"
     )
+
+
+def discoverable(kind: str, **extra: object) -> dict:
+    return {"type": kind, "role": "reader", "allowFileDiscovery": True, **extra}
+
+
+async def test_a_discoverable_domain_or_anyone_share_grants_the_enabled_people_of_the_audience(ws: Workspace) -> None:
+    ws.world.add_item("f-domain", "pricing.txt", parent="root-alice", owner=ALICE, perms=[discoverable("domain", domain="example.com")])
+    ws.world.add_item("f-anyone", "open.txt", parent="root-alice", owner=ALICE, perms=[discoverable("anyone")])
+    ws.world.add_item("f-partner", "p.txt", parent="root-alice", owner=ALICE, perms=[discoverable("domain", domain="partner.com")])
+    ws.world.add_item("f-link", "l.txt", parent="root-alice", owner=ALICE, perms=[
+        {"type": "domain", "role": "reader", "domain": "example.com", "allowFileDiscovery": False},
+        {"type": "anyone", "role": "reader", "allowFileDiscovery": False},
+    ])
+    await ws.sync()
+
+    assert ("domain-members:example.com", "GROUP", "READ") in ws.grants("f-domain")
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("f-anyone")
+    for external_id in ("f-partner", "f-link"):
+        assert {g[1] for g in ws.grants(external_id)} == {"USER"}, external_id
+    assert {m.email for m in ws.records.user_groups["workspace-members"][1]} == {ADMIN, ALICE, BOB}
+
+
+def _forget_the_marker(ws: Workspace) -> None:
+    """An install from before discoverable shares were stored: synced, with no marker."""
+    for key in [k for k in ws.sync_points.sync_points if k.endswith("discoverable_shares_read")]:
+        del ws.sync_points.sync_points[key]
+
+
+def _share_without_a_change(ws: Workspace, file_id: str, share: dict) -> None:
+    """A share the change feed never reports: only a full read of the file finds it."""
+    ws.world.files[file_id].perms = [*ws.world.files[file_id].perms, share]
+
+
+async def test_the_first_run_reads_every_drive_in_full_once_so_stored_shares_get_their_audience_grant(ws: Workspace) -> None:
+    ws.world.add_item("f1", "a.txt", parent="root-alice", owner=ALICE)
+    await ws.sync()
+    _forget_the_marker(ws)
+    _share_without_a_change(ws, "f1", discoverable("anyone"))
+
+    await ws.sync()
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("f1"), "the checkpoints were cleared and the drive read again"
+    marker_writes = [k for k, _ in ws.sync_points.writes if k.endswith("discoverable_shares_read")]
+    assert len(marker_writes) == 2  # once on the first run, once on this one
+
+    _share_without_a_change(ws, "f1", {"type": "user", "role": "reader", "emailAddress": BOB})
+    await ws.sync()
+    assert (BOB, "USER", "READ") not in ws.grants("f1"), "incremental again: an unreported change is not read"
+    assert len([k for k, _ in ws.sync_points.writes if k.endswith("discoverable_shares_read")]) == 2
+
+
+async def test_a_run_that_fails_after_the_marker_still_reads_in_full_next_time(ws: Workspace) -> None:
+    ws.world.add_item("f1", "a.txt", parent="root-alice", owner=ALICE)
+    await ws.sync()
+    _forget_the_marker(ws)
+    _share_without_a_change(ws, "f1", discoverable("anyone"))
+    ws.http.fail("GET", "/drive/v3/files", 500, None, when=lambda r: r.identity == ALICE)
+
+    await ws.sync()
+    assert ws.incomplete is True
+    assert ws.user_checkpoint(ALICE) is None, "the checkpoint stays cleared, so the next run starts from the beginning"
+
+    ws.http.clear_faults()
+    await ws.sync()
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("f1")
+
+
+async def test_a_suspended_person_is_not_in_the_audience(ws: Workspace) -> None:
+    ws.world.users[BOB].suspended = True
+    await ws.sync()
+    assert BOB not in {m.email for m in ws.records.user_groups["workspace-members"][1]}
+
+
+async def test_a_members_only_drive_ignores_a_discoverable_share_and_a_domain_only_drive_keeps_it(ws: Workspace) -> None:
+    ws.world.add_drive("sd-m", "Members", {ALICE: "organizer"}, MEMBERS_ONLY)
+    ws.world.add_item("fm", "m.txt", parent="sd-m", perms=[discoverable("domain", domain="example.com")])
+    ws.world.add_drive("sd-d", "Domain", {ALICE: "organizer"}, DOMAIN_ONLY)
+    ws.world.add_item("fd", "d.txt", parent="sd-d", perms=[discoverable("domain", domain="example.com")])
+    await ws.sync()
+    assert "domain-members:example.com" not in {g[0] for g in ws.grants("fm")}
+    assert "domain-members:example.com" in {g[0] for g in ws.grants("fd")}
 
 
 async def test_a_domain_share_and_a_domain_link_share_grant_no_one(ws: Workspace) -> None:
@@ -2297,3 +2380,90 @@ async def test_an_unrestricted_drive_records_nothing_about_its_groups(ws: Worksp
     join_group(ws, "team@example.com", PARTNER)
     assert not await relisted(ws)
     assert not [w for k, w in ws.sync_points.writes if "shared_drive_restrictions_sd-1" in k and w.get("group_hashes")]
+
+
+# --- discoverable shares: the rest of the lifecycle ---------------------------
+
+async def test_a_suspended_person_is_in_the_audience_again_when_reinstated(ws: Workspace) -> None:
+    await ws.sync()
+    ws.world.users[BOB].suspended = True
+    await ws.sync()
+    assert BOB not in {m.email for m in ws.records.user_groups["workspace-members"][1]}
+    ws.world.users[BOB].suspended = False
+    await ws.sync()
+    assert BOB in {m.email for m in ws.records.user_groups["workspace-members"][1]}
+
+
+async def test_a_share_turned_off_loses_its_audience_grant(ws: Workspace) -> None:
+    ws.world.add_item("f", "x.txt", parent="root-alice", owner=ALICE, perms=[discoverable("anyone")])
+    await ws.sync()
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("f")
+
+    def off() -> None:
+        ws.world.files["f"].perms = []
+
+    ws.world._mutate("f", off)
+    await ws.sync()
+    assert ("workspace-members", "GROUP", "READ") not in ws.grants("f")
+
+
+async def test_a_domain_whose_people_are_all_gone_is_written_empty(ws: Workspace) -> None:
+    ws.world.add_user("zed@gone.example")
+    await ws.sync()
+    assert "domain-members:gone.example" in ws.records.user_groups
+    ws.world.users.pop("zed@gone.example")
+    await ws.sync()
+    assert ws.records.user_groups["domain-members:gone.example"][1] == []
+
+
+async def test_a_file_deleted_from_a_filtered_out_drive_is_removed_though_a_discoverable_share_names_the_audience(
+    ws: Workspace,
+) -> None:
+    ws.world.add_drive("sd-2", "Finance", {ALICE: "organizer"})
+    ws.world.add_item("f1", "fin.txt", parent="sd-2", perms=[
+        {"type": "user", "role": "writer", "emailAddress": BOB}, discoverable("domain", domain="example.com"),
+    ])
+    ws.filters(drive_ids={"operator": "not_in", "type": "list", "value": ["sd-2"]})
+    await ws.sync()
+    assert ("domain-members:example.com", "GROUP", "READ") in ws.grants("f1")
+
+    ws.world.delete("f1")
+    await ws.sync()
+    assert "f1" not in ws.records.records
+
+
+async def test_a_reindex_on_a_fresh_instance_keeps_the_audience_grant(ws: Workspace) -> None:
+    ws.world.add_item("f", "x.txt", parent="root-alice", owner=ALICE, perms=[discoverable("anyone")])
+    await ws.sync()
+    old = ws.connector
+    ws.connector = None
+    fresh = await ws.connector_()
+    assert not fresh._audience_groups
+    ws.world.share("f", {"type": "user", "role": "reader", "emailAddress": BOB})
+
+    await fresh.reindex_records([ws.records.records["f"]])
+
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("f")
+    assert (BOB, "USER", "READ") in ws.grants("f")
+    await old.cleanup()
+
+
+async def test_a_failed_audience_write_does_not_stop_the_sync_and_keeps_the_stored_groups(ws: Workspace) -> None:
+    ws.world.add_item("f", "x.txt", parent="root-alice", owner=ALICE, perms=[discoverable("anyone")])
+    await ws.sync()
+    stored_members = list(ws.records.user_groups["workspace-members"][1])
+    write = ws.records.on_new_user_groups
+
+    async def refuse_audience(groups: list) -> None:
+        if any(g.source_user_group_id == "workspace-members" for g, _ in groups):
+            raise RuntimeError("memory pool refused")
+        await write(groups)
+
+    ws.records.on_new_user_groups = refuse_audience
+    ws.world.add_item("g", "y.txt", parent="root-alice", owner=ALICE, perms=[discoverable("anyone")])
+    await ws.sync()
+
+    assert ws.incomplete is True, "reported, and tried again next run"
+    assert "g" in ws.records.records
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("g"), "the stored group is still granted"
+    assert ws.records.user_groups["workspace-members"][1] == stored_members
