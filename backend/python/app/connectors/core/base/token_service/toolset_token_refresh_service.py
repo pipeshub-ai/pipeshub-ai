@@ -171,7 +171,7 @@ class ToolsetTokenRefreshService:
                 stale_locks = [path for path in self._toolset_locks if path not in current_paths]
 
                 if stale_locks:
-                    self.logger.debug(f"🧹 Cleaning up {len(stale_locks)} stale toolset locks")
+                    self.logger.debug(f"Cleaning up {len(stale_locks)} stale toolset locks")
                     for path in stale_locks:
                         # Only remove if lock is not currently held
                         lock = self._toolset_locks.get(path)
@@ -182,7 +182,7 @@ class ToolsetTokenRefreshService:
                 # Clean up stale scheduling locks
                 stale_schedule_locks = [path for path in self._schedule_locks if path not in current_paths]
                 if stale_schedule_locks:
-                    self.logger.debug(f"🧹 Cleaning up {len(stale_schedule_locks)} stale schedule locks")
+                    self.logger.debug(f"Cleaning up {len(stale_schedule_locks)} stale schedule locks")
                     for path in stale_schedule_locks:
                         lock = self._schedule_locks.get(path)
                         if lock and not lock.locked():
@@ -228,13 +228,13 @@ class ToolsetTokenRefreshService:
             config = await self.configuration_service.get_config(config_path)
 
             if not config:
-                self.logger.debug(f"⚠️ No config found for toolset: {config_path}")
+                self.logger.debug(f"No config found for toolset: {config_path}")
                 return False
 
             # Check authentication flag
             is_authenticated = config.get("isAuthenticated", False)
             if not is_authenticated:
-                self.logger.debug(f"⚠️ Toolset not authenticated (isAuthenticated=False): {config_path}")
+                self.logger.debug(f"Toolset not authenticated (isAuthenticated=False): {config_path}")
                 return False
 
             # Check auth type - only OAuth toolsets need token refresh
@@ -244,23 +244,23 @@ class ToolsetTokenRefreshService:
 
             # If auth type is explicitly API_TOKEN, skip (no token refresh needed)
             if auth_type == "API_TOKEN":
-                self.logger.debug(f"⚠️ Toolset is API_TOKEN type (no refresh needed): {config_path}")
+                self.logger.debug(f"Toolset is API_TOKEN type (no refresh needed): {config_path}")
                 return False
 
             # If auth type is OAUTH or not set (but has refresh_token), proceed
             # Many toolsets might not have explicit auth.type set but still use OAuth
             if auth_type and auth_type != "OAUTH":
-                self.logger.debug(f"⚠️ Toolset has unknown auth type (type={auth_type}): {config_path}")
+                self.logger.debug(f"Toolset has unknown auth type (type={auth_type}): {config_path}")
                 return False
 
             credentials = config.get("credentials")
             if not credentials:
-                self.logger.debug(f"⚠️ No credentials found for toolset: {config_path}")
+                self.logger.debug(f"No credentials found for toolset: {config_path}")
                 return False
 
             has_refresh_token = bool(credentials.get("refresh_token"))
             if not has_refresh_token:
-                self.logger.debug(f"⚠️ No refresh_token in credentials for toolset: {config_path}")
+                self.logger.debug(f"No refresh_token in credentials for toolset: {config_path}")
                 return False
 
             return True
@@ -277,10 +277,10 @@ class ToolsetTokenRefreshService:
             # LEGACY: Old format was /services/toolsets/{userId}/{toolset_type}
             try:
                 all_keys = await self.configuration_service.list_keys_in_directory("/services/toolsets/")
-                self.logger.debug(f"🔍 Found {len(all_keys)} toolset keys in key value store (scanning /services/toolsets/)")
+                self.logger.debug(f"Found {len(all_keys)} toolset keys in key value store (scanning /services/toolsets/)")
 
                 if all_keys:
-                    self.logger.debug(f"📋 Sample keys found (first 5): {all_keys[:5]}")
+                    self.logger.debug(f"Sample keys found (first 5): {all_keys[:5]}")
                     for key in all_keys[:5]:
                         path_parts = key.strip("/").split("/")
                         self.logger.debug(f"   - Key: {key} -> Parts: {path_parts} (count: {len(path_parts)})")
@@ -298,7 +298,7 @@ class ToolsetTokenRefreshService:
                     try:
                         # Skip if already processed (key exists in dict)
                         if config_path in processed_toolsets:
-                            self.logger.debug(f"⏭️ Skipping duplicate key: {config_path}")
+                            self.logger.debug(f"Skipping duplicate key: {config_path}")
                             skipped_counts["duplicate"] += 1
                             continue
 
@@ -311,7 +311,7 @@ class ToolsetTokenRefreshService:
                         # Format (legacy): /services/toolsets/{userId}/{toolset_type}
                         path_parts = config_path.strip("/").split("/")
                         if len(path_parts) < MIN_PATH_PARTS_COUNT:
-                            self.logger.debug(f"⚠️ Skipping invalid path format: {config_path} (parts: {path_parts}, count: {len(path_parts)}, expected: 4)")
+                            self.logger.debug(f"Skipping invalid path format: {config_path} (parts: {path_parts}, count: {len(path_parts)}, expected: 4)")
                             skipped_counts["invalid_path"] += 1
                             continue
 
@@ -332,7 +332,7 @@ class ToolsetTokenRefreshService:
                             # Not a UUID, so it's old/legacy format
                             # Skip legacy formats during migration
                             self.logger.debug(
-                                f"⏭️ Skipping legacy format path (will be migrated): {config_path}. "
+                                f"Skipping legacy format path (will be migrated): {config_path}. "
                                 f"Expected instanceId (UUID) at path_parts[2], got: {instance_id_or_type}"
                             )
                             skipped_counts["invalid_path"] += 1
@@ -344,7 +344,7 @@ class ToolsetTokenRefreshService:
                         # Get config to check authentication
                         config = await self.configuration_service.get_config(config_path)
                         if not config:
-                            self.logger.debug(f"⚠️ No config found for toolset: {config_path}")
+                            self.logger.debug(f"No config found for toolset: {config_path}")
                             skipped_counts["no_config"] += 1
                             continue
 
@@ -352,7 +352,7 @@ class ToolsetTokenRefreshService:
                         toolset_type = config.get("toolsetType")
                         if not toolset_type:
                             self.logger.warning(
-                                f"⚠️ No toolsetType in config for {config_path}. "
+                                f"No toolsetType in config for {config_path}. "
                                 f"This is required for new architecture. Skipping."
                             )
                             skipped_counts["no_config"] += 1
@@ -361,7 +361,7 @@ class ToolsetTokenRefreshService:
                         # Check if toolset is authenticated and has OAuth
                         if not await self._is_toolset_authenticated(config_path):
                             self.logger.debug(
-                                f"⚠️ Toolset not authenticated or missing refresh_token: {config_path} "
+                                f"Toolset not authenticated or missing refresh_token: {config_path} "
                                 f"(instance: {instance_id}, user: {user_id}, type: {toolset_type})"
                             )
                             skipped_counts["not_authenticated"] += 1
@@ -388,7 +388,7 @@ class ToolsetTokenRefreshService:
                         continue
 
                 self.logger.debug(
-                    f"📊 Toolset scan summary: "
+                    f"Toolset scan summary: "
                     f"{len([v for v in processed_toolsets.values() if v])} authenticated OAuth toolsets processed, "
                     f"{skipped_counts['duplicate']} duplicates skipped, "
                     f"{skipped_counts['not_authenticated']} not authenticated, "
@@ -400,7 +400,7 @@ class ToolsetTokenRefreshService:
                 self.logger.error(f"Error listing toolset keys from etcd: {e}", exc_info=True)
 
         except Exception as e:
-            self.logger.error(f"❌ Error refreshing toolset tokens: {e}", exc_info=True)
+            self.logger.error(f"Error refreshing toolset tokens: {e}", exc_info=True)
 
     # ============================================================================
     # Helper Methods for OAuth Config Building
@@ -610,7 +610,7 @@ class ToolsetTokenRefreshService:
             auth_config = {**oauth_creds, "clientId": client_id, "clientSecret": client_secret}
 
             self.logger.debug(
-                "✅ Fetched OAuth credentials for token refresh from centralized config. "
+                "Fetched OAuth credentials for token refresh from centralized config. "
                 f"Field count: {len(oauth_creds)}"
             )
 
@@ -801,7 +801,7 @@ class ToolsetTokenRefreshService:
         # which already verified the toolset has valid OAuth credentials (refresh_token)
         if not auth_type:
             self.logger.debug(
-                f"⚠️ Toolset {config_path} has no auth.type set, but has refresh_token. "
+                f"Toolset {config_path} has no auth.type set, but has refresh_token. "
                 f"Assuming OAuth (legacy config)."
             )
 
@@ -856,7 +856,7 @@ class ToolsetTokenRefreshService:
                 if attempt > 0:
                     pre_write_delay = 0.1  # 100ms delay before retry
                     self.logger.debug(
-                        f"⏸️ Waiting {pre_write_delay}s before retry attempt {attempt + 1} "
+                        f"Waiting {pre_write_delay}s before retry attempt {attempt + 1} "
                         f"for toolset {config_path} (allows previous verification to complete)"
                     )
                     await asyncio.sleep(pre_write_delay)
@@ -897,7 +897,7 @@ class ToolsetTokenRefreshService:
 
             # Update last refresh time to prevent duplicate refreshes
             self._last_refresh_time[config_path] = time.time()
-            self.logger.debug(f"📝 Updated last refresh time for {config_path}")
+            self.logger.debug(f"Updated last refresh time for {config_path}")
 
             self._invalid_refresh_failures.pop(config_path, None)
 
@@ -1018,7 +1018,7 @@ class ToolsetTokenRefreshService:
         delay, refresh_time = self._calculate_refresh_delay(token)
         if delay <= 0:
             self.logger.debug(
-                f"🔄 Token reached refresh threshold for {config_path}; refreshing now "
+                f"Token reached refresh threshold for {config_path}; refreshing now "
                 f"(refresh_time={refresh_time}, now={datetime.now()})"
             )
             new_token = await self._perform_token_refresh(config_path, toolset_type, token.refresh_token)
@@ -1027,7 +1027,7 @@ class ToolsetTokenRefreshService:
 
         # Token is still outside the refresh window, schedule refresh task.
         self.logger.debug(
-            f"✅ Token not in refresh window for toolset {config_path}, scheduling refresh "
+            f"Token not in refresh window for toolset {config_path}, scheduling refresh "
             f"(delay={delay:.1f}s, refresh_time={refresh_time})"
         )
         await self.schedule_token_refresh(config_path, toolset_type, token)
@@ -1055,17 +1055,17 @@ class ToolsetTokenRefreshService:
             log_skipped(self.logger, reason="lock_wait_timeout")
             return
         except Exception as e:
-            self.logger.error(f"❌ Error acquiring lock for toolset {config_path}: {e}", exc_info=True)
+            self.logger.error(f"Error acquiring lock for toolset {config_path}: {e}", exc_info=True)
             return
 
         # Lock acquired - ensure it's released in all cases
         try:
-            self.logger.debug(f"🔒 Acquired refresh lock for toolset {config_path}")
+            self.logger.debug(f"Acquired refresh lock for toolset {config_path}")
 
             # Prevent recursion (redundant with lock, but keep for safety)
             if self._is_toolset_being_processed(config_path):
                 self.logger.warning(
-                    f"⚠️ Already processing toolset {config_path} "
+                    f"Already processing toolset {config_path} "
                     f"(should not happen with locks, possible deadlock)"
                 )
                 return
@@ -1090,7 +1090,7 @@ class ToolsetTokenRefreshService:
                 log_check_failed(self.logger, e, once_key=_once_key(config_path))
             finally:
                 self._unmark_toolset_processing(config_path)
-                self.logger.debug(f"🔓 Released refresh lock for toolset {config_path}")
+                self.logger.debug(f"Released refresh lock for toolset {config_path}")
             if rejected is not None:
                 # After the except block, so an error the strike handler raises is not chained to the rejection;
                 # still under the toolset lock, so strikes stay serialised.
@@ -1102,18 +1102,18 @@ class ToolsetTokenRefreshService:
 
     async def _periodic_refresh_check(self) -> None:
         """Periodically check and refresh tokens for all toolsets"""
-        self.logger.info("🔄 Starting periodic toolset token refresh check (every 5 minutes)")
+        self.logger.info("Starting periodic toolset token refresh check (every 5 minutes)")
         while self._running:
             try:
                 await asyncio.sleep(300)  # Check every 5 minutes
                 if self._running:
-                    self.logger.debug("🔄 Running periodic toolset token refresh check...")
+                    self.logger.debug("Running periodic toolset token refresh check...")
                     await self._refresh_all_tokens()
             except asyncio.CancelledError:
-                self.logger.info("🛑 Periodic toolset refresh check cancelled")
+                self.logger.info("Periodic toolset refresh check cancelled")
                 break
             except Exception as e:
-                self.logger.error(f"❌ Error in periodic toolset refresh check: {e}", exc_info=True)
+                self.logger.error(f"Error in periodic toolset refresh check: {e}", exc_info=True)
 
     async def refresh_toolset_token(self, config_path: str, toolset_type: str) -> None:
         """Manually refresh token for a specific toolset"""
@@ -1184,12 +1184,12 @@ class ToolsetTokenRefreshService:
 
         if old_task.done():
             del self._refresh_tasks[config_path]
-            self.logger.debug(f"✅ Removed completed task for toolset {config_path}")
+            self.logger.debug(f"Removed completed task for toolset {config_path}")
             return
 
         # Cancel the task
         old_task.cancel()
-        self.logger.info(f"⏹️ Cancelled existing refresh task for toolset {config_path}")
+        self.logger.info(f"Cancelled existing refresh task for toolset {config_path}")
 
         # Remove from tracking IMMEDIATELY (don't wait for task to finish)
         # This prevents duplicate scheduling if a new task is created before cancel completes
@@ -1231,7 +1231,7 @@ class ToolsetTokenRefreshService:
         
         if cancelled_count > 0:
             self.logger.info(
-                f"⏹️ Cancelled {cancelled_count} refresh task(s) for instance {instance_id}"
+                f"Cancelled {cancelled_count} refresh task(s) for instance {instance_id}"
             )
         
         return cancelled_count
@@ -1254,7 +1254,7 @@ class ToolsetTokenRefreshService:
             existing_task = self._refresh_tasks.get(config_path)
             if existing_task and not existing_task.done() and not existing_task.cancelled():
                 self.logger.warning(
-                    f"⚠️ Refusing to create duplicate refresh task for {config_path} - task already running"
+                    f"Refusing to create duplicate refresh task for {config_path} - task already running"
                 )
                 return False
 
@@ -1266,7 +1266,7 @@ class ToolsetTokenRefreshService:
             log_scheduled(self.logger, next_refresh_at=refresh_time, delay_s=delay, changed=True)
             return True
         except Exception as e:
-            self.logger.error(f"❌ Failed to schedule token refresh for toolset {config_path}: {e}", exc_info=True)
+            self.logger.error(f"Failed to schedule token refresh for toolset {config_path}: {e}", exc_info=True)
             return False
 
     async def schedule_token_refresh(
@@ -1299,10 +1299,10 @@ class ToolsetTokenRefreshService:
             token: Current OAuth token
         """
         if not self._running:
-            self.logger.warning(f"⚠️ Toolset token refresh service not running, scheduling anyway for {config_path}")
+            self.logger.warning(f"Toolset token refresh service not running, scheduling anyway for {config_path}")
 
         if not token.expires_in:
-            self.logger.warning(f"⚠️ Token for toolset {config_path} has no expiry time, cannot schedule refresh")
+            self.logger.warning(f"Token for toolset {config_path} has no expiry time, cannot schedule refresh")
             return
 
         schedule_lock = self._get_schedule_lock(config_path)
@@ -1319,18 +1319,18 @@ class ToolsetTokenRefreshService:
                     # If the existing task is still running (not done, not cancelled), keep it
                     if not existing_task.done() and not existing_task.cancelled():
                         self.logger.debug(
-                            f"⏭️ Skipping duplicate schedule request for {config_path} - "
+                            f"Skipping duplicate schedule request for {config_path} - "
                             f"valid refresh task already exists and is running"
                         )
                         return
 
                     # Existing task is dead; safe to remove
                     self.logger.debug(
-                        f"📝 Existing task for {config_path} is done/cancelled, will create new task"
+                        f"Existing task for {config_path} is done/cancelled, will create new task"
                     )
                     del self._refresh_tasks[config_path]
 
-            self.logger.debug(f"🔄 Scheduling token refresh for toolset {config_path} (type: {toolset_type})")
+            self.logger.debug(f"Scheduling token refresh for toolset {config_path} (type: {toolset_type})")
 
             # Calculate refresh delay
             delay, _ = self._calculate_refresh_delay(token)
@@ -1365,7 +1365,7 @@ class ToolsetTokenRefreshService:
                     log_check_failed(self.logger, e, once_key=_once_key(config_path))
         except asyncio.CancelledError:
             # This is expected when rescheduling - don't log as error
-            self.logger.debug(f"🔄 Token refresh task cancelled for toolset {config_path} (likely rescheduled)")
+            self.logger.debug(f"Token refresh task cancelled for toolset {config_path} (likely rescheduled)")
             raise
         except Exception as e:
             # fresh_root or the scope failed to enter or exit.
