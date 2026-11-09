@@ -23,7 +23,7 @@ from contextlib import (
     contextmanager,
     nullcontext,
 )
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
 
@@ -47,6 +47,7 @@ EVENT_STRIKE = "credential_refresh.strike"
 EVENT_DEAUTHENTICATED = "credential_refresh.deauthenticated"
 EVENT_DEAUTHENTICATE_FAILED = "credential_refresh.deauthenticate_failed"
 EVENT_APP_DISABLED_EVENT_FAILED = "credential_refresh.app_disabled_event_failed"
+EVENT_SKIPPED = "credential_refresh.skipped"
 
 JOB = "credential_refresh"
 _LOGGED_ATTR = "_credential_refresh_logged"
@@ -73,6 +74,7 @@ ERROR_CLASS_BY_REASON = {"invalid_grant": "auth_expired", "config_missing": "mis
 @dataclass
 class Attempt:
     reason: str | None = None  # why a success did not call the token endpoint ("adopted")
+    fields: dict[str, object] = field(default_factory=dict)  # facts about this attempt, on its end line either way
 
 
 def org_of(doc: Mapping[str, object] | None) -> str | None:
@@ -127,9 +129,9 @@ async def refresh_attempt(logger: logging.Logger, *, once_key: str) -> AsyncIter
     try:
         yield attempt
     except (Exception, asyncio.CancelledError) as e:
-        _log_failed(logger, EVENT_END, e, once_key, duration_ms=_ms_since(start))
+        _log_failed(logger, EVENT_END, e, once_key, duration_ms=_ms_since(start), **attempt.fields)
         raise
-    log_event(logger, EVENT_END, outcome="success", reason=attempt.reason, duration_ms=_ms_since(start))
+    log_event(logger, EVENT_END, outcome="success", reason=attempt.reason, duration_ms=_ms_since(start), **attempt.fields)
 
 
 def log_check_failed(logger: logging.Logger, exc: BaseException, *, once_key: str) -> None:
@@ -145,6 +147,11 @@ def log_scheduled(logger: logging.Logger, *, next_refresh_at: datetime, delay_s:
         next_refresh_at=next_refresh_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         delay_s=round(delay_s),
     )
+
+
+def log_skipped(logger: logging.Logger, *, reason: str) -> None:
+    """An attempt that did not start, e.g. another refresh of the same credential holds its lock."""
+    log_event(logger, EVENT_SKIPPED, level=logging.WARNING, outcome="skipped", reason=reason)
 
 
 def log_strike(

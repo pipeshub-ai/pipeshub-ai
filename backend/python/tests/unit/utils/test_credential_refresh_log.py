@@ -126,6 +126,18 @@ class TestRefreshAttempt:
         [end] = _ends(records)
         assert log_record_fields(end)["reason"] == "adopted"
 
+    async def test_attempt_fields_are_on_its_end_either_way(self, records: _Records) -> None:
+        async with CR.refresh_attempt(_logger(), once_key="toolset:t1") as attempt:
+            attempt.fields["oauth_app"] = "unlinked"
+        with pytest.raises(TimeoutError):
+            async with CR.refresh_attempt(_logger(), once_key="toolset:t1") as attempt:
+                attempt.fields["oauth_app"] = "linked"
+                raise TimeoutError
+
+        assert [(log_record_fields(r)["outcome"], log_record_fields(r)["oauth_app"]) for r in _ends(records)] == [
+            ("success", "unlinked"), ("failure", "linked"),
+        ]
+
     @pytest.mark.parametrize(("exc", "cls", "status"), [
         (_provider_error(503), "unavailable", 503),
         (_provider_error(502), "upstream_5xx", 502),
@@ -484,3 +496,14 @@ class TestSmallLines:
         assert deauth.levelno == logging.WARNING
         assert log_record_fields(deauth)["reason"] == "refresh_token_invalid"
         assert "path" not in log_record_fields(deauth)
+
+    def test_skipped_is_a_warning_with_the_bound_ids(self, records: _Records) -> None:
+        with CR.refresh_scope(CR.Kind.TOOLSET, trigger=CR.Trigger.SCAN, toolset_id="t1", owner_id="agent-key-1"):
+            CR.log_skipped(_logger(), reason="lock_wait_timeout")
+
+        [line] = records
+        assert (line.getMessage(), line.levelno) == ("credential_refresh.skipped", logging.WARNING)
+        assert log_record_fields(line).items() >= {
+            "outcome": "skipped", "reason": "lock_wait_timeout", "refresh_kind": "toolset", "trigger": "scan",
+            "toolset_id": "t1", "owner_id": "agent-key-1",
+        }.items()

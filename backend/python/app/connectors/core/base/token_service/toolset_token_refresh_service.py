@@ -7,6 +7,7 @@ Separate from connector token refresh to avoid interference
 import asyncio
 import logging
 import time
+from contextlib import AbstractContextManager
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Dict, Optional
 
@@ -16,9 +17,30 @@ if TYPE_CHECKING:
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthToken,
+    RefreshConfigError,
     RefreshTokenInvalidError,
 )
+from app.connectors.core.base.token_service.token_refresh_service import (
+    CredentialSaveError,
+)
 from app.core.org_context import spawn_detached
+from app.utils.credential_refresh_log import (
+    EVENT_DEAUTHENTICATE_FAILED,
+    Attempt,
+    Kind,
+    Trigger,
+    fresh_root,
+    log_check_failed,
+    log_deauthenticated,
+    log_refresh_failure,
+    log_scheduled,
+    log_skipped,
+    log_strike,
+    org_of,
+    refresh_attempt,
+    refresh_scope,
+)
+from app.utils.logging_fields import log_event
 from app.utils.oauth_config import apply_tenant_to_microsoft_oauth_url, get_oauth_config
 from app.utils.request_context import (
     new_system_root,
@@ -41,12 +63,23 @@ SHORT_LIVED_TOKEN_BUFFER_RATIO = 0.2  # For short-lived tokens, refresh ~20% bef
 MAX_REFRESH_TOKEN_INVALID_FAILURES = 3
 
 
+def _once_key(config_path: str) -> str:
+    return f"toolset:{config_path}"
+
+
+def _config_error(message: str, cause: Exception) -> ValueError:
+    """A config verdict (ours, or a ValueError the resolver raised itself) is a RefreshConfigError. The
+    resolver also wraps bugs and store errors as ``ValueError from e``: those stay plain, so the cause is classified."""
+    verdict = isinstance(cause, ValueError) and cause.__cause__ is None
+    return (RefreshConfigError if verdict else ValueError)(message)
+
+
 class ToolsetTokenRefreshService:
     """Service for managing token refresh across all OAuth toolsets"""
 
     def __init__(self, configuration_service: ConfigurationService) -> None:
         self.configuration_service = configuration_service
-        self.logger = logging.getLogger("connector_service")
+        self.logger = logging.getLogger("connector_service.refresh")
         self._refresh_tasks: Dict[str, asyncio.Task] = {}
         self._running = False
         self._refresh_lock = asyncio.Lock()  # Prevent concurrent refresh operations
@@ -138,7 +171,7 @@ class ToolsetTokenRefreshService:
                 stale_locks = [path for path in self._toolset_locks if path not in current_paths]
 
                 if stale_locks:
-                    self.logger.info(f"🧹 Cleaning up {len(stale_locks)} stale toolset locks")
+                    self.logger.debug(f"🧹 Cleaning up {len(stale_locks)} stale toolset locks")
                     for path in stale_locks:
                         # Only remove if lock is not currently held
                         lock = self._toolset_locks.get(path)
@@ -149,7 +182,7 @@ class ToolsetTokenRefreshService:
                 # Clean up stale scheduling locks
                 stale_schedule_locks = [path for path in self._schedule_locks if path not in current_paths]
                 if stale_schedule_locks:
-                    self.logger.info(f"🧹 Cleaning up {len(stale_schedule_locks)} stale schedule locks")
+                    self.logger.debug(f"🧹 Cleaning up {len(stale_schedule_locks)} stale schedule locks")
                     for path in stale_schedule_locks:
                         lock = self._schedule_locks.get(path)
                         if lock and not lock.locked():
@@ -278,7 +311,7 @@ class ToolsetTokenRefreshService:
                         # Format (legacy): /services/toolsets/{userId}/{toolset_type}
                         path_parts = config_path.strip("/").split("/")
                         if len(path_parts) < MIN_PATH_PARTS_COUNT:
-                            self.logger.info(f"⚠️ Skipping invalid path format: {config_path} (parts: {path_parts}, count: {len(path_parts)}, expected: 4)")
+                            self.logger.debug(f"⚠️ Skipping invalid path format: {config_path} (parts: {path_parts}, count: {len(path_parts)}, expected: 4)")
                             skipped_counts["invalid_path"] += 1
                             continue
 
@@ -342,19 +375,16 @@ class ToolsetTokenRefreshService:
                         }
                         processed_toolsets[config_path] = toolset_info
 
-                        self.logger.info(
-                            f"✅ Found authenticated OAuth toolset: {config_path} "
-                            f"(instance: {instance_id}, user: {user_id}, type: {toolset_type})"
-                        )
-
-                        # Process this toolset for refresh
-                        try:
-                            await self._refresh_toolset_token(config_path, toolset_type)
-                        except Exception as e:
-                            self.logger.error(f"Failed to process toolset {config_path}: {e}", exc_info=False)
+                        with self._scope(config_path, toolset_type, trigger=Trigger.SCAN, org_id=org_of(config)):
+                            self.logger.debug("Found an authenticated OAuth toolset")
+                            try:
+                                await self._refresh_toolset_token(config_path, toolset_type)
+                            except Exception as e:
+                                log_check_failed(self.logger, e, once_key=_once_key(config_path))
 
                     except Exception as e:
-                        self.logger.warning(f"Error processing toolset config {config_path}: {e}")
+                        with self._scope(config_path, trigger=Trigger.SCAN):
+                            log_check_failed(self.logger, e, once_key=_once_key(config_path))
                         continue
 
                 self.logger.debug(
@@ -546,7 +576,7 @@ class ToolsetTokenRefreshService:
             )
 
             if not full_user_config or not isinstance(full_user_config, dict):
-                raise ValueError(f"Could not load toolset config from {config_path}")
+                raise RefreshConfigError(f"Could not load toolset config from {config_path}")
 
             # Tokens of a config linked to a central OAuth app were issued to that app, so
             # nothing saved under its own "auth" may choose the credentials or where they go.
@@ -557,10 +587,10 @@ class ToolsetTokenRefreshService:
             # Use the new centralized OAuth credential fetching
             from app.api.routes.toolsets import get_oauth_credentials_for_toolset
 
+            # No logger: its lines would repeat on every scan what the attempt's end line already says.
             oauth_creds = await get_oauth_credentials_for_toolset(
                 toolset_config=full_user_config,
                 config_service=self.configuration_service,
-                logger=self.logger
             )
 
             # oauth_creds now contains ALL OAuth config fields dynamically
@@ -569,7 +599,7 @@ class ToolsetTokenRefreshService:
             client_secret = oauth_creds.get("clientSecret") or oauth_creds.get("client_secret")
 
             if not client_id or not client_secret:
-                raise ValueError(
+                raise RefreshConfigError(
                     f"OAuth credentials incomplete for {config_path}. "
                     f"Available fields: {list(oauth_creds.keys())}"
                 )
@@ -586,23 +616,21 @@ class ToolsetTokenRefreshService:
 
         except Exception as e:
             if linked_to_central_app:
-                raise ValueError(
-                    f"OAuth app for toolset {config_path} could not be loaded: {e}"
-                ) from e
-            self.logger.error(
-                f"Failed to fetch OAuth credentials for {config_path}: {e}. "
-                f"Falling back to legacy auth_config (if available).",
-                exc_info=True
+                raise _config_error(f"OAuth app for toolset {config_path} could not be loaded: {e}", e) from e
+            # When the legacy credentials are missing too, the end line carries this error as the cause.
+            self.logger.debug(
+                "Central OAuth app not loaded; trying the legacy credentials", extra={"error_type": type(e).__name__}
             )
             # Fallback to legacy: credentials directly in auth_config
             client_id = auth_config.get("clientId")
             client_secret = auth_config.get("clientSecret")
 
             if not client_id or not client_secret:
-                raise ValueError(
+                raise _config_error(
                     f"No OAuth credentials found for toolset {config_path}. "
-                    f"New architecture fetch failed AND legacy credentials not in auth_config."
-                )
+                    f"New architecture fetch failed AND legacy credentials not in auth_config.",
+                    e,
+                ) from e
 
         # Try to get OAuth config from registry for fallback URLs and scopes
         oauth_config_obj = self._get_toolset_oauth_config_from_registry(toolset_type)
@@ -704,11 +732,35 @@ class ToolsetTokenRefreshService:
     # Core Token Refresh Logic
     # ============================================================================
 
+    @staticmethod
+    def _scope(
+        config_path: str, toolset_type: str | None = None, *, trigger: Trigger | None = None, org_id: str | None = None,
+    ) -> AbstractContextManager[None]:
+        parts = config_path.strip("/").split("/")
+        instance_id, owner_id = (parts[2], parts[3]) if len(parts) >= MIN_PATH_PARTS_COUNT else (None, None)
+        # The owner is a user id or an agent key, so it is owner_id, never user_id.
+        return refresh_scope(
+            Kind.TOOLSET, trigger=trigger, org_id=org_id,
+            toolset_id=instance_id, owner_id=owner_id, provider=toolset_type or None,
+        )
+
     async def _perform_token_refresh(
         self,
         config_path: str,
         toolset_type: str,
         refresh_token: str
+    ) -> OAuthToken:
+        """One refresh attempt, logged as exactly one credential_refresh.end (the caller holds the toolset lock)."""
+        with self._scope(config_path, toolset_type):
+            async with refresh_attempt(self.logger, once_key=_once_key(config_path)) as refresh:
+                return await self._perform_token_refresh_attempt(config_path, toolset_type, refresh_token, refresh)
+
+    async def _perform_token_refresh_attempt(
+        self,
+        config_path: str,
+        toolset_type: str,
+        refresh_token: str,
+        refresh: Attempt,
     ) -> OAuthToken:
         """
         Core token refresh logic - performs the actual OAuth token refresh for toolsets.
@@ -728,7 +780,9 @@ class ToolsetTokenRefreshService:
         config = await self.configuration_service.get_config(config_path)
 
         if not config:
-            raise ValueError(f"No config found for toolset {config_path}")
+            raise RefreshConfigError(f"No config found for toolset {config_path}")
+        # Unlinked is normal for a personal instance; for another it is a sign-in to re-link.
+        refresh.fields["oauth_app"] = "linked" if config.get("oauthConfigId") else "unlinked"
 
         auth_config = config.get("auth", {})
 
@@ -738,7 +792,7 @@ class ToolsetTokenRefreshService:
         auth_type = auth_config.get("type", "").upper()
         if auth_type and auth_type != "OAUTH":
             # Only fail if type is explicitly set to non-OAUTH (e.g., "API_TOKEN")
-            raise ValueError(
+            raise RefreshConfigError(
                 f"Toolset {config_path} is configured for {auth_type}, not OAuth. "
                 f"Token refresh only works for OAuth toolsets."
             )
@@ -760,16 +814,16 @@ class ToolsetTokenRefreshService:
 
         # Validate required OAuth fields
         if not oauth_flow_config.get("tokenUrl"):
-            raise ValueError(
+            raise RefreshConfigError(
                 f"Missing tokenUrl in OAuth config for toolset {config_path}. "
                 f"Required for token refresh."
             )
         if not oauth_flow_config.get("clientId"):
-            raise ValueError(
+            raise RefreshConfigError(
                 f"Missing clientId in OAuth config for toolset {config_path}."
             )
         if not oauth_flow_config.get("clientSecret"):
-            raise ValueError(
+            raise RefreshConfigError(
                 f"Missing clientSecret in OAuth config for toolset {config_path}."
             )
 
@@ -786,9 +840,7 @@ class ToolsetTokenRefreshService:
 
         try:
             # 5. Perform the token refresh
-            self.logger.info(f"🔄 Refreshing token for toolset {config_path} (type: {toolset_type})")
             new_token = await oauth_provider.refresh_access_token(refresh_token)
-            self.logger.info(f"✅ Successfully refreshed token for toolset {config_path}")
 
             # 6. Update stored credentials with retry on verification failure
             config["credentials"] = new_token.to_dict()
@@ -813,13 +865,7 @@ class ToolsetTokenRefreshService:
                     success = await self.configuration_service.set_config(config_path, config)
 
                     if success:
-                        if attempt > 0:
-                            self.logger.info(
-                                f"💾 Updated stored credentials for toolset {config_path} "
-                                f"on attempt {attempt + 1}/{max_retries}"
-                            )
-                        else:
-                            self.logger.info(f"💾 Updated stored credentials for toolset {config_path}")
+                        self.logger.debug("Stored the refreshed credentials", extra={"attempt": attempt + 1})
 
                         # Add small delay after successful write to ensure verification completes
                         # This prevents interference if another operation starts immediately
@@ -828,27 +874,23 @@ class ToolsetTokenRefreshService:
 
                     # set_config returned False (verification failed)
                     last_error = "Verification failed"
+                    self.logger.warning("Saving the refreshed credentials failed", extra={"attempt": attempt + 1})
                     if attempt < max_retries - 1:
-                        self.logger.warning(
-                            f"⚠️ Verification failed for toolset {config_path} "
-                            f"(attempt {attempt + 1}/{max_retries}). "
-                            f"Will wait {retry_delay}s before next attempt..."
-                        )
                         await asyncio.sleep(retry_delay)
                         retry_delay *= 2  # Exponential backoff
 
                 except Exception as e:
                     last_error = str(e)
                     self.logger.warning(
-                        f"⚠️ Error saving credentials for toolset {config_path} "
-                        f"(attempt {attempt + 1}/{max_retries}): {e}"
+                        "Saving the refreshed credentials failed",
+                        extra={"attempt": attempt + 1, "error_type": type(e).__name__},
                     )
                     if attempt < max_retries - 1:
                         await asyncio.sleep(retry_delay)
                         retry_delay *= 2
             else:
                 # All retries exhausted
-                raise Exception(
+                raise CredentialSaveError(
                     f"Failed to save refreshed credentials for {config_path} "
                     f"after {max_retries} attempts. Last error: {last_error}"
                 )
@@ -868,20 +910,12 @@ class ToolsetTokenRefreshService:
         """Deactivate the toolset after MAX_REFRESH_TOKEN_INVALID_FAILURES consecutive rejections."""
         failures = self._invalid_refresh_failures.get(config_path, 0) + 1
         self._invalid_refresh_failures[config_path] = failures
+        # The full cause is on the attempt's credential_refresh.end line; the strike carries only its class and OAuth code.
+        log_strike(self.logger, strike=failures, max_strikes=MAX_REFRESH_TOKEN_INVALID_FAILURES, cause=error)
 
         if failures < MAX_REFRESH_TOKEN_INVALID_FAILURES:
-            self.logger.error(
-                f"Refresh token rejected for toolset {config_path} "
-                f"(failure {failures}/{MAX_REFRESH_TOKEN_INVALID_FAILURES}): {error}",
-                exc_info=False,
-            )
             return
 
-        self.logger.error(
-            f"Refresh token rejected for toolset {config_path} "
-            f"{failures} consecutive times, deactivating: {error}",
-            exc_info=False,
-        )
         self._invalid_refresh_failures.pop(config_path, None)
         await self._mark_toolset_unauthenticated(config_path)
 
@@ -890,6 +924,8 @@ class ToolsetTokenRefreshService:
         try:
             config = await self.configuration_service.get_config(config_path, default=None, use_cache=False)
             if not config or not isinstance(config, dict):
+                # Also a swallowed read error; the strike count is already reset, so say it.
+                log_event(self.logger, EVENT_DEAUTHENTICATE_FAILED, level=logging.ERROR, outcome="failure", reason="not_found")
                 return
 
             now_ms = get_epoch_timestamp_in_ms()
@@ -897,14 +933,13 @@ class ToolsetTokenRefreshService:
             config["deauthReason"] = "refresh_token_invalid"
             config["deauthAt"] = now_ms
             config["updatedAt"] = now_ms
-            await self.configuration_service.set_config(config_path, config)
-
-            self.logger.warning(
-                f"Marked toolset {config_path} as unauthenticated — "
-                f"refresh token is invalid, re-authentication required"
-            )
+            updated = await self.configuration_service.set_config(config_path, config)
+            if updated:
+                log_deauthenticated(self.logger, reason="refresh_token_invalid", strikes=MAX_REFRESH_TOKEN_INVALID_FAILURES)
+            else:
+                log_event(self.logger, EVENT_DEAUTHENTICATE_FAILED, level=logging.ERROR, outcome="failure", reason="not_updated")
         except Exception as e:
-            self.logger.error(f"Error marking toolset {config_path} as unauthenticated: {e}", exc_info=False)
+            log_refresh_failure(self.logger, EVENT_DEAUTHENTICATE_FAILED, e, level=logging.ERROR)
 
         # Cancelling our own task here would raise CancelledError on the caller's next await.
         existing_task = self._refresh_tasks.get(config_path)
@@ -982,7 +1017,7 @@ class ToolsetTokenRefreshService:
         # This ensures refresh happens at/before threshold, not only after actual expiry.
         delay, refresh_time = self._calculate_refresh_delay(token)
         if delay <= 0:
-            self.logger.info(
+            self.logger.debug(
                 f"🔄 Token reached refresh threshold for {config_path}; refreshing now "
                 f"(refresh_time={refresh_time}, now={datetime.now()})"
             )
@@ -991,7 +1026,7 @@ class ToolsetTokenRefreshService:
             return
 
         # Token is still outside the refresh window, schedule refresh task.
-        self.logger.info(
+        self.logger.debug(
             f"✅ Token not in refresh window for toolset {config_path}, scheduling refresh "
             f"(delay={delay:.1f}s, refresh_time={refresh_time})"
         )
@@ -1016,10 +1051,8 @@ class ToolsetTokenRefreshService:
             # Acquire lock with timeout
             await asyncio.wait_for(toolset_lock.acquire(), timeout=LOCK_TIMEOUT)
         except asyncio.TimeoutError:
-            self.logger.error(
-                f"❌ Timeout waiting for refresh lock for toolset {config_path}. "
-                f"Another refresh operation may be stuck. Lock will be released when that operation completes."
-            )
+            # Another refresh of this sign-in holds the lock; it releases it when it completes.
+            log_skipped(self.logger, reason="lock_wait_timeout")
             return
         except Exception as e:
             self.logger.error(f"❌ Error acquiring lock for toolset {config_path}: {e}", exc_info=True)
@@ -1038,6 +1071,7 @@ class ToolsetTokenRefreshService:
                 return
 
             self._mark_toolset_processing(config_path)
+            rejected = None
 
             try:
                 # Load token from config
@@ -1050,21 +1084,17 @@ class ToolsetTokenRefreshService:
                 # Handle refresh workflow
                 await self._handle_token_refresh_workflow(config_path, toolset_type, token)
 
-            except RecursionError as e:
-                self.logger.error(f"RECURSION ERROR in toolset token refresh for {config_path}: {str(e)[:100]}")
             except RefreshTokenInvalidError as e:
-                await self._handle_refresh_token_invalid(config_path, e)
+                rejected = e
             except Exception as e:
-                import traceback
-                error_details = traceback.format_exc()
-                self.logger.error(
-                    f"❌ Error refreshing token for toolset {config_path}: {e}\n"
-                    f"Error type: {type(e).__name__}\n"
-                    f"Traceback:\n{error_details}"
-                )
+                log_check_failed(self.logger, e, once_key=_once_key(config_path))
             finally:
                 self._unmark_toolset_processing(config_path)
                 self.logger.debug(f"🔓 Released refresh lock for toolset {config_path}")
+            if rejected is not None:
+                # After the except block, so an error the strike handler raises is not chained to the rejection;
+                # still under the toolset lock, so strikes stay serialised.
+                await self._handle_refresh_token_invalid(config_path, rejected)
 
         finally:
             # Always release the lock
@@ -1132,14 +1162,15 @@ class ToolsetTokenRefreshService:
         """
         try:
             new_token = await self._perform_token_refresh(config_path, toolset_type, token.refresh_token)
-            self.logger.info(f"🔄 Immediate refresh completed for toolset {config_path}")
             return new_token, True
         except RefreshTokenInvalidError as e:
-            await self._handle_refresh_token_invalid(config_path, e)
-            return None, False
+            rejected = e
         except Exception as e:
-            self.logger.error(f"❌ Failed to perform immediate refresh for toolset {config_path}: {e}", exc_info=False)
+            log_check_failed(self.logger, e, once_key=_once_key(config_path))
             return None, False
+        # After the except block, so an error the strike handler raises is not chained to the rejection.
+        await self._handle_refresh_token_invalid(config_path, rejected)
+        return None, False
 
     def _cancel_existing_refresh_task(self, config_path: str) -> None:
         """
@@ -1231,16 +1262,24 @@ class ToolsetTokenRefreshService:
                 self._delayed_refresh(config_path, toolset_type, delay)
             )
             self._refresh_tasks[config_path] = task
-            self.logger.info(
-                f"✅ Scheduled token refresh for toolset {config_path} (type: {toolset_type}) "
-                f"in {delay:.0f} seconds ({delay/60:.1f} minutes) - will refresh at {refresh_time}"
-            )
+            # A live task is never re-armed (schedule_token_refresh skips it), so every call is a new time.
+            log_scheduled(self.logger, next_refresh_at=refresh_time, delay_s=delay, changed=True)
             return True
         except Exception as e:
             self.logger.error(f"❌ Failed to schedule token refresh for toolset {config_path}: {e}", exc_info=True)
             return False
 
     async def schedule_token_refresh(
+        self,
+        config_path: str,
+        toolset_type: str,
+        token: OAuthToken
+    ) -> None:
+        """Schedule the next refresh. Called by the OAuth callback (``trigger=on_demand``) and by a refresh."""
+        with self._scope(config_path, toolset_type):
+            await self._schedule_token_refresh(config_path, toolset_type, token)
+
+    async def _schedule_token_refresh(
         self,
         config_path: str,
         toolset_type: str,
@@ -1279,7 +1318,7 @@ class ToolsetTokenRefreshService:
                 else:
                     # If the existing task is still running (not done, not cancelled), keep it
                     if not existing_task.done() and not existing_task.cancelled():
-                        self.logger.info(
+                        self.logger.debug(
                             f"⏭️ Skipping duplicate schedule request for {config_path} - "
                             f"valid refresh task already exists and is running"
                         )
@@ -1291,7 +1330,7 @@ class ToolsetTokenRefreshService:
                     )
                     del self._refresh_tasks[config_path]
 
-            self.logger.info(f"🔄 Scheduling token refresh for toolset {config_path} (type: {toolset_type})")
+            self.logger.debug(f"🔄 Scheduling token refresh for toolset {config_path} (type: {toolset_type})")
 
             # Calculate refresh delay
             delay, _ = self._calculate_refresh_delay(token)
@@ -1303,7 +1342,7 @@ class ToolsetTokenRefreshService:
             # out the cooldown, so a slow save cannot leave a due token to the 5-minute scan.
             delay = max(delay, MIN_IMMEDIATE_RECHECK_DELAY, cooldown_left)
             if is_due:
-                self.logger.info(
+                self.logger.debug(
                     f"Token for toolset {config_path} reached refresh threshold; "
                     f"re-checking in {delay:.1f}s (cooldown {REFRESH_COOLDOWN}s)"
                 )
@@ -1316,14 +1355,22 @@ class ToolsetTokenRefreshService:
         """Delayed token refresh for toolset"""
         try:
             await asyncio.sleep(delay)
-            self.logger.info(f"⏰ Scheduled refresh time reached for toolset {config_path}, refreshing token...")
-            await self._refresh_toolset_token(config_path, toolset_type)
+            with fresh_root(), self._scope(config_path, toolset_type, trigger=Trigger.SCHEDULED):
+                self.logger.debug("Scheduled refresh time reached")
+                try:
+                    await self._refresh_toolset_token(config_path, toolset_type)
+                except Exception as e:
+                    # What _refresh_toolset_token lets through (a failing strike handler), caught here so the
+                    # line keeps the timer's own root and scheduled_by.
+                    log_check_failed(self.logger, e, once_key=_once_key(config_path))
         except asyncio.CancelledError:
             # This is expected when rescheduling - don't log as error
             self.logger.debug(f"🔄 Token refresh task cancelled for toolset {config_path} (likely rescheduled)")
             raise
         except Exception as e:
-            self.logger.error(f"❌ Error in delayed token refresh for toolset {config_path}: {e}", exc_info=True)
+            # fresh_root or the scope failed to enter or exit.
+            with self._scope(config_path, toolset_type, trigger=Trigger.SCHEDULED):
+                log_check_failed(self.logger, e, once_key=_once_key(config_path))
         finally:
             # Remove task from tracking only if this exact task is still the tracked one.
             schedule_lock = self._get_schedule_lock(config_path)
