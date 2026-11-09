@@ -18,6 +18,7 @@ from app.modules.indexing.connector_off_events import (
     GraphConnectorOffFilter,
     ReadTimeOutcome,
     connector_off_updates,
+    connector_state,
     read_time_outcome,
 )
 from app.services.messaging.config import IndexingEvent, StreamMessage
@@ -500,3 +501,17 @@ class TestAConnectorTurnedBackOnDuringTheWrite:
 
         assert result.settled == frozenset({0})
         assert graph.calls["get_nodes_by_field_in:apps"] == 2
+
+
+@pytest.mark.parametrize("is_active", [True, False])
+def test_a_connector_being_deleted_is_already_removed(is_active: bool) -> None:
+    """Its records are the delete's: indexing one makes the delete's batch lose a write conflict on ArangoDB."""
+    app = {"_key": "conn-off", "isActive": is_active, "status": "DELETING"}
+
+    assert connector_state(app) is ConnectorState.REMOVED
+    state = connector_state(app)
+    assert read_time_outcome(NEW, _payload(), _record(), lambda _c: state) is ReadTimeOutcome.SETTLE
+
+
+def test_a_live_connector_with_another_status_is_still_active() -> None:
+    assert connector_state({"_key": "conn-on", "isActive": True, "status": "SYNCING"}) is ConnectorState.ACTIVE

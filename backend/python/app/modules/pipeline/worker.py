@@ -192,6 +192,17 @@ class StageJobHandler:
 
     async def _handle(self, job: StageJob, stage: Stage[Any]) -> None:
         io = self._io_for(job, Deadline(stage.budget_s))
+        connector_deleting = getattr(io, "connector_deleting", None)
+        if connector_deleting is not None and await connector_deleting(job):
+            # Not even the state is claimed: the delete removes the records and their stage
+            # states, and a write here would make its batch lose a write conflict.
+            self._logger.info(
+                "Stage job %s belongs to connector %s, which is being deleted; dropping it",
+                job.job_id,
+                job.connector_id,
+            )
+            self._count(job.stage, "stale")
+            return
         state = await self._state_for(job, io)
         if state is None:
             self._logger.info(

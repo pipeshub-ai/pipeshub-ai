@@ -609,3 +609,52 @@ async def test_an_unchanged_completion_loses_to_a_redrive_that_finished_meanwhil
     assert (h.state(job).attempt, h.state(job).output) == (2, "newer")
     assert h.headlines.writes == []
     assert h.producer.sent == []
+
+
+class _DeletingIO(_IO):
+    """A stage IO whose job's connector is (or is not) being deleted."""
+
+    deleting: ClassVar[set[str]] = set()
+
+    async def connector_deleting(self, job: StageJob) -> bool:
+        return job.connector_id in self.deleting
+
+
+def _harness_with(io: type[_IO]) -> _Harness:
+    h = _Harness()
+    h.handler = StageJobHandler(
+        h.registry, h.states, h.headlines, h.coordinator, io,
+        logger=logging.getLogger("t"), worker_id="w1", clock_ms=h.clock,
+    )
+    return h
+
+
+@pytest.mark.asyncio
+async def test_a_job_of_a_connector_being_deleted_writes_nothing() -> None:
+    """Its records and stage states are the delete's: a claim or headline write here makes the
+    delete's batch lose a write conflict on ArangoDB."""
+    _DeletingIO.deleting = {"conn-1"}
+    h, job = _harness_with(_DeletingIO), _job()
+    h.seed(job)
+    assert await h.deliver(job) == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+    assert h.stage.runs == 0
+    assert h.state(job).status is ProgressStatus.QUEUED and h.state(job).attempt == 0
+    assert h.headlines.writes == [] and h.producer.jobs("pipeline.summary-embed") == []
+    assert h.handler.outcomes("classify")["stale"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_job_of_a_connector_being_deleted_does_not_recreate_its_state() -> None:
+    _DeletingIO.deleting = {"conn-1"}
+    h, job = _harness_with(_DeletingIO), _job()
+    await h.deliver(job)
+    assert job.state_key not in h.states.states
+
+
+@pytest.mark.asyncio
+async def test_a_job_of_another_connector_runs_as_before() -> None:
+    _DeletingIO.deleting = {"conn-other"}
+    h, job = _harness_with(_DeletingIO), _job()
+    h.seed(job)
+    await h.deliver(job)
+    assert h.stage.runs == 1 and h.state(job).status is ProgressStatus.COMPLETED

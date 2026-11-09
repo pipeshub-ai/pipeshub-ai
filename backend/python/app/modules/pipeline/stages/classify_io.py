@@ -19,6 +19,7 @@ from app.modules.pipeline.policy import PipelinePolicy
 from app.modules.pipeline.stage import Deadline
 from app.modules.pipeline.stages.record_io import (
     NAMED_ENTITIES_SECTION,
+    ConnectorDeleting,
     RecordFromDocument,
     RecordStageIO,
     with_classification,
@@ -52,6 +53,7 @@ class GraphClassifyIO(RecordStageIO):
         config_service: ConfigurationService,
         record_from_document: RecordFromDocument,
         record_leases: RecordLeases,
+        connector_deleting: ConnectorDeleting | None = None,
         sidecars: ArtifactSidecars | None = None,
     ) -> None:
         super().__init__(
@@ -62,6 +64,7 @@ class GraphClassifyIO(RecordStageIO):
             blob_storage=blob_storage,
             record_from_document=record_from_document,
             record_leases=record_leases,
+            connector_deleting=connector_deleting,
         )
         self._sink = sink
         self._classifier = classifier

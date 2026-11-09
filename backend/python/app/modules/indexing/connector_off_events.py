@@ -25,6 +25,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.services.graph_db.common.record_visibility import is_live_record
+from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.messaging.connector_off import ConnectorOffResult
 from app.utils.user_errors import CONNECTOR_OFF
 
@@ -66,8 +67,11 @@ class ReadTimeOutcome(Enum):
 
 
 def connector_state(instance: Mapping[str, Any] | None) -> ConnectorState:
-    """State of a connector app document read with ``raise_on_error=True``."""
-    if not instance:
+    """State of a connector app document read with ``raise_on_error=True``.
+
+    One being deleted is already removed: its records are the delete's, and indexing one
+    makes the delete's batch lose a write conflict on ArangoDB."""
+    if not instance or instance.get("status") == APP_STATUS_DELETING:
         return ConnectorState.REMOVED
     return ConnectorState.ACTIVE if instance.get("isActive", False) else ConnectorState.OFF
 
