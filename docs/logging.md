@@ -231,11 +231,13 @@ short: a count that is absent is 0.
   connector) is not counted, even when it held the run's calls.
 
 A write counts once its transaction commits; deletes count after theirs. Limits: on a deadlock retry,
-`retry_on_deadlock` re-runs the whole `on_new_records` call, so `records_unchanged` and `records_failed` can include records
-an earlier attempt stored. Work the run hands to `loop.run_in_executor` (which does not copy the context), or that a
-connector leaves running after `run_sync` returns, is not counted. On Neo4j with `NEO4J_EXPLICIT_TRANSACTIONS=false` each
-statement commits on its own, so a write that fails part-way is not counted although some of it stayed. Records a connector
-writes to the graph without the processor are not counted.
+`retry_on_deadlock` re-runs the whole `on_new_records` call, so `records_unchanged` and `records_failed` can count again
+records an earlier attempt stored or refused; likewise a connector that sends a failed batch again counts it failed, then
+new. Work the run hands to `loop.run_in_executor` (which does not copy the context), or that a connector leaves running
+after `run_sync` returns, is not counted. On Neo4j with `NEO4J_EXPLICIT_TRANSACTIONS=false` the single-record updates
+(content, metadata, moves and permissions) commit each statement on their own, so one that fails part-way is not counted
+although some of it stayed; batch writes still run in a real transaction. Records a connector writes to the graph without
+the processor are not counted.
 
 ## Agent loop events (Python)
 
