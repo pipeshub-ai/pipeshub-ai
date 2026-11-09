@@ -68,7 +68,6 @@ from app.services.vector_db.membership import (
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import Collection
 
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
     from app.services.vector_db.interface.vector_db import IVectorDBService
@@ -240,7 +239,7 @@ class ScopeBackfill:
                         break
                     nodes = await stamps.nodes(org_id, frozenset(ids))
                     vrids = sorted({n.vrid for n in nodes.values() if n.vrid and not n.deleted})
-                    stale_vrids = {vrid for vrid in vrids if await self._stamp(org_id, vrid) == "stale"}
+                    stale_vrids = {vrid for vrid in vrids if await self._stamp(org_id, app_id, vrid) == "stale"}
                     # a virtual record is counted once, whichever step left it on the stale marker; this raises only for a write the store did not apply
                     page_stale = len(stale_vrids | await self._membership.refresh_membership(org_id, app_id, vrids))
                     # counted with the page, so a page written again after a failure is not counted twice
@@ -259,8 +258,9 @@ class ScopeBackfill:
                                       "with the legacy filter until the pass is run again", app_id, p.stale)
             return p
 
-    async def _stamp(self, org_id: str, vrid: str) -> str:
-        """`done`, `skipped` (no point to write) or `stale` (the stale marker was written, or could not be: see `_mark`)."""
+    async def _stamp(self, org_id: str, app_id: str, vrid: str) -> str:
+        """`done`, `skipped` (no point to write) or `stale` (the stale marker was written and read back; one that did not land raises, so the
+        pass fails: see `_mark`)."""
         collections: list[str] | tuple[str, ...] = ()
         try:
             async with vrid_write_locks([vrid]):
@@ -271,44 +271,37 @@ class ScopeBackfill:
                         return "skipped"
                     fields = await scope_fields_for_state(self._graph, state, org_id, self._log)
                     if fields == STALE_SCOPE:
-                        await self._mark(collections, org_id, vrid)
+                        await self._mark(org_id, app_id, vrid)
                         return "stale"
                     await self._write(collections, org_id, vrid, fields)
                     # the graph may have changed between the read and the write: write again if it says something else now
                     again = await scope_fields_for_state(self._graph, await resolve_virtual_record_state(self._graph, vrid), org_id, self._log)
                     if again == fields:
                         return "done"
-                await self._mark(collections, org_id, vrid)
+                await self._mark(org_id, app_id, vrid)
                 return "stale"
         except Exception as exc:
             SCOPE_STAMP_FAILED.inc("backfill")
             self._log.warning("scope fields of %s not written: %s", vrid, type(exc).__name__)
-            try:
-                targets = collections or await self._locator.all_collections(fresh=True)
-            except Exception:
-                targets = ()
-            await self._mark(targets, org_id, vrid)
+            await self._mark(org_id, app_id, vrid)
             return "stale"
 
-    async def _mark(self, collections: Collection[str], org_id: str, vrid: str) -> bool:
-        """Write the stale marker, trying again with a growing wait. False (logged at error with the virtual record, counted) when it
-        still fails: the point then keeps what it holds, which may be exact fields this run wrote before a later step failed."""
+    async def _mark(self, org_id: str, app_id: str, vrid: str) -> None:
+        """The stale marker, through the engine's: written by id whatever fence the points carry, at the database's time on pgvector, and read
+        back. Tried again with a growing wait; raises (logged at error with the virtual record, counted) when it still did not land, which fails
+        the pass: the point then keeps what it holds, which may admit."""
         delay = MARKER_DELAY_SECONDS
         for attempt in range(MARKER_ATTEMPTS):
             try:
-                if collections:
-                    await self._write(collections, org_id, vrid, STALE_SCOPE)
-                    return True
+                return await self._membership.mark_stale(org_id, app_id, [vrid])
             except Exception as exc:
-                last = type(exc).__name__
-            else:
-                last = "no collection"
+                last = exc
             if attempt + 1 < MARKER_ATTEMPTS:
                 await asyncio.sleep(delay)
                 delay *= 2
         SCOPE_STAMP_FAILED.inc("marker")
-        self._log.error("scope fields of virtual record %s may be wrong and could not be marked stale (%s); run the back-fill again", vrid, last)
-        return False
+        self._log.error("scope fields of virtual record %s may be wrong and could not be marked stale (%s); run the back-fill again", vrid, type(last).__name__)
+        raise last
 
     async def _write(self, collections: list[str] | tuple[str, ...], org_id: str, vrid: str, fields: ScopeFields) -> None:
         flt = await self._vdb.filter_collection(must={"orgId": org_id, "virtualRecordId": vrid})

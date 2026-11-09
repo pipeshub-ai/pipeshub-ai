@@ -271,3 +271,72 @@ async def test_a_virtual_record_left_stale_by_both_steps_of_the_pass_is_counted_
     monkeypatch.setattr(scope_rewrite, "resolve_virtual_record_state", incomplete(scope_rewrite.resolve_virtual_record_state))
     done = await env.backfill.run_connector(ORG, "w:app", restart=True)
     assert done.state == DONE and done.stale == 1, done.line()
+
+
+def stamps_all_stale(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The graph read for the stamp says "stale" for every virtual record: the pass's own marker is written for all of them."""
+    from app.services.vector_db import scope_backfill
+    from app.services.vector_db.membership import STALE_SCOPE
+
+    async def stale(*a: Any, **k: Any) -> Any:
+        return STALE_SCOPE
+
+    monkeypatch.setattr(scope_backfill, "scope_fields_for_state", stale)
+    monkeypatch.setattr(scope_backfill, "MARKER_DELAY_SECONDS", 0.0)
+
+
+def is_marker(update: dict[str, Any]) -> bool:
+    return update.get("scopeStamp") == "legacy" and update.get("scopeFieldsVersion") == 0
+
+
+@pytest.mark.parametrize("how", ["raises", "drops"])
+async def test_a_stamp_marker_the_store_refuses_or_drops_fails_the_pass_and_a_later_pass_leaves_no_point_admitting(
+        monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, how: str) -> None:
+    """The pass's own stale marker (a record whose stamp cannot be computed) is written by id and read back, like the rewrite's: one that did not
+    land fails the pass, never ends it current with a stamp that may admit; once the store takes it, no point admits."""
+    env = await Env.make(WorldStore().world("golden/confluence_hr"))
+    await env.change((HR_MOVE,), whole=True)
+    stamps_all_stale(monkeypatch)
+    real = env.vdb.update_payloads_by_ids
+
+    async def refusing(collection: str, updates: Any, **k: Any) -> None:
+        if any(is_marker(u) for u in updates.values()):
+            if how == "raises":
+                raise RuntimeError("store down")
+            return None      # taken and dropped
+        return await real(collection, updates, **k)
+
+    monkeypatch.setattr(env.vdb, "update_payloads_by_ids", refusing)
+    with caplog.at_level("ERROR"):
+        failed = await env.backfill.run_connector(ORG, "w:app", restart=True)
+    assert failed.state == FAILED, failed.line()
+    assert "w:app" not in await env.current() and (how == "drops" or "could not be marked stale" in caplog.text)
+    monkeypatch.setattr(env.vdb, "update_payloads_by_ids", real)
+    done = await env.backfill.run_connector(ORG, "w:app", restart=True)
+    assert done.state == DONE and done.stale > 0, done.line()
+    assert all(p.payload["scopeFieldsVersion"] == 0 for p in env.vdb._points(env.loaded.collection).values())
+    seen = Log()
+    await env.audit(seen)
+    assert not seen.leaks and not seen.pending_admits
+
+
+async def test_the_marker_of_a_record_whose_membership_cannot_be_resolved_is_read_back_on_the_full_pass_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A store that takes the marker of the membership step without applying it must fail the pass: the read-back is what sees it."""
+    env = await Env.make(WorldStore().world("golden/confluence_hr"))
+    await env.change((HR_MOVE,), whole=True)
+    bad = env.vrids()["page:Handbook"]
+    real_state = scope_rewrite.resolve_virtual_record_state
+
+    async def unresolved(graph: Any, v: str, *a: Any, **k: Any) -> Any:
+        out = await real_state(graph, v, *a, **k)
+        return replace(out, roots_resolved=False) if v == bad else out
+
+    monkeypatch.setattr(scope_rewrite, "resolve_virtual_record_state", unresolved)
+    real = env.vdb.update_payloads_by_ids
+
+    async def dropping(collection: str, updates: Any, **k: Any) -> None:
+        return await real(collection, {pid: u for pid, u in updates.items() if not is_marker(u)}, **k)
+
+    monkeypatch.setattr(env.vdb, "update_payloads_by_ids", dropping)
+    failed = await env.backfill.run_connector(ORG, "w:app", restart=True)
+    assert failed.state == FAILED and "w:app" not in await env.current(), failed.line()

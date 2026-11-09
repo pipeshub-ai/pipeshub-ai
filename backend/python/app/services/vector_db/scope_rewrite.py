@@ -501,6 +501,11 @@ class ScopeRewriteJob:
         except GenerationMoved:
             return
 
+    async def mark_stale(self, org_id: str, connector_id: str, vrids: Sequence[str]) -> None:
+        """The stale marker on these virtual records' points, read back (see `_mark_stale`). For the back-fill's own marker; raises when it did not
+        land. It takes no virtual record lock: the caller holds it or has none."""
+        await self._mark_stale(org_id, connector_id, vrids, await self._epoch(connector_id))
+
     async def _stored(self, collection: str, point_ids: list[str]) -> dict[str, dict[str, Any]]:
         out: dict[str, dict[str, Any]] = {}
         for i in range(0, len(point_ids), SCAN_BATCH):
