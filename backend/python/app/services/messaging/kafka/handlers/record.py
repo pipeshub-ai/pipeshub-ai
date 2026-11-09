@@ -163,6 +163,13 @@ def _seconds_from_env(name: str, default: float) -> float:
 
 # Records whose statuses a parse-now must leave as they are: it stores the content and does not index.
 _STORE_ONLY_STATUSES = frozenset({ProgressStatus.AUTO_INDEX_OFF.value})
+# A connector record's events that are held while its connector is being deleted: every one that
+# indexes, re-runs stages or rebuilds vectors, vectorDbOnly included.
+_HELD_FOR_DELETE_EVENTS = frozenset({
+    EventTypes.NEW_RECORD.value,
+    EventTypes.UPDATE_RECORD.value,
+    EventTypes.REINDEX_RECORD.value,
+})
 
 
 def _event_org(record: dict, payload: dict) -> str | None:
@@ -1841,6 +1848,21 @@ class RecordEventHandler(BaseEventService):
             # before its first attempt; the record holds the one that attempt saved.
             virtual_record_id = record.get("virtualRecordId") or virtual_record_id
 
+            # A connector being deleted owns its records, and the delete may yet be put back, so its
+            # record events are held before anything is written: a stage redrive's states, a vector
+            # rebuild (vectorDbOnly), the embeddings taken out below. This read decides only that:
+            # the connector check further on reads the app again, since it can change meanwhile.
+            # Known before the read below: the finally block keys on it if that read fails.
+            resuming_enrichment = record_resuming_enrichment(record)
+            if event_type in _HELD_FOR_DELETE_EVENTS:
+                deleting_id = gating_connector_id(record)
+                if deleting_id and connector_state(await self._read_gating_app(deleting_id)) is ConnectorState.DELETING:
+                    held_for_delete = True
+                    raise RecordHeldForDelete(
+                        f"connector {deleting_id} of record {record_id} is being deleted",
+                        delay_s=HELD_FOR_DELETE_DELAY_S,
+                    )
+
             stages = payload.get("stages")
             stage_ingress = self.event_processor.stage_ingress
             if event_type == EventTypes.REINDEX_RECORD.value and isinstance(stages, list) and stages and stage_ingress is not None:
@@ -1881,25 +1903,6 @@ class RecordEventHandler(BaseEventService):
                     return
                 # The runtime never saw this revision: a full reindex dispatches every stage.
                 stage_redrive = False
-
-            # The record's embeddings are taken out below, before the connector check. A connector
-            # being deleted owns its records and the delete may yet be put back, so such an event
-            # is held first, with the app read kept for that check.
-            gating_app: tuple[str, dict | None] | None = None
-            if (
-                not parse_now
-                and clears_embeddings_first(event_type, payload)
-                and connector_gated_event(event_type, payload)
-            ):
-                deleting_id = gating_connector_id(record)
-                if deleting_id:
-                    gating_app = (deleting_id, await self._read_gating_app(deleting_id))
-                    if connector_state(gating_app[1]) is ConnectorState.DELETING:
-                        held_for_delete = True
-                        raise RecordHeldForDelete(
-                            f"connector {deleting_id} of record {record_id} is being deleted",
-                            delay_s=HELD_FOR_DELETE_DELAY_S,
-                        )
 
             #Reconciliation
             vector_db_only = bool(payload.get("vectorDbOnly"))
@@ -1954,23 +1957,21 @@ class RecordEventHandler(BaseEventService):
             if connector_gated_event(event_type, payload):
                 connector_id = gating_connector_id(record)
                 if connector_id:
-                    if gating_app is not None and gating_app[0] == connector_id:
-                        connector_instance = gating_app[1]
-                    else:
-                        connector_instance = await self.event_processor.graph_provider.get_document(
-                            connector_id,
-                            CollectionNames.APPS.value,
-                            # Same reason as the record read above: the two yields
-                            # below ack the message and leave the record QUEUED, so
-                            # an unreadable graph must not reach them by looking
-                            # like a deleted connector.
-                            raise_on_error=True,
-                        )
+                    connector_instance = await self.event_processor.graph_provider.get_document(
+                        connector_id,
+                        CollectionNames.APPS.value,
+                        # Same reason as the record read above: the two yields
+                        # below ack the message and leave the record QUEUED, so
+                        # an unreadable graph must not reach them by looking
+                        # like a deleted connector.
+                        raise_on_error=True,
+                    )
                     state = connector_state(connector_instance)
                     source_name = (connector_instance or {}).get("name") or None
                     if state is ConnectorState.DELETING:
                         # Before anything is written: the delete may yet be put back, so the event is
-                        # held rather than dropped, a forced re-index included.
+                        # held rather than dropped, a forced re-index included. Also reached when the
+                        # delete began while the embeddings were being deleted above.
                         held_for_delete = True
                         raise RecordHeldForDelete(
                             f"connector {connector_id} of record {record_id} is being deleted",
