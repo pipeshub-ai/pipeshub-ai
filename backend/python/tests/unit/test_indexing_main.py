@@ -3177,16 +3177,29 @@ class TestRepublishStrandedRecords:
         producer.send_event.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_metadata_saves_do_not_keep_a_lost_event_from_recovery(self) -> None:
-        """A QUEUED row whose event was lost, saved again and again by syncs, is still recovered."""
+    async def test_a_resave_does_not_hide_a_lost_event(self) -> None:
+        """A sync rewrites updatedAtTimestamp on every save, changed or not, and sends
+        nothing for a record already queued. Aged on it, a record on a source synced
+        more often than the minimum age would never be re-sent."""
         graph = _sweep_graph(
             {
                 ProgressStatus.QUEUED.value: [
-                    self._old_record(
-                        queuedAtTimestamp=1, updatedAtTimestamp=get_epoch_timestamp_in_ms()
-                    )
+                    self._old_record(queuedAtTimestamp=1, updatedAtTimestamp=get_epoch_timestamp_in_ms())
                 ]
             },
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_queue_stamp_falls_back_to_the_row_clock(self) -> None:
+        """An unreadable queue stamp is not a clock: the row is aged on updatedAt as a
+        row without one would be, instead of having no clock and never being looked at."""
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record(queuedAtTimestamp="not-a-number")]},
             active_ids={"live"},
         )
         producer = AsyncMock()
