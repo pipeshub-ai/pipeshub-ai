@@ -327,7 +327,7 @@ class JsonFormatter(logging.Formatter):
         return "\n".join(parts)
 
 
-_HTTPX_RENDERED_STATUS = re.compile(r'^HTTP Request: \S+ \S+ "HTTP/[\d.]+ (\d{3}) ')
+_HTTPX_RENDERED_STATUS = re.compile(r'HTTP Request: \S+ \S+ "HTTP/[\d.]+ (\d{3}) ')
 
 
 class HttpxSuccessFilter(logging.Filter):
@@ -339,7 +339,9 @@ class HttpxSuccessFilter(logging.Filter):
     as well — so filter on the status code instead and keep 3xx/4xx/5xx.
 
     The status is read from ``record.args`` rather than the formatted message:
-    httpx passes it as an int, so this does not depend on message wording.
+    httpx passes it as an int, so this does not depend on message wording. Only
+    when another filter has already rendered the message and cleared ``args``
+    (litellm's) is it read from the text.
 
     Lines that are kept have their request URL redacted: the query string of a
     signed URL, or the userinfo of any URL, is a credential.
@@ -349,7 +351,7 @@ class HttpxSuccessFilter(logging.Filter):
         if not isinstance(record.args, (tuple, list)):
             # Another filter on this logger (litellm's SecretRedactionFilter) may already have rendered the
             # message and cleared args: read the status from the text instead.
-            status = _HTTPX_RENDERED_STATUS.search(record.msg) if isinstance(record.msg, str) else None
+            status = _HTTPX_RENDERED_STATUS.match(record.msg) if isinstance(record.msg, str) else None
             return not (status and 200 <= int(status.group(1)) < 300)
         # args are (method, url, http_version, status_code, reason_phrase); scan
         # for the status rather than indexing, so a signature change downgrades
