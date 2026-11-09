@@ -2706,22 +2706,30 @@ _SCAN_LIMIT = 50_000
 class TestCitationScansAreBounded:
     """Answers carry model output, so no shape of link text may make normalizing it superlinear."""
 
-    @pytest.mark.parametrize("text", [
-        pytest.param("[" + " " * _SCAN_LIMIT + "x](ref1)", id="spaces-in-label"),
-        pytest.param("[source" + " " * _SCAN_LIMIT + "x](ref1)", id="spaces-after-label-word"),
-        pytest.param("[ref" + " " * 25_000 + "#" + " " * 25_000 + "x](ref1)", id="spaces-around-hash"),
-        pytest.param("[" + "\t" * _SCAN_LIMIT + "x](ref1)", id="tabs-in-label"),
-        pytest.param("[" * _SCAN_LIMIT, id="open-brackets"),
-        pytest.param("[" * _SCAN_LIMIT + "](", id="open-brackets-then-target"),
-        pytest.param("[ref" * (_SCAN_LIMIT // 4), id="open-bracketed-refs"),
-        pytest.param("[a](" * 50_000, id="unclosed-link-targets"),
-        pytest.param("[a](https://b " * 14_000, id="unclosed-url-targets"),
-        pytest.param("[a](https://b" * 16_000, id="unclosed-url-list-targets"),
+    @pytest.mark.parametrize("make", [
+        pytest.param(lambda n: "[" + " " * n + "x](ref1)", id="spaces-in-label"),
+        pytest.param(lambda n: "[source" + " " * n + "x](ref1)", id="spaces-after-label-word"),
+        pytest.param(lambda n: "[ref" + " " * (n // 2) + "#" + " " * (n // 2) + "x](ref1)", id="spaces-around-hash"),
+        pytest.param(lambda n: "[" + "\t" * n + "x](ref1)", id="tabs-in-label"),
+        pytest.param(lambda n: "[" * n, id="open-brackets"),
+        pytest.param(lambda n: "[" * n + "](", id="open-brackets-then-target"),
+        pytest.param(lambda n: "[ref" * (n // 4), id="open-bracketed-refs"),
+        pytest.param(lambda n: "[a](" * (n // 4), id="unclosed-link-targets"),
+        pytest.param(lambda n: "[a](https://b " * (n // 14), id="unclosed-url-targets"),
+        pytest.param(lambda n: "[a](https://b" * (n // 13), id="unclosed-url-list-targets"),
     ])
-    def test_normalizing_stays_fast(self, text: str) -> None:
-        started = time.perf_counter()
-        citations_mod.normalize_citations_and_chunks(text, [])
-        assert time.perf_counter() - started < 3.0
+    def test_normalizing_time_grows_linearly(self, make) -> None:
+        """Four times the text takes about 4x as long if linear and 16x if quadratic. A ratio, not
+        a time limit, so a slow or busy machine cannot fail it."""
+        def best_of_three(text: str) -> float:
+            times = []
+            for _ in range(3):
+                started = time.perf_counter()
+                citations_mod.normalize_citations_and_chunks(text, [])
+                times.append(time.perf_counter() - started)
+            return min(times)
+
+        assert best_of_three(make(_SCAN_LIMIT)) < 8 * best_of_three(make(_SCAN_LIMIT // 4)) + 0.05
 
     @pytest.mark.parametrize("seed", range(4))
     def test_label_check_accepts_what_it_always_did(self, seed: int) -> None:
