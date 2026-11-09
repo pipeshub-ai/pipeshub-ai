@@ -465,7 +465,8 @@ class CodeGraphMixin(PgBase):
             path = cf.get("filePath") or r["name"]
             if path:
                 out[r["rid"]] = CodeFileInfo(file_path=path, referenced_names=tuple(cf.get("referencedNames") or ()),
-                                             changed_names=tuple(cf.get("changedNames") or ()), has_code_file=bool(cf))
+                                             changed_names=tuple(cf.get("changedNames") or ()), has_code_file=bool(cf),
+                                             commit_sha=cf.get("commitSha") or None)
         return out
 
     # ---- blocks --------------------------------------------------------------------------------------------------

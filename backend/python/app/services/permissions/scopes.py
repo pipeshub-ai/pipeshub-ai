@@ -42,6 +42,8 @@ class ViewerScopes:
     legacy_apps: frozenset[str] = frozenset()
     #: The ACL version the scopes were computed at; `UNVERSIONED` when not read through the counter.
     version: int = UNVERSIONED
+    #: Connectors that have a pending scope: their container-stamped points have no path to hide by, so the filter does not admit them.
+    blocked: frozenset[str] = frozenset()
 
     @property
     def readable_containers(self) -> frozenset[str]:
@@ -57,7 +59,7 @@ class ViewerScopes:
             "org": self.org_id, "user": self.user_key, "gated": sorted(self.gated_apps), "open": sorted(self.open_apps),
             "groups": sorted(self.readable_groups), "scopes": sorted(self.readable_scopes),
             "unreadable": sorted(self.unreadable_restricted), "tokens": sorted(self.principal_tokens),
-            "pending": sorted(self.pending), "legacy": sorted(self.legacy_apps), "version": self.version,
+            "pending": sorted(self.pending), "legacy": sorted(self.legacy_apps), "version": self.version, "blocked": sorted(self.blocked),
         }, separators=(",", ":"))
 
     @classmethod
@@ -66,4 +68,4 @@ class ViewerScopes:
         d = json.loads(raw)
         return cls(d["org"], d["user"], frozenset(d["gated"]), frozenset(d["open"]), frozenset(d["groups"]), frozenset(d["scopes"]),
                    frozenset(d["unreadable"]), frozenset(d["tokens"]), frozenset(d["pending"]), frozenset(d["legacy"]),
-                   int(d["version"]))
+                   int(d["version"]), frozenset(d["blocked"]))

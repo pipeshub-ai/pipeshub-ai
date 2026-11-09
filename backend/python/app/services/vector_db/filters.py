@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Union
 
-from app.services.permissions.scope_fields import SCOPE_KEYS
+from app.services.permissions.scope_fields import SCOPE_FENCE_FIELD, SCOPE_KEYS
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
@@ -132,6 +132,12 @@ def forbid_org_in_payload(payload: dict) -> None:
     """A payload merge must not change which org a point belongs to (the org is what every write filter pins)."""
     if _org_in_payload(payload)[0]:
         raise OrgMismatch("a payload update may not name orgId: it would move points to another organisation")
+
+
+def forbid_fence_in_payload(payload: dict) -> None:
+    """The fence is set by the fenced write alone; a payload that names it could set it to anything (a later duplicate field wins on Redis)."""
+    if SCOPE_FENCE_FIELD in payload:
+        raise ValueError(f"a payload may not name {SCOPE_FENCE_FIELD}: the fenced write sets it")
 
 
 def keep_org_in_overwrite(payload: dict, expr: FilterExpression) -> None:
@@ -349,7 +355,7 @@ class ScopeFilter:
     def of(cls, scopes: ViewerScopes, current_connectors: Iterable[str] | Mapping[str, int], *, version: int, generation: int,
            blocked: Iterable[str] = ()) -> ScopeFilter:
         return cls(frozenset(current_connectors), scopes.open_apps, scopes.readable_groups, scopes.readable_scopes,
-                   scopes.unreadable_restricted, version, generation, scopes.pending, frozenset(blocked))
+                   scopes.unreadable_restricted, version, generation, scopes.pending, frozenset(blocked) | scopes.blocked)
 
     @property
     def reach(self) -> frozenset[str]:

@@ -459,11 +459,14 @@ class CodeFileInfo:
         in recent projections, so a build re-resolves the files referencing them
     has_code_file: False for a source file with no codeFiles node (a .py
         uploaded to a KB), which records neither list
+    commit_sha: the commit the file was synced at (codeFiles.commitSha, written
+        by the git connectors); None for a file with no commit
     """
     file_path: str
     referenced_names: tuple[str, ...] = ()
     changed_names: tuple[str, ...] = ()
     has_code_file: bool = True
+    commit_sha: str | None = None
 
 
 class IGraphDBProvider(ABC):
@@ -8638,6 +8641,26 @@ class IGraphDBProvider(ABC):
             ``{"id", "fullName", "email"}`` ordered by name: the first ``limit``
             matching people by name (a person is an email, or a node without
             one), each with all their nodes. An email query returns all its nodes.
+
+        Raises:
+            Exception: on any query failure.
+        """
+        pass
+
+    @abstractmethod
+    async def find_people(self, org_id: str, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        """People of ``org_id`` who are not members (``people`` nodes) that a
+        person query names. ``query`` is matched case-insensitively, spaces
+        collapsed: full name or first + last name equals it; when none does,
+        full name or a word of it starts with it (3+ characters). An email
+        matches only when ``query`` is one whole address and equals the node's
+        email: never a fragment, prefix or domain, and a query holding "@"
+        that is not a whole address matches nobody. No permission check, so a
+        caller must not show a person until a record linking them is readable
+        (``entity_permissions.readable_person_offsets``).
+
+        Returns:
+            ``{"id", "fullName", "email"}`` ordered by name, at most ``limit``.
 
         Raises:
             Exception: on any query failure.

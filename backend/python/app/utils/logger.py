@@ -224,7 +224,8 @@ def log_record_fields(record: logging.LogRecord) -> dict[str, object]:
     """The record's fields: the bound context's (identity first, then the call context's
     ids, then bound ids), then its ``extra=`` fields in the order passed. An ``extra=``
     value replaces a bound one in place; it never sets or replaces org_id, user_id,
-    ctx_kind or ctx_source. Numbers, booleans and None keep their type; anything else
+    ctx_kind or ctx_source. Numbers, booleans and None keep their type, except that a number
+    under a credential name that the text pair rule masks becomes ``[REDACTED]``; anything else
     becomes a string, and a string under a credential name (``token``, ``apiKey``) is masked."""
     merged: dict[str, object] = dict(getattr(record, "_log_ctx", None) or {})
     for key, value in record.__dict__.items():
@@ -235,11 +236,19 @@ def log_record_fields(record: logging.LogRecord) -> dict[str, object]:
     for key, value in merged.items():
         if key in RESERVED_RECORD_ATTRS:
             continue
-        if isinstance(value, _UNREDACTED_TYPES):
+        if isinstance(value, _UNREDACTED_TYPES) and not _is_masked_number(key, value):
             fields[key] = value
         else:
             fields[key] = REDACTED if _is_credential_key(key) else str(value)
     return fields
+
+
+def _is_masked_number(key: str, value: object) -> bool:
+    """A number the text line masks as a pair (``password=73915528``), so every format masks it."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not _is_credential_key(key):
+        return False
+    pair = f"{key}={_text_value(value)}"
+    return redact_secrets_in_text(pair) != pair
 
 
 # Shared with Node (docs/logging.md, "Field values in text"): bare when it

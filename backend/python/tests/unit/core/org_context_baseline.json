@@ -91,7 +91,7 @@
   "app/agents/actions/artifacts/artifacts.py": 2,
   "app/agents/actions/code_graph/code_graph.py": 1,
   "app/agents/actions/code_graph/neighbours.py": 2,
-  "app/agents/actions/code_graph/ops.py": 6,
+  "app/agents/actions/code_graph/ops.py": 5,
   "app/agents/actions/code_graph/query.py": 2,
   "app/agents/actions/code_graph/repos.py": 2,
   "app/agents/actions/code_graph/search.py": 2,

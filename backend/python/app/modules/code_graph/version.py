@@ -37,7 +37,8 @@ __all__ = ["EDGE_RULES_VERSION", "EMBED_UNITS_VERSION", "PARSER_VERSION"]
 # 2026.11.20: Go embedded fields are heritage facts with context "embeds" (method promotion only).
 # 2026.11.21: Python star imports, a literal `__all__`, scoped receiver types and chains, pytest fixtures.
 # 2026.11.24: JS default imports are marked; a built-in-named JS call on an imported module is kept.
-PARSER_VERSION = "2026.11.24"
+# 2026.11.25: Python and JS/TS INDIRECT_CALL facts for functions passed as values; accessors carry isAccessor.
+PARSER_VERSION = "2026.11.25"
 
 # 2026.10.20: EXTENDS merged into INHERITS (an interface extending one stays
 # INHERITS); the full rebuild this forces replaces stored EXTENDS edges.
@@ -48,7 +49,8 @@ PARSER_VERSION = "2026.11.24"
 # 2026.11.16: Go embedding promotes the embedded type's methods, depth by depth.
 # 2026.11.21: Python import scoping, star re-exports, function-local imports as the file's, scoped receivers.
 # 2026.11.24: blocks carry externalRefs, the library calls they make (`requests:get`).
-EDGE_RULES_VERSION = "2026.11.24"
+# 2026.11.25: INDIRECT_CALL edges to functions and methods passed as values (never to an accessor).
+EDGE_RULES_VERSION = "2026.11.25"
 
 # What a code record embeds besides its blocks (class header units, the residue unit). It is folded into code
 # groups' content hashes only, so a bump re-indexes each class while unchanged blocks keep their vectors.

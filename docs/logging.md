@@ -59,7 +59,7 @@ JSON (`LOG_FORMAT=json`): one object per line.
 | `filename`, `line` | the call site |
 | `message` | the message with `%` arguments applied |
 | `request_id` | the bound request id, or `null` |
-| fields | each `extra=` field with its JSON type (NaN and infinities as strings); a field named like a standard key does not replace it, and `stack` is reserved (left out in text and JSON) |
+| fields | each `extra=` field with its JSON type (NaN and infinities as strings; a number the credential rule in Redaction masks as `"[REDACTED]"`); a field named like a standard key does not replace it, and `stack` is reserved (left out in text and JSON) |
 | `stack` | traceback and `stack_info`, when present |
 
 A logging provider (`app/utils/structured_logging`) may supply its own console formatter, decide whether per-service files are
@@ -220,7 +220,7 @@ One chat turn is reconstructable from these lines; each carries the bound `org_i
 | --- | --- | --- |
 | `agent_turn.end` | INFO; WARNING for `max_turns` and for an error no other line reported; `level_for(error_class)` for a pre-loop rejection | `stop_reason`, `end_event`, `turns`, `tool_calls`, `tool_errors`, `llm_calls`, `tokens_in`, `tokens_out`, `cache_read_tokens`, `duration_ms`, `model`, `mode`, `spans` (when `PIPESHUB_CHAT_TIMING` is on, the default), `error_class`, `code` |
 | `agent_turn.failed` | `log_failure` policy | a turn that crashed (before `agent_turn.end`, which is then INFO) |
-| `llm_call.end` | INFO; DEBUG for a failed attempt (`llm_call.retry` or `llm_call.failed` reports it) | `source`, `provider`, `model`, `duration_ms`, `tokens_in`, `tokens_out`, `cache_read_tokens`, `finish_reason`, `tools_offered`, `tool_calls`, `attempt`, `outcome`; on failure `error_class`, `error_type`, `status` |
+| `llm_call.end` | INFO; DEBUG for a failed attempt. `llm_call.retry` or `llm_call.failed` reports a failed attempt; for a client disconnect, `agent_turn.end` with `stop_reason=client_disconnect` reports it. | `source`, `provider`, `model`, `duration_ms`, `tokens_in`, `tokens_out`, `cache_read_tokens`, `finish_reason`, `tools_offered`, `tool_calls`, `attempt`, `outcome`; on failure `error_class`, `error_type`, `status` |
 | `llm_call.retry` | WARNING | `attempt`, `max_attempts`, `status`, `error_class`, `delay_ms` |
 | `llm_call.failed` | `log_failure` policy | `turn`, `error_class`, `error_type`, `error_message` |
 
@@ -311,10 +311,13 @@ field list, and any JSON string value that holds such pairs), a pair value that 
 `updated_password=…`); and an `http(s)` URL with no query, fragment or userinfo under `token_url`, `token_uri`, `token_endpoint`,
 `authorization_url` or `authorization_endpoint`. A field whose **name** is a credential (`token`, `apiKey`, …) is redacted in both
 formats when its value is a string or an object, so a URL or an ISO time passed as a string field stays masked; the rules above
-apply to `name=value` pairs inside text, not to a field's own value. Numbers and booleans are kept: in JSON always, and in text
-booleans always and integers of up to 6 digits or under a time name (`token_count=12`, `token_expires_at=1730000000`); a longer
-number or a fraction under another credential name (`token_count=12345678`, `token_ratio=0.5`) is masked in text.
-Redaction is a safety net; it cannot recognise content, so the rules below still apply.
+apply to `name=value` pairs inside text, not to a field's own string value. Booleans are always kept, and `None` is `null` in JSON
+and left out in text. A number (a Python `int` or `float`) under a credential name follows the pair rule in both formats: it is
+kept when it is a non-negative integer of up to 6 digits (`token_count=12`) or a non-negative number in plain decimal form under a
+time name (`token_expires_at=1730000000`, `token_expires_in=3600.5`); any other number under a credential name
+(`password=73915528`, `token_count=12345678`, `token_ratio=0.5`, `token_ttl=-1`, `1e+16`, NaN) is `"[REDACTED]"` in text and JSON
+alike. Other numeric types (`Decimal`, numpy scalars) take the string path and are masked under a credential name. Redaction is a
+safety net; it cannot recognise content, so the rules below still apply.
 
 ## Conventions
 
