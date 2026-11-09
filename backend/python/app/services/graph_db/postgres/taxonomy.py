@@ -157,6 +157,7 @@ class TaxonomyMixin(PgBase):
         """The taxonomy entities no live record of ``org_id`` reaches any more, or whose node is gone; each entity stops at its first live record."""
         if not refs or not org_id:
             return set()
+        self._require_org(org_id)    # another org matches no record here, which would report every entity unreached
         by_type = _refs_by_type(refs, TAXONOMY_ENTITY_TYPES)
         org = current_org_id()
 

@@ -868,6 +868,7 @@ block_schema = {
             "typeParamCount": {"type": ["number", "null"]},
             "isBlockGroup": {"type": "boolean"},
             "isExternal": {"type": "boolean"},
+            "isAccessor": {"type": ["boolean", "null"]},
             "index": {"type": ["number", "null"]},
             "startLine": {"type": ["number", "null"]},
             "endLine": {"type": ["number", "null"]},
