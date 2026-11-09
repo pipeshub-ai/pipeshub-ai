@@ -95,6 +95,7 @@ class TestMCPRegistry:
         assert "cloudflare" in type_ids
         assert "paypal" in type_ids
         assert "posthog" in type_ids
+        assert "pagerduty" in type_ids
 
     def test_airtable_catalog_entry(self) -> None:
         registry = MCPRegistry()
@@ -187,6 +188,38 @@ class TestMCPRegistry:
         assert paypal.default_scopes == []
         assert paypal.icon == "/icons/connectors/paypal.svg"
         assert paypal.documentation_url == "https://developer.paypal.com/tools/mcp-server/"
+
+    def test_pagerduty_catalog_entry(self) -> None:
+        """PagerDuty's official hosted server. No DCR: the admin creates a Scoped OAuth app."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        pagerduty = registry.get_template("pagerduty")
+        assert pagerduty is not None
+        assert pagerduty.display_name == "PagerDuty"
+        assert pagerduty.transport == MCPTransport.STREAMABLE_HTTP
+        assert pagerduty.default_auth_mode == MCPAuthMode.OAUTH
+        assert pagerduty.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert pagerduty.default_url == "https://mcp.pagerduty.com/mcp"
+        assert pagerduty.url_editable is False
+        assert pagerduty.supports_dcr is False
+        assert pagerduty.authorization_url == "https://app.pagerduty.com/global/oauth/authorize"
+        assert pagerduty.token_url == "https://app.pagerduty.com/global/oauth/token"
+        # Read scopes only: the server publishes every write scope too, and asking for them
+        # would make the consent screen grant far more than the card's read tools need.
+        assert pagerduty.default_scopes == [
+            "change_events.read",
+            "escalation_policies.read",
+            "event_orchestrations.read",
+            "incident_workflows.read",
+            "incidents.read",
+            "oncalls.read",
+            "schedules.read",
+            "services.read",
+            "status_pages.read",
+            "teams.read",
+            "users.read",
+        ]
+        assert pagerduty.icon == "/icons/connectors/pagerduty.svg"
 
     def test_auto_discover_templates_are_well_formed(self) -> None:
         """Every registered template must carry the fields its own transport/auth mode

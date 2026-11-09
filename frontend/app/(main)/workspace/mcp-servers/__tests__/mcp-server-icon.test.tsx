@@ -112,6 +112,11 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId={null} name="Cloudflare" />)).toBe('cloudflare icon');
   });
 
+  it("shows PagerDuty's logo, also for a custom server named after it", () => {
+    expect(logo(<McpServerIcon typeId="pagerduty" name="PagerDuty" />)).toBe('pagerduty icon');
+    expect(logo(<McpServerIcon typeId={null} name="PagerDuty" />)).toBe('pagerduty icon');
+  });
+
   it("shows PostHog's logo, also for a custom server named after it", () => {
     expect(logo(<McpServerIcon typeId="posthog" name="PostHog" />)).toBe('posthog icon');
     expect(logo(<McpServerIcon typeId={null} name="PostHog" />)).toBe('posthog icon');
