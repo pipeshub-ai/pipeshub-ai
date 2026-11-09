@@ -34,6 +34,7 @@ the live writers use, so a back-filled point carries what a newly indexed one wo
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
@@ -41,6 +42,7 @@ from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import for_org
 from app.services.permissions.metrics import SCOPE_STAMP_FAILED
 from app.services.permissions.mode import scope_fields_enabled
+from app.services.permissions.rewrite_lease import RewriteLease
 from app.services.permissions.scope_fields import (
     SCOPE_FIELDS_VERSION,
     ScopeFields,
@@ -49,6 +51,7 @@ from app.services.permissions.scope_fields import (
 from app.services.permissions.structure_generation import (
     CLOSED_KEY,
     GENERATION_KEY,
+    OPEN_WRITES_KEY,
     OPENED_KEY,
     UNSAFE_KEY,
     clear_pending_covered,
@@ -68,6 +71,7 @@ from app.services.vector_db.membership import (
 
 if TYPE_CHECKING:
     import logging
+    from collections.abc import Callable
 
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
     from app.services.vector_db.interface.vector_db import IVectorDBService
@@ -101,6 +105,10 @@ class CheckpointRefused(RuntimeError):
 
 class OpenMarkNotClosed(RuntimeError):
     """The connector carries an open unsafe mark and the operator did not say the write behind it is over."""
+
+
+class ConnectorBusy(RuntimeError):
+    """Another back-fill or rewrite holds the connector's lease."""
 
 
 class StaleMarkerNotWritten(RuntimeError):
@@ -169,7 +177,8 @@ class AppDocCheckpoints:
 
 class ScopeBackfill:
     def __init__(self, graph_provider: IGraphDBProvider, vector_db: IVectorDBService, locator: CollectionLocator,
-                 logger: logging.Logger, *, page_size: int = PAGE_SIZE) -> None:
+                 logger: logging.Logger, *, page_size: int = PAGE_SIZE, clock: Callable[[], float] = time.time) -> None:
+        self._clock = clock
         self._graph, self._vdb, self._locator, self._log = graph_provider, vector_db, locator, logger
         self._page_size = page_size
         self._checkpoints = AppDocCheckpoints(graph_provider)
@@ -181,6 +190,8 @@ class ScopeBackfill:
 
     async def run_connector(self, org_id: str, app_id: str, *, restart: bool = False, max_pages: int = MAX_PAGES,
                             close_open_mark: bool = False) -> Progress:
+        """One pass at a time per connector: the pass holds the connector's rewrite lease (`permissions.rewrite_lease`), renewed before each page, so
+        it never runs beside another back-fill or a rewrite. `ConnectorBusy` while another holds it. A killed pass leaves the lease to run out."""
         if not scope_fields_enabled():
             raise ScopeFieldsOff("turn the scope fields on (ACL_SCOPE_FIELDS) before back-filling")
         if current_scope_generation() < 0:  # UNAVAILABLE_GENERATION: before any read, write or checkpoint
@@ -188,79 +199,93 @@ class ScopeBackfill:
         if not org_id:
             raise UnknownConnector("an organisation is required")
         with for_org(org_id, job="scope-backfill"):
-            stamps = self._graph.permission_stamp_graph()
-            if not (await stamps.app(org_id, app_id)).connector_type:
+            if not (await self._graph.permission_stamp_graph().app(org_id, app_id)).connector_type:
                 raise UnknownConnector(f"{app_id} is not a connector of this organisation")
-            p = await self._checkpoints.load(app_id)
-            # What the connector's structure was BEFORE any record is read: a change that commits after this moves the generation, so the
-            # connector is not current for stamps written from a graph that may predate it (see `permissions.currency`).
-            app = await self._graph.get_document(app_id, CollectionNames.APPS.value, raise_on_error=True) or {}
-            structure = structure_generation_of(app)
+            lease = RewriteLease(self._graph, app_id, clock=self._clock)
+            if not await lease.acquire():
+                raise ConnectorBusy(f"{app_id} is held by another back-fill or rewrite; run again when it has finished or its lease has run out")
+            self._membership.attach(lease)
             try:
-                mark = unsafe_mark(app.get(UNSAFE_KEY))
-            except ValueError:
-                structure = None
-            in_flight = unclosed_writes(app, allow_closed_ahead=close_open_mark)
-            if in_flight is None:
-                structure = None
-            if structure is None:  # a stored generation, mark or counter that is not readable is not read as "never changed" or "none": nothing is written
-                raise UnreadableStructureState(
-                    f"the structure state of {app_id} is not readable: generation {app.get(GENERATION_KEY)!r}, unsafe mark {app.get(UNSAFE_KEY)!r}, "
-                    f"opened {app.get(OPENED_KEY)!r}, closed {app.get(CLOSED_KEY)!r}")
-            if in_flight != 0:
-                if not close_open_mark:
-                    raise OpenMarkNotClosed(
-                        f"{app_id} has {in_flight} unclassified write(s) that started and never wrote their closing mark, so a pass cannot tell whether "
-                        "they finished. If no write of this organisation's connectors is still running, run again with --close-open-mark.")
-                # The operator says the writes are over: close them and write a mark now, which the pass that starts after it covers.
-                mark = new_unsafe_mark()
-                if not await self._graph.update_node(app_id, CollectionNames.APPS.value, {CLOSED_KEY: app.get(OPENED_KEY) or 0, UNSAFE_KEY: mark}):
-                    raise CheckpointRefused(f"the open writes of {app_id} could not be closed")
-            # A checkpoint of another field version, scope generation, structure generation or unsafe mark says nothing about the points now:
-            # start over. Nothing clears the mark: the pass records the value it read, and the connector is current only while it still reads
-            # the same (a mark written during the pass is a different value, and nothing the pass does can erase it).
-            generation = current_scope_generation()
-            if (p is None or restart or p.version != SCOPE_FIELDS_VERSION or p.generation != generation or p.structure_generation != structure
-                    or not same_mark(p.unsafe, mark)):
-                p = Progress(generation=generation, structure_generation=structure, unsafe=mark)
-                try:
-                    await self._checkpoints.save(app_id, p)
-                except Exception as exc:  # the first write of a run: nothing else has been written
-                    raise CheckpointRefused(
-                        f"the back-fill checkpoint of {app_id} could not be written ({type(exc).__name__}). If the graph store's app schema is older "
-                        f"than this release (it must list {', '.join([*BACKFILL_KEYS.values(), OPENED_KEY, CLOSED_KEY])}), restart a connector or indexing "
-                        "service, which applies the schema at start, and run again. Nothing was written."
-                    ) from exc
-            if p.state == DONE:
-                await clear_pending_covered(self._graph, app_id, p.structure_generation)
-                return p
-            p.state, p.error = RUNNING, None
+                progress = await self._pass(org_id, app_id, lease, restart=restart, max_pages=max_pages, close_open_mark=close_open_mark)
+            except Exception:
+                await lease.release()
+                raise
+            await lease.release()
+            return progress
+
+    async def _pass(self, org_id: str, app_id: str, lease: RewriteLease, *, restart: bool, max_pages: int, close_open_mark: bool) -> Progress:
+        stamps = self._graph.permission_stamp_graph()
+        p = await self._checkpoints.load(app_id)
+        # What the connector's structure was BEFORE any record is read: a change that commits after this moves the generation, so the
+        # connector is not current for stamps written from a graph that may predate it (see `permissions.currency`).
+        app = await self._graph.get_document(app_id, CollectionNames.APPS.value, raise_on_error=True) or {}
+        structure = structure_generation_of(app)
+        try:
+            mark = unsafe_mark(app.get(UNSAFE_KEY))
+        except ValueError:
+            structure = None
+        in_flight = unclosed_writes(app, allow_closed_ahead=close_open_mark)
+        if in_flight is None:
+            structure = None
+        if structure is None:  # a stored generation, mark or counter that is not readable is not read as "never changed" or "none": nothing is written
+            raise UnreadableStructureState(
+                f"the structure state of {app_id} is not readable: generation {app.get(GENERATION_KEY)!r}, unsafe mark {app.get(UNSAFE_KEY)!r}, "
+                f"opened {app.get(OPENED_KEY)!r}, closed {app.get(CLOSED_KEY)!r}")
+        if in_flight != 0:
+            if not close_open_mark:
+                raise OpenMarkNotClosed(
+                    f"{app_id} has {in_flight} unclassified write(s) that started and never wrote their closing mark, so a pass cannot tell whether "
+                    "they finished. If no write of this organisation's connectors is still running, run again with --close-open-mark.")
+            # The operator says the writes are over: close them and write a mark now, which the pass that starts after it covers.
+            mark = new_unsafe_mark()
+            if not await self._graph.update_node(app_id, CollectionNames.APPS.value, {CLOSED_KEY: app.get(OPENED_KEY) or 0, OPEN_WRITES_KEY: None, UNSAFE_KEY: mark}):
+                raise CheckpointRefused(f"the open writes of {app_id} could not be closed")
+        # A checkpoint of another field version, scope generation, structure generation or unsafe mark says nothing about the points now:
+        # start over. Nothing clears the mark: the pass records the value it read, and the connector is current only while it still reads
+        # the same (a mark written during the pass is a different value, and nothing the pass does can erase it).
+        generation = current_scope_generation()
+        if (p is None or restart or p.version != SCOPE_FIELDS_VERSION or p.generation != generation or p.structure_generation != structure
+                or not same_mark(p.unsafe, mark)):
+            p = Progress(generation=generation, structure_generation=structure, unsafe=mark)
             try:
-                for _ in range(max_pages):
-                    ids = await stamps.record_page(org_id, app_id, p.after, self._page_size)
-                    if not ids:
-                        p.state = DONE
-                        break
-                    nodes = await stamps.nodes(org_id, frozenset(ids))
-                    vrids = sorted({n.vrid for n in nodes.values() if n.vrid and not n.deleted})
-                    stale_vrids = {vrid for vrid in vrids if await self._stamp(org_id, app_id, vrid) == "stale"}
-                    # a virtual record is counted once, whichever step left it on the stale marker; this raises only for a write the store did not apply
-                    page_stale = len(stale_vrids | await self._membership.refresh_membership(org_id, app_id, vrids))
-                    # counted with the page, so a page written again after a failure is not counted twice
-                    moved = replace(p, after=ids[-1], records=p.records + len(ids), stale=p.stale + page_stale)
-                    await self._checkpoints.save(app_id, moved)  # only after the page is written
-                    p = moved
-            except Exception as exc:
-                p.state, p.error = FAILED, type(exc).__name__
-                SCOPE_STAMP_FAILED.inc("backfill")
-                self._log.warning("scope back-fill of %s stopped at %s: %s", app_id, p.after, p.error)
-            await self._checkpoints.save(app_id, p)
-            if p.state == DONE:  # the pass wrote every stamp from the graph as of its generation, so it covers the roots registered up to it
-                await clear_pending_covered(self._graph, app_id, p.structure_generation)
-                if p.stale:
-                    self._log.warning("scope back-fill of %s is done and current with %d virtual record(s) on the stale marker: their points are read "
-                                      "with the legacy filter until the pass is run again", app_id, p.stale)
+                await self._checkpoints.save(app_id, p)
+            except Exception as exc:  # the first write of a run: nothing else has been written
+                raise CheckpointRefused(
+                    f"the back-fill checkpoint of {app_id} could not be written ({type(exc).__name__}). If the graph store's app schema is older "
+                    f"than this release (it must list {', '.join([*BACKFILL_KEYS.values(), OPENED_KEY, CLOSED_KEY])}), restart a connector or indexing "
+                    "service, which applies the schema at start, and run again. Nothing was written."
+                ) from exc
+        if p.state == DONE:
+            await clear_pending_covered(self._graph, app_id, p.structure_generation)
             return p
+        p.state, p.error = RUNNING, None
+        try:
+            for _ in range(max_pages):
+                await lease.renew()      # outside the virtual-record locks (the app document is written only there)
+                ids = await stamps.record_page(org_id, app_id, p.after, self._page_size)
+                if not ids:
+                    p.state = DONE
+                    break
+                nodes = await stamps.nodes(org_id, frozenset(ids))
+                vrids = sorted({n.vrid for n in nodes.values() if n.vrid and not n.deleted})
+                stale_vrids = {vrid for vrid in vrids if await self._stamp(org_id, app_id, vrid) == "stale"}
+                # a virtual record is counted once, whichever step left it on the stale marker; this raises only for a write the store did not apply
+                page_stale = len(stale_vrids | await self._membership.refresh_membership(org_id, app_id, vrids))
+                # counted with the page, so a page written again after a failure is not counted twice
+                moved = replace(p, after=ids[-1], records=p.records + len(ids), stale=p.stale + page_stale)
+                await self._checkpoints.save(app_id, moved)  # only after the page is written
+                p = moved
+        except Exception as exc:
+            p.state, p.error = FAILED, type(exc).__name__
+            SCOPE_STAMP_FAILED.inc("backfill")
+            self._log.warning("scope back-fill of %s stopped at %s: %s", app_id, p.after, p.error)
+        await self._checkpoints.save(app_id, p)
+        if p.state == DONE:  # the pass wrote every stamp from the graph as of its generation, so it covers the roots registered up to it
+            await clear_pending_covered(self._graph, app_id, p.structure_generation)
+            if p.stale:
+                self._log.warning("scope back-fill of %s is done and current with %d virtual record(s) on the stale marker: their points are read "
+                                  "with the legacy filter until the pass is run again", app_id, p.stale)
+        return p
 
     async def _stamp(self, org_id: str, app_id: str, vrid: str) -> str:
         """`done`, `skipped` (no point to write) or `stale` (the stale marker was written and read back; one that did not land raises, so the

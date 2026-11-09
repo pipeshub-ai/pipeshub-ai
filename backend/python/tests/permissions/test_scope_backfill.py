@@ -32,6 +32,7 @@ from tests.support.in_memory_vector_db import (
     InMemoryVectorDBService as InMemoryVectorDB,
 )
 
+from .rewrite_kit import advancing_clock
 from .stamp_world import ORG
 from .store_harness import Loaded, expected, load, read_stamps
 from .test_scope_projector import CASES
@@ -53,7 +54,7 @@ def flag_on(monkeypatch: pytest.MonkeyPatch) -> None:
 async def setup(page_size: int = 100) -> tuple[InMemoryVectorDB, Loaded, ScopeBackfill, str]:
     vdb = InMemoryVectorDB()
     loaded = await load(vdb, COLL, {"w": CASES[WORLD]})
-    return vdb, loaded, ScopeBackfill(loaded.graph, vdb, loaded.locator, log, page_size=page_size), loaded.apps[0]
+    return vdb, loaded, ScopeBackfill(loaded.graph, vdb, loaded.locator, log, page_size=page_size, clock=advancing_clock()), loaded.apps[0]
 
 
 def keys_of(vdb) -> list[set[str]]:
@@ -502,6 +503,12 @@ async def test_a_progress_built_the_old_positional_way_keeps_its_meaning() -> No
     assert p.structure_generation == -1 and p.unsafe is None
 
 
+def unleased(doc: dict) -> dict:
+    """The app document without the rewrite lease: a run takes the connector's lease before it reads anything and gives it back (null) when it stops,
+    which is exclusion metadata and not something the run wrote about the connector."""
+    return {k: v for k, v in doc.items() if k != "scopeRewriteLease"}
+
+
 async def test_a_structure_generation_that_is_not_a_number_stops_the_run_before_it_writes_anything() -> None:
     from app.services.vector_db.scope_backfill import UnreadableStructureState
 
@@ -511,7 +518,7 @@ async def test_a_structure_generation_that_is_not_a_number_stops_the_run_before_
         before = dict(loaded.graph.app_docs[app])
         with pytest.raises(UnreadableStructureState):
             await job.run_connector(ORG, app)
-        assert loaded.graph.app_docs[app].keys() == before.keys() and not any(keys_of(vdb)), junk        # no checkpoint, no point
+        assert unleased(loaded.graph.app_docs[app]).keys() == before.keys() and not any(keys_of(vdb)), junk        # no checkpoint, no point
 
 
 async def test_a_graph_store_that_refuses_the_checkpoint_stops_the_run_before_anything_else_is_written() -> None:
@@ -531,7 +538,7 @@ async def test_a_graph_store_that_refuses_the_checkpoint_stops_the_run_before_an
     loaded.graph.update_node = old_schema  # type: ignore[method-assign]
     with pytest.raises(CheckpointRefused, match="restart a connector or indexing service"):
         await job.run_connector(ORG, app)
-    assert loaded.graph.app_docs[app] == {"_key": app, UNSAFE_KEY: True} and not any(keys_of(vdb))
+    assert unleased(loaded.graph.app_docs[app]) == {"_key": app, UNSAFE_KEY: True} and not any(keys_of(vdb))
 
 
 async def test_true_and_the_token_one_are_different_marks_for_the_pass_as_for_the_currency_check() -> None:
@@ -557,7 +564,7 @@ async def test_writes_that_never_closed_stop_the_run_until_the_operator_closes_t
     before = dict(loaded.graph.app_docs[app])
     with pytest.raises(OpenMarkNotClosed, match="--close-open-mark"):
         await job.run_connector(ORG, app)
-    assert loaded.graph.app_docs[app] == before and not any(keys_of(vdb))        # nothing written, no point stamped
+    assert unleased(loaded.graph.app_docs[app]) == before and not any(keys_of(vdb))        # nothing written, no point stamped
     assert not app_is_current(loaded.graph.app_docs[app])
     p = await job.run_connector(ORG, app, close_open_mark=True)
     doc = loaded.graph.app_docs[app]
@@ -588,7 +595,7 @@ async def test_an_unreadable_generation_or_mark_stops_the_run_before_the_flag_cl
         before = dict(loaded.graph.app_docs[app])
         with pytest.raises(UnreadableStructureState):
             await job.run_connector(ORG, app, close_open_mark=True)
-        assert loaded.graph.app_docs[app] == before and not any(keys_of(vdb)), key          # not closed, and the unreadable value is still there
+        assert unleased(loaded.graph.app_docs[app]) == before and not any(keys_of(vdb)), key          # not closed, and the unreadable value is still there
 
 
 async def test_counters_that_do_not_read_stop_the_run_before_it_writes_anything_even_with_the_flag() -> None:

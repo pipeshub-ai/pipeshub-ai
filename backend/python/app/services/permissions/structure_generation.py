@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import secrets
+import time
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
@@ -26,6 +28,7 @@ from app.core.org_context import (
 )
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.pending import (
+    MAX_PENDING_ROOTS,
     PendingOverflow,
     PendingUnreadable,
     parse,
@@ -34,11 +37,16 @@ from app.services.permissions.pending import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Collection, Mapping
+    from collections.abc import AsyncIterator, Callable, Collection, Mapping
 
 GENERATION_KEY = "scopeProjectionGeneration"
 UNSAFE_KEY = "scopeProjectionUnsafe"
 PENDING_KEY = "scopeProjectionPendingRoots"
+OPEN_WRITES_KEY = "scopeProjectionOpenWrites"
+#: How long a write that has opened a connector may run before the sweep reads it as dead. A write with long steps renews it before each one.
+OPEN_WRITE_SECONDS = 600
+#: Past its deadline a write is still given this long, for the skew between the clock of the writer and the clock of the sweep.
+OPEN_WRITE_GRACE_SECONDS = 120
 
 
 def whole_number(value: object) -> int | None:
@@ -172,8 +180,176 @@ async def register_pending_roots(graph_provider: Any, connector_id: str, roots: 
     return new
 
 
+class OpenWritesUnreadable(ValueError):
+    """The stored list of open writes does not parse: it is never read as "none"."""
+
+
+def parse_open_writes(raw: object) -> dict[str, dict[str, Any]]:
+    """``{token: {"u": deadline in epoch seconds, "r": roots the write will register}}``. Absent is none; anything else that does not parse raises."""
+    if raw is None or raw == "":
+        return {}
+    try:
+        out: dict[str, dict[str, Any]] = {}
+        for token, entry in json.loads(raw).items():  # type: ignore[arg-type]
+            until = whole_number(entry["u"])
+            roots = entry.get("r")
+            if until is None or not (roots is None or (isinstance(roots, list) and all(isinstance(r, str) for r in roots))):
+                raise ValueError
+            out[str(token)] = {"u": until, **({"r": roots} if roots is not None else {})}
+        return out
+    except (ValueError, TypeError, AttributeError, KeyError):
+        raise OpenWritesUnreadable(f"not an open-writes value: {raw!r:.80}") from None
+
+
+def _dump_open_writes(held: Mapping[str, Any]) -> str | None:
+    return json.dumps(dict(held), sort_keys=True, separators=(",", ":")) if held else None
+
+
+async def _swap(graph_provider: Any, connector_id: str, updates: dict[str, Any], expected: dict[str, Any]) -> bool:  # noqa: ANN401
+    """Compare-and-set on the app document; a write conflict is a lost race (False), anything else raises."""
+    try:
+        return bool(await graph_provider.update_node_fields_if_match(connector_id, CollectionNames.APPS.value, updates, expected))
+    except Exception as exc:
+        if getattr(graph_provider, "is_write_conflict", lambda _e: False)(exc):
+            return False
+        raise
+
+
+async def _backoff(attempt: int) -> None:
+    # Jitter on a growing ceiling (to 0.4 s): contenders on one document must not retry in step, and a crowd of them must thin out.
+    await asyncio.sleep(secrets.randbelow(1 + min(400, 10 * 2 ** min(attempt, 6))) / 1000)
+
+
+async def open_write(graph_provider: Any, connector_id: str, roots: Collection[str] | None = None, *,  # noqa: ANN401
+                     attempts: int = 30, clock: Callable[[], float] = time.time) -> str | None:
+    """Count one write that could not be undone as opened on the connector (`OPENED_KEY`) and record a lease for it, in one compare-and-set: a
+    process that dies before it closes the write leaves a lease that runs out, and the sweep then does what the write would have done
+    (`recover_expired_writes`) instead of waiting for an operator. ``roots``: the records the write will register once it is done (kept only up
+    to `MAX_PENDING_ROOTS`; without them the recovery marks the connector unsafe). Returns the token for `close_write`; None when the stored
+    list or counter cannot be read, or when the document is too contended for the compare-and-set, in which case the plain atomic counter is
+    incremented as before (no lease: the operator view shows it). Contention alone never refuses the caller's write.
+    Raises `ScopeGenerationError` when the connector does not exist or the counter cannot be written (the caller's write must not happen)."""
+    for attempt in range(attempts):
+        app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
+        if not app:
+            raise ScopeGenerationError(f"could not open a write on connector {connector_id}: no such connector")
+        raw, opened = app.get(OPEN_WRITES_KEY) or None, app.get(OPENED_KEY)
+        try:
+            held = parse_open_writes(raw)
+        except OpenWritesUnreadable:
+            held = None
+        if held is None or (opened is not None and whole_number(opened) is None):
+            if await graph_provider.increment_node_field(connector_id, CollectionNames.APPS.value, OPENED_KEY) is None:
+                raise ScopeGenerationError(f"could not open a write on connector {connector_id}: no such connector")
+            return None
+        token = secrets.token_hex(8)
+        entry: dict[str, Any] = {"u": int(clock()) + OPEN_WRITE_SECONDS}
+        if roots is not None and len(roots) <= MAX_PENDING_ROOTS:
+            entry["r"] = sorted(roots)
+        if await _swap(graph_provider, connector_id, {OPEN_WRITES_KEY: _dump_open_writes({**held, token: entry}), OPENED_KEY: (whole_number(opened) or 0) + 1},
+                       {OPEN_WRITES_KEY: raw, OPENED_KEY: opened}):
+            return token
+        await _backoff(attempt)
+    if await graph_provider.increment_node_field(connector_id, CollectionNames.APPS.value, OPENED_KEY) is None:
+        raise ScopeGenerationError(f"could not open a write on connector {connector_id}: no such connector")
+    return None
+
+
+async def close_write(graph_provider: Any, connector_id: str, token: str | None, *, attempts: int = 30) -> bool:  # noqa: ANN401
+    """Count the write as closed and drop its lease, in one compare-and-set. Retried, because it is idempotent: a lease that is gone was closed
+    already, by this call or by the sweep (which counted it), and is not counted twice. A lease that is gone because the sweep read this write as
+    dead means the sweep registered its roots at a time that may be before the write landed: the connector is marked unsafe (a full pass), not
+    left looking fine. False (the connector stays not current until its lease runs out and the sweep closes it) when it cannot be written, which
+    contention alone does only after `attempts` tries with a growing wait."""
+    if token is None:  # opened without a lease
+        try:
+            return await graph_provider.increment_node_field(connector_id, CollectionNames.APPS.value, CLOSED_KEY) is not None
+        except Exception:
+            return False
+    for attempt in range(attempts):
+        try:
+            app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) or {}
+            raw, closed = app.get(OPEN_WRITES_KEY) or None, app.get(CLOSED_KEY)
+            held = parse_open_writes(raw)
+            if token not in held:
+                return await graph_provider.update_node(connector_id, CollectionNames.APPS.value, {UNSAFE_KEY: new_unsafe_mark()}) is not False
+            del held[token]
+            if await _swap(graph_provider, connector_id, {OPEN_WRITES_KEY: _dump_open_writes(held), CLOSED_KEY: (whole_number(closed) or 0) + 1},
+                           {OPEN_WRITES_KEY: raw, CLOSED_KEY: closed}):
+                return True
+        except Exception:
+            pass
+        await _backoff(attempt)
+    return False
+
+
+async def renew_write(graph_provider: Any, connector_id: str, token: str | None, roots: Collection[str] | None = None, *,  # noqa: ANN401
+                      attempts: int = 10, clock: Callable[[], float] = time.time) -> str | None:
+    """Push the deadline of a write that is still running, right before a long step or the write that matters. When the lease is gone (the sweep
+    read the write as dead and closed it) the write is opened again with its roots, so a registration happens again for what lands from here on
+    instead of the write going on unfenced; the new token is returned. A renewal that cannot be written leaves the old lease running."""
+    if token is None:
+        return None
+    for attempt in range(attempts):
+        app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) or {}
+        raw = app.get(OPEN_WRITES_KEY) or None
+        try:
+            held = parse_open_writes(raw)
+        except OpenWritesUnreadable:
+            return token
+        if token not in held:
+            return await open_write(graph_provider, connector_id, roots, clock=clock)
+        held[token] = {**held[token], "u": int(clock()) + OPEN_WRITE_SECONDS}
+        if await _swap(graph_provider, connector_id, {OPEN_WRITES_KEY: _dump_open_writes(held)}, {OPEN_WRITES_KEY: raw}):
+            return token
+        await _backoff(attempt)
+    return token
+
+
+async def recover_expired_writes(graph_provider: Any, connector_id: str, *, clock: Callable[[], float] = time.time) -> int:  # noqa: ANN401
+    """Close the writes of the connector whose lease ran out (past `OPEN_WRITE_GRACE_SECONDS`): the process that opened them is gone. When every
+    one of them recorded its roots they are registered, as the write would have done after itself (the subtree is hidden and the engine
+    rewrites it); otherwise the connector is marked unsafe, as `--close-open-mark` does (a full pass). The registration comes first and the
+    close is one compare-and-set that also counts them, so a crash in between repeats the registration (harmless) and never loses it, and a
+    write that finishes late finds its lease gone and registers its own roots again. Returns how many writes it closed (0 on a lost race).
+
+    shortcut: a write is read as dead by the clock of whoever sweeps. A long write renews its lease before each long step and before the write that
+    matters (`renew_write`), and finds itself recovered by reopening, so what lands afterwards is registered again; what remains is a sweeper whose
+    clock runs more than the grace (120 s) ahead of the writer's, which can recover a live write once between two renewals, and the write that
+    lands in that gap is registered by its own `finally` (or, if the process dies there, only by the next expiry). Upgrade with a store-side
+    clock for the deadline."""
+    app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) or {}
+    raw, closed = app.get(OPEN_WRITES_KEY) or None, app.get(CLOSED_KEY)
+    held = parse_open_writes(raw)
+    cutoff = clock() - OPEN_WRITE_GRACE_SECONDS
+    dead = {t: e for t, e in held.items() if e["u"] <= cutoff}
+    if not dead or (closed is not None and whole_number(closed) is None):
+        return 0
+    updates: dict[str, Any] = {OPEN_WRITES_KEY: _dump_open_writes({t: e for t, e in held.items() if t not in dead}), CLOSED_KEY: (whole_number(closed) or 0) + len(dead)}
+    if all("r" in e for e in dead.values()):
+        if roots := sorted({r for e in dead.values() for r in e["r"]}):
+            await register_pending_roots(graph_provider, connector_id, roots)
+    else:
+        updates[UNSAFE_KEY] = new_unsafe_mark()
+    return len(dead) if await _swap(graph_provider, connector_id, updates, {OPEN_WRITES_KEY: raw, CLOSED_KEY: closed}) else 0
+
+
+class OpenWrites:
+    """What `leaving_vrid` hands the body of the fence: `renew()` before a long step and before the write that matters."""
+
+    def __init__(self, graph_provider: Any, tokens: dict[str, str | None], roots: Mapping[str, Collection[str]], log: logging.Logger) -> None:  # noqa: ANN401
+        self._graph, self._tokens, self._roots, self._log = graph_provider, tokens, roots, log
+
+    async def renew(self) -> None:
+        for connector_id in sorted(self._tokens):
+            try:
+                self._tokens[connector_id] = await renew_write(self._graph, connector_id, self._tokens[connector_id], self._roots.get(connector_id))
+            except Exception:
+                self._log.warning("could not renew the lease of the write on connector %s; it runs out on its own deadline", connector_id, exc_info=True)
+
+
 @contextlib.asynccontextmanager
-async def leaving_vrid(graph_provider: Any, record_key: str, vrid: str, logger: logging.Logger | None = None) -> AsyncIterator[None]:  # noqa: ANN401
+async def leaving_vrid(graph_provider: Any, record_key: str, vrid: str, logger: logging.Logger | None = None) -> AsyncIterator[OpenWrites | None]:  # noqa: ANN401
     """Around the write that makes a record stop standing for virtual record ``vrid``. The points of ``vrid`` keep the scope of the record
     that left until they are stamped again, so each record that still stands for it is registered as a pending root of its connector
     after the write. Before the write each of those connectors is opened (`OPENED_KEY`), and closed only once its roots are registered
@@ -185,9 +361,9 @@ async def leaving_vrid(graph_provider: Any, record_key: str, vrid: str, logger: 
     Raises when an opening cannot be written (after closing the connectors already opened) or a registration cannot, after trying every
     connector; a connector whose registration failed is not closed, which keeps it not current.
 
-    shortcut: a process that dies inside the window leaves the write unclosed, and the connector stays not current (legacy filter, and no
-    back-fill) until an operator runs the back-fill with ``--close-open-mark``; upgrade with the operator view that shows and clears it,
-    before serving depends on the filter."""
+    A process that dies inside the window leaves the write opened with a lease (`open_write`); once the lease has run out the sweep registers the
+    roots itself and closes the write (`recover_expired_writes`), which is what recovers it without an operator. Until then the connector is not
+    current. A body with long steps calls ``renew()`` on the handle this yields before each of them and before the graph write."""
     log = logger or logging.getLogger(__name__)
     by_connector: dict[str, list[str]] = {}
     try:
@@ -199,24 +375,22 @@ async def leaving_vrid(graph_provider: Any, record_key: str, vrid: str, logger: 
         log.exception("could not read the records sharing virtual record %s: marking the organisation's connectors instead", vrid)
         await _mark_organisation(graph_provider, log, before_write=True)
         try:
-            yield
+            yield None
         finally:
             await _mark_organisation(graph_provider, log, before_write=False)
         return
     connectors = sorted(by_connector)  # one order for every writer
-    opened: list[str] = []
+    opened: dict[str, str | None] = {}
     try:
         for connector_id in connectors:
-            if await graph_provider.increment_node_field(connector_id, CollectionNames.APPS.value, OPENED_KEY) is None:
-                raise ScopeGenerationError(f"could not open the write that moves {record_key} off virtual record {vrid}: no connector {connector_id}")
-            opened.append(connector_id)
+            opened[connector_id] = await open_write(graph_provider, connector_id, by_connector[connector_id])
     except BaseException:
-        for connector_id in opened:  # the write will not happen: do not leave the ones opened so
-            await _close(graph_provider, connector_id, log)
+        for connector_id, token in opened.items():  # the write will not happen: do not leave the ones opened so
+            await _close(graph_provider, connector_id, token, log)
         raise
     first: BaseException | None = None
     try:
-        yield
+        yield OpenWrites(graph_provider, opened, by_connector, log)
     finally:  # a write that raised may still have landed: its registration is harmless when it did not
         for connector_id in connectors:
             try:
@@ -225,20 +399,16 @@ async def leaving_vrid(graph_provider: Any, record_key: str, vrid: str, logger: 
                 log.error("could not register the pending roots of connector %s: it stays opened, so not current", connector_id)
                 first = first or exc
                 continue
-            await _close(graph_provider, connector_id, log)
+            await _close(graph_provider, connector_id, opened[connector_id], log)
         if first is not None:
             raise first
 
 
-async def _close(graph_provider: Any, connector_id: str, log: logging.Logger) -> None:  # noqa: ANN401
-    """Count one write of the connector as closed. Not retried: an increment that raised may have been applied, and a second would close a
-    write that is still running. A close that did not land leaves the connector opened (not current) and is logged."""
-    try:
-        if await graph_provider.increment_node_field(connector_id, CollectionNames.APPS.value, CLOSED_KEY) is not None:
-            return
-    except Exception:
-        pass
-    log.error("could not close the write on connector %s: it stays not current until the back-fill is run with --close-open-mark", connector_id)
+async def _close(graph_provider: Any, connector_id: str, token: str | None, log: logging.Logger) -> None:  # noqa: ANN401
+    """Close one write (`close_write`). A close that did not land leaves the connector opened (not current) until its lease runs out and the
+    sweep closes it, or an operator does; logged."""
+    if not await close_write(graph_provider, connector_id, token):
+        log.error("could not close the write on connector %s: it stays not current until its lease runs out (the sweep closes it) or the back-fill is run with --close-open-mark", connector_id)
 
 
 async def _mark_organisation(graph_provider: Any, log: logging.Logger, *, before_write: bool) -> None:  # noqa: ANN401

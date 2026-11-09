@@ -43,6 +43,7 @@ from app.services.permissions.errors import ViewerScopesUnavailable
 from app.services.permissions.metrics import SCOPE_STAMP_FAILED
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.pending import PendingUnreadable, parse, without_done
+from app.services.permissions.rewrite_lease import LeaseLost, RewriteLease
 from app.services.permissions.rules import Rule, rule_for
 from app.services.permissions.scope_fields import (
     SCOPE_FENCE_FIELD,
@@ -78,7 +79,7 @@ from app.services.vector_db.scope_backfill import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
     from app.services.vector_db.interface.vector_db import IVectorDBService
@@ -120,6 +121,7 @@ class Epoch:
 
     generation: int
     unsafe: object
+    leased: bool = True      # the app document still names this rewriter as the holder of the connector
 
 
 @dataclass
@@ -189,16 +191,36 @@ async def remove_pending(graph: IGraphDBProvider, connector_id: str, done: Mappi
 
 class ScopeRewriteJob:
     def __init__(self, graph_provider: IGraphDBProvider, vector_db: IVectorDBService, locator: CollectionLocator, *,
-                 logger: logging.Logger | None = None, settle_seconds: float = SETTLE_SECONDS) -> None:
+                 logger: logging.Logger | None = None, settle_seconds: float = SETTLE_SECONDS, clock: Callable[[], float] = time.time) -> None:
         self._graph, self._vdb, self._locator = graph_provider, vector_db, locator
         self._log = logger or logging.getLogger(__name__)
         self._settle = settle_seconds
+        self._clock = clock      # the lease's (the fence's is the store's)
+        self._lease: RewriteLease | None = None
+
+    def attach(self, lease: RewriteLease) -> None:
+        """Run under a lease taken by the caller (the back-fill's membership step): the guard then also stops a write once it is lost."""
+        self._lease = lease
 
     async def run_connector(self, org_id: str, connector_id: str) -> RewriteResult:
+        """One rewriter per connector: while another holds its lease the result is "busy" and nothing is read or written. The lease is given back
+        on a normal end or an error, and left to run out when the process is killed (a `BaseException`), as a dead process would leave it."""
         if not scope_fields_enabled():
             raise ScopeFieldsOff("turn the scope fields on (ACL_SCOPE_FIELDS) before rewriting")
         with for_org(org_id, job="scope-rewrite"):
-            return await self._run(org_id, connector_id)
+            lease = self._lease = RewriteLease(self._graph, connector_id, clock=self._clock)
+            if not await lease.acquire():
+                return RewriteResult(org_id, connector_id, state="busy")
+            try:
+                result = await self._run(org_id, connector_id)
+            except LeaseLost:
+                await lease.release()      # (a no-op unless it is still ours)
+                return RewriteResult(org_id, connector_id, state="busy")
+            except Exception:
+                await lease.release()
+                raise
+            await lease.release()
+            return result
 
     async def _app(self, connector_id: str) -> dict[str, Any]:
         return dict(await self._graph.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) or {})
@@ -248,6 +270,8 @@ class ScopeRewriteJob:
             try:
                 await self._rewrite(org_id, connector_id, batch, result)
                 rewritten += batch
+            except LeaseLost:
+                raise
             except Exception as exc:
                 # One bad root must not hold the healthy roots of its connector hidden: take the batch again root by root. Those that fail stay.
                 if len(batch) == 1:
@@ -257,6 +281,8 @@ class ScopeRewriteJob:
                     try:
                         await self._rewrite(org_id, connector_id, [root], result)
                         rewritten.append(root)
+                    except LeaseLost:
+                        raise
                     except Exception as one:
                         failed[root] = one
         if rewritten:
@@ -271,6 +297,8 @@ class ScopeRewriteJob:
     async def _rewrite(self, org_id: str, connector_id: str, roots: list[str], result: RewriteResult) -> None:
         vrids = sorted(await self._graph.permission_stamp_graph().subtree_vrids(org_id, roots))
         for i in range(0, len(vrids), PAGE):
+            if self._lease:
+                await self._lease.renew()      # outside the virtual-record locks: the app document is written only there
             await self._page(org_id, connector_id, vrids[i:i + PAGE], result)
 
     # ---- one page -----------------------------------------------------------------------------------------
@@ -360,11 +388,13 @@ class ScopeRewriteJob:
         app = await self._app(connector_id)
         if (generation := structure_generation_of(app)) is None:
             raise RewriteIncomplete(f"the structure generation of {connector_id} is not readable")
-        return Epoch(generation, app.get(UNSAFE_KEY))
+        return Epoch(generation, app.get(UNSAFE_KEY), self._lease.holds(app) if self._lease else True)
 
     async def _guard(self, connector_id: str, epoch: Epoch) -> None:
         """Right before a request that writes: the connector did not change since the graph was read."""
         now = await self._epoch(connector_id)
+        if not now.leased:
+            raise LeaseLost(f"{connector_id} is held by another rewriter")
         if now.generation != epoch.generation or not same_mark(now.unsafe, epoch.unsafe):
             raise GenerationMoved(f"{connector_id} changed after its graph was read")
 
