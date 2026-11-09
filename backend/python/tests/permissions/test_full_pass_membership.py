@@ -123,6 +123,25 @@ async def test_a_virtual_record_whose_membership_cannot_be_resolved_is_left_stal
     assert not seen.leaks and not await env.problems()
 
 
+async def test_a_connector_that_moves_while_the_pass_marks_an_unplaced_record_does_not_fail_the_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    env = await Env.make(WorldStore().world("golden/confluence_hr"))
+    await env.change((HR_MOVE,), whole=True)
+    bad = env.vrids()["page:Onboarding"]
+    real = scope_rewrite.resolve_virtual_record_state
+
+    async def unresolved(graph: Any, v: str, *a: Any, **k: Any) -> Any:
+        out = await real(graph, v, *a, **k)
+        return replace(out, roots_resolved=False) if v == bad else out
+
+    async def moved(*a: Any, **k: Any) -> None:
+        raise scope_rewrite.GenerationMoved("w:app")
+
+    monkeypatch.setattr(scope_rewrite, "resolve_virtual_record_state", unresolved)
+    monkeypatch.setattr(env.backfill._membership, "_mark_stale", moved)
+    done = await env.backfill.run_connector(ORG, "w:app", restart=True)
+    assert done.state == DONE and done.stale == 1, done.line()
+
+
 async def test_a_membership_write_the_store_does_not_apply_leaves_the_pass_failed_not_done(monkeypatch: pytest.MonkeyPatch) -> None:
     """The move keeps the stamp (container), so only the membership changes; a store that takes the fields and drops the membership is seen."""
     env = await moved_whole()
