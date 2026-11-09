@@ -209,21 +209,32 @@ async def _unproven_note(
 
     Only readable callers count: "something calls it" from a hidden file would reveal that file.
     """
-    rows, _, spent = await _readable_neighbour_rows(
-        graph_provider, org_id, access, [target_key], [RecordRelations.CALLS.value], "inbound",
-        page=_CALLER_PROBE, budget=_CALLER_SCAN_LIMIT, want=1,
-        accept=lambda r: r.get("collection") == _BLOCKS and bool(r.get("key")),
-    )
-    # A spent scan cannot say nothing calls it.
-    linked = bool(rows) or spent
-    reason = (
-        "No chain of linked calls joins them, but calls the graph could not link (on values "
-        "of unknown type, through getattr or callbacks) can. "
-        if linked else
-        "Nothing in the graph calls the second symbol, so every call to it is one the graph "
-        "could not link (through getattr, a callback, or a value of unknown type), and this "
-        "search cannot tell whether the first reaches it. "
-    )
+    async def probe(relation: str) -> str:
+        """"linked" (a readable edge), "unknown" (the scan limit hit before one was read) or "none"."""
+        rows, _, spent = await _readable_neighbour_rows(
+            graph_provider, org_id, access, [target_key], [relation], "inbound",
+            page=_CALLER_PROBE, budget=_CALLER_SCAN_LIMIT, want=1,
+            accept=lambda r: r.get("collection") == _BLOCKS and bool(r.get("key")),
+        )
+        return "linked" if rows else "unknown" if spent else "none"
+
+    if await probe(RecordRelations.CALLS.value) != "none":  # a spent scan cannot say nothing calls it
+        reason = ("No chain of linked calls joins them, but calls the graph could not link (on values "
+                  "of unknown type, through getattr or callbacks) can. ")
+    elif (handover := await probe(RecordRelations.INDIRECT_CALL.value)) == "linked":
+        # A handover is a possible call, not a definite one: say which the graph holds.
+        reason = ("Nothing in the graph calls the second symbol directly, but it is handed over as a "
+                  "value (INDIRECT_CALL: a callback or table entry), so it may run wherever that value "
+                  "goes; calls the graph could not link (on values of unknown type, through getattr) "
+                  "can join them too. ")
+    elif handover == "unknown":
+        reason = ("Nothing in the graph calls the second symbol directly, and the scan limit was reached "
+                  "before it could tell whether anything hands it over as a value; calls the graph could "
+                  "not link (on values of unknown type, through getattr or callbacks) can join them. ")
+    else:
+        reason = ("Nothing in the graph calls the second symbol, so every call to it is one the graph "
+                  "could not link (through getattr, a callback, or a value of unknown type), and this "
+                  "search cannot tell whether the first reaches it. ")
     return (reason + "Before answering that it is not reached, read the calls the first symbol "
             "makes and follow them; a call counts even when it sits in a branch only some "
             "arguments take.")
@@ -388,6 +399,7 @@ def _next_phase(phase: int, row: dict[str, Any], *, undirected: bool) -> int | N
 
 _HOP_VERBS = {
     RecordRelations.CALLS.value: "calls",
+    RecordRelations.INDIRECT_CALL.value: "may call (as a value)",
     RecordRelations.IMPORTS.value: "imports",
     RecordRelations.IMPORTS_FROM.value: "imports from",
     RecordRelations.RE_EXPORTS.value: "re-exports",

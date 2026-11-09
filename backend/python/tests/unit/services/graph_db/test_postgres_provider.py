@@ -218,3 +218,50 @@ async def test_get_user_by_email_reads_only_the_ambient_org(org_id: str | None, 
         assert p._one.await_args.args[1:] == ("o1", "A@x.io")
     else:
         p._one.assert_not_awaited()
+
+
+class TestReplaceRecordEntityRelations:
+    """One org-scoped statement: the new edges are written and only that origin's other edges of the record go."""
+
+    @staticmethod
+    async def _run(edges: list[dict], collections: list[str] | None = None, origin: str = "EXTRACTED") -> tuple[str, tuple]:
+        from app.core.org_context import OrgContext, bind
+
+        provider = PostgresGraphProvider.__new__(PostgresGraphProvider)
+        provider.logger = logging.getLogger("t")
+        seen: dict = {}
+
+        async def q(fn, transaction, write=False):  # noqa: ANN202
+            tx = MagicMock()
+            tx.execute = AsyncMock(side_effect=lambda sql, *args: seen.update(sql=sql, args=args))
+            await fn(tx)
+            seen["write"] = write
+
+        provider._q = q
+        with bind(OrgContext("org-1", None, "job", "job:test", "t")):
+            await provider.replace_record_entity_relations("r1", collections or ["organizations"], origin, edges)
+        assert seen["write"] is True
+        return seen["sql"], seen["args"]
+
+    @pytest.mark.asyncio
+    async def test_it_is_one_statement_scoped_by_org_record_origin_and_collections(self) -> None:
+        edge = {"_from": "records/r1", "_to": "organizations/o1", "edgeType": "MENTIONS", "origin": "EXTRACTED", "createdAtTimestamp": 1}
+        sql, args = await self._run([edge], ["organizations", "users"])
+        assert sql.count("INSERT INTO") == 1 and sql.count("DELETE FROM") == 1
+        assert "d.org_id = $1" in sql and "d.from_id = $3" in sql and "d.to_coll = ANY($4::text[])" in sql
+        assert "coalesce(d.doc->>'origin', $5) = $6" in sql and "NOT EXISTS (SELECT 1 FROM ins" in sql
+        assert (args[0], args[2], args[3], args[4], args[5]) == ("org-1", "r1", ["organizations", "users"], "INFERRED", "EXTRACTED")
+
+    @pytest.mark.asyncio
+    async def test_no_edges_still_clears_the_origin(self) -> None:
+        sql, args = await self._run([])
+        assert "DELETE FROM" in sql and args[1] == "[]"
+
+    @pytest.mark.asyncio
+    async def test_a_missing_record_collection_or_origin_raises_before_any_statement(self) -> None:
+        provider = PostgresGraphProvider.__new__(PostgresGraphProvider)
+        provider._q = AsyncMock()
+        for args in (("", ["users"], "INFERRED", []), ("r1", [], "INFERRED", []), ("r1", ["users"], "", [])):
+            with pytest.raises(ValueError, match="needs a record"):
+                await provider.replace_record_entity_relations(*args)
+        provider._q.assert_not_awaited()

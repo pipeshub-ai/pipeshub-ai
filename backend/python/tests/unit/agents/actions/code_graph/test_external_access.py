@@ -137,9 +137,13 @@ async def test_a_search_hit_names_its_repo() -> None:
 class _Container:
     def __init__(self, graph) -> None:
         self._graph = graph
+        self.retrievals = 0
 
     async def graph_provider(self) -> Repos:
         return self._graph
+
+    async def retrieval_service(self) -> None:
+        self.retrievals += 1
 
     def logger(self) -> logging.Logger:
         return logging.getLogger("test")
@@ -197,6 +201,17 @@ async def test_the_search_route_takes_the_external_mode_and_a_name(blobs) -> Non
     body = res.json()
     assert body["mode"] == "external" and body["module"] == "requests" and body["name"] == "get"
     assert body["matches"] == [] and "hint" in body
+
+
+async def test_only_a_path_free_text_search_builds_the_retrieval_service(blobs) -> None:
+    client = _client(Repos())
+    for body in ({"pattern": "create_app"}, {"pattern": "x", "mode": "text", "path": "app/"},
+                 {"pattern": "requests", "mode": "external"}):
+        client.post("/api/v1/code-graph/search", json={"repo": "acme/admin", **body})
+    assert client.app.container.retrievals == 0
+    res = client.post("/api/v1/code-graph/search", json={"repo": "acme/admin", "pattern": "x", "mode": "text"})
+    assert client.app.container.retrievals == 1
+    assert "path" in res.json()["error"]
 
 
 async def test_read_by_search_hit_needs_no_repo(blobs) -> None:

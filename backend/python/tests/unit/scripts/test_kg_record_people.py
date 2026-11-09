@@ -71,7 +71,7 @@ async def test_apply_writes_each_page_in_one_retried_transaction() -> None:
     graph, out = _graph([["m1"], ["m2"]]), io.StringIO()
     tx_store = MagicMock(
         get_users_by_emails=graph.get_users_by_emails, get_user_by_source_id=graph.get_user_by_source_id,
-        delete_edges_between_collections=AsyncMock(), batch_create_entity_relations=AsyncMock(),
+        replace_record_entity_relations=AsyncMock(),
         get_record_group_organization=graph.get_record_group_organization,
     )
     data_store = MagicMock()
@@ -83,7 +83,7 @@ async def test_apply_writes_each_page_in_one_retried_transaction() -> None:
     code = await backfill(graph, data_store, "org-1", apply=True, logger=logging.getLogger("t"), out=out)
     assert code == 0
     assert data_store.execute_idempotent_in_transaction.await_count == 2
-    assert tx_store.batch_create_entity_relations.await_count == 2
+    assert tx_store.replace_record_entity_relations.await_count == 2
     pages = [c.kwargs["after_key"] for c in graph.page_record_ids_by_type.await_args_list]
     assert pages == [None, "m1", "m2"]
     assert graph.page_record_ids_by_type.await_args.args[1] == LINKED_TYPES
@@ -97,7 +97,7 @@ async def test_apply_has_the_entity_index_project_the_orgs_people_again() -> Non
     graph, data_store = _graph([["m1"]]), MagicMock()
     tx_store = MagicMock(
         get_users_by_emails=graph.get_users_by_emails, get_user_by_source_id=graph.get_user_by_source_id,
-        delete_edges_between_collections=AsyncMock(), batch_create_entity_relations=AsyncMock(),
+        replace_record_entity_relations=AsyncMock(),
         get_record_group_organization=graph.get_record_group_organization,
     )
 
@@ -180,7 +180,7 @@ async def test_a_failed_lookup_fails_the_page(apply: bool) -> None:
     data_store = MagicMock()
     tx_store = MagicMock(
         get_users_by_emails=graph.get_users_by_emails, get_user_by_source_id=graph.get_user_by_source_id,
-        delete_edges_between_collections=AsyncMock(), batch_create_entity_relations=AsyncMock(),
+        replace_record_entity_relations=AsyncMock(),
     )
 
     async def _run(fn: object) -> int:
@@ -204,9 +204,8 @@ async def test_apply_stamps_accounts_first_and_links_deals_to_them() -> None:
     graph.stamp_external_org_parents = AsyncMock(return_value=2)
     tx_store = MagicMock(
         get_users_by_emails=graph.get_users_by_emails, get_user_by_source_id=graph.get_user_by_source_id,
-        delete_edges_between_collections=AsyncMock(), batch_create_entity_relations=AsyncMock(),
+        replace_record_entity_relations=AsyncMock(),
         get_record_group_organization=graph.get_record_group_organization,
-        delete_record_entity_relations=AsyncMock(return_value=0),
     )
     data_store = MagicMock()
 

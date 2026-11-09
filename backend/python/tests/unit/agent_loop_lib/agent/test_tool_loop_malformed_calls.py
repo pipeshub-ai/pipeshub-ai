@@ -13,6 +13,9 @@ loop-side handling in isolation via a directly-constructed `ToolCall`.
 
 from __future__ import annotations
 
+import logging
+from typing import TYPE_CHECKING
+
 from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.core.messages import (
@@ -25,7 +28,11 @@ from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.builtin.planning.task_complete import TaskCompleteTool
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agent_loop_lib.transport.registry import TransportRegistry
+from app.utils.logger import log_record_fields
 from tests.unit.agents.adapter.support.scripted_transport import ScriptedTransport
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def _build_agent(transport: ScriptedTransport, *, max_turns: int = 5) -> Agent:
@@ -90,3 +97,25 @@ class TestMalformedToolCallShortCircuit:
         malformed_result = result.turns[0].tool_results[0]
         assert malformed_result.is_error is True
         assert "Unknown tool" not in malformed_result.content
+
+
+class TestTheMalformedCallIsLogged:
+    async def test_one_warning_end_line_and_no_raw_arguments(self, caplog: pytest.LogCaptureFixture) -> None:
+        transport = ScriptedTransport()
+        transport.add_tool_call(ToolCall(
+            id="call-1", name="run_code",
+            arguments={MALFORMED_TOOL_CALL_ARGS_KEY: '{"code": "sentinel-m"  BROKEN', MALFORMED_TOOL_CALL_ERROR_KEY: "bad"},
+        ))
+        transport.add_tool_call(ToolCall(id="call-2", name="task_complete", arguments={"output": "done"}))
+
+        with caplog.at_level(logging.DEBUG):
+            await _build_agent(transport).run(Goal(description="do something"))
+
+        ends = {log_record_fields(r)["tool_call_id"]: r for r in caplog.records if r.getMessage() == "tool_call.end"}
+        malformed = ends["call-1"]
+        assert malformed.levelno == logging.WARNING
+        assert {k: log_record_fields(malformed)[k] for k in ("tool", "outcome", "reason", "error_class")} == {
+            "tool": "run_code", "outcome": "failure", "reason": "malformed_args", "error_class": "bad_request",
+        }
+        assert sorted(ends) == ["call-1", "call-2"]
+        assert "sentinel-m" not in caplog.text

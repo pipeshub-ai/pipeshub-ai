@@ -89,11 +89,13 @@ class EntityAccessMixin(PgBase):
                       r.doc->>'connectorId' IN (SELECT jsonb_array_elements_text(s->'apps')) OR r.id IN (SELECT jsonb_array_elements_text(s->'records'))
                       OR EXISTS (SELECT 1 FROM graph.edges b WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'records' AND b.from_id = r.id AND b.to_coll = 'recordGroups'
                                    AND b.to_id IN (SELECT jsonb_array_elements_text(s->'groups'))), false)))
-                    AND r.id IN (SELECT e.from_id FROM graph.edges e JOIN graph.nodes p ON p.org_id = e.org_id AND p.coll = 'users' AND p.id = e.to_id
-                                   WHERE e.org_id = $1 AND e.coll = 'entityRelations' AND e.from_coll = 'records' AND e.to_coll = 'users' AND e.to_id = ANY($10::text[])
+                    AND r.id IN (SELECT e.from_id FROM graph.edges e JOIN graph.nodes p ON p.org_id = e.org_id AND p.coll = e.to_coll AND p.id = e.to_id
+                                   WHERE e.org_id = $1 AND e.coll = 'entityRelations' AND e.from_coll = 'records'
+                                     AND ((e.to_coll = 'users' AND e.to_id = ANY($10::text[])) OR (e.to_coll = 'person' AND e.to_id = ANY($13::text[])))
                                      AND p.doc->>'orgId' = $2 AND e.doc->>'edgeType' = ANY($11::text[])
-                                 UNION SELECT e.to_id FROM graph.edges e JOIN graph.nodes p ON p.org_id = e.org_id AND p.coll = 'users' AND p.id = e.from_id
-                                   WHERE e.org_id = $1 AND e.coll = 'entityRelations' AND e.from_coll = 'users' AND e.to_coll = 'records' AND e.from_id = ANY($10::text[])
+                                 UNION SELECT e.to_id FROM graph.edges e JOIN graph.nodes p ON p.org_id = e.org_id AND p.coll = e.from_coll AND p.id = e.from_id
+                                   WHERE e.org_id = $1 AND e.coll = 'entityRelations' AND e.to_coll = 'records'
+                                     AND ((e.from_coll = 'users' AND e.from_id = ANY($10::text[])) OR (e.from_coll = 'person' AND e.from_id = ANY($13::text[])))
                                      AND p.doc->>'orgId' = $2 AND e.doc->>'edgeType' = ANY($12::text[]))
                   ORDER BY r.id LIMIT $9),
                 o AS (SELECT s.id, s.doc, row_number() OVER (ORDER BY CASE WHEN $6::boolean AND s.doc->>'sourceTimestampOrigin' = 'upload' THEN 0::float8
@@ -101,7 +103,7 @@ class EntityAccessMixin(PgBase):
                                   CASE WHEN jsonb_typeof(s.doc->'updatedAtTimestamp') = 'number' THEN (s.doc->>'updatedAtTimestamp')::float8 END, 0) END DESC, s.id) AS ord FROM s)
                 SELECT o.id, o.doc, o.ord, (SELECT count(*) FROM s) AS scanned FROM o WHERE o.ord > $7::int AND o.ord <= $7::int + $8::int
                 UNION ALL SELECT NULL, NULL, 0, (SELECT count(*) FROM s) WHERE NOT EXISTS (SELECT 1 FROM o WHERE o.ord > $7::int AND o.ord <= $7::int + $8::int) ORDER BY ord""",
-                                  *args, ref["userIds"], ref["outTypes"], ref["inTypes"])
+                                  *args, ref["userIds"], ref["outTypes"], ref["inTypes"], ref["personIds"])
         else:
             edge, colls, scope = ("", (), "none") if typ == EntityType.RECORD.value else _TARGETS[typ]
             rows = await tx.fetch("""/* pipeshub:graph.get_entity_candidate_records */ WITH s AS (SELECT r.id, r.doc FROM graph.nodes r

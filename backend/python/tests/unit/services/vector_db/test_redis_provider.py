@@ -1342,6 +1342,42 @@ class TestRedisUpdatePayloadByIds:
         mock_redis_client.pipeline.assert_not_called()
 
 
+class TestRedisUpdatePayloadsByIdsFence:
+    @staticmethod
+    def _pipeline(mock_redis_client: MagicMock, owners: list) -> MagicMock:
+        pipeline = mock_redis_client.pipeline.return_value
+        pipeline.execute_command = MagicMock()
+        pipeline.execute = AsyncMock(side_effect=[owners, [1] * len(owners)])
+        return pipeline
+
+    @pytest.mark.asyncio
+    async def test_without_a_fence_it_sends_what_update_payload_by_ids_sends(self, service, mock_redis_client) -> None:
+        pipeline = self._pipeline(mock_redis_client, [b"o1", b"o1"])
+        await service.update_payload_by_ids("entities", ["p1", "p2"], {"connectorIds": ["c1"]}, org_id="o1")
+        single = [c.args for c in pipeline.execute_command.call_args_list]
+        pipeline = self._pipeline(mock_redis_client, [b"o1", b"o1"])
+        await service.update_payloads_by_ids("entities", {"p1": {"connectorIds": ["c1"]}, "p2": {"connectorIds": ["c1"]}}, org_id="o1")
+        assert [c.args for c in pipeline.execute_command.call_args_list] == single
+
+    @pytest.mark.asyncio
+    async def test_a_fence_sends_one_script_per_point_with_the_org_the_fence_and_the_payload(self, service, mock_redis_client) -> None:
+        pipeline = mock_redis_client.pipeline.return_value
+        pipeline.execute_command = MagicMock()
+        pipeline.execute = AsyncMock(return_value=[1, 0])
+        await service.update_payloads_by_ids("entities", {"p1": {"a": "x"}, "p2": {"metadata.k": "y"}}, org_id="o1", fence=7)
+        script = type(service)._FENCED_HSET
+        assert [c.args for c in pipeline.execute_command.call_args_list] == [
+            ("EVAL", script, 1, "entities:p1", 7, "o1", "scopeFence", "a", "x"),
+            ("EVAL", script, 1, "entities:p2", 7, "o1", "scopeFence", "metadata_k", "y")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("org", [None, "", "  "])
+    async def test_a_missing_org_raises_with_a_fence(self, service, mock_redis_client, org) -> None:
+        with pytest.raises(OrgRequired):
+            await service.update_payloads_by_ids("entities", {"p1": {"x": 1}}, org_id=org, fence=7)
+        mock_redis_client.pipeline.assert_not_called()
+
+
 class TestDeletesAndUpdatesNeedAnOrg:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("method", ["delete_points", "set_payload", "overwrite_payload"])
