@@ -224,6 +224,13 @@ class TestSkips:
         stats = await self._skip(lambda _: None, _make_record(external_record_id="x", record_name="Thumbs.db"))
         assert _skipped(stats) == {"not_content": 1}
 
+    async def test_a_placeholder_left_unwritten_is_not_counted_skipped(self) -> None:
+        def setup(store: _Store) -> None:
+            store.committed["x"] = _make_record(external_record_id="x", org_id="org-2")
+
+        stats = await self._skip(setup, _make_record(external_record_id="x", is_placeholder=True))
+        assert _skipped(stats) == {}
+
 
 class TestCountedOnlyOnCommit:
     async def test_a_rolled_back_write_is_not_counted(self) -> None:
@@ -317,6 +324,18 @@ class TestFailures:
             await proc.on_new_records(batch)
 
         assert _records(stats) == {"new": 2, "failed": 1}
+
+    async def test_a_quarantined_record_is_not_counted_failed_again_when_the_batch_fails(self) -> None:
+        proc = _make_processor()
+        # Slice 1 (t1) is refused, so its 3 records are written one by one (t2-t4); slice 2 (t5) fails for good.
+        _Store(proc, t5=RuntimeError("graph down"))
+        batch = _batch(5)
+        batch[1][0].record_name = "bad"
+
+        with _run() as stats, patch.object(dsep, "_RECORDS_PER_TRANSACTION", 3), pytest.raises(RuntimeError):
+            await proc.on_new_records(batch)
+
+        assert _records(stats) == {"new": 2, "failed": 3}
 
 
 def _stored_doc(key: str = "r1") -> dict:
