@@ -177,6 +177,18 @@ class TestWriteOutcomes:
 
         assert _records(stats) == {"updated": 1}
 
+    async def test_a_rename_onto_a_new_external_id_counts_updated(self) -> None:
+        """The source renamed the item: a new external id, the id of the record already stored."""
+        proc = _make_processor()
+        store = _Store(proc)
+        record = _make_record(external_record_id="new-name", external_revision_id="r1")
+        store.by_key[record.id] = {"_key": record.id, "orgId": "org-1", "connectorId": "conn-1"}
+
+        with _run() as stats:
+            await proc.on_new_records([(record, [])])
+
+        assert _records(stats) == {"updated": 1}
+
 
 class TestSkips:
     @staticmethod

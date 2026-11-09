@@ -215,7 +215,8 @@ Counts on `sync_run.end`, each left out when 0. Unlike `agent_turn.end`, which p
 short: a count that is absent is 0.
 - `records_new`: not stored before. A placeholder (a stand-in for a parent not synced yet) is not counted; the real record
   that replaces it counts as new.
-- `records_updated`: stored before, and its source revision changed, or it came back from the trash.
+- `records_updated`: stored before, and its source revision changed, it came back from the trash, or it was renamed onto
+  a new external id.
 - `records_unchanged`: stored before with the same source revision and saved again, which a full sync does to every record.
   Its name, place or access may still have been refreshed.
 - `records_deleted`: removed or sent to the trash, descendants included. A delete of something not stored counts nothing.

@@ -316,11 +316,16 @@ def _not_stored(record: Record, reason: SkipReason) -> tuple[None, list]:
     return None, []
 
 
-def _write_outcome(record: Record, existing_record: Record | None, *, restored: bool) -> RecordOutcome | None:
+def _write_outcome(
+    record: Record, existing_record: Record | None, *, restored: bool, renamed: bool,
+) -> RecordOutcome | None:
     """What ``_process_record``'s write is for the running sync. A placeholder is a stand-in, not a
-    record, so it counts nothing and the real record that replaces it counts new."""
+    record, so it counts nothing and the real record that replaces it counts new. A rename onto a
+    new external id overwrites the record stored under its id, so it is a change."""
     if record.is_placeholder:
         return None
+    if renamed:
+        return RecordOutcome.UPDATED
     if existing_record is None or existing_record.is_placeholder:
         return RecordOutcome.NEW
     if restored or record.external_revision_id != existing_record.external_revision_id:
@@ -2861,7 +2866,9 @@ class DataSourceEntitiesProcessor:
         )
 
         # Counted now, folded into the run only when this transaction commits.
-        if outcome := _write_outcome(record, existing_record, restored=restored_from_trash):
+        if outcome := _write_outcome(
+            record, existing_record, restored=restored_from_trash, renamed=stored_under_its_id,
+        ):
             _stats_sink().records[outcome] += 1
         if existing_record is None:
             # A brand-new record must be stored NOT_STARTED, not the model's
