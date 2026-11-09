@@ -31,9 +31,10 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
         # (.../.well-known/oauth-authorization-server/global/oauth/anonymous) lists no
         # `registration_endpoint`, and PagerDuty's docs say it does not support dynamic client
         # registration, so the admin creates a Scoped OAuth app and pastes its client
-        # ID/secret. Its OpenID document does advertise a registration endpoint, but discovery
-        # reads the RFC 8414 one first, so PipesHub sees no DCR. PKCE S256 is supported. These
-        # are only the UI-hint defaults; the authorize flow always re-discovers live (see dcr.py).
+        # ID/secret. The OpenID document at issuer/.well-known/openid-configuration does name a
+        # registration endpoint, but discovery reads the RFC 8414 document first and stops
+        # there, so PipesHub asks for a client today. PKCE S256 is supported. These are only
+        # the UI-hint defaults; the authorize flow always re-discovers live (see dcr.py).
         authorization_url="https://app.pagerduty.com/global/oauth/authorize",
         token_url="https://app.pagerduty.com/global/oauth/token",
         # The server's protected-resource metadata publishes 84 scopes, every write scope among
