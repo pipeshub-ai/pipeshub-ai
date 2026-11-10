@@ -162,6 +162,10 @@ async def verify_app(tx: Tx, org: str, app_id: str) -> Result:
     for r in await tx.fetch("""/* pipeshub:kg.verify_orphan_grants */ SELECT m.principal_sk, m.node_sk, m.gtype FROM kg.scope_members m
             WHERE m.org_id = $1 AND m.app_sk IS NULL AND NOT EXISTS (SELECT 1 FROM kg.records r WHERE r.org_id = m.org_id AND r.sk = m.node_sk) ORDER BY m.node_sk LIMIT $2""", org, LIMIT):
         res.note("extra", f"g|{r['principal_sk']}|{r['node_sk']}|{r['gtype']} (node gone)")      # a grant on a node that is gone leaves its row without a connector: the per-connector scan cannot find it
+    if app_sk is not None:
+        for r in await tx.fetch("""/* pipeshub:kg.verify_orphan_scopes */ SELECT s.sk FROM kg.scopes s WHERE s.org_id = $1 AND s.app_sk = $2
+                AND NOT EXISTS (SELECT 1 FROM kg.records r WHERE r.org_id = s.org_id AND r.sk = s.sk) ORDER BY s.sk LIMIT $3""", org, app_sk, LIMIT):
+            res.note("extra", f"sc|{r['sk']} (node gone)")        # an access list of this connector whose record row is gone: no reader counts it; a restart backfill removes it
     if cross:   # superset: kg may mark a connector the graph no longer needs marked, never miss one
         marked = {r["app_sk"] for r in await tx.fetch("""/* pipeshub:kg.verify_cross */ SELECT app_sk FROM kg.projection_state WHERE org_id = $1 AND cross_app AND app_sk = ANY($2::bigint[])""",
                                                       org, sorted(cross))}

@@ -39,8 +39,13 @@ CALLS = {   # name -> (arguments of one call, the table, a count query for one o
     "kg.w_queue_release": ((9, "worker-1"), "kg.restamp_queue"),
     "kg.w_queue_done": ((9,), "kg.restamp_queue"),
     "kg.w_stamps_set": (([11], [3], ["rec"], [3], [b"\x00" * 8], [None], [False], [False], [False], [False], [None], [True]), "kg.records"),
+    "kg.w_r13_set": (([11], [3], ["rec"], [3], [True]), "kg.records"),
+    "kg.w_scopes_set": (([11], [3], [5], [True], [True], [False], [False]), "kg.scopes"),
+    "kg.w_scopes_delete": (([11],), "kg.scopes"),
 }
 CASTS = {   # the arguments psycopg cannot type from a list of Nones, or that are not what it sends
+    "kg.w_r13_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::boolean[]"],
+    "kg.w_scopes_set": ["%s::bigint[]", "%s::smallint[]", "%s::bigint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]"],
     "kg.w_fence_rows": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bigint[]"],
     "kg.w_stamps_set": ["%s::bigint[]", "%s::smallint[]", "%s::text[]", "%s::smallint[]", "%s::bytea[]", "%s::bigint[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]", "%s::boolean[]",
                         "%s::smallint[]", "%s::boolean[]"],
@@ -82,7 +87,7 @@ def test_every_kg_table_requires_the_per_org_policy_and_is_plain_with_org_first_
     with conn(pdb) as c:
         tables = c.execute("SELECT c.oid::regclass::text, c.relkind::text, c.relispartition, COALESCE(r.vetted_org_policy, false), r.class FROM pg_class c "
                            "LEFT JOIN kernel.rls_registry r ON r.rel = c.oid WHERE c.relnamespace = 'kg'::regnamespace AND c.relkind IN ('r', 'p')").fetchall()
-        assert len(tables) == 10, tables
+        assert len(tables) == 11, tables
         assert [t[0] for t in tables if not t[3]] == [], "kg tables without kernel.require_vetted_org_policy"
         # rule 128 exempts a table the vetted role also reads unbound; no kg table is one (its vetted functions read through the per-org policy), and one that set the flag
         # would slip past 128 with the policy missing
@@ -110,7 +115,7 @@ def test_a_set_writes_the_session_org_and_leaves_the_other_orgs_row_as_it_was(pd
 
 
 @pytest.mark.parametrize("name, seed", [("kg.w_records_delete", "kg.w_records_upsert"), ("kg.w_links_delete", "kg.w_links_set"), ("kg.w_grants_delete", "kg.w_grants_set"),
-                                        ("kg.w_closure_delete", "kg.w_closure_set")])
+                                        ("kg.w_closure_delete", "kg.w_closure_set"), ("kg.w_scopes_delete", "kg.w_scopes_set")])
 def test_a_delete_with_the_keys_of_another_orgs_rows_deletes_nothing_of_theirs(pdb, name, seed):
     args, table = CALLS[name]
     with conn(pdb) as c:
@@ -177,6 +182,10 @@ BAD = {
     "kg.w_queue_touch": [(0, 0, "w", 1, None), (9, -1, "w", 1, None), (9, 0, "", 1, None), (9, 0, "w", -1, None), (9, 0, "w", 1, "x" * 513)],
     "kg.w_queue_release": [(0, "w"), (9, ""), (9, "x" * 129), (9, None), (None, "w")],
     "kg.w_queue_done": [(0,), (None,)],
+    "kg.w_r13_set": [([11, 12], [3], ["s"], [3], [True]), ([11], [4], ["s"], [3], [True]), ([11], [3], [""], [3], [True]), ([11], [3], ["s"], [3], [None]), ([None], [3], ["s"], [3], [True])],
+    "kg.w_scopes_set": [([11, 12], [3], [5], [True], [True], [False], [False]), ([11], [1], [5], [True], [True], [False], [False]), ([11], [3], [None], [True], [True], [False], [False]),
+                        ([11], [3], [5], [None], [True], [False], [False]), ([11], [3], [5], [True], [True], [False], [None]), ([None], [3], [5], [True], [True], [False], [False])],
+    "kg.w_scopes_delete": [(None,), ([None],)],
     "kg.w_stamps_set": [([11, 12], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]), ([None], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]),
                         ([11], [4], ["rec"], [3], [None], [None], [False], [False], [False], [False], [None], [True]), ([11], [3], [""], [3], [None], [None], [False], [False], [False], [False], [None], [True]),
                         ([11], [3], ["rec"], [3], [None], [None], [False], [False], [False], [False], [9], [True]), ([11], [3], ["rec"], [3], [None], [None], [None], [False], [False], [False], [None], [True]),
@@ -474,4 +483,18 @@ def test_a_mark_is_set_and_lifted_on_a_row_of_the_session_org_only(pdb):
         assert c.execute("SELECT fence_job FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()[0] == 9
         assert call(c, "kg.w_fence_rows", ORG_A, ([11], [3], ["rec-1"], [3], [None])) == [(1,)]
         assert c.execute("SELECT fence_job FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()[0] is None
+        clean(c)
+
+
+def test_r13_is_written_to_the_row_of_the_session_org_and_the_other_stamps_stay(pdb):
+    with conn(pdb) as c:
+        clean(c)
+        call(c, "kg.w_records_upsert", ORG_A, rec_args((11, rec_values())))
+        call(c, "kg.w_stamps_set", ORG_A, ([11], [3], ["rec-1"], [3], [b"\x00\x01"], [None], [True], [True], [False], [True], [4], [False]))
+        assert c.execute("SELECT r13 FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()[0] is None           # not stamped is NULL, never false
+        assert call(c, "kg.w_r13_set", ORG_A, ([11], [3], ["rec-1"], [3], [True])) == [(1,)]
+        got = c.execute("SELECT r13, path, self_lit, legacy_reason FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()
+        assert tuple(got) == (True, b"\x00\x01", True, 4)
+        call(c, "kg.w_r13_set", ORG_B, ([11], [3], ["rec-1"], [3], [False]))                                                    # another org's call makes a row of its own
+        assert c.execute("SELECT r13 FROM kg.records WHERE org_id = %s AND sk = 11", (ORG_A,)).fetchone()[0] is True
         clean(c)
