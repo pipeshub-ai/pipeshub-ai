@@ -245,6 +245,12 @@ class TestNewReads:
         end = _one_end(caplog)
         assert (end["disposition"], end["reason"], end["error_class"]) == ("retry", "exception", "unavailable")
 
+    async def test_cancellation_during_the_ack_is_a_retry_not_an_ack(self, caplog) -> None:
+        c = _consumer(_handler())
+        c.redis.xack = AsyncMock(side_effect=asyncio.CancelledError())
+        await _deliver(c, ("1-0", _signed()))
+        assert _row(_one_end(caplog)) == ("failure", "retry", "cancelled", 1, logging.INFO)
+
     async def test_cancellation_inside_the_handler_ends_it_and_stops_the_loop(self, caplog) -> None:
         handler = _handler(raises=asyncio.CancelledError())
         await _deliver(_consumer(handler), ("1-0", _signed()), ("2-0", _signed()))
@@ -286,7 +292,8 @@ class TestPendingEntries:
 
     @pytest.mark.parametrize("phase", ["claimed", "own"])
     async def test_a_failing_ack_on_a_pending_entry_ends_it_once(self, caplog, phase) -> None:
-        c = _consumer(_handler(), retry_manager=_Tracker())
+        tracker = _Tracker()
+        c = _consumer(_handler(), retry_manager=tracker)
         c.redis.xack = AsyncMock(side_effect=ConnectionError("redis down"))
         await _drain(c, **{phase: [("1-0", _signed())]})
         end = _one_end(caplog)
@@ -294,6 +301,7 @@ class TestPendingEntries:
             "failure", "retry", "exception", "unavailable",
         )
         assert end["org_id"] == "org_a"
+        assert tracker.counts == {}  # a pending entry gets no fallback retry count, as on main
 
     async def test_a_failing_dead_letter_ack_ends_it_once(self, caplog) -> None:
         c = _consumer(_handler(), retry_manager=_Tracker({"1-0": 3}))

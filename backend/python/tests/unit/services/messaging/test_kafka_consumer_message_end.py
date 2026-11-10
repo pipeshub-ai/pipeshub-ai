@@ -238,6 +238,12 @@ class TestDeliveries:
             "retry", "exception", "internal", logging.ERROR,
         )
 
+    async def test_cancellation_during_the_commit_is_a_retry_not_an_ack(self, caplog) -> None:
+        c = _consumer(_handler())
+        c.consumer.commit = AsyncMock(side_effect=asyncio.CancelledError())
+        await _deliver(c, _record(_signed()))
+        assert _row(_one_end(caplog)) == ("failure", "retry", "cancelled", 1, logging.INFO)
+
     async def test_repeated_errors_outside_the_handler_are_given_up_on(self, caplog) -> None:
         c = _consumer(_handler(), _Tracker())
         with patch.object(c, "_KafkaMessagingConsumer__process_message", AsyncMock(side_effect=KeyError("bug"))):

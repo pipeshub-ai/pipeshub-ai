@@ -35,6 +35,9 @@ EVENT_END = "message.end"
 
 @dataclass(slots=True)
 class _Delivery:
+    """One open delivery. A task started inside it copies a context that points at this same object, so
+    only the consumer's decision sites call :func:`end`: anything else may only :func:`note`."""
+
     logger: logging.Logger
     stack: ExitStack
     facts: dict[str, object]

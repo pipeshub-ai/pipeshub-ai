@@ -257,7 +257,8 @@ carries them: the handler's own, and the ack, retry or dead-letter decision. Bef
 
 - Exactly one `message.end` per delivery, written after the broker call (XACK, commit, seek) that carries out the decision. A
   delivery that ends any other way (an error in the ack, a stop mid-handler) is `failure` with `disposition=retry`: the entry stays
-  pending, the offset is read again. A redelivery is a new delivery with its own line.
+  pending, the offset is read again. A redelivery is a new delivery with its own line. One exception: a stop in the short
+  window after the XACK or commit, while the retry count is cleared, also says `retry` for a message already settled.
 - `attempt` is the number of this delivery: 1 for a new message; after failures, the failure count with a retry tracker, or Redis's
   delivery count (`times_delivered`) without one.
 - Kafka with no retry tracker commits a failed message: `disposition=dead_letter`. Redis with none leaves it pending: `retry`.

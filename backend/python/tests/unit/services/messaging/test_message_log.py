@@ -169,15 +169,20 @@ class TestEnd:
         error_class.log_failure(log, ML.EVENT_END, exc)
         assert caplog.records[-1].levelno == logging.DEBUG
 
-    @pytest.mark.parametrize("reason", ["unparseable", "exception"])
-    def test_validation_error_text_never_reaches_a_line(self, caplog, reason) -> None:
+    @pytest.mark.parametrize(("reason", "wrapped"), [("unparseable", False), ("exception", False), ("exception", True)])
+    def test_validation_error_text_never_reaches_a_line(self, caplog, reason, wrapped) -> None:
         exc = _validation_error()
         assert SEEDED in str(exc)  # control: pydantic quotes the input
+        if wrapped:  # a handler's `raise ProcessingError(...) from e`: the chain text would quote it too
+            try:
+                raise RuntimeError("bad payload") from exc
+            except RuntimeError as outer:
+                exc = outer
         with ML.delivery(log, topic="t", message_id="1-0"):
             ML.note(reason=reason, exc=exc)
             ML.end("dead_letter")
         record, fields = _only_end(caplog)
-        assert fields["error_type"] == "ValidationError" and "error_message" not in fields
+        assert fields["error_type"] == type(exc).__name__ and "error_message" not in fields
         assert record.exc_info is None
         text = " ".join([record.getMessage(), str(fields), record.exc_text or ""])
         assert SEEDED not in text
@@ -232,6 +237,19 @@ class TestWorkStartedFromADelivery:
         copied.run(ML.end, "ack")
         assert len(_ends(caplog)) == 1
         assert copied.run(lambda: ML._current.get().facts) == {}
+
+
+class TestOnlyTheDecisionSiteEnds:
+    async def test_a_task_started_inside_a_delivery_that_notes_does_not_end_it(self, caplog) -> None:
+        async def work() -> None:
+            ML.note(size_bytes=7)
+
+        with ML.delivery(log, topic="t", message_id="1-0", attempt=1):
+            await asyncio.create_task(work())
+            assert _ends(caplog) == []
+            ML.end("ack")
+        record, fields = _only_end(caplog)
+        assert (fields["outcome"], fields["disposition"], fields["size_bytes"]) == ("success", "ack", 7)
 
 
 class TestBoundMessage:

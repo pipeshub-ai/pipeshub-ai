@@ -5,7 +5,7 @@ DEBUG is captured throughout, so a payload logged at DEBUG fails too.
 
 import asyncio
 import logging
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from jsonschema import Draft7Validator
@@ -106,12 +106,43 @@ class TestEntityEvents:
         await svc.process_event(event_type, payload)
         _assert_no_seeds(caplog)
 
-    async def test_no_log_line_has_an_emoji(self, caplog) -> None:
+    @pytest.mark.parametrize(("event_type", "payload"), [
+        ("orgCreated", {"orgId": "org_a", "accountType": "enterprise", "registeredName": SEEDED_NAME}),
+        ("orgUpdated", dict(ORG_UPDATED)),
+        ("orgDeleted", {"orgId": "org_a"}),
+        ("appEnabled", {"orgId": "org_a", "apps": ["DRIVE"], "connectorId": "c1"}),
+        ("appDisabled", {"orgId": "org_a", "apps": ["DRIVE"], "connectorId": "c1"}),
+    ])
+    @pytest.mark.parametrize("fails", [False, True])
+    async def test_no_log_line_has_an_emoji(self, caplog, event_type, payload, fails) -> None:
         graph = AsyncMock()
-        graph.batch_upsert_nodes = AsyncMock(side_effect=[None, ConnectionError("down")])
-        await _service(graph).process_event("orgUpdated", dict(ORG_UPDATED))
-        await _service(graph).process_event("orgUpdated", dict(ORG_UPDATED))
+        if fails:
+            graph.batch_upsert_nodes = AsyncMock(side_effect=ConnectionError("down"))
+            graph.get_document = AsyncMock(side_effect=ConnectionError("down"))
+        svc = _service(graph)
+        svc._remove_mcp_data = AsyncMock()
+        svc._remove_personal_toolsets = AsyncMock()
+        svc._remove_api_toolset_data = AsyncMock()
+        svc._start_requeue_of_parked_records = AsyncMock()
+        svc._wait_for_sync_to_stop = AsyncMock(return_value=True)
+        await svc.process_event(event_type, payload)
+        assert _ours(caplog)
         assert all(m.isascii() for m in (r.getMessage() for r in _ours(caplog)))
+
+    async def test_a_failure_escaping_the_service_is_one_line_with_its_class(self, caplog) -> None:
+        container = MagicMock()
+        container.logger.return_value = log
+        service = MagicMock()
+        service.process_event = AsyncMock(side_effect=ConnectionError(f"graph said {SEEDED_NAME}"))
+        with patch("app.services.messaging.kafka.utils.utils.EntityEventService", return_value=service):
+            handle = await KafkaUtils.create_entity_message_handler(container, AsyncMock())
+        assert await handle(StreamMessage(eventType="orgUpdated", payload=dict(ORG_UPDATED))) is False
+        [record] = _ours(caplog)
+        fields = log_record_fields(record)
+        assert (record.getMessage(), fields["error_class"], fields["error_type"]) == (
+            "message.handler_failed", "unavailable", "ConnectionError",
+        )
+        assert record.exc_info is None  # WARNING: no stack
 
 
 class TestSchemaRejection:
