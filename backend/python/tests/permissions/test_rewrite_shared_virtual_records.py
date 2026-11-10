@@ -33,14 +33,9 @@ def sequence(world, rng: random.Random, n: int) -> list:
     return out
 
 
-#: Runs that end in a full pass over a record moved to another group: the pass must also bring the membership right, which the next change does.
-NEEDS_THE_PASS_MEMBERSHIP = {("DEMO", "cross", "batched")}
-RUNS = [pytest.param(app_type, share, mode, id=f"{app_type}-{share}-{mode}")
-        for mode in ("batched", "midflight") for share in (True, "cross") for app_type in sorted(RULE_BY_CONNECTOR)[:6]
-        if (app_type, share, mode) not in NEEDS_THE_PASS_MEMBERSHIP]
-
-
-@pytest.mark.parametrize(("app_type", "share", "mode"), RUNS)
+@pytest.mark.parametrize("mode", ["batched", "midflight"])
+@pytest.mark.parametrize("share", [True, "cross"])
+@pytest.mark.parametrize("app_type", sorted(RULE_BY_CONNECTOR)[:6])
 async def test_a_shared_virtual_record_keeps_every_sharer(app_type: str, share, mode: str) -> None:
     rng = random.Random(f"shared/{app_type}/{share}/{mode}")
     ran = 0
