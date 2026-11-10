@@ -163,6 +163,10 @@ class _Job:
     # Never run in the calling thread when no worker can be started: the job is
     # here because it must not allocate in this process.
     require_worker: bool = False
+    # What the job is, so lane admission charges the memory it holds (``ParseKind``; None is the
+    # fallback charge). ``covered`` is whether a heavy parse permit of this process covers the job.
+    kind: object | None = None
+    covered: bool = False
     future: Future = field(default_factory=Future)
     cancelled: threading.Event = field(default_factory=threading.Event)
 
@@ -416,6 +420,15 @@ def _pool(*, interactive: bool = False) -> _ParsePool | LanePool | None:
         return _State.pool
 
 
+def _covered(kind: object | None) -> bool:
+    """Whether a heavy parse permit held by the caller covers this job's memory (read at submit time)."""
+    if kind is None or parse_lanes_mode() != "on":
+        return False
+    from app.services.resource_governor.memory_domain import permit_covers_here
+
+    return permit_covers_here()
+
+
 async def submit(
     fn: Callable[..., T],
     *args: object,
@@ -423,6 +436,7 @@ async def submit(
     size: int = 0,
     timeout: float | None = None,
     interactive: bool = False,
+    kind: object | None = None,
 ) -> T:
     """Run ``fn(*args)`` in a worker process and return its result.
 
@@ -442,7 +456,7 @@ async def submit(
     pool = _pool(interactive=interactive)
     if pool is not None:
         try:
-            return await pool.submit(_Job(fn, args, label, size, timeout))
+            return await pool.submit(_Job(fn, args, label, size, timeout, kind=kind, covered=_covered(kind)))
         except _PoolClosed:
             pass
     return await asyncio.to_thread(fn, *args)
@@ -465,6 +479,7 @@ def run_blocking(
     size: int = 0,
     timeout: float | None = None,
     cancelled: threading.Event | None = None,
+    kind: object | None = None,
 ) -> T:
     """Run ``fn(*args)`` in a worker process, blocking the calling thread (never the event loop's).
 
@@ -481,7 +496,7 @@ def run_blocking(
     """
     if os.name != "posix":
         return fn(*args)
-    job = _Job(fn, args, label, size, timeout, require_worker=True)
+    job = _Job(fn, args, label, size, timeout, require_worker=True, kind=kind, covered=_covered(kind))
     if cancelled is not None:
         job.cancelled = cancelled
     pool = _pool()

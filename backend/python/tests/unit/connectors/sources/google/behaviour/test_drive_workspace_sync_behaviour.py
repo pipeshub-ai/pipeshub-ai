@@ -1828,3 +1828,472 @@ async def test_reindex_of_an_unchanged_indexed_file_asks_for_a_reindex(ws: Works
     await connector.reindex_records([ws.records.records["a1"]])
 
     assert [r.external_record_id for r in ws.records.reindexed] == ["a1"]
+
+
+# --- shared drive restrictions ------------------------------------------------
+
+CAROL = "carol@example.com"
+MEMBERS_ONLY = {"driveMembersOnly": True}
+DOMAIN_ONLY = {"domainUsersOnly": True}
+
+
+def restricted_drive(ws: Workspace, restrictions: Optional[dict[str, bool]] = None) -> None:
+    """A drive whose members are Alice and the eng group (Bob); one item is shared with Bob (a member through the
+    group), a person of the domain outside the drive, an outsider, the member group and a group that is not."""
+    ws.world.add_user(CAROL)
+    ws.world.add_group("eng@example.com", [BOB])
+    ws.world.add_group("other@example.com", [CAROL])
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", "eng@example.com": "reader"}, restrictions)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        {"type": "user", "role": "writer", "emailAddress": BOB}, reader(CAROL), reader(PARTNER),
+        {"type": "group", "role": "reader", "emailAddress": "eng@example.com"},
+        {"type": "group", "role": "reader", "emailAddress": "other@example.com"},
+    ])
+
+
+def f1_people(ws: Workspace) -> set[str]:
+    return {who for who, _, _ in ws.grants("f1")}
+
+
+EVERYONE = {BOB, CAROL, PARTNER, "eng@example.com", "other@example.com"}
+MEMBERS = {BOB, "eng@example.com"}
+
+
+async def test_a_drive_without_restrictions_keeps_every_share(ws: Workspace) -> None:
+    restricted_drive(ws)
+    await ws.sync()
+    assert f1_people(ws) == EVERYONE
+
+
+async def test_members_only_keeps_the_members_and_drops_every_other_share(ws: Workspace) -> None:
+    restricted_drive(ws, MEMBERS_ONLY)
+    await ws.sync()
+    assert f1_people(ws) == MEMBERS
+    assert ws.incomplete is False
+
+
+async def test_members_only_drops_a_non_member_who_is_shared_with_on_a_shared_with_me_link(ws: Workspace) -> None:
+    restricted_drive(ws, MEMBERS_ONLY)
+    await ws.sync()
+    assert "0S:carol@example.com" not in ws.records.records["f1"].shared_with_me_record_group_ids
+    assert "0S:bob@example.com" in ws.records.records["f1"].shared_with_me_record_group_ids
+
+
+async def test_domain_only_keeps_people_of_the_domain_and_drops_the_outsider(ws: Workspace) -> None:
+    restricted_drive(ws, DOMAIN_ONLY)
+    await ws.sync()
+    assert f1_people(ws) == EVERYONE - {PARTNER}
+
+
+async def test_domain_only_drops_an_outside_member_of_the_drive_itself(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", PARTNER: "reader"}, DOMAIN_ONLY)
+    await ws.sync()
+    assert {p.email for p in ws.records.record_group_permissions["sd-1"]} == {ALICE}
+
+
+async def test_both_restrictions_together_leave_the_members_of_the_domain(ws: Workspace) -> None:
+    restricted_drive(ws, {**MEMBERS_ONLY, **DOMAIN_ONLY})
+    await ws.sync()
+    assert f1_people(ws) == MEMBERS
+
+
+async def test_a_restriction_turned_on_between_syncs_cuts_shares_nobody_changed_and_turning_it_off_restores_them(
+    ws: Workspace,
+) -> None:
+    restricted_drive(ws)
+    await ws.sync()
+    assert f1_people(ws) == EVERYONE
+
+    ws.world.drives["sd-1"]["restrictions"] = {**MEMBERS_ONLY, **DOMAIN_ONLY}
+    await ws.sync()
+    assert f1_people(ws) == MEMBERS
+
+    ws.world.drives["sd-1"]["restrictions"] = {}
+    await ws.sync()
+    assert f1_people(ws) == EVERYONE
+
+
+async def test_a_restriction_that_does_not_change_does_not_relist_the_drive(ws: Workspace) -> None:
+    restricted_drive(ws, MEMBERS_ONLY)
+    await ws.sync()
+    await ws.sync()
+    assert f1_people(ws) == MEMBERS
+    assert len([k for k, w in ws.sync_points.writes if "shared_drive_restrictions_sd-1" in k and "driveMembersOnly" in w]) == 1
+
+
+async def test_restrictions_left_out_of_the_listing_are_asked_for_directly(ws: Workspace) -> None:
+    restricted_drive(ws, MEMBERS_ONLY)
+    ws.world.restrictions_unlisted = True
+    await ws.sync()
+    assert f1_people(ws) == MEMBERS
+
+
+async def test_restrictions_that_cannot_be_read_fail_closed_and_keep_the_stored_grants(ws: Workspace) -> None:
+    restricted_drive(ws)
+    await ws.sync()
+    assert f1_people(ws) == EVERYONE
+
+    ws.world.drives["sd-1"]["restrictions"] = MEMBERS_ONLY
+    ws.world.restrictions_unlisted = True
+    ws.world.restrictions_unreadable = True
+    ws.world.share("f1", reader("late@example.com"))
+    await ws.sync()
+
+    assert ws.incomplete is True
+    assert f1_people(ws) == EVERYONE  # not widened (no late share), not cut: the item is read again next run
+
+    ws.world.restrictions_unlisted = False
+    ws.world.restrictions_unreadable = False
+    await ws.sync()
+    assert ws.incomplete is False
+    assert f1_people(ws) == MEMBERS
+
+
+async def test_the_organization_drive_listing_asks_for_the_restrictions(ws: Workspace) -> None:
+    restricted_drive(ws, MEMBERS_ONLY)
+    await ws.sync()
+    admin_listings = [r for r in ws.http.calls("GET", "/drive/v3/drives") if r.query.get("useDomainAdminAccess") == "true"]
+    assert admin_listings
+    assert all("restrictions" in r.query["fields"] for r in admin_listings)
+
+
+@pytest.mark.parametrize("status", [404, 403])
+async def test_members_only_hides_what_an_unreadable_member_group_would_have_vouched_for(
+    ws: Workspace, status: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    restricted_drive(ws, MEMBERS_ONLY)
+    ws.world.unlistable_groups["eng@example.com"] = status
+
+    await ws.sync()
+
+    # Bob is a member only through the group the directory will not list: his direct share waits until it can be read.
+    # The member group itself keeps its grant, and nobody who is not known to be a member is let in.
+    assert f1_people(ws) == {"eng@example.com"}
+    assert any("sd-1" in r.getMessage() and "eng@example.com" in r.getMessage() for r in caplog.records if r.levelname == "WARNING")
+
+
+async def test_a_member_group_that_could_not_be_listed_vouches_again_once_it_can(ws: Workspace) -> None:
+    restricted_drive(ws, MEMBERS_ONLY)
+    ws.world.unlistable_groups["eng@example.com"] = 404
+    await ws.sync()
+    assert BOB not in f1_people(ws)
+
+    del ws.world.unlistable_groups["eng@example.com"]
+    await ws.sync()
+    assert f1_people(ws) == MEMBERS
+
+
+async def test_members_only_replaces_a_group_that_is_not_a_member_with_its_members_who_are(ws: Workspace) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_group("partial@example.com", [BOB, CAROL])
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", BOB: "writer"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        {"type": "group", "role": "writer", "emailAddress": "partial@example.com"},
+    ])
+
+    await ws.sync()
+
+    assert ws.grants("f1") == {(BOB, "USER", "WRITE")}
+
+
+async def test_members_only_counts_the_people_of_a_member_group_who_are_not_synced_users(ws: Workspace) -> None:
+    ws.world.add_group("eng@example.com", [BOB, PARTNER])
+    ws.world.add_group("mixed@example.com", [BOB, PARTNER])
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", "eng@example.com": "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        reader(PARTNER), {"type": "group", "role": "reader", "emailAddress": "mixed@example.com"},
+    ])
+
+    await ws.sync()
+
+    # Bob's own sync adds his grant; Dana is a member only through the group and is not a synced user.
+    assert f1_people(ws) == {BOB, PARTNER, "mixed@example.com"}
+
+
+async def test_members_only_keeps_a_group_nested_in_a_member_group_whole(ws: Workspace) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_group("inner@example.com", [BOB])
+    ws.world.add_group("outer@example.com", ["inner@example.com"])
+    ws.world.add_group("stranger@example.com", [CAROL])
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", "outer@example.com": "writer"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        {"type": "group", "role": "writer", "emailAddress": "inner@example.com"},
+        {"type": "group", "role": "writer", "emailAddress": "stranger@example.com"},
+    ])
+
+    await ws.sync()
+
+    # Everyone in the nested group is a member, so it stays whole; the stranger group has no member and goes.
+    assert ws.grants("f1") == {("inner@example.com", "GROUP", "WRITE")}
+
+
+async def test_a_group_that_is_not_a_member_and_cannot_be_listed_is_hidden_with_a_warning(
+    ws: Workspace, caplog: pytest.LogCaptureFixture
+) -> None:
+    ws.world.add_group("partial@example.com", [BOB])
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", BOB: "writer"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        {"type": "group", "role": "writer", "emailAddress": "partial@example.com"},
+    ])
+    ws.world.unlistable_groups["partial@example.com"] = 404
+
+    await ws.sync()
+
+    assert ws.grants("f1") == set()
+    assert any("sd-1" in r.getMessage() and "partial@example.com" in r.getMessage() for r in caplog.records if r.levelname == "WARNING")
+
+
+def domain_drive(ws: Workspace, groups: dict[str, list[str]]) -> None:
+    ws.world.add_user(CAROL)
+    for email, members in groups.items():
+        ws.world.add_group(email, members)
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", BOB: "writer"}, DOMAIN_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        {"type": "group", "role": "writer", "emailAddress": email} for email in groups
+    ])
+
+
+async def test_domain_only_replaces_a_group_holding_an_outsider_with_the_people_of_the_domain(ws: Workspace) -> None:
+    domain_drive(ws, {"mixed@example.com": [BOB, CAROL, PARTNER]})
+    await ws.sync()
+    assert ws.grants("f1") == {(BOB, "USER", "WRITE"), (CAROL, "USER", "WRITE")}
+
+
+async def test_domain_only_keeps_a_group_whole_when_everyone_in_it_is_of_the_domain(ws: Workspace) -> None:
+    domain_drive(ws, {"team@example.com": [BOB, CAROL]})
+    await ws.sync()
+    assert ws.grants("f1") == {("team@example.com", "GROUP", "WRITE")}
+
+
+async def test_domain_only_hides_a_group_that_cannot_be_listed(ws: Workspace, caplog: pytest.LogCaptureFixture) -> None:
+    domain_drive(ws, {"team@example.com": [BOB, CAROL]})
+    ws.world.unlistable_groups["team@example.com"] = 403
+    await ws.sync()
+    assert ws.grants("f1") == set()
+    assert any("team@example.com" in r.getMessage() for r in caplog.records if r.levelname == "WARNING")
+
+
+async def test_a_restriction_does_not_leave_an_earlier_grant_when_only_a_viewer_reads_back_an_empty_list(
+    ws: Workspace,
+) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", BOB: "reader"})
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[reader(CAROL)])
+    await ws.sync()
+    assert CAROL in f1_people(ws)
+
+    ws.world.drives["sd-1"]["restrictions"] = MEMBERS_ONLY
+    await ws.sync()
+
+    # Bob, a viewer, only ever gets the empty-list fallback; the organizer's read rewrites the grants.
+    assert CAROL not in f1_people(ws)
+
+
+async def test_domain_only_keeps_the_secondary_and_alias_domains_of_the_account(ws: Workspace) -> None:
+    ws.world.other_domains = {"example.org": ["alias.example.net"]}
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer"}, DOMAIN_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        reader("zed@example.org"), reader("yan@alias.example.net"), reader(PARTNER),
+    ])
+
+    await ws.sync()
+
+    assert f1_people(ws) == {"zed@example.org", "yan@alias.example.net"}
+
+
+async def test_domains_that_cannot_be_read_fail_closed_and_keep_the_stored_grants(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer"})
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[reader("zed@example.org"), reader(PARTNER)])
+    await ws.sync()
+    assert f1_people(ws) == {"zed@example.org", PARTNER}
+
+    ws.world.drives["sd-1"]["restrictions"] = DOMAIN_ONLY
+    ws.world.domains_unreadable = True
+    await ws.sync()
+    assert ws.incomplete is True
+    assert f1_people(ws) == {"zed@example.org", PARTNER}
+
+    ws.world.domains_unreadable = False
+    ws.world.other_domains = {"example.org": []}
+    await ws.sync()
+    assert f1_people(ws) == {"zed@example.org"}
+
+
+async def test_a_group_hidden_because_it_could_not_be_listed_comes_back_once_it_can(ws: Workspace) -> None:
+    domain_drive(ws, {"team@example.com": [BOB, CAROL]})
+    ws.world.unlistable_groups["team@example.com"] = 404
+    await ws.sync()
+    assert ws.grants("f1") == set()
+
+    del ws.world.unlistable_groups["team@example.com"]
+    await ws.sync()
+    assert ws.grants("f1") == {("team@example.com", "GROUP", "WRITE")}
+
+
+def drive_listings(ws: Workspace, since: int) -> int:
+    return len([
+        r for r in ws.http.requests[since:]
+        if r.path == "/drive/v3/files" and r.query.get("corpora") == "drive" and r.query.get("driveId") == "sd-1"
+    ])
+
+
+async def test_a_group_that_stays_unreadable_does_not_relist_the_drive_every_run(ws: Workspace) -> None:
+    domain_drive(ws, {"team@example.com": [BOB, CAROL]})
+    ws.world.unlistable_groups["team@example.com"] = 404
+    await ws.sync()
+    assert drive_listings(ws, 0) > 0
+
+    for _ in range(2):
+        before = len(ws.http.requests)
+        await ws.sync()
+        assert drive_listings(ws, before) == 0
+    assert ws.grants("f1") == set()
+
+
+async def test_a_group_that_becomes_unreadable_relists_once_and_its_grant_is_hidden(ws: Workspace) -> None:
+    domain_drive(ws, {"team@example.com": [BOB, CAROL]})
+    await ws.sync()
+    assert ws.grants("f1") == {("team@example.com", "GROUP", "WRITE")}
+
+    ws.world.unlistable_groups["team@example.com"] = 403
+    before = len(ws.http.requests)
+    await ws.sync()
+    assert drive_listings(ws, before) > 0
+    assert ws.grants("f1") == set()
+
+    before = len(ws.http.requests)
+    await ws.sync()
+    assert drive_listings(ws, before) == 0
+
+
+async def test_a_hidden_group_that_becomes_readable_relists_once_and_access_returns(ws: Workspace) -> None:
+    domain_drive(ws, {"team@example.com": [BOB, CAROL]})
+    ws.world.unlistable_groups["team@example.com"] = 404
+    await ws.sync()
+
+    del ws.world.unlistable_groups["team@example.com"]
+    before = len(ws.http.requests)
+    await ws.sync()
+    assert drive_listings(ws, before) > 0
+    assert ws.grants("f1") == {("team@example.com", "GROUP", "WRITE")}
+
+    before = len(ws.http.requests)
+    await ws.sync()
+    assert drive_listings(ws, before) == 0
+
+
+async def test_two_hidden_groups_one_recovers_then_the_other(ws: Workspace) -> None:
+    domain_drive(ws, {"a@example.com": [BOB], "b@example.com": [CAROL]})
+    ws.world.unlistable_groups.update({"a@example.com": 404, "b@example.com": 403})
+    await ws.sync()
+    assert ws.grants("f1") == set()
+
+    del ws.world.unlistable_groups["a@example.com"]
+    before = len(ws.http.requests)
+    await ws.sync()
+    assert drive_listings(ws, before) > 0
+    assert ws.grants("f1") == {("a@example.com", "GROUP", "WRITE")}
+
+    before = len(ws.http.requests)
+    await ws.sync()
+    assert drive_listings(ws, before) == 0  # b is still unreadable and still remembered
+    assert ws.grants("f1") == {("a@example.com", "GROUP", "WRITE")}
+
+    del ws.world.unlistable_groups["b@example.com"]
+    before = len(ws.http.requests)
+    await ws.sync()
+    assert drive_listings(ws, before) > 0
+    assert ws.grants("f1") == {("a@example.com", "GROUP", "WRITE"), ("b@example.com", "GROUP", "WRITE")}
+
+
+def join_group(ws: Workspace, group: str, email: str) -> None:
+    ws.world.groups[group]["members"].append(email)
+
+
+def leave_group(ws: Workspace, group: str, email: str) -> None:
+    ws.world.groups[group]["members"].remove(email)
+
+
+async def test_members_only_a_non_member_who_joins_a_kept_group_gets_nothing(ws: Workspace) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_group("eng@example.com", [BOB])
+    ws.world.add_group("kept@example.com", [BOB])
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", "eng@example.com": "reader"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        {"type": "group", "role": "reader", "emailAddress": "kept@example.com"},
+    ])
+    await ws.sync()
+    assert "kept@example.com" in f1_people(ws) and CAROL not in f1_people(ws)
+
+    join_group(ws, "kept@example.com", CAROL)
+    before = len(ws.http.requests)
+    await ws.sync()
+
+    assert drive_listings(ws, before) > 0
+    assert "kept@example.com" not in f1_people(ws) and CAROL not in f1_people(ws) and BOB in f1_people(ws)
+
+
+async def relisted(ws: Workspace) -> bool:
+    before = len(ws.http.requests)
+    await ws.sync()
+    return drive_listings(ws, before) > 0
+
+
+async def test_an_outsider_joining_a_group_kept_whole_loses_the_group_grant_on_the_next_run(ws: Workspace) -> None:
+    domain_drive(ws, {"team@example.com": [BOB, CAROL]})
+    await ws.sync()
+    assert ws.grants("f1") == {("team@example.com", "GROUP", "WRITE")}
+
+    join_group(ws, "team@example.com", PARTNER)
+
+    assert await relisted(ws)
+    assert ws.grants("f1") == {(BOB, "USER", "WRITE"), (CAROL, "USER", "WRITE")}
+
+
+async def test_a_person_leaving_an_expanded_group_loses_their_individual_grant(ws: Workspace) -> None:
+    domain_drive(ws, {"mixed@example.com": [BOB, CAROL, PARTNER]})
+    await ws.sync()
+    assert ws.grants("f1") == {(BOB, "USER", "WRITE"), (CAROL, "USER", "WRITE")}
+
+    leave_group(ws, "mixed@example.com", CAROL)
+
+    assert await relisted(ws)
+    assert ws.grants("f1") == {(BOB, "USER", "WRITE")}
+
+
+async def test_a_person_leaving_a_member_group_loses_their_direct_share(ws: Workspace) -> None:
+    ws.world.add_user(CAROL)
+    ws.world.add_group("eng@example.com", [BOB, CAROL])
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", "eng@example.com": "writer"}, MEMBERS_ONLY)
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        {"type": "user", "role": "writer", "emailAddress": BOB},
+        {"type": "user", "role": "writer", "emailAddress": CAROL},
+    ])
+    await ws.sync()
+    assert f1_people(ws) == {BOB, CAROL}
+
+    leave_group(ws, "eng@example.com", CAROL)
+
+    assert await relisted(ws)
+    assert f1_people(ws) == {BOB}
+
+
+async def test_groups_that_did_not_change_cost_no_relist(ws: Workspace) -> None:
+    domain_drive(ws, {"team@example.com": [BOB, CAROL]})
+    await ws.sync()
+    assert not await relisted(ws)
+    assert not await relisted(ws)
+    assert ws.grants("f1") == {("team@example.com", "GROUP", "WRITE")}
+
+
+async def test_an_unrestricted_drive_records_nothing_about_its_groups(ws: Workspace) -> None:
+    ws.world.add_group("team@example.com", [BOB, CAROL])
+    ws.world.add_user(CAROL)
+    ws.world.add_drive("sd-1", "Board", {ALICE: "organizer", BOB: "writer"})
+    ws.world.add_item("f1", "plan.txt", parent="sd-1", perms=[
+        {"type": "group", "role": "writer", "emailAddress": "team@example.com"},
+    ])
+    await ws.sync()
+    join_group(ws, "team@example.com", PARTNER)
+    assert not await relisted(ws)
+    assert not [w for k, w in ws.sync_points.writes if "shared_drive_restrictions_sd-1" in k and w.get("group_hashes")]

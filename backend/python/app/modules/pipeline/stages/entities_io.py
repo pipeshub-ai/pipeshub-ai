@@ -19,7 +19,11 @@ from app.modules.pipeline.leases import RecordLeases, RevisionSuperseded
 from app.modules.pipeline.models import StageJob
 from app.modules.pipeline.policy import PipelinePolicy
 from app.modules.pipeline.stage import Deadline
-from app.modules.pipeline.stages.record_io import RecordFromDocument, RecordStageIO
+from app.modules.pipeline.stages.record_io import (
+    ConnectorDeleting,
+    RecordFromDocument,
+    RecordStageIO,
+)
 from app.services.featureflag.platform_settings import (
     is_named_entity_extraction_enabled,
 )
@@ -48,6 +52,7 @@ class GraphEntitiesIO(RecordStageIO):
         config_service: ConfigurationService,
         record_from_document: RecordFromDocument,
         record_leases: RecordLeases,
+        connector_deleting: ConnectorDeleting | None = None,
         extraction_client: "ExtractionClient | None" = None,
         logger: logging.Logger | None = None,
         sidecars: ArtifactSidecars | None = None,
@@ -60,6 +65,7 @@ class GraphEntitiesIO(RecordStageIO):
             blob_storage=blob_storage,
             record_from_document=record_from_document,
             record_leases=record_leases,
+            connector_deleting=connector_deleting,
         )
         self._sink = sink
         self._config_service = config_service

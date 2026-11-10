@@ -20,6 +20,7 @@ from app.models.blocks import (
     TableMetadata,
 )
 from app.modules.parsers import parse_pool
+from app.services.resource_governor.kinds import ParseKind
 from app.modules.parsers.csv import table_detection
 from app.modules.parsers.csv.table_detection import DelimitedReadError, read_csv_tables
 from app.modules.parsers.excel.prompt_template import (
@@ -185,7 +186,7 @@ class CSVParser:
         try:
             return await parse_pool.submit(
                 read_csv_tables, content, self.delimiter, self.quotechar,
-                label=record_name, size=len(content),
+                label=record_name, size=len(content), kind=ParseKind.CSV,
             )
         except DelimitedReadError as e:
             logger.warning("Could not read rows from CSV %s: %s", record_name, e)

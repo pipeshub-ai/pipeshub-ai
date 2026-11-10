@@ -395,6 +395,10 @@ def _remove_opts(transaction: str | None) -> str:
     return "OPTIONS { ignoreErrors: true }" if transaction is None else ""
 
 
+class _TaxonomyNodeNotVisible(Exception):
+    """An alias UPDATE matched no node; retried, as the node may exist."""
+
+
 def _is_write_conflict(exc: Exception) -> bool:
     """ArangoDB errorNum 1200: a write-write conflict or a lock timeout."""
     return bool(_WRITE_CONFLICT_RE.search(str(exc)))
@@ -4405,7 +4409,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         from_collection: str,
         collection: str,
         relationship_types: list[str],
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,  # a failure always raises here; the flag keeps the shared signature
     ) -> int:
         """
         Delete edges by relationship types from a node - FULLY ASYNC.
@@ -4964,6 +4970,57 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Get edge rollup by file prefix failed: {str(e)}")
             return []
+
+    async def find_uncalled_blocks(
+        self,
+        org_id: str,
+        connector_id: str,
+        record_ids: list[str],
+        kinds: list[str],
+        relations: list[str],
+        limit: int,
+        after_key: str | None = None,
+        uncounted_caller_records: list[str] | None = None,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        if not record_ids:
+            return [], None
+        # The inner loop reads the edge collection's _to index, one probe per block, and stops at the first edge
+        # that counts. A caller's record is looked up only when some records are not counted.
+        query = f"""
+        FOR b IN {CollectionNames.BLOCKS.value}
+            FILTER b.orgId == @orgId AND b.connectorId == @connectorId AND b.kind IN @kinds
+            FILTER b.recordId IN @records
+            FILTER @after == null OR b._key > @after
+            LET called = LENGTH(
+                FOR e IN {CollectionNames.RECORD_LINKS.value}
+                    FILTER e._to == b._id AND e.relationshipType IN @relations
+                    FILTER LENGTH(@uncounted) == 0
+                        OR NOT_NULL(DOCUMENT(e._from).recordId, PARSE_IDENTIFIER(e._from).key) NOT IN @uncounted
+                    LIMIT 1
+                    RETURN 1
+            )
+            FILTER called == 0
+            SORT b._key
+            LIMIT @limit
+            RETURN b
+        """
+        try:
+            page = await self.http_client.execute_aql(
+                query,
+                bind_vars={"orgId": org_id, "connectorId": connector_id, "kinds": kinds, "records": record_ids,
+                           "after": after_key, "relations": relations,
+                           "uncounted": uncounted_caller_records or [], "limit": limit},
+                txn_id=transaction,
+            ) or []
+            return page, (page[-1].get("_key") if len(page) == limit else None)
+        except Exception as e:
+            self.logger.error("Find uncalled blocks failed: %s", e)
+            if raise_on_error:
+                raise
+            return [], None
 
     async def get_file_paths_for_records(
         self,
@@ -8490,6 +8547,20 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if raise_on_error:
                 raise
             return []
+
+    async def get_app_user_links(self, org_id: str, connector_id: str, transaction: str | None = None) -> list[dict]:
+        query = f"""
+            FOR edge IN {CollectionNames.USER_APP_RELATION.value}
+                FILTER edge._to == CONCAT('{CollectionNames.APPS.value}/', @connector_id)
+                FILTER STARTS_WITH(edge._from, '{CollectionNames.USERS.value}/')
+                FILTER edge.sourceUserId != null
+                LET user = DOCUMENT(edge._from)
+                FILTER user != null AND user.orgId == @org_id
+                RETURN {{ id: user._key, sourceUserId: edge.sourceUserId }}
+        """
+        return await self.http_client.execute_aql(
+            query, bind_vars={"connector_id": connector_id, "org_id": org_id}, txn_id=transaction
+        )
 
     async def get_user_group_by_external_id(
         self,
@@ -22912,19 +22983,26 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 // A write locks the document even when it changes nothing, and
                 // popular nodes get alias writes from many records at once.
-                FILTER LENGTH(fresh) > 0
+                LET needs_write = LENGTH(fresh) > 0
                     OR paired != LENGTH(stored_displays)
                     OR paired != LENGTH(stored_normals)
-                UPDATE doc WITH {{
-                    aliases: SLICE(
-                        APPEND(displays, (FOR i IN fresh RETURN incoming_displays[i])),
-                        0, @max_aliases
-                    ),
-                    normalizedAliases: SLICE(
-                        APPEND(normals, (FOR i IN fresh RETURN incoming_normals[i])),
-                        0, @max_aliases
-                    )
-                }} IN {collection}
+                // Written in a subquery so a matched node returns a row even
+                // when nothing is written, and a missed one returns none.
+                LET written = (
+                    FILTER needs_write
+                    UPDATE doc WITH {{
+                        aliases: SLICE(
+                            APPEND(displays, (FOR i IN fresh RETURN incoming_displays[i])),
+                            0, @max_aliases
+                        ),
+                        normalizedAliases: SLICE(
+                            APPEND(normals, (FOR i IN fresh RETURN incoming_normals[i])),
+                            0, @max_aliases
+                        )
+                    }} IN {collection}
+                    RETURN 1
+                )
+                RETURN 1
         """
         bind_vars = {
             "key": key,
@@ -22933,20 +23011,28 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "normalized": [normalized for _, normalized in pairs],
             "max_aliases": max(1, max_aliases),
         }
+
+        async def merge() -> None:
+            # Next to concurrent updates of the same node, ArangoDB can answer
+            # the lookup with no node although it exists; the UPDATE then
+            # matches nothing and reports success, dropping the aliases.
+            if not await self.execute_query(query, bind_vars=bind_vars, transaction=transaction):
+                raise _TaxonomyNodeNotVisible(f"{collection}/{key} not found for add_taxonomy_aliases")
+
         # Records resolving to one popular node add aliases to it at once, and
         # ArangoDB rejects all but one concurrent UPDATE of a document with
         # errorNum 1200 even outside a stream transaction. The merge is
         # idempotent, so a retry cannot double-apply anything.
-        await self._retry_write_conflicts(
-            lambda: self.execute_query(query, bind_vars=bind_vars, transaction=transaction),
-            transaction,
-        )
+        # shortcut: a node of another org, or none, ends here as before; a
+        # node that stays missed through every retry is lost the same way.
+        with contextlib.suppress(_TaxonomyNodeNotVisible):
+            await self._retry_write_conflicts(merge, transaction)
 
     @staticmethod
     async def _retry_write_conflicts(
         write: Callable[[], Awaitable[_T]], transaction: str | None,
     ) -> _T:
-        """Run an idempotent single write, retrying errorNum 1200 with backoff.
+        """Run an idempotent single write, retrying errorNum 1200 (and a missed node) with backoff.
 
         Inside a caller's transaction the conflict has aborted it, so it is the
         caller's to handle and is raised at once."""
@@ -22959,7 +23045,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if (
                     transaction is not None
                     or attempt >= _WRITE_CONFLICT_ATTEMPTS
-                    or not _is_write_conflict(exc)
+                    or not (_is_write_conflict(exc) or isinstance(exc, _TaxonomyNodeNotVisible))
                 ):
                     raise
                 await asyncio.sleep(random.uniform(0.02, 0.1) * attempt)

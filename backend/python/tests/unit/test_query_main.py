@@ -464,6 +464,84 @@ class TestLifespan:
             # retrieval_service should NOT have been awaited (no orgs)
             mock_container.retrieval_service.assert_not_awaited()
 
+    async def test_startup_lists_orgs_in_a_system_scope_that_ends_after_the_list(self) -> None:
+        """The PostgreSQL graph refuses an org list with no context (the service then could not start); the
+        scope must end with the list, or every task started after it would inherit a cross-org context."""
+        from app.core import org_context
+        from app.query_main import lifespan
+
+        mock_container = _make_container()
+        seen: list = []
+
+        async def _orgs(*_a: object, **_k: object) -> list:
+            seen.append(org_context.peek())
+            return []
+
+        gp = _make_graph_provider()
+        gp.get_all_orgs = AsyncMock(side_effect=_orgs)
+        mock_container._graph_provider = gp
+        mock_registry = MagicMock()
+        mock_registry.list_toolsets.return_value = []
+        mock_config_service = MagicMock()
+        mock_config_service.close = AsyncMock()
+
+        with (
+            patch("app.query_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
+            patch("app.query_main.container", mock_container),
+            patch.dict("sys.modules", {
+                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_registry)),
+                "app.agents.tools.registry": MagicMock(_global_tools_registry=MagicMock()),
+            }),
+        ):
+            mock_container.config_service.return_value = mock_config_service
+            async with lifespan(MagicMock()):
+                assert org_context.peek() is None
+
+        assert len(seen) == 1 and seen[0] is not None
+        assert (seen[0].kind, seen[0].source) == ("system", "system:query_startup")
+
+    async def test_startup_seed_task_starts_with_no_org_context(self) -> None:
+        """With orgs present the seeding task is started after the list; it must not inherit the list's cross-org scope."""
+        from types import SimpleNamespace
+
+        from app.core import org_context
+        from app.query_main import lifespan
+
+        mock_container = _make_container()
+        mock_container._graph_provider = _make_graph_provider(orgs=[{"_key": "org-1"}])
+        mock_container.retrieval_service = AsyncMock(return_value=AsyncMock())
+        mock_registry = MagicMock()
+        mock_registry.list_toolsets.return_value = []
+        mock_config_service = MagicMock()
+        mock_config_service.close = AsyncMock()
+        mock_container.config_service.return_value = mock_config_service
+        seen: list = []
+
+        async def _seed(*_a: object, **_k: object) -> None:
+            seen.append(org_context.peek())
+
+        app = MagicMock()
+        app.state = SimpleNamespace()
+        with (
+            patch("app.query_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.query_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.query_main.stop_kafka_consumers", new_callable=AsyncMock),
+            patch("app.query_main.container", mock_container),
+            patch("app.agents.agent_loop.skills_wiring.skills_enabled", return_value=True),
+            patch("app.services.featureflag.platform_settings.is_skills_enabled", new_callable=AsyncMock, return_value=True),
+            patch("app.agents.agent_loop.skills.manager_factory.reconcile_builtin_skills_for_orgs", side_effect=_seed),
+            patch.dict("sys.modules", {
+                "app.agents.registry.toolset_registry": MagicMock(get_toolset_registry=MagicMock(return_value=mock_registry)),
+                "app.agents.tools.registry": MagicMock(_global_tools_registry=MagicMock()),
+            }),
+        ):
+            async with lifespan(app):
+                await app.state.skills_seed_task
+
+        assert seen == [None]
+
     async def test_startup_graph_provider_fallback(self):
         """When _graph_provider is not set, lifespan falls back to await graph_provider()."""
         from app.query_main import lifespan

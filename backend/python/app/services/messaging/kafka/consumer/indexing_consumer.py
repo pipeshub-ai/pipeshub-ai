@@ -21,6 +21,7 @@ from app.core.envelope import EnvelopeRejected, ctx_of, open_stream_message
 from app.core.org_context import bind_optional, spawn_detached
 from app.core.org_context import pop as pop_org
 from app.core.org_context import push as push_org
+from app.modules.indexing.embed_resume import stamp_delivery_id
 from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import (
     IndexingEvent,
@@ -2753,6 +2754,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     )
 
             parsed_message.payload["_processing_started_at"] = int(time.time() * 1000)
+            stamp_delivery_id(parsed_message.payload, stable_message_id)
 
             # Counted only now that the record is ours: a crash while it waited
             # for a permit or for its lease was not its doing.
@@ -2787,6 +2789,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         }
                     )
                 )
+                record_kind = concurrency.record_parse_kind(parsed_message.payload)
                 processing_timeout = messaging_env.record_processing_timeout_for(
                     parsed_message.payload.get("extension"),
                     parsed_message.payload.get("mimeType"),
@@ -2822,6 +2825,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                             index_tier,
                                             event.data.size_bytes if event.data else None,
                                             timeout=wait.remaining(),
+                                            kind=record_kind,
                                         )
                                 elif (
                                     event.event == IndexingEvent.START_PARSING
@@ -2847,13 +2851,15 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                         memory_admission = await concurrency.reserve_record_memory(
                                             self, parse_tier, size_bytes,
                                             timeout=wait.remaining(), downloaded=True,
-                                            current=memory_admission,
+                                            current=memory_admission, kind=record_kind,
                                         )
                                         parsing_admission = await concurrency.acquire_parsing_slot(
                                             self,
                                             parse_tier,
                                             size_bytes,
                                             timeout=wait.remaining(),
+                                            kind=record_kind,
+                                            reserved_bytes=memory_admission.cost if memory_admission else 0,
                                         )
                                         # Set before the lease attempt so the
                                         # wrapper's finally hands this permit
