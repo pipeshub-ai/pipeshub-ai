@@ -1506,6 +1506,7 @@ index kg.scope_classes_pkey on kg.scope_classes unique=true exclusion=false vali
 index kg.scope_members_by_app on kg.scope_members unique=false exclusion=false valid=true def=3478709a7055d29344ba2740614912e0
 index kg.scope_members_by_node on kg.scope_members unique=false exclusion=false valid=true def=bdceb2383f884502c22edff6bf0e30d7
 index kg.scope_members_pkey on kg.scope_members unique=true exclusion=false valid=true def=4bdea6ca4d0ddcd117fab409da9bd74d
+index kg.scopes_app on kg.scopes unique=false exclusion=false valid=true def=753547d37e42392afe81e6a25977340e
 index kg.scopes_pkey on kg.scopes unique=true exclusion=false valid=true def=92c81946c98bf57da079ba68f85489b7
 index oauth.access_tokens_by_actor on oauth.access_tokens unique=false exclusion=false valid=true def=bc3d7e0515e91dc35794e4be69c871f8
 index oauth.access_tokens_by_expiry on oauth.access_tokens unique=false exclusion=false valid=true def=607a7c7b97647c3b1fce93682b73ea0a

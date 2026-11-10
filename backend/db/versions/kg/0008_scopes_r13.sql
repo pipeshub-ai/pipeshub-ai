@@ -7,6 +7,7 @@ CREATE TABLE kg.scopes (
   org_id text NOT NULL, sk bigint NOT NULL, kind smallint NOT NULL, app_sk bigint NOT NULL, restricted boolean NOT NULL, rule_restricted boolean NOT NULL, needs_grant boolean NOT NULL,
   deleted boolean NOT NULL, PRIMARY KEY (org_id, sk)
 );
+CREATE INDEX scopes_app ON kg.scopes (org_id, app_sk, sk);      -- one connector's rows: verify, and a restart that holds the whole organisation while it reads them
 ALTER TABLE kg.scopes SET (autovacuum_analyze_scale_factor = 0.02, autovacuum_analyze_threshold = 200, autovacuum_vacuum_scale_factor = 0.05, autovacuum_vacuum_insert_scale_factor = 0.02);
 
 SELECT kernel.apply_rls('kg.scopes', 'org', p_vetted_write => true);
