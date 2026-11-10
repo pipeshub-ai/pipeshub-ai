@@ -273,6 +273,11 @@ async def _finalize(
         if await _deleting_or_gone(graph_provider, logger, connector_id):
             logger.info("Not writing IDLE: the connector is being deleted")
         else:
+            # A served search reads this connector with the stamps once it is IDLE, so what the sync wrote is in the cached viewer scopes first:
+            # the version moves before the status does (the call after dispose stays, for the record caches).
+            from app.services.cache.invalidation_hooks import notify_principals_changed
+
+            await notify_principals_changed(org_id)
             # An update, not the upsert write_app_status does: it cannot create
             # the node if the read above failed or a delete landed since.
             try:

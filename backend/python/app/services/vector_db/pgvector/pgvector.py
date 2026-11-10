@@ -452,6 +452,22 @@ class PgVectorService(IVectorDBService):
                 org, float(min_ahead_seconds)), idempotent=True, custom_plan=True)
         return int(row["n"]), float(row["ahead"])
 
+    async def unreadable_group_rows(self, org_id: str) -> int:
+        """How many of the org's group rows hold a stamp of a deciding kind but a NULL list its rule reads (a data fault): a served search hides their
+        points, since the verdict cannot be read. A container stamp reads only lists that cannot be NULL, so it is never counted.
+
+        shortcut: reads the org's group rows without an index on the stamp; an operator command, run it when asked, not per request."""
+        db, _ = self._assert_connected()
+        org = require_org(org_id)
+        with org_scope(org):
+            n = await db.run(lambda tx: tx.fetchval(
+                """/* pipeshub:pgvector.unreadable_group_rows */
+                SELECT count(*) FROM retrieval.point_groups
+                WHERE org_id = $1 AND scope_stamp IN ('container', 'union', 'intersection', 'override') AND scope_version IS NOT NULL
+                  AND scope_generation IS NOT NULL AND connector_ids IS NOT NULL
+                  AND ((scope_stamp <> 'container' AND acl_scope IS NULL) OR (scope_stamp IN ('union', 'intersection') AND path_ids IS NULL))""", org), idempotent=True, custom_plan=True)
+        return int(n)
+
     async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
         db, catalog = self._assert_connected()
         org = _filter_org(count_filter)
