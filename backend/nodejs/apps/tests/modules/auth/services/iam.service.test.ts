@@ -14,12 +14,6 @@ describe('IamService', () => {
   const mockConfig = {
     iamBackend: 'http://127.0.0.1:13000',
   } as any;
-  const mockLogger = {
-    info: sinon.stub(),
-    debug: sinon.stub(),
-    warn: sinon.stub(),
-    error: sinon.stub(),
-  } as any;
 
   beforeEach(() => {
     iamService = new IamService(mockConfig);
@@ -464,12 +458,6 @@ describe('IamService', () => {
 describe('IamService - branch coverage', () => {
   let iamService: IamService
   const mockConfig = { iamBackend: 'http://127.0.0.1:13000' } as any
-  const mockLogger = {
-    info: sinon.stub(),
-    debug: sinon.stub(),
-    warn: sinon.stub(),
-    error: sinon.stub(),
-  } as any
 
   beforeEach(() => {
     iamService = new IamService(mockConfig)
@@ -792,12 +780,6 @@ describe('IamService - additional coverage', () => {
   let iamService: IamService
   const mockConfig = {
     iamBackend: IAM_BACKEND,
-  } as any
-  const mockLogger = {
-    info: sinon.stub(),
-    debug: sinon.stub(),
-    warn: sinon.stub(),
-    error: sinon.stub(),
   } as any
 
   beforeEach(() => {

@@ -47,7 +47,14 @@ export class IamService {
       }
       if (error instanceof HttpError) throw keepDeliberateWording(error);
       // The error middleware logs it once, with this cause.
-      throw withCause(markClientSafe(new InternalServerError(serverFailureMessage('create the organisation'))), error);
+      throw withCause(
+        markClientSafe(
+          new InternalServerError(
+            serverFailureMessage('create the organisation'),
+          ),
+        ),
+        error,
+      );
     }
   }
 
@@ -78,7 +85,12 @@ export class IamService {
       }
       if (error instanceof HttpError) throw keepDeliberateWording(error);
       // The error middleware logs it once, with this cause.
-      throw withCause(markClientSafe(new InternalServerError(serverFailureMessage('create the account'))), error);
+      throw withCause(
+        markClientSafe(
+          new InternalServerError(serverFailureMessage('create the account')),
+        ),
+        error,
+      );
     }
   }
 
@@ -116,7 +128,12 @@ export class IamService {
       }
       if (error instanceof HttpError) throw keepDeliberateWording(error);
       // The error middleware logs it once, with this cause.
-      throw withCause(markClientSafe(new InternalServerError(serverFailureMessage('look up the account'))), error);
+      throw withCause(
+        markClientSafe(
+          new InternalServerError(serverFailureMessage('look up the account')),
+        ),
+        error,
+      );
     }
   }
 
@@ -156,7 +173,12 @@ export class IamService {
       }
       if (error instanceof HttpError) throw keepDeliberateWording(error);
       // The error middleware logs it once, with this cause.
-      throw withCause(markClientSafe(new InternalServerError(serverFailureMessage('look up the account'))), error);
+      throw withCause(
+        markClientSafe(
+          new InternalServerError(serverFailureMessage('look up the account')),
+        ),
+        error,
+      );
     }
   }
 
@@ -191,7 +213,12 @@ export class IamService {
       }
       if (error instanceof HttpError) throw keepDeliberateWording(error);
       // The error middleware logs it once, with this cause.
-      throw withCause(markClientSafe(new InternalServerError(serverFailureMessage('update the account'))), error);
+      throw withCause(
+        markClientSafe(
+          new InternalServerError(serverFailureMessage('update the account')),
+        ),
+        error,
+      );
     }
   }
 
@@ -223,7 +250,14 @@ export class IamService {
       }
       if (error instanceof HttpError) throw keepDeliberateWording(error);
       // The error middleware logs it once, with this cause.
-      throw withCause(markClientSafe(new InternalServerError(serverFailureMessage('check the admin account'))), error);
+      throw withCause(
+        markClientSafe(
+          new InternalServerError(
+            serverFailureMessage('check the admin account'),
+          ),
+        ),
+        error,
+      );
     }
   }
 }

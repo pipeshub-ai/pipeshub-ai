@@ -28,7 +28,9 @@ export interface AuditFields {
 }
 
 const INVALID_EVENT = 'audit.invalid_event';
-const AUTH_METHODS: ReadonlySet<string> = new Set(Object.values(AuthMethodType));
+const AUTH_METHODS: ReadonlySet<string> = new Set(
+  Object.values(AuthMethodType),
+);
 const REFUSAL = Symbol('auditRefusal');
 
 /** A value that is not an id PipesHub issued is rejected, never cleaned: an email must not reach the line in any form. */

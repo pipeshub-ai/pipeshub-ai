@@ -134,8 +134,11 @@ const isAccountRecord = (value: unknown): value is Record<string, unknown> =>
 const BLOCK_COOLDOWN_DURATION_MS = 24 * 60 * 60 * 1000;
 
 /** An id from a stored record (string or ObjectId) as audit() takes it; nothing when there is none. */
-const idOf = (value: unknown): string | undefined =>
-  value === undefined || value === null || value === '' ? undefined : String(value);
+const idOf = (value: unknown): string | undefined => {
+  if (typeof value === 'string') return value === '' ? undefined : value;
+  const id = value as { toHexString?: () => string } | null | undefined;
+  return typeof id?.toHexString === 'function' ? id.toHexString() : undefined;
+};
 export const RESET_LINK_ALREADY_USED =
   'This reset link has already been used. Request a new one from the sign-in page.';
 export const RESET_LINK_NOT_CHECKED =
@@ -359,10 +362,13 @@ export class UserAccountController {
           },
         });
       } catch (error) {
-        this.logger[logLevelFor(error)]("The account-locked email couldn't be sent", {
-          user_id: userId,
-          error,
-        });
+        this.logger[logLevelFor(error)](
+          "The account-locked email couldn't be sent",
+          {
+            user_id: userId,
+            error,
+          },
+        );
       }
     })();
   }
@@ -527,7 +533,10 @@ export class UserAccountController {
   ): Promise<void> {
     try {
       const { userId, orgId } = this.callerIdentity(req);
-      const userCredentialData = await getCredentialRepository().find(userId, orgId);
+      const userCredentialData = await getCredentialRepository().find(
+        userId,
+        orgId,
+      );
       res.json({ hasPassword: !!userCredentialData?.hashedPassword });
     } catch (error) {
       next(error);
@@ -543,7 +552,10 @@ export class UserAccountController {
   ): Promise<void> {
     try {
       const { userId, orgId } = this.callerIdentity(req);
-      const userCredentialData = await getCredentialRepository().find(userId, orgId);
+      const userCredentialData = await getCredentialRepository().find(
+        userId,
+        orgId,
+      );
       if (userCredentialData?.hashedPassword) {
         throw new BadRequestError(
           'A password is already set. Use change password instead.',
@@ -861,10 +873,11 @@ export class UserAccountController {
       const user = await this.iamService.getUserByEmail(email, authToken);
 
       if (user.statusCode === 200 && user.data) {
+        const account = user.data as { _id?: unknown; orgId?: unknown };
         await this.sendForgotPasswordEmail(user.data);
         audit('auth.password_reset.request', {
-          actor: idOf(user.data._id),
-          org: idOf(user.data.orgId),
+          actor: idOf(account._id),
+          org: idOf(account.orgId),
           outcome: 'success',
         });
       } else {
@@ -1131,9 +1144,12 @@ export class UserAccountController {
     } catch (error) {
       // The reset's own error is the one to report; this only costs the person
       // a fresh link.
-      this.logger[logLevelFor(error)]('Could not hand back an unused reset link', {
-        error,
-      });
+      this.logger[logLevelFor(error)](
+        'Could not hand back an unused reset link',
+        {
+          error,
+        },
+      );
     }
   }
 
@@ -1286,10 +1302,13 @@ export class UserAccountController {
     // answer slower than an unknown email's. The code is already stored, so it
     // works whenever the email arrives.
     const logSendFailure = (error: unknown): void => {
-      this.logger[logLevelFor(error)]("The sign-in code email couldn't be sent", {
-        user_id: userId,
-        error,
-      });
+      this.logger[logLevelFor(error)](
+        "The sign-in code email couldn't be sent",
+        {
+          user_id: userId,
+          error,
+        },
+      );
     };
     this.mailService
       .sendMail({
@@ -1482,7 +1501,9 @@ export class UserAccountController {
       const deleted = activity.activityType === ACCOUNT_DELETED;
       throw authRefusal(
         new UnauthorizedError(
-          deleted ? ACCOUNT_NO_LONGER_ACTIVE : 'Session expired, please login again',
+          deleted
+            ? ACCOUNT_NO_LONGER_ACTIVE
+            : 'Session expired, please login again',
         ),
         deleted ? 'account_inactive' : 'session_ended',
       );
@@ -1715,7 +1736,10 @@ export class UserAccountController {
 
     const email = payload?.email;
     if (email?.toLowerCase() !== user.email?.toLowerCase()) {
-      throw authRefusal(new BadRequestError(EMAIL_MISMATCH), 'sso_email_mismatch');
+      throw authRefusal(
+        new BadRequestError(EMAIL_MISMATCH),
+        'sso_email_mismatch',
+      );
     }
     await getActivityRepository().record({
       email: email,
@@ -2119,18 +2143,23 @@ export class UserAccountController {
 
       // The account is known: what follows runs as it (its credentials, activity and token are its own).
       const account = user;
-      await asAccount(String(account.orgId), String(account._id), 'sign-in', () =>
-        this.completeSignIn(
-          req,
-          res,
-          account,
-          method as AuthMethodType,
-          credentials,
-          sessionInfo,
-        ),
+      await asAccount(
+        String(account.orgId),
+        String(account._id),
+        'sign-in',
+        () =>
+          this.completeSignIn(
+            req,
+            res,
+            account,
+            method as AuthMethodType,
+            credentials,
+            sessionInfo,
+          ),
       );
     } catch (error) {
-      const method: unknown = req.body?.method;
+      const method: unknown = (req.body as { method?: unknown } | undefined)
+        ?.method;
       auditAuthRefusal('auth.sign_in', error, {
         actor: idOf(user?._id),
         org: idOf(req.sessionInfo?.orgId),

@@ -32,8 +32,9 @@ export type JitProvider = 'google' | 'microsoft';
 export class JitProvisioningService {
   constructor(
     @inject('Logger') private logger: Logger,
-    @inject('EntitiesEventProducer') private eventService: EntitiesEventProducer,
-  ) { }
+    @inject('EntitiesEventProducer')
+    private eventService: EntitiesEventProducer,
+  ) {}
 
   /**
    * Provision a new user via JIT from a Google or Microsoft sign-in.
@@ -92,8 +93,8 @@ export class JitProvisioningService {
     }
 
     audit('auth.jit_provision', {
-      actor: String(newUser._id),
-      org: String(orgId),
+      actor: newUser._id,
+      org: orgId,
       outcome: 'success',
       authMethod: provider,
     });
@@ -124,7 +125,10 @@ export class JitProvisioningService {
   /**
    * Extract user details from a Microsoft decoded token
    */
-  extractMicrosoftUserDetails(decodedToken: any, email: string): JitUserDetails {
+  extractMicrosoftUserDetails(
+    decodedToken: any,
+    email: string,
+  ): JitUserDetails {
     const firstName = decodedToken?.given_name;
     const lastName = decodedToken?.family_name;
     const displayName = decodedToken?.name;

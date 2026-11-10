@@ -30,7 +30,7 @@ describe('sign-in audit: reason lists and the sites a request cannot reach', () 
   const noEmails = () => {
     for (const r of records) for (const e of EMAILS) expect(JSON.stringify(r)).to.not.include(e);
   };
-  const controller = (overrides: Record<string, unknown> = {}) =>
+  const controller = () =>
     new UserAccountController(
       ...([
         { jwtSecret: 'j', scopedJwtSecret: 's', cmBackend: 'http://cm' },
@@ -42,7 +42,7 @@ describe('sign-in audit: reason lists and the sites a request cannot reach', () 
         {},
         {},
       ] as unknown as ConstructorParameters<typeof UserAccountController>),
-    ) as any as UserAccountController & Record<string, any> & typeof overrides;
+    ) as any as UserAccountController & Record<string, any>;
 
   beforeEach(() => {
     records = [];
@@ -62,11 +62,12 @@ describe('sign-in audit: reason lists and the sites a request cannot reach', () 
     const google = (payload: unknown) =>
       sinon.stub(OAuth2Client.prototype, 'verifyIdToken').resolves({ getPayload: () => payload } as unknown as LoginTicket);
     const user = { _id: userId, orgId, email: EMAILS[0] };
-    let stub = google(undefined);
+    google(undefined);
     const noPayload = await controller().authenticateWithGoogle(user, 't', '1.1.1.1').catch((e: unknown) => e);
     expect(refusalReason(noPayload)).to.equal('sso_token_invalid');
-    stub.restore();
-    stub = google({ email: EMAILS[2] });
+    sinon.restore();
+    sinon.stub(root(), 'log').callsFake(((info: Record<string, any>) => { records.push(info); return root(); }) as any);
+    google({ email: EMAILS[2] });
     const mismatch = await controller().authenticateWithGoogle(user, 't', '1.1.1.1').catch((e: unknown) => e);
     expect(refusalReason(mismatch)).to.equal('sso_email_mismatch');
     noEmails();

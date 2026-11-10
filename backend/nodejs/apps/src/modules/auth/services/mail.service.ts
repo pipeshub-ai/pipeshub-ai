@@ -93,7 +93,12 @@ export class MailService {
       }
       if (error instanceof HttpError) throw keepDeliberateWording(error);
       // The error middleware logs it once, with this cause.
-      throw withCause(markClientSafe(new InternalServerError(serverFailureMessage('send that email'))), error);
+      throw withCause(
+        markClientSafe(
+          new InternalServerError(serverFailureMessage('send that email')),
+        ),
+        error,
+      );
     }
   }
 }

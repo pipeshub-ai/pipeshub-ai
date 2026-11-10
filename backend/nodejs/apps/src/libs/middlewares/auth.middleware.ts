@@ -356,7 +356,10 @@ export class AuthMiddleware {
         const token = this.extractToken(req);
 
         if (!token) {
-          throw authRefusal(new UnauthorizedError('No token provided'), 'no_token');
+          throw authRefusal(
+            new UnauthorizedError('No token provided'),
+            'no_token',
+          );
         }
 
         const decoded = await this.tokenService
