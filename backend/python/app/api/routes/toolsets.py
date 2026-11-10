@@ -1875,7 +1875,7 @@ async def update_toolset_instance(
     if oauth_credentials_changed:
         deauthed_count = await _deauth_all_instance_users(instance_id, config_service)
         if deauthed_count > 0:
-            logger.info("Deauthenticated users after an OAuth config update: %d", deauthed_count)
+            logger.info("Deauthenticated users after an OAuth config update", extra={"users": deauthed_count})
 
     msg = "Toolset instance updated successfully."
     if deauthed_count > 0:

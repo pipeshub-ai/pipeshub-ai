@@ -325,7 +325,7 @@ the batch is launched before the calls are dispatched.
 | `mcp.load.end` | INFO, once per turn | `servers`, `servers_loaded`, `tools_listed`, `failed` |
 | `openapi.retry` | WARNING | `status`, `reason` |
 | `tool_approval.run_failed` | DEBUG in practice: the executor already logged it | `error_class`, `error_type` |
-| `mcp.route.failed`, `toolset.route.failed` | the failure's class's level | `op` (the step), `error_class`, `error_type`, the bound ids |
+| `mcp.route.failed`, `toolset.route.failed` | the failure's class's level | `op` (the step), `error_class`, `error_type`, `error_message` (our own errors only; not for a provider or factory call), the bound ids |
 
 - **Routes** (`api/routes/mcp_servers.py`, `toolsets.py`, `api_toolsets.py`): a request's failure is on its `http.request.end`, with
   `mcp_server_id`, `toolset_id` or `agent_id`, `reason`, and no server or provider text. `*.route.failed` is only for a step the route
