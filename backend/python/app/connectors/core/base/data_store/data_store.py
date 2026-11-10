@@ -250,6 +250,11 @@ class BaseDataStore(ABC):
         """A failed read raises only with ``raise_on_error``; otherwise it answers ``[]``."""
         pass
 
+    async def get_app_user_links(self, org_id: str, connector_id: str) -> list[dict]:
+        """``{"id", "sourceUserId"}`` of every user of the org linked to the connector, guests
+        included. A failed read raises."""
+        raise NotImplementedError
+
     @abstractmethod
     async def get_app_user_by_email(self, email: str, connector_id: str) -> Optional[AppUser]:
         pass
@@ -445,7 +450,9 @@ class BaseDataStore(ABC):
         from_id: str,
         from_collection: str,
         collection: str,
-        relationship_types: list[str]
+        relationship_types: list[str],
+        *,
+        raise_on_error: bool = False,
     ) -> int:
         """
         Delete edges from a record by relationship types.

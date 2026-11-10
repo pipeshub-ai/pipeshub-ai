@@ -20,7 +20,7 @@ from app.api.middlewares.request_log import (
 from app.api.routes.chatbot import warm_up_entity_vector_store
 from app.api.routes.records import router as records_router
 from app.core.envelope import configure_from_config as configure_envelope
-from app.core.org_context import spawn_detached
+from app.core.org_context import spawn_detached, system
 from app.edition_config import (
     agent_router,
     agent_sharing_router,
@@ -261,8 +261,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Failed to start message consumers: {str(e)}")
         raise
 
-    # Get all organizations
-    orgs = await graph_provider.get_all_orgs()
+    # Only the list is cross-org: tasks started below must not inherit this scope.
+    with system("query_startup"):
+        orgs = await graph_provider.get_all_orgs()
     if not orgs:
         logger.info("No organizations found in the system")
     else:
@@ -307,7 +308,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 )
 
                 app.state.skills_seed_task = asyncio.create_task(
-                    reconcile_builtin_skills_for_orgs(graph_provider, orgs)
+                    reconcile_builtin_skills_for_orgs(graph_provider)
                 )
         except Exception as e:
             logger.warning(f"Builtin skill seeding not scheduled at startup (requests will retry): {e}")

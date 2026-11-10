@@ -212,6 +212,8 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
 
     snap = await snapshot(tx, org, every, allocate, known_children=expand_neighbours)
     d = derive(every, snap)
+    if d.gone and not org_wide:      # gone since `_held`: its key can already be another connector's, and only the whole org holds that connector off
+        raise NeedLocks(set(), wide=True)
     st.focus = len(every)
     st.keys = set(focus)
     cur_links, cur_grants, cur_closure = await current(tx, org, d)
@@ -221,6 +223,7 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
         st.records = len(d.records)
     if d.gone:
         st.records_deleted = await w.records_delete(sorted(d.gone))
+        await w.scopes_delete(sorted(d.gone))              # the access list of a node that is gone goes with it
     if d.cross_apps:
         done = {r["app_sk"] for r in await tx.fetch("/* pipeshub:kg.cross_read */ SELECT app_sk FROM kg.projection_state WHERE org_id = $1 AND cross_app AND app_sk = ANY($2::bigint[])",
                                                     org, sorted(d.cross_apps))}

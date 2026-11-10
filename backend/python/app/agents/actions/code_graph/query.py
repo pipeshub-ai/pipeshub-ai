@@ -32,7 +32,6 @@ from .ops import (
     _degrees,
     _key_of,
     _readable_blocks,
-    _readable_neighbour_rows,
     _readable_only,
     _repo_matches,
     _unwrap,
@@ -42,7 +41,7 @@ from .ops import (
     name_repos_of_shared_paths,
     repo_names,
 )
-from .results import saw_commit
+from .results import saw_commit, touched
 
 if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -557,10 +556,22 @@ _ENTRY_FILES = re.compile(
     re.IGNORECASE,
 )
 _ENTRY_KINDS = {"function", "method"}
-_ENTRY_SCAN_BLOCKS = 5000
-_ENTRY_BATCH = 400
-_ENTRY_CALLER_PAGE = 5000
+# Uncalled functions and methods ranked at most; past it the ranking is of a prefix (in key order) and says so.
+_ENTRY_SCAN_LIMIT = 50000
+_ENTRY_PAGE = 5000
 DEFAULT_ENTRY_LIMIT = 30
+
+
+async def _connector_records(
+    graph_provider: IGraphDBProvider, org_id: str, connector_id: str,
+) -> list[dict[str, Any]]:
+    """The connector's records (key and repo), in key order. Not only CODE_FILE ones: a source file uploaded to
+    a knowledge base is a plain file record, and is parsed all the same."""
+    rows = [_unwrap(r) for r in await graph_provider.get_nodes_by_filters(
+        collection=_RECORDS, filters={"orgId": org_id, "connectorId": connector_id},
+        return_fields=["_key", "recordGroupId"], raise_on_error=True,
+    ) or []]
+    return sorted((r for r in rows if _key_of(r)), key=_key_of)
 
 
 async def entry_points_impl(
@@ -584,45 +595,37 @@ async def entry_points_impl(
     if not connector_id:
         return {"error": CONNECTOR_ID_REQUIRED}
     limit = max(1, min(int(limit or DEFAULT_ENTRY_LIMIT), MAX_QUERY_LIMIT))
-    candidates: list[dict[str, Any]] = []
-    after: str | None = None
-    scanned = 0
-    while scanned < _ENTRY_SCAN_BLOCKS:
-        page = await graph_provider.get_documents_paginated(
-            collection=_BLOCKS, limit=2000, sort_field="_key", after_key=after,
-            filters={"orgId": org_id, "connectorId": connector_id}, raise_on_error=True,
-        )
-        if not page:
-            break
-        scanned += len(page)
-        candidates += [b for b in page if (b.get("kind") or "").lower() in _ENTRY_KINDS]
-        if len(page) < 2000:
-            break
-        after = page[-1].get("_key")
-    scan_capped = scanned >= _ENTRY_SCAN_BLOCKS
-
-    if repo:
-        names = await repo_names(graph_provider, org_id, (b.get("recordGroupId") for b in candidates))
-        candidates = [b for b in candidates if _repo_matches(repo, b.get("recordGroupId"), names)]
+    # The scope first -- the repo, then what the caller may read, then source over tests -- and only then
+    # the blocks: filtering a connector-wide sample afterwards ranked whatever the scan happened to read.
     access = RecordAccess(graph_provider, org_id, user_id)
-    candidates = await _readable_only(access, candidates)
-    if not include_tests:
-        roles = await get_record_roles(graph_provider, org_id,
-                                       {b.get("recordId") for b in candidates if b.get("recordId")})
-        candidates = [b for b in candidates if roles.get(b.get("recordId")) != TEST_ROLE]
+    files = await _connector_records(graph_provider, org_id, connector_id)
+    readable = await access.readable(_key_of(f) for f in files)
+    # A caller in a file the caller cannot read does not count: it must neither hide an entry point nor show.
+    hidden = [_key_of(f) for f in files if _key_of(f) not in readable]
+    if repo:
+        names = await repo_names(graph_provider, org_id, (f.get("recordGroupId") for f in files))
+        files = [f for f in files if _repo_matches(repo, f.get("recordGroupId"), names)]
+    scope = [_key_of(f) for f in files if _key_of(f) in readable]
+    if scope and not include_tests:
+        roles = await get_record_roles(graph_provider, org_id, set(scope))
+        scope = [f for f in scope if roles.get(f) != TEST_ROLE]
 
-    called: set[str] = set()
-    keys = [k for b in candidates if (k := _key_of(b))]
-    callers_cut = False
-    for start in range(0, len(keys), _ENTRY_BATCH):
-        # Only callers the caller can read count: an unreadable file's call must not hide an entry point.
-        rows, _, spent = await _readable_neighbour_rows(
-            graph_provider, org_id, access, keys[start:start + _ENTRY_BATCH], [RecordRelations.CALLS.value],
-            "inbound", page=_ENTRY_CALLER_PAGE, budget=50000,
+    # "Uncalled" is decided in the database, over the whole scope.
+    uncalled: list[dict[str, Any]] = []
+    after: str | None = None
+    scan_capped = False
+    while scope:
+        page, after = await graph_provider.find_uncalled_blocks(
+            org_id=org_id, connector_id=connector_id, record_ids=scope, kinds=sorted(_ENTRY_KINDS),
+            relations=[RecordRelations.CALLS.value], limit=_ENTRY_PAGE, after_key=after,
+            uncounted_caller_records=hidden, raise_on_error=True,
         )
-        callers_cut = callers_cut or spent
-        called |= {r.get("anchorKey") for r in rows}
-    uncalled = [b for b in candidates if _key_of(b) not in called]
+        uncalled += page
+        if after is None:
+            break
+        if len(uncalled) >= _ENTRY_SCAN_LIMIT:
+            scan_capped = True
+            break
     await attach_file_paths(graph_provider, org_id, uncalled)
 
     def reason(block: dict[str, Any]) -> str:
@@ -645,14 +648,14 @@ async def entry_points_impl(
         points.append(ref)
     out: dict[str, Any] = {
         "connector_id": connector_id,
-        **({"coverage": gap} if (gap := coverage_for(candidates)) else {}),
+        **({"coverage": gap} if (gap := coverage_for(uncalled)) else {}),
         "entry_points": points,
         "total": len(uncalled),
-        "truncated": len(uncalled) > limit or scan_capped or callers_cut,
-        **({"incomplete": True} if callers_cut else {}),
+        "truncated": len(uncalled) > limit or scan_capped,
     }
     if scan_capped:
-        out["note"] = (f"Only the first {_ENTRY_SCAN_BLOCKS} symbols were scanned; pass `repo` "
-                       "to look at one repository.")
-    return out
+        out["scan_capped"] = True
+        out["note"] = (f"Only {_ENTRY_SCAN_LIMIT} uncalled symbols were ranked, so `total` is a lower bound"
+                       + ("." if repo else "; pass `repo` to rank one repository whole."))
+    return touched(out, uncalled)
 
