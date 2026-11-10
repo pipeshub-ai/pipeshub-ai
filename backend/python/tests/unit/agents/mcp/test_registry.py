@@ -92,6 +92,7 @@ class TestMCPRegistry:
         assert "okta" in type_ids
         assert "zoom" in type_ids
         assert "trello" in type_ids
+        assert "hubspot" in type_ids
         assert "cloudflare" in type_ids
         assert "paypal" in type_ids
         assert "posthog" in type_ids
@@ -146,6 +147,26 @@ class TestMCPRegistry:
             "spring_write",
             "cors",
         }
+
+    def test_hubspot_catalog_entry(self) -> None:
+        """HubSpot is one official CRM host; no DCR — admin pastes an MCP connector app."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        hubspot = registry.get_template("hubspot")
+        assert hubspot is not None
+        assert hubspot.display_name == "HubSpot"
+        assert hubspot.transport == MCPTransport.STREAMABLE_HTTP
+        assert hubspot.default_url == "https://mcp.hubspot.com"
+        assert hubspot.default_auth_mode == MCPAuthMode.OAUTH
+        assert hubspot.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert hubspot.supports_dcr is False
+        assert hubspot.require_oauth_client is True
+        assert hubspot.url_editable is False
+        assert hubspot.authorization_url == "https://mcp.hubspot.com/oauth/authorize/user"
+        assert hubspot.token_url == "https://mcp.hubspot.com/oauth/v3/token"
+        assert hubspot.default_scopes == []
+        assert hubspot.icon == "/icons/connectors/hubspot.svg"
+        assert hubspot.documentation_url == "https://developers.hubspot.com/ai-tools/mcp"
 
     def test_zoom_catalog_entry(self) -> None:
         """Zoom is one official host, no DCR, and the admin pastes a Marketplace app."""
