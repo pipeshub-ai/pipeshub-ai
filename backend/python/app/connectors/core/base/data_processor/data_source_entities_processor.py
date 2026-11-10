@@ -553,7 +553,12 @@ class DataSourceEntitiesProcessor:
         if getattr(error, "schema_reported", False):
             return
         error.schema_reported = True
-        self.logger.error("Graph write rejected by schema validation (collection=%s): %s", error.collection, error)
+        # Where and which rule, never the message: jsonschema's text quotes the rejected value.
+        rule = error.original_error
+        self.logger.error(
+            "Graph write rejected by schema validation (collection=%s)", error.collection,
+            extra={"schema_path": getattr(rule, "json_path", None), "validator": getattr(rule, "validator", None)},
+        )
         record_schema_rejection(error.collection)
 
     def _must_propagate(self, error: Exception, tx_store: TransactionStore | None) -> bool:
@@ -2142,8 +2147,25 @@ class DataSourceEntitiesProcessor:
         ):
             record.queued_at = get_epoch_timestamp_in_ms()
 
-    @staticmethod
-    def _keeps_stored_indexing(record: Record, existing_record: Record, *, reindex_restored: bool) -> bool:
+    @classmethod
+    def _content_changed(cls, new_record: Record, old_record: Record) -> bool:
+        """Whether indexing would read *new_record* differently from *old_record*.
+
+        A new revision, but also the same bytes read as another file type (a GCS
+        object whose Content-Type changed keeps its MD5 revision; a rename to
+        another extension keeps a Drive revision). The save and a move decide on
+        it alike. A code file's path is not compared here: it is part of its
+        external id, so a save (matched on that id) cannot change it, and the
+        stored row a save reads is a base Record with no file_path, which would
+        read as a new path on every sync. A move compares it (_code_path_changed).
+        """
+        return (
+            new_record.external_revision_id != old_record.external_revision_id
+            or cls._file_type_changed(new_record, old_record)
+        )
+
+    @classmethod
+    def _keeps_stored_indexing(cls, record: Record, existing_record: Record, *, reindex_restored: bool) -> bool:
         """Whether a connector save leaves the stored indexing state as it is.
 
         It does when the content indexing saw is unchanged and the stored status
@@ -2161,16 +2183,9 @@ class DataSourceEntitiesProcessor:
         """
         if record.is_placeholder or reindex_restored:
             return False
-        if record.external_revision_id != existing_record.external_revision_id:
+        if cls._content_changed(record, existing_record):
             return False
         stored = existing_record.indexing_status
-        if (
-            stored == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
-            and DataSourceEntitiesProcessor._file_type_changed(record, existing_record)
-        ):
-            # The type can become supported with the revision unchanged (an object
-            # store's MD5 does not move): the outcome was for the old type.
-            return False
         if stored == ProgressStatus.QUEUED.value:
             return record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
         return stored in INDEXING_OUTCOME_STATUSES or stored in INDEXING_PENDING_STATUSES
@@ -3301,8 +3316,8 @@ class DataSourceEntitiesProcessor:
         self._report_schema_rejection(error)
         _stats_sink().records[RecordOutcome.FAILED] += 1
         self.logger.error(
-            "Record %s quarantined, skipped: write rejected by schema validation (collection=%s): %s",
-            record.id, error.collection, error,
+            "Record %s quarantined, skipped: write rejected by schema validation (collection=%s)",
+            record.id, error.collection,
         )
 
     @retry_on_deadlock()
@@ -3769,11 +3784,9 @@ class DataSourceEntitiesProcessor:
                     content_changed = (
                         new_record.external_revision_id != old_record.external_revision_id
                     )
-                    needs_reindex = (
-                        content_changed
-                        or self._file_type_changed(new_record, old_record)
-                        or self._code_path_changed(new_record, old_record)
-                    )
+                    needs_reindex = self._content_changed(
+                        new_record, old_record
+                    ) or self._code_path_changed(new_record, old_record)
 
                     is_kb_item = new_record.origin == OriginTypes.UPLOAD
                     if not is_kb_item:
