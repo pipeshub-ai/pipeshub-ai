@@ -7972,6 +7972,27 @@ def _tag_instance_name(connector_obj: BaseConnector, name: str | None) -> None:
         connector_obj.instance_name = name
 
 
+async def _send_revert_disabled(
+    producer: Any,  # noqa: ANN401 - the container's messaging producer
+    enabled: dict[str, Any],
+    toggle_seq: int,
+    logger: logging.Logger,
+) -> None:
+    """Send the appDisabled of a reverted on, numbered by the revert. Never raises."""
+    message = {
+        "eventType": "appDisabled",
+        "payload": {**enabled["payload"], ConnectorStateKeys.TOGGLE_SEQ: toggle_seq},
+        "timestamp": get_epoch_timestamp_in_ms(),
+    }
+    try:
+        await producer.send_message(topic="entity-events", message=message)
+    except Exception:
+        logger.exception(
+            f"Could not send appDisabled for connector {enabled['payload'].get('connectorId')} "
+            "after reverting its enable; a sync it had running may go on until the next toggle"
+        )
+
+
 async def _revert_toggle(
     graph_provider: IGraphDBProvider,
     connector_id: str,
@@ -7982,8 +8003,12 @@ async def _revert_toggle(
     previous: bool,
     written_at: int | None,
     logger: logging.Logger,
+    toggle_seq: int | None = None,
 ) -> bool:
     """Restore the pre-toggle state unless a newer write has landed since.
+
+    Given the number the toggle took, the revert takes the next one, so the
+    appDisabled the caller sends for it is not mistaken for a superseded one.
 
     Returns whether the revert was applied. Never raises, so the caller's error
     propagates.
@@ -7993,6 +8018,10 @@ async def _revert_toggle(
         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
         **{key: instance.get(key) for key in owner_updates},
     }
+    expected: dict[str, Any] = {"updatedAtTimestamp": written_at}
+    if toggle_seq is not None:
+        reverted[ConnectorStateKeys.TOGGLE_SEQ] = toggle_seq + 1
+        expected[ConnectorStateKeys.TOGGLE_SEQ] = toggle_seq
     try:
         # Toggles flip, so a stale revert can undo a newer successful one; the
         # version check is part of the write so nothing can land in between.
@@ -8000,7 +8029,7 @@ async def _revert_toggle(
             connector_id,
             CollectionNames.APPS.value,
             reverted,
-            {"updatedAtTimestamp": written_at},
+            expected,
         ):
             logger.warning(
                 f"Not reverting {status_field} for connector {connector_id}: "
@@ -8442,13 +8471,42 @@ async def toggle_connector_instance(
             # too, but every app write moves it.
             updates["enabledAtTimestamp"] = now
 
-        success = await connector_registry.update_connector_instance(
-            connector_id=connector_id,
-            updates=updates,
-            user_id=user_id,
-            org_id=org_id,
-            is_admin=is_admin
-        )
+        toggle_seq: int | None = None
+        if toggle_type == "sync":
+            # The appDisabled/appEnabled events are handled after this returns, and a quick
+            # off-then-on can see the off's event handled after the on was written. Each
+            # sync toggle numbers itself, in the same transaction as the flip, so the
+            # handler can tell a superseded event from a current one.
+            txn = await graph_provider.begin_transaction(
+                read=[CollectionNames.APPS.value], write=[CollectionNames.APPS.value], explicit=True,
+            )
+            try:
+                toggle_seq = await graph_provider.increment_node_field(
+                    connector_id, CollectionNames.APPS.value, ConnectorStateKeys.TOGGLE_SEQ, transaction=txn,
+                )
+                success = await connector_registry.update_connector_instance(
+                    connector_id=connector_id,
+                    updates=updates,
+                    user_id=user_id,
+                    org_id=org_id,
+                    is_admin=is_admin,
+                    transaction=txn,
+                )
+                if not success:
+                    await graph_provider.rollback_transaction(txn)
+                else:
+                    await graph_provider.commit_transaction(txn)
+            except BaseException:
+                await graph_provider.rollback_transaction(txn)
+                raise
+        else:
+            success = await connector_registry.update_connector_instance(
+                connector_id=connector_id,
+                updates=updates,
+                user_id=user_id,
+                org_id=org_id,
+                is_admin=is_admin
+            )
         if not success:
             logger.error(f"Failed to update {instance.get('name')} connector instance status")
             raise HTTPException(
@@ -8475,6 +8533,8 @@ async def toggle_connector_instance(
                 "fullSync": full_sync,
                 "syncedBy": user_info.get("userId", ""),
             }
+            if toggle_seq is not None:
+                payload[ConnectorStateKeys.TOGGLE_SEQ] = toggle_seq
 
             message = {
                 "eventType": event_type,
@@ -8497,9 +8557,14 @@ async def toggle_connector_instance(
                     previous=not target_status,
                     written_at=success.get("updatedAtTimestamp") if isinstance(success, dict) else None,
                     logger=logger,
+                    toggle_seq=toggle_seq if target_status else None,
                 )
                 if reverted and target_status:
                     await evict_cached_connector(container, connector_id, logger)
+                    if toggle_seq is not None:
+                        # An off handled while this on stood was skipped as superseded; the
+                        # connector is off again, so its sync stop and cleanup are still owed.
+                        await _send_revert_disabled(producer, message, toggle_seq + 1, logger)
                 raise
 
             # Drop the instance now so a quick re-enable rebuilds it with init(); its
