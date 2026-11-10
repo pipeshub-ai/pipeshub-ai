@@ -99,6 +99,21 @@ class TestRetrievalFailureModes:
         assert result.final_results == []
         assert "qdrant unavailable" in (result.error_message or "")
 
+    async def test_a_search_that_raises_is_one_line_without_the_query(self, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        from app.utils.logger import log_record_fields
+
+        caplog.set_level(logging.DEBUG)
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters.side_effect = RuntimeError("no hits for query-sentinel-12")
+
+        await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
+
+        (failed,) = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert failed.getMessage() == "prefetch.failed" and "error_message" not in log_record_fields(failed)
+        assert "query-sentinel-12" not in caplog.text
+
     @pytest.mark.parametrize("status_code", [202, 404, 500, 503])
     async def test_backend_error_status_codes_return_empty_result(self, status_code) -> None:
         retrieval_service = AsyncMock()
