@@ -764,6 +764,7 @@ class SinkOrchestrator(Transformer):
                 stored_record_fields=ctx.settings.get(STORED_RECORD_FIELDS),
                 properties=properties,
                 stored_run=stored_write.run,
+                still_current=lambda: self._stored_run_is(record.virtual_record_id, stored_write.run),
             )
         except Exception as exc:
             # Only the type and our own messages: an aiohttp error can carry a signed URL.
@@ -776,6 +777,11 @@ class SinkOrchestrator(Transformer):
             return None
         record_artifact_write("written" if written is not None else "unavailable")
         return written
+
+    async def _stored_run_is(self, vrid: str, run: str) -> bool:
+        """Whether the mapping still names *run* as the stored write: a later write of the same record has not taken over."""
+        node = await self.graph_provider.get_document(vrid, CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value)
+        return node is not None and node.get("storedRun") == run
 
     async def _provided_properties(
         self, record: Record, record_doc: dict[str, Any]

@@ -29,6 +29,12 @@ from app.services.messaging.config import (
     PipelineEvent,
     PipelineEventData,
 )
+from app.services.messaging.error_classifier import (
+    MessageErrorClassifier,
+    MessageErrorType,
+)
+from app.services.parsing.interface import ParseErrorCode, UnsupportedFormatError
+from app.utils.user_errors import to_user_reason, unsupported_file_type
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -98,6 +104,35 @@ async def _drain(async_gen):
     async for item in async_gen:
         items.append(item)
     return items
+
+
+async def _unroutable_error(extension: str | None, mime_type: str) -> UnsupportedFormatError:
+    """The error the real legacy dispatch raises for a type none of its branches routes."""
+    ep, _, _, gp = _make_event_processor()
+    gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+    with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+                      return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
+        with pytest.raises(UnsupportedFormatError) as exc:
+            await _drain(ep.on_event(_make_event_payload(extension=extension, mime_type=mime_type)))
+    return exc.value
+
+
+def _rewrapped(error: Exception) -> Exception:
+    """As the record handler re-raises an unknown error on the connector-stream path."""
+    try:
+        raise Exception(str(error)) from error
+    except Exception as wrapped:
+        return wrapped
+
+
+# Types the record handler's gate accepts that no dispatch branch routes (F23 repro):
+# an extension the handler derives from the mime but never hands on, and an extension
+# its list has that the HTML branch does not.
+_GATE_ACCEPTS_DISPATCH_REFUSES = [
+    (None, "image/pjpeg"),
+    (None, "application/x-pdf"),
+    ("htm", "application/octet-stream"),
+]
 
 
 async def _mock_processor_gen(*args, **kwargs):
@@ -1595,15 +1630,29 @@ class TestOnEventExtensionDispatch:
         processor.process_image.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_unsupported_extension_raises(self):
-        ep, _, processor, gp = _make_event_processor()
-        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+    async def test_unsupported_extension_raises(self) -> None:
+        error = await _unroutable_error("xyz", "unknown")
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
-             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
-            event_data = _make_event_payload(extension="xyz")
-            with pytest.raises(Exception, match="Unsupported file extension"):
-                await _drain(ep.on_event(event_data))
+        assert str(error) == "Unsupported file extension: xyz (mime type unknown)"
+        assert error.code is ParseErrorCode.UNSUPPORTED_FORMAT
+        assert error.details == {"extension": "xyz"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("extension", "mime_type"), _GATE_ACCEPTS_DISPATCH_REFUSES)
+    async def test_a_type_no_branch_routes_is_terminal(self, extension, mime_type) -> None:
+        """A retry reads the same extension and mime, so it can only fail the same way."""
+        error = await _unroutable_error(extension, mime_type)
+
+        assert mime_type in str(error)
+        assert MessageErrorClassifier.classify_by_exception(error) == MessageErrorType.TERMINAL
+        assert MessageErrorClassifier.classify_by_exception(_rewrapped(error)) == MessageErrorType.TERMINAL
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("extension", "mime_type"), [("htm", "application/octet-stream"), (None, "image/pjpeg")])
+    async def test_the_unsupported_reason_names_the_extension(self, extension, mime_type) -> None:
+        error = await _unroutable_error(extension, mime_type)
+
+        assert to_user_reason(_rewrapped(error)) == unsupported_file_type(extension)
 
     @pytest.mark.asyncio
     async def test_html_extension_routes_to_html_processor(self):

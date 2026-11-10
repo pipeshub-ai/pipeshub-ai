@@ -56,6 +56,7 @@ from app.modules.parsers.excel.workbook_model import (
 )
 from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
 from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResult
+from app.services.resource_governor.kinds import ParseKind
 from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.concurrency import max_table_rows_for_llm
 from app.utils.env_config import env_int, env_positive_int
@@ -570,6 +571,7 @@ class ExcelParser:
                 label="xlsx workbook",
                 size=len(file_binary),
                 timeout=EXCEL_LOAD_MAX_SECONDS,
+                kind=ParseKind.EXCEL_LOAD,
             )
         except WorkbookRefused as refused:
             raise _refusal(refused) from None
