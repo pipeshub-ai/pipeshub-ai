@@ -28,7 +28,6 @@ them it is only read.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import inspect
 import logging
 import secrets
@@ -283,8 +282,9 @@ class ScopeRewriteJob:
 
         A virtual record whose membership the graph cannot tell is left on the stale marker (its points are not admitted by any stamp), as the
         back-fill's own `_stamp` does, and returned: the pass goes on. A write the store did not apply raises
-        `RewriteIncomplete` (the points may hold the wrong membership under a stamp that admits). A connector that keeps changing under a page
-        leaves the page as it is: the pass then ends not current (its generation is the one it started from) and a later pass does it again."""
+        `RewriteIncomplete` (the points may hold the wrong membership under a stamp that admits). So does a connector that keeps changing under a
+        page, or moves while its stale marker is written: a release (`releasable`) can make a finished pass current without a new one, as long as
+        every change since it listed a root, and nothing would then write these records."""
         ordered, stale = sorted(set(vrids)), set[str]()
         for i in range(0, len(ordered), PAGE):
             stale |= await self._page(org_id, connector_id, ordered[i:i + PAGE], RewriteResult(org_id, connector_id), keys=MEMBERSHIP_KEYS)
@@ -292,8 +292,7 @@ class ScopeRewriteJob:
 
     async def _page(self, org_id: str, connector_id: str, vrids: list[str], result: RewriteResult, *, keys: Sequence[str] | None = None) -> set[str]:
         """Rewrite these virtual records. With `keys` (the back-fill's membership step) a virtual record that cannot be placed is left on the
-        stale marker and returned, and a connector that keeps changing leaves the page as it is; a rewrite of roots raises for both, so that
-        the root stays.
+        stale marker and returned, where a rewrite of roots raises, so that the root stays. A connector that keeps changing raises in both.
 
         shortcut: PAGE virtual records are read, written and proved under their locks in one block that must end inside
         `MEMBERSHIP_LOCK_TIMEOUT_SECONDS` (120 s). The page size is unmeasured at scale; measure it before this is reachable. Every run also
@@ -341,12 +340,11 @@ class ScopeRewriteJob:
                     break
             stale = sorted({*failed, *(unplaced if keys is not None else ())})
             if stale and not moved:      # fail closed: no stamp of these points admits (they are on the legacy filter) until they are written again
-                with contextlib.suppress(GenerationMoved):      # a connector that moved meanwhile is not current anyway
-                    await self._mark_stale(org_id, connector_id, stale, epoch)
+                await self._mark_stale(org_id, connector_id, stale, epoch)
         if keys is None:
             failed |= unplaced
-            if moved:
-                failed.update(dict.fromkeys(todo, "the connector kept changing"))
+        if moved:
+            failed.update(dict.fromkeys(todo, "the connector kept changing"))
         if failed:
             first = min(failed)
             raise RewriteIncomplete(f"{len(failed)} virtual record(s) left unwritten or stale. First, {first}: {failed[first]}")
