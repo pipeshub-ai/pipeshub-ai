@@ -84,6 +84,20 @@ class TestTheHandBackWrite:
         assert updates["parsingStatus"] == "NOT_STARTED"
         gp.update_node.assert_not_awaited()
 
+    async def test_an_unreadable_record_is_not_written_over_as_not_started(self) -> None:
+        # Kills: a failed read that looks like an empty record, which would reset a COMPLETED extraction.
+        write, gp = await self._writer({"extractionStatus": "COMPLETED"})
+
+        async def read(_key: str, _coll: str, **kw: Any) -> Any:  # noqa: ANN401
+            if kw.get("raise_on_error"):
+                raise RuntimeError("graph down")
+            return {}  # what an unflagged read answers when the query fails
+
+        gp.get_document = AsyncMock(side_effect=read)
+        with pytest.raises(RuntimeError):
+            await write(1.0, 1)
+        gp.update_node_fields_if_match.assert_not_awaited()
+
     async def test_it_reports_a_refusal(self) -> None:
         write, _gp = await self._writer(applies=False)
         assert await write(1.0, 1) is False

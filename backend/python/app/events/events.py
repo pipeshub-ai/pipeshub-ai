@@ -659,7 +659,10 @@ class EventProcessor:
         """
 
         async def write(embed_seconds: float, uncounted: int) -> bool:
-            current = await self.graph_provider.get_document(record_id, CollectionNames.RECORDS.value) or {}
+            # An unreadable record must not read as an empty one: that would reset a finished extraction.
+            current = await self.graph_provider.get_document(
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
+            ) or {}
             updates: dict[str, Any] = {
                 "indexingStatus": ProgressStatus.QUEUED.value,
                 "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
