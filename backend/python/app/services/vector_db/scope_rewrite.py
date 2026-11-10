@@ -74,6 +74,7 @@ from app.services.vector_db.membership import (
 from app.services.vector_db.models import ScrollWindowExceededError
 from app.services.vector_db.scope_backfill import (
     BACKFILL_KEYS,
+    MAX_MOVES,
     ScopeFieldsOff,
     UnknownConnector,
 )
@@ -93,7 +94,6 @@ SCAN_ATTEMPTS = 3  # scroll-and-count rounds before a scan is called incomplete
 SCAN_RETRY_SECONDS = 0.5
 SETTLE_SECONDS = 30.0  # how long a write may take to show in a search
 MAX_ROUNDS = 3  # write + verify rounds for one page before its virtual records are marked stale
-MAX_MOVES = 20  # times the connector's generation may move under one page before it is given up (a move costs no round: the page is read again)
 #: How far above the store's clock (this host's, where the store has none) a stored fence is still followed: the skew between two hosts that is
 #: believed. A fence further away is not followed: the log says so and the root stays pending.
 #: A follow adds a random amount below this to the fence it found, so that two followers that saw the same fence do not write the same value.
@@ -543,8 +543,8 @@ class ScopeRewriteJob:
                             at: datetime, floor: int = 0) -> tuple[bool, int]:
         """The back-fill's write of the scope fields: every point of the virtual record, by id, guarded (lease and generation) and fenced like a
         rewrite's (at `at`, or above `floor`), then read back. Returns whether every point holds it, and the floor for the next try (above a
-        plausible fence a refused point carries, as a rewrite follows it): False means read the graph again. `LeaseLost` and `GenerationMoved`
-        send nothing more."""
+        plausible fence a refused point carries, as a rewrite follows it; negative for one that is no plausible time, which no round will pass):
+        False means read the graph again. `LeaseLost` and `GenerationMoved` send nothing more."""
         fence, refused, top = max(_micros(at), floor), False, 0
         for name in collections:
             found = await self._scan(org_id, name, [vrid])
@@ -554,7 +554,7 @@ class ScopeRewriteJob:
             refused |= bool(bad)
             top = max([top, *(int(p.get(SCOPE_FENCE_FIELD) or 0) for p in bad)])
         if refused and top > fence:
-            floor = max(floor, await self._follow(connector_id, epoch, top, fence))
+            floor = await self._follow(connector_id, epoch, top, fence)      # (above `fence`, so above the old floor; or -1)
         return not refused, floor
 
     async def _stored(self, collection: str, point_ids: list[str]) -> dict[str, dict[str, Any]]:

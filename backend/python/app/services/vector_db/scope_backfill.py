@@ -83,6 +83,7 @@ if TYPE_CHECKING:
 PAGE_SIZE = 100
 MAX_PAGES = 20  # records per run: 2,000 at the default page size
 MAX_ROUNDS = 3  # write + read-back rounds for one virtual record before it is marked stale
+MAX_MOVES = 20  # times the connector's generation may move under one page or record before it is given up (a move costs no round: it is read again)
 MARKER_ATTEMPTS = 4  # tries to write the stale marker of one virtual record
 MARKER_DELAY_SECONDS = 0.25  # doubled after each failed try
 
@@ -306,10 +307,10 @@ class ScopeBackfill:
         """`done`, `skipped` (no point to write) or `stale` (the stale marker was written and read back; one that did not land raises, so the
         pass fails: see `_mark`)."""
         collections: list[str] | tuple[str, ...] = ()
-        floor = 0      # a plausible fence a point carried above this pass's time: the next round writes above it
+        floor, rounds, moves = 0, 0, 0      # (floor: a plausible fence a point carried above this pass's time: the next round writes above it)
         try:
             async with vrid_write_locks([vrid]):
-                for _ in range(MAX_ROUNDS):
+                while rounds < MAX_ROUNDS and moves <= MAX_MOVES:
                     epoch, at = await self._membership.begin(app_id)      # before the graph is read: the generation to check and the fence
                     state = await resolve_virtual_record_state(self._graph, vrid)
                     collections = self._locator.collections_for_records(state.records)
@@ -322,7 +323,12 @@ class ScopeBackfill:
                     try:
                         taken, floor = await self._membership.write_payload(org_id, app_id, collections, vrid, fields.to_payload(), epoch, at, floor)
                     except self._moved:
-                        continue      # the connector changed after the graph was read: nothing was sent, read it again
+                        moves += 1      # the connector changed after the graph was read: nothing was sent, read it again (a move costs no round)
+                        continue
+                    if floor < 0:      # a fence no round will pass: every try would be refused again
+                        self._log.error("virtual record %s carries a fence that is no plausible time; marked stale until it is indexed again", vrid)
+                        break
+                    rounds += 1
                     # the graph may have changed between the read and the write: write again if it says something else now
                     again = await scope_fields_for_state(self._graph, await resolve_virtual_record_state(self._graph, vrid), org_id, self._log)
                     if taken and again == fields:
