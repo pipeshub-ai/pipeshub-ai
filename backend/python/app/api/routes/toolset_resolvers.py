@@ -132,8 +132,6 @@ async def get_oauth_credentials_for_toolset(
                 f"Please ask an administrator to update the OAuth configuration."
             )
 
-        if logger:
-            logger.debug(f"Fetched OAuth config '{oauth_config_id}' for toolset type '{toolset_type}'")
         return dict(config_data)
     except ValueError:
         raise
