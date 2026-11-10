@@ -1210,6 +1210,13 @@ export class Application {
         slackEventsRateLimitPerMinute(),
       ),
       (req, res) => {
+        // A reset errors both proxyReq and proxyRes: log and close once.
+        const fail = (err: Error): void => {
+          if (res.destroyed) return;
+          this.logger.error('Slack events proxy error', { error: err.message });
+          if (res.headersSent) res.destroy();
+          else res.status(502).json({ error: 'Slack bot service unavailable' });
+        };
         const proxyReq = http.request(
           {
             hostname: 'localhost',
@@ -1220,18 +1227,12 @@ export class Application {
           },
           (proxyRes) => {
             res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+            // pipe() leaves `res` open when the bot's answer is cut midway.
+            proxyRes.on('error', fail);
             proxyRes.pipe(res);
           },
         );
-
-        proxyReq.on('error', (err) => {
-          this.logger.error('Slack events proxy error', {
-            error: err instanceof Error ? err.message : String(err),
-          });
-          if (!res.headersSent) {
-            res.status(502).json({ error: 'Slack bot service unavailable' });
-          }
-        });
+        proxyReq.on('error', fail);
 
         req.pipe(proxyReq);
       },
