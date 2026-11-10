@@ -140,6 +140,38 @@ async def test_the_people_behind_an_app_are_the_orgs_members_linked_to_it(w: Wor
     assert await w.p.get_app_users(_org(), APP) == []
 
 
+async def test_the_app_user_links_include_guests_but_not_another_orgs_or_connectors(w: World, org_ctx, pg_db) -> None:
+    await member(w, "m", userId="um", email="m@x.com")
+    await w.nodes("users", {"_key": "guest", "userId": "ug", "email": "g@x.com"}, {"_key": "unnamed"}, {"_key": "elsewhere"})       # a guest has no org edge
+    await w.nodes("apps", {"_key": "app2", "type": "JIRA", "isActive": True})
+    await w.edge("userAppRelation", ("users", "m"), ("apps", APP), sourceUserId="src-m")
+    await w.edge("userAppRelation", ("users", "guest"), ("apps", APP), sourceUserId="src-guest")
+    await w.edge("userAppRelation", ("users", "unnamed"), ("apps", APP))                                    # a link the source names no user for
+    await w.edge("userAppRelation", ("users", "elsewhere"), ("apps", "app2"), sourceUserId="src-else")     # another connector
+    await w.nodes("people", {"_key": "person"})
+    await w.edge("userAppRelation", ("people", "person"), ("apps", APP), sourceUserId="src-person")        # an external collaborator is no user
+    other = _org()
+    token = org_context.push(None)
+    try:
+        with org_ctx(other):
+            theirs = World(w.p, other)
+            await theirs.nodes("users", {"_key": "stranger"})
+            await theirs.nodes("apps", {"_key": APP, "type": "JIRA", "isActive": True})
+            await theirs.edge("userAppRelation", ("users", "stranger"), ("apps", APP), sourceUserId="src-stranger")      # another org
+    finally:
+        org_context.pop(token)
+    assert {link["id"]: link["sourceUserId"] for link in await w.p.get_app_user_links(w.org, APP)} == {"m": "src-m", "guest": "src-guest"}
+    assert {u["_key"] for u in await w.p.get_app_users(w.org, APP)} == {"m"}                                  # the members-only read is as it was
+    assert await w.p.get_app_user_links(_org(), APP) == []
+    token = org_context.push(None)                                                                            # the other org's rows go too
+    try:
+        with org_ctx(other):
+            await pg_db.run(lambda tx: tx.execute("DELETE FROM graph.edges WHERE org_id = $1", other), write=True)
+            await pg_db.run(lambda tx: tx.execute("DELETE FROM graph.nodes WHERE org_id = $1", other), write=True)
+    finally:
+        org_context.pop(token)
+
+
 def app_user(email: str, key: str, *, guest: bool = False, active: bool = False) -> AppUser:
     return AppUser(app_name=Connectors.JIRA, connector_id=APP, id=key, source_user_id=f"src-{key}", email=email, full_name=key, is_guest=guest, is_active=active)
 
@@ -251,12 +283,16 @@ async def test_what_identity_writes_feeds_the_access_check(w: World) -> None:
 CALLS = [
     ("get_user_by_user_id", ("u",)), ("get_user_by_email", ("a@b.c",)), ("get_users_by_emails", (["a@b.c"],)), ("get_org_apps", ("o",)), ("get_account_type", ("o",)), ("get_users", ("o",)),
     ("get_organization_users", ("o",)), ("find_users", ("o", "x")), ("get_graph_user_keys_by_mongo_user_ids", (["u"],)), ("get_user_by_source_id", ("s", "c")),
-    ("get_app_users", ("o", "c")), ("batch_upsert_app_users", ([app_user("a@b.c", "k")],)), ("get_user_group_by_external_id", ("c", "e")),
+    ("get_app_users", ("o", "c")), ("get_app_user_links", ("o", "c")), ("batch_upsert_app_users", ([app_user("a@b.c", "k")],)), ("get_user_group_by_external_id", ("c", "e")),
     ("get_user_groups", ("c", "o")), ("get_user_directory_groups", ("u", "o")), ("get_app_role_by_external_id", ("c", "e")),
     ("batch_upsert_user_groups", ([AppUserGroup(app_name=Connectors.JIRA, connector_id="c", source_user_group_id="e", name="G")],)),
     ("delete_edges_to_groups", ("u", "users", "permission")), ("ensure_app_membership", ("u", "users", "c")),
     ("ensure_team_app_edge", ("c", "o")), ("upsert_authenticated_as", ("a", "b", "c", "o")), ("remove_authenticated_as", ("c",)),
     ("get_user_apps", ("u",)), ("get_user_app_ids", ("u",)),
+    ("add_user_to_all_team", ("o", "u")), ("ensure_all_team_with_users", ("o",)), ("check_api_toolset_in_use", ("i",)), ("check_mcp_instance_in_use", ("i",)),
+    ("check_toolset_instance_in_use", ("i",)), ("check_connector_name_uniqueness", ("n", "team", "o", "u", "apps")),
+    ("count_connector_instances_by_scope", ("apps", "team")),
+    ("get_agent", ("a",)), ("get_agents_by_model_key", ("o", "m")), ("get_agents_by_web_search_provider", ("o", "p")),
 ]
 
 
@@ -304,3 +340,43 @@ async def test_an_address_is_lowered_by_the_database_alone_so_the_stored_and_the
     assert (len(nodes) == 1) is bool(same)
     assert (await w.p.get_user_by_email(b)).id == ("n1" if same else "n2")            # the lookup by address resolves as the batch did
     assert [r["id"] for r in await w.p.find_users(w.org, b)] == (["n1"] if same else ["n2"])
+
+
+async def test_a_withdrawn_user_gets_the_link_back_when_the_next_listing_shows_the_user(w: World) -> None:
+    """The self-healing the withdrawal relies on, through the real processor: save, withdraw, save again."""
+    import logging
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.connectors.core.base.data_processor.data_source_entities_processor import (
+        DataSourceEntitiesProcessor,
+    )
+    from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+
+    await member(w, "m", userId="um", email="m@x.com")
+    processor = DataSourceEntitiesProcessor(logging.getLogger("t"), GraphDataStore(logging.getLogger("t"), w.p), MagicMock())
+    processor.org_id = w.org
+    processor.messaging_producer = MagicMock(send_message=AsyncMock(return_value=True), send_messages=AsyncMock(return_value=[]))
+    listed = app_user("m@x.com", "m")
+
+    async def links() -> set[str]:
+        return {u.id for u in await processor.get_app_user_links(APP)}
+
+    await processor.on_new_app_users([listed])
+    assert await links() == {"m"}
+    await processor.withdraw_app_user_access(APP, [SimpleNamespace(id="m")])
+    assert await links() == set()
+    await processor.on_new_app_users([listed])                                  # the next listing shows the user again
+    assert await links() == {"m"}
+
+
+async def test_a_link_written_in_an_open_transaction_is_read_inside_it(w: World) -> None:
+    await member(w, "m", userId="um", email="m@x.com")
+    txn = await w.p.begin_transaction(read=[], write=[], explicit=True)
+    try:
+        await w.p.ensure_app_membership("m", "users", APP, is_external=False, source_user_id="src-tx", transaction=txn)
+        inside = {link["id"] for link in await w.p.get_app_user_links(w.org, APP, transaction=txn)}
+    finally:
+        await w.p.rollback_transaction(txn)
+    assert inside == {"m"}
+    assert await w.p.get_app_user_links(w.org, APP) == []

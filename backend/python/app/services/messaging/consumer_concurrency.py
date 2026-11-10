@@ -290,9 +290,8 @@ async def acquire_distributed_slot(
 
     With ``deadline_seconds`` set, gives up (returning False) after that many
     seconds instead of waiting indefinitely — used for the per-record lease,
-    which is contended by duplicate in-flight deliveries of the *same* record
-    and must not convoy the whole pipeline while already holding the outer
-    indexing permit.
+    which is contended only by other work on the *same* record and must not
+    convoy the whole pipeline while already holding the outer indexing permit.
 
     Contention and failure are backed off separately, and only failure is
     budgeted. Contention is normal: the pool is full and this record waits its
@@ -1188,6 +1187,18 @@ class MemoryAdmissionTimeout(ParseAdmissionTimeout):
     reservations ahead of it do, and one bigger than the whole budget runs
     once nothing else is reserved, so counting it would fail a big record only
     for being big.
+    """
+
+    counts_toward_backstop = False
+
+
+class RecordLeaseHeld(RequeueWithoutAttempt):
+    """Something else held the record's lease past the wait: a stage, a retention
+    sweep, an unexpired lease of a dead replica, a duplicate delivery, or Redis is down.
+
+    Not counted toward the delivery backstop: a live holder can outlast every
+    hand-back (a long record takes minutes), and failing the record for that would
+    be worse than the wait. The lease ends with its holder or its term.
     """
 
     counts_toward_backstop = False

@@ -30,6 +30,13 @@ def oauth_error_code(body: Any) -> Optional[str]:  # noqa: ANN401
     return code if isinstance(code, str) and code else None
 
 
+def is_transient_status(status: Optional[int]) -> bool:
+    """An overloaded or rate-limiting endpoint: a retry can succeed, whatever error code it sent."""
+    return status is not None and (
+        status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value or status == HttpStatusCode.TOO_MANY_REQUESTS.value
+    )
+
+
 def is_permanent_grant_rejection(
     text: str,
     error_code: Optional[str],
@@ -39,9 +46,7 @@ def is_permanent_grant_rejection(
 ) -> bool:
     """True for a permanent `error_code`, or a text marker even when the code itself is not permanent."""
     # An overloaded or rate-limiting endpoint can answer with any code; only a 4xx (or 200) refusal is final.
-    if status is not None and (
-        status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value or status == HttpStatusCode.TOO_MANY_REQUESTS.value
-    ):
+    if is_transient_status(status):
         return False
     if error_code and error_code.lower() in permanent_codes:
         return True

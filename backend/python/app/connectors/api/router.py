@@ -5481,6 +5481,10 @@ async def update_connector_instance_auth_config(
         # Start with existing config, then overlay with new values
         merged_auth_config = existing_auth_config.copy()
         merged_auth_config.update(auth_config_clean)
+        # The auth type is fixed once a connector exists. A body's own authType would pick
+        # another client (Jira Cloud's BASIC_AUTH skips the Atlassian-site check).
+        if auth_type:
+            merged_auth_config["authType"] = auth_type
 
         _require_valid_auth_config(connector_type, merged_auth_config)
         new_config[OAuthConfigKeys.AUTH] = merged_auth_config

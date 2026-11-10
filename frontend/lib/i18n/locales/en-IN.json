@@ -1386,6 +1386,11 @@
     "stopListening": "Stop listening",
     "voiceInput": "Voice input",
     "regenerateResponse": "Regenerate response",
+    "quoteSelection": "Quote",
+    "quoteSelectionHint": "Ask about this",
+    "quotedExcerpt": "Quoted",
+    "quotedExcerptTruncated": "Quoted (trimmed)",
+    "dismissQuote": "Remove quote",
     "editQuery": "Edit query",
     "queryOptions": "Query options",
     "models": "Models",
@@ -1490,7 +1495,31 @@
       "webSearch": "Web search",
       "internalAndWebSearch": "Internal + web search"
     },
-    "searchDegraded": "Results may be incomplete."
+    "searchDegraded": "Results may be incomplete.",
+    "compare": {
+      "toggle": "Compare models",
+      "pickTwo": "Pick {{max}} models to compare.",
+      "pickedHint": "Each question is answered by both models side by side.",
+      "costNote": "Every question runs on both models, so it uses about twice the usage. In Agent mode both can use tools; actions that need approval ask you separately in each column.",
+      "pillLabel": "Compare {{picked}}/{{max}}",
+      "stop": "Stop",
+      "retry": "Retry",
+      "failed": "This model could not answer. Try again.",
+      "useAnswer": "Use this answer",
+      "useAnswerLabel": "Use the answer from {{model}}",
+      "columnLabel": "Answer from {{model}}",
+      "chooseConflict": "This answer is not ready to keep yet. Wait for it to finish and try again.",
+      "chooseFailed": "Could not keep this answer. Try again.",
+      "primaryFallback": "Model",
+      "starting": "Starting...",
+      "status": {
+        "starting": "Starting",
+        "waiting": "Waiting",
+        "streaming": "Answering",
+        "done": "Done",
+        "error": "Failed"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -4768,6 +4797,8 @@
     "serviceAgentBadgeTooltip": "This service agent has its own toolset credentials. It searches knowledge with its creator's access, so everyone who uses it sees results from what the creator can read.",
     "convertToServiceAgentTooltip": "Permanent: agent-level toolsets, shared with your whole organisation, and knowledge searched with the creator's access. Cannot be undone.",
     "convertToServiceAgentTooltipNewAgent": "Creates this agent as a service agent: agent-level toolsets, shared with your whole organisation, and knowledge searched with your access.",
+    "convertToServiceAgentTooltipNoOrg": "Permanent: agent-level toolsets and knowledge searched with the creator's access. Use the Share button to control who can access it. Cannot be undone.",
+    "convertToServiceAgentTooltipNewAgentNoOrg": "Creates this agent as a service agent: agent-level toolsets and knowledge searched with your access. Use the Share button to control who can access it.",
     "agentActionsMenuAria": "Agent menu",
     "agentMenuCreateAsServiceAgent": "Create as service agent",
     "agentMenuConvertToServiceAgent": "Convert to service agent",
@@ -5724,5 +5755,107 @@
     "alreadyRemovedDescription": "{{name}} had already lost access",
     "removeConfirmTitle": "Remove access?",
     "removeConfirmDescription": "{{name}} will lose access straight away. You can share with them again later."
+  },
+  "graph": {
+    "status": {
+      "stale": "The graph is being updated; recent changes may be missing.",
+      "building": "The graph is being built, so what you see may be incomplete.",
+      "retrying": "The graph build hit a problem and is trying again.",
+      "failed": "The last graph build failed, so this view may be out of date.",
+      "unknown": "The state of this graph could not be read."
+    },
+    "empty": {
+      "neverBuilt": "This repository has no code graph yet.",
+      "tooLarge": "This repository is too large to graph."
+    },
+    "incomplete": "Some links may be missing. Narrow by edge type or direction.",
+    "simplified": "Simplified view for smooth movement.",
+    "verify": {
+      "degraded": "Can't verify access right now. Showing what was last confirmed.",
+      "blank": "Access could not be verified for several minutes, so the graph was cleared. Reconnecting…"
+    },
+    "error": {
+      "unavailable": "Couldn't load this right now. Try again.",
+      "notAvailable": "This item isn't available.",
+      "unexpected": "Something went wrong.",
+      "ambiguous": "More than one repository has that name. Choose the repository in the search box.",
+      "full": "This view is full. Open a node to start a new one.",
+      "revoked": "The item you were looking at is no longer available."
+    },
+    "title": "Code graph",
+    "ui": {
+      "back": "Back",
+      "forward": "Forward",
+      "fit": "Fit to view",
+      "showTable": "Show as table",
+      "showGraph": "Show as graph",
+      "direction": {
+        "any": "Both",
+        "inbound": "Callers",
+        "outbound": "Callees"
+      },
+      "includeTests": "Include tests",
+      "showMore": "Show more",
+      "expand": "Expand",
+      "open": "Open",
+      "nothingSelected": "Select a node to see its details.",
+      "details": "Details",
+      "links": "Links: {{n}}",
+      "table": {
+        "caption": "Nodes in this view",
+        "name": "Name",
+        "kind": "Kind",
+        "file": "File",
+        "actions": "Actions",
+        "moreRows": "Show more rows",
+        "callersShown": "Callers shown",
+        "calleesShown": "Callees shown",
+        "focus": "Centre"
+      },
+      "emptyPrompt": "Search for a function, method or class above to see what calls it and what it calls.",
+      "disclosure": "Shows only what you can access.",
+      "legendInferred": "Dashed lines are links inferred by name.",
+      "disabled": "The code graph isn't enabled.",
+      "search": {
+        "repo": "Repository",
+        "repoPlaceholder": "Choose a repository",
+        "placeholder": "Find a function, method or class by name",
+        "label": "Search code",
+        "results": "Search results",
+        "noRepos": "No code repositories you can read.",
+        "noMatches": "No matches.",
+        "chooseFirst": "Choose a repository first",
+        "minChars": "Type at least 2 characters.",
+        "more": "Showing the first matches. Type more to narrow the search."
+      },
+      "action": {
+        "retry": "Retry",
+        "restore": "Use full quality"
+      },
+      "loading": "Loading…",
+      "legend": {
+        "functions": "Functions and methods",
+        "classes": "Classes and interfaces",
+        "focus": "Centre of this view"
+      },
+      "openHint": "Open: make this the centre of a new view.",
+      "expandHint": "Expand: show its neighbours here, keeping what is on screen.",
+      "announce": {
+        "opened": "Showing {{n}} items.",
+        "added": "{{n}} items added."
+      },
+      "canvasHint": "The graph picture is not available to screen readers. Use the Show as table button to read and use every node.",
+      "selectionGone": "The item you selected is no longer available.",
+      "viewGraph": "View graph",
+      "viewGraphOf": "View graph of {{repo}}",
+      "fillerNode": "{{kind}} in {{file}}"
+    },
+    "capped": "The picture shows only part of this view. The table lists everything.",
+    "crowded": "This view is getting crowded. Narrow it with filters.",
+    "hint": {
+      "testsOff": "Test files are hidden. If the item is in test code, turn on Include tests."
+    },
+    "nothingNew": "Nothing more to show for this node.",
+    "tableOnly": "Showing the table only, to keep things responsive."
   }
 }

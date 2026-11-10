@@ -99,6 +99,7 @@ from app.connectors.core.registry.types import (
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
+from app.connectors.sources.microsoft.common.graph_people import source_person
 from app.connectors.sources.microsoft.common.msgraph_client import (
     MSGraphClient,
     RecordUpdate,
@@ -696,6 +697,10 @@ class SharePointConnector(BaseConnector):
         self._rewrite_all_items = False
         # Set for a run that has to read every Entra group's members again.
         self._refresh_all_groups = False
+        # Set for a run whose user listing is not trusted and that has no earlier disabled set to fall back on.
+        self._disabled_set_unknown = False
+        # Whether this run's disabled set comes from a trusted listing, and so may become the stored one.
+        self._listing_trusted = True
 
         self.tenant_region: str = None
         self.sync_filters: FilterCollection = FilterCollection()
@@ -1767,6 +1772,8 @@ class SharePointConnector(BaseConnector):
                 crc32_hash=hashes.get('crc32_hash'),
                 sha1_hash=hashes.get('sha1_hash'),
                 sha256_hash=hashes.get('sha256_hash'),
+                authored_by=source_person(getattr(item, 'created_by', None)),
+                last_modified_by=source_person(getattr(item, 'last_modified_by', None)),
             )
 
         except Exception as e:
@@ -2177,7 +2184,9 @@ class SharePointConnector(BaseConnector):
                 weburl=getattr(item, 'web_url', None),
                 parent_external_record_id=list_id,
                 external_record_group_id=site_id,
-                semantic_metadata=metadata
+                semantic_metadata=metadata,
+                authored_by=source_person(getattr(item, 'created_by', None)),
+                last_modified_by=source_person(getattr(item, 'last_modified_by', None)),
             )
 
         except Exception as e:
@@ -2345,6 +2354,8 @@ class SharePointConnector(BaseConnector):
                 inherit_permissions=True,
                 semantic_metadata=metadata,
                 preview_renderable=False,
+                authored_by=source_person(getattr(page, 'created_by', None)),
+                last_modified_by=source_person(getattr(page, 'last_modified_by', None)),
             )
 
         except Exception as e:
@@ -3382,9 +3393,10 @@ class SharePointConnector(BaseConnector):
                     sync_point_key,
                     {"nextLink": None, "deltaLink": new_delta_link}
                 )
-                await self.user_sync_point.update_sync_point(
-                    INACTIVE_USERS_SYNC_POINT_KEY, sync_point_data={"emails": sorted(self._inactive_emails)}
-                )
+                if self._listing_trusted:
+                    await self.user_sync_point.update_sync_point(
+                        INACTIVE_USERS_SYNC_POINT_KEY, sync_point_data={"emails": sorted(self._inactive_emails)}
+                    )
         else:
             await self._perform_delta_sync(delta_link, sync_point_key)
 
@@ -3601,6 +3613,43 @@ class SharePointConnector(BaseConnector):
         else:
             return PermissionType.READ
 
+    async def _withdraw_unlisted_app_users(self, listed: list[AppUser]) -> bool:
+        """Take the connector away from stored users (guest accounts included) the complete
+        user read no longer lists and that Microsoft confirms are gone (a 404 on the user
+        itself): a stale listing cannot withdraw anyone, nor can a failed or throttled read
+        of the user. Only called after a complete read; an empty list withdraws nobody (the
+        directory always has users), and so does a failed read of the stored users.
+        Restoring the account saves the user again.
+
+        Returns whether the listing can be trusted: every stored account it does not list was
+        confirmed gone. An empty listing, a failed read of the stored users, and an unlisted
+        account that was found or whose read failed make it untrusted."""
+        if not listed:
+            return False
+        try:
+            stored = await self.data_entities_processor.get_app_user_links(self.connector_id)
+        except Exception as e:
+            self.logger.error(f"Could not read the stored users; no user loses access this run: {e}")
+            return False
+        kept = {u.source_user_id for u in listed}
+        gone = []
+        trusted = True
+        for u in stored:
+            if not u.source_user_id or u.source_user_id in kept:
+                continue
+            try:
+                if await self.msgraph_client.get_user_status(u.source_user_id) != "gone":
+                    trusted = False
+                    continue
+            except Exception as e:
+                self.logger.error(f"Could not confirm user {u.source_user_id} is gone; keeping the access: {e}")
+                trusted = False
+                continue
+            gone.append(u)
+        if gone:
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+        return trusted
+
     async def _sync_users(self) -> None:
         """Sync the tenant's users, note who is disabled, and rewrite the tenant-wide claim groups.
 
@@ -3622,13 +3671,28 @@ class SharePointConnector(BaseConnector):
             )
             raise
         await self.data_entities_processor.on_new_app_users(users)
-        self._inactive_emails = {user.email.lower() for user in users if user.email and user.is_active is False}
+        trusted = getattr(users, "complete", True) and await self._withdraw_unlisted_app_users(users)
         stored = await self.user_sync_point.read_sync_point(INACTIVE_USERS_SYNC_POINT_KEY)
-        # Saved once every group has been read with the new set (_sync_azure_ad_groups).
-        self._refresh_all_groups = set((stored or {}).get("emails") or []) != self._inactive_emails
-        await self.data_entities_processor.on_new_user_groups(
-            everyone_groups(self.connector_name, self.connector_id, users)
-        )
+        stored_emails = set((stored or {}).get("emails") or [])
+        if trusted:
+            self._inactive_emails = {user.email.lower() for user in users if user.email and user.is_active is False}
+            # Saved once every group has been read with the new set (_sync_azure_ad_groups).
+            self._refresh_all_groups = stored_emails != self._inactive_emails
+            self._disabled_set_unknown = False
+            self._listing_trusted = True
+            await self.data_entities_processor.on_new_user_groups(
+                everyone_groups(self.connector_name, self.connector_id, users)
+            )
+        else:
+            # Unknown is not empty: a listing that may be cut or stale replaces no membership and no disabled set.
+            self.logger.warning("User listing is not trusted; no user loses access and the claim groups keep their members this run")
+            # The accounts a cut listing shows as disabled are disabled; the rest is the last good set. Used this run, never saved.
+            self._inactive_emails = stored_emails | {user.email.lower() for user in users if user.email and user.is_active is False}
+            self._refresh_all_groups = False
+            self._listing_trusted = False
+            # Without an earlier set nobody is known to be enabled either: no group is read until a trusted listing.
+            self._disabled_set_unknown = stored is None
+            self._health.skipped("user listing", "not trusted; the claim groups and the disabled set were not rewritten")
         self.logger.info(f"✅ Successfully synced {len(users)} users")
 
     # Record update handling
@@ -3753,7 +3817,10 @@ class SharePointConnector(BaseConnector):
             await self._sync_users()
 
             sites = await self._get_all_sites()
-            await self._sync_user_groups(sites)
+            if self._disabled_set_unknown:
+                self.logger.warning("The disabled accounts are not known yet; no group is read until a trusted user listing")
+            else:
+                await self._sync_user_groups(sites)
             await self._remove_deleted_sites()
             await self._remove_filtered_out(FILTERED_SITES_SYNC_POINT_KEY, self._filtered_out_site_ids, self._forget_site)
 

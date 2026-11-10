@@ -26,6 +26,7 @@ overrides = [
     { name = "cchardet", marker = "sys_platform == 'never'" },
     { name = "grpcio-tools", marker = "sys_platform == 'never'" },
     { name = "rapidocr", marker = "sys_platform == 'never'" },
+    { name = "unclecode-litellm", marker = "sys_platform == 'never'" },
 ]
 
 [[package]]
@@ -1934,7 +1935,7 @@ dependencies = [
     { name = "rich" },
     { name = "shapely" },
     { name = "snowballstemmer" },
-    { name = "unclecode-litellm" },
+    { name = "unclecode-litellm", marker = "sys_platform == 'never'" },
     { name = "xxhash" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ea/ad/44b57b650c3c0afaeea917bd7e6b87a64cd1108be53431690483cde0eb2d/crawl4ai-0.9.5.tar.gz", hash = "sha256:84fa6f4970fbb086a68893c9fb18605a93fcd609c72bee6fbb1d2715924afbff", size = 577411, upload-time = "2026-10-14T10:25:34.554Z" }

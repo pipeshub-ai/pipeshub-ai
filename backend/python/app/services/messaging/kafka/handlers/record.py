@@ -32,10 +32,10 @@ from app.config.constants.service import (
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.entity_cleanup_intents import clear_pending_entity_cleanup
 from app.events.events import EventProcessor
-from app.events.processor import convert_record_dict_to_record
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.models.entities import EntityType
+from app.models.record_convert import convert_record_dict_to_record
 from app.modules.code_graph import deleted_files, edge_build_trigger
 from app.modules.code_graph import enabled as code_graph_switch
 from app.modules.code_graph.build_state import (
@@ -55,6 +55,7 @@ from app.modules.indexing.connector_off_events import (
     resuming_enrichment as record_resuming_enrichment,
 )
 from app.modules.indexing.duplicate_reconcile import DuplicateReconciler
+from app.modules.indexing.embed_resume import chain_end_fields, end_attempt
 from app.modules.indexing.parse_now_marker import (
     PARSE_NOW_REV,
     PARSE_NOW_STATUS,
@@ -1542,6 +1543,7 @@ class RecordEventHandler(BaseEventService):
         parse_now_refused = False
         # Nothing of an earlier delivery's run survives into this one.
         end_run()
+        end_attempt()
         try:
             if not event_type:
                 # A message with no event type is a producer bug: acking it
@@ -2611,6 +2613,7 @@ class RecordEventHandler(BaseEventService):
 
             # Last, so every status write above is shaped by the run.
             end_run()
+            end_attempt()
 
     async def __update_document_status(
         self,
@@ -2634,6 +2637,7 @@ class RecordEventHandler(BaseEventService):
                 "indexingStatus": indexing_status,
                 "extractionStatus": extraction_status,
                 "processingStartedAt": None,
+                **chain_end_fields(indexing_status),
             }
             # Mirror the terminal status onto parsingStatus, but never
             # downgrade a parse that already completed in this attempt.

@@ -122,6 +122,10 @@ class KgWriter:
         another worker took the job."""
         return await self.tx.fetchval("/* pipeshub:kg.w_queue_touch */ SELECT kg.w_queue_touch($1, $2, $3, $4, $5)", job, seen, worker, attempts, cursor) or None
 
+    async def queue_release(self, job: int, worker: str) -> bool:
+        """Give back this worker's own claim on a job (the cursor and the heartbeat stay): False when the job is not claimed by ``worker`` in this org."""
+        return await self.tx.fetchval("/* pipeshub:kg.w_queue_release */ SELECT kg.w_queue_release($1, $2)", job, worker)
+
     async def queue_done(self, job: int) -> bool:
         """Delete a finished job; False when it was not there."""
         return await self.tx.fetchval("/* pipeshub:kg.w_queue_done */ SELECT kg.w_queue_done($1)", job)

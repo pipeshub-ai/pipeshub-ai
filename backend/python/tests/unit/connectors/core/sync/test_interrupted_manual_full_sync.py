@@ -301,8 +301,8 @@ class TestTheBootSweep:
         from app.connectors_main import reset_stale_sync_state
 
         docs = [
-            {"id": "full", "status": AppStatus.FULL_SYNCING.value},
-            {"id": "incr", "status": AppStatus.SYNCING.value},
+            {"id": "full", "status": AppStatus.FULL_SYNCING.value, "orgId": "o1"},
+            {"id": "incr", "status": AppStatus.SYNCING.value, "orgId": "o1"},
         ]
 
         async def _by_field(
@@ -315,6 +315,7 @@ class TestTheBootSweep:
         gp = AsyncMock()
         gp.get_nodes_by_field_in = AsyncMock(side_effect=_by_field)
         gp.batch_upsert_nodes = AsyncMock()
+        gp.get_all_orgs = AsyncMock(return_value=[{"_key": "o1"}])
         coordinator = MagicMock()
         coordinator.reports_liveness = True
         coordinator.peek_many = AsyncMock(return_value=set())

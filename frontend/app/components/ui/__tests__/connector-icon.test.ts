@@ -12,6 +12,8 @@ describe('resolveConnectorType', () => {
     expect(resolveConnectorType('docusign')).toBe('docusign');
     expect(resolveConnectorType('okta')).toBe('okta');
     expect(resolveConnectorType('zoom')).toBe('zoom');
+    expect(resolveConnectorType('paypal')).toBe('paypal');
+    expect(resolveConnectorType('PayPal')).toBe('paypal');
   });
 
   it('maps the bare Google toolset slugs to their logos', () => {

@@ -581,6 +581,29 @@ async def test_transaction_control_is_refused_at_runtime(sql: str) -> None:
     assert not tx.failed
 
 
+@pytest.mark.parametrize("sql", ["COMMIT", "SELECT 1; ROLLBACK", "SELECT set_config('role', 'x', false)"])
+async def test_a_refused_custom_plan_statement_leaves_the_plan_mode_alone(sql: str) -> None:
+    class Con:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        async def fetchval(self, q: str, *a: object) -> str:
+            self.sent.append(q)
+            return "auto"
+
+        async def execute(self, q: str, *a: object) -> str:
+            self.sent.append(q)
+            return "SELECT 1"
+
+        def is_in_transaction(self) -> bool:
+            return True
+    con = Con()
+    tx = Tx(con, _db(), klass="query", idempotent=False, request_id="r")  # type: ignore[arg-type]
+    with pytest.raises(UowUsageError):
+        await tx.fetch_custom_plan(sql)
+    assert con.sent == [] and not tx.failed      # refused before the mode was read or set, so there is nothing to put back
+
+
 def test_transaction_control_check_ignores_bodies_and_literals() -> None:
     from app.core.db.uow import _SQL_NOISE, _TXN_CONTROL
 

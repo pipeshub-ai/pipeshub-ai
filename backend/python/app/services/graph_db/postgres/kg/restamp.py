@@ -190,6 +190,19 @@ async def claim(db: KernelDB, org: str, worker: str, *, stale_ms: int = STALE_MS
         return await db.run(go, write=True)
 
 
+async def release(db: KernelDB, org: str, job: Job, worker: str) -> bool:
+    """Give the claim of ``job`` back so that another worker takes it at once instead of when the claim goes stale. Only the claim: the cursor stays, and every batch committed whole, so
+    the next claimant resumes where this one stopped. A failure is logged and leaves the claim to go stale, as after a crash."""
+    async def go(tx: Tx) -> bool:
+        return await KgWriter(tx).queue_release(job.id, worker)
+    try:
+        with bind(_ctx(org)):
+            return await db.run(go, write=True)
+    except Exception:
+        logger.exception("kg restamp job %s: the claim could not be given back; it is claimed again once it is stale", job.id)
+        return False
+
+
 async def _app_id(tx: Tx, org: str, app_sk: int) -> str | None:
     """The id of the connector with this sk, or None (a job of records with no connector, or a connector whose key is gone)."""
     return await tx.fetchval("/* pipeshub:kg.app_id */ SELECT id FROM kg.node_keys WHERE org_id = $1 AND sk = $2 AND coll = 1", org, app_sk)
@@ -264,7 +277,7 @@ def _stopped(stop: asyncio.Event | None) -> bool:
 async def run_job(db: KernelDB, org: str, job: Job, worker: str, *, batch: int | None = None, max_batches: int | None = None, stale_ms: int = STALE_MS,
                   stop: asyncio.Event | None = None) -> bool:
     """Batches until the job is finished (True), ``max_batches`` ran or ``stop`` is set (False). A claim lost to another worker ends it quietly. ``stop`` is looked at before each batch,
-    never inside one (a batch commits or rolls back whole): a job left unfinished keeps its marks, so what it hides stays hidden, and it is claimed again once its claim has gone stale."""
+    never inside one (a batch commits or rolls back whole): a job left unfinished keeps its marks, so what it hides stays hidden, and a stop gives the claim back so that another worker takes the job at once (after a crash it is claimed again once its claim has gone stale)."""
     n = 0
     while (max_batches is None or n < max_batches) and not _stopped(stop):
         try:
@@ -279,6 +292,8 @@ async def run_job(db: KernelDB, org: str, job: Job, worker: str, *, batch: int |
             return True
         if job.cursor is None:
             return False                                   # a pass is over and some rows could not be restamped: they stay hidden, and the job is looked at again once its claim is stale
+    if _stopped(stop):
+        await release(db, org, job, worker)                # a graceful stop: the rows this job hides must not wait out the claim
     return False
 
 

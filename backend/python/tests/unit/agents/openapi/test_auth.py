@@ -15,7 +15,18 @@ from app.agents.openapi.auth import (
     OAuthTokenSource,
     build_auth,
 )
-from app.agents.openapi.models import ApiToolsetCredentials, AuthScheme, AuthType
+from app.agents.openapi.executor import ApiCallError, OpenAPIHttpExecutor
+from app.agents.openapi.models import (
+    ApiToolsetCredentials,
+    AuthScheme,
+    AuthType,
+    CompiledOperation,
+)
+from tests.unit.agents.mcp.refresh_failures import (
+    BODY_SECRET,
+    TOKEN_HOST,
+    token_endpoint_error,
+)
 
 BASE = "https://api.acme.test/v2"
 
@@ -178,6 +189,93 @@ class TestOAuth:
         with pytest.raises(ApiToolsetAuthError) as raised:
             await source.access_token()
         assert "abc" not in str(raised.value)
+
+
+PROVIDER_DOWN = (
+    "The API's OAuth server is down or busy, so PipesHub couldn't get an access token. Try again in a few minutes."
+)
+OUTAGES = [
+    (500, {"error": "server_error"}), (502, {}), (503, {"error": "temporarily_unavailable"}), (504, {}),
+    (429, {"error": "slow_down"}),
+    # An overloaded endpoint can send any code: the status decides.
+    (503, {"error": "invalid_grant"}),
+]
+REFUSALS = [
+    (400, {"error": "invalid_grant"}), (401, {"error": "invalid_client"}), (403, {}), (400, {"error": "invalid_request"}),
+    (200, {}),  # answered without an access token: no status on the error
+]
+
+
+def _with_secret(body: dict[str, Any]) -> dict[str, Any]:
+    return {**body, "error_description": BODY_SECRET}
+
+
+def _refreshable() -> ApiToolsetCredentials:
+    return ApiToolsetCredentials(client_id="c", oauth=_tokens("old", expires_in=10, age=100, refresh="r1"))
+
+
+class TestTokenEndpointOutage:
+    """A provider that is down or rate-limiting hasn't revoked anything: the user is told to retry, not to sign in."""
+
+    @pytest.mark.parametrize(("status", "body"), OUTAGES)
+    async def test_a_refresh_outage_says_try_again(self, endpoint: _FakeTokenEndpoint, status: int, body: dict[str, Any]) -> None:
+        endpoint.error = await token_endpoint_error(status, _with_secret(body))
+        saved: list[ApiToolsetCredentials] = []
+
+        async def save(creds: ApiToolsetCredentials) -> None:
+            saved.append(creds)
+
+        source = OAuthTokenSource(AUTH_CODE, _refreshable(), token_url="https://auth.acme.test/token", allow_private=False, save=save)
+        with pytest.raises(ApiCallError) as raised:
+            await source.access_token()
+        assert str(raised.value) == PROVIDER_DOWN
+        assert raised.value.__cause__ is endpoint.error and endpoint.error.status == status
+        assert not saved
+
+    @pytest.mark.parametrize(("status", "body"), [(503, {"error": "temporarily_unavailable"}), (429, {"error": "slow_down"})])
+    async def test_a_client_credentials_outage_says_try_again(
+        self, endpoint: _FakeTokenEndpoint, status: int, body: dict[str, Any],
+    ) -> None:
+        endpoint.error = await token_endpoint_error(status, _with_secret(body))
+        source = OAuthTokenSource(CLIENT_CREDENTIALS, ApiToolsetCredentials(client_id="c", client_secret="s"),
+                                  token_url="https://a/t", allow_private=False)
+        with pytest.raises(ApiCallError, match="^The API's OAuth server is down or busy"):
+            await source.access_token()
+        assert [kind for kind, _ in endpoint.calls] == ["client_credentials"]
+
+    @pytest.mark.parametrize(("status", "body"), REFUSALS)
+    async def test_a_refusal_still_asks_to_sign_in_again(self, endpoint: _FakeTokenEndpoint, status: int, body: dict[str, Any]) -> None:
+        endpoint.error = await token_endpoint_error(status, _with_secret(body))
+        source = OAuthTokenSource(AUTH_CODE, _refreshable(), token_url="https://auth.acme.test/token", allow_private=False)
+        with pytest.raises(ApiToolsetAuthError, match="or sign in again") as raised:
+            await source.access_token()
+        assert BODY_SECRET not in str(raised.value) and TOKEN_HOST not in str(raised.value)
+
+    async def test_after_the_outage_the_same_sign_in_works(self, endpoint: _FakeTokenEndpoint) -> None:
+        saved: list[ApiToolsetCredentials] = []
+
+        async def save(creds: ApiToolsetCredentials) -> None:
+            saved.append(creds)
+
+        source = OAuthTokenSource(AUTH_CODE, _refreshable(), token_url="https://auth.acme.test/token", allow_private=False, save=save)
+        endpoint.error = await token_endpoint_error(503, {"error": "temporarily_unavailable"})
+        with pytest.raises(ApiCallError):
+            await source.access_token()
+        endpoint.error = None
+        assert await source.access_token() == "rt-2"
+        assert [call["refresh_token"] for _, call in endpoint.calls] == ["r1", "r1"]
+        assert len(saved) == 1
+
+    async def test_an_outage_on_the_refresh_after_a_401_says_try_again(self, endpoint: _FakeTokenEndpoint) -> None:
+        creds = ApiToolsetCredentials(client_id="c", oauth=_tokens("valid", refresh="r1"))
+        auth = build_auth(AUTH_CODE, creds, base_url=BASE, allow_private=False)
+        executor = OpenAPIHttpExecutor(BASE, auth, allow_private=False,
+                                       transport=httpx.MockTransport(lambda r: httpx.Response(401, json={})))
+        endpoint.error = await token_endpoint_error(503, _with_secret({"error": "temporarily_unavailable"}))
+        op = CompiledOperation(tool_name="t", method="GET", path="/items", input_schema={"type": "object"})
+        with pytest.raises(ApiCallError, match="^The API's OAuth server is down or busy"):
+            await executor.call(op, {})
+        assert [kind for kind, _ in endpoint.calls] == ["refresh"]
 
 
 class TestSharedCredentialRefresh:

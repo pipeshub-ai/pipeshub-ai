@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextlib
+import contextvars
 import logging
 import math
 import multiprocessing
@@ -18,18 +20,28 @@ from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from functools import lru_cache
 from io import BytesIO
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, TypeVar
 
 import numpy as np
 import pdfplumber
 from PIL import Image
 
+from app.services.resource_governor.lanes import (
+    RASTER_WORKERS_ENV,
+    explicit_setting,
+    in_lane_scope,
+    parse_lanes_mode,
+)
 from app.services.resource_governor.probe import effective_cpu_count
 from app.utils.pool_worker import run_and_release, start_housekeeping
 from app.utils.worker_scaling import scaled
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+
     from app.services.resource_governor import ResourceGovernor
+
+T = TypeVar("T")
 
 _logger = logging.getLogger(__name__)
 _pool_lock = threading.Lock()
@@ -218,7 +230,80 @@ def _worker_render_page_from_bytes(
         return _page_to_rgb_array(pdf.pages[page_number - 1], resolution)
 
 
+LANE_WORKER_ENV = "PIPESHUB_LANE_WORKER"
+# Measurement knob: a lane worker renders in its own process
+# instead of in its nested one-child executor. Honoured only under PARSE_LANES=on.
+LANE_RASTER_INPROC_ENV = "PIPESHUB_LANE_RASTER_INPROC"
+
+# pdfium is not thread-safe: lane threads that render in this process take turns.
+_inproc_lock = threading.Lock()
+_raster_jobs = [0]  # a list so the counter needs no global statement
+_raster_jobs_lock = threading.Lock()
+# Set by a caller that may be cancelled while its render waits for a lane.
+_cancel_event: contextvars.ContextVar[threading.Event | None] = contextvars.ContextVar(
+    "pdf_raster_cancel", default=None
+)
+
+
+@contextlib.contextmanager
+def cancel_on(event: threading.Event) -> Iterator[None]:
+    """Renders started in this context stop waiting for a lane once *event* is set."""
+    token = _cancel_event.set(event)
+    try:
+        yield
+    finally:
+        _cancel_event.reset(token)
+
+
+def raster_jobs() -> int:
+    """Render jobs sent to the parse lanes by this process."""
+    return _raster_jobs[0]
+
+
+def _lanes_active() -> bool:
+    if parse_lanes_mode() != "on":
+        return False
+    if os.environ.get(LANE_WORKER_ENV) == "1":
+        return os.environ.get(LANE_RASTER_INPROC_ENV) == "1"
+    governor = _resource_governor
+    return governor is not None and getattr(governor, "lanes", None) is not None
+
+
+def _lane_route() -> str | None:
+    """``"inproc"``, ``"pool"`` or None for the legacy executor.
+
+    A render inside a lane (worker process, or a lane thread's in-process fallback)
+    already runs under that lane's lease: it takes no second one and never enters the
+    parse pool, which would wait for the lane its caller holds. An explicit
+    ``PDF_RASTER_WORKERS`` or a process without a parse pool keeps the old executor.
+    """
+    if not _lanes_active():
+        return None
+    if os.environ.get(LANE_WORKER_ENV) == "1" or in_lane_scope():
+        return "inproc"
+    if explicit_setting(RASTER_WORKERS_ENV) is not None:
+        return None
+    from app.modules.parsers import parse_pool
+
+    return "pool" if parse_pool.parse_pool_workers() > 0 else None
+
+
+def _run_on_route(route: str, fn: Callable[..., T], *args: object) -> T:
+    if route == "inproc":
+        with _inproc_lock:
+            return fn(*args)
+    from app.modules.parsers import parse_pool
+
+    with _raster_jobs_lock:
+        _raster_jobs[0] += 1
+    return parse_pool.run_blocking(
+        fn, *args, label="pdf raster", cancelled=_cancel_event.get()
+    )
+
+
 def _run_in_pool(fn, *args):
+    if (route := _lane_route()) is not None:
+        return _run_on_route(route, fn, *args)
     try:
         return _get_pdf_raster_pool().submit(run_and_release, fn, *args).result()
     except BrokenProcessPool:
@@ -319,6 +404,8 @@ async def render_all_pages_from_bytes(
     pdf_bytes: bytes,
     resolution: float = 72,
 ) -> Dict[int, Tuple[np.ndarray, float]]:
+    if (route := _lane_route()) is not None:
+        return await asyncio.to_thread(_run_on_route, route, _worker_render_all_from_bytes, pdf_bytes, resolution)
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         _get_pdf_raster_pool(),

@@ -7,10 +7,7 @@ backend. A test that cannot apply to Neo4j is left out of its collection instead
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    import pytest
+import pytest
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -27,3 +24,19 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     if left_out:
         config.hook.pytest_deselected(items=left_out)
         items[:] = [item for item in items if item not in left_out]
+
+
+#: Suites that build sparse, synthetic worlds to exercise access, closure and projection logic, not payloads the
+#: application writes: graph schema validation is off for them. Every other suite here (the real-writer ones:
+#: KB pushes, partial-write failures, record-write concurrency, entity and connector writes, ...) stays strict.
+_SYNTHETIC_WORLD_MODULES = frozenset({
+    "test_conformance", "test_kg_capture", "test_kg_closure_parity", "test_kg_derivation", "test_kg_guard",
+    "test_kg_projection", "test_kg_projection_races", "test_kg_sql_helpers", "test_access", "test_identity",
+    "test_core", "test_linear_access_real_backends",
+})
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_worlds_skip_schema_validation(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    if request.module.__name__.rsplit(".", 1)[-1] in _SYNTHETIC_WORLD_MODULES:
+        monkeypatch.setenv("GRAPH_SCHEMA_ENFORCEMENT", "off")

@@ -481,7 +481,7 @@ export class UserAccountController {
   async incrementWrongCredentialCount(userId: string, orgId: string) {
     return getCredentialRepository().incrementWrongCount(userId, orgId);
   }
-  // userValidator verifies the JWT and sets req.user; it does not bind an org context.
+  // The caller comes from the verified token on req.user, never from the request body.
   private callerIdentity(req: AuthSessionRequest): {
     userId: string;
     orgId: string;

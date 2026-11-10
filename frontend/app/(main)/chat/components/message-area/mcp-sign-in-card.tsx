@@ -13,6 +13,7 @@ import {
 import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
 import { useChatStore } from '../../store';
+import { useRenderSlotId } from './render-slot';
 import type { McpSignInServer } from '../../types';
 
 /** When the server's current sign-in was made (0 for a record from before that was kept), or null without one. */
@@ -38,7 +39,8 @@ export function McpSignInCard({ servers }: McpSignInCardProps) {
   const { t } = useTranslation();
   const access = useChatStore((s) => s.agentContextAccess);
   // Someone viewing a conversation shared with them can't send in it.
-  const canSend = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null)) !== false;
+  const renderSlotId = useRenderSlotId();
+  const canSend = useChatStore((s) => (renderSlotId ? s.slots[renderSlotId]?.isOwner ?? null : null)) !== false;
   const [signedIn, setSignedIn] = useState<ReadonlySet<string>>(new Set());
   const [busyId, setBusyId] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -96,7 +98,7 @@ export function McpSignInCard({ servers }: McpSignInCardProps) {
   };
 
   const tryAgain = () => {
-    const slotId = useChatStore.getState().activeSlotId;
+    const slotId = renderSlotId;
     if (!slotId) return;
     const text = t('chat.mcpSignIn.retryMessage', { servers: servers.map((s) => s.serverName).join(', ') });
     // MCP servers are only in agent mode.

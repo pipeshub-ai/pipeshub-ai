@@ -29,6 +29,9 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # published from this lock the install changes nothing, so the site-packages
 # layer copied below stays byte-identical across releases. REQUIRE_CURRENT_BASE=1
 # (the release build) fails instead of silently installing a delta.
+# A base published before unclecode-litellm was excluded still carries that fork.
+# It shares litellm/ with the real package, so removing it also deletes litellm
+# files, and litellm is reinstalled right after.
 # Git sources have no hash, so they install separately; see Dockerfile.base.
 WORKDIR /app/python
 COPY --from=uv /uv /uvx /bin/
@@ -38,10 +41,15 @@ RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
     set -eux; \
     snap() { find /usr/local/lib/python3.12/site-packages -type f -printf '%P %s\n' | sort | sha256sum | awk '{print $1}'; }; \
     before="$(snap)"; \
+    reinstall=""; \
+    if uv pip show --system --quiet unclecode-litellm; then \
+        uv pip uninstall --system unclecode-litellm; \
+        reinstall="--reinstall-package litellm"; \
+    fi; \
     uv export --frozen --no-dev --no-editable --no-emit-project --no-header --quiet -o /tmp/requirements.txt; \
     grep -E '^[A-Za-z0-9_.-]+ @ git\+' /tmp/requirements.txt > /tmp/requirements-git.txt || true; \
     grep -vE '^[A-Za-z0-9_.-]+ @ git\+' /tmp/requirements.txt > /tmp/requirements-hashed.txt; \
-    uv pip install --system --require-hashes -r /tmp/requirements-hashed.txt; \
+    uv pip install --system --require-hashes $reinstall -r /tmp/requirements-hashed.txt; \
     if [ -s /tmp/requirements-git.txt ]; then uv pip install --system --no-deps -r /tmp/requirements-git.txt; fi; \
     after="$(snap)"; \
     if [ "$REQUIRE_CURRENT_BASE" = "1" ] && [ "$before" != "$after" ]; then \

@@ -144,6 +144,11 @@ class SourceReconciler:
                  "includeArchived": True}, page_size=PROJECT_PAGE)
             if n.get("id") and not n.get("trashed")
         }
+        for node in listed.values():
+            # The stamp covers every team, link and milestone of a project, so a long list is read to its end.
+            for field, operation in (("teams", "projectTeams"), ("externalLinks", "projectExternalLinks"),
+                                     ("projectMilestones", "projectMilestones")):
+                await self._gateway.complete(node, field, operation, ["project", field], page_size=PROJECT_PAGE)
         removed = 0
         kept: dict[str, Record] = {}
         for record in stored:

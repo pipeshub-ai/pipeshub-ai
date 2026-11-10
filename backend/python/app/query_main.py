@@ -36,6 +36,7 @@ from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-qs")
 from app.api.routes.code_graph import router as code_graph_router  # noqa: E402 - after set_service_suffix(), like the imports around it
+from app.api.routes.graph_view import router as graph_view_router  # noqa: E402
 from app.api.routes.health import router as health_router
 from app.api.routes.knowledge_search import router as knowledge_search_router  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.openai_models import router as openai_models_router
@@ -603,6 +604,7 @@ app.include_router(agent_router, prefix="/api/v1/agent")
 app.include_router(skills_router, prefix="/api/v1/skills")
 app.include_router(toolsets_router)
 app.include_router(code_graph_router, prefix="/api/v1")
+app.include_router(graph_view_router, prefix="/api/v1")
 # These routes call whatever provider URL the body names, so only admins may reach them.
 app.include_router(health_router, prefix="/api/v1", dependencies=[Depends(require_admin_caller)])
 app.include_router(ai_models_registry_router, prefix="/api/v1")

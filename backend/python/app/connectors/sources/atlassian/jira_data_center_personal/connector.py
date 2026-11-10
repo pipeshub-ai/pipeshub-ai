@@ -202,6 +202,8 @@ def _excludes(project_keys_operator: FilterOperatorType | None) -> bool:
 class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
     """Personal Jira DC: creator-only permissions, no user/group/role/scheme API calls."""
 
+    _enforces_issue_security = False
+
     def __init__(
         self,
         logger: Logger,
@@ -296,6 +298,7 @@ class JiraDataCenterPersonalConnector(JiraDataCenterConnector):
 
             # The creator's user-app link is the gate. Projects inherit from the app.
             await self.ensure_creator_user_app_relation()
+            await self.withdraw_app_users_except_creator()
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service,

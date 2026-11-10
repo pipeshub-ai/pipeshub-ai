@@ -1,9 +1,8 @@
 import { Router, Response, NextFunction } from 'express';
 import { Container } from 'inversify';
-import {
-  adminValidator,
-  userValidator,
-} from '../middlewares/userAuthentication.middleware';
+import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
+import { requireSessionAuth } from '../../../libs/middlewares/require-session-auth.middleware';
+import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { z } from 'zod';
 import { AuthMethodType } from '../types/auth-method';
@@ -110,13 +109,18 @@ const authMethodValidationSchema = z.object({
 export function createOrgAuthConfigRouter(container: Container) {
   const router = Router();
   router.use(attachContainerMiddleware(container));
+  // These settings decide how everyone signs in, so only an admin's interactive session may read or change them.
+  const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
+  router.use(
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireSessionAuth,
+    userAdminCheck,
+  );
   const userAccountController = container.get<UserAccountController>(
     'UserAccountController',
   );
   router.get(
     '/authMethods',
-    userValidator,
-    adminValidator,
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         await userAccountController.getAuthMethod(req, res, next);
@@ -127,8 +131,6 @@ export function createOrgAuthConfigRouter(container: Container) {
   );
   router.get(
     '/signInRemoval',
-    userValidator,
-    adminValidator,
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         res
@@ -141,8 +143,6 @@ export function createOrgAuthConfigRouter(container: Container) {
   );
   router.post(
     '/',
-    userValidator,
-    adminValidator,
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         await userAccountController.setUpAuthConfig(req, res);
@@ -153,8 +153,6 @@ export function createOrgAuthConfigRouter(container: Container) {
   );
   router.post(
     '/updateAuthMethod',
-    userValidator,
-    adminValidator,
     ValidationMiddleware.validate(authMethodValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {

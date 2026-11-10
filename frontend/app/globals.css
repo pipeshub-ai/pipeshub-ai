@@ -1790,3 +1790,28 @@ th code {
 .kb-filter-bar-mobile > * {
   flex-shrink: 0;
 }
+
+/* Graph explorer: controls are at least 44px tall on touch screens and narrow windows (the switch is labelled, so its label is the target). */
+@media (pointer: coarse), (max-width: 480px) {
+  .graph-explorer button:not([role='switch']),
+  .graph-explorer input,
+  .graph-explorer [role='combobox'],
+  .graph-explorer [role='option'] {
+    min-height: 44px;
+  }
+  .graph-explorer button:not([role='switch']) {
+    min-width: 44px;
+  }
+}
+@media (pointer: coarse), (max-width: 480px) {
+  .graph-explorer label {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+}
+
+/* The repository list's placeholder, darker than Radix's default so it keeps 4.5:1 on white. */
+.graph-explorer .rt-SelectTrigger:where([data-placeholder]) {
+  color: var(--gray-11);
+}

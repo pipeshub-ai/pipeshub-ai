@@ -1,7 +1,7 @@
 import uuid
 from typing import Any
 
-from docling.datamodel.document import DoclingDocument
+from docling_core.types.doc.document import DoclingDocument
 
 from app.models.blocks import (
     Block,

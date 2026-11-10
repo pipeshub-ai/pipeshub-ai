@@ -12,12 +12,14 @@ AG-UI formatter, serialised exactly as `stream_bridge.py` writes them.
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NoReturn
 
 import pytest
 
 from app.agents.agent_loop.protocol.formatter import AGUI_FORMATTER
+from app.utils.logger import log_record_fields
 from tests.support.agent_routes import (
     AGENTS,
     FakeConfigService,
@@ -83,6 +85,17 @@ def _stream(client: TestClient, agent: str, caller: str, body: dict | None = Non
     )
 
 
+_RUN_ID = "7c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+
+
+def _turn_ends(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
+    """The route's own `agent_turn.end` lines (exits before the agent loop starts)."""
+    return [
+        {**log_record_fields(r), "level": r.levelno}
+        for r in caplog.records if r.getMessage() == "agent_turn.end"
+    ]
+
+
 class TestChatStreamAccess:
     @pytest.mark.parametrize("caller,agent", [("bob", "private"), ("mallory", "shared")])
     def test_agent_outside_reach_reads_as_not_found(self, graph, loop, caller, agent) -> None:
@@ -118,6 +131,18 @@ class TestChatStreamAccess:
         assert call["user_info"]["fullName"] == "Bob B."
         assert call["query_info"]["is_service_account"] is True
         assert call["cancellation_owner"].user_id == "u-bob"
+
+    def test_service_account_chat_logs_the_agent_id_not_who_is_chatting(self, graph, loop, caplog) -> None:
+        caplog.set_level(logging.DEBUG, logger="test.agent_routes")
+        c, _ = make_client(graph)
+        body = {"query": "hi", "callerDisplayName": "Bob B.", "callerEmail": "bob@acme.test"}
+        assert _stream(c, "sa", "bob", body).status_code == 200
+
+        messages = [r.getMessage() for r in caplog.records if r.name == "test.agent_routes"]
+        for personal in ("Bob B.", "bob@acme.test", "Alice", "alice@acme.test"):
+            assert not any(personal in m for m in messages), f"{personal!r} was logged"
+        # Retrieval runs as the creator, so the id logged is u-alice, not the caller.
+        assert "Loaded service account agent sa (retrieval runs as user u-alice)" in messages
 
     def test_service_account_artifacts_belong_to_the_person_chatting(self, graph, loop) -> None:
         c, _ = make_client(graph)
@@ -264,6 +289,23 @@ class TestChatStreamToolsets:
         assert "Workspace" in response.text
         assert not loop.calls
 
+    @pytest.mark.parametrize("stored,counts", [(None, (1, 0)), ({"isAuthenticated": False}, (0, 1))])
+    def test_the_stopped_run_logs_one_end_line_with_counts_not_names(
+        self, graph, loop, caplog, stored, counts,
+    ) -> None:
+        self._with_toolset(graph, "private")
+        config = FakeConfigService({"/services/toolsets/inst-1/u-alice": stored} if stored else {})
+        c, _ = make_client(graph, config)
+        with caplog.at_level(logging.INFO):
+            _stream(c, "private", "alice", {"query": "hi", "runId": _RUN_ID})
+
+        [end] = _turn_ends(caplog)
+        assert (end["stop_reason"], end["error_class"], end["code"], end["run_id"], end["level"]) == (
+            "error", "bad_request", "toolset_config_missing", _RUN_ID, logging.WARNING,
+        )
+        assert (end["missing"], end["unauthenticated"]) == counts
+        assert not [r for r in caplog.records if "Jira" in r.getMessage()]
+
     def test_actions_flag_off_drops_every_toolset(self, graph, loop) -> None:
         from app.services.featureflag.platform_settings import PLATFORM_SETTINGS_KEY
 
@@ -302,13 +344,15 @@ class TestChatStreamMcpServers:
                 return json.loads(block.split("data: ", 1)[1])
         raise AssertionError(f"no RUN_ERROR in {response.text!r}")
 
-    def test_a_server_the_user_has_not_connected_is_named_with_its_sign_in(self, graph, loop) -> None:
+    def test_a_server_the_user_has_not_connected_is_named_with_its_sign_in(self, graph, loop, caplog) -> None:
         self._attach(graph, "private")
         c, _ = make_client(graph, self._config(**{"/services/mcp/instances/inst-m": self._instance()}))
 
-        error = self._run_error(_stream(c, "private", "alice"))
+        with caplog.at_level(logging.INFO):
+            error = self._run_error(_stream(c, "private", "alice"))
 
         assert error["code"] == "mcp_server_config_missing"
+        assert [(e["code"], e["unauthenticated"]) for e in _turn_ends(caplog)] == [("mcp_server_config_missing", 1)]
         assert error["details"] == {
             "agentId": "private",
             "serviceAccount": False,
@@ -382,7 +426,7 @@ class TestChatStreamKnowledge:
         assert call["query_info"]["filters"]["strictScope"] is True
         assert {k["connectorId"] for k in call["query_info"]["knowledge"]} == {"conn-1", "kb-1"}
 
-    def test_loop_failure_becomes_a_plain_error_frame(self, graph, monkeypatch) -> None:
+    def test_loop_failure_becomes_a_plain_error_frame(self, graph, monkeypatch, caplog) -> None:
         def boom(*_a: object, **_k: object) -> NoReturn:
             raise RuntimeError("socket closed by 10.0.0.7")
         monkeypatch.setattr("app.api.routes.agent.run_agent_loop_stream", boom)
@@ -391,9 +435,33 @@ class TestChatStreamKnowledge:
             return object(), {}, {}
         monkeypatch.setattr("app.api.routes.agent.get_llm_for_chat", llm)
         c, _ = make_client(graph)
-        response = _stream(c, "private", "alice")
+        with caplog.at_level(logging.INFO):
+            response = _stream(c, "private", "alice", {"query": "hi", "runId": _RUN_ID})
         assert "RUN_ERROR" in response.text
         assert "10.0.0.7" not in response.text
+        failed = [r for r in caplog.records if r.getMessage() == "agent_turn.failed"]
+        assert [r.levelno for r in failed] == [logging.ERROR]
+        assert [(e["stop_reason"], e["run_id"], e["level"]) for e in _turn_ends(caplog)] == [
+            ("error", _RUN_ID, logging.INFO),
+        ]
+        assert not [r for r in caplog.records if "Error in chat_stream body" in r.getMessage()]
+
+    @pytest.mark.parametrize("step", ["_resolve_turn_filters", "_knowledge_within_connection"])
+    def test_a_selection_too_large_logs_one_end_line(self, graph, loop, monkeypatch, caplog, step) -> None:
+        from app.modules.retrieval.selection_scope import SelectionTooLargeError
+
+        async def too_large(*_a: object, **_k: object) -> NoReturn:
+            raise SelectionTooLargeError
+        monkeypatch.setattr(f"app.api.routes.agent.{step}", too_large)
+        c, _ = make_client(graph)
+        with caplog.at_level(logging.INFO):
+            response = _stream(c, "private", "alice", {"query": "hi", "runId": _RUN_ID})
+
+        assert "RUN_ERROR" in response.text
+        assert not loop.calls
+        [end] = _turn_ends(caplog)
+        assert (end["stop_reason"], end["error_class"], end["run_id"]) == ("error", "bad_request", _RUN_ID)
+        assert end["code"].startswith("selection")
 
     def test_no_model_configured_is_reported_as_such(self, graph, monkeypatch) -> None:
         async def none(*_a: object, **_k: object) -> None:

@@ -10,18 +10,24 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.schema.node_validator import NodeSchemaValidator
 from app.services.graph_db import edge_effects
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
-EDGE = {"from_id": "r1", "from_collection": "records", "to_id": "g1", "to_collection": "recordGroups"}
-REL = {"from_id": "r1", "from_collection": "records", "to_id": "r2", "to_collection": "records", "relationshipType": "PARENT_CHILD"}
+EDGE = {
+    "from_id": "r1", "from_collection": "records", "to_id": "g1", "to_collection": "recordGroups",
+    "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+}
+REL = {"from_id": "r1", "from_collection": "records", "to_id": "r2", "to_collection": "records", "relationshipType": "PARENT_CHILD",
+       "createdAtTimestamp": 1, "updatedAtTimestamp": 1}
 BEL = CollectionNames.BELONGS_TO.value
 
 
 def _neo4j() -> tuple[Neo4jProvider, AsyncMock]:
     provider = Neo4jProvider.__new__(Neo4jProvider)
     provider.logger = MagicMock()
+    provider.validator = NodeSchemaValidator()
     run = AsyncMock(return_value=[{"made": [["r1", "g1"]], "created": 1, "matched": 1, "upserted": 1}])
     provider.client = SimpleNamespace(execute_query=run)
     return provider, run
