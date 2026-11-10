@@ -11,6 +11,7 @@ import type {
   ChatSessionDto,
   MessageRow,
   NewMessage,
+  SessionScope,
 } from '../../../libs/repositories/conversation/types';
 import type { ConversationRepository } from '../../../libs/repositories/conversation';
 import { sessionOf } from '../../../libs/repositories/mongo';
@@ -273,6 +274,19 @@ export async function copySessionUpToMessage(
     throw new NotFoundError('Message not found');
   }
 
+  // Counted before the session exists because its metadata is written once, at
+  // creation, and the "forked from here" line is placed by this count.
+  let copiedCount = 0;
+  for await (const batch of messagesUpTo(
+    source._id,
+    orgId,
+    forkPoint.seq,
+    unit,
+    repo,
+  )) {
+    copiedCount += batch.length;
+  }
+
   const conversation = await repo.createSession(
     {
       ...(artifacts && { id: artifacts.forkId }),
@@ -295,6 +309,7 @@ export async function copySessionUpToMessage(
       metadata: {
         forkedFromConversationId: source._id,
         forkedFromMessageId: messageId,
+        forkedMessageCount: copiedCount,
       },
     },
     unit,
@@ -337,6 +352,109 @@ export async function copySessionUpToMessage(
   }
 
   return { conversation, messageCount };
+}
+
+export interface ForkOrigin {
+  conversationId: string;
+  messageId: string;
+  /** The original chat's title; null when the viewer cannot open it (deleted, archived, not theirs). */
+  title: string | null;
+  /** This chat's copy of the fork point: the "forked from here" line goes after it. Absent on forks made before it was recorded. */
+  atMessageId?: string;
+}
+
+const metaOf = (session: Pick<ChatSessionDto, 'metadata'>): Record<string, unknown> =>
+  session.metadata instanceof Map
+    ? Object.fromEntries(session.metadata)
+    : (session.metadata ?? {});
+
+/**
+ * Where a fork was copied from, for the viewer of the fork. The original's
+ * title is returned only when the viewer owns it, so a chat shared with
+ * someone never names a chat that was not shared. Never throws: the origin is
+ * decoration, and opening the chat must not depend on it.
+ */
+export async function resolveForkOrigin(
+  session: Pick<ChatSessionDto, '_id' | 'orgId' | 'metadata' | 'agentKey'>,
+  userId: string,
+  repo: ConversationRepository = getConversationRepository(),
+): Promise<ForkOrigin | undefined> {
+  const meta = metaOf(session);
+  const conversationId = meta.forkedFromConversationId;
+  const messageId = meta.forkedFromMessageId;
+  if (typeof conversationId !== 'string' || typeof messageId !== 'string') {
+    return undefined;
+  }
+  try {
+    const scope: SessionScope = session.agentKey
+      ? { kind: 'agent', agentKey: session.agentKey }
+      : { kind: 'chat' };
+    const original = await repo.findOwned(scope, conversationId, {
+      orgId: session.orgId,
+      userId,
+    });
+    const copied = Number(meta.forkedMessageCount);
+    const [atRow] =
+      Number.isInteger(copied) && copied > 0
+        ? await repo.listMessages(session._id, {
+            orgId: session.orgId,
+            skip: copied - 1,
+            limit: 1,
+          })
+        : [];
+    return {
+      conversationId,
+      messageId,
+      title: original && !original.isArchived ? (original.title ?? '') : null,
+      ...(atRow && { atMessageId: atRow.dto._id }),
+    };
+  } catch (error) {
+    logger.warn('Could not resolve where a fork was copied from', {
+      conversationId: session._id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+}
+
+export interface ForkChild {
+  conversationId: string;
+  title: string;
+  /** The message of this chat the fork was made at; the link goes after it. */
+  fromMessageId: string;
+}
+
+/**
+ * The viewer's own forks of a chat, so the original can link to them. Only the
+ * viewer's own chats are listed: a fork someone else made of a shared chat is
+ * theirs and is never named here. Never throws, like `resolveForkOrigin`.
+ */
+export async function resolveForks(
+  session: Pick<ChatSessionDto, '_id' | 'orgId' | 'agentKey'>,
+  userId: string,
+  repo: ConversationRepository = getConversationRepository(),
+): Promise<ForkChild[]> {
+  try {
+    const scope: SessionScope = session.agentKey
+      ? { kind: 'agent', agentKey: session.agentKey }
+      : { kind: 'chat' };
+    const forks = await repo.listForksOf(scope, session._id, {
+      orgId: session.orgId,
+      userId,
+    });
+    return forks.flatMap((fork) => {
+      const fromMessageId = metaOf(fork).forkedFromMessageId;
+      return typeof fromMessageId === 'string'
+        ? [{ conversationId: fork._id, title: fork.title ?? '', fromMessageId }]
+        : [];
+    });
+  } catch (error) {
+    logger.warn('Could not list the forks of a conversation', {
+      conversationId: session._id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  }
 }
 
 const copyOf = (row: MessageRow): NewMessage =>

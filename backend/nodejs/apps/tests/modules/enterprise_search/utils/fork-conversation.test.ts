@@ -14,10 +14,13 @@ import {
   copyArtifactsForFork,
   copySessionUpToMessage,
   resolveForkProjectId,
+  resolveForkOrigin,
+  resolveForks,
   expirePendingApprovals,
   FORK_COPY_BATCH_SIZE,
 } from '../../../../src/modules/enterprise_search/utils/fork-conversation'
 import { InMemoryChatStore, oid } from '../controller/chat-test-harness'
+import type { ChatSessionDto } from '../../../../src/libs/repositories/conversation/types'
 import { MongoTx } from '../../../../src/libs/repositories/mongo'
 
 describe('fork-conversation helpers', () => {
@@ -521,5 +524,152 @@ describe('stripMessageForCopy', () => {
   it('drops the author stamp and keeps the turn as written', () => {
     const message = { content: 'c', authorUserId: 'b'.repeat(24), tools: [1], reasoning: [1], parts: [1], referenceData: [1] }
     expect(stripMessageForCopy(message)).to.deep.equal({ content: 'c', tools: [1], reasoning: [1], parts: [1], referenceData: [1] })
+  })
+})
+
+const metaOf = (s: { metadata?: unknown }): Record<string, unknown> =>
+  s.metadata instanceof Map ? Object.fromEntries(s.metadata) : (s.metadata as Record<string, unknown>)
+
+describe('fork origin', () => {
+  afterEach(() => {
+    sinon.restore()
+  })
+
+  const seedFork = async (opts: { archive?: boolean } = {}) => {
+    const store = new InMemoryChatStore()
+    store.install()
+    const orgId = oid()
+    const owner = oid()
+    const source = store.addSession({
+      orgId,
+      userId: owner,
+      initiator: owner,
+      title: 'Quarterly numbers',
+      sessionType: 'chat',
+      ...(opts.archive && { isArchived: true }),
+    })
+    store.addMessage(source, { messageType: 'user_query', content: 'What were Q3 sales?' })
+    const mid = store.addMessage(source, { messageType: 'bot_response', content: 'Q3 sales were 4M.' })
+    store.addMessage(source, { messageType: 'user_query', content: 'And Q4?' })
+    // The route passes a plain row whose ids are strings, which the notes keep.
+    const dto = {
+      _id: String(source._id),
+      orgId: String(orgId),
+      userId: String(owner),
+      initiator: String(owner),
+      title: 'Quarterly numbers',
+    } as ChatSessionDto
+    const { conversation } = await copySessionUpToMessage(
+      dto,
+      String(mid._id),
+      String(owner),
+      String(orgId),
+      { sessionType: 'chat' },
+    )
+    return { store, orgId, owner, source: dto, mid, fork: conversation }
+  }
+
+  it('records how many messages the fork copied', async () => {
+    const { fork } = await seedFork()
+    expect(metaOf(fork).forkedMessageCount).to.equal(2)
+  })
+
+  it('names the original and the copy of the fork point to the owner', async () => {
+    const { store, owner, source, mid, fork } = await seedFork()
+    const copyOfMid = store.messagesOf(fork._id)[1]!
+
+    const origin = await resolveForkOrigin(fork, String(owner))
+
+    expect(origin).to.deep.equal({
+      conversationId: source._id,
+      messageId: String(mid._id),
+      title: 'Quarterly numbers',
+      atMessageId: String(copyOfMid._id),
+    })
+  })
+
+  it('reads the notes whether the store gives a Map or a plain object', async () => {
+    const { owner, source, mid, fork } = await seedFork()
+    const asMap = { ...fork, metadata: new Map(Object.entries(metaOf(fork))) }
+    const asObject = { ...fork, metadata: metaOf(fork) }
+    expect((await resolveForkOrigin(asObject, String(owner)))?.conversationId).to.equal(source._id)
+    expect((await resolveForkOrigin(asMap, String(owner)))?.conversationId).to.equal(source._id)
+    expect((await resolveForkOrigin(asMap, String(owner)))?.messageId).to.equal(String(mid._id))
+  })
+
+  it('has no origin for a chat that is not a fork', async () => {
+    const { owner, source } = await seedFork()
+    expect(await resolveForkOrigin(source, String(owner))).to.equal(undefined)
+  })
+
+  it('has no origin when the notes do not name a message', async () => {
+    const { owner, fork } = await seedFork()
+    const broken = { ...fork, metadata: { forkedFromConversationId: 'x' } }
+    expect(await resolveForkOrigin(broken, String(owner))).to.equal(undefined)
+  })
+
+  it('withholds the title from a viewer who does not own the original', async () => {
+    const { source, fork } = await seedFork()
+    const origin = await resolveForkOrigin(fork, String(oid()))
+    expect(origin).to.include({ conversationId: source._id, title: null })
+  })
+
+  it('withholds the title once the original is archived', async () => {
+    const { owner, fork } = await seedFork({ archive: true })
+    expect((await resolveForkOrigin(fork, String(owner)))?.title).to.equal(null)
+  })
+
+  it('still answers, without the title, when the original no longer exists', async () => {
+    const { store, owner, source, fork } = await seedFork()
+    store.sessions.splice(store.sessions.findIndex((x) => String(x._id) === String(source._id)), 1)
+    expect((await resolveForkOrigin(fork, String(owner)))?.title).to.equal(null)
+  })
+
+  it('leaves out the position for a fork made before the count was recorded', async () => {
+    const { owner, fork } = await seedFork()
+    const meta = { ...metaOf(fork) }
+    delete meta.forkedMessageCount
+    const origin = await resolveForkOrigin({ ...fork, metadata: meta }, String(owner))
+    expect(origin).to.not.have.property('atMessageId')
+    expect(origin?.title).to.equal('Quarterly numbers')
+  })
+
+  it('does not fail the caller when the lookup breaks', async () => {
+    const { owner, fork } = await seedFork()
+    const repo = { findOwned: sinon.stub().rejects(new Error('db down')) }
+    expect(await resolveForkOrigin(fork, String(owner), repo as never)).to.equal(undefined)
+  })
+})
+
+describe('resolveForks', () => {
+  const session = { _id: 'a'.repeat(24), orgId: 'o'.repeat(24) } as ChatSessionDto
+  const fork = (id: string, title: string | undefined, meta: Record<string, unknown>) =>
+    ({ _id: id, title, metadata: meta }) as unknown as ChatSessionDto
+
+  it('names each fork and the message of this chat it was made at', async () => {
+    const listForksOf = sinon.stub().resolves([
+      fork('f1', 'Branch A', { forkedFromMessageId: 'm1' }),
+      fork('f2', undefined, { forkedFromMessageId: 'm2' }),
+    ])
+    const forks = await resolveForks(session, 'u1', { listForksOf } as never)
+    expect(forks).to.deep.equal([
+      { conversationId: 'f1', title: 'Branch A', fromMessageId: 'm1' },
+      { conversationId: 'f2', title: '', fromMessageId: 'm2' },
+    ])
+    expect(listForksOf.firstCall.args).to.deep.equal([
+      { kind: 'chat' },
+      session._id,
+      { orgId: session.orgId, userId: 'u1' },
+    ])
+  })
+
+  it('skips a fork whose notes do not name a message', async () => {
+    const listForksOf = sinon.stub().resolves([fork('f1', 'x', {})])
+    expect(await resolveForks(session, 'u1', { listForksOf } as never)).to.deep.equal([])
+  })
+
+  it('does not fail the caller when the lookup breaks', async () => {
+    const listForksOf = sinon.stub().rejects(new Error('db down'))
+    expect(await resolveForks(session, 'u1', { listForksOf } as never)).to.deep.equal([])
   })
 })

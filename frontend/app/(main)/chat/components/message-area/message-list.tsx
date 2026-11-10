@@ -5,6 +5,7 @@ import { useAui, useAuiState } from '@assistant-ui/react';
 import { Flex, Box, IconButton } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { ChatResponse } from './chat-response';
+import { ForkedIntoLine, ForkOriginLine } from './fork-origin-line';
 import { useChatStore } from '../../store';
 import { useCompareStore } from '../../compare/compare-store';
 import { useCompareLifecycle } from '../../compare/use-compare-lifecycle';
@@ -101,6 +102,18 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   );
   const messagePagination = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.messagePagination ?? null : null
+  );
+  const forkedFrom = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.forkedFrom ?? null : null
+  );
+  const forks = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.forks : undefined
+  );
+  const threadAgentId = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.threadAgentId ?? null : null
+  );
+  const slotProjectId = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.projectId ?? null : null
   );
   const hasOlderMessages = messagePagination?.hasOlderMessages ?? false;
   const isLoadingOlder = messagePagination?.isLoadingOlder ?? false;
@@ -1173,6 +1186,18 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
                     response()
                   )}
                 </ErrorBoundary>
+
+                {forkedFrom?.atMessageId && pair.messageId === forkedFrom.atMessageId && (
+                  <ForkOriginLine origin={forkedFrom} agentId={threadAgentId} projectId={slotProjectId} />
+                )}
+
+                {pair.messageId && forks?.some((f) => f.fromMessageId === pair.messageId) && (
+                  <ForkedIntoLine
+                    forks={forks.filter((f) => f.fromMessageId === pair.messageId)}
+                    agentId={threadAgentId}
+                    projectId={slotProjectId}
+                  />
+                )}
 
                 {/* Ask More — follow-up suggestions after the last bot response.
                     Placed inside the last message wrapper so the ResizeObserver

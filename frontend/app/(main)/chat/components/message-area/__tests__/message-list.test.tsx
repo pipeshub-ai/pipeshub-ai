@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, act, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup, act, fireEvent, within } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 
 type ThreadMessage = {
@@ -826,6 +826,160 @@ describe('MessageList — blur above the composer dock', () => {
       open();
 
       expect(blurHeight()).toBe('180px');
+    });
+  });
+});
+
+// next/link drops the trailing slash, so the path and the query are compared apart.
+function hrefOf(link: HTMLElement) {
+  const url = new URL(link.getAttribute('href') ?? '', 'http://localhost');
+  return { path: url.pathname.replace(/\/$/, ''), params: Object.fromEntries(url.searchParams) };
+}
+
+describe('MessageList — a forked chat', () => {
+  const withIds: ThreadMessage[] = [
+    user('u1', 'What is our refund policy?'),
+    { ...assistant('a1', 'Refunds are issued within 30 days.'), metadata: { custom: { messageId: 'srv-a1' } } },
+    user('u2', 'Who approves exceptions?'),
+    { ...assistant('a2', 'The finance lead approves exceptions.'), metadata: { custom: { messageId: 'srv-a2' } } },
+  ];
+
+  const origin = { conversationId: 'orig-9', messageId: 'p-5', title: 'Refund policy review', atMessageId: 'srv-a1' };
+
+  it('puts the "forked from here" line after the last message it copied, and nowhere else', () => {
+    thread.messages = withIds;
+    openConversation('fork-1', { forkedFrom: origin });
+
+    render(<MessageList />);
+
+    const lines = screen.getAllByTestId('fork-origin-line');
+    expect(lines).toHaveLength(1);
+    const copiedRow = screen.getByLabelText('What is our refund policy?').parentElement as HTMLElement;
+    expect(copiedRow.contains(lines[0])).toBe(true);
+  });
+
+  it('links to the original chat', () => {
+    thread.messages = withIds;
+    openConversation('fork-1', { forkedFrom: origin });
+
+    render(<MessageList />);
+
+    const link = screen.getByRole('link', { name: 'Refund policy review' });
+    expect(hrefOf(link)).toEqual({ path: '/chat', params: { conversationId: 'orig-9' } });
+  });
+
+  it('keeps the agent in the link when the fork belongs to an agent', () => {
+    thread.messages = withIds;
+    openConversation('fork-1', { forkedFrom: origin, threadAgentId: 'agent-7' });
+
+    render(<MessageList />);
+
+    expect(hrefOf(screen.getByRole('link', { name: 'Refund policy review' }))).toEqual({
+      path: '/chat',
+      params: { agentId: 'agent-7', conversationId: 'orig-9' },
+    });
+  });
+
+  it('shows no line on a chat that is not a fork', () => {
+    thread.messages = withIds;
+    openConversation('conv-1');
+
+    render(<MessageList />);
+
+    expect(screen.queryByTestId('fork-origin-line')).toBeNull();
+  });
+
+  it('shows no line when the fork point is not among the loaded messages', () => {
+    thread.messages = withIds;
+    openConversation('fork-1', { forkedFrom: { ...origin, atMessageId: 'srv-older-page' } });
+
+    render(<MessageList />);
+
+    expect(screen.queryByTestId('fork-origin-line')).toBeNull();
+  });
+
+  it('shows no line for a fork made before the position was recorded', () => {
+    thread.messages = withIds;
+    openConversation('fork-1', { forkedFrom: { ...origin, atMessageId: undefined } });
+
+    render(<MessageList />);
+
+    expect(screen.queryByTestId('fork-origin-line')).toBeNull();
+  });
+
+  it('keeps every message and its answer', () => {
+    thread.messages = withIds;
+    openConversation('fork-1', { forkedFrom: origin });
+
+    render(<MessageList />);
+
+    expect(screen.getAllByRole('article').map((r) => r.getAttribute('aria-label'))).toEqual([
+      'What is our refund policy?',
+      'Who approves exceptions?',
+    ]);
+  });
+
+  describe('the original', () => {
+    const forkAt = (id: string, fromMessageId: string) => ({ conversationId: id, title: `Fork ${id}`, fromMessageId });
+
+    it('links to a fork right after the message it was made at, and nowhere else', () => {
+      thread.messages = withIds;
+      openConversation('orig-9', { forks: [forkAt('f-1', 'srv-a1')] });
+
+      render(<MessageList />);
+
+      const lines = screen.getAllByTestId('forked-into-line');
+      expect(lines).toHaveLength(1);
+      const row = screen.getByLabelText('What is our refund policy?').parentElement as HTMLElement;
+      expect(row.contains(lines[0])).toBe(true);
+      expect(hrefOf(screen.getByRole('link', { name: 'Fork f-1' }))).toEqual({
+        path: '/chat',
+        params: { conversationId: 'f-1' },
+      });
+    });
+
+    it('groups forks made at the same message and separates those made elsewhere', () => {
+      thread.messages = withIds;
+      openConversation('orig-9', {
+        forks: [forkAt('f-1', 'srv-a1'), forkAt('f-2', 'srv-a1'), forkAt('f-3', 'srv-a2')],
+      });
+
+      render(<MessageList />);
+
+      const [first, second] = screen.getAllByTestId('forked-into-line');
+      expect(within(first).getAllByRole('link')).toHaveLength(2);
+      expect(within(second).getAllByRole('link')).toHaveLength(1);
+    });
+
+    it('keeps the agent in the link', () => {
+      thread.messages = withIds;
+      openConversation('orig-9', { forks: [forkAt('f-1', 'srv-a1')], threadAgentId: 'agent-7' });
+
+      render(<MessageList />);
+
+      expect(hrefOf(screen.getByRole('link', { name: 'Fork f-1' }))).toEqual({
+        path: '/chat',
+        params: { agentId: 'agent-7', conversationId: 'f-1' },
+      });
+    });
+
+    it('shows nothing when there are no forks or the fork point is not loaded', () => {
+      thread.messages = withIds;
+      openConversation('orig-9', { forks: [forkAt('f-1', 'srv-older-page')] });
+
+      render(<MessageList />);
+
+      expect(screen.queryByTestId('forked-into-line')).toBeNull();
+    });
+
+    it('shows both lines on a chat that is a fork and was forked again', () => {
+      thread.messages = withIds;
+      openConversation('fork-1', { forkedFrom: origin, forks: [forkAt('f-9', 'srv-a2')] });
+
+      render(<MessageList />);
+
+      expect(screen.getAllByTestId('fork-origin-line')).toHaveLength(1);
+      expect(screen.getAllByTestId('forked-into-line')).toHaveLength(1);
     });
   });
 });

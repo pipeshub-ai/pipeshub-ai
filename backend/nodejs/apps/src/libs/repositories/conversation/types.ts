@@ -261,6 +261,8 @@ export type SessionSummary = Pick<
   | 'modelInfo'
   | 'projectId'
   | 'projectVisibility'
+  | 'metadata'
+  | 'agentKey'
 >;
 
 export interface AgentArchiveGroup {
@@ -342,6 +344,12 @@ export interface ConversationRepository {
     actor: SessionActor,
     tx?: Tx,
   ): Promise<ChatSessionDto | null>;
+  /** The caller's own live, unarchived chats copied from `sourceId`, oldest first, so the original can link to its forks. */
+  listForksOf(
+    scope: SessionScope,
+    sourceId: string,
+    actor: SessionActor,
+  ): Promise<ChatSessionDto[]>;
   /** Initiator of a conversation the caller may share. Plain chats unless a scope says otherwise. */
   findForShare(
     id: string,

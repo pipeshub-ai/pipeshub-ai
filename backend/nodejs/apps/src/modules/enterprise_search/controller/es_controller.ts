@@ -163,6 +163,8 @@ import {
   copySessionUpToMessage,
   ForkChatSessionResult,
   ForkSessionFields,
+  resolveForkOrigin,
+  resolveForks,
   resolveForkProjectId,
 } from '../utils/fork-conversation';
 import { ArtifactCopier, ArtifactCopyOutcome } from '../utils/fork-artifacts';
@@ -2619,9 +2621,18 @@ export const getConversationById =
         messageSortOptions,
       );
 
+      const [forkedFrom, forks] = await Promise.all([
+        resolveForkOrigin(session, String(userId)),
+        resolveForks(session, String(userId)),
+      ]);
+
       // Prepare response using existing format
       const response = {
-        conversation: conversationResponse,
+        conversation: {
+          ...conversationResponse,
+          ...(forkedFrom && { forkedFrom }),
+          ...(forks.length > 0 && { forks }),
+        },
         filters: filtersMetadata,
         meta: {
           requestId,
@@ -8337,9 +8348,18 @@ export const getAgentConversationById =
         messageSortOptions,
       );
 
+      const [forkedFrom, forks] = await Promise.all([
+        resolveForkOrigin(session, String(userId)),
+        resolveForks(session, String(userId)),
+      ]);
+
       // Prepare response using existing format
       const response = {
-        conversation: conversationResponse,
+        conversation: {
+          ...conversationResponse,
+          ...(forkedFrom && { forkedFrom }),
+          ...(forks.length > 0 && { forks }),
+        },
         filters: filtersMetadata,
         meta: {
           requestId,

@@ -114,6 +114,24 @@ export interface SharedByInfo {
  * `hasNextPage` means there are older message batches to load;
  * the API sorts messages newest-first so page 1 = most recent.
  */
+/** Where a forked conversation was copied from (GET conversation detail `forkedFrom`). */
+export interface ForkOrigin {
+  conversationId: string;
+  messageId: string;
+  /** `null` when the viewer cannot open the original (deleted, archived, or not theirs). */
+  title: string | null;
+  /** This chat's copy of the fork point; the "forked from here" line goes after it. */
+  atMessageId?: string;
+}
+
+/** A chat the viewer made from this one (GET conversation detail `forks`). */
+export interface ForkChild {
+  conversationId: string;
+  title: string;
+  /** The message of this chat the fork was made at; the link goes after it. */
+  fromMessageId: string;
+}
+
 export interface ConversationPagination {
   page: number;
   limit: number;
@@ -1243,6 +1261,10 @@ export interface ChatSlot {
    * out as one card. `null` when the thread was not built from stored rows.
    */
   rawMessages: ConversationMessage[] | null;
+
+  /** Set when this chat is a fork; `null` for any other chat or before the detail has loaded. */
+  forkedFrom: ForkOrigin | null;
+  forks: ForkChild[];
 
   /** Epoch ms of last interaction — used for LRU eviction. */
   lastAccessedAt: number;
