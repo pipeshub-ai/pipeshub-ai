@@ -98,6 +98,7 @@ class TestMCPRegistry:
         assert "paypal" in type_ids
         assert "gitlab" in type_ids
         assert "posthog" in type_ids
+        assert "egnyte" in type_ids
 
     def test_monday_catalog_entry(self) -> None:
         registry = MCPRegistry()
@@ -251,6 +252,23 @@ class TestMCPRegistry:
         assert gitlab.default_scopes == ["mcp"]
         assert gitlab.icon == "/icons/connectors/gitlab.svg"
         assert gitlab.documentation_url == "https://docs.gitlab.com/user/model_context_protocol/mcp_server/"
+
+    def test_egnyte_catalog_entry(self) -> None:
+        """Egnyte is one official host that registers PipesHub itself, so the admin only signs in."""
+        registry = MCPRegistry()
+        registry.auto_discover_templates()
+        egnyte = registry.get_template("egnyte")
+        assert egnyte is not None
+        assert egnyte.default_url == "https://mcp-server.egnyte.com/mcp"
+        assert egnyte.transport == MCPTransport.STREAMABLE_HTTP
+        assert egnyte.supported_auth_modes == [MCPAuthMode.OAUTH]
+        assert egnyte.supports_dcr is True
+        assert egnyte.url_editable is False
+        assert egnyte.require_oauth_client is False
+        assert egnyte.authorization_url == "https://mcp-oauth.egnyte.com/external/oauth2/authorize/egnyte-connect"
+        assert egnyte.token_url == "https://mcp-oauth.egnyte.com/egnyte-connect/oauth2/token"
+        assert egnyte.default_scopes == []
+        assert egnyte.icon == "/icons/connectors/egnyte.svg"
 
     def test_auto_discover_templates_are_well_formed(self) -> None:
         """Every registered template must carry the fields its own transport/auth mode
