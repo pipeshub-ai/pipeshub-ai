@@ -18,6 +18,9 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from pydantic import TypeAdapter
 
+from app.utils.error_class import log_failure
+from app.utils.logging_fields import log_event
+
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
     Message,
@@ -133,13 +136,13 @@ async def keep(context: "AgentContext", agent: "Agent", *, call_id: Optional[str
             "visibleTools": sorted(agent.visible_tools or []),
         }
         if len(json.dumps(record, default=str)) > _MAX_BYTES:
-            logger.info("The turn waiting for the person is too large to keep; its answer uses the history")
+            log_event(logger, "parked_turn.not_kept", reason="too_large")
             return
         await context.config_service.set_config(
             _path(context.conversation_id), record, ttl_seconds=max(stopped.values()), keep_in_cache=False,
         )
     except Exception as e:
-        logger.warning(f"Couldn't keep the turn waiting for the person: {e}")
+        log_failure(logger, "parked_turn.keep_failed", e)
 
 
 async def keep_question(context: "AgentContext", agent: "Agent") -> None:
@@ -164,7 +167,7 @@ async def restore(context: "AgentContext", history: "ContextManager", *, call_id
             return None
         turn = [_MESSAGE.validate_python(m) for m in raw["messages"]]
     except Exception as e:
-        logger.warning(f"Couldn't read the turn waiting for the person: {e}")
+        log_failure(logger, "parked_turn.read_failed", e)
         return None
     if not _has_call(turn, call_id):
         return None

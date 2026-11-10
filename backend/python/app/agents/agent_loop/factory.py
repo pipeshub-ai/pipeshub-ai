@@ -211,6 +211,7 @@ from app.services.featureflag.platform_settings import (
 from app.utils.citations import rewrite_request_refs
 from app.utils.image_policy import resolve_image_policy
 from app.utils.render_budget import fetch_result_cap
+from app.utils.logging_fields import log_event
 
 
 def _register_final_answer_if_enabled(tool_registry: "ToolRegistry") -> None:  # noqa: F821
@@ -710,10 +711,7 @@ class PipesHubAgentFactory:
         # this requester's history) are an ordinary message: resuming would drop their text and
         # carry on an earlier request instead.
         if resume_answers is not None and not any_card_shown(context.previous_conversations):
-            logger.info(
-                "ask_card_answers_without_a_card: conversation=%s run=%s",
-                context.conversation_id, context.run_id,
-            )
+            log_event(logger, "ask_card.answers_without_card")
             resume_answers = None
         # Typing instead of tapping answers the open card, as when a chat asks in text. A message
         # that carries files answers it too: every later reader of the history counts it so.
