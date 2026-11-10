@@ -18,17 +18,27 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from aiokafka.structs import ConsumerRecord
+from pydantic import ValidationError
 
-from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData, StreamMessage
+from app.services.messaging.config import (
+    IndexingEvent,
+    PipelineEvent,
+    PipelineEventData,
+    StreamMessage,
+)
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer import indexing_consumer as consumer_module
 from app.services.messaging.kafka.consumer import remembered as remembered_module
-from app.services.messaging.kafka.consumer.indexing_consumer import IndexingKafkaConsumer
+from app.services.messaging.kafka.consumer.indexing_consumer import (
+    IndexingKafkaConsumer,
+)
 from app.services.messaging.scheduling.interface import FairSchedulerConfig
 from tests.support.fake_kafka import FakeAIOKafkaConsumer, FakeKafkaBroker
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Iterator
+
+    from aiokafka import TopicPartition
 
 TOPIC = "record-events"
 GROUP = "records_consumer_group"
@@ -81,7 +91,7 @@ class TestParseMessageTreatsSchemaFailuresAsPoison:
 
     async def test_logs_the_error_type_not_the_payload(self, caplog: pytest.LogCaptureFixture) -> None:
         record = _record(POISON["validation_no_event_type"])
-        with pytest.raises(Exception) as control:  # noqa: PT011 - the control: pydantic's text quotes the value
+        with pytest.raises(ValidationError) as control:
             StreamMessage(**json.loads(record.value))
         assert SEEDED in str(control.value)
 
@@ -129,7 +139,7 @@ def broker(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeKafkaBroker]:
     broker.polls = 0
     real_getmany = FakeAIOKafkaConsumer.getmany
 
-    async def capped_getmany(self, *partitions, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+    async def capped_getmany(self, *partitions, **kwargs) -> dict[TopicPartition, list[ConsumerRecord]]:
         broker.polls += 1
         if broker.polls > POLL_CAP:
             await asyncio.sleep(0.005)
@@ -143,7 +153,7 @@ def broker(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeKafkaBroker]:
         yield broker
 
 
-async def _until(predicate, timeout: float = 10.0) -> bool:  # noqa: ANN001
+async def _until(predicate, timeout: float = 10.0) -> bool:
     deadline = time.monotonic() + timeout
     while not predicate():
         if time.monotonic() > deadline:
