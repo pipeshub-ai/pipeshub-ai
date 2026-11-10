@@ -25,7 +25,6 @@ const EMAILS = ['ada@acme.test', 'ada.upn@acme.test', 'mallory@acme.test'];
 
 describe('sign-in audit: reason lists and the sites a request cannot reach', () => {
   let records: Record<string, any>[];
-  const root = () => (Logger.getInstance() as any).logger as winston.Logger;
   const audits = () => records.filter((r) => r.service === 'audit').map((r) => [r.message, r.outcome, r.reason, r.actor, r.target]);
   const noEmails = () => {
     for (const r of records) for (const e of EMAILS) expect(JSON.stringify(r)).to.not.include(e);
@@ -46,7 +45,9 @@ describe('sign-in audit: reason lists and the sites a request cannot reach', () 
 
   beforeEach(() => {
     records = [];
-    sinon.stub(root(), 'log').callsFake(((info: Record<string, any>) => { records.push(info); return root(); }) as any);
+    // Every winston root, not just the current one: modules keep the logger they got at load, and other test files
+    // replace the root, so a per-instance stub misses lines depending on test order.
+    sinon.stub(winston.Logger.prototype, 'log').callsFake(function (this: unknown, info: Record<string, any>) { records.push(info); return this; } as any);
   });
   afterEach(() => sinon.restore());
 
@@ -66,7 +67,9 @@ describe('sign-in audit: reason lists and the sites a request cannot reach', () 
     const noPayload = await controller().authenticateWithGoogle(user, 't', '1.1.1.1').catch((e: unknown) => e);
     expect(refusalReason(noPayload)).to.equal('sso_token_invalid');
     sinon.restore();
-    sinon.stub(root(), 'log').callsFake(((info: Record<string, any>) => { records.push(info); return root(); }) as any);
+    // Every winston root, not just the current one: modules keep the logger they got at load, and other test files
+    // replace the root, so a per-instance stub misses lines depending on test order.
+    sinon.stub(winston.Logger.prototype, 'log').callsFake(function (this: unknown, info: Record<string, any>) { records.push(info); return this; } as any);
     google({ email: EMAILS[2] });
     const mismatch = await controller().authenticateWithGoogle(user, 't', '1.1.1.1').catch((e: unknown) => e);
     expect(refusalReason(mismatch)).to.equal('sso_email_mismatch');

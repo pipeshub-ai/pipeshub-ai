@@ -271,7 +271,9 @@ describe('auth audit lines (HTTP)', function () {
     delete process.env.TURNSTILE_SECRET_KEY;
     savedLevel = root().level;
     root().level = 'debug';
-    sinon.stub(root(), 'log').callsFake(((info: Rec) => { records.push(info); return root(); }) as any);
+    // Every winston root, not just the current one: modules keep the logger they got at load, and other test files
+    // replace the root, so a per-instance stub misses lines depending on test order.
+    sinon.stub(winston.Logger.prototype, 'log').callsFake(function (this: unknown, info: Record<string, any>) { records.push(info); return this; } as any);
 
     directory = { [alice.email]: { ...alice }, [bob.email]: { ...bob } };
     creds = {};
