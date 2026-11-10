@@ -17,7 +17,14 @@ from app.modules.named_entities.graph_ops import (
     PERSIST_RETRY_MAX_MS,
 )
 from app.modules.named_entities.keys import value_mention_key
-from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _doc, _j, _node
+from app.services.graph_db.postgres.base import (
+    _VALIDATOR,
+    MENTIONS_BOUND,
+    PgBase,
+    _doc,
+    _j,
+    _node,
+)
 from app.services.graph_db.taxonomy import MAX_MERGE_REDIRECT_HOPS
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -135,8 +142,15 @@ class EntityMixin(PgBase):
         org = current_org_id()
 
         async def go(tx: Tx) -> int:
-            rows = [_doc(r["doc"]) for r in await tx.fetch("""/* pipeshub:graph.copy_named_entity_mentions_values */ SELECT doc FROM graph.nodes
-                WHERE org_id = $1 AND coll = 'valueMentions' AND doc->>'recordId' = $2 ORDER BY id""", org, source_key)]
+            found = None
+            if 0 < len(source_key) <= 200:      # the vetted read of graph_0007
+                found = await tx.fetch("/* pipeshub:graph.value_mentions_by_records */ SELECT doc FROM graph.value_mentions_by_records($1::text[]) ORDER BY node_id", [source_key])
+                if len(found) >= MENTIONS_BOUND:      # at its bound the answer may be partial
+                    found = None
+            if found is None:
+                found = await tx.fetch("""/* pipeshub:graph.copy_named_entity_mentions_values */ SELECT doc FROM graph.nodes
+                    WHERE org_id = $1 AND coll = 'valueMentions' AND doc->>'recordId' = $2 ORDER BY id""", org, source_key)
+            rows = [_doc(r["doc"]) for r in found]
             value_org = next((d[_ORG] for d in rows if d.get(_ORG)), None)
             docs: list[dict] = []
             if value_org and await tx.fetchval("""/* pipeshub:graph.copy_named_entity_mentions_target */ SELECT count(*) FROM graph.nodes WHERE org_id = $1 AND coll = 'records'
@@ -299,8 +313,17 @@ class EntityMixin(PgBase):
 
 async def _replace_values(tx: Tx, org: str, record_id: str, docs: list[dict]) -> None:
     rows = {d["id"]: {k: v for k, v in d.items() if v is not None} for d in docs}      # a repeated id: the last one wins; a null is not stored (``SET v = doc``)
-    await tx.execute("""/* pipeshub:graph.replace_named_entity_values_stale */ DELETE FROM graph.nodes WHERE org_id = $1 AND coll = 'valueMentions'
-        AND doc->>'recordId' = $2 AND id <> ALL($3::text[])""", org, record_id, list(rows))
+    held = None
+    if 0 < len(record_id) <= 200:      # the rows are found by the vetted read of graph_0007
+        held = [r["node_id"] for r in await tx.fetch("/* pipeshub:graph.value_mentions_by_records */ SELECT node_id FROM graph.value_mentions_by_records($1::text[])", [record_id])]
+        if len(held) >= MENTIONS_BOUND:      # at its bound the list may be partial
+            held = None
+    if held is not None:
+        await tx.execute("""/* pipeshub:graph.replace_named_entity_values_stale_ids */ DELETE FROM graph.nodes WHERE org_id = $1 AND coll = 'valueMentions' AND id = ANY($2::text[])""",
+                         org, [i for i in held if i not in rows])
+    else:
+        await tx.execute("""/* pipeshub:graph.replace_named_entity_values_stale */ DELETE FROM graph.nodes WHERE org_id = $1 AND coll = 'valueMentions'
+            AND doc->>'recordId' = $2 AND id <> ALL($3::text[])""", org, record_id, list(rows))
     if rows:
         await tx.execute("""/* pipeshub:graph.replace_named_entity_values */ INSERT INTO graph.nodes AS t (org_id, coll, id, doc)
             SELECT $1, 'valueMentions', x.id, x.doc FROM jsonb_to_recordset($2::jsonb) AS x(id text, doc jsonb) ORDER BY x.id

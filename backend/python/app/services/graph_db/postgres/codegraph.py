@@ -18,6 +18,7 @@ from app.services.graph_db.interface.graph_db_provider import CodeFileInfo
 from app.services.graph_db.postgres.base import (
     _LINK_COLLS,
     _VALIDATOR,
+    VETTED_BOUND,
     PgBase,
     _arango,
     _doc,
@@ -551,8 +552,14 @@ class CodeGraphMixin(PgBase):
 
     async def stage_states_for_revision(self, virtual_record_id: str, rev: str) -> list[dict[str, Any]]:
         org = current_org_id()
-        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.stage_states_for_revision */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = $2
-            AND doc->>'virtualRecordId' = $3 AND doc->>'rev' = $4""", org, _STAGES, virtual_record_id, rev), None)
+        rows = None
+        if 0 < len(virtual_record_id) <= 200 and 0 < len(rev) <= 200:      # the vetted read of graph_0007
+            rows = await self._q(lambda tx: tx.fetch("/* pipeshub:graph.stage_states_by_revision */ SELECT doc FROM graph.stage_states_by_revision($1, $2)", virtual_record_id, rev), None)
+            if len(rows) >= VETTED_BOUND:      # at its bound the answer may be partial
+                rows = None
+        if rows is None:
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.stage_states_for_revision */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = $2
+                AND doc->>'virtualRecordId' = $3 AND doc->>'rev' = $4""", org, _STAGES, virtual_record_id, rev), None)
         return [_doc(r["doc"]) for r in rows]
 
     async def stage_state_create(self, document: dict[str, Any]) -> bool:
@@ -577,14 +584,36 @@ class CodeGraphMixin(PgBase):
         org = current_org_id()
         if limit <= 0 or (org_id and org_id != org):
             return []
-        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_stage_states_with_records */ WITH st AS (SELECT s.id, s.doc->>'virtualRecordId' AS vrid, s.doc->>'rev' AS rev
-                FROM graph.nodes s WHERE s.org_id = $1 AND s.coll = $2 AND s.doc->>'connectorId' = $3 AND s.doc->>'stage' = $4 AND s.doc->>'status' = $5
-                  AND ($6::text IS NULL OR s.id > $6) ORDER BY s.id LIMIT $7)
-            SELECT st.id AS key, coalesce(array_agg(r.id ORDER BY r.id) FILTER (WHERE r.id IS NOT NULL), '{}') AS records FROM st
-            LEFT JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.doc->>'virtualRecordId' = st.vrid AND r.doc->>'contentRev' = st.rev
-              AND r.doc->>'connectorId' = $3 AND NOT coalesce((r.doc->>'isPlaceholder')::boolean, false) AND NOT coalesce((r.doc->>'isDeleted')::boolean, false)
-              AND NOT (coalesce(r.doc->>'indexingStatus', '') = ANY($8::text[]))
-            GROUP BY st.id ORDER BY st.id""", org, _STAGES, connector_id, stage, status, after_key, limit, exclude_indexing_statuses or []), None)
+        rows = None
+        if limit <= 1000 and all(isinstance(v, str) and 0 < len(v) <= 200 for v in (connector_id, stage, status)) and len(after_key or "") <= 200 and after_key != "":      # the vetted reads of graph_0008
+            # shortcut: a state whose virtual record or revision is empty or longer than the function takes (200) is given no record, and the count is logged; ids are uuids, so none is
+            # expected, raise the function's bound if one shows up
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_stage_states_with_records_vetted */ WITH st AS (SELECT p.node_id AS id, p.doc->>'virtualRecordId' AS vrid, p.doc->>'rev' AS rev
+                    FROM graph.stage_states_page($1, $2, $3, coalesce($4, ''), $5) p),
+                  rr AS (SELECT x.node_id AS id, x.doc FROM graph.records_by_revision(
+                    coalesce((SELECT array_agg(st.vrid ORDER BY st.id) FROM st WHERE length(st.vrid) BETWEEN 1 AND 200 AND length(st.rev) BETWEEN 1 AND 200), '{}'::text[]),
+                    coalesce((SELECT array_agg(st.rev ORDER BY st.id) FROM st WHERE length(st.vrid) BETWEEN 1 AND 200 AND length(st.rev) BETWEEN 1 AND 200), '{}'::text[])) x)
+                SELECT st.id AS key, coalesce(array_agg(r.id ORDER BY r.id) FILTER (WHERE r.id IS NOT NULL), '{}') AS records,
+                  (SELECT count(*) FROM st x WHERE x.vrid IS NOT NULL AND x.rev IS NOT NULL AND NOT (length(x.vrid) BETWEEN 1 AND 200 AND length(x.rev) BETWEEN 1 AND 200)) AS skipped,
+                  (SELECT count(*) FROM rr) AS read FROM st
+                LEFT JOIN rr r ON r.doc->>'virtualRecordId' = st.vrid AND r.doc->>'contentRev' = st.rev
+                  AND r.doc->>'connectorId' = $1 AND NOT coalesce((r.doc->>'isPlaceholder')::boolean, false) AND NOT coalesce((r.doc->>'isDeleted')::boolean, false)
+                  AND NOT (coalesce(r.doc->>'indexingStatus', '') = ANY($6::text[]))
+                GROUP BY st.id ORDER BY st.id""", connector_id, stage, status, after_key, limit, exclude_indexing_statuses or []), None)
+            if rows and rows[0]["read"] >= VETTED_BOUND:      # the records read are at the bound of the function: they may be partial
+                rows = None
+        if rows is None:
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_stage_states_with_records */ WITH st AS (SELECT s.id, s.doc->>'virtualRecordId' AS vrid, s.doc->>'rev' AS rev
+                    FROM graph.nodes s WHERE s.org_id = $1 AND s.coll = $2 AND s.doc->>'connectorId' = $3 AND s.doc->>'stage' = $4 AND s.doc->>'status' = $5
+                      AND ($6::text IS NULL OR s.id > $6) ORDER BY s.id LIMIT $7)
+                SELECT st.id AS key, coalesce(array_agg(r.id ORDER BY r.id) FILTER (WHERE r.id IS NOT NULL), '{}') AS records FROM st
+                LEFT JOIN graph.nodes r ON r.org_id = $1 AND r.coll = 'records' AND r.doc->>'virtualRecordId' = st.vrid AND r.doc->>'contentRev' = st.rev
+                  AND r.doc->>'connectorId' = $3 AND NOT coalesce((r.doc->>'isPlaceholder')::boolean, false) AND NOT coalesce((r.doc->>'isDeleted')::boolean, false)
+                  AND NOT (coalesce(r.doc->>'indexingStatus', '') = ANY($8::text[]))
+                GROUP BY st.id ORDER BY st.id""", org, _STAGES, connector_id, stage, status, after_key, limit, exclude_indexing_statuses or []), None)
+        if rows and rows[0].get("skipped"):
+            self.logger.warning("get_stage_states_with_records: %s stage state(s) of connector %s name a virtual record or revision outside 1..200 characters and were given no record",
+                                rows[0]["skipped"], connector_id)
         return [(r["key"], list(r["records"])) for r in rows]
 
     async def get_record_content_revs(self, record_ids: list[str], *, status_field: str, statuses: list[str],

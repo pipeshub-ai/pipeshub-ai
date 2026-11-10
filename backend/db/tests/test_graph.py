@@ -710,3 +710,263 @@ def test_the_per_record_lookups_use_their_index_where_the_plain_statement_cannot
         for key, (coll, pred) in plain.items():
             plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, f"SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = '{coll}' AND {pred}")
             assert not any(re.search(rf"Index Cond: .*{key}", p) for p in plans), (key, plans[0])
+
+
+# ---- the entity pipeline's lookups (graph_0007) -----------------------------------------------------------------------------------------
+def _ne(i, org, kind="person", key=None, aliases=None, merged=None, doc_org=None):
+    d = {"orgId": doc_org or org, "kind": kind, "normKey": key or f"k{i}", **({"normalizedAliases": aliases} if aliases is not None else {}), **({"mergedInto": merged} if merged else {})}
+    return (org, "namedEntities", f"ne{i}", json.dumps(d))
+
+
+def _seed_entities(c):
+    for org in (A, B):
+        as_role(c, "pipeshub_connectors", org)
+        for r in (_ne(1, org, key="anna lee", aliases=["a lee", "annie"]), _ne(2, org, key="anna lee smith"), _ne(3, org, key="anna leeds"), _ne(4, org, key="anna lee x", aliases=["annie"], merged="ne1"),
+                  _ne(5, org, kind="org", key="anna lee", aliases=["annie"]), _ne(6, org, key="zed", aliases=["annie", "a lee"]), _ne(7, org, key="annie"),
+                  _ne(8, org, key="anna lee y", doc_org="other"), _ne(9, org, key="Anna Lee", aliases=[]), _ne(10, org, key="anna%lee z"), _ne(11, org, key="b c", aliases=["annie"])):
+            c.execute(NODE, r)
+        for rec, vid, doc_org in (("r1", "v1", org), ("r1", "v2", org), ("r2", "v3", org), ("r1", "v4", "other"), ("r3", "v5", org)):
+            c.execute(NODE, (org, "valueMentions", f"{rec}:{vid}", json.dumps({"recordId": rec, "orgId": doc_org, "kind": "date"})))
+        c.execute(NODE, (org, "records", "r1", json.dumps({"recordId": "r1"})))                                                  # not a value mention
+        for i, (vrid, rev) in enumerate((("v1", "1"), ("v1", "1"), ("v1", "2"), ("v2", "1"))):
+            c.execute(NODE, (org, "stageStates", f"s{i}", json.dumps({"virtualRecordId": vrid, "rev": rev, "stage": "x"})))
+        c.execute(NODE, (org, "records", "rs", json.dumps({"virtualRecordId": "v1", "rev": "1"})))                               # not a stage state
+
+
+def test_the_entity_lookups_return_what_the_plain_statements_returned(rdb):
+    cluster, name = rdb
+    by_keys = """SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = 'namedEntities' AND n.doc->>'orgId' = %s AND n.doc->>'kind' = %s
+                 AND (n.doc->>'normKey' = ANY(%s::text[]) OR n.doc->'normalizedAliases' ?| %s::text[]) ORDER BY n.id"""
+    alias = """SELECT p.key, n.id FROM unnest(%s::text[], %s::text[]) AS p(kind, key) CROSS JOIN LATERAL (SELECT x.id FROM graph.nodes x WHERE x.org_id = current_setting('app.org_id')
+               AND x.coll = 'namedEntities' AND x.doc->>'orgId' = %s AND x.doc->>'kind' = p.kind AND x.doc->'normalizedAliases' ? p.key AND x.doc->>'normKey' <> p.key
+               AND x.doc->>'mergedInto' IS NULL ORDER BY x.id LIMIT %s) n ORDER BY p.key, n.id"""
+    prefix = """SELECT p.key, n.id FROM unnest(%s::text[], %s::text[]) AS p(kind, key) CROSS JOIN LATERAL (SELECT x.id, x.doc FROM graph.nodes x WHERE x.org_id = current_setting('app.org_id')
+                AND x.coll = 'namedEntities' AND x.doc->>'orgId' = %s AND x.doc->>'kind' = p.kind AND starts_with(x.doc->>'normKey', p.key || ' ')
+                ORDER BY x.doc->>'normKey', x.id LIMIT %s) n ORDER BY p.key, n.doc->>'normKey', n.id"""
+    with connect(cluster, name) as c:
+        _seed_entities(c)
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for owner in (org, A, B, "other"):
+                for kind in ("person", "org", "none"):
+                    for keys in (["anna lee"], ["annie"], ["a lee", "zed"], ["nope"], ["anna lee", "annie", "b c"], ["Anna Lee"]):
+                        assert _ids(c, "SELECT node_id FROM graph.named_entities_by_keys(%s, %s, %s::text[])", owner, kind, keys) == _ids(c, by_keys, owner, kind, keys, keys), (org, owner, kind, keys)
+                kinds, keys = ["person", "person", "org", "person"], ["annie", "a lee", "annie", "nope"]
+                for n in (1, 2, 3, 1000):
+                    assert _ids(c, "SELECT key, node_id FROM graph.named_entities_by_alias(%s, %s::text[], %s::text[], %s)", owner, kinds, keys, n) == _ids(c, alias, kinds, keys, owner, n), (org, owner, n)
+                pkinds, pkeys = ["person", "person", "org", "person", "person"], ["anna lee", "anna", "anna lee", "nope", "anna%lee"]
+                for n in (1, 2, 21):
+                    assert _ids(c, "SELECT key, node_id FROM graph.named_entities_by_prefix(%s, %s::text[], %s::text[], %s)", owner, pkinds, pkeys, n) == _ids(c, prefix, pkinds, pkeys, owner, n), (org, owner, n)
+        as_role(c, "pipeshub_connectors", A)
+        assert _ids(c, "SELECT node_id FROM graph.named_entities_by_keys(%s, 'person', '{annie}')", A) == ["ne1", "ne11", "ne4", "ne6", "ne7"]
+        assert _ids(c, "SELECT key, node_id FROM graph.named_entities_by_alias(%s, '{person}', '{annie}', 3)", A) == [("annie", "ne1"), ("annie", "ne11"), ("annie", "ne6")]
+        assert _ids(c, "SELECT node_id FROM graph.named_entities_by_prefix(%s, '{person}', '{anna lee}', 21)", A) == ["ne2", "ne4"]
+
+
+def test_value_mentions_and_stage_states_return_the_rows_of_the_org_that_hold_the_key(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        _seed_entities(c)
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for ids in (["r1"], ["r1", "r2"], ["r3", "nope"], [], ["r1", "r1"]):
+                old = _ids(c, "SELECT id FROM graph.nodes WHERE org_id = current_setting('app.org_id') AND coll = 'valueMentions' AND doc->>'recordId' = ANY(%s::text[]) ORDER BY id", ids)
+                assert _ids(c, "SELECT node_id FROM graph.value_mentions_by_records(%s::text[]) ORDER BY node_id", ids) == old, (org, ids)
+            for vrid, rev in (("v1", "1"), ("v1", "2"), ("v2", "2"), ("nope", "1")):
+                old = _ids(c, "SELECT id FROM graph.nodes WHERE org_id = current_setting('app.org_id') AND coll = 'stageStates' AND doc->>'virtualRecordId' = %s AND doc->>'rev' = %s ORDER BY id", vrid, rev)
+                assert sorted(_ids(c, "SELECT node_id FROM graph.stage_states_by_revision(%s, %s)", vrid, rev)) == old, (org, vrid, rev)
+        as_role(c, "pipeshub_connectors", A)
+        assert _ids(c, "SELECT node_id FROM graph.value_mentions_by_records('{r1,r2}') ORDER BY node_id") == ["r1:v1", "r1:v2", "r1:v4", "r2:v3"]
+        assert sorted(_ids(c, "SELECT node_id FROM graph.stage_states_by_revision('v1', '1')")) == ["s0", "s1"]
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'valueMentions', 'big' || i, '{\"recordId\": \"big\"}' FROM generate_series(1, 100001) i", (A,))
+        assert _ids(c, "SELECT count(*) FROM graph.value_mentions_by_records('{r1}')") == [3]
+        assert _ids(c, "SELECT count(*) FROM graph.value_mentions_by_records('{big}')") == [100001]          # the bound: a caller that gets that many reads with its own statement
+        assert _ids(c, "SELECT count(*) FROM graph.value_mentions_by_records('{big,r1}')") == [100001]
+
+
+def test_an_entity_lookup_answers_nothing_without_an_org_or_for_another_one(rdb):
+    cluster, name = rdb
+    calls = {"named_entities_by_keys": ("(%s, 'person', '{annie}')", (A,)), "named_entities_by_alias": ("(%s, '{person}', '{annie}', 3)", (A,)),
+             "named_entities_by_prefix": ("(%s, '{person}', '{anna lee}', 21)", (A,)), "value_mentions_by_records": ("('{r1}')", ()), "stage_states_by_revision": ("('v1', '1')", ())}
+    with connect(cluster, name) as c:
+        _seed_entities(c)
+        for org in ("", "c" * 24):
+            as_role(c, "pipeshub_connectors", org)
+            for fn, (marks, args) in calls.items():
+                assert c.execute(f"SELECT count(*) FROM graph.{fn}{marks}", args).fetchone()[0] == 0, (org, fn)
+        for role, ok in (("pipeshub_connectors", True), ("pipeshub_indexing", True), ("pipeshub_query", True), ("pipeshub_node", False), ("pipeshub_jobs", False)):
+            for fn in calls:
+                has = c.execute("SELECT has_function_privilege(%s, p.oid, 'EXECUTE') FROM pg_proc p WHERE p.pronamespace = 'graph'::regnamespace AND p.proname = %s", (role, fn)).fetchone()[0]
+                assert has is ok, (role, fn)
+
+
+BAD_ENTITY = [
+    ("named_entities_by_keys", "(%s, %s, %s::text[])", a) for a in ((None, "k", ["a"]), ("", "k", ["a"]), ("o", None, ["a"]), ("o", "", ["a"]), ("o", "k" * 201, ["a"]), ("o", "k", None), ("o", "k", [None]),
+                                                                  ("o", "k", [""]), ("o", "k", ["a" * 1001]), ("o", "k", ["a"] * 1001))] + [
+    (fn, "(%s, %s::text[], %s::text[], %s)", a) for fn in ("named_entities_by_alias", "named_entities_by_prefix")
+    for a in ((None, ["k"], ["a"], 3), ("o", None, ["a"], 3), ("o", ["k"], None, 3), ("o", ["k"], ["a", "b"], 3), ("o", [None], ["a"], 3), ("o", [""], ["a"], 3), ("o", ["k"], [""], 3),
+              ("o", ["k"], ["a"], 0), ("o", ["k"], ["a"], 1001), ("o", ["k"], ["a"], None))] + [
+    ("value_mentions_by_records", "(%s::text[])", a) for a in ((None,), ([None],), ([""],), (["r" * 201],), (["r"] * 5001,))] + [
+    ("stage_states_by_revision", "(%s, %s)", a) for a in ((None, "1"), ("", "1"), ("v" * 201, "1"), ("v", None), ("v", ""), ("v", "1" * 201))]
+
+
+@pytest.mark.parametrize(("fn", "marks", "args"), BAD_ENTITY, ids=[f"{f}-{i}" for i, (f, _, _) in enumerate(BAD_ENTITY)])
+def test_an_entity_lookup_refuses_a_bad_argument(rdb, fn, marks, args):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        as_role(c, "pipeshub_connectors", A)
+        with pytest.raises(psycopg.errors.InvalidParameterValue):
+            c.execute(f"SELECT * FROM graph.{fn}{marks}", args)
+
+
+def test_the_entity_lookups_use_their_index_where_the_plain_statement_cannot(rdb):
+    """20,000 documents of each kind in the org (and as many in another): the function reaches the index of its key, the plain statement the provider sent before
+    reaches the org only. Seven calls: the plpgsql plan cache goes generic after five."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            c.execute("INSERT INTO graph.nodes SELECT %s, 'namedEntities', 'ne' || i, jsonb_build_object('orgId', %s::text, 'kind', (ARRAY['person','org','place'])[1 + i %% 3], "
+                      "'normKey', 'name ' || i, 'normalizedAliases', jsonb_build_array('al ' || i, 'al ' || (i + 1))) FROM generate_series(1, 20000) i", (org, org))
+            c.execute("INSERT INTO graph.nodes SELECT %s, 'valueMentions', 'v' || i, jsonb_build_object('orgId', %s::text, 'recordId', 'r' || (i %% 4000), 'kind', 'date') FROM generate_series(1, 20000) i", (org, org))
+            c.execute("INSERT INTO graph.nodes SELECT %s, 'stageStates', 's' || i, jsonb_build_object('virtualRecordId', 'v' || (i %% 5000), 'rev', 'r' || (i %% 2)) FROM generate_series(1, 20000) i", (org,))
+        c.execute("RESET ROLE")
+        c.execute("ANALYZE graph.nodes")
+        cases = [
+            ("graph.named_entities_by_keys(%s, %s, %s::text[])", (A, "person", ["name 777", "name 9"]), "nodes_ne_kind_key"),
+            ("graph.named_entities_by_keys(%s, %s, %s::text[])", (A, "person", ["al 777"]), "nodes_ne_aliases"),
+            ("graph.named_entities_by_alias(%s, %s::text[], %s::text[], %s)", (A, ["person", "org"], ["al 777", "al 778"], 3), "nodes_ne_aliases"),
+            ("graph.named_entities_by_prefix(%s, %s::text[], %s::text[], %s)", (A, ["person"], ["name 7"], 21), "nodes_ne_kind_key"),
+            ("graph.value_mentions_by_records(%s::text[])", (["r7", "r9"],), "nodes_value_record"),
+            ("graph.value_mentions_by_records(%s::text[])", ([f"r{i}" for i in range(50)],), "nodes_value_record"),
+            ("graph.stage_states_by_revision(%s, %s)", ("v777", "r1"), "nodes_stage_revision"),
+        ]
+        for call, params, index in cases:
+            plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, f"SELECT * FROM {call}", params)
+            for i in (0, 6):
+                assert _uses(plans[i], index), (call, params, i, plans[i])
+                assert "Seq Scan on" not in plans[i], (call, params, i, plans[i])
+        # the plain statements the provider sent before reach the org and nothing finer: the key is in no index condition
+        plain = {
+            "recordId": ("valueMentions", "n.doc->>'recordId' = ANY('{r7,r9}'::text[])"),
+            "virtualRecordId": ("stageStates", "n.doc->>'virtualRecordId' = 'v777' AND n.doc->>'rev' = 'r1'"),
+        }
+        for key, (coll, pred) in plain.items():
+            plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, f"SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = '{coll}' AND {pred}")
+            assert not any(re.search(rf"Index Cond: .*{key}", p) for p in plans), (key, plans[0])
+
+
+# ---- groups and roles by external id, the stage sweep's page (graph_0008) ---------------------------------------------------------------
+def _seed_external(c):
+    for org in (A, B):
+        as_role(c, "pipeshub_connectors", org)
+        for coll, key, prefix in (("groups", "externalGroupId", "g"), ("recordGroups", "externalGroupId", "rg"), ("roles", "externalRoleId", "ro")):
+            for i, (conn, ext) in enumerate((("c1", "e1"), ("c1", "e2"), ("c2", "e1"), ("c1", "E1"))):
+                c.execute(NODE, (org, coll, f"{prefix}{i}", json.dumps({"connectorId": conn, key: ext})))
+            c.execute(NODE, (org, coll, f"{prefix}x", json.dumps({"connectorId": "c1"})))                       # no external id
+        c.execute(NODE, (org, "records", "rec", json.dumps({"connectorId": "c1", "externalGroupId": "e1"})))        # another collection with the same keys
+        for i, (conn, stage, status, vrid, rev) in enumerate((("c1", "indexing", "PENDING", "v1", "1"), ("c1", "indexing", "PENDING", "v2", "1"), ("c1", "indexing", "DONE", "v3", "1"),
+                                                             ("c1", "entities", "PENDING", "v1", "1"), ("c2", "indexing", "PENDING", "v1", "1"), ("c1", "indexing", "PENDING", "v4", "2"))):
+            c.execute(NODE, (org, "stageStates", f"st{i}", json.dumps({"connectorId": conn, "stage": stage, "status": status, "virtualRecordId": vrid, "rev": rev})))
+        for i, (vrid, rev) in enumerate((("v1", "1"), ("v1", "2"), ("v2", "1"), ("v1", "1"))):
+            c.execute(NODE, (org, "records", f"rv{i}", json.dumps({"virtualRecordId": vrid, "contentRev": rev})))
+    as_role(c, "pipeshub_connectors", A)
+    c.execute(NODE, (A, "groups", "only-a", json.dumps({"connectorId": "c1", "externalGroupId": "only-a"})))
+
+
+def test_a_node_by_external_id_is_the_one_of_its_collection_and_org(rdb):
+    cluster, name = rdb
+    keys = {"groups": "externalGroupId", "recordGroups": "externalGroupId", "roles": "externalRoleId"}
+    with connect(cluster, name) as c:
+        _seed_external(c)
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for coll, key in keys.items():
+                for conn, ext in (("c1", "e1"), ("c1", "E1"), ("c2", "e1"), ("c2", "e2"), ("c1", "only-a"), ("nope", "e1")):
+                    old = _ids(c, f"SELECT id FROM graph.nodes WHERE org_id = current_setting('app.org_id') AND coll = '{coll}' AND doc->>'{key}' = %s AND doc->>'connectorId' = %s ORDER BY id", ext, conn)
+                    new = _ids(c, "SELECT node_id FROM graph.node_by_external(%s, %s, %s)", coll, conn, ext)
+                    assert len(new) == min(1, len(old)) and set(new) <= set(old), (org, coll, conn, ext, new, old)
+        as_role(c, "pipeshub_connectors", A)
+        assert _ids(c, "SELECT node_id FROM graph.node_by_external('groups', 'c1', 'only-a')") == ["only-a"]
+        assert _ids(c, "SELECT node_id FROM graph.node_by_external('roles', 'c2', 'e1')") == ["ro2"]
+        assert _ids(c, "SELECT node_id FROM graph.node_by_external('recordGroups', 'c1', 'only-a')") == []         # only in the collection of groups
+        as_role(c, "pipeshub_connectors", B)
+        assert _ids(c, "SELECT node_id FROM graph.node_by_external('groups', 'c1', 'only-a')") == []
+
+
+def test_the_stage_sweeps_page_of_states_and_their_records(rdb):
+    cluster, name = rdb
+    page = """SELECT s.id FROM graph.nodes s WHERE s.org_id = current_setting('app.org_id') AND s.coll = 'stageStates' AND s.doc->>'connectorId' = %s AND s.doc->>'stage' = %s
+              AND s.doc->>'status' = %s AND (%s::text IS NULL OR s.id > %s) ORDER BY s.id LIMIT %s"""
+    with connect(cluster, name) as c:
+        _seed_external(c)
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for conn, stage, status in (("c1", "indexing", "PENDING"), ("c1", "indexing", "DONE"), ("c2", "indexing", "PENDING"), ("c1", "nope", "PENDING")):
+                for after in (None, "st0", "st1", "zzz"):
+                    for n in (1, 2, 1000):
+                        assert _ids(c, "SELECT node_id FROM graph.stage_states_page(%s, %s, %s, %s, %s)", conn, stage, status, after or "", n) == _ids(c, page, conn, stage, status, after, after, n), (org, conn, stage, status, after, n)
+            for vrids, revs in ((["v1"], ["1"]), (["v1", "v1", "v2"], ["1", "2", "1"]), (["v1", "v4"], ["1", "2"]), ([], []), (["nope"], ["1"])):
+                old = sorted(_ids(c, "SELECT n.id FROM graph.nodes n JOIN unnest(%s::text[], %s::text[]) p(v, r) ON n.doc->>'virtualRecordId' = p.v AND n.doc->>'contentRev' = p.r "
+                                     "WHERE n.org_id = current_setting('app.org_id') AND n.coll = 'records'", vrids, revs))
+                assert sorted(set(_ids(c, "SELECT node_id FROM graph.records_by_revision(%s::text[], %s::text[])", vrids, revs))) == sorted(set(old)), (org, vrids, revs)
+        as_role(c, "pipeshub_connectors", A)
+        assert _ids(c, "SELECT node_id FROM graph.stage_states_page('c1', 'indexing', 'PENDING', 'st0', 10)") == ["st1", "st5"]
+        assert sorted(_ids(c, "SELECT node_id FROM graph.records_by_revision('{v1,v2}', '{1,1}')")) == ["rv0", "rv2", "rv3"]
+
+
+def test_the_external_and_stage_lookups_answer_nothing_without_an_org_refuse_bad_arguments_and_are_for_the_graph_services(rdb):
+    cluster, name = rdb
+    calls = {"node_by_external": "('groups', 'c1', 'e1')", "stage_states_page": "('c1', 'indexing', 'PENDING', '', 10)", "records_by_revision": "('{v1}', '{1}')"}
+    bad = [("node_by_external", "(%s, %s, %s)", a) for a in ((None, "c", "e"), ("other", "c", "e"), ("groups", None, "e"), ("groups", "", "e"), ("groups", "c" * 201, "e"), ("groups", "c", None), ("groups", "c", ""), ("groups", "c", "e" * 2001))] + [
+        ("stage_states_page", "(%s, %s, %s, %s, %s)", a) for a in ((None, "s", "t", "", 1), ("c", "", "t", "", 1), ("c", "s", None, "", 1), ("c", "s", "t", None, 1), ("c", "s", "t", "x" * 201, 1), ("c", "s", "t", "", 0), ("c", "s", "t", "", 1001))] + [
+        ("records_by_revision", "(%s::text[], %s::text[])", a) for a in ((None, ["1"]), (["v"], None), ([None], ["1"]), ([""], ["1"]), (["v"], []), (["v" * 201], ["1"]), (["v"] * 1001, ["1"] * 1001))]
+    with connect(cluster, name) as c:
+        _seed_external(c)
+        for org in ("", "c" * 24):
+            as_role(c, "pipeshub_connectors", org)
+            for fn, args in calls.items():
+                assert c.execute(f"SELECT count(*) FROM graph.{fn}{args}").fetchone()[0] == 0, (org, fn)
+        as_role(c, "pipeshub_connectors", A)
+        for fn, marks, args in bad:
+            with pytest.raises(psycopg.errors.InvalidParameterValue):
+                c.execute(f"SELECT * FROM graph.{fn}{marks}", args)
+            c.execute("ROLLBACK")
+        for role, ok in (("pipeshub_connectors", True), ("pipeshub_indexing", True), ("pipeshub_query", True), ("pipeshub_node", False), ("pipeshub_jobs", False)):
+            for fn in calls:
+                has = c.execute("SELECT has_function_privilege(%s, p.oid, 'EXECUTE') FROM pg_proc p WHERE p.pronamespace = 'graph'::regnamespace AND p.proname = %s", (role, fn)).fetchone()[0]
+                assert has is ok, (role, fn)
+
+
+def test_the_external_and_stage_lookups_use_their_index_where_the_plain_statement_cannot(rdb):
+    """30,000 groups, record groups and stage states in the org (and as many in another). Seven calls: the plpgsql plan cache goes generic after five."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for coll, key, prefix in (("groups", "externalGroupId", "g"), ("recordGroups", "externalGroupId", "rg"), ("roles", "externalRoleId", "ro")):
+                c.execute(f"INSERT INTO graph.nodes SELECT %s, '{coll}', '{prefix}' || i, jsonb_build_object('connectorId', 'c' || (i %% 10), '{key}', 'e' || i) FROM generate_series(1, 30000) i", (org,))
+            c.execute("INSERT INTO graph.nodes SELECT %s, 'stageStates', 's' || lpad(i::text, 6, '0'), jsonb_build_object('connectorId', 'c' || (i %% 4), 'stage', 'indexing', "
+                      "'status', (ARRAY['PENDING','DONE','FAILED'])[1 + i %% 3], 'virtualRecordId', 'v' || i, 'rev', '1') FROM generate_series(1, 30000) i", (org,))
+            c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 'r' || i, jsonb_build_object('virtualRecordId', 'v' || i, 'contentRev', '1') FROM generate_series(1, 30000) i", (org,))
+        c.execute("RESET ROLE")
+        c.execute("ANALYZE graph.nodes")
+        cases = [
+            ("graph.node_by_external(%s, %s, %s)", ("groups", "c7", "e777"), "nodes_group_by_external"),
+            ("graph.node_by_external(%s, %s, %s)", ("roles", "c7", "e777"), "nodes_role_by_external"),
+            ("graph.node_by_external(%s, %s, %s)", ("recordGroups", "c7", "e777"), "externalGroupId"),                  # the baseline's index of this collection has a generated name
+            ("graph.stage_states_page(%s, %s, %s, %s, %s)", ("c1", "indexing", "PENDING", "s010000", 100), "nodes_stage_page"),
+            ("graph.stage_states_page(%s, %s, %s, %s, %s)", ("c1", "indexing", "PENDING", "", 100), "nodes_stage_page"),
+            ("graph.records_by_revision(%s::text[], %s::text[])", (["v7", "v77", "v777"], ["1", "1", "1"]), "nodes_record_virtual_rev"),
+        ]
+        for call, params, index in cases:
+            plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, f"SELECT node_id FROM {call}", params)
+            for i in (0, 6):
+                assert re.search(index, plans[i]) and "Seq Scan on" not in plans[i], (call, params, i, plans[i])
+                if "stage_states_page" in call:      # the index gives the order: a sort would read every state of the status for each page
+                    assert not re.search(r"\bSort\b", plans[i]), (params, i, plans[i])
+        # the plain statements the provider sent before: the org only
+        for coll, key in (("groups", "externalGroupId"), ("roles", "externalRoleId"), ("recordGroups", "externalGroupId")):
+            plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, f"SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = '{coll}' "
+                                                                                    f"AND n.doc->>'{key}' = 'e777' AND n.doc->>'connectorId' = 'c7' LIMIT 1")
+            assert not any(re.search(rf"Index Cond: .*{key}", p) for p in plans), (coll, plans[0])
