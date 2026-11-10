@@ -6,7 +6,7 @@ Each row drives deliveries through the real consume loop with a mocked AIOKafkaC
 import asyncio
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -77,7 +77,7 @@ def _consumer(handler=None, retry_manager=None) -> KafkaMessagingConsumer:
     return c
 
 
-def _handler(result=True, *, raises: BaseException | None = None):
+def _handler(result: bool = True, *, raises: BaseException | None = None) -> Callable[..., Awaitable[bool]]:
     calls = []
 
     async def handle(message) -> bool:

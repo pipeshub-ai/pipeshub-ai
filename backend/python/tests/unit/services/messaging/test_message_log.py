@@ -3,7 +3,6 @@
 import asyncio
 import contextvars
 import logging
-from collections.abc import Iterator
 
 import pytest
 from pydantic import ValidationError

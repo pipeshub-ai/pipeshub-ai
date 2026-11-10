@@ -18,7 +18,10 @@ from app.services.messaging.kafka.handlers.entity import EntityEventService
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.utils.logger import log_record_fields
 from app.utils.structured_logging import DefaultLoggingProvider
-from tests.unit.services.messaging.test_record_handler import _collect_events, _make_handler
+from tests.unit.services.messaging.test_record_handler import (
+    _collect_events,
+    _make_handler,
+)
 
 LOGGER = "test.p8.handlers"
 log = logging.getLogger(LOGGER)
@@ -110,7 +113,8 @@ class TestEntityEvents:
 
 class TestConnectorLinkPasses:
     async def test_link_passes_run_as_an_org_job_without_the_message_ids(self, caplog, monkeypatch) -> None:
-        from app.services.messaging import message_log as ML  # new module: imported here so the rest runs on main
+        # A new module: imported here so the rest of this file runs on main.
+        from app.services.messaging import message_log as ML
 
         monkeypatch.setattr(entity_module, "_LINK_DEBOUNCE_SEC", 0)
         svc = _service()

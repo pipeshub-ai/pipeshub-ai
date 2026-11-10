@@ -59,6 +59,7 @@ from app.services.messaging.kafka.consumer.remembered import (
 from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.membership import register_group
+from app.services.messaging.message_log import bound_message
 from app.services.messaging.scheduling.drr_scheduler import DRRScheduler
 from app.services.messaging.scheduling.interface import (
     EnqueueResult,
@@ -73,7 +74,6 @@ from app.services.messaging.scheduling.key_extractors import (
 )
 from app.services.messaging.scheduling.offset_tracker import PartitionOffsetTracker
 from app.services.messaging.scheduling.slot_share import SlotShare, SlotSharePlan
-from app.services.messaging.message_log import bound_message
 from app.services.messaging.storage_protocol import tagged
 from app.services.resource_governor import ParseTier, Pool
 from app.telemetry.modules import scheduling_metrics as metrics

@@ -20,7 +20,6 @@ from app.core.org_context import bind_optional, spawn_detached
 from app.modules.indexing.embed_resume import stamp_delivery_id
 from app.services.distributed.interface import IDistributedLeaseManager, IRetryTracker
 from app.services.messaging import consumer_concurrency as concurrency
-from app.services.messaging.message_log import bound_message
 from app.services.messaging.config import (
     IndexingEvent,
     IndexingMessageHandler,
@@ -54,6 +53,7 @@ from app.services.messaging.lanes.backlog import LaneBacklog, redis_lanes_for_ke
 from app.services.messaging.lanes.hash_router import RedisLaneRouter
 from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.membership import register_group
+from app.services.messaging.message_log import bound_message
 from app.services.messaging.redis_streams.backlog import read_stream_backlog_detail
 from app.services.messaging.redis_streams.retention import (
     DEFAULT_INTERVAL_SECONDS,
@@ -83,8 +83,8 @@ from app.services.resource_governor import ParseTier, Pool
 from app.telemetry.modules import scheduling_metrics as metrics
 from app.utils import indexing_timing as timing
 from app.utils.cpu_offload import offload_if_large
-from app.utils.loop_lag_monitor import LoopLagMonitor, loop_lag_monitor_from_env
 from app.utils.logging_fields import log_fields
+from app.utils.loop_lag_monitor import LoopLagMonitor, loop_lag_monitor_from_env
 from app.utils.request_context import (
     context_from_envelope,
     run_in_context,

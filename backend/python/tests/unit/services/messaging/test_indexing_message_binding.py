@@ -5,7 +5,7 @@ failures never log the value or a validation error's text."""
 import asyncio
 import json
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -13,10 +13,18 @@ from aiokafka import TopicPartition
 from pydantic import ValidationError
 
 from app.exceptions.non_retryable import NonRetryableError
-from app.services.messaging.config import PipelineEvent, RedisStreamsConfig, StreamMessage
+from app.services.messaging.config import (
+    PipelineEvent,
+    RedisStreamsConfig,
+    StreamMessage,
+)
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
-from app.services.messaging.kafka.consumer.indexing_consumer import IndexingKafkaConsumer
-from app.services.messaging.redis_streams.indexing_consumer import IndexingRedisStreamsConsumer
+from app.services.messaging.kafka.consumer.indexing_consumer import (
+    IndexingKafkaConsumer,
+)
+from app.services.messaging.redis_streams.indexing_consumer import (
+    IndexingRedisStreamsConsumer,
+)
 from app.services.messaging.scheduling.interface import FairSchedulerConfig
 from app.utils.logger import log_record_fields
 from app.utils.structured_logging import DefaultLoggingProvider
@@ -53,7 +61,7 @@ def _value(event_type: str = "newRecord", payload: dict | None = None) -> str:
     return json.dumps({"eventType": event_type, "payload": payload or PAYLOAD, "requestId": "req-producer"})
 
 
-def _failing_handler(exc: Exception):
+def _failing_handler(exc: Exception) -> Callable[[object], AsyncGenerator[PipelineEvent, None]]:
     async def handler(message) -> AsyncGenerator[PipelineEvent, None]:
         logging.getLogger(LOGGER).info("handler line")
         raise exc

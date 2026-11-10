@@ -27,10 +27,10 @@ from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.sync_coordinator import get_coordinator, stop_wait_sec
 from app.connectors.core.sync.task_manager import reindex_task_manager
 from app.connectors.services.event_service import evict_cached_connector
-from app.core import org_context
 from app.containers.connector import (
     ConnectorAppContainer,
 )
+from app.core import org_context
 from app.edition_services import get_data_entities_processor_cls
 from app.modules.indexing.record_republish import record_event
 from app.schema.node_validator import SchemaValidationError
