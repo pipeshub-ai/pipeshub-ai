@@ -85,7 +85,7 @@ HARMLESS = frozenset("""
     kh_scope_forget kh_scope_mark_changed kh_scope_mark_stale kh_scope_reset_syncing kh_scope_restamp_stale kh_scope_stamp
     kh_scope_sync_ended mark_orphan_named_entities migrate_agent_hub_knowledge migrate_person_to_user move_taxonomy_edges
     name_knowledge_hub_parents normalize_folder_mime_types organization_exists page_entity_index_source
-    page_records_for_vector_membership_backfill permission_hierarchy_view permission_stamp_graph
+    page_records_for_vector_membership_backfill permission_hierarchy_view permission_stamp_graph store_time
     reap_stale_external_app_relations record_purge_failure records_accept_indexed_copy reindex_record_group_records
     reindex_single_record remove_authenticated_as remove_kb_permission remove_sync_point
     replace_named_entity_values reset_indexing_status_for_connector retag_push_record rollback_transaction

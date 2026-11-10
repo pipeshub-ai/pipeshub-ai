@@ -158,3 +158,17 @@ async def _busy() -> object:
     from app.services.vector_db.scope_rewrite import RewriteResult
 
     return RewriteResult("o", "c", state="busy")
+
+
+async def test_the_store_clock_is_close_to_this_hosts_and_a_skewed_sweeper_leaves_a_live_write_alone(backend, monkeypatch) -> None:
+    import time
+    from types import SimpleNamespace
+
+    from app.services.permissions import structure_generation as sg
+
+    _, conn, *_ = await _world(backend)
+    assert abs(await backend.provider.store_time() - time.time()) < 30
+    await open_write(backend.provider, conn, ["root-x"])
+    monkeypatch.setattr(sg, "time", SimpleNamespace(time=lambda: time.time() + 3600))      # a sweeper host an hour ahead
+    assert await recover_expired_writes(backend.provider, conn) == 0
+    assert unclosed_writes(await app_of(backend, conn)) == 1

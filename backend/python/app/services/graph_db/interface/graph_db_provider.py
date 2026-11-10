@@ -5095,6 +5095,11 @@ class IGraphDBProvider(ABC):
         "no scopes"."""
         raise NotImplementedError(f"{type(self).__name__} has no permission hierarchy view")
 
+    async def store_time(self) -> float:
+        """The store's own clock, in epoch seconds. Leases that a writer and a sweeper judge are written and read by this clock, so a host whose
+        clock is off cannot make a live lease look dead. A provider that cannot say raises, and the callers fall back to the local clock."""
+        raise NotImplementedError(f"{type(self).__name__} has no store clock")
+
     async def increment_node_field(
         self, key: str, collection: str, field: str, transaction: str | None = None
     ) -> int | None:

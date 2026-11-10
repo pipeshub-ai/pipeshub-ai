@@ -25,6 +25,7 @@ from app.services.permissions.structure_generation import (
     UNSAFE_KEY,
     OpenWritesUnreadable,
     parse_open_writes,
+    store_now,
     structure_generation_of,
     unclosed_writes,
 )
@@ -105,15 +106,16 @@ def connector_view(connector_id: str, app: Mapping[str, Any], *, clock: Callable
         v.attention.append("writes_unreadable: the opened and closed counters do not read; run the back-fill with --close-open-mark once no write is running")
     elif in_flight:
         leased = leases or {}
-        dead = sum(1 for e in leased.values() if e["u"] <= now - OPEN_WRITE_GRACE_SECONDS)
-        live = len(leased) - dead
+        alive = [e for e in leased.values() if e.get("k") or e["u"] > now - OPEN_WRITE_GRACE_SECONDS]      # the sweep does not take a `k` lease's deadline as dead
+        live = len(alive)
+        dead = len(leased) - live
         unleased = in_flight - len(leased) if leases is not None else in_flight
         if dead:
             v.attention.append(f"open_write_expired: {dead} write(s) opened the connector and never closed it; the sweep closes them (run it)")
         if unleased > 0:
             v.attention.append(f"open_write_unleased: {unleased} write(s) have no lease to run out; run the back-fill with --close-open-mark once no write is running")
         if live:
-            left = int(min(e["u"] for e in leased.values() if e["u"] > now - OPEN_WRITE_GRACE_SECONDS) - now)
+            left = int(min(e["u"] for e in alive) - now)
             v.info.append(f"{live} write(s) in flight, the next lease " + (f"runs out in {left} s" if left > 0 else "has run out and is inside its grace"))
     # ---- the rest of why it is not current
     if v.current is False and not roots and not unreadable and in_flight == 0 and app.get(BACKFILL_KEYS["state"]) is not None:
@@ -132,16 +134,19 @@ def connector_view(connector_id: str, app: Mapping[str, Any], *, clock: Callable
 
 
 async def org_view(graph_provider: IGraphDBProvider, org_id: str, vector_db: IVectorDBService | None = None, *,
-                   connectors: list[str] | None = None, clock: Callable[[], float] = time.time) -> OrgView:
+                   connectors: list[str] | None = None, clock: Callable[[], float] | None = None) -> OrgView:
     """Raises only when the connectors cannot be listed; a vector store that cannot answer is a note."""
     with for_org(org_id, job="scope-view"):
         apps = await graph_provider.get_org_apps(org_id, active_only=False, raise_on_error=True) or []
         rows = []
+        now = await store_now(graph_provider, clock)      # leases are read by the store's clock, as the sweep reads them
         for app in sorted(apps, key=lambda a: str(a.get("_key") or a.get("id"))):
             key = str(app.get("_key") or app.get("id"))
             if (connectors is None or key in connectors) and any(k in app for k in _TRACKED):
-                rows.append(connector_view(key, app, clock=clock))
+                rows.append(connector_view(key, app, clock=lambda: now if now is not None else time.time()))
         view = OrgView(org_id, rows)
+        if now is None:
+            view.notes.append("store_clock_unknown: the graph store could not say its time; lease deadlines were read by this host's clock and the sweep recovers nothing until it can")
         ask = getattr(vector_db, "group_clock_skew", None)
         if ask is not None:
             try:

@@ -7,6 +7,7 @@ not current), a live one is not (no connector current while a write is running),
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import pytest
@@ -56,6 +57,9 @@ class Graph:
         self.lost_race: Any = None
         self.sharers: list[dict] = []
         self.swap_fails_after: int | None = None       # swaps allowed before every later one raises
+
+    async def store_time(self) -> float:
+        return time.time()      # the store's clock; a test that needs its own passes a `clock`
 
     async def get_document(self, key: str, collection: str, **kw: Any) -> dict | None:
         return dict(self.app)

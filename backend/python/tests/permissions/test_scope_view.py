@@ -181,6 +181,13 @@ async def test_an_unclosed_write_with_no_lease_alone_is_listed_and_needs_attenti
     assert [a.split(":")[0] for a in view.connectors[0].attention] == ["open_write_unleased"]
 
 
+def test_a_lease_written_without_the_store_clock_is_not_called_dead_on_its_own_deadline() -> None:
+    clock = Clock()
+    app = {**current_app(), OPENED_KEY: 1, OPEN_WRITES_KEY: f'{{"t":{{"u":{int(clock.now) - 86400},"k":1}}}}'}
+    v = connector_view("c", app, clock=clock)
+    assert not v.attention and any("in flight" in i for i in v.info)
+
+
 def test_a_lease_inside_its_grace_never_prints_a_negative_time() -> None:
     clock = Clock()
     app = {**current_app(), OPENED_KEY: 1, OPEN_WRITES_KEY: f'{{"t":{{"u":{int(clock.now) - 10}}}}}'}
