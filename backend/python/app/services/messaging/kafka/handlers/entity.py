@@ -65,6 +65,25 @@ _PARKED_WHILE_OFF = {
 PRINCIPAL_EVENTS = frozenset({"userAdded", "userUpdated", "userDeleted", "appEnabled", "appDisabled", "orgDeleted"})
 
 
+# Each one that misses means another toggle committed meanwhile; this many in a row is someone
+# toggling non-stop, and the event is failed rather than looped on.
+_DISABLE_WRITE_ATTEMPTS = 5
+
+
+def _superseded_by_a_newer_toggle(payload: dict, app_doc: dict) -> bool:
+    """Whether a toggle numbered after this event's turned the connector back on.
+
+    Only a sync toggle numbers its event; any other appDisabled (a refresh token gone
+    bad, a delete) carries no number and always disables. A newer toggle that left the
+    connector off is not a reason to skip: disabling again stops what the first one
+    should have, and writes the same value."""
+    sent = payload.get(ConnectorStateKeys.TOGGLE_SEQ)
+    current = app_doc.get(ConnectorStateKeys.TOGGLE_SEQ)
+    if sent is None or current is None:
+        return False
+    return int(sent) < int(current) and bool(app_doc.get(ConnectorStateKeys.IS_ACTIVE))
+
+
 class EntityEventService(BaseEventService):
     def __init__(
         self,
@@ -680,6 +699,44 @@ class EntityEventService(BaseEventService):
             self.logger.error(f"❌ Error enabling apps: {str(e)}")
             return False
 
+    async def _write_app_disabled(self, payload: dict, app_doc: dict) -> bool | None:
+        """Write isActive false, unless a newer toggle turned the connector back on.
+
+        Returns True when written, False when superseded, None when the app went away. A
+        numbered event writes only while the app still has the number it was checked
+        against, so an on that commits between the read and the write is seen, not
+        overwritten; an event without a number writes as it always has.
+        """
+        connector_id = payload.get("connectorId", "")
+        apps = CollectionNames.APPS.value
+        disabled = {"isActive": False, "updatedAtTimestamp": get_epoch_timestamp_in_ms()}
+        if payload.get(ConnectorStateKeys.TOGGLE_SEQ) is None or app_doc.get(ConnectorStateKeys.TOGGLE_SEQ) is None:
+            await self.graph_provider.update_node(connector_id, apps, disabled)
+            return True
+        for _ in range(_DISABLE_WRITE_ATTEMPTS):
+            if _superseded_by_a_newer_toggle(payload, app_doc):
+                # A quick off-then-on can reach here after the on was written: disabling now
+                # would turn the connector off again and skip the sync the on started.
+                self.logger.info(
+                    f"Skipping app disabled event for connector {connector_id}: a newer toggle "
+                    f"(#{app_doc.get(ConnectorStateKeys.TOGGLE_SEQ)}) turned it back on after this one "
+                    f"(#{payload.get(ConnectorStateKeys.TOGGLE_SEQ)})"
+                )
+                return False
+            if await self.graph_provider.update_node_fields_if_match(
+                connector_id, apps, disabled,
+                {ConnectorStateKeys.TOGGLE_SEQ: app_doc[ConnectorStateKeys.TOGGLE_SEQ]},
+            ):
+                return True
+            app_doc = await self.graph_provider.get_document(connector_id, apps)
+            if not app_doc:
+                self.logger.error(f"App not found: {connector_id}")
+                return None
+        raise RuntimeError(
+            f"Connector {connector_id} was toggled {_DISABLE_WRITE_ATTEMPTS} times while its "
+            "app disabled event was being handled"
+        )
+
     async def _handle_app_disabled(self, payload: dict) -> bool:
         """Handle app disabled event"""
         try:
@@ -706,12 +763,11 @@ class EntityEventService(BaseEventService):
             # Update apps in database. Only the two fields that change: rebuilding the
             # whole document from the stored one would write None for a field a legacy
             # app lacks, which the schema (rightly) rejects.
-            for _ in apps:
-                await self.graph_provider.update_node(
-                    connector_id,
-                    CollectionNames.APPS.value,
-                    {"isActive": False, "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
-                )
+            disabled = await self._write_app_disabled(payload, app_doc)
+            if disabled is None:
+                return False
+            if not disabled:
+                return True
             await notify_principals_changed(org_id)  # before the (slow) cleanup below; see process_event
 
             # Stop any running sync/reindex and wait for it to unwind, bounded:

@@ -216,7 +216,16 @@ class TestARecordThatStalls:
     async def test_a_record_that_hangs_after_progress_is_cut_at_the_stall_limit_and_resumes(self) -> None:
         # Kills: waiting out the whole cap; counting a stall that followed progress.
         chain = await _chain(200)
-        chain.embedder.hang_after = 2  # type: ignore[attr-defined]
+        real_upsert, writes = chain.db.upsert_points, 0
+
+        async def hangs_after_two(*args: Any, **kw: Any) -> Any:  # noqa: ANN401
+            nonlocal writes
+            writes += 1
+            if writes % 3 == 0:  # the stall timer is off while an embedding call runs, so the hang is in the write
+                await asyncio.sleep(3600)
+            return await real_upsert(*args, **kw)
+
+        chain.db.upsert_points = hangs_after_two  # type: ignore[method-assign]
         consumer = Consumer(chain, cap=30.0, floor=0.15, ceiling=60.0, max_counted=1)
         started = asyncio.get_running_loop().time()
         outcome = await asyncio.wait_for(consumer.run(), timeout=6.0)
@@ -224,6 +233,31 @@ class TestARecordThatStalls:
         # Each attempt added two batches until the points were all there or the ceiling ended the chain.
         assert consumer.uncounted >= 2
         assert outcome in {"completed", "dead-lettered"}
+
+
+@pytest.mark.asyncio
+class TestASlowBatch:
+    async def test_a_batch_slower_than_the_stall_floor_is_not_cut_by_the_stall_timer(self) -> None:
+        # Kills: a stall timer that runs during the embedding call, so a batch the call timeout allows is cut.
+        chain = await _chain(5, delay=0.5)  # 3 x the floor
+        consumer = Consumer(chain, cap=30.0, floor=0.15)
+        assert await consumer.run() == "completed"
+        assert (consumer.counted, consumer.uncounted, consumer.attempts) == (0, 0, 1)
+
+    async def test_a_hung_call_is_bounded_by_its_own_timeout_not_by_the_stall_timer(self) -> None:
+        # What bounds a hung batch now: the call timeout, once per attempt, then the attempt fails as an error.
+        chain = await _chain(5)
+        chain.embedder.hang_after = 0  # type: ignore[attr-defined]
+        consumer = Consumer(chain, cap=30.0, floor=0.1)
+        started = asyncio.get_running_loop().time()
+        with patch("app.modules.transformers.vectorstore._LOCAL_EMBEDDING_BATCH_TIMEOUT_S", 0.3), patch(
+            "app.modules.transformers.vectorstore._REMOTE_EMBEDDING_BATCH_TIMEOUT_S", 0.3
+        ), patch("app.modules.transformers.vectorstore.retry_delay_seconds", return_value=0.01):
+            with pytest.raises(Exception, match="Failed to store batch") as raised:
+                await consumer.run()
+        assert "failed after 3 attempts" in str(raised.value.__cause__)
+        assert asyncio.get_running_loop().time() - started >= 0.85  # three calls of 0.3 s each
+        assert consumer.progresses[0].new_units == 0
 
 
 @pytest.mark.asyncio

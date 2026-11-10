@@ -206,6 +206,51 @@ class TestTheDeadline:
         assert await _run(q, never_recovers, cap=0.8)
         assert 0.7 < asyncio.get_running_loop().time() - started < 1.3
 
+    async def test_a_call_in_flight_is_not_a_stall_but_the_cap_still_ends_it(self) -> None:
+        # Kills: a stall timer that runs during an embedding call, and a call that lifts the cap.
+        p = _progress()
+
+        async def slow_call(pp: RecordProgress) -> None:
+            pp.call_start()
+            await asyncio.sleep(FLOOR * 3)
+            pp.call_end()
+            pp.beat(1)
+
+        assert not await _run(p, slow_call, cap=5.0)
+
+        q = _progress()
+
+        async def never_returns(pp: RecordProgress) -> None:
+            pp.call_start()
+            await asyncio.sleep(30)
+
+        started = asyncio.get_running_loop().time()
+        assert await _run(q, never_returns, cap=0.8)
+        assert 0.7 < asyncio.get_running_loop().time() - started < 1.3
+
+    async def test_the_stall_timer_counts_from_the_end_of_the_call(self) -> None:
+        # Kills: a call that ends with the clock of the last batch, which would cut at once.
+        p = _progress()
+
+        async def work(pp: RecordProgress) -> None:
+            pp.call_start()
+            await asyncio.sleep(FLOOR * 3)
+            pp.call_end()
+            await asyncio.sleep(FLOOR * 0.5)
+            pp.beat(1)
+
+        assert not await _run(p, work, cap=5.0)
+
+        q = _progress()
+
+        async def hangs_after_call(pp: RecordProgress) -> None:
+            pp.call_start()
+            pp.call_end()
+            await asyncio.sleep(30)
+
+        assert await _run(q, hangs_after_call, cap=5.0)
+        assert q.new_units == 0
+
     async def test_a_retry_starting_starts_the_stall_timer_over(self) -> None:
         # Kills: resume() that keeps the clock of the batch before the outage.
         p = _progress()

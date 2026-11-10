@@ -144,6 +144,7 @@ class RecordProgress:
         self._cap: float | None = None
         self._last_beat = 0.0
         self._pausers = 0
+        self._calls = 0
         self._pause_started = 0.0
         self._paused_total = 0.0
         self._reported_at = 0.0
@@ -286,6 +287,22 @@ class RecordProgress:
             self._last_beat = now
             self._arm()
 
+    def call_start(self) -> None:
+        """An embedding call is in flight: its own timeout bounds it, so the stall timer is off."""
+        if not self.planned:
+            return
+        self._calls += 1
+        self._arm()
+
+    def call_end(self) -> None:
+        """The call returned or failed; the stall timer counts from here, not from the last batch."""
+        if not self.planned or self._calls == 0:
+            return
+        self._calls -= 1
+        if self._calls == 0:
+            self._last_beat = self._clock()
+            self._arm()
+
     async def report(self, *, force: bool = False) -> None:
         """Write the display count, at most every few batches or seconds. A failure is logged and ignored."""
         if not self.planned or self._display is None:
@@ -306,7 +323,7 @@ class RecordProgress:
 
     # ---- the deadline -----------------------------------------------------------------------------------------------------------
     def _deadline(self) -> float | None:
-        if self._cap is None or self.finished:
+        if self._cap is None or self.finished or self._calls:
             return self._cap
         stall = self.stall_seconds()
         if self._pausers:

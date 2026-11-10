@@ -2122,9 +2122,14 @@ class VectorStore(Transformer):
         service_name = self.embedding_provider or EmbeddingProvider.DEFAULT.value
         total_chars = sum(len(text) for text in texts)
         last_error: BaseException | None = None
+        progress = current_progress()
 
         for attempt in range(1, _EMBEDDING_BATCH_MAX_ATTEMPTS + 1):
+            if progress is not None:
+                progress.call_start()
             try:
+                # The stall timer is off while the call runs: attempt_timeout, which may be longer
+                # than the stall floor on local CPU, is what bounds a hung batch.
                 return await asyncio.wait_for(
                     self.dense_embeddings.aembed_documents(texts),
                     timeout=attempt_timeout,
@@ -2141,6 +2146,9 @@ class VectorStore(Transformer):
                 if not is_retriable_embedding_error(e):
                     raise
                 last_error = e
+            finally:
+                if progress is not None:
+                    progress.call_end()
 
             if attempt >= _EMBEDDING_BATCH_MAX_ATTEMPTS:
                 break
@@ -2155,7 +2163,6 @@ class VectorStore(Transformer):
                 f"{format_exception_chain(last_error)}"
             )
             # A failing provider is not a stalled record: the stall timer waits out the retry.
-            progress = current_progress()
             if progress is not None:
                 progress.pause()
             try:

@@ -94,7 +94,7 @@ from app.services.messaging.config import (
 )
 from app.services.messaging.error_classifier import is_expected_outcome
 from app.services.parsing.client import ParsingClient
-from app.services.parsing.interface import ParserProvider
+from app.services.parsing.interface import ParserProvider, UnsupportedFormatError
 from app.services.permissions.mode import scope_fields_enabled
 from app.services.permissions.structure_generation import leaving_vrid
 from app.services.resource_governor import classify
@@ -659,7 +659,10 @@ class EventProcessor:
         """
 
         async def write(embed_seconds: float, uncounted: int) -> bool:
-            current = await self.graph_provider.get_document(record_id, CollectionNames.RECORDS.value) or {}
+            # An unreadable record must not read as an empty one: that would reset a finished extraction.
+            current = await self.graph_provider.get_document(
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
+            ) or {}
             updates: dict[str, Any] = {
                 "indexingStatus": ProgressStatus.QUEUED.value,
                 "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
@@ -2409,7 +2412,9 @@ class EventProcessor:
                     yield event
 
             else:
-                raise Exception(f"Unsupported file extension: {extension}")
+                raise UnsupportedFormatError(
+                    extension, f"Unsupported file extension: {extension} (mime type {mime_type})"
+                )
 
             self.logger.info(
                 f"✅ Successfully processed document for record {record_id}"

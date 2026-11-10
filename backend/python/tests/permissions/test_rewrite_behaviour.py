@@ -247,3 +247,19 @@ async def test_a_subtree_too_deep_to_walk_is_left_to_the_full_pass(monkeypatch: 
     seen = Log()
     await env.audit(seen)
     assert not seen.leaks and not seen.pending_admits
+
+
+async def test_more_roots_than_the_list_holds_leave_nothing_to_rewrite_and_nothing_released() -> None:
+    from app.services.permissions.pending import MAX_PENDING_ROOTS
+    from app.services.permissions.structure_generation import register_pending_roots
+
+    env = await hr()
+    await register_pending_roots(env.graph, "w:app", [f"w:r{i}" for i in range(MAX_PENDING_ROOTS + 1)])     # lists none; the bump keeps the connector not current
+    assert not env.pending() and not (await env.current())
+    res = await env.job.run_connector(ORG, "w:app")
+    assert res.state == "idle" and not res.released and not (await env.current())          # only a full pass makes it current again
+    await env.change((MOVE,))                                                              # and a root listed after the unlisted bump is not a licence to release
+    assert (await env.job.run_connector(ORG, "w:app")).state == "full_pass"
+    await env.settle()
+    assert not env.pending() and await env.current() == set(env.apps)
+    assert not await env.problems()
