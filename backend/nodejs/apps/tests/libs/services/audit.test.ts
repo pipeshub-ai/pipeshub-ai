@@ -152,7 +152,7 @@ describe('audit(): one fixed-shape line per security event', () => {
     }
   })
 
-  it('has a partial outcome for a passed step of a multi-step decision', () => {
+  it('[guard] has a partial outcome for a passed step of a multi-step decision', () => {
     audit('auth.sign_in', { actor: USER, org: ORG, outcome: 'partial', authMethod: 'password' })
     expect(record()).to.include({ outcome: 'partial' })
   })

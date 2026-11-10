@@ -840,7 +840,7 @@ describe('UserAccountController sign-in flow', () => {
     describe('when the account lookup is the real IAM client', () => {
       beforeEach(() => {
         const realIam = new IamService(
-          ...([{ iamBackend: IAM_BACKEND }, logger] as unknown as ConstructorParameters<typeof IamService>),
+          ...([{ iamBackend: IAM_BACKEND }] as unknown as ConstructorParameters<typeof IamService>),
         );
         iamService.getUserById.callsFake((id: string, token: string) =>
           realIam.getUserById(id, token),
@@ -893,7 +893,9 @@ describe('UserAccountController sign-in flow', () => {
         expect(error).to.be.instanceOf(InternalServerError);
         expect(error.message).to.include('refresh your session');
         expect(error.message).to.not.include('ECONNREFUSED');
-        expect(logger.error.calledWithMatch('Looking up the account to refresh a session failed')).to.be.true;
+        // Logged once, by the error middleware, with the network error as the cause.
+        expect((error as { cause?: Error }).cause?.name).to.equal('AxiosError');
+        expect(logger.error.called).to.be.false;
       });
     });
   });
@@ -1143,7 +1145,7 @@ describe('UserAccountController sign-in flow', () => {
 
     beforeEach(() => {
       const realIam = new IamService(
-        ...([{ iamBackend: IAM_BACKEND }, logger] as unknown as ConstructorParameters<typeof IamService>),
+        ...([{ iamBackend: IAM_BACKEND }] as unknown as ConstructorParameters<typeof IamService>),
       );
       iamService.getUserByEmail.callsFake((email: string, token: string) =>
         realIam.getUserByEmail(email, token),

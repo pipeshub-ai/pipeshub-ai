@@ -22,7 +22,7 @@ describe('IamService', () => {
   } as any;
 
   beforeEach(() => {
-    iamService = new IamService(mockConfig, mockLogger);
+    iamService = new IamService(mockConfig);
   });
 
   afterEach(() => {
@@ -30,8 +30,8 @@ describe('IamService', () => {
   });
 
   describe('constructor', () => {
-    it('should create an instance with the provided config and logger', () => {
-      const service = new IamService(mockConfig, mockLogger);
+    it('should create an instance with the provided config', () => {
+      const service = new IamService(mockConfig);
       expect(service).to.be.instanceOf(IamService);
     });
   });
@@ -53,7 +53,7 @@ describe('IamService', () => {
       // We need to stub axios as a callable. The source calls `await axios(config)`.
       // The cleanest way is to use sinon to replace the default export behavior:
       sinon.restore(); // clean up
-      iamService = new IamService(mockConfig, mockLogger);
+      iamService = new IamService(mockConfig);
 
       const stub = sinon.stub(axios, 'request');
       // The code calls axios(config), which internally calls axios.request
@@ -65,7 +65,7 @@ describe('IamService', () => {
         data: responseData,
       });
       sinon.restore();
-      iamService = new IamService(mockConfig, mockLogger);
+      iamService = new IamService(mockConfig);
 
       // Since axios(config) calls axios.request internally, and the source
       // uses `const response = await axios(config)`, the best approach is
@@ -472,7 +472,7 @@ describe('IamService - branch coverage', () => {
   } as any
 
   beforeEach(() => {
-    iamService = new IamService(mockConfig, mockLogger)
+    iamService = new IamService(mockConfig)
   })
 
   afterEach(() => {
@@ -801,7 +801,7 @@ describe('IamService - additional coverage', () => {
   } as any
 
   beforeEach(() => {
-    iamService = new IamService(mockConfig, mockLogger)
+    iamService = new IamService(mockConfig)
     nock.cleanAll()
   })
 

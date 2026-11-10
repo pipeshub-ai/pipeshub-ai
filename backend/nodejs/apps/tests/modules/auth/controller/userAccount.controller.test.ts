@@ -3708,7 +3708,7 @@ describe('UserAccountController', () => {
 
       expect(result.statusCode).to.equal(200);
       expect(save.calledOnce).to.be.true;
-      expect(mockLogger.error.calledWith("The sign-in code email couldn't be sent")).to.be.true;
+      expect(mockLogger.warn.calledWith("The sign-in code email couldn't be sent")).to.be.true;
     });
   });
 
