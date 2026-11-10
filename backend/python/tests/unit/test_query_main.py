@@ -461,7 +461,7 @@ class TestLifespan:
             # retrieval_service should NOT have been awaited (no orgs)
             mock_container.retrieval_service.assert_not_awaited()
 
-    async def test_startup_lists_orgs_in_a_system_scope_that_ends_after_the_list(self):
+    async def test_startup_lists_orgs_in_a_system_scope_that_ends_after_the_list(self) -> None:
         """The PostgreSQL graph refuses an org list with no context (the service then could not start); the
         scope must end with the list, or every task started after it would inherit a cross-org context."""
         from app.core import org_context
@@ -470,7 +470,7 @@ class TestLifespan:
         mock_container = _make_container()
         seen: list = []
 
-        async def _orgs(*_a, **_k):
+        async def _orgs(*_a: object, **_k: object) -> list:
             seen.append(org_context.peek())
             return []
 
