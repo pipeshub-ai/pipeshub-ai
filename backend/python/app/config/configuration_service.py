@@ -385,8 +385,8 @@ class ConfigurationService:
                 expiry = {"ttl": ttl_seconds} if ttl_seconds else {}
                 success = await self.store.create_key(key, value, overwrite=True, **expiry)
             except Exception as store_error:
-                self.logger.error("❌ Failed to create key in store: %s", str(store_error))
-                success = False
+                self._log_store_failure("config.set.failed", store_error, key)
+                return False
 
             if success:
                 with self._cache_lock:
@@ -448,23 +448,18 @@ class ConfigurationService:
             # Update in KV store
             try:
                 await self.store.update_value(key, value)
-                success = True
             except Exception as store_error:
-                self.logger.error("❌ Failed to update key in store: %s", str(store_error))
-                success = False
+                self._log_store_failure("config.update.failed", store_error, key)
+                return False
 
-            if success:
-                # Update cache with value
-                with self._cache_lock:
-                    self._remember(key, value)
-                self.logger.debug("✅ Successfully updated config for key: %s", key)
+            # Update cache with value
+            with self._cache_lock:
+                self._remember(key, value)
+            self.logger.debug("✅ Successfully updated config for key: %s", key)
 
-                # Publish cache invalidation for other processes (Redis only)
-                await self._publish_cache_invalidation(key)
-            else:
-                self.logger.error("❌ Failed to update config for key: %s", key)
-
-            return success
+            # Publish cache invalidation for other processes (Redis only)
+            await self._publish_cache_invalidation(key)
+            return True
 
         except Exception as e:
             self.logger.error("❌ Failed to update config %s: %s", key, str(e))
@@ -490,11 +485,15 @@ class ConfigurationService:
             return success
 
         except Exception as e:
-            # Imported here: at top level it cycles (error_class -> base_client -> jwt -> this module).
-            from app.utils.error_class import log_failure
-
-            log_failure(self.logger, "config.delete.failed", e, level=logging.ERROR, config_path=key)
+            self._log_store_failure("config.delete.failed", e, key)
             return False
+
+    def _log_store_failure(self, event: str, error: Exception, key: str) -> None:
+        """The one line for a store failure this service handles: the store and its wrappers raise without logging."""
+        # Imported here: at top level it cycles (error_class -> base_client -> jwt -> this module).
+        from app.utils.error_class import log_failure
+
+        log_failure(self.logger, event, error, level=logging.ERROR, config_path=key)
 
     async def _publish_cache_invalidation(self, key: str) -> None:
         """Publish cache invalidation for cross-process cache sync (R15).
