@@ -122,6 +122,7 @@ const EVENT_FIELD_KEYS = [
   'actor',
   'target',
   'reason',
+  'auth_method',
 ] as const;
 
 /** Shown in the text line as ` | k=v`, in this order (identity first, as in Python), when the record has them. */
@@ -193,6 +194,7 @@ const FIELD_TYPES: Readonly<Record<string, (value: unknown) => boolean>> = {
   actor: matches(SHOWN_ID),
   target: matches(SHOWN_ID),
   reason: matches(SNAKE_TOKEN),
+  auth_method: matches(TYPE_NAME),
   // Fill the identity only when the request context has none (an audit line before sign-in).
   org_id: isPipesHubId,
   user_id: isPipesHubId,
