@@ -1048,7 +1048,7 @@ class PipesHubAgentFactory:
             tools=len(tool_names), tools_registered=len(tool_registry.names()),
             toolsets_failed=len(context.toolset_load_failures), tool_disclosure=tool_disclosure,
             toolsets_grouped=len(grouped), toolsets_pinned=len(pinned_toolsets),
-            domain_agents=len(composition_plan.definitions) if composition_plan is not None and mode.compose_domain_agents else 0,
+            domain_agents=len(composition_plan.agent_names) if composition_plan is not None and mode.compose_domain_agents else 0,
             code_execution=code_execution, sandbox_network=network_enabled, has_knowledge=bool(context.has_knowledge),
             skills=len(skill_manager.catalog_snapshot()) if skill_manager is not None else None,
             duration_ms=round((time.perf_counter() - build_started) * 1000),

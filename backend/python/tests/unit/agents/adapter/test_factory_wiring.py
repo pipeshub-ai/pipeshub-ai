@@ -557,3 +557,22 @@ class TestOneBuildLinePerTurn:
         assert fields["mode"] == mode and fields["tool_disclosure"] in ("lazy", "eager")
         assert {"loop", "tools", "tools_registered", "code_execution", "duration_ms", "has_knowledge"} <= fields.keys()
         assert all(isinstance(v, (str, int, float, bool)) for v in fields.values())
+
+    async def test_domain_agents_counts_the_agents_built_not_the_catalogue(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from app.utils.logger import log_record_fields
+
+        # Only the sandbox tools are registered, so of the catalogue only `coding_agent` claims any.
+        monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
+        caplog.set_level(logging.INFO)
+        context = make_context(llm=FakeChatModel())
+
+        agent, _runtime, _goal, _clarifying = await PipesHubAgentFactory().create(
+            context, context.llm, "react", query="hello",
+        )
+
+        assert [n for n in agent.spec.tool_names if n.endswith("_agent")] == ["coding_agent"]
+        builds = [log_record_fields(r) for r in caplog.records if r.getMessage() == "agent.build.end"]
+        assert [b["domain_agents"] for b in builds] == [1]

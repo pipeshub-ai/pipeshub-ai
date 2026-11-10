@@ -415,7 +415,7 @@ class PipesHubToolLoader:
                             context.essential_toolset_names.append(group_name)
                     except Exception as e:
                         # The toolset still loads; it just drops out of lazy `fetch_tools`.
-                        log_failure(logger, "toolset.group_failed", e, toolset=ts_name)
+                        log_failure(logger, "toolset.group_failed", e, toolset=ts_name, include_error_text=False)
 
                 loaded_apps.add(ts_name)
             except Exception as e:
