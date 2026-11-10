@@ -426,18 +426,22 @@ class TestFailedRefresh:
         assert (end.levelno, fields(end)["error_class"], fields(end)["reason"]) == (logging.ERROR, "misconfigured", "config_missing")
         assert fields(end)["toolset_id"] == INST
 
+    @pytest.mark.parametrize(("app", "oauth_app"), [(APP_ID, "linked"), (None, "unlinked")], ids=["linked", "legacy-fallback"])
     async def test_a_resolver_bug_is_internal_not_a_missing_config(
         self, service: ttrs.ToolsetTokenRefreshService, config: FakeConfigStore, caplog: pytest.LogCaptureFixture,
+        app: str | None, oauth_app: str,
     ) -> None:
         # Review F3: the resolver wraps any error as `ValueError(...) from e`; only a ValueError of its own is a config verdict.
-        _seed(config)
+        # Unlinked, the instance supplies the app, so the bug reaches the legacy fallback's raise (implementation review C).
+        _seed(config, _record(app=app))
+        config.store[INSTANCES] = [{"_id": INST, "oauthConfigId": APP_ID, "orgId": ORG}]
         config.store[APPS] = ["not-an-app"]  # the resolver's lookup raises AttributeError
 
         with pytest.raises(ValueError):
             await service._perform_token_refresh(PATH, TYPE, SEEDED_RT)
 
         [end] = events(caplog, CR.EVENT_END)
-        assert (end.levelno, fields(end)["error_class"]) == (logging.ERROR, "internal")
+        assert (end.levelno, fields(end)["error_class"], fields(end)["oauth_app"]) == (logging.ERROR, "internal", oauth_app)
         assert "reason" not in fields(end)
 
     async def test_save_failure_is_an_internal_error_after_a_warning_per_try(
