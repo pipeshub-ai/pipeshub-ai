@@ -14,10 +14,12 @@ import contextlib
 from collections import deque
 
 from app.services.resource_governor.gate import _Waiter
+from app.services.resource_governor.kinds import ParseKind, permit_excess_bytes
 from app.services.resource_governor.models import ParseTier
 from app.services.resource_governor.policy import (
     INDEX_HEAVY_WORKING_SET_GB,
     INDEX_LIGHT_WORKING_SET_GB,
+    HeavyWorkingSet,
 )
 
 # A record's own peak as a multiple of its size. A web page of inline photos,
@@ -39,6 +41,24 @@ def record_memory_cost(tier: ParseTier, size_bytes: int | None) -> int:
     estimate = size_bytes * RECORD_MEMORY_FACTOR
     assumed = (INDEX_HEAVY_WORKING_SET_GB if tier is ParseTier.HEAVY else INDEX_LIGHT_WORKING_SET_GB) * _GIB
     return estimate if estimate > assumed else 0
+
+
+def kind_reservation_cost(
+    tier: ParseTier, size_bytes: int | None, kind: ParseKind | None, working_set: HeavyWorkingSet | None
+) -> int:
+    """Bytes a record reserves before its parse permit: its file estimate, or the part of its kind's
+    parent working set that the permit's base does not cover, whichever is larger.
+
+    Max, not sum: the file bytes are part of the kind's working set. Reserved here and not after the
+    permit, so no record waits for memory while it holds a permit. Zero extra unless the permit's
+    base is the measured one, so with the old constant the cost is ``record_memory_cost`` exactly.
+    """
+    cost = record_memory_cost(tier, size_bytes)
+    if kind is None or working_set is None:
+        return cost
+    # A light record holds no permit; what the pool already assumes it holds is its base.
+    base_gb = working_set.gb if tier is ParseTier.HEAVY else INDEX_LIGHT_WORKING_SET_GB
+    return max(cost, permit_excess_bytes(kind, base_gb, working_set.source, size_bytes))
 
 
 class MemoryBudget:
