@@ -5,20 +5,17 @@ import {
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 import { HttpError } from '../../../libs/errors/http.errors';
+import { withCause } from '../../../libs/errors/base.error';
 import {
   keepDeliberateWording,
   markClientSafe,
   serverFailureMessage,
 } from '../../../libs/errors/reader-friendly';
-import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 
 @injectable()
 export class IamService {
-  constructor(
-    @inject('AppConfig') private authConfig: AppConfig,
-    @inject('Logger') private logger: Logger,
-  ) {}
+  constructor(@inject('AppConfig') private authConfig: AppConfig) {}
   async createOrg(orgData: any, authServiceToken: string) {
     try {
       const config = {
@@ -49,10 +46,8 @@ export class IamService {
         );
       }
       if (error instanceof HttpError) throw keepDeliberateWording(error);
-      this.logger.error('Creating the organisation failed', { error });
-      throw markClientSafe(
-        new InternalServerError(serverFailureMessage('create the organisation')),
-      );
+      // The error middleware logs it once, with this cause.
+      throw withCause(markClientSafe(new InternalServerError(serverFailureMessage('create the organisation'))), error);
     }
   }
 
@@ -82,10 +77,8 @@ export class IamService {
         );
       }
       if (error instanceof HttpError) throw keepDeliberateWording(error);
-      this.logger.error('Creating the user failed', { error });
-      throw markClientSafe(
-        new InternalServerError(serverFailureMessage('create the account')),
-      );
+      // The error middleware logs it once, with this cause.
+      throw withCause(markClientSafe(new InternalServerError(serverFailureMessage('create the account'))), error);
     }
   }
 
@@ -110,7 +103,6 @@ export class IamService {
         // throw new NotFoundError('Account not found');
         return { statusCode: 404, data: { message: 'Account not found' } };
       }
-      this.logger.debug(users);
       return { statusCode: 200, data: users[0] };
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -123,10 +115,8 @@ export class IamService {
         );
       }
       if (error instanceof HttpError) throw keepDeliberateWording(error);
-      this.logger.error('Looking the user up by email failed', { error });
-      throw markClientSafe(
-        new InternalServerError(serverFailureMessage('look up the account')),
-      );
+      // The error middleware logs it once, with this cause.
+      throw withCause(markClientSafe(new InternalServerError(serverFailureMessage('look up the account'))), error);
     }
   }
 
@@ -165,10 +155,8 @@ export class IamService {
         );
       }
       if (error instanceof HttpError) throw keepDeliberateWording(error);
-      this.logger.error('Looking the user up by id failed', { error });
-      throw markClientSafe(
-        new InternalServerError(serverFailureMessage('look up the account')),
-      );
+      // The error middleware logs it once, with this cause.
+      throw withCause(markClientSafe(new InternalServerError(serverFailureMessage('look up the account'))), error);
     }
   }
 
@@ -202,10 +190,8 @@ export class IamService {
         );
       }
       if (error instanceof HttpError) throw keepDeliberateWording(error);
-      this.logger.error('Updating the user failed', { error });
-      throw markClientSafe(
-        new InternalServerError(serverFailureMessage('update the account')),
-      );
+      // The error middleware logs it once, with this cause.
+      throw withCause(markClientSafe(new InternalServerError(serverFailureMessage('update the account'))), error);
     }
   }
 
@@ -236,10 +222,8 @@ export class IamService {
         );
       }
       if (error instanceof HttpError) throw keepDeliberateWording(error);
-      this.logger.error('Checking whether the user is an admin failed', { error });
-      throw markClientSafe(
-        new InternalServerError(serverFailureMessage('check the admin account')),
-      );
+      // The error middleware logs it once, with this cause.
+      throw withCause(markClientSafe(new InternalServerError(serverFailureMessage('check the admin account'))), error);
     }
   }
 }
