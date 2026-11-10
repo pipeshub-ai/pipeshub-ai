@@ -758,6 +758,9 @@ def _stop_cause(lease: SyncLease | None, coordinator: SyncCoordinator | None, *,
     return "cancelled"
 
 
+_START_STATUS_TRIES = 3
+
+
 async def run_sync_task(
     connector: "BaseConnector",
     connector_id: str,
@@ -800,10 +803,18 @@ async def run_sync_task(
         connector.last_action_items = None
         if full_sync:
             processor, seen = _begin_full_sync_run(connector, connector_id)
-        await write_app_status(
-            graph_provider, logger, connector_id, start_status,
-            full_sync_started=full_sync, run_started=True,
-        )
+        # Until this lands the connector is still served from its stamps (`app_is_served`), and the grants this run writes are hidden from it.
+        # Retried, not required: a write that keeps failing (a schema that rejects it) must not stop every sync of the connector.
+        for attempt in range(_START_STATUS_TRIES):
+            if await write_app_status(
+                graph_provider, logger, connector_id, start_status,
+                full_sync_started=full_sync, run_started=True,
+            ):
+                break
+            if attempt + 1 < _START_STATUS_TRIES:
+                await asyncio.sleep(attempt + 1)
+        else:
+            logger.error("the %s status of connector %s could not be written; it is read from its stamps until the run ends", start_status, connector_id)
         # A resync asked for before this run began is served by it. Left set, the
         # flag handed the finalizer a request that was already satisfied, and
         # the connector synced twice back to back. Except a full sync owed to an
