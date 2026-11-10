@@ -46,6 +46,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.agent import Agent
@@ -200,7 +201,7 @@ from app.agents.agent_loop.tool_approvals import (
 from app.agents.agent_loop.tool_approvals import (
     is_resume_query as is_tool_approval_resume_query,
 )
-from app.agents.agent_loop.tool_loader import PipesHubToolLoader
+from app.agents.agent_loop.tool_loader import PipesHubToolLoader, note_sandbox_unavailable
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
 from app.agents.agent_loop.usage_transport import with_usage_reporting
 from app.agents.mcp.service import is_mcp_enabled
@@ -211,7 +212,7 @@ from app.services.featureflag.platform_settings import (
 from app.utils.citations import rewrite_request_refs
 from app.utils.image_policy import resolve_image_policy
 from app.utils.render_budget import fetch_result_cap
-from app.utils.logging_fields import log_event
+from app.utils.logging_fields import log_event, log_once
 
 
 def _register_final_answer_if_enabled(tool_registry: "ToolRegistry") -> None:  # noqa: F821
@@ -338,10 +339,8 @@ def _transport_provider() -> str:
         # Anything else -- a typo, a stale value, different casing -- would reach
         # TransportRegistry.resolve and raise RegistryError, failing every turn.
         # A misconfigured env var should cost the optimisation, not the service.
-        logger.warning(
-            "PIPESHUB_AGENT_TRANSPORT=%r is not a known transport; using %s",
-            raw, LANGCHAIN_TRANSPORT,
-        )
+        if log_once("agent_wiring.unknown_transport"):
+            log_event(logger, "agent_transport.unknown", level=logging.WARNING, using=LANGCHAIN_TRANSPORT)
     return LANGCHAIN_TRANSPORT
 
 # Phase-1 auto-compact (gentle): protects up to 70% of budget in the tail,
@@ -442,6 +441,7 @@ class PipesHubAgentFactory:
         # `OPIK_PROJECT_NAME` is optional; Opik falls back to its default
         # project when unset, same as the legacy `OpikTracer()` call site
         # (`utils/streaming.py`).
+        build_started = time.perf_counter()
         _timer = context.tool_state.get("_stage_timer")
 
         def _mark(stage: str) -> None:
@@ -539,10 +539,7 @@ class PipesHubAgentFactory:
         # default True) rather than re-deriving an env-only check here, so
         # both paths apply identically.
         code_exec_enabled = code_execution_enabled(context.tool_state)
-        logger.info(
-            "PipesHubAgentFactory.create: code_execution_enabled=%s (org_id=%s conversation_id=%s)",
-            code_exec_enabled, context.org_id, context.conversation_id,
-        )
+        code_execution = "enabled" if code_exec_enabled else "disabled"
 
         # `coding_sandbox` (legacy execute_python/execute_typescript) and
         # `database_sandbox` are ALWAYS skipped, regardless of
@@ -624,27 +621,14 @@ class PipesHubAgentFactory:
                 # means no code execution this turn, not an in-process
                 # fallback and not a 500.
                 code_exec_enabled = False
-                logger.warning(
-                    "PipesHubAgentFactory.create: coding-sandbox tools NOT registered "
-                    "(org_id=%s conversation_id=%s): %s",
-                    context.org_id, context.conversation_id, exc,
-                )
-        else:
-            logger.info(
-                "PipesHubAgentFactory.create: code execution disabled — coding-sandbox tools "
-                "(run_code/install_packages/read_sandbox_file) will NOT be available this turn"
-            )
+                code_execution = "unavailable"
+                note_sandbox_unavailable(exc)
         if sandbox_manager is not None:
             register_coding_sandbox_tools(tool_registry, sandbox_manager, allow_network=network_enabled)
             # Stashed on the context (not returned from create()) so
             # stream_bridge.py's finally block can tear it down without
             # widening this method's (Agent, AgentRuntime) return contract.
             context.sandbox_manager = sandbox_manager
-            logger.info(
-                "PipesHubAgentFactory.create: registered coding-sandbox tools: %s (network=%s)",
-                [n for n in tool_registry.names() if n in ("run_code", "install_packages", "read_sandbox_file")],
-                network_enabled,
-            )
 
         # Skills subsystem, gated by two layers that must BOTH be true:
         # `skills_enabled()` is the deployment-level env kill-switch
@@ -661,10 +645,7 @@ class PipesHubAgentFactory:
             skill_manager = await build_skill_manager(context, transport_registry)
             if skill_manager is not None:
                 register_skill_tools(tool_registry, skill_manager)
-                logger.debug(
-                    "PipesHubAgentFactory.create: skills enabled — %d skill(s) in catalog "
-                    "(org_id=%s)", len(skill_manager.catalog_snapshot()), context.org_id,
-                )
+                log_event(logger, "skills.enabled", level=logging.DEBUG, skills=len(skill_manager.catalog_snapshot()))
 
         _mark("f:sandbox+skills")
         artifact_store = build_artifact_store(context)
@@ -813,12 +794,6 @@ class PipesHubAgentFactory:
                 if meta_name not in tool_names:
                     tool_names.append(meta_name)
 
-        logger.info(
-            "PipesHubAgentFactory.create: mode=%s | loop=%s | %d tool(s) granted to agent spec "
-            "(run_code available=%s)",
-            mode.name, loop.name if hasattr(loop, "name") else type(loop).__name__,
-            len(tool_names), "run_code" in tool_registry.names(),
-        )
 
         _mark("f:attachments")
         runtime = AgentRuntime(
@@ -906,12 +881,7 @@ class PipesHubAgentFactory:
                 ),
             )
             run_code_delegated_to_coding_agent = "coding_agent" in composed_names
-            logger.info(
-                "PipesHubAgentFactory.create: composed %s — %d flat tool(s) -> %d "
-                "(domain agents + residual): %s",
-                "spawn pool" if mode.loop_kind == "orchestrator" else "top-level agent",
-                flat_count, len(composed_names), composed_names,
-            )
+            log_event(logger, "agent.composed", level=logging.DEBUG, flat_tools=flat_count, composed_tools=len(composed_names))
             if mode.loop_kind == "orchestrator":
                 runtime.spec_factory = domain_spec_factory(
                     provider=_transport_provider(), model_name=model_name,
@@ -1015,18 +985,8 @@ class PipesHubAgentFactory:
         pinned_toolsets = essential_toolset_names if tool_disclosure == "lazy" else []
         if tool_disclosure == "lazy":
             grouped = sorted(g.name for g in tool_registry.children_of(CONNECTORS_PARENT))
-            logger.info(
-                "PipesHubAgentFactory.create: tool_disclosure=lazy — %d tool(s) granted, "
-                "%d grouped into toolset(s) %s, pinned toolset(s) %s (schemas loaded on "
-                "demand via list_toolsets/fetch_tools/search_tools) (org_id=%s conversation_id=%s)",
-                len(tool_names), len(grouped), grouped, pinned_toolsets, context.org_id, context.conversation_id,
-            )
         else:
-            logger.info(
-                "PipesHubAgentFactory.create: tool_disclosure=eager — %d tool(s) bound eagerly "
-                "(org_id=%s conversation_id=%s)",
-                len(tool_names), context.org_id, context.conversation_id,
-            )
+            grouped = []
 
         tool_names = _initial_entity_tool_grant(tool_names, context)
 
@@ -1080,6 +1040,17 @@ class PipesHubAgentFactory:
                 agent, resume_answers, typed=typed_reply, files=goal.attachment_text if typed_reply else "",
             )
 
+        # The turn's one wiring line: counts and enums only (docs/logging.md, "Agent wiring").
+        log_event(
+            logger, "agent.build.end", mode=mode.name, loop=loop.name if hasattr(loop, "name") else type(loop).__name__,
+            tools=len(tool_names), tools_registered=len(tool_registry.names()),
+            toolsets_failed=len(context.toolset_load_failures), tool_disclosure=tool_disclosure,
+            toolsets_grouped=len(grouped), toolsets_pinned=len(pinned_toolsets),
+            domain_agents=len(composition_plan.definitions) if composition_plan is not None and mode.compose_domain_agents else 0,
+            code_execution=code_execution, sandbox_network=network_enabled, has_knowledge=bool(context.has_knowledge),
+            skills=len(skill_manager.catalog_snapshot()) if skill_manager is not None else None,
+            duration_ms=round((time.perf_counter() - build_started) * 1000),
+        )
         return agent, runtime, goal, clarifying_questions
 
     @staticmethod

@@ -51,6 +51,7 @@ from app.agents.agent_loop.skills.builtin_seeder import SEED_IDENTITY, BuiltinSk
 from app.agents.agent_loop.skills.graph_store import GraphSkillStore
 from app.agents.agent_loop.skills.graph_tracker import GraphUsageTracker
 from app.agents.agent_loop.skills.semantic_index import SemanticSkillIndex
+from app.utils.logging_fields import log_event, log_once
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.transport.registry import TransportRegistry
@@ -272,10 +273,8 @@ async def build_runtime_skill_manager(
     backend. Callers must check for `None` and skip the rest of the
     skills wiring."""
     if context.graph_provider is None:
-        logger.warning(
-            "skills: PIPESHUB_ENABLE_SKILLS is on but no graph_provider is set on this "
-            "request's context — skills will not be available this turn"
-        )
+        if log_once("agent_wiring.skills_no_graph_provider"):
+            log_event(logger, "skills.unavailable", level=logging.WARNING, reason="no_graph_provider")
         return None
 
     config = skills_manager_config()
