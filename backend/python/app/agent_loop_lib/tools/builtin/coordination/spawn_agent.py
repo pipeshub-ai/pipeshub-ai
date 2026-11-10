@@ -191,9 +191,11 @@ async def _run_detached_spawn(agent, call: ToolCall, goal, turn_index: int, star
             "status": ToolCallStatus.SUCCESS if child_result.success else ToolCallStatus.ERROR,
         })
     except Exception as e:
-        # Nothing waits on a detached child: this is its one failure line.
+        # Nothing waits on a detached child: this is its one failure line. No error text: a failed
+        # prerequisite's carries the child's error, which can quote a provider's answer.
         log_failure(
-            _logger, "sub_agent.detached_failed", e, role=call.arguments.get("role"), **(spawn_refusal(e) or {}),
+            _logger, "sub_agent.detached_failed", e, role=call.arguments.get("role"), include_error_text=False,
+            **(spawn_refusal(e) or {}),
         )
         if agent.scope is not None:
             failed = AgentResult(

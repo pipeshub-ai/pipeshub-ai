@@ -302,6 +302,7 @@ class TestDetached:
         (failed,) = warn_plus(caplog)
         assert failed.getMessage() == "sub_agent.detached_failed"
         assert (fields(failed)["error_class"], fields(failed)["tool_call_id"], fields(failed)["role"]) == ("internal", "call_d", "broken")
+        assert "error_message" not in fields(failed)
 
     async def test_a_detached_child_at_the_depth_limit_is_a_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         caplog.set_level(logging.DEBUG)

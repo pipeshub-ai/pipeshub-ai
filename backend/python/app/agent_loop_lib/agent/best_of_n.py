@@ -45,7 +45,7 @@ async def _run_one_candidate(agent, candidate_spec, candidate_goal: Goal, team_i
         )
     except Exception as e:
         # Swallowed into a failed candidate: no other line reports it.
-        log_failure(_logger, "sub_agent.failed", e, **(spawn_refusal(e) or {}))
+        log_failure(_logger, "sub_agent.failed", e, include_error_text=False, **(spawn_refusal(e) or {}))
         return AgentResult(goal=candidate_goal, success=False, error=str(e))
 
 
