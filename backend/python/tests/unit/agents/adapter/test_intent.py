@@ -14,9 +14,7 @@ parsing.
 from __future__ import annotations
 
 import logging
-from typing import Any
-
-import pytest
+from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.messages import ToolCall
 from app.agent_loop_lib.transport.registry import TransportRegistry
@@ -26,6 +24,9 @@ from app.agents.agent_loop.intent import (
     parse_intent_and_route,
 )
 from tests.unit.agents.adapter.support.scripted_transport import ScriptedTransport
+
+if TYPE_CHECKING:
+    import pytest
 
 _LOGGER = logging.getLogger("test.agents.agent_loop.intent")
 
