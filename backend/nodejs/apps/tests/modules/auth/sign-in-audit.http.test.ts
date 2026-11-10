@@ -75,6 +75,9 @@ const OUR_TENANT = '11111111-1111-1111-1111-111111111111';
 const OTHER_TENANT = '22222222-2222-2222-2222-222222222222';
 const KID = 'k1';
 const orgId = new mongoose.Types.ObjectId().toHexString();
+/** Every request this file makes carries a request id with this prefix; only those lines are captured. */
+const OUR_REQUESTS = 'n4atest';
+let requestSeq = 0;
 
 interface Person { _id: string; orgId: string; email: string; fullName: string; role: string; hasLoggedIn: boolean }
 const person = (fullName: string, email: string): Person => ({
@@ -158,7 +161,7 @@ describe('auth audit lines (HTTP)', function () {
   async function call(method: 'POST' | 'PUT' | 'GET', path: string, body: unknown = {}, headers: Record<string, string> = {}, mount = '/api/v1/userAccount') {
     const res = await fetch(`${baseUrl}${mount}${path}`, {
       method,
-      headers: { 'content-type': 'application/json', ...headers },
+      headers: { 'content-type': 'application/json', 'x-request-id': `${OUR_REQUESTS}-${++requestSeq}`, ...headers },
       body: method === 'GET' ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(5000),
     });
@@ -272,8 +275,12 @@ describe('auth audit lines (HTTP)', function () {
     savedLevel = root().level;
     root().level = 'debug';
     // Every winston root, not just the current one: modules keep the logger they got at load, and other test files
-    // replace the root, so a per-instance stub misses lines depending on test order.
-    sinon.stub(winston.Logger.prototype, 'log').callsFake(function (this: unknown, info: Record<string, any>) { records.push(info); return this; } as any);
+    // replace the root, so a per-instance stub misses lines depending on test order. Only this test's requests
+    // count: other work in the same mocha worker (timers, sweeps, reconnects) logs meanwhile.
+    sinon.stub(winston.Logger.prototype, 'log').callsFake(function (this: unknown, info: Record<string, any>) {
+      if (String(info.request_id).startsWith(OUR_REQUESTS)) records.push(info);
+      return this;
+    } as any);
 
     directory = { [alice.email]: { ...alice }, [bob.email]: { ...bob } };
     creds = {};

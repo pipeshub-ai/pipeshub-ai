@@ -22,6 +22,9 @@ const orgId = new mongoose.Types.ObjectId().toHexString();
 const userId = new mongoose.Types.ObjectId().toHexString();
 const adminId = new mongoose.Types.ObjectId().toHexString();
 const EMAILS = ['ada@acme.test', 'ada.upn@acme.test', 'mallory@acme.test'];
+/** The calls under test run in a request context with this id prefix; only those lines are captured. */
+const OUR_REQUESTS = 'n4atest';
+const inRequest = <T>(fn: () => Promise<T>): Promise<T> => runWithRequestContext({ rootId: `${OUR_REQUESTS}-unit` }, fn);
 
 describe('sign-in audit: reason lists and the sites a request cannot reach', () => {
   let records: Record<string, any>[];
@@ -46,8 +49,12 @@ describe('sign-in audit: reason lists and the sites a request cannot reach', () 
   beforeEach(() => {
     records = [];
     // Every winston root, not just the current one: modules keep the logger they got at load, and other test files
-    // replace the root, so a per-instance stub misses lines depending on test order.
-    sinon.stub(winston.Logger.prototype, 'log').callsFake(function (this: unknown, info: Record<string, any>) { records.push(info); return this; } as any);
+    // replace the root, so a per-instance stub misses lines depending on test order. Only this test's requests
+    // count: other work in the same mocha worker (timers, sweeps, reconnects) logs meanwhile.
+    sinon.stub(winston.Logger.prototype, 'log').callsFake(function (this: unknown, info: Record<string, any>) {
+      if (String(info.request_id).startsWith(OUR_REQUESTS)) records.push(info);
+      return this;
+    } as any);
   });
   afterEach(() => sinon.restore());
 
@@ -64,14 +71,18 @@ describe('sign-in audit: reason lists and the sites a request cannot reach', () 
       sinon.stub(OAuth2Client.prototype, 'verifyIdToken').resolves({ getPayload: () => payload } as unknown as LoginTicket);
     const user = { _id: userId, orgId, email: EMAILS[0] };
     google(undefined);
-    const noPayload = await controller().authenticateWithGoogle(user, 't', '1.1.1.1').catch((e: unknown) => e);
+    const noPayload = await inRequest(() => controller().authenticateWithGoogle(user, 't', '1.1.1.1')).catch((e: unknown) => e);
     expect(refusalReason(noPayload)).to.equal('sso_token_invalid');
     sinon.restore();
     // Every winston root, not just the current one: modules keep the logger they got at load, and other test files
-    // replace the root, so a per-instance stub misses lines depending on test order.
-    sinon.stub(winston.Logger.prototype, 'log').callsFake(function (this: unknown, info: Record<string, any>) { records.push(info); return this; } as any);
+    // replace the root, so a per-instance stub misses lines depending on test order. Only this test's requests
+    // count: other work in the same mocha worker (timers, sweeps, reconnects) logs meanwhile.
+    sinon.stub(winston.Logger.prototype, 'log').callsFake(function (this: unknown, info: Record<string, any>) {
+      if (String(info.request_id).startsWith(OUR_REQUESTS)) records.push(info);
+      return this;
+    } as any);
     google({ email: EMAILS[2] });
-    const mismatch = await controller().authenticateWithGoogle(user, 't', '1.1.1.1').catch((e: unknown) => e);
+    const mismatch = await inRequest(() => controller().authenticateWithGoogle(user, 't', '1.1.1.1')).catch((e: unknown) => e);
     expect(refusalReason(mismatch)).to.equal('sso_email_mismatch');
     noEmails();
   });
@@ -99,7 +110,7 @@ describe('sign-in audit: reason lists and the sites a request cannot reach', () 
     const correctEmail = sinon.stub().resolves();
     sinon.stub(userRepo, 'getUserRepository').returns({ correctEmail } as any);
     const target = { _id: userId, orgId, email: EMAILS[1] };
-    await controller().correctEmailFromToken({ email: EMAILS[0], preferred_username: EMAILS[1] }, target, 'Microsoft auth', true);
+    await inRequest(() => controller().correctEmailFromToken({ email: EMAILS[0], preferred_username: EMAILS[1] }, target, 'Microsoft auth', true));
     expect(correctEmail.calledOnce).to.equal(true);
     expect(audits()).to.deep.equal([['auth.email.change', 'success', 'sso_mail_claim', userId, null]]);
     noEmails();
@@ -107,7 +118,7 @@ describe('sign-in audit: reason lists and the sites a request cannot reach', () 
 
   it('T13 a correction that clashes with another account is one warning with the user id, without either address', async () => {
     sinon.stub(userRepo, 'getUserRepository').returns({ correctEmail: sinon.stub().rejects(new Error(`E11000 duplicate key: ${EMAILS[0]}`)) } as any);
-    await controller().correctEmailFromToken({ email: EMAILS[0], preferred_username: EMAILS[1] }, { _id: userId, orgId, email: EMAILS[1] }, 'Microsoft auth', true);
+    await inRequest(() => controller().correctEmailFromToken({ email: EMAILS[0], preferred_username: EMAILS[1] }, { _id: userId, orgId, email: EMAILS[1] }, 'Microsoft auth', true));
     const warnings = records.filter((r) => r.level === 'warning');
     expect(warnings).to.have.length(1);
     expect(warnings[0]).to.include({ message: 'auth.email.correct_failed', user_id: userId });
@@ -122,7 +133,7 @@ describe('sign-in audit: reason lists and the sites a request cannot reach', () 
     const setup = async () => {
       const next = sinon.stub();
       const res = { status: () => res, json: () => res } as any;
-      await runWithRequestContext({ rootId: 'req-1' }, async () => {
+      await inRequest(async () => {
         setContextIdentity({ orgId, userId });
         await controller().userAccountSetup(
           { body: { fullName: 'Ada', password: 'Correct-Horse-9!', email: EMAILS[0] }, user: { userId, orgId }, ip: '1.1.1.1' } as any, res, next,
@@ -141,7 +152,7 @@ describe('sign-in audit: reason lists and the sites a request cannot reach', () 
     sinon.stub(credentialRepo, 'getCredentialRepository').returns({ unblock: async () => true } as any);
     const users = new UserController(...([{}, {}, {}, Logger.getInstance(), {}, {}] as unknown as ConstructorParameters<typeof UserController>));
     const res = { status: () => res, json: () => res } as any;
-    await runWithRequestContext({ rootId: 'req-2' }, async () => {
+    await inRequest(async () => {
       setContextIdentity({ orgId, userId: adminId });
       await users.unblockUser({ params: { id: userId }, user: { orgId, userId: adminId } } as any, res, sinon.stub());
     });
