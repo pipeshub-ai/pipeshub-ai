@@ -202,7 +202,7 @@ the auth middleware bound.
 
 | Event | Level | Fields |
 | --- | --- | --- |
-| `http.request.end` | INFO; DEBUG for a `/health*` answer below 400; INFO for a 4xx (WARNING for `reason=org_mismatch`); WARNING for a 5xx answered without an exception; an unhandled exception: ERROR with its stack (`internal`); an `HTTPException` of 500 or more that was raised: its class's level; WARNING at most, with no second stack, for an exception already logged; INFO with `error_class=cancelled reason=client_disconnect` when the client left first | `method`, `route`, `status`, `duration_ms`, `client_ip`, `outcome`, `error_class` (4xx, 5xx), `reason`, and for an exception the `log_failure` fields |
+| `http.request.end` | INFO; DEBUG for a `/health*` answer below 400; INFO for a 4xx (WARNING for `reason=org_mismatch`); WARNING for a 5xx answered without an exception; an unhandled exception: ERROR with its stack (`internal`); an `HTTPException` of 500 or more that was raised: its class's level; WARNING at most, with no second stack, for an exception already logged; INFO with `error_class=cancelled reason=client_disconnect` when the client left first | `method`, `route`, `status`, `duration_ms`, `client_ip`, `outcome`, `error_class` (4xx, 5xx), `reason`, and for an exception the `log_failure` fields plus `cause_type` |
 
 - `route` is the template (`/api/v1/kb/{kb_id}`), the same one `MetricsMiddleware` uses (`app/utils/route_template.py`); a request
   refused before routing gets the route it would have reached. `unmatched` when no route matches. The raw path and the query
@@ -224,12 +224,20 @@ the auth middleware bound.
   `insufficient_scope`, `org_mismatch`, `not_admin`, `auth_error`, `auth_config` (500). A refusal is INFO because an expired
   session is routine; `org_mismatch` (a service token naming another org) is WARNING. Alert on `reason`, not on the level.
 - Code that turns a failure into a response itself (the auth middleware's 401, a route that answers a 200 after a dependency
-  failed) hands it over with `mark_request_failure(request, exc, /, *, error_class=None, reason=None, include_error_text=True)`.
-  The line then logs it as a failure whatever the status: a 2xx or 3xx and a 5xx at the class's level (with the stack once
-  for `internal`), a 4xx at INFO. `error_class` and `reason` win over the ones read from `exc`; `include_error_text=False` keeps
-  its text off the line, as in `log_failure`. An `HTTPException` raised anywhere below is handed over by the exception handler,
-  which keeps the hints of a route that marked that same exception before raising it, then calls the handler registered before
-  it.
+  failed) hands it over with `mark_request_failure(request, exc=None, /, *, error_class=None, reason=None,
+  include_error_text=True)`. The line then logs it as a failure whatever the status: a 2xx or 3xx and a 5xx at the class's
+  level (with the stack once for `internal`), a 4xx at INFO. `error_class` and `reason` win over the ones read from `exc`; a
+  marked bare `HTTPException` is classed by its own status, not by the one answered. `include_error_text=False` keeps its text
+  off the line, as in `log_failure`. The hints also apply to an exception raised `from` the marked one
+  (`raise HTTPException(502) from e` after marking `e`), whether the exception handler hands it over or nobody handles it.
+  `exc` may be None for a failure with no exception (an OAuth callback that answers a redirect); `error_class` is then required
+  (TypeError otherwise), and the line has no `error_type`, `error_message`, `cause_type` or stack. An `HTTPException` raised
+  anywhere below is handed over by the exception handler, which then calls the handler registered before it.
+- `cause_type` is the type name of the innermost cause (`__cause__`, else `__context__` unless suppressed; a group counts as its
+  first leaf), on a failure line whose exception has a chain; it is a type name only, so it stays with
+  `include_error_text=False`. For `HTTPException from MCPOAuthError from httpx.ConnectError` the line has
+  `error_type=HTTPException cause_type=ConnectError`: the middle domain error is not on the line. A route that needs its domain
+  code there marks it with `reason=`.
 - `client_ip` is the peer as uvicorn resolves it (`FORWARDED_ALLOW_IPS`, default loopback), usually the Node API, and only when it
   parses as an IP address. The end user's address is on Node's `http.request.end` with the same `request_id`.
 - A client disconnect is seen two ways: the response never sent its last body message, or an `http.disconnect` was read before
@@ -238,7 +246,9 @@ the auth middleware bound.
   from it (only the request context's org, without `user_id`). An exception raised by `MetricsMiddleware` or
   `RequestContextMiddleware` themselves gets uvicorn's line only. A middleware added before `install_request_logging` sits
   inside it, so the crash 500 sent here does not pass through it: an edition that adds `CORSMiddleware` adds it after
-  `install_request_logging`, so that it wraps that 500 and the CORS headers stay.
+  `install_request_logging`, so that it wraps that 500 and the CORS headers stay. A mounted sub-app (`app.mount`) gets one line,
+  but its `route` lacks the mount prefix and its own `HTTPException`s are not handed over: install on the sub-app too. None of
+  the three services mounts one.
 - Node writes the same event and fields (`HttpAccess`, `access-log.middleware.ts`). Node also logs the error on its own
   `http.request.error` line; Python logs it on this one.
 
@@ -377,7 +387,7 @@ Redaction is a safety net; it cannot recognise content, so the rules below still
   `run_id`, `parent_run_id`, `attempt`, `connector_id`, `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`,
   `mcp_server_id`, `toolset_id`, `job`, `workload`, `duration_ms`, `status`, `error_class`, `error_type`, `outcome`, `method`,
   `route`, `client_ip`, `reason`. Python also has
-  `ctx_kind`, `ctx_source` and `error_message`; Node's `error` is an object (`error.message`).
+  `ctx_kind`, `ctx_source`, `error_message` and `cause_type`; Node's `error` is an object (`error.message`).
 - **Fields are scalars**: ids, sizes, counts, enums. Never pass a config, a request, a response or a document as a field.
 - **Log an error once**, at the layer that handles it, with `error_class.log_failure` (see "Failures"). Lower layers raise
   (`raise … from e`), they do not log and re-raise.
