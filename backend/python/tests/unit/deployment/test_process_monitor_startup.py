@@ -122,6 +122,29 @@ def test_no_service_uses_the_fixed_retry_window_any_more() -> None:
     assert "MAX_RETRIES=60" not in text and "MAX_RETRIES=120" not in text
 
 
+def test_a_failed_service_is_seen_under_the_scripts_errexit(tmp_path: pathlib.Path) -> None:
+    """Called where errexit applies (no ``||`` around it), a waiter that failed must still report it, or startup waits for ever."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    curl = bin_dir / "curl"
+    curl.write_text(f'#!/bin/sh\nfor last; do :; done\n[ -e "{tmp_path}/${{last##*/}}" ]\n')
+    curl.chmod(0o755)
+    script = f"""
+set -e
+LOG_FILE={tmp_path}/log
+STARTUP_STALL_SECONDS=60 STARTUP_MAX_SECONDS=60 STARTUP_POLL_SECONDS=1
+{_functions()}
+sleep 1 >/dev/null 2>&1 & crashing=$!
+bash -c 'while :; do :; done' >/dev/null 2>&1 & slow=$!
+await_services connector $slow http://x/slow embedding $crashing http://x/embedding
+exit 0
+"""
+    began = time.monotonic()
+    out = _bash(script, {"PATH": f"{bin_dir}:/usr/bin:/bin"}, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15)
+    assert out.returncode == 1
+    assert time.monotonic() - began < 8, "the failed waiter's status was lost"
+
+
 def test_the_first_failed_service_ends_the_wait_without_waiting_for_the_others(tmp_path: pathlib.Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()

@@ -118,7 +118,7 @@ await_services() {
     local dir i=0 pids=() names=() done_count=0 total result
     dir=$(mktemp -d)
     while [ $# -ge 3 ]; do
-        ( wait_ready "$1" "$2" "$3"; echo $? > "$dir/$i" ) &
+        ( set +e; wait_ready "$1" "$2" "$3"; echo $? > "$dir/$i" ) &      # errexit would end the waiter at its failure, before the status is written
         pids+=($!)
         i=$((i + 1))
         shift 3
