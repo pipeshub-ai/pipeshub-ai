@@ -337,21 +337,9 @@ class ScopeRewriteJob:
                     written = await self._write(org_id, connector_id, plans, epoch, fence, at, result)
                     todo, top = await self._differs(org_id, plans, written, keys)
                     if top > fence and todo:
-                        # A point carries a fence above this writer's time: another host's clock runs ahead, or an earlier run left it. Follow it
-                        # when it is a plausible time (the next round reads the graph again, after that write, and writes above it), only while
-                        # the connector has not changed since this graph was read, and not otherwise.
-                        now = _micros(await self._now())
-                        if top >= MAX_FENCE - FOLLOW_JITTER_MICROS or top > max(now, fence) + MAX_FENCE_SKEW_MICROS:
-                            SCOPE_STAMP_FAILED.inc("fence_out_of_range")
-                            self._log.error("scope fence %d on a point of %s is not a plausible time (the store's clock: %d, at most %d s ahead is "
-                                            "followed): not followed; the rewrite stays incomplete until the point is repaired (index the record "
-                                            "again)", top, connector_id, now, MAX_FENCE_SKEW_MICROS // 10**6)
+                        if (floor := await self._follow(connector_id, epoch, top, fence)) < 0:
                             failed.update(dict.fromkeys(todo, f"a fence ({top}) that is no plausible time, not followed"))
                             break
-                        await self._guard(connector_id, epoch)
-                        # shortcut: two followers can still draw the same jitter (1 in FOLLOW_JITTER_MICROS); the last of them to write keeps the
-                        # point, and the other's read-back then sees fields that are not its own and fails its root (hidden), not a wrong stamp.
-                        floor = top + 1 + secrets.randbelow(FOLLOW_JITTER_MICROS)
                 except GenerationMoved:
                     moves += 1      # the graph changed after it was read; nothing from it was sent: read it again (a move costs no round)
                     if moves > MAX_MOVES:
@@ -377,6 +365,22 @@ class ScopeRewriteJob:
             first = min(failed)
             raise RewriteIncomplete(f"{len(failed)} virtual record(s) left unwritten or stale. First, {first}: {failed[first]}")
         return set(unplaced) if keys is not None else set()
+
+    async def _follow(self, connector_id: str, epoch: Epoch, top: int, fence: int) -> int:
+        """A point carries a fence above this writer's time: another host's clock runs ahead, or an earlier run left it. Follow it when it is a
+        plausible time (the next round reads the graph again, after that write, and writes above it), only while the connector has not changed
+        since this graph was read: the floor of the next round. -1 for a fence that is no plausible time (counted and logged, not followed)."""
+        now = _micros(await self._now())
+        if top >= MAX_FENCE - FOLLOW_JITTER_MICROS or top > max(now, fence) + MAX_FENCE_SKEW_MICROS:
+            SCOPE_STAMP_FAILED.inc("fence_out_of_range")
+            self._log.error("scope fence %d on a point of %s is not a plausible time (the store's clock: %d, at most %d s ahead is "
+                            "followed): not followed; the rewrite stays incomplete until the point is repaired (index the record "
+                            "again)", top, connector_id, now, MAX_FENCE_SKEW_MICROS // 10**6)
+            return -1
+        await self._guard(connector_id, epoch)
+        # shortcut: two followers can still draw the same jitter (1 in FOLLOW_JITTER_MICROS); the last of them to write keeps the
+        # point, and the other's read-back then sees fields that are not its own and fails its root (hidden), not a wrong stamp.
+        return top + 1 + secrets.randbelow(FOLLOW_JITTER_MICROS)
 
     async def _now(self) -> datetime:
         """The clock a store's fence is measured in: the database's for pgvector (`fence_time`), this host's for the others. Qdrant, OpenSearch
@@ -531,6 +535,28 @@ class ScopeRewriteJob:
         """The stale marker on these virtual records' points, read back (see `_mark_stale`). For the back-fill's own marker; raises when it did not
         land. It takes no virtual record lock: the caller holds it or has none."""
         await self._mark_stale(org_id, connector_id, vrids, await self._epoch(connector_id))
+
+    async def begin(self, connector_id: str) -> tuple[Epoch, datetime]:
+        """What `write_payload` needs, taken before the graph is read (the connector's generation and lease, and the time that is the fence)."""
+        return await self._epoch(connector_id), await self._now()
+
+    async def write_payload(self, org_id: str, connector_id: str, collections: Sequence[str], vrid: str, payload: dict[str, Any], epoch: Epoch,
+                            at: datetime, floor: int = 0) -> tuple[bool, int]:
+        """The back-fill's write of the scope fields: every point of the virtual record, by id, guarded (lease and generation) and fenced like a
+        rewrite's (at `at`, or above `floor`), then read back. Returns whether every point holds it, and the floor for the next try (above a
+        plausible fence a refused point carries, as a rewrite follows it): False means read the graph again. `LeaseLost` and `GenerationMoved`
+        send nothing more."""
+        fence, refused, top = max(_micros(at), floor), False, 0
+        for name in collections:
+            found = await self._scan(org_id, name, [vrid])
+            await self._put(org_id, connector_id, name, dict.fromkeys(found, payload), epoch, fence, at)
+            held = await self._stored(name, list(found))
+            bad = [p for p in held.values() if not _holds(p, payload)]
+            refused |= bool(bad)
+            top = max([top, *(int(p.get(SCOPE_FENCE_FIELD) or 0) for p in bad)])
+        if refused and top > fence:
+            floor = max(floor, await self._follow(connector_id, epoch, top, fence))
+        return not refused, floor
 
     async def _stored(self, collection: str, point_ids: list[str]) -> dict[str, dict[str, Any]]:
         out: dict[str, dict[str, Any]] = {}
