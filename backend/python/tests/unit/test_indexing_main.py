@@ -3072,6 +3072,46 @@ class TestRepublishStrandedRecords:
         producer.send_event.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "twin_fields",
+        [
+            pytest.param({"indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.COMPLETED.value},
+                         id="finished"),
+            pytest.param({"indexingStatus": ProgressStatus.FAILED.value}, id="failed"),
+            pytest.param({"indexingStatus": ProgressStatus.EMPTY.value}, id="empty"),
+            pytest.param({"indexingStatus": ProgressStatus.COMPLETED.value, "extractionStatus": ProgressStatus.IN_PROGRESS.value,
+                          "processingStartedAt": 1}, id="enrichment-abandoned-long-ago"),
+        ],
+    )
+    async def test_a_parked_copy_whose_twin_is_done_is_sent(self, twin_fields: dict) -> None:
+        """Promotion runs once, when the twin's processing ends: a twin that is done never releases
+        the copy again. The re-send's dedup reuses a finished twin rather than indexing it twice."""
+        graph = self._parked_graph({**self._twin(ProgressStatus.QUEUED.value), "virtualRecordId": "vr-1", **twin_fields})
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "twin_fields",
+        [
+            pytest.param({"extractionStatus": ProgressStatus.QUEUED.value}, id="classify-stage-owns-it"),
+            pytest.param({"extractionStatus": ProgressStatus.IN_PROGRESS.value, "processingStartedAt": 10**15},
+                         id="enrichment-running"),
+        ],
+    )
+    async def test_a_parked_copy_whose_twin_is_still_enriching_stays_parked(self, twin_fields: dict) -> None:
+        """Indexed, with its enrichment still ahead: its end promotes the copy."""
+        graph = self._parked_graph(
+            {**self._twin(ProgressStatus.COMPLETED.value), "virtualRecordId": "vr-1", **twin_fields}
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+    @pytest.mark.asyncio
     async def test_a_parked_copy_whose_twin_was_deleted_is_sent(self) -> None:
         """Its twin went with its connector before its enrichment ended, so nothing will
         release it: it is sent like any stranded record, to be indexed on its own."""
