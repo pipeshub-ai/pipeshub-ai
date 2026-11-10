@@ -133,10 +133,7 @@ async def get_oauth_credentials_for_toolset(
             )
 
         if logger:
-            logger.debug(
-                f"Fetched complete OAuth config '{oauth_config_id}' "
-                f"for toolset type '{toolset_type}' ({len(config_data)} fields)"
-            )
+            logger.debug(f"Fetched OAuth config '{oauth_config_id}' for toolset type '{toolset_type}'")
         return dict(config_data)
     except ValueError:
         raise
