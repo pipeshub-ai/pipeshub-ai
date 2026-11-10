@@ -265,14 +265,7 @@ export class UserAccountController {
     sessionInfo: SessionData,
     user: Record<string, unknown> | null | undefined,
   ): void {
-    const id = user?._id;
-    const userId =
-      typeof id === 'string'
-        ? id
-        : typeof (id as { toHexString?: unknown } | undefined)?.toHexString ===
-            'function'
-          ? (id as { toHexString(): string }).toHexString()
-          : '';
+    const userId = idOf(user?._id) ?? '';
     if (Number(sessionInfo.currentStep) > 0 && userId !== sessionInfo.userId) {
       throw authRefusal(
         new UnauthorizedError(SIGN_IN_ACCOUNT_CHANGED),

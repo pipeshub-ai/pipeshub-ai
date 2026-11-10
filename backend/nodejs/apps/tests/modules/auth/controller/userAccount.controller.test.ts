@@ -2726,7 +2726,7 @@ describe('UserAccountController', () => {
     // and be answered with a 500.
     describe('when the account was deleted after the link was sent', () => {
       beforeEach(() => {
-        const realIam = new IamService(mockConfig, mockLogger);
+        const realIam = new IamService(mockConfig);
         mockIamService.getUserById.callsFake((id: string, token: string) =>
           realIam.getUserById(id, token),
         );
