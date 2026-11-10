@@ -1068,7 +1068,7 @@ echo "== In-tree installer: --print-env-only bundle command keeps the existing b
   work="$TMP_ROOT/print-bundle"; mkdir -p "$work/certs" "$work/bin"
   cp "$INNER_INSTALLER" "$work/install.sh"
   [[ -f "$COMPOSE_DIR/docker-compose.yml" ]] && cp "$COMPOSE_DIR/docker-compose.yml" "$work/"
-  printf 'IMAGE_TAG=0.6.0-slim\nSECRET_KEY=x\nMONGO_PASSWORD=y\nAPP_PORT=3000\nPROJECT_NAME=testproj\n' >"$work/.env"
+  printf 'IMAGE_TAG=0.6.0-slim\nSECRET_KEY=x\nMONGO_PASSWORD=y\nAPP_PORT=3000\nPROJECT_NAME=testproj\nDATA_STORE=neo4j\n' >"$work/.env"
   printf 'services: {}\n' >"$work/docker-compose.ca.yml"
   printf 'NEW-CA\n' >"$work/certs/custom-ca.pem"
   printf 'PUBLIC\nOLD-CA\n' >"$work/certs/ca-bundle.pem"
