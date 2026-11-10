@@ -305,7 +305,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 )
 
                 app.state.skills_seed_task = asyncio.create_task(
-                    reconcile_builtin_skills_for_orgs(graph_provider, orgs)
+                    reconcile_builtin_skills_for_orgs(graph_provider)
                 )
         except Exception as e:
             logger.warning(f"Builtin skill seeding not scheduled at startup (requests will retry): {e}")
