@@ -71,10 +71,32 @@ class Trigger(StrEnum):
 ERROR_CLASS_BY_REASON = {"invalid_grant": "auth_expired", "config_missing": "misconfigured"}
 
 
+# The keywords the end lines pass themselves: an Attempt.fields key with one of these names would collide with them.
+_END_LINE_KEYS = frozenset({
+    "outcome", "reason", "duration_ms", "error_class", "error_type", "error_message", "http_status", "oauth_error",
+    "level", "include_error_text",
+})
+
+
+class _EndFields(dict[str, object]):
+    """Rejects a key the end line writes itself where it is set: in ``refresh_attempt``'s ``except`` the
+    collision would raise instead, replacing the attempt's real error and writing no ``end``."""
+
+    def __setitem__(self, key: str, value: object) -> None:
+        if key in _END_LINE_KEYS:
+            raise ValueError(f"Attempt.fields cannot set {key!r}: the credential_refresh.end line writes it")
+        super().__setitem__(key, value)
+
+    def update(self, *args: object, **kwargs: object) -> None:  # type: ignore[override]
+        # shortcut: setdefault and |= skip the check; route them here if a caller starts using them.
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
+
+
 @dataclass
 class Attempt:
     reason: str | None = None  # why a success did not call the token endpoint ("adopted")
-    fields: dict[str, object] = field(default_factory=dict)  # facts about this attempt, on its end line either way
+    fields: dict[str, object] = field(default_factory=_EndFields)  # facts about this attempt, on its end line either way
 
 
 def org_of(doc: Mapping[str, object] | None) -> str | None:

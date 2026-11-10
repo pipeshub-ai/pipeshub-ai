@@ -138,6 +138,20 @@ class TestRefreshAttempt:
             ("success", "unlinked"), ("failure", "linked"),
         ]
 
+    async def test_an_attempt_field_cannot_take_an_end_line_key(self, records: _Records) -> None:
+        with pytest.raises(TimeoutError):
+            async with CR.refresh_attempt(_logger(), once_key="toolset:t1") as attempt:
+                for key in ("reason", "duration_ms", "outcome"):
+                    with pytest.raises(ValueError, match=repr(key)):
+                        attempt.fields[key] = "x"
+                    with pytest.raises(ValueError, match=repr(key)):
+                        attempt.fields.update({key: "x"})
+                raise TimeoutError
+
+        [end] = _ends(records)  # the attempt's own error still ends it
+        assert (log_record_fields(end)["error_class"], log_record_fields(end)["outcome"]) == ("timeout", "failure")
+        assert isinstance(log_record_fields(end)["duration_ms"], int)
+
     @pytest.mark.parametrize(("exc", "cls", "status"), [
         (_provider_error(503), "unavailable", 503),
         (_provider_error(502), "upstream_5xx", 502),
