@@ -21,7 +21,7 @@ describe('SettingsPageContainer', () => {
     const el = getByTestId('child').parentElement as HTMLElement;
     expect(el.style.paddingInline).toBe(pagePaddingX(100));
     expect(el.style.maxWidth).toBe('');
-    expect(el.style.paddingTop).toBe('64px');
+    expect(el.style.paddingTop).toBe('32px');
   });
 
   it('accepts a max width and clears the hamburger on mobile', () => {

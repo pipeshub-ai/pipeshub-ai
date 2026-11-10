@@ -41,7 +41,6 @@ from app.connectors.sources.dropbox.connector import (
     get_parent_path_from_path,
 )
 from app.models.entities import AppUser, RecordGroup, RecordGroupType, RecordType
-from app.models.permission import EntityType, Permission, PermissionType
 
 
 # ===========================================================================
@@ -56,6 +55,16 @@ def _make_mock_tx_store(existing_record=None):
     tx.batch_upsert_user_groups = AsyncMock()
     tx.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
     tx.get_file_record_by_id = AsyncMock(return_value=None)
+    tx.get_records_by_file_path = AsyncMock(return_value=[])
+    tx.get_records_in_record_group = AsyncMock(return_value=[])
+    tx.get_all_app_users = AsyncMock(return_value=[])
+    tx.withdraw_app_user_access = AsyncMock()
+    tx.on_external_app_users = AsyncMock()
+    tx.reap_external_app_users = AsyncMock(return_value=0)
+    tx.get_nodes_by_filters = AsyncMock(return_value=[])
+    tx.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+    tx.batch_update_nodes = AsyncMock()
+    tx.get_records_by_parent = AsyncMock(return_value=[])
     return tx
 
 
@@ -80,6 +89,16 @@ def _make_connector():
     dep.upsert_permission_edge = AsyncMock()
     dep.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
     dep.get_file_record_by_id = AsyncMock(return_value=None)
+    dep.get_records_by_file_path = AsyncMock(return_value=[])
+    dep.get_records_in_record_group = AsyncMock(return_value=[])
+    dep.get_all_app_users = AsyncMock(return_value=[])
+    dep.withdraw_app_user_access = AsyncMock()
+    dep.on_external_app_users = AsyncMock()
+    dep.reap_external_app_users = AsyncMock(return_value=0)
+    dep.get_nodes_by_filters = AsyncMock(return_value=[])
+    dep.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+    dep.batch_update_nodes = AsyncMock()
+    dep.get_records_by_parent = AsyncMock(return_value=[])
 
     tx = _make_mock_tx_store()
 
@@ -236,8 +255,10 @@ class TestSyncUserGroups:
         resp.error = "API Error"
         c.data_source.team_groups_list = AsyncMock(return_value=resp)
 
-        with pytest.raises(Exception):
-            await c._sync_user_groups()
+        # A list that could not be read writes nothing and marks the run incomplete; files still sync.
+        await c._sync_user_groups()
+        dep.on_new_user_groups.assert_not_awaited()
+        assert not c._health.complete
 
     @pytest.mark.asyncio
     async def test_no_groups(self):
@@ -310,31 +331,6 @@ class TestExtractFolderInfoFromEvent:
 # ===========================================================================
 
 
-class TestHandleMemberAdded:
-
-    @pytest.mark.asyncio
-    async def test_user_found(self):
-        c, dep, *_ = _make_connector()
-        user = MagicMock()
-        user.email = "new@test.com"
-
-        await c._handle_member_added("new@test.com", "tm1", [user])
-        dep.on_new_app_users.assert_called_once_with([user])
-
-    @pytest.mark.asyncio
-    async def test_user_not_found(self):
-        c, dep, *_ = _make_connector()
-        await c._handle_member_added("missing@test.com", "tm1", [])
-        dep.on_new_app_users.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_error_handled(self):
-        c, dep, *_ = _make_connector()
-        dep.on_new_app_users.side_effect = Exception("fail")
-        user = MagicMock()
-        user.email = "u@test.com"
-        # Should not raise
-        await c._handle_member_added("u@test.com", "tm1", [user])
 
 
 # ===========================================================================
@@ -342,36 +338,6 @@ class TestHandleMemberAdded:
 # ===========================================================================
 
 
-class TestProcessMemberEvent:
-
-    @pytest.mark.asyncio
-    async def test_member_change_status(self):
-        c, *_ = _make_connector()
-        event = MagicMock()
-        event.event_type._tag = "member_change_status"
-        c._handle_member_change_status_event = AsyncMock()
-
-        await c._process_member_event(event, [])
-        c._handle_member_change_status_event.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_unknown_event_type(self):
-        c, *_ = _make_connector()
-        event = MagicMock()
-        event.event_type._tag = "member_other"
-
-        # Should not raise
-        await c._process_member_event(event, [])
-
-    @pytest.mark.asyncio
-    async def test_error_handled(self):
-        c, *_ = _make_connector()
-        event = MagicMock()
-        event.event_type._tag = "member_change_status"
-        c._handle_member_change_status_event = AsyncMock(side_effect=Exception("fail"))
-
-        # Should not raise
-        await c._process_member_event(event, [])
 
 
 # ===========================================================================
@@ -379,62 +345,6 @@ class TestProcessMemberEvent:
 # ===========================================================================
 
 
-class TestHandleMemberChangeStatusEvent:
-
-    @pytest.mark.asyncio
-    async def test_active_status(self):
-        c, *_ = _make_connector()
-        event = MagicMock()
-        event.context.is_team_member.return_value = True
-        user_info = MagicMock()
-        user_info.email = "u@test.com"
-        user_info.display_name = "U"
-        user_info.team_member_id = "tm1"
-        event.context.get_team_member.return_value = user_info
-
-        status_details = MagicMock()
-        status_details.new_value._tag = "active"
-        status_details.previous_value._tag = "invited"
-        event.details.get_member_change_status_details.return_value = status_details
-
-        c._handle_member_added = AsyncMock()
-        await c._handle_member_change_status_event(event, [])
-        c._handle_member_added.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_removed_status(self):
-        c, *_ = _make_connector()
-        event = MagicMock()
-        event.context.is_team_member.return_value = True
-        user_info = MagicMock()
-        user_info.email = "u@test.com"
-        user_info.display_name = "U"
-        user_info.team_member_id = "tm1"
-        event.context.get_team_member.return_value = user_info
-
-        status_details = MagicMock()
-        status_details.new_value._tag = "removed"
-        status_details.previous_value._tag = "active"
-        event.details.get_member_change_status_details.return_value = status_details
-
-        c._handle_member_added = AsyncMock()
-        await c._handle_member_change_status_event(event, [])
-        # Should not call _handle_member_added for removed status
-        c._handle_member_added.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_no_email(self):
-        c, *_ = _make_connector()
-        event = MagicMock()
-        event.context.is_team_member.return_value = False
-
-        status_details = MagicMock()
-        status_details.new_value._tag = "active"
-        event.details.get_member_change_status_details.return_value = status_details
-
-        c._handle_member_added = AsyncMock()
-        await c._handle_member_change_status_event(event, [])
-        c._handle_member_added.assert_not_called()
 
 
 # ===========================================================================
@@ -480,57 +390,6 @@ class TestInitializeEventCursor:
 # ===========================================================================
 
 
-class TestSyncRecordGroups:
-
-    @pytest.mark.asyncio
-    async def test_no_admin_user(self):
-        c, dep, *_ = _make_connector()
-        users = [MagicMock(title="member")]
-        await c.sync_record_groups(users)
-        dep.on_new_record_groups.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_with_active_folders(self):
-        c, dep, *_ = _make_connector()
-        admin = MagicMock(source_role="team_admin", email="admin@test.com", source_user_id="adm1")
-        users = [admin]
-
-        folder = MagicMock()
-        folder.team_folder_id = "tf1"
-        folder.name = "Engineering"
-        folder.status._tag = "active"
-
-        folders_resp = MagicMock()
-        folders_resp.success = True
-        folders_resp.data.team_folders = [folder]
-        folders_resp.data.cursor = "fc1"
-        folders_resp.data.has_more = False
-        c.data_source.team_team_folder_list = AsyncMock(return_value=folders_resp)
-
-        c._create_and_sync_single_record_group = AsyncMock()
-        await c.sync_record_groups(users)
-        c._create_and_sync_single_record_group.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_skips_inactive_folders(self):
-        c, dep, *_ = _make_connector()
-        admin = MagicMock(source_role="team_admin", email="admin@test.com", source_user_id="adm1")
-
-        folder = MagicMock()
-        folder.team_folder_id = "tf1"
-        folder.name = "Archived"
-        folder.status._tag = "archived"
-
-        folders_resp = MagicMock()
-        folders_resp.success = True
-        folders_resp.data.team_folders = [folder]
-        folders_resp.data.cursor = "fc1"
-        folders_resp.data.has_more = False
-        c.data_source.team_team_folder_list = AsyncMock(return_value=folders_resp)
-
-        c._create_and_sync_single_record_group = AsyncMock()
-        await c.sync_record_groups([admin])
-        c._create_and_sync_single_record_group.assert_not_called()
 
 
 # ===========================================================================
@@ -665,7 +524,7 @@ class TestReindexRecords:
         rec2 = MagicMock(id="r2")
 
         c._check_and_fetch_updated_record = AsyncMock(
-            side_effect=[("updated_rec", []), None]
+            side_effect=[MagicMock(record="updated_rec", new_permissions=[], is_new=False), None]
         )
 
         await c.reindex_records([rec1, rec2])
@@ -751,14 +610,14 @@ class TestTestConnectionAndAccess:
     @pytest.mark.asyncio
     async def test_success(self):
         c, *_ = _make_connector()
-        c.data_source.users_get_current_account = AsyncMock()
+        c.data_source.team_token_get_authenticated_admin = AsyncMock(return_value=MagicMock(success=True))
         result = await c.test_connection_and_access()
         assert result is True
 
     @pytest.mark.asyncio
     async def test_api_failure(self):
         c, *_ = _make_connector()
-        c.data_source.users_get_current_account = AsyncMock(side_effect=Exception("fail"))
+        c.data_source.team_token_get_authenticated_admin = AsyncMock(side_effect=Exception("fail"))
         result = await c.test_connection_and_access()
         assert result is False
 
@@ -804,45 +663,3 @@ class TestUpdateGroupName:
 # ===========================================================================
 
 
-class TestHandleRecordUpdatesDeep:
-
-    @pytest.mark.asyncio
-    async def test_new_record_logs_only(self):
-        c, dep, *_ = _make_connector()
-        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
-        record = MagicMock()
-        record.record_name = "new.pdf"
-        update = RecordUpdate(
-            record=record,
-            is_new=True,
-            is_updated=False,
-            is_deleted=False,
-            metadata_changed=False,
-            content_changed=False,
-            permissions_changed=False
-        )
-        await c._handle_record_updates(update)
-        dep.on_record_deleted.assert_not_called()
-        dep.on_record_metadata_update.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_all_changes(self):
-        c, dep, *_ = _make_connector()
-        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
-        record = MagicMock()
-        record.record_name = "all.pdf"
-        perms = [Permission(email="u@t.com", type=PermissionType.READ, entity_type=EntityType.USER)]
-        update = RecordUpdate(
-            record=record,
-            is_new=False,
-            is_updated=True,
-            is_deleted=False,
-            metadata_changed=True,
-            content_changed=True,
-            permissions_changed=True,
-            new_permissions=perms
-        )
-        await c._handle_record_updates(update)
-        dep.on_record_metadata_update.assert_called_once()
-        dep.on_record_content_update.assert_called_once()
-        dep.on_updated_record_permissions.assert_called_once()

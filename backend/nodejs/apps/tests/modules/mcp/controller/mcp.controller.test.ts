@@ -6,6 +6,8 @@ import { createMockAppConfig } from '../../../helpers/fixtures/config.fixture'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer'
 import { requestContextMiddleware } from '../../../../src/libs/middlewares/request.context'
+import { isMcpRelay, MCP_RELAY_HEADER, relayKey } from '../../../../src/libs/middlewares/mcp-relay'
+import { makeOrgContext, runWithOrgContext } from '../../../../src/libs/context/orgContext'
 
 // The controller is imported AFTER mock-mcp-global.ts has patched require.cache
 // for @pipeshub-ai/mcp/* and @modelcontextprotocol/sdk, so all ESM deps resolve
@@ -15,7 +17,7 @@ import { requestContextMiddleware } from '../../../../src/libs/middlewares/reque
 const CONTROLLER_PATH = require.resolve('../../../../src/modules/mcp/controller/mcp.controller')
 delete require.cache[CONTROLLER_PATH]
 const { handleMCPRequest } = require(CONTROLLER_PATH) as typeof import('../../../../src/modules/mcp/controller/mcp.controller')
-import { CODE_GRAPH_TOOL_NAMES } from '../../../../src/modules/mcp/code-graph.tools'
+import { CODE_GRAPH_INSTRUCTIONS, CODE_GRAPH_TOOL_NAMES } from '../../../../src/modules/mcp/code-graph.tools'
 
 // Cached module references — we mutate these exports per-test so the controller
 // picks up our stubs (it destructures from the same object on every request).
@@ -27,6 +29,9 @@ const mcpCoreExports = require.cache[
 ]!.exports
 const sdkTransportExports = require.cache[
   require.resolve('@modelcontextprotocol/sdk/server/streamableHttp.js')
+]!.exports
+const oauthScopesExports = require.cache[
+  require.resolve('@pipeshub-ai/mcp/esm/mcp-server/oauth-scopes.js')
 ]!.exports
 
 describe('MCP Controller — handleMCPRequest', () => {
@@ -262,16 +267,18 @@ describe('MCP Controller — handleMCPRequest', () => {
     let fetchStub: sinon.SinonStub
     let registered: string[]
     let connectedAfter: number
+    let sdkServer: { _instructions?: string }
 
     beforeEach(() => {
       fetchStub = sinon.stub(globalThis, 'fetch')
       registered = []
       connectedAfter = -1
+      sdkServer = { _instructions: 'Documents.' }
       mcpServerExports.createMCPServer = sinon.stub().returns({
         server: {
           registerTool: (name: string) => { registered.push(name) },
           connect: sinon.stub().callsFake(async () => { connectedAfter = registered.length }),
-          server: {},
+          server: sdkServer,
         },
       })
       sdkTransportExports.StreamableHTTPServerTransport = class {
@@ -284,11 +291,12 @@ describe('MCP Controller — handleMCPRequest', () => {
         status: 200, headers: { 'content-type': 'application/json' },
       })
     // A distinct user per test: the repo check is cached per caller.
-    const serve = async (userId: string, body: unknown, user: Record<string, unknown> = {}) => {
+    const serve = async (userId: string, body: unknown, user: Record<string, unknown> = {}, query: Record<string, string> = {}) => {
       const req = createMockRequest({
         headers: { authorization: 'Bearer t' },
         user: { userId, orgId: 'org-1', ...user },
         body,
+        query,
       })
       await handleMCPRequest(appConfig)(req, createMockResponse() as any, createMockNext())
     }
@@ -309,6 +317,20 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(registered).to.deep.equal([])
     })
 
+    it('asks again for another token of the same user, whose knowledge limit may differ', async () => {
+      fetchStub.onFirstCall().resolves(repos([]))
+      fetchStub.onSecondCall().resolves(repos([{ repo: 'acme/shop' }]))
+      await serve('cg-two-tokens', list)
+      expect(registered).to.deep.equal([])
+      const req = createMockRequest({
+        headers: { authorization: 'Bearer other' },
+        user: { userId: 'cg-two-tokens', orgId: 'org-1' },
+        body: list,
+      })
+      await handleMCPRequest(appConfig)(req, createMockResponse() as any, createMockNext())
+      expect(registered).to.deep.equal([...CODE_GRAPH_TOOL_NAMES])
+    })
+
     it('leaves them out for an OAuth token without code:read, without asking', async () => {
       await serve('cg-no-scope', list, { isOAuth: true, oauthScopes: ['semantic:read', 'connector:read'] })
       expect(registered).to.deep.equal([])
@@ -327,11 +349,169 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(registered).to.deep.equal([...CODE_GRAPH_TOOL_NAMES])
     })
 
+    it('names the code tools in the instructions when the caller can read a repo', async () => {
+      fetchStub.resolves(repos([{ repo: 'acme/shop' }]))
+      await serve('cg-init', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
+      expect(sdkServer._instructions).to.equal('Documents.' + CODE_GRAPH_INSTRUCTIONS)
+    })
+
+    it('sends only the code tools and their instructions for ?tools=code', async () => {
+      const docTool = { remove: sinon.stub() }
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: {
+          _registeredTools: { pipeshub_search: docTool },
+          registerTool: (name: string) => { registered.push(name) },
+          connect: sinon.stub().resolves(),
+          server: sdkServer,
+        },
+      })
+      fetchStub.resolves(repos([{ repo: 'acme/shop' }]))
+      await serve('cg-code-only', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }, {}, { tools: 'code' })
+      expect(docTool.remove.calledOnce).to.equal(true)
+      expect(registered).to.deep.equal([...CODE_GRAPH_TOOL_NAMES])
+      expect(sdkServer._instructions).to.equal(CODE_GRAPH_INSTRUCTIONS.trimStart())
+    })
+
+    it('keeps document tools callable in a ?tools=code batch that calls one', async () => {
+      const docTool = { remove: sinon.stub() }
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: {
+          _registeredTools: { pipeshub_search: docTool },
+          registerTool: (name: string) => { registered.push(name) },
+          connect: sinon.stub().resolves(),
+          server: sdkServer,
+        },
+      })
+      fetchStub.resolves(repos([{ repo: 'acme/shop' }]))
+      await serve('cg-code-only-batch', [
+        { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'pipeshub_code_read' } },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'pipeshub_search' } },
+      ], {}, { tools: 'code' })
+      expect(docTool.remove.called).to.equal(false)
+      expect(registered).to.deep.equal([...CODE_GRAPH_TOOL_NAMES])
+    })
+
+    it('leaves the instructions alone when the caller can read no repo', async () => {
+      fetchStub.resolves(repos([]))
+      await serve('cg-init-none', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
+      expect(sdkServer._instructions).to.equal('Documents.')
+    })
+
     it('does not check repos for requests that cannot reach a code tool', async () => {
-      await serve('cg-other', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
+      await serve('cg-other', { jsonrpc: '2.0', id: 1, method: 'ping' })
       await serve('cg-other', { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'pipeshub_search' } })
       expect(fetchStub.called).to.equal(false)
       expect(registered).to.deep.equal([])
+    })
+  })
+
+  describe('scopes, step-up and the audit trail', () => {
+    const oauthReq = (scopes: string[], body: unknown = {}) =>
+      createMockRequest({
+        headers: { authorization: 'Bearer t' },
+        body,
+        user: { userId: 'u1', orgId: 'o1', isOAuth: true, oauthClientId: 'client-1', oauthScopes: scopes },
+      })
+    let origRequired: any
+    let createOpts: any
+
+    beforeEach(() => {
+      origRequired = oauthScopesExports.requiredOAuthScopes
+      oauthScopesExports.requiredOAuthScopes = (tool: string) =>
+        ({ pipeshub_upload: ['kb:upload'] } as Record<string, string[]>)[tool]
+      createOpts = undefined
+      mcpServerExports.createMCPServer = sinon.stub().callsFake((opts: any) => {
+        createOpts = opts
+        return { server: { registerTool: () => undefined, connect: sinon.stub().resolves(), server: {} } }
+      })
+    })
+
+    afterEach(() => {
+      oauthScopesExports.requiredOAuthScopes = origRequired
+    })
+
+    it('answers a call to a tool the token lacks scopes for with an insufficient_scope 403', async () => {
+      const res = createMockResponse() as any
+      res.set = sinon.stub().returns(res)
+      const body = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'pipeshub_upload' } }
+
+      await handleMCPRequest(appConfig)(oauthReq(['kb:read'], body), res, createMockNext())
+
+      expect(res.status.calledWith(403)).to.be.true
+      const [header, challenge] = res.set.firstCall.args
+      expect(header).to.equal('WWW-Authenticate')
+      expect(challenge).to.contain('error="insufficient_scope"').and.contain('scope="kb:read kb:upload"')
+      expect(createOpts, 'no server is built').to.be.undefined
+    })
+
+    it("lists tools by the token's scopes, and lets chat act only with agent:execute", async () => {
+      await handleMCPRequest(appConfig)(oauthReq(['conversation:chat']), createMockResponse() as any, createMockNext())
+      expect(createOpts.grantedOAuthScopes).to.deep.equal(['conversation:chat'])
+      expect(createOpts.allowChatActions).to.be.false
+
+      await handleMCPRequest(appConfig)(oauthReq(['conversation:chat', 'agent:execute']), createMockResponse() as any, createMockNext())
+      expect(createOpts.allowChatActions).to.be.true
+    })
+
+    it('records each tool call with who, which app and which tool, never the arguments', async () => {
+      const info = sinon.stub(Logger.prototype, 'info')
+      await handleMCPRequest(appConfig)(oauthReq(['kb:read']), createMockResponse() as any, createMockNext())
+
+      // The tool runs inside the request, where authentication bound the caller's org.
+      runWithOrgContext(makeOrgContext({ orgId: 'o1', userId: 'u1', kind: 'user', source: 'jwt' }), () =>
+        createOpts.onToolCall({ tool: 'pipeshub_search', durationMs: 12, isError: false, argumentNames: ['query'] }),
+      )
+
+      const entry = info.getCalls().find((c) => c.args[0] === 'MCP tool call')
+      expect(entry, 'audit entry').to.exist
+      expect(entry!.args[1]).to.include({
+        audit: 'mcp_tool_call', orgId: 'o1', userId: 'u1', clientId: 'client-1',
+        tool: 'pipeshub_search', durationMs: 12, isError: false,
+      })
+      expect(entry!.args[1].argumentNames).to.deep.equal(['query'])
+    })
+  })
+
+  describe('loopback calls and disconnects', () => {
+    it("marks the tools' API calls with a relay header bound to the caller's token", async () => {
+      let capturedOpts: any
+      mcpCoreExports.PipeshubCore = function (opts: any) { capturedOpts = opts }
+      mcpServerExports.createMCPServer = sinon.stub().callsFake((opts: any) => {
+        opts.getSDK()
+        return { server: { registerTool: () => undefined, connect: sinon.stub().resolves() } }
+      })
+      const req = createMockRequest({ headers: { authorization: 'Bearer tok-1' }, body: {} })
+
+      await handleMCPRequest(appConfig)(req, createMockResponse() as any, createMockNext())
+
+      const outgoing = new Request('http://localhost:3000/api/v1/search', {
+        headers: { authorization: 'Bearer tok-1' },
+      })
+      for (const hook of capturedOpts.httpClient.hooks) hook(outgoing)
+      const relayed = {
+        headers: {
+          authorization: 'Bearer tok-1',
+          [MCP_RELAY_HEADER]: outgoing.headers.get(MCP_RELAY_HEADER) ?? undefined,
+        },
+      }
+      const key = relayKey(appConfig.scopedJwtSecret)
+      expect(isMcpRelay(relayed as any, key)).to.be.true
+      expect(isMcpRelay({ headers: { ...relayed.headers, authorization: 'Bearer other' } } as any, key)).to.be.false
+    })
+
+    it('closes the server when the client hangs up, which aborts the running tool call', async () => {
+      const close = sinon.stub().resolves()
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: { registerTool: () => undefined, connect: sinon.stub().resolves(), close },
+      })
+      const res = createMockResponse()
+
+      await handleMCPRequest(appConfig)(createMockRequest({ headers: {}, body: {} }), res as any, createMockNext())
+
+      const onClose = res.on.getCalls().find((c: any) => c.args[0] === 'close')
+      expect(onClose, 'close listener').to.exist
+      onClose!.args[1]()
+      expect(close.calledOnce).to.be.true
     })
   })
 
@@ -526,6 +706,10 @@ describe('MCP Controller — handleMCPRequest', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
+      // initialize asks the query service whether the caller has code repos.
+      sinon.stub(globalThis, 'fetch').resolves(new Response(JSON.stringify({ repos: [] }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      }))
       await handleMCPRequest(appConfig)(req, res as any, next)
 
       expect(handleRequestStub.calledOnce).to.be.true
@@ -565,9 +749,21 @@ describe('MCP Controller — handleMCPRequest', () => {
           .to.deep.equal(['read'])
       })
 
-      it('mounts every tool for a token with both write scopes', async () => {
+      it('mounts the read and write tools, not the connect ones, for a token with both write scopes only', async () => {
         expect(await scopesFor({ userId: 'u', orgId: 'o', isOAuth: true, oauthScopes: ['kb:read', 'kb:write', 'kb:upload'] }))
-          .to.equal(undefined)
+          .to.deep.equal(['read', 'write'])
+      })
+
+      it('needs both connector scopes for the connect tools', async () => {
+        expect(await scopesFor({ userId: 'u', orgId: 'o', isOAuth: true, oauthScopes: ['kb:write', 'kb:upload', 'connector:write'] }))
+          .to.deep.equal(['read', 'write'])
+      })
+
+      it('mounts every tool for a token with the write and connector scopes', async () => {
+        expect(await scopesFor({
+          userId: 'u', orgId: 'o', isOAuth: true,
+          oauthScopes: ['kb:read', 'kb:write', 'kb:upload', 'connector:write', 'connector:sync'],
+        })).to.equal(undefined)
       })
 
       it('mounts every tool for a session user, as requireScopes lets them through', async () => {
@@ -804,6 +1000,10 @@ describe('MCP Controller — handleMCPRequest', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
+      // initialize asks the query service whether the caller has code repos.
+      sinon.stub(globalThis, 'fetch').resolves(new Response(JSON.stringify({ repos: [] }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      }))
       await handle(appConfig)(req, res as any, next)
 
       expect(infoStub.calledOnce).to.be.true

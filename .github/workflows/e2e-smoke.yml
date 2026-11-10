@@ -26,10 +26,34 @@ env:
   PIPESHUB_BASE_URL: http://localhost:3000
 
 jobs:
+  # Which of the jobs below this pull request's changes can affect
+  # (scripts/pr_changes.py). Every other event runs them all.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      e2e_smoke: ${{ steps.changes.outputs.e2e_smoke }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            .github/actions
+      - id: changes
+        uses: ./.github/actions/pr-changes
+
   e2e-smoke:
     name: E2E smoke (browser)
+    needs: changes
     # Self-hosted runner: never run a fork's code on it (same guard as published-hub-smoke.yml).
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # Skipped when the pull request changes only docs, which the stack never reads.
+    if: >-
+      needs.changes.outputs.e2e_smoke == 'true' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
     timeout-minutes: 60
 

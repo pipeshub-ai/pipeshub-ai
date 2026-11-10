@@ -125,7 +125,7 @@ class TestAzureFilesConnectorInit:
     @patch("app.connectors.sources.azure_files.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_init_personal_scope_with_creator(self, mock_filters, mock_ds_cls, mock_build, azure_files_connector):
         azure_files_connector.config_service.get_config = AsyncMock(return_value={
-            "auth": {"connectionString": "AccountName=teststorage;AccountKey=abc"},
+            "auth": {"connectionString": "AccountName=teststorage;AccountKey=YWJj"},
             "scope": "PERSONAL",
             "created_by": "user-1",
         })
@@ -142,7 +142,7 @@ class TestAzureFilesConnectorInit:
     @patch("app.connectors.sources.azure_files.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_init_creator_lookup_fails(self, mock_filters, mock_ds_cls, mock_build, azure_files_connector, mock_data_store_provider):
         azure_files_connector.config_service.get_config = AsyncMock(return_value={
-            "auth": {"connectionString": "AccountName=teststorage;AccountKey=abc"},
+            "auth": {"connectionString": "AccountName=teststorage;AccountKey=YWJj"},
             "scope": "PERSONAL",
             "created_by": "user-1",
         })
@@ -162,15 +162,15 @@ class TestAzureFilesConnectorInit:
 # ===========================================================================
 class TestAzureFilesExtractAccountName:
     def test_valid_connection_string(self):
-        conn = "DefaultEndpointsProtocol=https;AccountName=myaccount;AccountKey=abc;EndpointSuffix=core.windows.net"
+        conn = "DefaultEndpointsProtocol=https;AccountName=myaccount;AccountKey=YWJj;EndpointSuffix=core.windows.net"
         assert AzureFilesConnector._extract_account_name_from_connection_string(conn) == "myaccount"
 
     def test_no_account_name(self):
-        conn = "DefaultEndpointsProtocol=https;AccountKey=abc"
+        conn = "DefaultEndpointsProtocol=https;AccountKey=YWJj"
         assert AzureFilesConnector._extract_account_name_from_connection_string(conn) is None
 
     def test_empty_account_name(self):
-        conn = "AccountName=;AccountKey=abc"
+        conn = "AccountName=;AccountKey=YWJj"
         assert AzureFilesConnector._extract_account_name_from_connection_string(conn) is None
 
     def test_empty_string(self):
@@ -346,7 +346,7 @@ def mock_config_service():
     svc = AsyncMock()
     svc.get_config = AsyncMock(return_value={
         "auth": {
-            "connectionString": "DefaultEndpointsProtocol=https;AccountName=teststorage;AccountKey=abc;EndpointSuffix=core.windows.net"
+            "connectionString": "DefaultEndpointsProtocol=https;AccountName=teststorage;AccountKey=YWJj;EndpointSuffix=core.windows.net"
         },
         "scope": "TEAM",
     })
@@ -494,7 +494,7 @@ class TestAzureFilesInit:
     @pytest.mark.asyncio
     async def test_extract_account_name(self):
         result = AzureFilesConnector._extract_account_name_from_connection_string(
-            "DefaultEndpointsProtocol=https;AccountName=myaccount;AccountKey=abc;EndpointSuffix=core.windows.net"
+            "DefaultEndpointsProtocol=https;AccountName=myaccount;AccountKey=YWJj;EndpointSuffix=core.windows.net"
         )
         assert result == "myaccount"
 
@@ -917,7 +917,7 @@ def cfg():
     svc = AsyncMock()
     svc.get_config = AsyncMock(return_value={
         "auth": {
-            "connectionString": "DefaultEndpointsProtocol=https;AccountName=teststorage;AccountKey=abc;EndpointSuffix=core.windows.net"
+            "connectionString": "DefaultEndpointsProtocol=https;AccountName=teststorage;AccountKey=YWJj;EndpointSuffix=core.windows.net"
         },
         "scope": "TEAM",
     })
@@ -1096,7 +1096,7 @@ class TestInitBranches:
         mock_ds.return_value = MagicMock()
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         conn.config_service.get_config = AsyncMock(return_value={
-            "auth": {"connectionString": "AccountName=teststorage;AccountKey=abc"},
+            "auth": {"connectionString": "AccountName=teststorage;AccountKey=YWJj"},
             "scope": "TEAM",
             "created_by": "user-1",
         })
@@ -1115,7 +1115,7 @@ class TestInitBranches:
         mock_ds.return_value = MagicMock()
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         conn.config_service.get_config = AsyncMock(return_value={
-            "auth": {"connectionString": "AccountName=teststorage;AccountKey=abc"},
+            "auth": {"connectionString": "AccountName=teststorage;AccountKey=YWJj"},
             "scope": "PERSONAL",
             "created_by": "user-1",
         })
@@ -1133,7 +1133,7 @@ class TestInitBranches:
         mock_ds.return_value = MagicMock()
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         conn.config_service.get_config = AsyncMock(return_value={
-            "auth": {"connectionString": "AccountName=teststorage;AccountKey=abc"},
+            "auth": {"connectionString": "AccountName=teststorage;AccountKey=YWJj"},
         })
         result = await conn.init()
         assert result is True

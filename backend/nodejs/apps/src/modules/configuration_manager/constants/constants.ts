@@ -154,6 +154,13 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     defaultEnabled: false,
   },
   {
+    key: 'ENABLE_CHAT_COMPARE',
+    label: 'Enable Compare Models in Chat (Beta)',
+    description:
+      'Let users send one question to two configured models at once and choose the better answer. Disable to hide Compare models in chat and reject its requests.',
+    defaultEnabled: false,
+  },
+  {
     key: 'ENABLE_SKILLS',
     label: 'Enable Skills (Beta)',
     description:
@@ -173,6 +180,14 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     label: 'Extract Named Entities',
     description:
       'During indexing, extract typed named entities (people, organizations, dates, amounts) and store them for search filters and agent tools. Disable to skip extraction and remove mention links from records indexed while this is off. Always on when the deployment sets HIGH_ACCURACY_MODE=true.',
+    defaultEnabled: false,
+    advanced: true,
+  },
+  {
+    key: 'ENABLE_CLASSIFY_ON_FIRST_USE',
+    label: 'Classify Records When First Used',
+    description:
+      'Make records searchable without classifying them, and classify a record (summary, categories, topics, departments) the first time a search returns it. Saves the classification model calls for records nobody searches for; until then a record has no summary and does not match category or department filters. Disable to classify every record right after it is indexed; records already waiting then stay unclassified until they are reindexed.',
     defaultEnabled: false,
     advanced: true,
   },

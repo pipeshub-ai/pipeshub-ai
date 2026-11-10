@@ -8,6 +8,7 @@ import pypdfium2
 import pytest
 
 from app.exceptions.indexing_exceptions import PasswordProtectedError
+from app.modules.parsers import encryption as encryption_module
 from app.modules.parsers.encryption import (
     has_encrypted_package,
     pdfium_password_error,
@@ -37,6 +38,30 @@ OOXML_MIME = {
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
+
+
+# A damaged container is read for a bounded number of header fields (at most 64 directory sectors and
+# 8 index sectors, a few fields each), whatever the file claims. Counting the reads checks that bound
+# without timing it.
+MAX_FIELD_READS = 200
+
+
+def _field_reads(monkeypatch: pytest.MonkeyPatch, content: bytes) -> int:
+    reads = 0
+
+    class Counting:
+        def __getattr__(self, name: str) -> object:
+            return getattr(struct, name)
+
+        def unpack_from(self, *args: object) -> tuple:
+            nonlocal reads
+            reads += 1
+            return struct.unpack_from(*args)
+
+    monkeypatch.setattr(encryption_module, "struct", Counting())
+    has_encrypted_package(content)
+    return reads
+
 
 
 class TestOoxml:
@@ -107,10 +132,10 @@ class TestMalformedContainers:
         for cut in (7, 100, 511, 512, 700, len(good) - 1):
             assert has_encrypted_package(good[:cut]) in (True, False)
 
-    def test_a_directory_chain_that_loops(self) -> None:
-        started = time.monotonic()
-        assert not has_encrypted_package(cfbf(["x"] * 30 + ["EncryptedPackage"], directory_loops=True))
-        assert time.monotonic() - started < 0.5
+    def test_a_directory_chain_that_loops(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        looping = cfbf(["x"] * 30 + ["EncryptedPackage"], directory_loops=True)
+        assert not has_encrypted_package(looping)
+        assert _field_reads(monkeypatch, looping) < MAX_FIELD_READS
 
     @pytest.mark.parametrize(
         "offset, fmt, value",
@@ -129,12 +154,10 @@ class TestMalformedContainers:
         assert not has_encrypted_package(bytes(damaged))
 
     @pytest.mark.parametrize("first", [0, 1, 0xFFFFFFFE])
-    def test_a_difat_chain_that_never_ends_is_bounded(self, first: int) -> None:
+    def test_a_difat_chain_that_never_ends_is_bounded(self, first: int, monkeypatch: pytest.MonkeyPatch) -> None:
         damaged = bytearray(cfbf(["EncryptionInfo"]))
         struct.pack_into("<II", damaged, 68, first, 0xFFFFFFFF)
-        started = time.monotonic()
-        has_encrypted_package(bytes(damaged))
-        assert time.monotonic() - started < 0.5
+        assert _field_reads(monkeypatch, bytes(damaged)) < MAX_FIELD_READS
 
     def test_random_bytes_behind_the_magic(self) -> None:
         import random

@@ -1,5 +1,6 @@
 import type { FileHandle } from 'fs/promises';
 import { StorageServiceInterface } from '../services/storage.service';
+import type { ObjectStat } from '../utils/storage-fingerprint';
 import {
   Document,
   FilePayload,
@@ -155,6 +156,17 @@ export class StorageServiceAdapter {
   objectExists(document: Document): Promise<boolean> {
     return this.adapter.objectExists
       ? this.adapter.objectExists(document)
+      : Promise.reject(new Error('Method not implemented'));
+  }
+
+  /**
+   * Size and ETag of the document's current file as the store reports them now.
+   * @param document - Metadata of the document.
+   * @returns A promise resolving to null only when storage confirms the file is absent.
+   */
+  statObject(document: Document): Promise<ObjectStat | null> {
+    return this.adapter.statObject
+      ? this.adapter.statObject(document)
       : Promise.reject(new Error('Method not implemented'));
   }
 

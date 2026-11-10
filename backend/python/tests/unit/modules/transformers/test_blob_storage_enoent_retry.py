@@ -32,6 +32,12 @@ def _blob(**overrides) -> BlobStorage:
     )
     # No other record shares the vrid, so its stored copy is written whole.
     b.graph_provider.get_records_by_virtual_record_id = AsyncMock(return_value=[])
+    # The mapping names doc-1, last written in place; a switch of it is accepted.
+    b._mapping_node = AsyncMock(return_value={
+        "id": "vrid-1", "documentId": "doc-1", "record_doc_id": "doc-1", "storedRun": "none:p", "switchSeq": 2,
+    })
+    b._switch_mapping = AsyncMock(return_value=True)
+    b.graph_provider.update_node_fields_if_match = AsyncMock(return_value=True)
     for k, v in overrides.items():
         setattr(b, k, v)
     return b
@@ -61,14 +67,29 @@ def _no_auth():
 
 
 class TestRecordBufferRetry:
+    """The in-place PUT is retried on a transient failure (a move running at the same time),
+    twice at most, with jittered pauses of up to 0.5 s and then 1 s. Re-sending the same bytes
+    is safe: the mapping was invalidated first and the final compare-and-set decides."""
+
+    @staticmethod
+    def _ctx() -> MagicMock:
+        record = MagicMock()
+        record.org_id = "org-1"
+        record.id = "rec-1"
+        record.virtual_record_id = "vrid-1"
+        record.connector_id = "conn-1"
+        record.record_group_id = "rg-1"
+        record.model_dump.return_value = {"record_name": "f.txt"}
+        ctx = MagicMock()
+        ctx.record = record
+        ctx.settings = {}
+        return ctx
+
     @pytest.mark.asyncio
     async def test_first_fail_retry_succeeds(self, _no_sleep, _no_auth):
-        """update_record_buffer fails once, retry succeeds — no fallback."""
+        """update_record_buffer fails once, the retry succeeds: one mapping switch, no new document."""
         b = _blob()
         b._build_hierarchical_storage_path = AsyncMock(return_value="records/conn/space/f.txt")
-        b.get_document_id_by_virtual_record_id = AsyncMock(
-            return_value={"record_doc_id": "doc-1"}
-        )
         b._get_current_document_path = AsyncMock(return_value="org-1/PipesHub/records/conn/space/f.txt")
 
         call_count = 0
@@ -82,89 +103,65 @@ class TestRecordBufferRetry:
 
         b.update_record_buffer = failing_then_ok
         b.save_record_to_storage = AsyncMock(return_value=("doc-new", 2048))
-        b.store_virtual_record_mapping = AsyncMock()
-        b._save_metadata = AsyncMock()
 
-        record = MagicMock()
-        record.org_id = "org-1"
-        record.id = "rec-1"
-        record.virtual_record_id = "vrid-1"
-        record.connector_id = "conn-1"
-        record.record_group_id = "rg-1"
-        record.model_dump.return_value = {"record_name": "f.txt"}
-
-        ctx = MagicMock()
-        ctx.record = record
-        ctx.settings = {}
-
-        result = await b.apply(ctx)
+        await b.apply(self._ctx())
 
         assert call_count == 2
         b.save_record_to_storage.assert_not_called()
-        _no_sleep.assert_awaited_once_with(0.5)
+        (pause,) = [c.args[0] for c in _no_sleep.await_args_list]
+        assert 0.25 <= pause <= 0.5
+        # The stored run was already unservable (a ``none`` run): one compare-and-set, the final one.
+        assert b._switch_mapping.await_count == 1
+        assert b._switch_mapping.await_args.args[3]["documentId"] == "doc-1"
 
     @pytest.mark.asyncio
-    async def test_both_fail_falls_back_to_new_upload(self, _no_sleep, _no_auth):
-        """Both update_record_buffer attempts fail → falls back to save_record_to_storage."""
+    async def test_every_attempt_fails_the_write_with_no_replacement_and_no_switch(self, _no_sleep, _no_auth) -> None:
+        """Three failed PUTs fail the attempt: no new document, no delete, no mapping write."""
         b = _blob()
         b._build_hierarchical_storage_path = AsyncMock(return_value="records/conn/space/f.txt")
-        b.get_document_id_by_virtual_record_id = AsyncMock(
-            return_value={"record_doc_id": "doc-1"}
-        )
         b._get_current_document_path = AsyncMock(return_value=None)
+        b._delete_replaced_document = AsyncMock()
 
         async def always_fail(org_id, doc_id, record_dict, vrid):
             raise FileNotFoundError("ENOENT: directory renamed by move")
 
         b.update_record_buffer = always_fail
         b.save_record_to_storage = AsyncMock(return_value=("doc-new", 2048))
-        b.store_virtual_record_mapping = AsyncMock()
-        b._save_metadata = AsyncMock()
 
-        record = MagicMock()
-        record.org_id = "org-1"
-        record.id = "rec-1"
-        record.virtual_record_id = "vrid-1"
-        record.connector_id = "conn-1"
-        record.record_group_id = "rg-1"
-        record.model_dump.return_value = {"record_name": "f.txt"}
+        with pytest.raises(FileNotFoundError):
+            await b.apply(self._ctx())
 
-        ctx = MagicMock()
-        ctx.record = record
-        ctx.settings = {}
-
-        result = await b.apply(ctx)
-
-        b.save_record_to_storage.assert_awaited_once()
-        _no_sleep.assert_awaited_once_with(0.5)
+        b.save_record_to_storage.assert_not_awaited()
+        b._delete_replaced_document.assert_not_awaited()
+        b._switch_mapping.assert_not_awaited()
+        pauses = [c.args[0] for c in _no_sleep.await_args_list]
+        assert len(pauses) == 2 and 0.25 <= pauses[0] <= 0.5 and 0.5 <= pauses[1] <= 1.0
+        b.graph_provider.batch_upsert_nodes.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_retry_when_first_call_succeeds(self, _no_sleep, _no_auth):
         """When update_record_buffer succeeds on first try, no sleep/retry."""
         b = _blob()
         b._build_hierarchical_storage_path = AsyncMock(return_value="records/conn/space/f.txt")
-        b.get_document_id_by_virtual_record_id = AsyncMock(
-            return_value={"record_doc_id": "doc-1"}
-        )
         b._get_current_document_path = AsyncMock(return_value="org-1/PipesHub/records/conn/space/f.txt")
         b.update_record_buffer = AsyncMock(return_value=("doc-1", 1024))
-        b.store_virtual_record_mapping = AsyncMock()
-        b._save_metadata = AsyncMock()
 
-        record = MagicMock()
-        record.org_id = "org-1"
-        record.id = "rec-1"
-        record.virtual_record_id = "vrid-1"
-        record.connector_id = "conn-1"
-        record.record_group_id = "rg-1"
-        record.model_dump.return_value = {"record_name": "f.txt"}
+        await b.apply(self._ctx())
 
-        ctx = MagicMock()
-        ctx.record = record
-        ctx.settings = {}
+        _no_sleep.assert_not_awaited()
 
-        await b.apply(ctx)
+    @pytest.mark.asyncio
+    async def test_a_document_that_is_gone_is_not_retried(self, _no_sleep, _no_auth) -> None:
+        from app.modules.transformers.blob_storage import StorageDocumentNotFoundError
 
+        b = _blob()
+        b._build_hierarchical_storage_path = AsyncMock(return_value="records/conn/space/f.txt")
+        b.update_record_buffer = AsyncMock(side_effect=StorageDocumentNotFoundError("gone"))
+        b.save_record_to_storage = AsyncMock(return_value=("doc-new", 5))
+
+        await b.apply(self._ctx())
+
+        assert b.update_record_buffer.await_count == 1
         _no_sleep.assert_not_awaited()
 
 

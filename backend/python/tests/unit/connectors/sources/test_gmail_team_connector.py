@@ -4,7 +4,6 @@ Comprehensive unit tests for GoogleGmailTeamConnector targeting 95%+ coverage.
 Covers all methods including sync, streaming, reindexing, cleanup, and error paths.
 """
 
-import asyncio
 import base64
 import logging
 import os
@@ -481,6 +480,28 @@ class TestCleanup:
         assert connector.gmail_client is None
         assert connector.admin_client is None
         assert connector.config is None
+
+    @pytest.mark.asyncio
+    async def test_cleanup_closes_both_google_clients(self, connector) -> None:
+        gmail_client, admin_client = MagicMock(), MagicMock()
+        connector.gmail_client, connector.admin_client = gmail_client, admin_client
+
+        await connector.cleanup()
+
+        gmail_client.get_client.return_value.close.assert_called_once_with()
+        admin_client.get_client.return_value.close.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_cleanup_closes_the_other_client_when_one_close_fails(self, connector) -> None:
+        gmail_client, admin_client = MagicMock(), MagicMock()
+        gmail_client.get_client.return_value.close.side_effect = OSError("socket already gone")
+        connector.gmail_client, connector.admin_client = gmail_client, admin_client
+
+        await connector.cleanup()
+
+        admin_client.get_client.return_value.close.assert_called_once_with()
+        assert connector.gmail_client is None
+        assert connector.admin_client is None
 
     @pytest.mark.asyncio
     async def test_cleanup_handles_exception(self, connector):
@@ -2193,83 +2214,19 @@ class TestStreamRecord:
             await connector.stream_record(record)
 
 
-# ===========================================================================
-# _convert_to_pdf
-# ===========================================================================
-
 class TestConvertToPdf:
     @pytest.mark.asyncio
-    async def test_successful_conversion(self, connector):
-        with patch("asyncio.create_subprocess_exec") as mock_subprocess, \
-             patch("os.path.exists", return_value=True):
-            mock_process = AsyncMock()
-            mock_process.communicate = AsyncMock(return_value=(b"", b""))
-            mock_process.returncode = 0
-            mock_subprocess.return_value = mock_process
+    async def test_delegates_to_shared_libreoffice_conversion(self, connector):
+        # The shared helper gives each run its own LibreOffice profile.
+        with patch(
+            "app.connectors.sources.google.gmail.team.connector.libreoffice_to_pdf",
+            new_callable=AsyncMock,
+            return_value="/work/test.pdf",
+        ) as convert:
+            result = await connector._convert_to_pdf("/work/test.docx", "/work")
 
-            result = await connector._convert_to_pdf("/tmp/file.docx", "/tmp")
-            assert result == os.path.join("/tmp", "file.pdf")
-
-    @pytest.mark.asyncio
-    async def test_conversion_fails_nonzero_return(self, connector):
-        with patch("asyncio.create_subprocess_exec") as mock_subprocess:
-            mock_process = AsyncMock()
-            mock_process.communicate = AsyncMock(return_value=(b"", b"error"))
-            mock_process.returncode = 1
-            mock_subprocess.return_value = mock_process
-
-            with pytest.raises(HTTPException) as exc_info:
-                await connector._convert_to_pdf("/tmp/file.docx", "/tmp")
-            assert exc_info.value.status_code == 500
-
-    @pytest.mark.asyncio
-    async def test_output_file_not_found(self, connector):
-        with patch("asyncio.create_subprocess_exec") as mock_subprocess, \
-             patch("os.path.exists", return_value=False):
-            mock_process = AsyncMock()
-            mock_process.communicate = AsyncMock(return_value=(b"", b""))
-            mock_process.returncode = 0
-            mock_subprocess.return_value = mock_process
-
-            with pytest.raises(HTTPException) as exc_info:
-                await connector._convert_to_pdf("/tmp/file.docx", "/tmp")
-            assert exc_info.value.status_code == 500
-
-    @pytest.mark.asyncio
-    async def test_conversion_timeout(self, connector):
-        with patch("asyncio.create_subprocess_exec") as mock_subprocess:
-            mock_process = AsyncMock()
-            mock_process.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
-            mock_process.terminate = MagicMock()
-            mock_process.wait = AsyncMock()
-            mock_process.kill = MagicMock()
-            mock_subprocess.return_value = mock_process
-
-            with pytest.raises(HTTPException) as exc_info:
-                await connector._convert_to_pdf("/tmp/file.docx", "/tmp")
-            assert exc_info.value.status_code == 500
-
-    @pytest.mark.asyncio
-    async def test_conversion_timeout_with_kill_fallback(self, connector):
-        with patch("asyncio.create_subprocess_exec") as mock_subprocess:
-            mock_process = AsyncMock()
-            mock_process.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
-            mock_process.terminate = MagicMock()
-            mock_process.wait = AsyncMock(side_effect=asyncio.TimeoutError())
-            mock_process.kill = MagicMock()
-            mock_subprocess.return_value = mock_process
-
-            with pytest.raises(HTTPException) as exc_info:
-                await connector._convert_to_pdf("/tmp/file.docx", "/tmp")
-            assert exc_info.value.status_code == 500
-            mock_process.kill.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_general_exception_during_conversion(self, connector):
-        with patch("asyncio.create_subprocess_exec", side_effect=Exception("exec error")):
-            with pytest.raises(HTTPException) as exc_info:
-                await connector._convert_to_pdf("/tmp/file.docx", "/tmp")
-            assert exc_info.value.status_code == 500
+        assert result == "/work/test.pdf"
+        convert.assert_awaited_once_with("/work/test.docx", "/work")
 
 
 # ===========================================================================

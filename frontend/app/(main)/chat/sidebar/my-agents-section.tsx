@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useCallback } from 'react';
+import useSWR from 'swr';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
@@ -10,6 +11,7 @@ import { useChatStore } from '@/chat/store';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { AgentsApi } from '@/app/(main)/agents/api';
+import { SWR_NS, SWR_POLICY } from '@/lib/api/swr-cache';
 import type { AgentListRecord } from '@/app/(main)/agents/types';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { ChatSectionHeader } from './chat-section-header';
@@ -43,35 +45,20 @@ export const MyAgentsSection = React.memo(function MyAgentsSection() {
   const openMobileSidebar = useMobileSidebarStore((s) => s.open);
   const isMobile = useIsMobile();
 
-  const [agents, setAgents] = useState<AgentListRecord[]>([]);
-  const [hasMore, setHasMore] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-  const [loadError, setLoadError] = useState(false);
-
-  const load = useCallback(async () => {
-    setIsLoading(true);
-    setLoadError(false);
-    try {
-      const { agents: rows, pagination } = await AgentsApi.getAgents({
-        page: 1,
-        limit: SIDEBAR_AGENTS_PREVIEW_FETCH_LIMIT,
-      });
-      setAgents(rows);
-      setHasMore(
-        rows.length > MAX_VISIBLE_AGENTS_IN_SIDEBAR || Boolean(pagination?.hasNext)
-      );
-    } catch {
-      setLoadError(true);
-      setAgents([]);
-      setHasMore(false);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+  const { data, error, isLoading } = useSWR(
+    [SWR_NS.agentLists, 'sidebar-preview', { limit: SIDEBAR_AGENTS_PREVIEW_FETCH_LIMIT }] as const,
+    // The section shows its own error text; a background refresh must not toast.
+    ([, , { limit }]) => AgentsApi.getAgents({ page: 1, limit }, { suppressErrorToast: true }),
+    SWR_POLICY.list60s,
+  );
+  const agents: AgentListRecord[] = data?.agents ?? [];
+  const hasMore = agents.length > MAX_VISIBLE_AGENTS_IN_SIDEBAR || Boolean(data?.pagination?.hasNext);
+  // A failed background refresh keeps the rows already shown.
+  const loadError = Boolean(error) && !data;
 
   useEffect(() => {
-    load();
-  }, [load]);
+    if (error) console.error('Failed to fetch agents:', error);
+  }, [error]);
 
   const visible = agents.slice(0, MAX_VISIBLE_AGENTS_IN_SIDEBAR);
 
@@ -139,7 +126,6 @@ export const MyAgentsSection = React.memo(function MyAgentsSection() {
                     if (isMobile) useMobileSidebarStore.getState().close();
                   }}
                   onDeleted={(deletedId) => {
-                    void load();
                     if (onChatRoute && currentAgentId === deletedId) {
                       router.replace('/chat/');
                     }

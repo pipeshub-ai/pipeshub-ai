@@ -44,6 +44,7 @@ from app.connectors.core.registry.code_indexing_flags import (
     code_indexing_flags,
 )
 from app.models.entities import CodeFileRecord, FileRecord, RecordGroupType, RecordType
+from app.modules.code_graph.synced_commit import record_synced_commit
 from app.modules.parsers.code_parser.file_role import (
     FileRole,
     classify_file_role,
@@ -155,12 +156,14 @@ class ReposSync:
         last_sha, last_path, last_branch = await self._get_code_repo_checkpoint(project_id)
         # A checkpoint from before branch selection was taken on the default branch.
         last_branch = last_branch or default_branch
-        if last_sha is not None and last_branch != branch:
+        branch_changed = last_sha is not None and last_branch != branch
+        if branch_changed:
+            # The compare is straight (from one head to the other, not from their
+            # merge base), so it is the exact delta between the two branches.
             self.logger.info(
-                "Project %s synced branch changed (%s -> %s); walking the whole tree",
+                "Project %s synced branch changed (%s -> %s); syncing the difference",
                 project_id, last_branch, branch,
             )
-            last_sha = None
         if last_sha is not None and last_path != project_path:
             # Code records are keyed by the project's path. After a rename or a transfer
             # (or a checkpoint written before the path was kept) only a walk re-keys them.
@@ -184,6 +187,11 @@ class ReposSync:
             return
 
         if last_sha == current_sha:
+            if branch_changed:
+                await self._update_code_repo_checkpoint(project_id, current_sha, project_path, branch)
+            else:
+                # A project synced before the stamp existed gets it here, without a resync.
+                await self._record_synced_commit(project_id, current_sha)
             self.logger.info(
                 "Code repo unchanged for project %s (HEAD %s); skipping",
                 project_id, current_sha[:8],
@@ -230,6 +238,11 @@ class ReposSync:
     # Checkpoints
     # ------------------------------------------------------------------
 
+    async def synced_project_path(self, project_id: int) -> str | None:
+        """The ``path_with_namespace`` this project's code-file ids were last built on (its checkpoint), or None
+        when its code was never synced -- then it has no code-file records to link to."""
+        return (await self._get_code_repo_checkpoint(project_id))[1]
+
     async def _get_code_repo_checkpoint(self, project_id: int) -> tuple[str | None, str | None, str | None]:
         """Return the last synced head commit SHA, and the project path and branch it was synced under."""
         from app.config.constants.arangodb import Connectors
@@ -260,6 +273,12 @@ class ReposSync:
         )
         await self.c.record_sync_point.update_sync_point(
             key, {GitlabLiterals.LAST_COMMIT_SHA.value: commit_sha, "project_path": project_path, "branch": branch}
+        )
+        await self._record_synced_commit(project_id, commit_sha)
+
+    async def _record_synced_commit(self, project_id: int, commit_sha: str) -> None:
+        await record_synced_commit(
+            self.c.data_entities_processor, self.c.connector_id, f"{project_id}-code-repository", commit_sha,
         )
 
     # ------------------------------------------------------------------
@@ -1229,8 +1248,12 @@ class ReposSync:
                         patches.append(patch)
                 if patches:
                     try:
-                        async with c.data_store_provider.transaction() as tx_store:
-                            await tx_store.batch_update_nodes(patches, CollectionNames.RECORDS.value)
+                        # Indexing writes these records right after the sync saved them;
+                        # execute_in_transaction runs the patch again on a write conflict.
+                        await c.data_store_provider.execute_in_transaction(
+                            lambda tx_store, patches: tx_store.batch_update_nodes(patches, CollectionNames.RECORDS.value),
+                            patches,
+                        )
                     except Exception as e:
                         self.logger.warning(
                             "Failed to patch %s timestamp(s) for project %s: %s",

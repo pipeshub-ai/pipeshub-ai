@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 import { jurisdictions } from '../../../libs/utils/juridiction.utils';
 
 import { Address } from '../../../libs/utils/address.utils';
-import { generateUniqueSlug } from '../../../libs/utils/counter';
+import { generateUniqueSlug } from '../../../libs/repositories/slug/mongo';
 import {
   applyServiceAccountRules,
   serviceAccountFields,

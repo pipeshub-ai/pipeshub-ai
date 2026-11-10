@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
+import { ServiceUnavailableError } from '../../../src/libs/errors/http.errors';
 import { configureEnvelope, deriveKey, sign } from '../../../src/libs/context/envelope';
 import { currentOrgContext, makeOrgContext, orgContextStorage, runWithOrgContext } from '../../../src/libs/context/orgContext';
 import { KafkaError } from '../../../src/libs/errors/kafka.errors';
@@ -656,6 +657,24 @@ describe('Kafka Service', () => {
         });
         await consumer.consume(handler);
         expect(mockLogger.error.calledOnce).to.be.true;
+      });
+
+      it('should rethrow a retryable store error so the offset is not committed', async () => {
+        const handler = sinon.stub().rejects(new ServiceUnavailableError('store frozen'));
+        let thrown: unknown;
+        mockCons.run.callsFake(async ({ eachMessage }: any) => {
+          try {
+            await eachMessage({
+              topic: 'test-topic',
+              partition: 0,
+              message: { key: Buffer.from('k'), value: Buffer.from(JSON.stringify('val')), headers: {} },
+            });
+          } catch (e) {
+            thrown = e;
+          }
+        });
+        await consumer.consume(handler);
+        expect(thrown).to.be.instanceOf(ServiceUnavailableError);
       });
 
       it('should log error when message value is invalid JSON', async () => {

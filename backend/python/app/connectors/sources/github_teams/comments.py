@@ -18,19 +18,25 @@ import base64
 import datetime
 import os
 import re
-import uuid
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    CollectionNames,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.data_processor.pr_links import link_changed_files
 from app.connectors.core.base.error.stream_errors import (
     not_downloadable,
     raise_for_stream_fetch,
 )
+from app.connectors.utils.record_ids import new_record_id
 from app.models.blocks import (
     Block,
     BlockComment,
@@ -41,6 +47,7 @@ from app.models.blocks import (
     ChildType,
     CommentAttachment,
     DataFormat,
+    FileChangeMetadata,
     GroupSubType,
     GroupType,
 )
@@ -56,7 +63,7 @@ from .constants import (
     PR_FILE_INLINE_CONTENT_MAX_BYTES,
     PR_FILE_INLINE_MAX_FILES,
 )
-from .models import GitHubLiterals, RecordUpdate
+from .models import GitHubLiterals, RecordUpdate, blob_external_id
 
 if TYPE_CHECKING:
     from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
@@ -82,6 +89,11 @@ _IMAGE_MAGIC: tuple[tuple[bytes, str], ...] = (
     (b"II*\x00", "tiff"),
     (b"MM\x00*", "tiff"),
 )
+
+
+def _count(value: object) -> int | None:
+    """A line count GitHub gave, else None: absent is unknown, not 0."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _image_format_from_bytes(image_bytes: bytes) -> str | None:
@@ -404,8 +416,8 @@ class CommentsHelper:
     ) -> RecordUpdate | None:
         """Build one attachment FileRecord update. No DB access.
 
-        ``existing_record`` is only consulted for ``source_created_at``: the
-        processor re-runs the same external-id lookup, overwrites ``record.id``
+        ``existing_record`` is only consulted for its id and ``source_created_at``:
+        the processor re-runs the same external-id lookup, overwrites ``record.id``
         with the stored one, and derives everything else itself — but it does
         NOT carry ``source_created_at`` forward, so without the caller's lookup
         every re-sync would reset an attachment's created time to "now".
@@ -423,12 +435,13 @@ class CommentsHelper:
             return None
         attachment_name = attach.get("filename") or os.path.basename(urlparse(attachment_url).path) or "attachment"
         attachment_type = attach.get("type") or "unknown"
+        external_record_id = attachment_key(str(attachment_url), str(record.external_record_id))
         filerecord = FileRecord(
-            id=str(uuid.uuid4()),
+            id=existing_record.id if existing_record else new_record_id(self.c.connector_id, external_record_id),
             org_id=self.c.data_entities_processor.org_id,
             record_name=attachment_name,
             record_type=RecordType.FILE.value,
-            external_record_id=attachment_key(str(attachment_url), str(record.external_record_id)),
+            external_record_id=external_record_id,
             connector_name=self.c.connector_name,
             connector_id=self.c.connector_id,
             origin=OriginTypes.CONNECTOR,
@@ -460,8 +473,7 @@ class CommentsHelper:
         return RecordUpdate(
             record=filerecord, is_new=existing_record is None, is_updated=existing_record is not None,
             is_deleted=False, metadata_changed=False, content_changed=False, permissions_changed=False,
-            old_permissions=[], new_permissions=[],
-            external_record_id=attachment_key(str(attachment_url), str(record.external_record_id)),
+            old_permissions=[], new_permissions=[], external_record_id=external_record_id,
         )
 
     async def make_file_records_from_list(
@@ -572,6 +584,7 @@ class CommentsHelper:
         processor = c.data_entities_processor
         kept: list[Record] = []
         legacy: list[Record] = []
+        untitled: list[dict[str, str]] = []
         by_external_id: dict[str, Record] = {}
         after: str | None = None
         while True:
@@ -581,12 +594,15 @@ class CommentsHelper:
             for r in page:
                 key = str(r.external_record_id or "")
                 by_external_id[key] = r
+                if self._carries_another_repos_title(r, external_group_id):
+                    untitled.append({"id": r.id, "recordName": key})
                 if r.record_type == RecordType.FILE.value and _is_github_attachment_url(key.split("#", 1)[0]):
                     (kept if "#" in key else legacy).append(r)
             if len(page) < _STORED_PAGE:
                 break
             after = page[-1].id
         processor.note_kept_records(c.connector_id, [r.id for r in kept])
+        await self._clear_foreign_titles(untitled, external_group_id)
         if not legacy:
             return
         # Their parents are streamed once more, which writes the keyed records (the ones
@@ -598,6 +614,32 @@ class CommentsHelper:
         await c.record_remover.remove_records(legacy)
         self.logger.info("Replaced %s attachment record(s) keyed by URL alone in %s; re-reading %s parent(s)",
                          len(legacy), external_group_id, len(parents))
+
+    def _carries_another_repos_title(self, record: Record, external_group_id: str) -> bool:
+        """A placeholder of this connector, in a repository's group, named for something other than its own id
+        and not an issue or pull request of that repository: a stub stored before a link to another repository
+        stopped carrying the linked title. An id that names no repository counts as another one."""
+        key = str(record.external_record_id or "")
+        return bool(
+            record.is_placeholder
+            and record.connector_id == self.c.connector_id
+            and record.record_name
+            and record.record_name != key
+            and key.split("/", 1)[0] != external_group_id.split("-", 1)[0]
+        )
+
+    async def _clear_foreign_titles(self, patches: list[dict[str, str]], external_group_id: str) -> None:
+        """Name those stubs by their ids. A partial update that names one key, so nothing else on the record
+        changes, and a second run finds nothing to do. A failed write is logged and tried again next time."""
+        if not patches:
+            return
+        try:
+            await self.c.data_entities_processor.batch_update_nodes(patches, CollectionNames.RECORDS.value)
+        except Exception as e:
+            self.logger.warning("Could not rename %s stub record(s) in %s: %s", len(patches), external_group_id, e)
+            return
+        self.logger.info("A link to an issue in another repository no longer shows that issue's title: "
+                         "renamed %s stub record(s) in %s", len(patches), external_group_id)
 
     async def remove_unlinked_attachments(self, record: Record, linked_keys: set[str]) -> None:
         """Remove the attachment records of ``record`` that nothing links any more.
@@ -984,6 +1026,13 @@ class CommentsHelper:
                 comments=list(threads.values()),
                 weburl=changes_url,
                 requires_processing=True,
+                file_change_metadata=FileChangeMetadata(
+                    path=filename,
+                    previous_path=previous if previous and status in ("renamed", "copied") else None,
+                    status=status or None,
+                    additions=_count(getattr(file, "additions", None)),
+                    deletions=_count(getattr(file, "deletions", None)),
+                ),
             )
             block_groups.append(bg)
             block_group_number += 1
@@ -994,6 +1043,10 @@ class CommentsHelper:
                 "past the %s-byte diff limit",
                 pr_number, owner, repo, omitted, len(changed_files), PR_DIFF_TEXT_MAX_BYTES,
             )
+        repo_id = (getattr(record, "external_record_group_id", None) or "").split("-", 1)[0]  # "{repo.id}-pull-requests"
+        if repo_id.isdigit():
+            await link_changed_files(c.data_entities_processor, record, block_groups,
+                                     lambda path: blob_external_id(int(repo_id), path))
         return block_groups, remaining
 
     def _inline_file_content(

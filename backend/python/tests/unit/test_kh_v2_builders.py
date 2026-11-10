@@ -376,7 +376,8 @@ def test_the_search_term_is_matched_literally(
         text = " ".join(conditions)
         assert "LIKE" not in text.upper(), f"{name}: search reintroduced LIKE"
         assert "CONTAINS" in text.upper(), f"{name}: expected a substring match"
-        assert params["kh_search"] == "50% off_a", "the term should be lowercased as-is"
+        assert params["kh_search"] == "50% off a", "the term should be lowercased, separators read as spaces"
+        assert params["kh_norm"] is True, "a spaced term compares names with separators read as spaces"
 
 
 def test_only_containers_is_applied_by_both(

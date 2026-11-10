@@ -338,7 +338,7 @@ describe('Knowledge base routes over HTTP: uploading files', () => {
       expect(failed['b.pdf']).to.include({ stage: 'index' })
       expect(failed['b.pdf']!.errors).to.deep.equal(['Server failed to create this record'])
       expect(failed['c.pdf']).to.include({ stage: 'index', reason: 'DUPLICATE_NAME' })
-      expect(failed['c.pdf']!.errors).to.deep.equal(['A file named "c" already exists in this location; it was skipped.'])
+      expect(failed['c.pdf']!.errors).to.deep.equal(['A file named "c.pdf" already exists in this location; it was skipped.'])
       expect(summary(events)).to.deep.equal({ total: 3, succeeded: 1, failed: 2 })
     })
 
@@ -441,7 +441,7 @@ describe('Knowledge base routes over HTTP: uploading files', () => {
 
       expect(r.status).to.equal(400)
       expect(errorMessage(r)).to.equal(
-        'One of the files is larger than the 1 MB limit. Remove it or make it smaller, then upload again.',
+        'This file is larger than the 1 MB limit. Make it smaller or split it, then upload it again.',
       )
       expect(h.backend.calls).to.deep.equal([])
     })

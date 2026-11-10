@@ -1,0 +1,104 @@
+- id: RULE-C01
+  title: 'Same content in two records: cite the smallest admitted record id'
+  source: rule cases R1-R13 (spec)
+  rule: vrid
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: r1, kind: record, connector: A, rule: OPEN, vrid: shared-vrid, parents: [S], inherits: [S]}
+      - {id: r2, kind: record, connector: A, rule: OPEN, vrid: shared-vrid, parents: [S], inherits: [S]}
+    grants:
+      - [u, S]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {r2: admit}
+    cite: [{viewer: u, vrid: shared-vrid, record: r1, indexed_only: false}]
+  tags: [rules, vrid]
+- id: RULE-C02
+  title: 'Same content: smallest id inaccessible, the other cited'
+  source: rule cases R1-R13 (spec)
+  rule: vrid
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: s2, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: r1, kind: record, connector: A, rule: OPEN, vrid: shared-vrid, parents: [s2], inherits: [s2]}
+      - {id: r2, kind: record, connector: A, rule: OPEN, vrid: shared-vrid, parents: [S], inherits: [S]}
+    grants:
+      - [u, S]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {r2: admit}
+    cite: [{viewer: u, vrid: shared-vrid, record: r2, indexed_only: false}]
+  tags: [rules, vrid]
+- id: RULE-C03
+  title: 'indexed_only: the only admitted copy is still QUEUED and has no indexed copy'
+  source: rule cases R1-R13 (spec)
+  rule: vrid
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: r1, kind: record, connector: A, rule: OPEN, vrid: vrid, indexing: QUEUED, parents: [S], inherits: [S]}
+    grants:
+      - [u, S]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {r1: admit}
+    cite: [{viewer: u, vrid: vrid, record: null, indexed_only: true}]
+  tags: [rules, vrid]
+- id: RULE-C04
+  title: 'indexed_only: queued but hasIndexedCopy keeps serving'
+  source: rule cases R1-R13 (spec)
+  rule: vrid
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: r1, kind: record, connector: A, rule: OPEN, vrid: vrid, indexing: QUEUED, has_indexed_copy: true, parents: [S], inherits: [S]}
+    grants:
+      - [u, S]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {r1: admit}
+    cite: [{viewer: u, vrid: vrid, record: r1, indexed_only: true}]
+  tags: [rules, vrid]
+- id: RULE-C05
+  title: 'vrid shared across two orgs: only the viewer''s org copy is cited'
+  source: rule cases R1-R13 (spec)
+  rule: org-isolation
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app}
+      - {id: S, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+      - {id: r0, kind: record, connector: A, rule: OPEN, vrid: vrid, org: other, parents: [S], inherits: [S]}
+      - {id: r1, kind: record, connector: A, rule: OPEN, vrid: vrid, parents: [S], inherits: [S]}
+    grants:
+      - [u, S]
+    gates:
+      - [u, A]
+  expect:
+    verdicts:
+      u: {r1: admit}
+    cite: [{viewer: u, vrid: vrid, record: r1, indexed_only: false}]
+  tags: [rules, org-isolation]

@@ -149,6 +149,16 @@ def connector():
         dep.upsert_permission_edge = AsyncMock()
         dep.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
         dep.get_file_record_by_id = AsyncMock(return_value=None)
+        dep.get_records_by_file_path = AsyncMock(return_value=[])
+        dep.get_records_in_record_group = AsyncMock(return_value=[])
+        dep.get_all_app_users = AsyncMock(return_value=[])
+        dep.withdraw_app_user_access = AsyncMock()
+        dep.on_external_app_users = AsyncMock()
+        dep.reap_external_app_users = AsyncMock(return_value=0)
+        dep.get_nodes_by_filters = AsyncMock(return_value=[])
+        dep.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+        dep.batch_update_nodes = AsyncMock()
+        dep.get_records_by_parent = AsyncMock(return_value=[])
 
         ds_provider = _make_mock_data_store_provider()
         config_service = AsyncMock()
@@ -353,7 +363,7 @@ class TestProcessDropboxEntry:
             entry, "user-1", "user@example.com", "rg-1",
         )
         assert result is not None
-        assert result.is_updated is False
+        assert (result.metadata_changed, result.content_changed) == (False, False)
 
     async def test_existing_record_name_changed(self, connector):
         existing = MagicMock()
@@ -377,87 +387,6 @@ class TestProcessDropboxEntry:
 # ---------------------------------------------------------------------------
 # _handle_record_updates
 # ---------------------------------------------------------------------------
-class TestHandleRecordUpdates:
-    async def test_deleted_record(self, connector):
-        from app.connectors.sources.dropbox_individual.connector import RecordUpdate
-        connector.data_entities_processor.on_record_deleted = AsyncMock()
-        update = RecordUpdate(
-            record=None, is_new=False, is_updated=False, is_deleted=True,
-            metadata_changed=False, content_changed=False, permissions_changed=False,
-            external_record_id="ext-1",
-        )
-        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
-        await connector._handle_record_updates(update)
-        connector.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(connector.connector_id, "ext-1")
-        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
-
-    @pytest.mark.asyncio
-    async def test_deleted_record_never_indexed(self, connector):
-        from app.connectors.sources.dropbox_individual.connector import RecordUpdate
-        update = RecordUpdate(
-            record=None, is_new=False, is_updated=False, is_deleted=True,
-            metadata_changed=False, content_changed=False, permissions_changed=False,
-            external_record_id="ext-404",
-        )
-        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
-        connector.data_entities_processor.on_record_deleted = AsyncMock()
-        await connector._handle_record_updates(update)
-        connector.data_entities_processor.on_record_deleted.assert_not_awaited()
-
-    async def test_new_record(self, connector):
-        from app.connectors.sources.dropbox_individual.connector import RecordUpdate
-        update = RecordUpdate(
-            record=MagicMock(record_name="new.txt"), is_new=True, is_updated=False,
-            is_deleted=False, metadata_changed=False, content_changed=False,
-            permissions_changed=False,
-        )
-        await connector._handle_record_updates(update)
-
-    async def test_metadata_changed(self, connector):
-        from app.connectors.sources.dropbox_individual.connector import RecordUpdate
-        connector.data_entities_processor.on_record_metadata_update = AsyncMock()
-        update = RecordUpdate(
-            record=MagicMock(record_name="updated.txt"),
-            is_new=False, is_updated=True, is_deleted=False,
-            metadata_changed=True, content_changed=False, permissions_changed=False,
-        )
-        await connector._handle_record_updates(update)
-        connector.data_entities_processor.on_record_metadata_update.assert_awaited_once()
-
-    async def test_permissions_changed(self, connector):
-        from app.connectors.sources.dropbox_individual.connector import RecordUpdate
-        connector.data_entities_processor.on_updated_record_permissions = AsyncMock()
-        update = RecordUpdate(
-            record=MagicMock(record_name="perms.txt"),
-            is_new=False, is_updated=True, is_deleted=False,
-            metadata_changed=False, content_changed=False, permissions_changed=True,
-            new_permissions=[MagicMock()],
-        )
-        await connector._handle_record_updates(update)
-        connector.data_entities_processor.on_updated_record_permissions.assert_awaited_once()
-
-    async def test_content_changed(self, connector):
-        from app.connectors.sources.dropbox_individual.connector import RecordUpdate
-        connector.data_entities_processor.on_record_content_update = AsyncMock()
-        update = RecordUpdate(
-            record=MagicMock(record_name="content.txt"),
-            is_new=False, is_updated=True, is_deleted=False,
-            metadata_changed=False, content_changed=True, permissions_changed=False,
-        )
-        await connector._handle_record_updates(update)
-        connector.data_entities_processor.on_record_content_update.assert_awaited_once()
-
-    async def test_exception_swallowed(self, connector):
-        from app.connectors.sources.dropbox_individual.connector import RecordUpdate
-        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
-        connector.data_entities_processor.on_record_deleted = AsyncMock(side_effect=Exception("err"))
-        update = RecordUpdate(
-            record=None, is_new=False, is_updated=False, is_deleted=True,
-            metadata_changed=False, content_changed=False, permissions_changed=False,
-            external_record_id="ext-1",
-        )
-        await connector._handle_record_updates(update)
-        connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
 
 # ---------------------------------------------------------------------------
@@ -503,13 +432,12 @@ class TestCreatePersonalRecordGroup:
 # ---------------------------------------------------------------------------
 class TestRunIncrementalSync:
     async def test_incremental_sync(self, connector):
-        connector._get_current_user_info = AsyncMock(return_value=("uid-1", "u@test.com"))
-        connector._run_sync_with_cursor = AsyncMock()
+        connector.run_sync = AsyncMock()
         await connector.run_incremental_sync()
-        connector._run_sync_with_cursor.assert_awaited_once()
+        connector.run_sync.assert_awaited_once()
 
     async def test_incremental_sync_error(self, connector):
-        connector._get_current_user_info = AsyncMock(side_effect=Exception("err"))
+        connector.run_sync = AsyncMock(side_effect=Exception("err"))
         with pytest.raises(Exception, match="err"):
             await connector.run_incremental_sync()
 

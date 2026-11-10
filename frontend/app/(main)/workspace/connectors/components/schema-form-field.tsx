@@ -737,6 +737,8 @@ function TextareaInput({
   hasError?: boolean;
 }) {
   const [isFocused, setIsFocused] = useState(false);
+  // A secret (a private key) is masked except while it is being edited.
+  const isSecret = 'isSecret' in field && Boolean(field.isSecret);
   const control = useFormFieldControl();
 
   return (
@@ -744,6 +746,8 @@ function TextareaInput({
       <textarea
         {...control}
         value={String(value ?? '')}
+        spellCheck={isSecret ? false : undefined}
+        autoComplete={isSecret ? 'off' : undefined}
         placeholder={'placeholder' in field ? (field.placeholder ?? '') : ''}
         disabled={disabled}
         onChange={(e) => onChange(field.name, e.target.value)}
@@ -759,6 +763,7 @@ function TextareaInput({
                 : { ...focusStyle })
             : {}),
           opacity: disabled ? 0.6 : 1,
+          ...(isSecret && !isFocused ? ({ WebkitTextSecurity: 'disc' } as React.CSSProperties) : {}),
         }}
       />
     </>

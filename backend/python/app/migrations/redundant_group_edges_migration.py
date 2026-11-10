@@ -2,6 +2,7 @@ from typing import Any
 
 from app.config.configuration_service import ConfigurationService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.permissions.structure_generation import note_org_structure_change
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -42,6 +43,9 @@ class RedundantGroupEdgesMigrationService:
             return {"success": False, "removed": 0, "error": str(e)}
 
         removed = (result or {}).get("removed", 0)
+        if not await note_org_structure_change(self.graph_provider, None, self.logger):  # group edges removed outside the transaction store
+            self.logger.error("structure change not recorded for every connector; the migration stays pending and runs again at the next start")
+            return {"success": False, "removed": removed, "error": "structure change not recorded"}
         try:
             await self.config_service.set_config(
                 self.MIGRATION_FLAG_KEY,

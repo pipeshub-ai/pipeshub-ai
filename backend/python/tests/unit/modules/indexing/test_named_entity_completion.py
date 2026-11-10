@@ -166,8 +166,17 @@ async def test_a_completion_that_is_not_kept_is_not_queued_again(keep: AsyncMock
     graph.schedule_named_entity_reextract.assert_not_called()
 
 
-async def test_a_failed_extraction_writes_nothing() -> None:
-    sink = _sink(_BLOB, NamedEntityExtraction(status="FAILED", termination_reason="llm_error", strategy="deterministic"))
+@pytest.mark.parametrize("extraction", [
+    NamedEntityExtraction(status="FAILED", termination_reason="llm_error", strategy="deterministic"),
+    # The model failed but the recognizers found values: still a failed completion, not a lesser write.
+    NamedEntityExtraction(status="PARTIAL", termination_reason="llm_error", strategy="deterministic"),
+    NamedEntityExtraction(
+        status="PARTIAL", termination_reason="single_call", strategy="single_call",
+        stats=ExtractionStats(windows_total=4, windows_run=4, windows_failed=1),
+    ),
+])
+async def test_a_failed_extraction_writes_nothing(extraction: NamedEntityExtraction) -> None:
+    sink = _sink(_BLOB, extraction)
     with patch("app.events.processor.convert_record_dict_to_record", return_value=SimpleNamespace(id="r1")), \
             patch("app.modules.transformers.transformer.TransformContext", _context):
         assert await completion._complete_one(_graph([], _RECORD), sink, None, "r1", "o1", 100, 0) == "extract_failed"

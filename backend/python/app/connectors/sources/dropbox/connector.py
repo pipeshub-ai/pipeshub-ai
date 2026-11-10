@@ -1,7 +1,6 @@
 import asyncio
 import mimetypes
 import re
-import urllib.parse
 import uuid
 
 # from datetime import datetime
@@ -17,9 +16,7 @@ from dropbox.files import (
     DeletedMetadata,
     FileMetadata,
     FolderMetadata,
-    ListFolderResult,
 )
-from dropbox.sharing import AccessLevel, LinkAudience, SharedLinkSettings
 from dropbox.team_log import EventCategory, TeamEvent
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -73,9 +70,26 @@ from app.connectors.core.constants import (
     IconPaths,
 )
 # App-specific Dropbox client imports
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.dropbox.access import DropboxGrants, member_is_direct
 from app.connectors.sources.dropbox.common.apps import DropboxApp
-from app.connectors.sources.dropbox.deletes import apply_deleted_entry, item_still_exists
+from app.connectors.sources.dropbox.deletes import (
+    DeleteOutcome,
+    apply_deleted_entry,
+    apply_out_of_scope_entry,
+    apply_replaced_entry,
+    item_still_exists,
+    recheck_owed_deletes,
+)
+from app.connectors.sources.dropbox.errors import is_auth_error, is_cursor_reset, missing_scope
+from app.connectors.sources.dropbox.owed import OwedDeletes
+from app.connectors.sources.dropbox.parents import ParentResolver
+from app.connectors.sources.dropbox.paths import repath_descendants
+from app.connectors.sources.dropbox.reconcile import remove_unlisted
+from app.connectors.sources.dropbox.sync_health import SyncHealth
+from app.connectors.sources.dropbox.sync_notices import SyncNotices
+from app.connectors.sources.dropbox.team_directory import read_team_members, withdrawn
+from app.connectors.sources.dropbox.weblinks import WebLinks
 from app.connectors.sources.dropbox.shared_folders import (
     SharedFolder,
     folder_grants,
@@ -102,6 +116,7 @@ from app.sources.client.dropbox.dropbox_ import (
     DropboxResponse,
     DropboxTokenConfig,
 )
+from app.sources.client.dropbox.endpoint import dropbox_api_base_url
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
@@ -121,6 +136,8 @@ from app.utils.streaming import create_stream_record_response, stream_content
 _MAX_MEMBERS_TO_ASK = 5
 # Members tried in turn for a stream; each costs one temporary-link call on a user-facing request.
 _MAX_STREAM_CANDIDATES = 25
+# Sync point holding the nested shared folders the last complete run planned.
+_NESTED_FOLDERS_KEY = generate_record_sync_point_key(RecordType.DRIVE.value, "nested_shared_folders", "team")
 
 # Team-log sharing events after which an item's members are read again.
 SHARING_CHANGE_EVENTS = frozenset({
@@ -218,6 +235,15 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
 #     old_permissions: Optional[List[Permission]] = None
 #     new_permissions: Optional[List[Permission]] = None
 #     external_record_id: Optional[str] = None
+
+def _reset_time(error: object) -> datetime | None:
+    """The timestamp of a GetTeamEventsContinueError.reset, as the SDK prints it, or None."""
+    match = re.search(r"'reset', datetime\.datetime\(([\d, ]+)\)", str(error or ""))
+    if not match:
+        return None
+    parts = [int(p) for p in match.group(1).split(",")]
+    return datetime(*parts, tzinfo=timezone.utc)
+
 
 def _next_cursor(page: object) -> str | None:
     """The cursor of a sharing list page; Dropbox leaves it unset on the last page."""
@@ -353,6 +379,16 @@ class DropboxConnector(BaseConnector):
         self.indexing_filters: FilterCollection = FilterCollection()
         # This run's shared folders, so a sharing event is re-read as the folder's syncer.
         self._shared_folder_plan: dict[str, SharedFolder] = {}
+        self._health = SyncHealth()
+        self._owed = OwedDeletes(self.dropbox_cursor_sync_point)
+        self._web_links: WebLinks | None = None
+        # Emails of the team's members, and of the people outside the team that this run granted something to.
+        self._team_emails: set[str] = set()
+        self._external_emails: set[str] = set()
+        # Folders whose stored path changed in the page being written: (external id, old path, new path).
+        self._moved_folders: list[tuple[str, str, str]] = []
+        # Shared and team folders with no live record stored: listed from the start, not from a cursor.
+        self._fresh_folders: set[str] = set()
 
     async def init(self) -> bool:
         """Initializes the Dropbox client using credentials from the config service."""
@@ -403,6 +439,11 @@ class DropboxConnector(BaseConnector):
             )
             client = await DropboxClient.build_with_config(config, is_team=is_team)
             self.data_source = DropboxDataSource(client)
+            if dropbox_api_base_url():
+                self.logger.warning(
+                    "Dropbox calls for this connector go to %s (DROPBOX_API_BASE_URL), not to Dropbox: "
+                    "only a test deployment should set it.", dropbox_api_base_url()
+                )
             self.logger.info("Dropbox client initialized successfully.")
             return True
         except Exception as e:
@@ -417,189 +458,90 @@ class DropboxConnector(BaseConnector):
           modified_after: Optional[datetime] = None,
           modified_before: Optional[datetime] = None,
           created_after: Optional[datetime] = None,
-          created_before: Optional[datetime] = None
+          created_before: datetime | None = None,
+          *,
+          parents: ParentResolver | None = None,
+          force_members: bool = False,
     ) -> Optional[RecordUpdate]:
         """
-        Process a single Dropbox entry and detect changes.
+        Turn one listed entry into the record to write, and say what changed.
 
-        Returns:
-            RecordUpdate object containing the record and change information.
+        ``new_permissions`` is the file's own members as read from Dropbox, ``[]`` when Dropbox says the file has
+        no explicit members, or None when they could not be read (the stored ones are then kept). A delete is
+        applied here and gives None.
         """
+        team_folder_id = record_group_id if not is_person_folder else None
         try:
             # A delete has no id, dates or extension to filter on.
             if isinstance(entry, DeletedMetadata):
-                await apply_deleted_entry(
-                    self.data_entities_processor, self.connector_id, entry.path_lower,
-                    lambda record: self._team_item_still_exists(record, user_id), self.logger,
-                )
+                await self._apply_delete(entry.path_lower, user_id, record_group_id)
+                if parents is not None:
+                    parents.note_gone(entry.path_lower)
                 return None
 
-            # 0. Apply date filters if provided
-            if not self._pass_date_filters(entry, modified_after, modified_before, created_after, created_before):
+            if not (self._pass_date_filters(entry, modified_after, modified_before, created_after, created_before)
+                    and self._pass_extension_filter(entry)):
+                self.logger.debug(f"Skipping item {entry.name} (ID: {entry.id}): outside the sync filters.")
+                self._note_delete_outcome(await apply_out_of_scope_entry(
+                    self.data_entities_processor, self.connector_id, entry.id, self.logger,
+                ))
                 return None
 
-            if not self._pass_extension_filter(entry):
-                self.logger.debug(f"Skipping item {entry.name} (ID: {entry.id}) due to extention filters.")
-                return
-
-            # 2. Get existing record from the database
             existing_record = await self.data_entities_processor.get_record_by_external_id(
                 self.connector_id, entry.id
             )
-
-            # 3. Detect changes
-            is_new = existing_record is None
-            is_updated = False
-            metadata_changed = False
-            content_changed = False
-            permissions_changed = False
             is_file = isinstance(entry, FileMetadata)
+            if existing_record is None:
+                # Another item stored at this path was replaced (deleted, and this one made in its place).
+                outcome = await apply_replaced_entry(
+                    self.data_entities_processor, self.connector_id, entry.path_lower, entry.id, record_group_id,
+                    lambda record: self._team_item_still_exists(record, user_id), self.logger,
+                )
+                self._note_delete_outcome(outcome)
 
-            if existing_record:
-                if existing_record.record_name != entry.name:
-                    metadata_changed = True
-                    is_updated = True
-                if is_file and existing_record.external_revision_id != entry.rev:
+            if parents is not None:
+                parent_external_record_id = await parents.parent_id(entry.path_lower)
+            else:
+                parent_external_record_id = await self._ask_parent_id(
+                    get_parent_path_from_path(entry.path_lower), user_id, team_folder_id
+                )
 
-                    content_changed = True
-                    is_updated = True
-
-            # 4. Create or Update the FileRecord object
-            record_type = RecordType.FILE
-
-
-            # Conditionally get timestamp: files have it, folders do not.
             if is_file:
                 timestamp_ms = int(entry.server_modified.timestamp() * 1000)
+                created_ms = int((getattr(entry, "client_modified", None) or entry.server_modified).timestamp() * 1000)
+            elif existing_record is not None:
+                # Folders carry no dates; keep the stored ones instead of moving them on every sync.
+                timestamp_ms = existing_record.source_updated_at or existing_record.updated_at
+                created_ms = existing_record.source_created_at or existing_record.created_at
             else:
-                # Use current time for folders as a fallback.
-                timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+                timestamp_ms = created_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
-            # 5. Get signed URL for files
-            signed_url = None
-            if is_file:
-                temp_link_result = await self.data_source.files_get_temporary_link(
-                    entry.path_lower,
-                    team_member_id=user_id,
-                    team_folder_id=record_group_id if not is_person_folder else None
-                )
-                if temp_link_result.success:
-                    signed_url = temp_link_result.data.link
-
-            #5.5 Get preview URL
-            self.logger.debug("Processing weburl for path: %s", entry.path_lower)
-
-            preview_url = None
-            link_settings = SharedLinkSettings(
-                audience=LinkAudience('no_one'),
-                allow_download=True
+            weburl = await self._links().link_for(
+                entry, stored=existing_record.weburl if existing_record else None,
+                team_member_id=user_id, team_folder_id=team_folder_id,
             )
-
-            # First call - try to create link with settings
-            shared_link_result = await self.data_source.sharing_create_shared_link_with_settings(
-                path=entry.path_lower,
-                team_member_id=user_id,
-                team_folder_id=record_group_id if not is_person_folder else None,
-                settings=link_settings
-            )
-
-            self.logger.debug("Result 1: %s", shared_link_result)
-
-            if shared_link_result.success:
-                # Successfully created new link
-                preview_url = shared_link_result.data.url
-                self.logger.debug("Successfully created new link: %s", preview_url)
-            else:
-                # First call failed - check if link already exists
-                error_str = str(shared_link_result.error)
-                self.logger.debug("First call failed with error type: %s", error_str)
-
-                if 'shared_link_already_exists' in error_str:
-                    self.logger.debug("Link already exists, making second call to retrieve it")
-
-                    # Make second call with settings=None to get the existing link
-                    second_result = await self.data_source.sharing_create_shared_link_with_settings(
-                        path=entry.path_lower,
-                        team_member_id=user_id,
-                        team_folder_id=record_group_id if not is_person_folder else None,
-                        settings=None
-                    )
-
-                    self.logger.debug("Result 2 received")
-
-                    if second_result.success:
-                        # Unexpectedly succeeded
-                        preview_url = second_result.data.url
-                        self.logger.debug("Second call succeeded: %s", preview_url)
-                    else:
-                        # Expected to fail - extract URL from error string
-                        second_error_str = str(second_result.error)
-
-                        if 'shared_link_already_exists' in second_error_str:
-                            # Extract URL using regex
-
-                            # Pattern to match url='...' in the error string
-                            url_pattern = r"url='(https://[^']+)'"
-                            url_match = re.search(url_pattern, second_error_str)
-
-                            if url_match:
-                                preview_url = url_match.group(1)
-                                self.logger.debug("Successfully extracted URL from error: %s", preview_url)
-                            else:
-                                self.logger.error("Could not extract URL from second error string")
-                                self.logger.debug("Error string: %s", second_error_str[:500])  # Log first 500 chars
-                        else:
-                            self.logger.error("Unexpected error on second call (not shared_link_already_exists)")
-                else:
-                    self.logger.error("Unexpected error type on first call (not shared_link_already_exists): %s", error_str)
-
-            # Final check - fall back to a direct Dropbox web link if we couldn't
-            # create/retrieve a shared link (e.g. access_denied on nested shared
-            # folders with a restrictive shared_link_policy, or path/not_found
-            # for content whose path doesn't resolve in this namespace context).
-            if preview_url is None:
-                encoded_path = urllib.parse.quote(entry.path_display, safe="/")
-                preview_url = f"https://www.dropbox.com/home{encoded_path}"
-                self.logger.warning(
-                    "Falling back to home URL for %s: %s", entry.path_lower, preview_url
-                )
-            else:
-                self.logger.debug("Final preview_url: %s", preview_url)
-
-            # 6. Get parent record ID
-            parent_path = None
-            parent_external_record_id = None
-            if entry.path_display != '/':
-                parent_path = get_parent_path_from_path(entry.path_lower)
-            parent_metadata = None
-            if parent_path:
-                parent_metadata = await self.data_source.files_get_metadata(
-                    parent_path,
-                    team_member_id=user_id,
-                    team_folder_id=record_group_id if not is_person_folder else None,
-                )
-                if parent_metadata.success:
-                    parent_external_record_id = parent_metadata.data.id
 
             file_record = FileRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
                 record_name=entry.name,
-                record_type=record_type,
+                record_type=RecordType.FILE,
                 record_group_type=RecordGroupType.DRIVE.value,
-                external_record_group_id=record_group_id, # Use the passed-in folder_id or user_id
+                external_record_group_id=record_group_id,
                 external_record_id=entry.id,
                 external_revision_id=entry.rev if is_file else None,
-                version=0 if is_new else existing_record.version + 1,
+                # The processor sets the version: it moves on a content change only.
+                version=0,
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
-                created_at=timestamp_ms,
+                created_at=created_ms,
                 updated_at=timestamp_ms,
-                source_created_at=timestamp_ms,
+                source_created_at=created_ms,
                 source_updated_at=timestamp_ms,
-                weburl=preview_url,
-                signed_url=signed_url,
+                weburl=weburl,
                 parent_external_record_id=parent_external_record_id,
+                # Lets the processor stand in a placeholder for a parent listed after its child.
+                parent_record_type=RecordType.FILE if parent_external_record_id else None,
                 size_in_bytes=entry.size if is_file else 0,
                 is_file=is_file,
                 extension=get_file_extension(entry.name) if is_file else None,
@@ -608,66 +550,111 @@ class DropboxConnector(BaseConnector):
                 sha256_hash=entry.content_hash if is_file and hasattr(entry, 'content_hash') else None,
             )
 
-            # async with self.data_store_provider.transaction() as tx_store:
-            #     user = await tx_store.get_user_by_id(user_id=user_id)
-
-            # 5. Handle Permissions
             # A file keeps only the members invited on it; everything else is inherited
             # from its folder, its shared folder's record group, or the member's personal
             # group. Folders inside a namespace have no members of their own, and a
             # shared folder is a record group, not a record.
-            new_permissions: list[Permission] = []
-            permissions_read = True
+            new_permissions: list[Permission] | None = []
             if is_file:
-                try:
-                    grants = await self._convert_dropbox_permissions_to_permissions(
-                        file_or_folder_id=entry.id, is_file=True, team_member_id=user_id,
-                    )
-                except Exception as perm_ex:
-                    self.logger.warning(f"Could not fetch permissions for {entry.name}: {perm_ex}")
-                    grants = None
-                # Unread is not "no members": the stored grants stay until a read succeeds.
-                permissions_read = grants is not None
-                new_permissions = list(grants or [])
+                explicit = getattr(entry, "has_explicit_shared_members", None)
+                if explicit is False and not force_members:
+                    # Dropbox says the file has no members of its own: nothing to read.
+                    new_permissions = DropboxGrants([], covered_emails=set())
+                else:
+                    try:
+                        new_permissions = await self._convert_dropbox_permissions_to_permissions(
+                            file_or_folder_id=entry.id, is_file=True, team_member_id=user_id,
+                        )
+                    except Exception as perm_ex:
+                        self.logger.warning(f"Could not fetch permissions for {entry.name}: {perm_ex}")
+                        new_permissions = None
+                    if new_permissions is None:
+                        self._health.skipped(f"members of {entry.path_lower}", "could not be read; stored access kept")
+                if new_permissions:
+                    self._note_grant_emails(new_permissions)
             file_record.is_shared = bool(getattr(entry, "sharing_info", None)) or bool(new_permissions)
             file_record.inherit_permissions = True
+            file_record.rewrite_permissions = new_permissions is not None
 
-            # Compare permissions if record exists
-            old_permissions = []
-            if existing_record:
-                # Since you mentioned we can't get old_permissions from existing_record yet,
-                # we'll leave this empty. When you implement it, you can fetch them here:
-                # old_permissions = await tx_store.get_permissions_for_record(existing_record.id) or []
+            if existing_record is not None and not is_file:
+                stored_file = await self.data_entities_processor.get_file_record_by_id(existing_record.id)
+                old_path = getattr(stored_file, "path", None)
+                if old_path and old_path != entry.path_lower:
+                    self._moved_folders.append((entry.id, old_path, entry.path_lower))
 
-                # An empty direct list is a real ACL. Leaving permissions_changed
-                # false would keep members the file no longer names.
-                if permissions_read:
-                    file_record.rewrite_permissions = True
-                    permissions_changed = True
-                    is_updated = True
-                # The update path keeps the stored group edge, so a record written under a
-                # member's home before its shared folder became a group would stay there.
-                # Left un-updated, it goes through on_new_records, which moves it.
-                if existing_record.external_record_group_id != record_group_id:
-                    is_updated = False
+            metadata_changed = content_changed = False
+            if existing_record is not None:
+                metadata_changed = (
+                    existing_record.record_name != entry.name
+                    or existing_record.external_record_group_id != record_group_id
+                    or existing_record.parent_external_record_id != parent_external_record_id
+                    or getattr(existing_record, "path", entry.path_lower) != entry.path_lower
+                )
+                content_changed = is_file and existing_record.external_revision_id != entry.rev
 
             return RecordUpdate(
                 record=file_record,
-                is_new=is_new,
-                is_updated=is_updated,
+                is_new=existing_record is None,
+                is_updated=existing_record is not None,
                 is_deleted=False,
                 metadata_changed=metadata_changed,
                 content_changed=content_changed,
-                permissions_changed=permissions_changed,
-                old_permissions=old_permissions,
+                permissions_changed=new_permissions is not None,
+                old_permissions=[],
                 new_permissions=new_permissions,
                 external_record_id=entry.id
             )
         except Exception as ex:
             self.logger.error(f"Error processing Dropbox entry {getattr(entry, 'id', entry.path_lower)}: {ex}", exc_info=True)
+            self._health.skipped(f"entry {getattr(entry, 'path_lower', '?')}", ex)
             return None
 
-    async def _team_item_still_exists(self, record: Record, member_id: str) -> bool | None:
+    async def _apply_delete(self, path_lower: str, member_id: str | None, record_group_id: str | None) -> None:
+        outcome = await apply_deleted_entry(
+            self.data_entities_processor, self.connector_id, path_lower,
+            lambda record: self._team_item_still_exists(record, member_id), self.logger,
+            record_group_id=record_group_id,
+        )
+        self._note_delete_outcome(outcome)
+
+    def _note_delete_outcome(self, outcome: DeleteOutcome) -> None:
+        """A delete Dropbox could not confirm is owed: the cursor moves on, and Dropbox lists the change only once."""
+        if outcome.unsure_external_ids:
+            self._owed.add(outcome.unsure_external_ids)
+        if outcome.failed:
+            self._health.skipped("a delete", "could not be written; it is tried again on the next run")
+
+    def _note_grant_emails(self, permissions: list[Permission]) -> None:
+        for permission in permissions:
+            email = (permission.email or "").lower()
+            if permission.entity_type == EntityType.USER and email and email not in self._team_emails:
+                self._external_emails.add(email)
+
+    def _links(self) -> WebLinks:
+        if self._web_links is None or self._web_links.data_source is not self.data_source:
+            self._web_links = WebLinks(self.data_source, self.logger)
+        return self._web_links
+
+    async def _stored_id_at(self, path_lower: str, record_group_id: str) -> str | None:
+        for record in await self.data_entities_processor.get_records_by_file_path(self.connector_id, path_lower):
+            if record.external_record_group_id == record_group_id:
+                return record.external_record_id
+        return None
+
+    async def _ask_parent_id(self, parent_path: str | None, member_id: str | None,
+                             team_folder_id: str | None) -> str | None:
+        if not parent_path or parent_path == "/":
+            return None
+        metadata = await self.data_source.files_get_metadata(
+            parent_path, team_member_id=member_id, team_folder_id=team_folder_id,
+        )
+        found = item_still_exists(metadata)
+        if found is None:
+            # Unknown is not "no parent": the entry would be written at the root and Dropbox lists it once.
+            raise RuntimeError(f"could not read the parent folder {parent_path}: {metadata.error}")
+        return metadata.data.id if found else None
+
+    async def _team_item_still_exists(self, record: Record, member_id: str | None) -> bool | None:
         """Whether a deleted path's record still resolves by id for anyone who can open it.
 
         A member who leaves a shared folder sees a delete there while the owner
@@ -675,19 +662,27 @@ class DropboxConnector(BaseConnector):
         each member the graph says can open the record or a folder above it, and
         the member whose sync wrote the record. Stops at the first that resolves.
         """
+        members = await self._members_to_ask(record, member_id)
+        if not members:
+            # Nobody to ask is no answer: a delete is applied only on Dropbox's word.
+            return None
         unknown = False
-        for member in await self._members_to_ask(record, member_id):
+        # An id outside the member's home resolves only under its namespace's root: on the team member root
+        # layout a team folder item asked from the member's default root is not_found even for its owner.
+        group = record.external_record_group_id
+        namespace = group if group and not group.startswith("dbmid:") else None
+        for member in members:
             answer = item_still_exists(await self.data_source.files_get_metadata(
-                path=record.external_record_id, team_member_id=member,
+                path=record.external_record_id, team_member_id=member, team_folder_id=namespace,
             ))
             if answer:
                 return True
             unknown = unknown or answer is None
         return None if unknown else False
 
-    async def _members_to_ask(self, record: Record, member_id: str) -> list[str]:
+    async def _members_to_ask(self, record: Record, member_id: str | None) -> list[str]:
         """The reporting member, the members who can open the record, and the member whose sync wrote it."""
-        members = [member_id]
+        members = [member_id] if member_id else []
         for member in await self._members_with_access(record, _MAX_MEMBERS_TO_ASK):
             if member not in members:
                 members.append(member)
@@ -739,6 +734,7 @@ class DropboxConnector(BaseConnector):
         created_before: datetime | None = None,
         *,
         shared_folder_ids: frozenset[str] = frozenset(),
+        parents: ParentResolver | None = None,
     ) -> AsyncGenerator[Tuple[Optional[FileRecord], List[Permission], RecordUpdate], None]:
         """
         Process Dropbox entries and yield records with their permissions.
@@ -748,17 +744,23 @@ class DropboxConnector(BaseConnector):
         folder is a record group and its namespace is listed on its own.
         """
         namespace_id = None if is_person_folder else record_group_id
+        if parents is not None:
+            # A page may list a child before its folder.
+            for entry in entries:
+                if isinstance(entry, FolderMetadata) and not outside_namespace(entry, namespace_id, shared_folder_ids):
+                    parents.note_folder(entry.path_lower, entry.id)
         for entry in entries:
             try:
                 if outside_namespace(entry, namespace_id, shared_folder_ids):
-                    await self._drop_mount_record(entry)
+                    await self._drop_mount_record(entry, record_group_id)
                     continue
                 record_update = await self._process_dropbox_entry(
                     entry, user_id, user_email, record_group_id, is_person_folder,
                     modified_after=modified_after,
                     modified_before=modified_before,
                     created_after=created_after,
-                    created_before=created_before
+                    created_before=created_before,
+                    parents=parents,
                 )
                 if record_update and record_update.record:
                     files_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
@@ -770,6 +772,7 @@ class DropboxConnector(BaseConnector):
                 await asyncio.sleep(0)
             except Exception as e:
                 self.logger.error(f"Error processing item in generator: {e}", exc_info=True)
+                self._health.skipped(f"entry {getattr(entry, 'path_lower', '?')}", e)
                 continue
 
     def _pass_date_filters(
@@ -983,6 +986,20 @@ class DropboxConnector(BaseConnector):
             if not members_result.success:
                 self.logger.warning(f"Could not fetch permissions for {file_or_folder_id}: {members_result.error}")
                 return None
+            if is_file:
+                # sharing/list_file_members returns at most 100 members a page (sharing.stone); the rest follow.
+                cursor = _next_cursor(members_result.data)
+                while cursor:
+                    page = await self.data_source.sharing_list_file_members_continue(
+                        cursor=cursor, team_member_id=team_member_id,
+                    )
+                    if not page.success:
+                        self.logger.warning(f"Could not read every member of {file_or_folder_id}: {page.error}")
+                        return None
+                    members_result.data.users.extend(page.data.users)
+                    members_result.data.groups.extend(page.data.groups)
+                    members_result.data.invitees.extend(page.data.invitees)
+                    cursor = _next_cursor(page.data)
 
             # Map Dropbox AccessLevel to PermissionType
             access_level_map = {
@@ -1078,125 +1095,6 @@ class DropboxConnector(BaseConnector):
         return old_set == new_set
 
 
-    #unused function due for cleanup
-    async def _process_entry(
-        self, entry: Union[FileMetadata, FolderMetadata, DeletedMetadata]
-    ) -> Optional[Tuple[FileRecord, List[Permission]]]:
-        """Processes a single entry from Dropbox and converts it to internal models."""
-        if isinstance(entry, DeletedMetadata):
-            # Dropbox API for deleted items doesn't provide an ID, only path.
-            # A robust implementation would need to look up the record by its path.
-            self.logger.info(f"Item '{entry.name}' at path '{entry.path_lower}' was deleted. Deletion requires path-based lookup.")
-            # Example: await self.data_entities_processor.on_record_deleted(record_path=entry.path_lower)
-            return None
-
-        is_file = isinstance(entry, FileMetadata)
-        mime_type, _ = mimetypes.guess_type(entry.name) if is_file else (None, None)
-
-        file_record = FileRecord(
-            id=str(uuid.uuid4()),
-            record_name=entry.name,
-            record_type=RecordType.FILE,
-            record_group_type=RecordGroupType.DRIVE.value,
-            external_record_id=entry.id,
-            external_revision_id=entry.rev if is_file else None,
-            origin=OriginTypes.CONNECTOR.value,
-            connector_name=self.connector_name,
-            connector_id=self.connector_id,
-            updated_at=int(entry.server_modified.timestamp() * 1000) if is_file else None,
-            source_updated_at=int(entry.server_modified.timestamp() * 1000) if is_file else None,
-            web_url=f"https://www.dropbox.com/home{entry.path_display}",
-            parent_external_record_id=get_parent_path_from_path(entry.path_lower),
-            size_in_bytes=entry.size if is_file else 0,
-            is_file=is_file,
-            extension=get_file_extension(entry.name) if is_file else None,
-            path=entry.path_lower,
-            mime_type=mime_type,
-            sha256_hash=entry.content_hash if is_file and hasattr(entry, 'content_hash') else None,
-        )
-
-        permissions = await self._get_permissions(entry)
-        return file_record, permissions
-
-    async def _get_permissions(
-        self, entry: Union[FileMetadata, FolderMetadata]
-    ) -> List[Permission]:
-        """Fetches and converts permissions for a Dropbox entry."""
-        if not self.data_source:
-            return []
-
-        permissions = []
-        try:
-            members_result = None
-            if isinstance(entry, FileMetadata):
-                members_result = await self.data_source.sharing_list_file_members(file=entry.id)
-            elif hasattr(entry, 'shared_folder_id') and entry.shared_folder_id:
-                members_result = await self.data_source.sharing_list_folder_members(shared_folder_id=entry.shared_folder_id)
-
-            if not members_result:
-                return []
-
-            all_members = members_result.data.users + members_result.data.groups
-
-            for member in all_members:
-                # Map Dropbox AccessLevel to our internal PermissionType
-                access_type = getattr(member, 'access_type', None)
-                perm_type = PermissionType.WRITE if access_type in (AccessLevel.owner, AccessLevel.editor) else PermissionType.READ
-
-                member_info = getattr(member, 'user', getattr(member, 'group', None))
-                if not member_info:
-                    continue
-
-                entity_type = EntityType.USER if hasattr(member_info, 'account_id') else EntityType.GROUP
-                external_id = member_info.account_id if entity_type == EntityType.USER else member_info.group_id
-                email = getattr(member_info, 'email', None)
-
-                permissions.append(
-                    Permission(external_id=external_id, email=email, type=perm_type, entity_type=entity_type)
-                )
-        except Exception as e:
-            # Not all items are shared, so API calls can fail. This is expected.
-            self.logger.debug(f"Could not fetch permissions for '{entry.name}': {e}")
-        return permissions
-
-    async def _sync_from_source(self, path: str = "", cursor: Optional[str] = None) -> None:
-        """Helper to sync a folder, handling pagination and cursor management."""
-        if not self.data_source:
-            raise ConnectionError("Dropbox connector is not initialized.")
-
-        has_more = True
-        batch_records = []
-        sync_point_key = generate_record_sync_point_key(RecordType.DRIVE.value, "root", "")
-
-        while has_more:
-            try:
-                if cursor:
-                    response = await self.data_source.files_list_folder_continue(cursor=cursor)
-                else:
-                    response = await self.data_source.files_list_folder(path=path, recursive=True, include_deleted=True)
-
-                result: ListFolderResult = response.data
-
-                for entry in result.entries:
-                    processed_data = await self._process_entry(entry)
-                    if processed_data:
-                        batch_records.append(processed_data)
-
-                    if len(batch_records) >= self.batch_size:
-                        await self.data_entities_processor.on_new_records(batch_records)
-                        batch_records = []
-
-                cursor = result.data.cursor
-                has_more = result.data.has_more
-                await self.record_sync_point.update_sync_point(sync_point_key, {'cursor': cursor})
-
-            except Exception as e:
-                self.logger.error(f"Error during Dropbox folder sync: {e}", exc_info=True)
-                has_more = False
-
-        if batch_records:
-            await self.data_entities_processor.on_new_records(batch_records)
-
     async def _process_users_in_batches(self, users: List[User]) -> None:
         """
         Process users in concurrent batches for improved performance.
@@ -1210,10 +1108,11 @@ class DropboxConnector(BaseConnector):
             active_user_emails = {active_user.email.lower() for active_user in all_active_users}
 
 
-            # Filter users to sync
+            # Only an active member can open anything; a suspended member's calls are refused.
             users_to_sync = [
                 user for user in users
                 if user.email and user.email.lower() in active_user_emails
+                and getattr(user, "is_active", True) is not False
             ]
 
             self.logger.info(f"Processing {len(users_to_sync)} active users out of {len(users)} total users")
@@ -1221,6 +1120,7 @@ class DropboxConnector(BaseConnector):
             plan = await self._plan_shared_folders(users_to_sync)
             self._shared_folder_plan = plan
             await self._sync_shared_folder_groups(plan)
+            nested = await self._relist_parents_of_new_nested_folders(plan)
             assigned: dict[str, list[str]] = {}
             for folder in plan.values():
                 assigned.setdefault(folder.syncer, []).append(folder.folder_id)
@@ -1239,11 +1139,21 @@ class DropboxConnector(BaseConnector):
                     for user in batch
                 ]
 
-                await asyncio.gather(*sync_tasks, return_exceptions=True)
+                for user, result in zip(batch, await asyncio.gather(*sync_tasks, return_exceptions=True)):
+                    if isinstance(result, BaseException):
+                        self.logger.error(f"Sync of {user.email}'s Dropbox failed: {result}", exc_info=result)
+                        self._health.skipped(f"files of {user.email}", result)
+                if self._health.auth_error is not None:
+                    return
 
                 # Small delay between batches to prevent overwhelming the API
                 await asyncio.sleep(1)
 
+            await self._drop_vanished_shared_folders(plan)
+            if self._health.complete:
+                await self.dropbox_cursor_sync_point.update_sync_point(
+                    _NESTED_FOLDERS_KEY, sync_point_data={"ids": sorted(nested)}
+                )
             self.logger.info("Completed processing all user batches")
 
         except Exception as e:
@@ -1252,6 +1162,20 @@ class DropboxConnector(BaseConnector):
 
 
 
+    async def _relist_parents_of_new_nested_folders(self, plan: dict[str, SharedFolder]) -> set[str]:
+        """List from the start the parent of every nested folder no earlier run planned; return the nested ids.
+
+        Until then the parent listed that folder's mount point and contents as its own (a folder that just
+        stopped inheriting, or one an older version never planned). Its cursor reports no change for them, so
+        only a listing from the start removes that copy. The nested folders already seen are remembered, so an
+        empty one (which never has records) does not relist its parent on every run.
+        """
+        nested = {folder.folder_id for folder in plan.values() if folder.parent_id in plan}
+        known = set((await self.dropbox_cursor_sync_point.read_sync_point(_NESTED_FOLDERS_KEY)).get("ids") or [])
+        for folder_id in nested - known:
+            self._fresh_folders.add(plan[folder_id].parent_id)
+        return nested
+
     async def _plan_shared_folders(self, users: list[AppUser]) -> dict[str, SharedFolder]:
         """The team's shared folders, from every member's list, each with the member who lists it."""
         listings: dict[str, list] = {}
@@ -1259,11 +1183,56 @@ class DropboxConnector(BaseConnector):
             entries = await self._list_shared_folders(user.source_user_id)
             if entries is not None:
                 listings[user.source_user_id] = entries
+            else:
+                self._health.skipped(f"shared folders of {user.email}", "could not be listed")
         plan = plan_shared_folders(listings)
         # A member whose list could not be read may be the one who has a folder in their Dropbox.
-        if len(listings) == len(users):
+        self._plan_complete = len(listings) == len(users)
+        self._folder_metadata: dict[str, DropboxResponse] = {}
+        if self._plan_complete:
             await self._drop_unmounted_shared_folders(plan)
+        await self._resolve_parents(plan)
         return plan
+
+    async def _resolve_parents(self, plan: dict[str, SharedFolder]) -> None:
+        """Read the parent of every folder listed inside a team folder without one.
+
+        Until it is known, the folder's group is not rewritten: written as a top-level
+        folder it would drop the members it inherits.
+        """
+        self._parent_unknown: set[str] = set()
+        for folder in [folder for folder in plan.values() if folder.parent_unknown]:
+            response = await self._shared_folder_metadata(folder)
+            if not response.success:
+                self.logger.warning(f"Could not read where shared folder '{folder.name}' ({folder.folder_id}) sits: "
+                                    f"{response.error}")
+                self._health.skipped(f"parent of shared folder {folder.name}", "could not be read; stored folder kept")
+                self._parent_unknown.add(folder.folder_id)
+                continue
+            inheritance = getattr(getattr(response.data, "access_inheritance", None), "_tag", None) or folder.inheritance
+            folder.set_parent(getattr(response.data, "parent_shared_folder_id", None), inheritance)
+
+    async def _drop_vanished_shared_folders(self, plan: dict[str, SharedFolder]) -> None:
+        """Delete the stored shared and team folders that no synced member can open any more.
+
+        A folder that was unshared, archived (team folders), deleted, or left by every synced member is in no
+        member's ``sharing/list_folders``. Only a complete answer counts: every synced member's list read, and
+        the team's member list read whole; otherwise nothing is removed.
+        """
+        if not getattr(self, "_plan_complete", False) or not self._health.complete:
+            return
+        stored = await self.data_entities_processor.get_nodes_by_filters(
+            CollectionNames.RECORD_GROUPS.value, {"connectorId": self.connector_id},
+            ["externalGroupId", "description", "groupName"], raise_on_error=True,
+        )
+        for group in stored:
+            external_id = group.get("externalGroupId")
+            if group.get("description") not in ("Shared Folder", "Team Folder") or not external_id or external_id in plan:
+                continue
+            self.logger.info(f"Shared folder '{group.get('groupName')}' ({external_id}) is gone for every synced member; deleting it")
+            await self.data_entities_processor.on_record_group_deleted(
+                external_group_id=external_id, connector_id=self.connector_id, trash_live_records=True,
+            )
 
     async def _drop_unmounted_shared_folders(self, plan: dict[str, SharedFolder]) -> None:
         """Leave out, and delete, the shared folders no member has in their Dropbox.
@@ -1272,7 +1241,16 @@ class DropboxConnector(BaseConnector):
         anyone, and its namespace still lists its files as live; Dropbox has no
         deleted flag for it. Team folders are synced from the team folder list.
         """
-        for folder in [folder for folder in plan.values() if not folder.mounted and not folder.is_team_folder]:
+        gone = []
+        for folder in plan.values():
+            if folder.mounted or folder.is_team_folder:
+                continue
+            # A folder inside a team folder has no path on the team member root layout, members or not: it is
+            # reached through the team folder, so having no path does not mean it is gone. Its own id does.
+            if folder.inside_team_folder and not await self._deleted_inside_team_folder(folder):
+                continue
+            gone.append(folder)
+        for folder in gone:
             del plan[folder.folder_id]
             try:
                 stored = await self.data_entities_processor.get_record_group_by_external_id(
@@ -1286,11 +1264,39 @@ class DropboxConnector(BaseConnector):
             except Exception as e:
                 self.logger.error(f"Could not delete shared folder '{folder.name}' ({folder.folder_id}): {e}", exc_info=True)
 
+    async def _deleted_inside_team_folder(self, folder: SharedFolder) -> bool:
+        """Whether Dropbox says a shared folder inside a team folder was deleted: its folder id is not_found.
+
+        Its namespace still lists the files after the delete, and ``sharing/get_folder_metadata`` still answers,
+        so the folder's own id is the only sign. ``sharing/list_folders`` leaves that id out; the folder's metadata
+        has it. Without an answer the folder is kept.
+        """
+        metadata = await self._shared_folder_metadata(folder)
+        item_id = getattr(metadata.data, "folder_id", None) if metadata.success else None
+        answer = item_still_exists(await self.data_source.files_get_metadata(
+            path=item_id, team_member_id=folder.syncer, team_folder_id=folder.folder_id,
+        )) if item_id else None
+        if answer is None:
+            self.logger.warning(f"Could not check whether shared folder '{folder.name}' ({folder.folder_id}) "
+                                "still exists; keeping it")
+        return answer is False
+
+    async def _shared_folder_metadata(self, folder: SharedFolder) -> DropboxResponse:
+        """``sharing/get_folder_metadata`` as the folder's syncer, read once per run."""
+        cache = getattr(self, "_folder_metadata", {})
+        if folder.folder_id not in cache:
+            cache[folder.folder_id] = await self.data_source.sharing_get_folder_metadata(
+                shared_folder_id=folder.folder_id, team_member_id=folder.syncer
+            )
+        return cache[folder.folder_id]
+
     async def _list_shared_folders(self, member_id: str) -> list | None:
         """A member's shared folders, every page; None when Dropbox could not be read."""
         response = await self.data_source.sharing_list_folders(team_member_id=member_id)
         if not response.success:
             self.logger.warning(f"Could not list the shared folders of {member_id}: {response.error}")
+            if is_auth_error(response.error):
+                self._health.auth_failed(response.error)
             return None
         entries = list(response.data.entries)
         cursor = _next_cursor(response.data)
@@ -1308,19 +1314,29 @@ class DropboxConnector(BaseConnector):
 
         Members are read every time, in place of the stored grants: a member who left
         can no longer read the folder, so the event that says so can't be relied on.
-        Team folders are written from the team folder list.
+        Team folders are written the same way: their members come from the same call,
+        which needs no team-content permission (team/team_folder/list needs
+        team_data.content.read, which the connector does not ask for).
         """
         for folder in parents_first(plan):
-            if folder.is_team_folder:
+            if folder.folder_id in getattr(self, "_parent_unknown", set()):
                 continue
             try:
+                if not await self.data_entities_processor.get_records_in_record_group(
+                    self.connector_id, folder.folder_id, 1
+                ):
+                    self._fresh_folders.add(folder.folder_id)
                 grants = await self._shared_folder_members(folder.folder_id, folder.syncer)
+                if grants is None:
+                    self._health.skipped(f"members of shared folder {folder.name}", "could not be read; stored access kept")
+                else:
+                    self._note_grant_emails(grants)
                 record_group = RecordGroup(
                     name=folder.name,
                     org_id=self.data_entities_processor.org_id,
                     external_group_id=folder.folder_id,
                     parent_external_group_id=folder.parent_id,
-                    description="Shared Folder",
+                    description="Team Folder" if folder.is_team_folder else "Shared Folder",
                     connector_name=self.connector_name,
                     connector_id=self.connector_id,
                     group_type=RecordGroupType.DRIVE,
@@ -1329,6 +1345,7 @@ class DropboxConnector(BaseConnector):
                 await self.data_entities_processor.on_new_record_groups([(record_group, grants)])
             except Exception as e:
                 self.logger.error(f"Could not write shared folder '{folder.name}' ({folder.folder_id}): {e}", exc_info=True)
+                self._health.skipped(f"shared folder {folder.name}", e)
 
     async def _shared_folder_members(self, folder_id: str, member_id: str) -> list[Permission] | None:
         """A shared folder's own members as grants, every page; None when they could not all be read."""
@@ -1370,14 +1387,26 @@ class DropboxConnector(BaseConnector):
             return
         await self._sync_shared_folder_groups(plan_shared_folders({member_id: [response.data]}))
 
-    async def _drop_mount_record(self, entry: object) -> None:
-        """Remove a record an earlier sync wrote for a shared folder's mount point; the folder is a record group now."""
+    async def _drop_mount_record(self, entry: object, record_group_id: str) -> None:
+        """Remove a record an earlier sync wrote for a shared folder's mount point; the folder is a record group now.
+
+        A folder that becomes a shared folder (shared, or its inherited access removed) is listed in its parent
+        under a new id at the same path, while its old id becomes the shared folder's own and still resolves
+        (dbx-audit/live, 2026-10-29). So the folder record stored at that path in this listing's group goes too:
+        left behind, it stays in the parent, open to the parent's members.
+        """
         info = getattr(entry, "sharing_info", None)
         if not isinstance(entry, FolderMetadata) or not getattr(info, "shared_folder_id", None):
             return
+        stale = {}
         stored = await self.data_entities_processor.get_record_by_external_id(self.connector_id, entry.id)
         if stored is not None:
-            await self.data_entities_processor.on_record_deleted(record_id=stored.id)
+            stale[stored.id] = stored
+        for record in await self.data_entities_processor.get_records_by_file_path(self.connector_id, entry.path_lower):
+            if record.external_record_group_id == record_group_id:
+                stale[record.id] = record
+        for record_id in stale:
+            await self.data_entities_processor.on_record_deleted(record_id=record_id)
 
     async def _run_sync_with_yield(
         self, user_id: str, user_email: str,
@@ -1386,194 +1415,184 @@ class DropboxConnector(BaseConnector):
         """
         Synchronizes Dropbox files for a given user using the cursor-based approach.
 
-        This function first lists all shared folders, then loops through the
-        personal folder (root) and each shared folder, running a separate sync
-        operation with a unique cursor for each.
+        The member's personal folder (root) and each shared folder this member lists for
+        the team are listed separately, each with its own cursor.
 
         Args:
             user_id: The Dropbox team member ID of the user to sync.
             user_email: The email of the user to sync.
         """
-        try:
-            self.logger.info(f"Starting Dropbox sync with yield for user {user_email}")
+        self.logger.info(f"Starting Dropbox sync with yield for user {user_email}")
+        self.logger.info(f"Will sync {len(shared_folder_ids)} shared folder(s) as {user_email}")
+        for folder_id in [None, *shared_folder_ids]:
+            await self._sync_namespace(user_id, user_email, folder_id, known_shared_folders)
+            if self._health.auth_error is not None:
+                return
+        self.logger.info(f"Completed all Dropbox sync loops for user {user_id}")
 
-            # Personal folder, plus the shared folders this member lists for the whole team.
-            folders_to_sync = [None, *shared_folder_ids]
-            self.logger.info(f"Will sync {len(shared_folder_ids)} shared folder(s) as {user_email}")
+    async def _sync_namespace(
+        self, user_id: str, user_email: str, folder_id: str | None, known_shared_folders: frozenset[str],
+    ) -> None:
+        """List one namespace (a member's home, or a shared folder) from its cursor and write what changed.
 
-            # Loop through each folder (personal + shared) and run a separate sync
-            for folder_id in folders_to_sync:
-
-                # 1. Determine sync parameters for this specific folder
-                if folder_id is None:
-                    # This is the user's personal root folder
-                    sync_context_id = user_id
-                    # _v2: listings from before shared folders were their own groups re-run once
-                    # from the start, so records they left under a member's home are moved.
-                    sync_group = "users_v2"
-                    sync_log_name = f"personal folder for user {user_email}"
-                    current_record_group_id = user_id
-                else:
-                    # This is a shared folder
-                    sync_context_id = f"{user_id}_{folder_id}" # Safer key than using '/'
-                    sync_group = "shared_folders_v2"
-                    sync_log_name = f"shared folder {folder_id} for user {user_email}"
-                    current_record_group_id = folder_id
-
-                self.logger.info(f"Starting sync loop for: {sync_log_name}")
-
-                # 2. Get current sync state from the database *for this folder*
-                sync_point_key = generate_record_sync_point_key(RecordType.DRIVE.value, sync_group, sync_context_id)
-                sync_point = await self.dropbox_cursor_sync_point.read_sync_point(sync_point_key)
-                cursor = sync_point.get('cursor')
-
-                self.logger.info(f"Sync point key: {sync_point_key}")
-                self.logger.info(f"Retrieved sync point: {sync_point}")
-                self.logger.info(f"Cursor value: {cursor}")
-
-                modified_after, modified_before, created_after, created_before = self._get_date_filters()
-
-                # Reset batching and state for each folder sync
-                batch_records = []
-                batch_count = 0
-                has_more = True
-
-                while has_more:
-                    # 3. Fetch changes from Dropbox
-                    try:
-                        async with self.rate_limiter:
-                            if cursor:
-                                self.logger.info(f"[{sync_log_name}] Calling files_list_folder_continue...")
-                                result = await self.data_source.files_list_folder_continue(
-                                    cursor,
-                                    team_member_id=user_id,
-                                    team_folder_id=folder_id,
-                                )
-
-                            else:
-                                # This is the first sync for this folder
-                                try:
-                                    result = await self.data_source.files_list_folder(
-                                        path="",
-                                        team_member_id=user_id,
-                                        team_folder_id=folder_id,
-                                        recursive=True
-                                    )
-                                except Exception as e:
-                                    self.logger.error("error in api call:", e)
-
-                        if not result.success:
-                            self.logger.error(f"[{sync_log_name}] Dropbox API call failed: {result.error}")
-                            # Stop syncing this folder on API error
-                            has_more = False
-                            continue # Skip to the next 'while' iteration (which will exit)
-
-                        self.logger.info(f"[{sync_log_name}] Got {len(result.data.entries)} entries. Has_more: {result.data.has_more}")
-                        entries = result.data.entries
-
-                        # 4. Process the entries from the current page
-                        async for file_record, permissions, record_update in self._process_dropbox_items_generator(
-                            entries, user_id, user_email, current_record_group_id, folder_id is None,
-                            modified_after=modified_after,
-                            modified_before=modified_before,
-                            created_after=created_after,
-                            created_before=created_before,
-                            shared_folder_ids=known_shared_folders,
-                        ):
-                            if record_update.is_deleted:
-                                await self._handle_record_updates(record_update)
-                                continue
-
-                            if record_update.is_updated:
-                                await self._handle_record_updates(record_update)
-                                continue
-
-                            if file_record:
-                                batch_records.append((file_record, permissions))
-                                batch_count += 1
-
-                                if batch_count >= self.batch_size:
-                                    self.logger.info(f"[{sync_log_name}] Processing batch of {batch_count} records.")
-                                    await self.data_entities_processor.on_new_records(batch_records)
-                                    batch_records = []
-                                    batch_count = 0
-                                    await asyncio.sleep(0.1)
-
-                        # Process any remaining records in the batch from the last page
-                        if batch_records:
-                            self.logger.info(f"[{sync_log_name}] Processing final batch of {len(batch_records)} records.")
-                            await self.data_entities_processor.on_new_records(batch_records)
-                            batch_records = []
-                            batch_count = 0
-
-                        # 5. Update the sync state for the next iteration
-                        cursor = result.data.cursor
-                        self.logger.info(f"[{sync_log_name}] Storing new cursor for key {sync_point_key}")
-                        await self.dropbox_cursor_sync_point.update_sync_point(
-                            sync_point_key,
-                            sync_point_data={"cursor": cursor}
+        A page is written before its cursor is saved, so a run cut off part way resumes there. A cursor Dropbox
+        reset is dropped and the namespace listed from the start; once that listing has finished, what it no longer
+        shows is checked and removed. A page that cannot be read ends this namespace for this run and is recorded,
+        so the run is not reported as a success and a full sync removes nothing.
+        """
+        # _v3: a listing written by an earlier version is read once more from the start, and what it no longer
+        # shows is removed, to repair what that version stored (parents lost to a child listed before its
+        # folder, paths left by moves, records of replaced files, team folders without their members).
+        context = user_id if folder_id is None else f"{user_id}_{folder_id}"
+        group = "users" if folder_id is None else "shared_folders"
+        sync_point_key = generate_record_sync_point_key(RecordType.DRIVE.value, f"{group}_v3", context)
+        if folder_id is None:
+            sync_log_name = f"personal folder for user {user_email}"
+            record_group_id = user_id
+        else:
+            sync_log_name = f"shared folder {folder_id} for user {user_email}"
+            record_group_id = folder_id
+        sync_point = await self.dropbox_cursor_sync_point.read_sync_point(sync_point_key)
+        older = sync_point.get('cursor') is None and bool((await self.dropbox_cursor_sync_point.read_sync_point(
+            generate_record_sync_point_key(RecordType.DRIVE.value, f"{group}_v2", context))).get('cursor'))
+        # A folder with no live record (new, shared again, restored from the archive) is listed in full: an old
+        # cursor would list only what changed since, and its records went with the group when it was deleted.
+        cursor = None if folder_id in self._fresh_folders else sync_point.get('cursor')
+        dates = self._get_date_filters()
+        parents = ParentResolver(
+            stored_id_at=lambda path: self._stored_id_at(path, record_group_id),
+            ask_dropbox=lambda path: self._ask_parent_id(path, user_id, folder_id),
+        )
+        problems_before = len(self._health.problems)
+        # A listing from the start (a full sync, a new or restored folder) shows what exists, not what was deleted
+        # since the last cursor, which Dropbox reports only once: what it does not show is checked once it ends.
+        relisting = older or cursor is None
+        listed: set[str] = set()
+        held = restart = False
+        self.logger.info(f"Starting sync loop for: {sync_log_name} (cursor: {bool(cursor)})")
+        while True:
+            try:
+                async with self.rate_limiter:
+                    if cursor:
+                        result = await self.data_source.files_list_folder_continue(
+                            cursor, team_member_id=user_id, team_folder_id=folder_id,
                         )
+                    else:
+                        result = await self.data_source.files_list_folder(
+                            path="", team_member_id=user_id, team_folder_id=folder_id, recursive=True,
+                            include_has_explicit_shared_members=True,
+                        )
+            except Exception as e:  # the data source normally answers failures, it does not raise
+                result = DropboxResponse(success=False, error=str(e))
+            if not result.success:
+                if cursor and is_cursor_reset(result.error):
+                    self.logger.warning(f"[{sync_log_name}] Dropbox reset the cursor; listing it again from the start")
+                    self._health.relisted.append(sync_log_name)
+                    relisting, cursor = True, None
+                    listed.clear()
+                    continue
+                if is_auth_error(result.error):
+                    self._health.auth_failed(result.error)
+                    return
+                self.logger.error(f"[{sync_log_name}] Dropbox API call failed: {result.error}")
+                self._health.skipped(f"listing of {sync_log_name}", result.error)
+                return
 
-                        has_more = result.data.has_more
+            entries = result.data.entries
+            self.logger.info(f"[{sync_log_name}] Got {len(entries)} entries. Has_more: {result.data.has_more}")
+            page_problems = len(self._health.problems)
+            updates = []
+            async for _record, _permissions, record_update in self._process_dropbox_items_generator(
+                entries, user_id, user_email, record_group_id, folder_id is None,
+                modified_after=dates[0], modified_before=dates[1], created_after=dates[2], created_before=dates[3],
+                shared_folder_ids=known_shared_folders, parents=parents,
+            ):
+                updates.append(record_update)
+                listed.add(record_update.external_record_id)
+            if relisting:
+                listed.update(getattr(e, "id", None) for e in entries if not isinstance(e, DeletedMetadata))
+            await self._write_updates(updates, sync_log_name)
+            # A moved folder whose paths could not all be rewritten: listed again from the start, which writes
+            # every path below it. Saved now: replayed from an older cursor, the move would no longer show.
+            if not await self._repath_moved_folders():
+                restart = True
+                await self.dropbox_cursor_sync_point.update_sync_point(sync_point_key, sync_point_data={"cursor": None})
 
-                    except ApiError as api_ex:
-                        self.logger.error(f"Dropbox API Error during sync for {sync_log_name}: {api_ex}")
-                        # If path not found, stop this folder's sync and continue to the next
-                        if 'path/not_found' in str(api_ex):
-                            self.logger.warning(f"[{sync_log_name}] Path not found. Stopping sync for this folder.")
-                            has_more = False # Stop this 'while' loop
-                        else:
-                            raise # Re-raise other critical API errors
-                    except Exception as loop_ex:
-                        self.logger.error(f"Error in 'while has_more' loop for {sync_log_name}: {loop_ex}", exc_info=True)
-                        has_more = False # Stop this 'while' loop to be safe
+            cursor = result.data.cursor
+            # Dropbox lists a change once: after a page with a failed entry the saved cursor stays before it, and
+            # the next run reads it again (its writes are idempotent). The pages after it are still written.
+            held = held or len(self._health.problems) > page_problems
+            if not (held or restart):
+                await self.dropbox_cursor_sync_point.update_sync_point(sync_point_key, sync_point_data={"cursor": cursor})
+            if result.data.has_more is not True:
+                break
 
-                self.logger.info(f"Completed sync loop for: {sync_log_name}")
+        if relisting and len(self._health.problems) == problems_before:
+            outcome = await remove_unlisted(
+                self.data_entities_processor, self.connector_id, record_group_id, listed,
+                lambda record: self._team_item_still_exists(record, user_id), self.logger,
+            )
+            self._note_delete_outcome(outcome)
+        self.logger.info(f"Completed sync loop for: {sync_log_name}")
 
-            self.logger.info(f"Completed all Dropbox sync loops for user {user_id}")
+    async def _write_updates(self, updates: List[RecordUpdate], sync_log_name: str) -> None:
+        """Write a page's records in the order Dropbox listed them.
 
-        except ApiError as ex:
-            # Error during initial shared folder list
-            self.logger.error(f"Dropbox API Error during sync setup for user {user_id}: {ex}")
-            raise
-        except Exception as ex:
-            self.logger.error(f"Unhandled error in Dropbox sync for user {user_id}: {ex}", exc_info=True)
-            raise
+        Records whose own members were read (or are known to be none) are written with them, in one batch: a
+        moved, renamed or edited record and a folder made in the same change land together, so a child never
+        waits for a parent that is not stored yet. A record whose members could not be read keeps its stored
+        grants: it is written as a metadata or content update, which leaves them alone.
+        """
+        batch: list[tuple[FileRecord, list[Permission]]] = []
+
+        async def flush() -> None:
+            if batch:
+                self.logger.info(f"[{sync_log_name}] Processing batch of {len(batch)} records.")
+                await self.data_entities_processor.on_new_records(list(batch))
+                batch.clear()
+
+        for update in updates:
+            if update.new_permissions is not None or update.is_new:
+                batch.append((update.record, list(update.new_permissions or [])))
+                if len(batch) >= self.batch_size:
+                    await flush()
+                continue
+            await flush()
+            if update.content_changed:
+                await self.data_entities_processor.on_record_content_update(update.record)
+            else:
+                await self.data_entities_processor.on_record_metadata_update(update.record)
+        await flush()
 
     async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
-        """
-        Handle different types of record updates (new, updated, deleted).
-        """
-        try:
-            if record_update.is_deleted:
-                # The update carries the source's id; records are deleted by their key.
-                existing_record = await self.data_entities_processor.get_record_by_external_id(
-                    self.connector_id, record_update.external_record_id
-                )
-                if existing_record:
-                    await self.data_entities_processor.on_record_deleted(record_id=existing_record.id)
-            elif record_update.is_new:
-                self.logger.info(f"New record detected: {record_update.record.record_name}")
-            elif record_update.is_updated:
+        """Write one re-read record (after a sharing event, or a reindex that found it changed), or delete one."""
+        if record_update.is_deleted:
+            # The update carries Dropbox's id; records are deleted by their key.
+            existing = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, record_update.external_record_id
+            )
+            if existing:
+                await self.data_entities_processor.on_record_deleted(record_id=existing.id)
+            return
+        await self._write_updates([record_update], "re-read")
+        await self._repath_moved_folders()
 
-                if record_update.metadata_changed:
-                    self.logger.info(f"Metadata changed for record: {record_update.record.record_name}")
-                    await self.data_entities_processor.on_record_metadata_update(record_update.record)
-                if record_update.permissions_changed:
-                    self.logger.info(f"Permissions changed for record: {record_update.record.record_name}")
-                    await self.data_entities_processor.on_updated_record_permissions(
-                        record_update.record,
-                        record_update.new_permissions
-                    )
-                if record_update.content_changed:
-                    self.logger.info(f"Content changed for record: {record_update.record.record_name}")
-                    await self.data_entities_processor.on_record_content_update(record_update.record)
-        except Exception as e:
-            self.logger.error(f"Error handling record updates: {e}", exc_info=True)
+    async def _repath_moved_folders(self) -> bool:
+        """Rewrite the stored paths below each folder that moved; False when a walk stopped at its cap."""
+        complete = True
+        moved, self._moved_folders = self._moved_folders, []
+        for external_id, old_path, new_path in moved:
+            _, done = await repath_descendants(self.data_entities_processor, self.connector_id, external_id,
+                                               old_path, new_path, self.logger)
+            if not done:
+                self._health.skipped(f"paths below {new_path}", "could not all be rewritten; listed again next run")
+            complete = complete and done
+        return complete
 
-    def get_app_users(self, users: DropboxResponse) -> List[AppUser]:
+    def get_app_users(self, users: DropboxResponse | List) -> List[AppUser]:
+        members = users if isinstance(users, list) else users.data.members
         app_users: List[AppUser] = []
-        for member in users.data.members:
+        for member in members:
             profile = member.profile
             app_users.append(
                 AppUser(
@@ -1600,6 +1619,8 @@ class DropboxConnector(BaseConnector):
                 profile = getattr(response.data, "admin_profile", None)
             else:
                 self.logger.debug("Dropbox did not return the authenticated admin: %s", response.error)
+                if is_auth_error(response.error):
+                    self._health.auth_failed(response.error)
         except Exception as e:
             self.logger.debug("Could not read the authenticated Dropbox admin: %s", e)
             return
@@ -1607,74 +1628,125 @@ class DropboxConnector(BaseConnector):
             getattr(profile, "email", None), getattr(profile, "team_member_id", None)
         )
 
+    async def _sync_members(self) -> List[AppUser]:
+        """Every member of the team, saved as the connector's users, and the access of those who can no longer
+        open anything (suspended, invited, removed) withdrawn. Returns the members."""
+        members = await read_team_members(self.data_source)
+        if members.auth_error:
+            self._health.auth_failed(members.error)
+            return []
+        if not members.raw:
+            raise RuntimeError(f"Could not list the Dropbox team's members: {members.error}")
+        if not members.complete:
+            self._health.skipped("team member list", members.error)
+        app_users = self.get_app_users(members.raw)
+        self._team_emails = {u.email.lower() for u in app_users if u.email}
+        await self.data_entities_processor.on_new_app_users(app_users)
+        if members.complete:
+            stored = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
+            gone = withdrawn(stored, members)
+            if gone:
+                self.logger.info(f"Withdrawing Dropbox access from {len(gone)} member(s) who are not active")
+                await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+            # A member no longer on the team at all has no Dropbox home to read; a suspended one keeps theirs,
+            # since what they shared stays shared (Dropbox Help: "sharing relationships remain intact").
+            listed = {m.profile.team_member_id for m in members.raw}
+            for user in gone:
+                if user.source_user_id not in listed:
+                    self.logger.info(f"{user.email} left the team; removing their Dropbox home")
+                    await self.data_entities_processor.on_record_group_deleted(
+                        external_group_id=user.source_user_id, connector_id=self.connector_id,
+                        trash_live_records=True,
+                    )
+        return app_users
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A run that skipped part of Dropbox did not see everything, so a full sync must remove nothing."""
+        return FullSyncCoverage(complete=self._health.complete)
+
     async def run_sync(self) -> None:
-        """Runs a full synchronization from the Dropbox account root."""
+        """Runs a sync from the Dropbox account root: each folder from its cursor, or in full after a full-sync request.
+
+        A run that could not read part of Dropbox, or whose credentials Dropbox refused, raises at the end: it is
+        recorded as failed, a full sync removes nothing, and the people who own the connector are told once.
+        """
+        self._health = SyncHealth()
+        self._external_emails = set()
+        self._activity_log_missing: str | None = None
+        # Found again each run from what is stored: a folder is listed from the start only in the run that finds
+        # it fresh, and a move a stopped run did not finish is listed again, its cursor not having passed it.
+        self._fresh_folders = set()
+        self._moved_folders = []
         try:
-            self.logger.info("Starting Dropbox full sync.")
-
-            await self._register_authenticated_identity()
-
-            self.sync_filters, self.indexing_filters = await load_connector_filters(
-                self.config_service, "dropbox", self.connector_id, self.logger
-            )
-
-            # Step 1: fetch and sync all users
-            self.logger.info("Syncing users...")
-            users = await self.data_source.team_members_list()
-            app_users = self.get_app_users(users)
-
-            # Step 1.5: Initialize cursor for member events
-            member_sync_key = generate_record_sync_point_key("member_events", "team_events", "global")
-            member_sync_point = await self.dropbox_cursor_sync_point.read_sync_point(member_sync_key)
-
-            if not member_sync_point.get('cursor'):
-                self.logger.info("Initializing cursor for member events...")
-                await self._initialize_event_cursor(member_sync_key, EventCategory.members)
-                await self.data_entities_processor.on_new_app_users(app_users)
-
+            await self._sync_steps()
+        except Exception as ex:
+            self.logger.error(f"❌ Error in DropBox connector run: {ex}")
+            if is_auth_error(ex):
+                self._health.auth_failed(ex)
             else:
-                self.logger.info("Running an INCREMENTAL sync for member events...")
-                await self._sync_member_changes_with_cursor(app_users)
+                self._health.skipped("the sync", ex)
+            raise
+        finally:
+            self.last_sync_summary = {"skipped": len(self._health.problems), "relisted": len(self._health.relisted)}
+            await SyncNotices(self).report(self._health, activity_log_missing=self._activity_log_missing)
+        self._health.raise_if_incomplete()
 
+    async def _sync_steps(self) -> None:
+        activity_log_missing: str | None = None
+        self.logger.info("Starting Dropbox full sync.")
 
-            # Step 2: fetch and sync all user groups
-            group_sync_key = generate_record_sync_point_key("user_group_events", "team_events", "global")
-            group_sync_point = await self.dropbox_cursor_sync_point.read_sync_point(group_sync_key)
+        await self._register_authenticated_identity()
+        if self._health.auth_error is not None:
+            return
 
-            if not group_sync_point.get('cursor'):
-                self.logger.info("Running a FULL sync for user groups...")
+        self.sync_filters, self.indexing_filters = await load_connector_filters(
+            self.config_service, "dropbox", self.connector_id, self.logger
+        )
 
-                # IMPORTANT: Initialize cursor BEFORE doing the full sync
-                # This creates a bookmark at the current moment
-                await self._initialize_event_cursor(group_sync_key, EventCategory.groups)
+        # Step 1: every member, every run: who is on the team and who may still read is read again each time.
+        self.logger.info("Syncing users...")
+        app_users = await self._sync_members()
+        if self._health.auth_error is not None:
+            return
 
-                # Now do the full sync
-                await self._sync_user_groups()
-            else:
-                self.logger.info("Running an INCREMENTAL sync for user groups...")
-                await self._sync_group_changes_with_cursor()
+        # Step 2: fetch and sync all user groups
+        group_sync_key = generate_record_sync_point_key("user_group_events", "team_events", "global")
+        group_sync_point = await self.dropbox_cursor_sync_point.read_sync_point(group_sync_key)
 
+        if not group_sync_point.get('cursor'):
+            self.logger.info("Running a FULL sync for user groups...")
+            # The cursor is taken before the groups are read, so a change made while they are read is
+            # listed by the next run.
+            activity_log_missing = await self._initialize_event_cursor(group_sync_key, EventCategory.groups)
+            await self._sync_user_groups()
+        else:
+            self.logger.info("Running an INCREMENTAL sync for user groups...")
+            await self._sync_group_changes_with_cursor()
 
-            # Step 3: List all shared folders within a team and create record groups
-            record_group_sync_key = generate_record_sync_point_key("record_group_events", "team_events", "global")
-            record_group_sync_point = await self.dropbox_cursor_sync_point.read_sync_point(record_group_sync_key)
+        # Step 3: team folder events (renames, archives, deletes).
+        record_group_sync_key = generate_record_sync_point_key("record_group_events", "team_events", "global")
+        record_group_sync_point = await self.dropbox_cursor_sync_point.read_sync_point(record_group_sync_key)
+        if not record_group_sync_point.get('cursor'):
+            await self._initialize_event_cursor(record_group_sync_key, EventCategory.team_folders)
+        else:
+            await self._sync_record_group_changes_with_cursor(app_users)
 
-            if not record_group_sync_point.get('cursor'):
-                self.logger.info("Initializing cursor for record group events...")
-                await self._initialize_event_cursor(record_group_sync_key, EventCategory.team_folders)
-                await self.sync_record_groups(app_users)
-            else:
-                self.logger.info("Running incremental sync for record group events...")
-                await self._sync_record_group_changes_with_cursor(app_users)
-            self.logger.info("Syncing record groups...")
+        await self.sync_personal_record_groups(app_users)
 
+        # Deletes earlier runs could not confirm.
+        owed = await self._owed.load()
+        try:
+            if owed:
+                self._owed.settle(await recheck_owed_deletes(
+                    self.data_entities_processor, self.connector_id, owed,
+                    lambda record: self._team_item_still_exists(record, None), self.logger,
+                ))
 
-            await self.sync_personal_record_groups(app_users)
-
-
-            # Step 4: fetch and sync all user drives
+            # Step 4: fetch and sync all user drives (shared and team folders are record groups, written first).
             self.logger.info("Syncing User Drives")
             await self._process_users_in_batches(app_users)
+            if self._health.auth_error is not None:
+                return
 
             # Step 4.5 sync for permissions changes
             sharing_sync_key = generate_record_sync_point_key("sharing_events", "team_events", "global")
@@ -1682,221 +1754,63 @@ class DropboxConnector(BaseConnector):
 
             if not sharing_sync_point.get('cursor'):
                 self.logger.info("Initializing cursor for sharing events...")
-
-                # Initialize cursor BEFORE any potential sync work
-                await self._initialize_event_cursor(sharing_sync_key, EventCategory.sharing)
+                activity_log_missing = await self._initialize_event_cursor(sharing_sync_key, EventCategory.sharing) \
+                    or activity_log_missing
             else:
                 self.logger.info("Running an INCREMENTAL sync for sharing events...")
                 await self._sync_sharing_changes_with_cursor(sharing_sync_key, sharing_sync_point.get('cursor'))
 
-            self.logger.info("Dropbox full sync completed.")
-        except Exception as ex:
-            self.logger.error(f"❌ Error in DropBox connector run: {ex}")
-            raise
+            # People outside the team that something is shared with reach the app only through this membership.
+            if self._external_emails:
+                await self.data_entities_processor.on_external_app_users(sorted(self._external_emails), self.connector_id)
+            if self._health.complete:
+                await self.data_entities_processor.reap_external_app_users(self.connector_id)
+        finally:
+            # Deletes owed so far are kept even when this run stops part way.
+            await self._owed.save()
+        self._activity_log_missing = activity_log_missing
 
+        self.logger.info("Dropbox full sync completed.")
 
-    async def _initialize_event_cursor(self, sync_key: str, category) -> None:
+    async def _initialize_event_cursor(self, sync_key: str, category: EventCategory,
+                                       start_time: datetime | None = None,
+                                       pending: dict[str, list[str]] | None = None) -> str | None:
         """
-        Initialize a cursor that starts from the current moment.
+        Take a cursor of the team's activity log from now (or from ``start_time``) on.
+
+        A write replaces the stored document, so the work still owed beside the cursor (its ``pending*`` lists)
+        is written with the new cursor: ``pending`` when given, else what is stored.
+
+        Returns Dropbox's error when the log cannot be read (a plan without it, or no events.read), else None.
         """
         try:
-            from datetime import datetime, timezone
+            from dropbox.team_common import TimeRange
 
-            from dropbox.team_common import TimeRange  # <- It's in team_common!
-
-            # Create a time range that starts from "now"
-            current_time = datetime.now(timezone.utc)
-
-            # TimeRange with only start_time means "from now onwards"
-            time_range = TimeRange(start_time=current_time)
-
+            current_time = start_time or datetime.now(timezone.utc)
+            # TimeRange with only start_time means "from then onwards"
             response = await self.data_source.team_log_get_events(
                 category=category,
-                time=time_range,
+                time=TimeRange(start_time=current_time),
                 limit=1
             )
 
             if response.success and hasattr(response.data, 'cursor') and response.data.cursor:
+                if pending is None:
+                    stored = await self.dropbox_cursor_sync_point.read_sync_point(sync_key) or {}
+                    pending = {key: value for key, value in stored.items() if key.startswith("pending")}
                 await self.dropbox_cursor_sync_point.update_sync_point(
-                    sync_key, {"cursor": response.data.cursor}
+                    sync_key, {"cursor": response.data.cursor, **pending}
                 )
                 self.logger.info(f"✓ Initialized cursor for {category} from {current_time}")
-            else:
-                self.logger.warning(f"Could not initialize cursor for {category}: {response.error if not response.success else 'No cursor returned'}")
-
+                return None
+            error = response.error if not response.success else 'No cursor returned'
+            self.logger.warning(f"Could not initialize cursor for {category}: {error}")
+            if is_auth_error(error) and not missing_scope(error):
+                self._health.auth_failed(error)
+            return str(error)
         except Exception as e:
             self.logger.error(f"Could not initialize event cursor for {category}: {e}", exc_info=True)
-
-    async def _sync_member_changes_with_cursor(self, app_users: List[AppUser]) -> None:
-        """
-        Syncs team member changes incrementally using the team event log cursor.
-        """
-        try:
-            self.logger.info("Starting incremental sync for team members...")
-
-            # 1. Define the sync point key for member events
-            sync_point_key = generate_record_sync_point_key(
-                "member_events", "team_events", "global"
-            )
-
-            # 2. Get the last saved cursor from your database
-            sync_point = await self.dropbox_cursor_sync_point.read_sync_point(sync_point_key)
-            cursor = sync_point.get('cursor')
-
-            if not cursor:
-                self.logger.warning("No cursor found for incremental member sync.")
-                return
-
-            has_more = True
-            latest_cursor_to_save = cursor
-            events_processed = 0
-
-            while has_more:
-                try:
-                    # 3. Fetch the latest events from the Dropbox audit log
-                    async with self.rate_limiter:
-                        response = await self.data_source.team_log_get_events_continue(cursor)
-
-                    if not response.success:
-                        self.logger.error(f"⚠️ Error fetching team member event log: {response.error}")
-                        break
-
-                    events = response.data.events
-                    self.logger.info(f"Processing {len(events)} new member-related events.")
-
-                    # 4. Process each event individually
-                    for event in events:
-                        try:
-                            await self._process_member_event(event, app_users)
-                            events_processed += 1
-                        except Exception as e:
-                            self.logger.error(f"Error processing member event: {e}", exc_info=True)
-                            continue
-
-                    # 5. Update state for the next loop iteration
-                    latest_cursor_to_save = response.data.cursor
-                    has_more = response.data.has_more
-                    cursor = latest_cursor_to_save
-
-                except Exception as e:
-                    self.logger.error(f"⚠️ Error in member sync loop: {e}", exc_info=True)
-                    has_more = False
-
-            # 6. Save the final cursor
-            if latest_cursor_to_save:
-                self.logger.info(f"Storing latest member sync cursor for key {sync_point_key}")
-                await self.dropbox_cursor_sync_point.update_sync_point(
-                    sync_point_key,
-                    sync_point_data={"cursor": latest_cursor_to_save}
-                )
-
-            self.logger.info(f"Incremental member sync completed. Processed {events_processed} events.")
-
-        except Exception as e:
-            self.logger.error(f"⚠️ Fatal error in incremental member sync: {e}", exc_info=True)
-            raise
-
-    async def _process_member_event(self, event, app_users: List[AppUser]) -> None:
-        """
-        Process a single member-related event from the Dropbox audit log.
-        """
-        try:
-            # Log the full event for debugging
-            self.logger.debug(f"Processing member event: {event}")
-
-            event_type = event.event_type._tag
-
-            if event_type == "member_change_status":
-                await self._handle_member_change_status_event(event, app_users)
-            else:
-                self.logger.debug(f"Ignoring event type: {event_type}")
-
-        except Exception as e:
-            self.logger.error(
-                f"Error processing member event of type {getattr(event, 'event_type', 'unknown')}: {e}",
-                exc_info=True
-            )
-
-    async def _handle_member_change_status_event(self, event, app_users: List[AppUser]) -> None:
-        """Handle member_change_status events from Dropbox audit log."""
-        # Extract user info from event context
-        user_email = None
-        user_name = None
-        team_member_id = None
-
-        if event.context and event.context.is_team_member():
-            user_info = event.context.get_team_member()
-            user_email = user_info.email
-            user_name = user_info.display_name
-            team_member_id = user_info.team_member_id
-
-        # Extract status change details
-        new_status = None
-        previous_status = None
-
-        if hasattr(event.details, 'get_member_change_status_details'):
-            status_details = event.details.get_member_change_status_details()
-            new_status = status_details.new_value._tag if status_details.new_value else None
-            previous_status = status_details.previous_value._tag if status_details.previous_value else None
-
-        if not user_email or not new_status:
-            self.logger.warning(
-                f"Could not extract required info from member_change_status event. "
-                f"email={user_email}, new_status={new_status}"
-            )
-            return
-
-        self.logger.info(
-            f"Member status change for '{user_name}' ({user_email}): "
-            f"{previous_status} -> {new_status}"
-        )
-
-        try:
-            # If new status is 'active', treat as member added
-            if new_status == 'active':
-                self.logger.info(f"Adding team member '{user_name}' ({user_email}, ID: {team_member_id})")
-                await self._handle_member_added(user_email, team_member_id, app_users)
-
-            # If new status is 'removed', treat as member removed
-            elif new_status == 'removed':
-                self.logger.info(f"Removing team member '{user_name}' ({user_email}, ID: {team_member_id})")
-                # await self._handle_member_removed(user_email)
-
-            else:
-                self.logger.info(
-                    f"Status change to '{new_status}' for '{user_name}'. No action needed."
-                )
-
-        except Exception as e:
-            self.logger.error(
-                f"Error processing member_change_status event for user {user_email}: {e}",
-                exc_info=True
-            )
-
-    async def _handle_member_added(self, user_email: str, team_member_id: str, app_users: List[AppUser]) -> None:
-        """Process a newly added team member from the app_users list."""
-        try:
-            # Find the specific user in the app_users list
-            new_user = None
-            for user in app_users:
-                if user.email == user_email:
-                    new_user = user
-                    break
-
-            if not new_user:
-                self.logger.warning(
-                    f"Could not find newly added user {user_email} in app_users list. "
-                    f"User may need to be synced in the next full sync."
-                )
-                return
-
-            # Process the single user
-            await self.data_entities_processor.on_new_app_users([new_user])
-
-            self.logger.info(f"Successfully processed member addition for {user_email}")
-
-        except Exception as e:
-            self.logger.error(f"Error processing member addition for {user_email}: {e}", exc_info=True)
+            return str(e)
 
     async def _sync_user_groups(self) -> None:
         """
@@ -1907,29 +1821,23 @@ class DropboxConnector(BaseConnector):
             self.logger.info("Starting Dropbox user group synchronization")
 
             # --- 1. Get all groups, with pagination ---
+            # A list that could not be read whole writes nothing: the stored groups stay, and the run is not a
+            # success, so a full sync does not remove the groups it did not see.
             all_groups_list = []
-            try:
-                groups_response = await self.data_source.team_groups_list()
+            groups_response = await self.data_source.team_groups_list()
+            while True:
                 if not groups_response.success:
-                    raise Exception(f"Error fetching groups list: {groups_response.error}")
-
+                    self.logger.error(f"❌ Failed to fetch the group list: {groups_response.error}")
+                    if is_auth_error(groups_response.error):
+                        self._health.auth_failed(groups_response.error)
+                    else:
+                        self._health.skipped("group list", groups_response.error)
+                    return
                 all_groups_list.extend(groups_response.data.groups)
-                cursor = groups_response.data.cursor
-                has_more = groups_response.data.has_more
-
-                while has_more:
-                    self.logger.info("Fetching more groups...")
-                    groups_response = await self.data_source.team_groups_list_continue(cursor)
-                    if not groups_response.success:
-                        self.logger.error(f"Error fetching more groups: {groups_response.error}")
-                        break  # Stop pagination on error
-                    all_groups_list.extend(groups_response.data.groups)
-                    cursor = groups_response.data.cursor
-                    has_more = groups_response.data.has_more
-
-            except Exception as e:
-                self.logger.error(f"❌ Failed to fetch full group list: {e}", exc_info=True)
-                raise  # Stop the sync if we can't get the groups
+                if not groups_response.data.has_more:
+                    break
+                self.logger.info("Fetching more groups...")
+                groups_response = await self.data_source.team_groups_list_continue(groups_response.data.cursor)
 
             self.logger.info(f"Found {len(all_groups_list)} total groups. Now processing members.")
 
@@ -1942,7 +1850,9 @@ class DropboxConnector(BaseConnector):
             # --- 3. Loop through all groups to build the batch (NO processor calls inside loop) ---
             for group in all_groups_list:
                 try:
-                    all_members = await self._fetch_group_members(group.group_id, group.group_name)
+                    # Partial members would replace the stored ones and take access from everyone not read.
+                    all_members = await self._fetch_group_members(group.group_id, group.group_name,
+                                                                  raise_on_partial=True)
 
                     processor_group, member_permissions = self._create_user_group_with_permissions(
                         group.group_id, group.group_name, all_members
@@ -1951,6 +1861,7 @@ class DropboxConnector(BaseConnector):
 
                 except Exception as e:
                     self.logger.error(f"❌ Failed to process group {group.group_name}: {e}", exc_info=True)
+                    self._health.skipped(f"members of group {group.group_name}", e)
                     continue  # Skip this group and move to the next
 
             # --- 4. Send the ENTIRE batch to the processor ONCE (outside the loop) ---
@@ -2002,6 +1913,19 @@ class DropboxConnector(BaseConnector):
 
                     if not response.success:
                         self.logger.error(f"⚠️ Error fetching team event log: {response.error}")
+                        if is_cursor_reset(response.error):
+                            # Events since the cursor are lost: read every group again, and take a new cursor.
+                            # Removals still owed are kept with it: Dropbox does not list their events again.
+                            pending = {"pendingGroupMemberReads": owed_member_reads,
+                                       "pendingGroupDeletes": owed_deletes}
+                            if await self._initialize_event_cursor(sync_point_key, EventCategory.groups,
+                                                                   pending=pending) is not None:
+                                # No new cursor: the old one, which resets again next run, keeps them.
+                                await self.dropbox_cursor_sync_point.update_sync_point(
+                                    sync_point_key, sync_point_data={"cursor": cursor, **pending})
+                            await self._sync_user_groups()
+                            return
+                        self._health.skipped("group changes", response.error)
                         break
 
                     events = response.data.events
@@ -2668,65 +2592,6 @@ class DropboxConnector(BaseConnector):
             raise
 
 
-    async def sync_record_groups(self, users: List[AppUser]) -> None:
-        """Sync all team folders as record groups."""
-        # Find a team admin user
-        team_admin_user = None
-        for user in users:
-            if user.source_role == "team_admin":
-                team_admin_user = user
-                break
-
-        if not team_admin_user:
-            self.logger.error("No team admin user found. Cannot sync record groups.")
-            return
-
-        self.logger.info(f"Using team admin user: {team_admin_user.email} (ID: {team_admin_user.source_user_id})")
-
-        # Fetch all team folders with pagination
-        all_team_folders = []
-
-        team_folders_response = await self.data_source.team_team_folder_list()
-
-        if not team_folders_response.success:
-            self.logger.error(f"Failed to fetch team folders: {team_folders_response.error}")
-            return
-
-        all_team_folders.extend(team_folders_response.data.team_folders)
-
-        cursor = team_folders_response.data.cursor
-        has_more = getattr(team_folders_response.data, 'has_more', False)
-
-        while has_more:
-            self.logger.debug("Fetching more team folders...")
-
-            folders_continue = await self.data_source.team_team_folder_list_continue(cursor=cursor)
-
-            if not folders_continue.success:
-                self.logger.error(f"Error during team folder pagination: {folders_continue.error}")
-                break
-
-            all_team_folders.extend(folders_continue.data.team_folders)
-            cursor = folders_continue.data.cursor
-            has_more = getattr(folders_continue.data, 'has_more', False)
-
-        self.logger.info(f"Fetched {len(all_team_folders)} total team folders")
-
-        # Process each active folder using the shared function
-        for folder in all_team_folders:
-            if folder.status._tag != "active":
-                continue
-
-            try:
-                await self._create_and_sync_single_record_group(
-                    folder_id=folder.team_folder_id,
-                    folder_name=folder.name,
-                    team_admin_user=team_admin_user
-                )
-            except Exception as e:
-                self.logger.error(f"Failed to sync folder '{folder.name}': {e}", exc_info=True)
-                continue
-
     async def sync_personal_record_groups(self, users: List[AppUser]) -> None:
         record_groups = []
         for user in users:
@@ -2791,6 +2656,10 @@ class DropboxConnector(BaseConnector):
 
                     if not response.success:
                         self.logger.error(f"Error fetching team folder event log: {response.error}")
+                        if is_cursor_reset(response.error):
+                            await self._initialize_event_cursor(sync_point_key, EventCategory.team_folders)
+                            return
+                        self._health.skipped("team folder changes", response.error)
                         break
 
                     events = response.data.events
@@ -2991,12 +2860,31 @@ class DropboxConnector(BaseConnector):
         has_more = True
         latest_cursor_to_save = cursor
 
+        restarted = False
         while has_more:
             try:
                 response = await self.data_source.team_log_get_events_continue(cursor)
 
+                if not response.success and is_cursor_reset(response.error) and not restarted:
+                    # GetTeamEventsContinueError.reset carries the time of the last event the cursor returned:
+                    # read again from there (team_log.stone), and process that page too. Re-reading an item
+                    # twice is harmless; dropping the page would lose the changes in it.
+                    self.logger.warning(f"Dropbox reset the sharing event cursor: {response.error}")
+                    restarted = True
+                    restart = _reset_time(response.error)
+                    if restart is None:
+                        self._health.skipped("sharing changes", "the activity log cursor was reset")
+                        await self._initialize_event_cursor(sync_point_key, EventCategory.sharing)
+                        return
+                    from dropbox.team_common import TimeRange
+
+                    response = await self.data_source.team_log_get_events(
+                        category=EventCategory.sharing, time=TimeRange(start_time=restart),
+                    )
+
                 if not response.success:
                     self.logger.error(f"⚠️ Error fetching sharing event log: {response.error}")
+                    self._health.skipped("sharing changes", response.error)
                     break
 
                 for event in response.data.events:
@@ -3106,15 +2994,18 @@ class DropboxConnector(BaseConnector):
                 return
             record_group_id = existing_record.external_record_group_id
 
+            # A sharing change does not show in the file's metadata, so its members are read whatever the
+            # listing flag says.
             record_update = await self._process_dropbox_entry(
                 entry=metadata_result.data,
                 user_id=team_member_id,
                 user_email=user_email,
                 record_group_id=record_group_id,
                 is_person_folder=bool(record_group_id) and record_group_id.startswith("dbmid:"),
+                force_members=True,
             )
 
-            if record_update and record_update.is_updated:
+            if record_update and record_update.record:
                 self.logger.info(f"Permissions updated for {record_update.record.record_name}")
                 await self._handle_record_updates(record_update)
             else:
@@ -3124,19 +3015,8 @@ class DropboxConnector(BaseConnector):
             self.logger.error(f"Error during single record re-sync for {external_id}: {e}", exc_info=True)
 
     async def run_incremental_sync(self) -> None:
-        """Runs an incremental sync using the last known cursor."""
-        self.logger.info("Starting Dropbox incremental sync.")
-        sync_point_key = generate_record_sync_point_key(RecordType.DRIVE.value, "root","" )
-        sync_point = await self.record_sync_point.dropbox_cursor_sync_point(sync_point_key)
-
-        cursor = sync_point.get('cursor') if sync_point else None
-        if not cursor:
-            self.logger.warning("No cursor found. Running a full sync instead.")
-            await self.run_sync()
-            return
-
-        await self._sync_from_source(cursor=cursor)
-        self.logger.info("Dropbox incremental sync completed.")
+        """Every run is incremental already: each folder is listed from its cursor."""
+        await self.run_sync()
 
     async def get_signed_url(self, record: Record) -> Optional[str]:
         if not self.data_source:
@@ -3211,15 +3091,20 @@ class DropboxConnector(BaseConnector):
         )
 
     async def test_connection_and_access(self) -> bool:
+        """Whether Dropbox accepts the team token. users/get_current_account is not a team route (a team token
+        needs a member to act as), so the admin the token was linked by is asked for instead."""
         if not self.data_source:
             return False
         try:
-            await self.data_source.users_get_current_account()
-            self.logger.info("Dropbox connection test successful.")
-            return True
+            response = await self.data_source.team_token_get_authenticated_admin()
         except Exception as e:
             self.logger.error(f"Dropbox connection test failed: {e}", exc_info=True)
             return False
+        if not response.success:
+            self.logger.error(f"Dropbox connection test failed: {response.error}")
+            return False
+        self.logger.info("Dropbox connection test successful.")
+        return True
 
     def handle_webhook_notification(self, notification: Dict) -> None:
         """Handles a webhook notification by triggering an incremental sync."""
@@ -3252,25 +3137,28 @@ class DropboxConnector(BaseConnector):
 
             # Check records at source for updates
             org_id = self.data_entities_processor.org_id
-            updated_records = []
+            updated: list[RecordUpdate] = []
             non_updated_records = []
 
             for record in records:
                 try:
-                    updated_record_data = await self._check_and_fetch_updated_record(org_id, record)
-                    if updated_record_data:
-                        updated_record, permissions = updated_record_data
-                        updated_records.append((updated_record, permissions))
-                    else:
+                    update = await self._check_and_fetch_updated_record(org_id, record)
+                    if update is not None:
+                        updated.append(update)
+                    if update is None or not update.content_changed:
+                        # Unchanged content raises no index event when written, so it is re-indexed here.
                         non_updated_records.append(record)
                 except Exception as e:
                     self.logger.error(f"Error checking record {record.id} at source: {e}")
                     continue
 
-            # Update DB only for records that changed at source
-            if updated_records:
-                await self.data_entities_processor.on_new_records(updated_records)
-                self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
+            # Write records that changed at source; their content events re-index them.
+            if updated:
+                await self._write_updates(updated, "reindex")
+                # A folder that moved is stored at its new path now, so no later listing sees the move: the
+                # paths below it are rewritten here.
+                await self._repath_moved_folders()
+                self.logger.info(f"Updated {len(updated)} records in DB that changed at source")
 
             # Publish reindex events for non-updated records
             if non_updated_records:
@@ -3283,7 +3171,7 @@ class DropboxConnector(BaseConnector):
 
     async def _check_and_fetch_updated_record(
         self, org_id: str, record: Record
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> RecordUpdate | None:
         """
         Fetch record from Dropbox and return data for reindexing if changed.
 
@@ -3292,7 +3180,7 @@ class DropboxConnector(BaseConnector):
             record: The record to check for updates
 
         Returns:
-            Tuple of (updated_record, permissions) if the record has changed, None otherwise
+            The update to write if the record has changed, None otherwise
         """
         try:
             external_id = record.external_record_id
@@ -3344,26 +3232,20 @@ class DropboxConnector(BaseConnector):
                 self.logger.info(f"Record {record.id} has been deleted at source")
                 return None
 
-            # Process the entry using existing logic
+            # Written even when name, revision and place are unchanged: its members may have changed alone.
             record_update = await self._process_dropbox_entry(
                 entry=entry,
                 user_id=team_member_id,
                 user_email=user_email,
                 record_group_id=record_group_id,
-                is_person_folder=is_person_folder
+                is_person_folder=is_person_folder,
+                force_members=True,
             )
-
-            if not record_update or record_update.is_deleted:
+            if not record_update or not record_update.record:
                 return None
-
-            # Only return data if there's an actual update (metadata, content, or permissions)
-            if record_update.is_updated:
-                self.logger.info(f"Record {external_id} has changed at source. Updating.")
-                # Ensure we keep the internal DB ID
-                record_update.record.id = record.id
-                return (record_update.record, record_update.new_permissions or [])
-
-            return None
+            self.logger.info(f"Record {external_id} has changed at source. Updating.")
+            record_update.record.id = record.id
+            return record_update
 
         except Exception as e:
             self.logger.error(f"Error checking Dropbox record {record.id} at source: {e}", exc_info=True)

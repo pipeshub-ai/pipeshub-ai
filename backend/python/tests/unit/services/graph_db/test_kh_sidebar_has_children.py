@@ -44,7 +44,7 @@ async def _browse_statement(filters: dict | None) -> str:
 async def test_neo4j_decides_the_container_filter_on_real_children() -> None:
     statement = await _browse_statement({"only_containers": True})
 
-    computed = statement.index("hasChildren: (EXISTS")
+    computed = statement.index("hasChildren: (CASE WHEN")
     assert computed < statement.index(NEO4J_CONTAINER_FILTER)
 
 
@@ -53,7 +53,7 @@ async def test_neo4j_main_list_does_not_compute_children_before_the_page_is_cut(
     statement = await _browse_statement(None)
 
     assert NEO4J_CONTAINER_FILTER not in statement
-    assert statement.count("hasChildren: (EXISTS") == 1
+    assert statement.count("hasChildren: (CASE WHEN") == 1
 
 
 def _arango() -> ArangoHTTPProvider:
@@ -65,7 +65,7 @@ def test_arango_decides_the_container_filter_on_real_children() -> None:
 
     slim = ArangoHTTPProvider._kh_v3_slim_aql(tuple(conditions), "name")
 
-    assert "hasChildren: (LENGTH(" in slim
+    assert "hasChildren: ((IS_SAME_COLLECTION(" in slim
     assert "hasChildren: false" not in slim
 
 

@@ -104,10 +104,11 @@ async def make_connector(
         filters: dict[str, Any] | None = None,
         scope: str = "team",
         expect_init: bool = True,
+        connector_id: str = CONNECTOR_ID,
         **sync: object,
     ) -> WebConnector:
         config = FakeConfigService(
-            CONNECTOR_ID,
+            connector_id,
             # Browser-like unless a test says otherwise: most scenarios predate the setting.
             {"url": url, "type": crawl_type, "depth": depth, "max_pages": max_pages, "browser_like_identity": True, **sync},
             filters,
@@ -117,7 +118,7 @@ async def make_connector(
             db,  # type: ignore[arg-type]
             SimpleNamespace(transaction=checkpoints.transaction),  # type: ignore[arg-type]
             config,  # type: ignore[arg-type]
-            CONNECTOR_ID,
+            connector_id,
             scope,
             "user-1",
         )

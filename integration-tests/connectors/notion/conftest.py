@@ -34,6 +34,14 @@ from helper.source_credentials import source_unavailable
 from helper.assertions import ConnectorAssertions  # type: ignore[import-not-found]
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
 from helper.graph_provider_utils import wait_for_sync_completion  # type: ignore[import-not-found]
+from helper.clients.users_client import UsersClient  # type: ignore[import-not-found]
+from helper.pipeshub_users import find_pipeshub_user_by_email  # type: ignore[import-not-found]
+from helper.second_user import (  # type: ignore[import-not-found]
+    SecondUser,
+    log_in_existing_user,
+    log_out_existing_user,
+    source_user_account,
+)
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 from connectors.notion.constants import (  # type: ignore[import-not-found]
     ENV_ROOT_DATABASE_ID,
@@ -115,9 +123,45 @@ async def connector_assertions(graph_provider: GraphProviderProtocol) -> Connect
     return ConnectorAssertions(graph_provider)
 
 
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def notion_reader(
+    notion_source_helper: NotionSourceHelper,
+    pipeshub_client: PipeshubClient,
+    users_client: UsersClient,
+) -> AsyncGenerator[SecondUser, None]:
+    """A PipesHub account with a workspace member's email, to open records as.
+
+    A Notion record is open only to the workspace's members, and the org admin the suite runs
+    as is not one in the simulator's workspace. An account that already exists may be a real
+    login, so its credentials are put back afterwards.
+    """
+    email = next(
+        (
+            str((user.get("person") or {}).get("email") or "").strip().lower()
+            for user in await notion_source_helper.list_all_users()
+            if user.get("type") == "person" and (user.get("person") or {}).get("email")
+        ),
+        "",
+    )
+    assert email, "the Notion workspace lists no member with an email to open records as"
+    pipeshub_client._ensure_access_token()
+    existing = await asyncio.to_thread(find_pipeshub_user_by_email, users_client, email)
+    if existing is None:
+        yield await asyncio.to_thread(source_user_account, pipeshub_client, email, "Notion IT reader")
+        return
+    user_id = str(existing.get("_id") or existing.get("id") or "")
+    reader = await asyncio.to_thread(log_in_existing_user, pipeshub_client, user_id, email)
+    try:
+        yield reader
+    finally:
+        await asyncio.to_thread(log_out_existing_user, pipeshub_client, reader)
+
+
 @pytest_asyncio.fixture(scope="module", loop_scope="session")
 async def notion_connector(
     notion_source_helper: NotionSourceHelper,
+    # Created before the baseline sync, whose user sync links it to the app.
+    notion_reader: SecondUser,
     pipeshub_client: PipeshubClient,
     graph_provider: GraphProviderProtocol,
 ) -> AsyncGenerator[dict[str, Any], None]:

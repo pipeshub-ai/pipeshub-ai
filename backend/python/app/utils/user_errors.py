@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from app.agents.agent_loop.error_classification import classify_error
 from app.config.constants.arangodb import Connectors, OriginTypes, RecordTypes
 from app.exceptions.indexing_exceptions import (
+    AISettingsUnavailableError,
     BlockContainerValidationError,
     ChunkingError,
     DocumentProcessingError,
@@ -23,6 +24,7 @@ from app.exceptions.indexing_exceptions import (
     EmbeddingModelUnavailableError,
     EmbeddingNotConfiguredError,
     ExtractionError,
+    MultimodalModelNotConfiguredError,
     PasswordProtectedError,
     ProcessingError,
     RecordStatusUpdateError,
@@ -31,6 +33,7 @@ from app.exceptions.indexing_exceptions import (
 from app.exceptions.storage_exceptions import StorageRequestRejectedError
 from app.services.base_client import ServiceCallError
 from app.services.parsing.interface import ParseErrorCode
+from app.utils.api_call import ApiCallError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -122,6 +125,14 @@ EPUB_NO_READABLE_CHAPTERS = (
     "This e-book has no chapters we could read. Check that it opens in an e-book reader, "
     "save a fresh copy from there, and upload it again."
 )
+EXCEL_TOO_LARGE = (
+    "This spreadsheet is too large to index: it holds more data than PipesHub reads from one workbook. "
+    "Split it into several smaller workbooks, or remove unused rows and columns, and upload it again."
+)
+PARSE_WORKER_UNAVAILABLE = (
+    "PipesHub could not start the process that reads this file, so it wasn't indexed. "
+    "Try Reindex; if it keeps failing, ask your admin for help."
+)
 GENERATED_FILE_SKIPPED = (
     "This is a generated file (a lock file, minified bundle, source map, test snapshot or "
     "a file its generator marked DO NOT EDIT), "
@@ -151,7 +162,10 @@ _STORED_AS_WRITTEN = frozenset({
     EPUB_TOO_LARGE,
     EPUB_UNSAFE_PATHS,
     EPUB_NO_READABLE_CHAPTERS,
+    EXCEL_TOO_LARGE,
+    UNREADABLE_FILE,
     PARSE_WORKER_OUT_OF_MEMORY,
+    PARSE_WORKER_UNAVAILABLE,
     PROCESSING_TIMED_OUT,
 })
 
@@ -681,6 +695,9 @@ def _reason(exc: BaseException | None) -> str:
     chain = list(_chain(exc))
 
     for e in chain:
+        # The source refused the item, and the connector said why in its own words.
+        if isinstance(e, ApiCallError) and e.source_reason:
+            return e.source_reason
         if isinstance(e, PasswordProtectedError):
             return PASSWORD_PROTECTED
         # ParseError raised in-process, or ParsingClientError carrying the
@@ -694,6 +711,10 @@ def _reason(exc: BaseException | None) -> str:
             return e.args[0]
         if isinstance(e, EmbeddingNotConfiguredError):
             return EMBEDDING_NOT_CONFIGURED
+        if isinstance(e, MultimodalModelNotConfiguredError):
+            return SCANNED_DOCUMENT_NEEDS_OCR
+        if isinstance(e, AISettingsUnavailableError):
+            return TEMPORARY_PROBLEM
         if isinstance(e, StorageRequestRejectedError):
             # Refused for what it is, not for when it was sent: not a temporary problem.
             return FILE_TOO_LARGE if e.too_large else GENERIC_FAILURE

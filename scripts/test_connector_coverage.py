@@ -78,5 +78,15 @@ class TestRegisteredConnectorsFollowTheImport(unittest.TestCase):
             self.assertEqual(cov.registered_connectors(), {"real": "RealConnector"})
 
 
+
+class TestHeldOutSuites(unittest.TestCase):
+    def test_a_suite_no_ci_job_runs_is_not_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("snowflake", "postgres"):
+                (Path(tmp) / name).mkdir()
+                (Path(tmp) / name / f"{name}_integration_test.py").write_text("")
+            with mock.patch.object(cov, "INTEGRATION", Path(tmp)):
+                self.assertEqual(cov.tested_connectors(), {"postgres"})
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,5 @@
 import type { FileHandle } from 'fs/promises';
+import type { ObjectStat } from '../utils/storage-fingerprint';
 import {
   Document,
   FilePayload,
@@ -108,6 +109,13 @@ export interface StorageServiceInterface {
    * when storage confirms the file is absent; any other failure rejects.
    */
   objectExists?(document: Document): Promise<boolean>;
+
+  /**
+   * Size and ETag of the document's current file as the store reports them now (HEAD on S3 and Azure, stat on local disk): the
+   * ETag has no quotes. Null when storage confirms the file is absent or the document has no location for this store; any other
+   * failure rejects. An S3 URL the provider cannot parse rejects with `StorageUrlParseError`.
+   */
+  statObject?(document: Document): Promise<ObjectStat | null>;
 
   /**
    * Whether a file is stored at this path. Resolves false only when storage

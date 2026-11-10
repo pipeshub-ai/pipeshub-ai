@@ -20,8 +20,8 @@ from helper.second_user import SecondUser, create_second_user, delete_second_use
 logger = logging.getLogger("security-fixtures")
 
 # authenticateWithPassword in userAccount.controller.ts locks the account on the
-# fifth wrong password, in the same request, before it answers.
-WRONG_ATTEMPTS_TO_BLOCK = 5
+# tenth wrong password, in the same request, before it answers.
+WRONG_ATTEMPTS_TO_BLOCK = 10
 
 
 def _try_password(base_url: str, email: str, password: str) -> requests.Response:

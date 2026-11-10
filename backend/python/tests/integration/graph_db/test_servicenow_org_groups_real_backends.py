@@ -75,7 +75,7 @@ class _World:
                 return_value=TableAPIResponse(result=[TableAPIRecord(
                     sys_id=DEPARTMENT_SYS_ID, name=name,
                     sys_created_on="2026-01-01 00:00:00", sys_updated_on="2026-01-02 00:00:00",
-                )])
+                )], total_count=1)  # X-Total-Count: this one row is the whole listing
             )
         )
         with patch.object(self.connector, "_get_fresh_datasource", AsyncMock(return_value=datasource)):

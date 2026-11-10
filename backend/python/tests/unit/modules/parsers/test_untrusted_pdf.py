@@ -6,6 +6,7 @@ threads (no pool), and real files through real parse worker processes.
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import time
 from contextlib import contextmanager
@@ -422,21 +423,25 @@ class TestRealFilesInWorkers:
         ids=["broken cross-reference table", "no startxref near the end"],
     )
     async def test_a_file_that_would_stall_pdfminer_is_handled_without_stalling_the_loop(
-        self, pool: None, damaged: bytes
+        self, pool: None, damaged: bytes, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The outage: read in a thread, each of these held the GIL for tens of seconds."""
-        await parse_pool.submit(len, b"warm up the worker")
+        """The outage: read in a thread, each of these held the GIL for tens of seconds. Now every read
+        goes to the pool's worker process, whose GIL is not the loop's; that is checked, not the loop's lag."""
+        submitted: list[object] = []
+        real_submit = parse_pool.submit
 
-        with IoProbe() as io_probe:
-            await asyncio.sleep(0.1)
-            started = time.monotonic()
-            result = await inspect_untrusted_pdf(damaged, label="damaged.pdf")
-            elapsed = time.monotonic() - started
+        async def spy(fn: object, *args: object, **kwargs: object) -> object:
+            submitted.append(fn)
+            return await real_submit(fn, *args, **kwargs)
+
+        monkeypatch.setattr(parse_pool, "submit", spy)
+        assert await real_submit(os.getpid) != os.getpid()
+
+        result = await inspect_untrusted_pdf(damaged, label="damaged.pdf")
 
         assert result.repaired is True
         assert open_pdf(result.content).page_count == 1
-        assert elapsed < 20
-        assert 0 < io_probe.worst < 0.25
+        assert submitted  # every read of the damaged file went to the worker
 
     async def test_the_probe_sees_the_stall_a_pdfminer_thread_causes(self) -> None:
         """Without this, a probe that measured nothing would pass the test above."""

@@ -12,10 +12,11 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useUserStore } from '@/lib/store/user-store';
 import { useChatStore, selectPendingForSidebar } from '@/chat/store';
 import { ProjectApi, type ProjectConversationRow } from '@/chat/project-api';
-import type { ProjectDetail } from '@/chat/project-types';
+import { useProjectDetail } from '@/chat/hooks/use-project-detail';
 import type { Conversation } from '@/chat/types';
 import { ChatSidebarHeader } from './header';
 import { ChatSidebarFooter } from '@/config';
+import { Link } from '@/lib/navigation';
 import { SidebarItem } from './sidebar-item';
 import { ChatSectionElement, ChatItemSkeleton, GeneratingTitleItem } from './chat-section-element';
 import { groupByTime, getNonEmptyGroups, type TimeGroupKey } from '@/lib/utils/group-by-time';
@@ -92,24 +93,26 @@ export const ProjectConversationsSidebar = React.memo(function ProjectConversati
   const pendingConversations = useChatStore((s) => s.pendingConversations);
   const slots = useChatStore((s) => s.slots);
 
-  const [project, setProject] = useState<ProjectDetail | null>(null);
+  const { project, unavailable: projectUnavailable, gone: projectGone } = useProjectDetail(projectId);
   const [conversations, setConversations] = useState<ProjectConversationRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [hasError, setHasError] = useState(false);
+  const [conversationsFailed, setConversationsFailed] = useState(false);
+  // A project deleted or left in this tab is not a load failure: the page is about to move away.
+  const hasError = conversationsFailed || (projectUnavailable && !projectGone);
 
   const load = useCallback(async () => {
     setIsLoading(true);
-    setHasError(false);
+    setConversationsFailed(false);
     try {
-      const [detail, conv] = await Promise.all([
-        ProjectApi.get(projectId),
-        ProjectApi.listConversations(projectId, { page: 1, limit: SIDEBAR_PROJECT_CONVERSATIONS_PAGE_SIZE }),
-      ]);
-      setProject(detail);
+      // The row shows its own "Failed to load"; the chat page owns the one toast.
+      const conv = await ProjectApi.listConversations(
+        projectId,
+        { page: 1, limit: SIDEBAR_PROJECT_CONVERSATIONS_PAGE_SIZE },
+        { suppressErrorToast: true },
+      );
       setConversations(conv.conversations);
     } catch {
-      setHasError(true);
-      setProject(null);
+      setConversationsFailed(true);
       setConversations([]);
     } finally {
       setIsLoading(false);
@@ -182,7 +185,19 @@ export const ProjectConversationsSidebar = React.memo(function ProjectConversati
           onClick={handleBackToProject}
         />
 
-        <Flex align="center" gap="2" style={{ padding: '0 var(--space-3)' }}>
+        <Link
+          href={`/projects/?projectId=${encodeURIComponent(projectId)}`}
+          onClick={handleBackToProject}
+          className="touch-hit"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--space-2)',
+            padding: '0 var(--space-3)',
+            textDecoration: 'none',
+            minWidth: 0,
+          }}
+        >
           <MaterialIcon
             name="folder"
             size={ICON_SIZE_DEFAULT}
@@ -200,7 +215,7 @@ export const ProjectConversationsSidebar = React.memo(function ProjectConversati
           >
             {project?.name ?? '…'}
           </Text>
-        </Flex>
+        </Link>
 
         <SidebarItem
           icon={<ChatStarIcon size={ICON_SIZE_DEFAULT} color="var(--accent-8)" />}

@@ -94,6 +94,16 @@ def _make_connector():
     c.data_entities_processor.upsert_permission_edge = AsyncMock()
     c.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
     c.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=None)
+    c.data_entities_processor.get_records_by_file_path = AsyncMock(return_value=[])
+    c.data_entities_processor.get_records_in_record_group = AsyncMock(return_value=[])
+    c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+    c.data_entities_processor.withdraw_app_user_access = AsyncMock()
+    c.data_entities_processor.on_external_app_users = AsyncMock()
+    c.data_entities_processor.reap_external_app_users = AsyncMock(return_value=0)
+    c.data_entities_processor.get_nodes_by_filters = AsyncMock(return_value=[])
+    c.data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+    c.data_entities_processor.batch_update_nodes = AsyncMock()
+    c.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[])
     c.sync_filters = FilterCollection()
     c.indexing_filters = FilterCollection()
     c.data_source = AsyncMock()
@@ -322,95 +332,6 @@ class TestGetDateFiltersExtended:
 # _handle_record_updates
 # ===========================================================================
 
-class TestHandleRecordUpdates:
-    @pytest.mark.asyncio
-    async def test_deleted_record(self):
-        c = _make_connector()
-        update = MagicMock()
-        update.is_deleted = True
-        update.external_record_id = "ext-1"
-        update.record = MagicMock()
-        update.record.record_name = "deleted"
-        update.is_new = False
-        update.is_updated = False
-        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
-        await c._handle_record_updates(update)
-        c.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(c.connector_id, "ext-1")
-        c.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
-
-    @pytest.mark.asyncio
-    async def test_new_record(self):
-        c = _make_connector()
-        update = MagicMock()
-        update.is_deleted = False
-        update.is_new = True
-        update.is_updated = False
-        update.record = MagicMock()
-        update.record.record_name = "new"
-        # Should just log, no processor calls
-        await c._handle_record_updates(update)
-
-    @pytest.mark.asyncio
-    async def test_metadata_changed(self):
-        c = _make_connector()
-        update = MagicMock()
-        update.is_deleted = False
-        update.is_new = False
-        update.is_updated = True
-        update.metadata_changed = True
-        update.permissions_changed = False
-        update.content_changed = False
-        update.record = MagicMock()
-        update.record.record_name = "meta"
-        await c._handle_record_updates(update)
-        c.data_entities_processor.on_record_metadata_update.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_permissions_changed(self):
-        c = _make_connector()
-        update = MagicMock()
-        update.is_deleted = False
-        update.is_new = False
-        update.is_updated = True
-        update.metadata_changed = False
-        update.permissions_changed = True
-        update.content_changed = False
-        update.record = MagicMock()
-        update.record.record_name = "perms"
-        update.new_permissions = []
-        await c._handle_record_updates(update)
-        c.data_entities_processor.on_updated_record_permissions.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_content_changed(self):
-        c = _make_connector()
-        update = MagicMock()
-        update.is_deleted = False
-        update.is_new = False
-        update.is_updated = True
-        update.metadata_changed = False
-        update.permissions_changed = False
-        update.content_changed = True
-        update.record = MagicMock()
-        update.record.record_name = "content"
-        await c._handle_record_updates(update)
-        c.data_entities_processor.on_record_content_update.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_error_handling(self):
-        c = _make_connector()
-        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
-        c.data_entities_processor.on_record_deleted = AsyncMock(side_effect=Exception("fail"))
-        update = MagicMock()
-        update.is_deleted = True
-        update.external_record_id = "ext-1"
-        update.record = MagicMock()
-        update.record.record_name = "err"
-        update.is_new = False
-        update.is_updated = False
-        # Should not raise
-        await c._handle_record_updates(update)
-        c.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
 
 # ===========================================================================
@@ -467,14 +388,14 @@ class TestTestConnectionAndAccess:
     @pytest.mark.asyncio
     async def test_success(self):
         c = _make_connector()
-        c.data_source.team_get_info = AsyncMock(return_value=MagicMock(success=True))
+        c.data_source.team_token_get_authenticated_admin = AsyncMock(return_value=MagicMock(success=True))
         result = await c.test_connection_and_access()
         assert result is True
 
     @pytest.mark.asyncio
     async def test_failure(self):
         c = _make_connector()
-        c.data_source.users_get_current_account = AsyncMock(side_effect=Exception("connection failed"))
+        c.data_source.team_token_get_authenticated_admin = AsyncMock(side_effect=Exception("connection failed"))
         result = await c.test_connection_and_access()
         assert result is False
 
@@ -838,34 +759,3 @@ class TestProcessDropboxEntry:
         )
         assert result is None
 
-    @pytest.mark.asyncio
-    async def test_shared_link_already_exists(self):
-        c = _make_connector()
-        entry = _make_file_metadata(name="exists.pdf", file_id="id:ex1", path="/exists.pdf")
-
-        temp_link = MagicMock(success=True)
-        temp_link.data = MagicMock()
-        temp_link.data.link = "https://dl.dropbox.com/exists.pdf"
-        c.data_source.files_get_temporary_link = AsyncMock(return_value=temp_link)
-
-        # First call fails with shared_link_already_exists
-        first_result = MagicMock(success=False)
-        first_result.error = "shared_link_already_exists"
-
-        # Second call also has shared_link_already_exists with URL in error
-        second_result = MagicMock(success=False)
-        second_result.error = "shared_link_already_exists: SharedLinkAlreadyExistsMetadata(url='https://dropbox.com/preview')"
-
-        c.data_source.sharing_create_shared_link_with_settings = AsyncMock(
-            side_effect=[first_result, second_result]
-        )
-
-        parent_meta = MagicMock(success=False)
-        c.data_source.files_get_metadata = AsyncMock(return_value=parent_meta)
-        c._convert_dropbox_permissions_to_permissions = AsyncMock(return_value=[])
-
-        result = await c._process_dropbox_entry(
-            entry, "user-1", "user@test.com", "group-1", False
-        )
-        assert result is not None
-        assert result.record.weburl == "https://dropbox.com/preview"

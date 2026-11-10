@@ -72,6 +72,22 @@ class TestSpecificCauses:
     def test_scanned_document(self) -> None:
         assert ue.to_user_reason(IndexingError(ue.SCANNED_DOCUMENT_NEEDS_OCR)) == ue.SCANNED_DOCUMENT_NEEDS_OCR
 
+    def test_ai_settings_that_could_not_be_read_are_a_temporary_problem(self) -> None:
+        from app.exceptions.indexing_exceptions import AISettingsUnavailableError
+
+        unread = AISettingsUnavailableError("Could not read the workspace's AI settings")
+        unread.__cause__ = KeyError("etcd key")  # a cause no other rule recognises
+        assert ue.to_user_reason(unread) == ue.TEMPORARY_PROBLEM
+
+    def test_no_model_that_reads_images_gives_the_scanned_document_reason_even_when_wrapped(self) -> None:
+        from app.exceptions.indexing_exceptions import MultimodalModelNotConfiguredError
+
+        missing = MultimodalModelNotConfiguredError("No multimodal LLM found in configuration.")
+        assert ue.to_user_reason(missing) == ue.SCANNED_DOCUMENT_NEEDS_OCR
+        # The in-process OCR path wraps whatever OCR raised.
+        wrapped = _wrapped(DocumentProcessingError(f"Failed to process document: {missing}"), missing)
+        assert ue.to_user_reason(wrapped) == ue.SCANNED_DOCUMENT_NEEDS_OCR
+
     @pytest.mark.parametrize(
         "reason",
         [

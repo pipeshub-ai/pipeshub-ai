@@ -101,6 +101,7 @@ async def _write(blob: BlobStorage, record: TicketRecord) -> tuple[NodeArtifactS
     rev = uuid.uuid4().hex[:16]
     written = await ArtifactWriter(store, logger).write_revision(
         record, ORG_ID, record.virtual_record_id, rev, record.block_containers,
+        stored_run="gen-it:run",
     )
     assert written is not None
     return store, written
@@ -145,8 +146,12 @@ async def test_the_reader_still_rebuilds_the_stored_record(blob: BlobStorage) ->
 
         store.read_urls = spy  # type: ignore[method-assign]
         mappings = MagicMock()
+        mappings.config_service.get_config = AsyncMock(
+            return_value={"featureFlags": {"ENABLE_ARTIFACT_READ": True}, "artifactReadGeneration": "gen-it"}
+        )
         backend = ArtifactRecordBackend(mappings, store)
         lookup = {"record_doc_id": "doc", "currentRev": written.manifest.rev, "storedRev": written.manifest.rev,
+                  "storedRun": "gen-it:run", "currentRun": "gen-it:run",
                   "manifestDocId": written.manifest_ref.document_id}
 
         read = await backend.read_record(vrid, ORG_ID, lookup=lookup)

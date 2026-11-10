@@ -553,3 +553,65 @@ class TestFetchAttachmentContent:
             async for _ in helper.fetch_attachment_content(record):
                 pass
         assert exc.value.status_code == HttpStatusCode.BAD_REQUEST.value
+
+
+# ===========================================================================
+# One record per attachment when the sync and the stream both create it
+# ===========================================================================
+
+
+class TestAttachmentMetByTwoWritersAtOnce:
+    """The issue sync and the stream of the issue (indexing reads the issue while the
+    sync goes on) can each look for an attachment before either has stored it. Each
+    then created its own record, so the graph held two records for one upload. The
+    next full sync rewrote the one its lookup found and unlinked the other, which lost
+    its parent issue and the access it inherits."""
+
+    BODY = f"See [spec.pdf](/uploads/{_HASH32}/spec.pdf)"
+    URL = f"https://gitlab.com/api/v4/projects/42/uploads/{_HASH32}/spec.pdf"
+
+    async def test_the_sync_and_the_stream_store_one_record(self) -> None:
+        from app.connectors.sources.gitlab.issues import IssuesSync
+
+        c, helper = _make_attachment_helper()
+        c.attachments = helper
+        # Both writers look before either has stored the attachment.
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        c.runtime.ds_call = AsyncMock(return_value=MagicMock(success=True, data=[], error=None))
+        issue = MagicMock(project_id=42, iid=1, title="Bug", description=self.BODY)
+        record = _record()
+
+        synced = await IssuesSync(c)._issue_attachment_records(issue, record)
+        children, streamed = await helper.make_child_records_of_attachments(self.BODY, record)
+        stored = {update.record.id: update.record for update in [*synced, *streamed]}
+
+        assert [r.external_record_id for r in stored.values()] == [self.URL], (
+            f"one attachment stored as {len(stored)} records: {sorted(stored)}")
+        assert [child.child_id for child in children] == list(stored)
+
+    async def test_a_new_attachment_gets_the_same_id_from_every_writer(self) -> None:
+        from app.connectors.sources.gitlab.models import FileAttachment
+
+        attachment = FileAttachment(
+            href=f"/uploads/{_HASH32}/spec.pdf", filename="spec.pdf", filetype="pdf", category="attachment")
+        record = _record()
+
+        async def ids(helper: AttachmentsHelper) -> list[str]:
+            listed = await helper.make_file_records_from_list([attachment], record)
+            _, from_body = await helper.make_child_records_of_attachments(self.BODY, record)
+            _, from_review = await helper.make_block_comment_of_attachments(self.BODY, record)
+            return [u.record.id for u in [*listed, *from_body, *from_review]]
+
+        first, second = await ids(_make_attachment_helper()[1]), await ids(_make_attachment_helper()[1])
+        assert first == second
+        assert len(set(first)) == 1
+
+    async def test_a_stored_attachment_keeps_its_id(self) -> None:
+        c, helper = _make_attachment_helper()
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=MagicMock(id="stored-node", record_name="spec.pdf"))
+
+        children, created = await helper.make_child_records_of_attachments(self.BODY, _record())
+
+        assert created == []
+        assert [child.child_id for child in children] == ["stored-node"]

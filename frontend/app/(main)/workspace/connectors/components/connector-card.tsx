@@ -210,7 +210,6 @@ function ActiveInstanceBar({
   const isMobile = useIsMobile();
   const [isAddHovered, setIsAddHovered] = useState(false);
   const { t } = useTranslation();
-  const onlyOnePill = (activeCount > 0) !== (inactiveCount > 0);
 
   const handleBadgeClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -233,9 +232,9 @@ function ActiveInstanceBar({
             justify="center"
             onClick={handleBadgeClick}
             style={{
-              flex: onlyOnePill ? 1 : undefined,
-              flexShrink: onlyOnePill ? undefined : 0,
-              height: 28,
+              // Pills share the row equally and never shrink below their label (the row scrolls instead)
+              flex: '1 0 0', minWidth: 'max-content',
+              height: isMobile ? 44 : 32, // same as the Set up and + buttons beside it
               borderRadius: 'var(--radius-2)',
               backgroundColor: 'var(--green-a3)',
               padding: '0 8px',
@@ -255,9 +254,9 @@ function ActiveInstanceBar({
             justify="center"
             onClick={handleBadgeClick}
             style={{
-              flex: onlyOnePill ? 1 : undefined,
-              flexShrink: onlyOnePill ? undefined : 0,
-              height: 28,
+              // Pills share the row equally and never shrink below their label (the row scrolls instead)
+              flex: '1 0 0', minWidth: 'max-content',
+              height: isMobile ? 44 : 32, // same as the Set up and + buttons beside it
               borderRadius: 'var(--radius-2)',
               backgroundColor: 'var(--amber-a3)',
               padding: '0 8px',

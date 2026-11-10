@@ -26,6 +26,7 @@ from app.web.fetch.remote import MAX_BLOCK_CHARS, markdown_blocks, markdown_page
 from app.web.health import check_provider
 from app.web.search.brave import BraveSearch
 from app.web.search.firecrawl import FirecrawlSearch
+from app.web.search.keenable import KeenableSearch
 from app.web.search.searxng import SearxngSearch
 
 Handler = Callable[[httpx.Request], httpx.Response]
@@ -123,6 +124,36 @@ class TestBrave:
         http = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(401)))
         with pytest.raises(AuthFailed):
             await BraveSearch({"apiKey": "k"}, http).search("q", deadline())
+
+
+class TestKeenable:
+    async def test_keyless_uses_the_public_endpoint(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"results": [
+                {"url": "https://a.example/", "title": "A", "description": "d", "snippet": "s"},
+                {"url": "https://b.example/", "title": "B", "snippet": "x" * 900},
+            ]})
+
+        results = await KeenableSearch({}, httpx.AsyncClient(transport=httpx.MockTransport(handler))).search("q", deadline())
+        assert [(r.url, r.snippet) for r in results] == [("https://a.example/", "d"), ("https://b.example/", "x" * 500)]
+        assert str(seen[0].url) == "https://api.keenable.ai/v1/search/public"
+        assert seen[0].headers["X-Keenable-Title"] == "PipesHub"
+        assert "X-API-Key" not in seen[0].headers
+        assert json.loads(seen[0].content) == {"query": "q", "max_results": 10}
+
+    async def test_key_uses_the_keyed_endpoint(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"results": []})
+
+        await KeenableSearch({"apiKey": "k"}, httpx.AsyncClient(transport=httpx.MockTransport(handler))).search("q", deadline())
+        assert str(seen[0].url) == "https://api.keenable.ai/v1/search"
+        assert seen[0].headers["X-API-Key"] == "k"
 
 
 class TestFirecrawlSearch:

@@ -71,6 +71,15 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
+def env_positive_int(name: str, default: int) -> int:
+    """Read a limit that must be at least 1; empty, malformed, zero or negative values use ``default``."""
+    value = env_int(name, default)
+    if value < 1:
+        _warn(name, str(value), default)
+        return default
+    return value
+
+
 def env_seconds(name: str, default: float) -> float:
     """Read a duration env var. Non-finite and negative values are rejected."""
     raw = os.getenv(name)

@@ -1,5 +1,7 @@
 """Unit tests for app.telemetry.modules.activity_metrics."""
 
+import pytest
+
 from app.telemetry.backend import METRICS_BACKEND
 from app.telemetry.modules.activity_metrics import record_service_activity
 
@@ -53,3 +55,41 @@ class TestRecordServiceActivity:
         text = METRICS_BACKEND.serialize()
         line = next(line for line in text.splitlines() if "repeat_case" in line)
         assert line.endswith(" 2.0")
+
+
+class TestBoundedLabels:
+    def test_unknown_mimetype_collapses_to_other(self) -> None:
+        record_service_activity(
+            "indexing_service", "bounded_mime", mimetype="application/x-weird-9f3a; charset=utf-8",
+        )
+        record_service_activity("indexing_service", "bounded_mime", mimetype="application/PDF; x=1")
+        lines = [
+            line for line in METRICS_BACKEND.serialize().splitlines()
+            if 'activity="bounded_mime"' in line
+        ]
+        assert any('mimetype="other"' in line for line in lines)
+        assert any('mimetype="application/pdf"' in line for line in lines)
+        assert not any("x-weird" in line for line in lines)
+
+    def test_distinct_kb_ids_are_capped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.telemetry.modules import activity_metrics as am
+
+        monkeypatch.setattr(am, "_MAX_VALUES_PER_LABEL", 3)
+        monkeypatch.setitem(am._seen, "kb", set())
+        for i in range(10):
+            record_service_activity("indexing_service", "bounded_kb", kb=f"kb-cap-{i}")
+        lines = [
+            line for line in METRICS_BACKEND.serialize().splitlines()
+            if line.startswith("pipeshub_activity_total{") and 'activity="bounded_kb"' in line
+        ]
+        assert len(lines) == 4  # three admitted ids and "other"
+        assert sum('kb="other"' in line for line in lines) == 1
+
+    def test_shipped_cap_is_500_distinct_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.telemetry.modules import activity_metrics as am
+
+        monkeypatch.setitem(am._seen, "domain", set())
+        assert am._MAX_VALUES_PER_LABEL == 500
+        bounded = [am._bound_value("domain", f"d{i}.example") for i in range(501)]
+        assert bounded[:500] == [f"d{i}.example" for i in range(500)]
+        assert bounded[500] == "other"

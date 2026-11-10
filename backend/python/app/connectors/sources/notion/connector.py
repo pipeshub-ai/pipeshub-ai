@@ -13,7 +13,7 @@ import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from logging import Logger
-from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, NoReturn, Optional, Tuple, Union
+from typing import Any, AsyncGenerator, Awaitable, Callable, Collection, Dict, List, NoReturn, Optional, Tuple, Union
 from http import HTTPStatus
 from urllib.parse import quote, unquote, urlparse
 from uuid import uuid4
@@ -40,9 +40,14 @@ from app.connectors.core.base.connector.connector_service import (
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
-from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.data_store.data_store import DataStoreProvider, TransactionStore
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
+from app.connectors.core.sync_routing import (
+    carry_stored_version,
+    save_synced_records,
+    synced,
+)
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import NotificationSeverity, NotificationType
 from app.connectors.core.base.sync_point.sync_point import (
@@ -74,6 +79,7 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.notion.block_parser import NotionBlockParser, property_items_fetcher
 from app.connectors.sources.notion.common.apps import NotionApp
+from app.connectors.utils.record_ids import new_record_id
 from app.models.blocks import (
     Block,
     BlockComment,
@@ -98,6 +104,7 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    SourcePerson,
     WebpageRecord,
 )
 from app.models.permission import Permission
@@ -109,6 +116,7 @@ from app.sources.client.notion.notion import (
 )
 from app.sources.external.notion.notion import NotionDataSource
 from app.utils.concurrency import gather_with_concurrency
+from app.utils.credential_refresh_log import EVENT_CHECK_FAILED, log_refresh_failure
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.public_http import (
     PublicFetchError,
@@ -171,6 +179,35 @@ _OAUTH_REQUIRED_SCOPES = (
     ("read_content", "Read content"),
     ("read_comment", "Read comments"),
 )
+
+
+# Waiting for indexing, which a filter turned off since must stop. Not a record indexing has
+# reached: a save would erase its parsing state and failure reason, or race a live run.
+_WAITING_FOR_INDEXING = frozenset((ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value))
+
+
+def _indexing_status_outdated(record: Record, *, enabled: bool) -> bool:
+    """Stored with indexing off while its filter now allows it, or waiting to be indexed while its
+    filter now turns indexing off: only a save brings the status in line."""
+    status = getattr(record, "indexing_status", None)
+    status = getattr(status, "value", status)
+    if enabled:
+        return status == ProgressStatus.AUTO_INDEX_OFF.value
+    return status in _WAITING_FOR_INDEXING
+
+
+def notion_person(
+    user: dict[str, Any] | None, bot_ids: Collection[str] = (), *, bots_known: bool = True,
+) -> SourcePerson | None:
+    """A Notion partial user ({object, id}, ``type`` only sometimes) as a SourcePerson. A partial user
+    without its type is a bot when the user sync listed its id as one; while that list is incomplete
+    (``bots_known`` False) such a user is left out, as it may be a bot read as a person."""
+    if not isinstance(user, dict) or not user.get("id"):
+        return None
+    is_bot = user.get("type") == "bot" or user["id"] in bot_ids
+    if not is_bot and user.get("type") is None and not bots_known:
+        return None
+    return SourcePerson(source_id=user["id"], is_service_account=is_bot)
 
 
 def _edit_part(revision: str | None) -> str | None:
@@ -429,6 +466,8 @@ class NotionConnector(BaseConnector):
         # Tracking state for deduplication
         # Workspace information from bot owner
         self.workspace_id: Optional[str] = None
+        self._bot_user_ids: set[str] = set()  # from the user sync; marks a page's untyped partial users
+        self._bot_ids_complete = False  # every page of the user listing was read
         self.workspace_name: Optional[str] = None
         # Set during a sync when part of the source was not read (a walk cut short, a page
         # whose attachments or comments failed, a user read that stopped early). Read by
@@ -691,7 +730,7 @@ class NotionConnector(BaseConnector):
                 self.connector_id, name.value if isinstance(name, Connectors) else str(name), refresh_token
             )
         except Exception as e:
-            self.logger.error("Notion token refresh after a 401 failed: %s", e)
+            log_refresh_failure(self.logger, EVENT_CHECK_FAILED, e)
             return False
         return bool(token and getattr(token, "access_token", None))
 
@@ -889,7 +928,7 @@ class NotionConnector(BaseConnector):
                     elif records == []:
                         self._sync_incomplete = True
                 if batch:
-                    await self.data_entities_processor.on_new_records(batch)
+                    await self._save_content_records(batch)
 
             if object_type == "page":
                 await self._recheck_page_comments(live, stored_ids)
@@ -961,7 +1000,7 @@ class NotionConnector(BaseConnector):
                 self._sync_incomplete = True
                 failed.append(obj_id)
         if batch:
-            await self.data_entities_processor.on_new_records(batch)
+            await self._save_content_records(batch)
         point: dict[str, Any] = {"after": slice_ids[-1]}
         if failed:
             point["retry"] = failed[: self._COMMENT_RECHECK_MAX_PAGES_PER_SYNC]
@@ -997,7 +1036,7 @@ class NotionConnector(BaseConnector):
                 self._sync_incomplete = True
                 self._touched_data_sources.add(ds_id)
         if batch:
-            await self.data_entities_processor.on_new_records(batch)
+            await self._save_content_records(batch)
         await self._persist_touched_data_sources()
 
     def _touched_sync_point_key(self) -> str:
@@ -1109,12 +1148,15 @@ class NotionConnector(BaseConnector):
         for child in children:
             child.parent_external_record_id = None
             child.parent_record_type = None
-            nodes.append(child.to_arango_base_record())
+            # Only the parent field: a rerun must not write back state indexing changed since.
+            nodes.append({"_key": child.id, "externalParentId": None})
 
-        async with self.data_store_provider.transaction() as tx_store:
-            # Base node only — batch_upsert_records would also rewrite the type doc, and
-            # these come back as base Records whose type payload is the wrong shape.
-            updated = await tx_store.batch_update_nodes(nodes, CollectionNames.RECORDS.value)
+        # Base node only — batch_upsert_records would also rewrite the type doc, and
+        # these come back as base Records whose type payload is the wrong shape.
+        # execute_in_transaction runs it again on a write conflict.
+        updated = await self.data_store_provider.execute_in_transaction(
+            lambda tx_store: tx_store.batch_update_nodes(nodes, CollectionNames.RECORDS.value)
+        )
 
         # The providers report a partial write by returning False, not by raising. Deleting
         # the stub anyway would strand whichever children kept their now-dangling parent
@@ -1154,9 +1196,10 @@ class NotionConnector(BaseConnector):
         for child in children:
             child.parent_external_record_id = new_parent_external_id
             child.parent_record_type = new_parent_type
-            nodes.append(child.to_arango_base_record())
+            # Only the parent field: a rerun must not write back state indexing changed since.
+            nodes.append({"_key": child.id, "externalParentId": new_parent_external_id})
 
-        async with self.data_store_provider.transaction() as tx_store:
+        async def rehome(tx_store: TransactionStore) -> None:
             if nodes:
                 updated = await tx_store.batch_update_nodes(
                     nodes, CollectionNames.RECORDS.value
@@ -1174,6 +1217,9 @@ class NotionConnector(BaseConnector):
                         child.id,
                         RecordRelations.PARENT_CHILD.value,
                     )
+
+        # Run again on a write conflict: the children may be indexing.
+        await self.data_store_provider.execute_in_transaction(rehome)
 
     async def _retire_database_container_record(self, record: Record) -> None:
         """Re-home children of a leftover DATABASE container, then delete it.
@@ -1800,8 +1846,10 @@ class NotionConnector(BaseConnector):
 
             self.logger.info(f"Starting reindex for {len(records)} Notion records")
             await self._ensure_workspace_from_bot()
+            if not self._bot_ids_complete:  # a reindex before a complete user sync: a page's untyped bot must not read as a person
+                await self._load_bot_user_ids()
 
-            updated_records: List[Tuple[Record, List[Permission]]] = []
+            updated_records: list[tuple[Record, list[Permission], Record]] = []
             non_updated_records: List[Record] = []
             gone_count = 0
             gone: list[Record] = []
@@ -1818,7 +1866,8 @@ class NotionConnector(BaseConnector):
                             gone.append(record)
                         continue
                     if updated:
-                        updated_records.append(updated)
+                        fresh, permissions = updated
+                        updated_records.append((fresh, permissions, record))
                     else:
                         non_updated_records.append(record)
                 except Exception as e:
@@ -1837,7 +1886,11 @@ class NotionConnector(BaseConnector):
                     await self._delete_records(gone)
 
             if updated_records:
-                await self.data_entities_processor.on_new_records(updated_records)
+                routed = []
+                for fresh, permissions, stored in updated_records:
+                    carry_stored_version(fresh, stored)
+                    routed.append(synced(fresh, permissions, stored))
+                await save_synced_records(self.data_entities_processor, routed)
                 self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
 
             if non_updated_records:
@@ -2037,6 +2090,7 @@ class NotionConnector(BaseConnector):
             total_synced = 0
             total_skipped = 0
             user_details_complete = True
+            listing_complete = True
             workspace_emails: List[str] = []
             persons_seen = 0
             persons_without_email = 0
@@ -2068,6 +2122,7 @@ class NotionConnector(BaseConnector):
                         has_more,
                     )
                     user_details_complete = False
+                    listing_complete = False
 
                 if not users_data:
                     self.logger.info("No more users to process")
@@ -2084,6 +2139,8 @@ class NotionConnector(BaseConnector):
                     if user_type == "person" and user.get("id"):
                         person_user_ids.append(user.get("id"))
                     elif user_type == "bot":
+                        if user.get("id"):
+                            self._bot_user_ids.add(user["id"])
                         # Bot users contain workspace information
                         bot_data = user.get("bot", {})
                         workspace_id = bot_data.get("workspace_id")
@@ -2180,6 +2237,7 @@ class NotionConnector(BaseConnector):
                 if next_cursor == cursor:
                     self.logger.warning("Notion users pagination stopping: next_cursor equals start_cursor (%s)", cursor)
                     user_details_complete = False
+                    listing_complete = False
                     break
                 cursor = next_cursor
 
@@ -2192,6 +2250,7 @@ class NotionConnector(BaseConnector):
                     "\"Read user information including email addresses\" on the integration, "
                     "then sync again."
                 )
+            self._bot_ids_complete = listing_complete
             if self.workspace_id and workspace_emails:
                 await self._add_users_to_workspace_permissions(workspace_emails)
             if user_details_complete:
@@ -2216,8 +2275,9 @@ class NotionConnector(BaseConnector):
         """
         keep = {email.lower() for email in keep_emails if email}
         kept_ids = set(keep_user_ids or ())
-        removed = 0
-        async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+
+        async def remove_leavers(tx_store: TransactionStore) -> int:
+            removed = 0
             existing = await tx_store.get_app_users(self.data_entities_processor.org_id, self.connector_id)
             for user in existing:
                 email = (user.email or "").lower()
@@ -2231,6 +2291,9 @@ class NotionConnector(BaseConnector):
                     CollectionNames.USER_APP_RELATION.value,
                 )
                 removed += 1
+            return removed
+
+        removed = await self.data_entities_processor.data_store_provider.execute_in_transaction(remove_leavers)
         if removed:
             self.logger.info("Removed %s Notion user(s) who are no longer in the workspace", removed)
 
@@ -2459,7 +2522,7 @@ class NotionConnector(BaseConnector):
                 if records_with_permissions:
                     # Before the rows: a crash after them must still find their tables touched.
                     await self._persist_touched_data_sources()
-                    await self.data_entities_processor.on_new_records(records_with_permissions)
+                    await self._save_content_records(records_with_permissions)
                     self.logger.info(f"Saved batch of {len(records_with_permissions)} {object_type}(s) and files")
 
                 # Pagination - only continue if we haven't hit the sync point threshold
@@ -2518,6 +2581,25 @@ class NotionConnector(BaseConnector):
             self.logger.error(f"❌ {type_display} sync failed: {e}", exc_info=True)
             raise
 
+    async def _save_content_records(
+        self, rows: list[tuple[Record, list[Permission]]],
+    ) -> None:
+        """Write pages, data sources and their files on the path their revision asks for.
+
+        A stored record whose source revision moved publishes ``updateRecord``.
+        A first write, a placeholder and an unchanged revision stay on ``newRecord``.
+        """
+        if not rows:
+            return
+        routed = []
+        for record, permissions in rows:
+            existing = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, record.external_record_id,
+            )
+            carry_stored_version(record, existing)
+            routed.append(synced(record, permissions, existing))
+        await save_synced_records(self.data_entities_processor, routed)
+
     async def _records_for_search_object(
         self,
         obj_data: dict[str, Any],
@@ -2529,7 +2611,8 @@ class NotionConnector(BaseConnector):
         """The records one search result becomes: the page or data source, then (pages) its
         attachment and comment-attachment files.
 
-        None: nothing to sync (its database is gone). ``[]``: it failed this run (transform, its
+        None: nothing to sync (its database is gone, or a rechecked page whose comments did not
+        change). ``[]``: it failed this run (transform, its
         database, attachments or comments) and is not saved, so its stored revision stays old and
         the next sync reads it again. A page whose last_edited_time is unchanged keeps its stored
         revision and skips the block walk, unless ``recheck_comments``. ``rows_changed``: a data
@@ -2650,6 +2733,28 @@ class NotionConnector(BaseConnector):
         )
         self._walked_pages.add(obj_id)
         self._sync_comments.pop(obj_id, None)
+        files_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.FILES)
+        if recheck_comments and same_edit and existing.external_revision_id == record.external_revision_id:
+            children = await self.data_entities_processor.get_records_by_parent(self.connector_id, obj_id)
+            stored = {c.external_record_id: c for c in children or [] if c.record_type == RecordType.FILE}
+            # Saving it again would change nothing but its timestamps, on every page the rotation
+            # reaches. It is saved below when a failed batch left one of its files unstored or
+            # stale, or when its indexing filter was turned on or off since the page or a file was stored.
+            if not _indexing_status_outdated(existing, enabled=indexing_enabled) and all(
+                f.external_record_id in stored
+                and stored[f.external_record_id].external_revision_id == f.external_revision_id
+                and not _indexing_status_outdated(stored[f.external_record_id], enabled=files_indexing_enabled)
+                for f in files
+            ):
+                current = {f.external_record_id for f in files}
+                # Notion's edit time has minute precision, so a file removed within the minute
+                # leaves the revision as it was.
+                await self._prune_removed_files(obj_id, current)
+                if self.data_entities_processor.full_sync_running(self.connector_id):
+                    self.data_entities_processor.note_kept_records(
+                        self.connector_id, [existing.id, *(stored[i].id for i in current)]
+                    )
+                return None
         # Only for a page indexing will stream: not one with indexing off, nor a rechecked page
         # whose revision did not change. Full: keep the oldest, which indexing streams first.
         will_stream = indexing_enabled and not (
@@ -2658,7 +2763,6 @@ class NotionConnector(BaseConnector):
         if will_stream and len(self._sync_comments) < self._SYNC_COMMENTS_CACHE_MAX:
             self._sync_comments[obj_id] = (record.external_revision_id, comments_by_block)
 
-        files_indexing_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.FILES)
         for file_record in files:
             if not files_indexing_enabled:
                 file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
@@ -3752,6 +3856,7 @@ class NotionConnector(BaseConnector):
 
                 if record_type == RecordType.FILE:
                     minimal_record = FileRecord(
+                        id=new_record_id(self.connector_id, ext_id),
                         org_id=self.data_entities_processor.org_id,
                         record_name=name,
                         record_type=record_type,
@@ -3782,6 +3887,7 @@ class NotionConnector(BaseConnector):
                             parent_record_type = RecordType.WEBPAGE
 
                     minimal_record = WebpageRecord(
+                        id=new_record_id(self.connector_id, ext_id),
                         org_id=self.data_entities_processor.org_id,
                         record_name=name,
                         record_type=record_type,
@@ -3805,16 +3911,18 @@ class NotionConnector(BaseConnector):
                     )
 
                 records_to_create.append((minimal_record, []))
-                # Pre-populate mapping (record.id is set before on_new_records)
-                child_record_map[ext_id] = ChildRecord(
-                    child_type=ChildType.RECORD,
-                    child_id=minimal_record.id,
-                    child_name=minimal_record.record_name
-                )
 
             # Batch create all missing records in one call
             await self.data_entities_processor.on_new_records(records_to_create)
             self.logger.info(f"Created {len(records_to_create)} placeholder records")
+            # After the write: a record the sync stored since the lookup keeps its id, and the
+            # processor hands that id back on the record, so the block points at what is stored.
+            for minimal_record, _ in records_to_create:
+                child_record_map[minimal_record.external_record_id] = ChildRecord(
+                    child_type=ChildType.RECORD,
+                    child_id=minimal_record.id,
+                    child_name=minimal_record.record_name
+                )
 
         return child_record_map
 
@@ -4454,6 +4562,28 @@ class NotionConnector(BaseConnector):
 
     # ==================== Transform Helpers ====================
 
+    async def _load_bot_user_ids(self) -> None:
+        """The bots the workspace lists, as the user sync records them; a failure leaves them unknown."""
+        cursor = None
+        try:
+            while True:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.list_users(start_cursor=cursor, page_size=100)
+                if not response or not response.success or not response.data:
+                    return
+                data = response.data.json()
+                self._bot_user_ids.update(
+                    u["id"] for u in data.get("results") or [] if u.get("type") == "bot" and u.get("id"))
+                next_cursor = data.get("next_cursor")
+                if not data.get("has_more") or not next_cursor:
+                    self._bot_ids_complete = True
+                    return
+                if next_cursor == cursor:
+                    return
+                cursor = next_cursor
+        except Exception as e:
+            self.logger.warning("Could not load Notion bot users: %s", e)
+
     async def _ensure_workspace_from_bot(self, *, refresh: bool = False) -> None:
         """Load the token's workspace from ``/users/me``; with ``refresh``, even when one is known.
 
@@ -4868,6 +4998,7 @@ class NotionConnector(BaseConnector):
             workspace_group_id = self.workspace_id if self.workspace_id else None
 
             return WebpageRecord(
+                id=new_record_id(self.connector_id, obj_id),
                 org_id=self.data_entities_processor.org_id,
                 record_name=title,
                 record_type=record_type,
@@ -4887,6 +5018,10 @@ class NotionConnector(BaseConnector):
                 weburl=obj_data.get("url"),
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
+                authored_by=notion_person(
+                    obj_data.get("created_by"), self._bot_user_ids, bots_known=self._bot_ids_complete),
+                last_modified_by=notion_person(
+                    obj_data.get("last_edited_by"), self._bot_user_ids, bots_known=self._bot_ids_complete),
             )
 
         except _DatabaseUnavailable:
@@ -4990,6 +5125,7 @@ class NotionConnector(BaseConnector):
             source_updated_at = self._parse_iso_timestamp(last_edited_time) if last_edited_time else None
 
             return FileRecord(
+                id=new_record_id(self.connector_id, file_id),
                 org_id=self.data_entities_processor.org_id,
                 record_name=file_name,
                 record_type=RecordType.FILE,
@@ -5325,6 +5461,7 @@ class NotionConnector(BaseConnector):
 
             self.logger.debug(f"Record not found: {external_id}, creating a placeholder")
             minimal_record = WebpageRecord(
+                id=new_record_id(self.connector_id, external_id),
                 org_id=self.data_entities_processor.org_id,
                 record_name=page_title or ("Database Row" if parent_data_source_id else f"Page {external_id[:8]}"),
                 record_type=RecordType.WEBPAGE,

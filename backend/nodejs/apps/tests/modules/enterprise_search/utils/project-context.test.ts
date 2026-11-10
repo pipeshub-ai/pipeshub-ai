@@ -3,13 +3,23 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import mongoose from 'mongoose'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
+import { Project } from '../../../../src/modules/projects/schema/project.schema'
+import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import {
+  accessibleProjectIdsFor,
   applyProjectScope,
   loadProjectForSession,
   resolveProjectLink,
   PROJECT_ID_UNASSIGNED,
 } from '../../../../src/modules/enterprise_search/utils/project-context'
-import { NotFoundError } from '../../../../src/libs/errors/http.errors'
+import {
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+} from '../../../../src/libs/errors/http.errors'
+import { ProjectsFeature } from '../../../../src/modules/projects/utils/projects-feature'
+
+const NO_TEAMS = { resolveTeamIds: async () => [] as string[] }
 
 const ORG_ID = new mongoose.Types.ObjectId().toString()
 const USER_ID = new mongoose.Types.ObjectId().toString()
@@ -30,6 +40,13 @@ function makeProject(overrides: Record<string, any> = {}): any {
 }
 
 describe('project-context', () => {
+  // The Projects flag is read from the worker's settings store, which an earlier test file in the same
+  // worker may have connected (flag off by default). These tests are about project context, so the flag
+  // is on unless a test turns it off.
+  let projectsEnabled: sinon.SinonStub
+  beforeEach(() => {
+    projectsEnabled = sinon.stub(ProjectsFeature, 'isEnabled').resolves(true)
+  })
   afterEach(() => {
     sinon.restore()
   })
@@ -330,6 +347,18 @@ describe('project-context', () => {
   // resolveProjectLink
   // -----------------------------------------------------------------------
   describe('resolveProjectLink', () => {
+    it('refuses a new project chat while Projects is turned off, before any access check', async () => {
+      projectsEnabled.resolves(false)
+      const accessStub = sinon.stub(ProjectService, 'assertAccess')
+      try {
+        await resolveProjectLink(ORG_ID, USER_ID, { projectId: PROJECT_ID })
+        expect.fail('expected ForbiddenError')
+      } catch (error) {
+        expect(error).to.be.instanceOf(ForbiddenError)
+      }
+      expect(accessStub.called).to.equal(false)
+    })
+
     it('returns {} when the body has no projectId', async () => {
       const result = await resolveProjectLink(ORG_ID, USER_ID, {})
       expect(result).to.deep.equal({})
@@ -371,6 +400,51 @@ describe('project-context', () => {
       }
     })
 
+    it('refuses a token without project:read before checking the project', async () => {
+      const accessStub = sinon.stub(ProjectService, 'assertAccess')
+      try {
+        await resolveProjectLink(ORG_ID, USER_ID, { projectId: PROJECT_ID }, {
+          ...NO_TEAMS,
+          oauthScopes: ['conversation:chat'],
+        })
+        expect.fail('Expected rejection')
+      } catch (error) {
+        expect(error).to.be.instanceOf(ForbiddenError)
+      }
+      expect(accessStub.called).to.equal(false)
+    })
+
+    it('accepts a token that carries project:read', async () => {
+      sinon.stub(ProjectService, 'assertAccess').resolves({ role: 'viewer', project: makeProject() })
+      const result = await resolveProjectLink(ORG_ID, USER_ID, { projectId: PROJECT_ID }, {
+        ...NO_TEAMS,
+        oauthScopes: ['conversation:chat', 'project:read'],
+      })
+      expect(result.projectId).to.equal(PROJECT_ID)
+    })
+
+    it('checks access with the caller\'s team ids', async () => {
+      const stub = sinon
+        .stub(ProjectService, 'assertAccess')
+        .resolves({ role: 'viewer', project: makeProject() })
+      await resolveProjectLink(ORG_ID, USER_ID, { projectId: PROJECT_ID }, {
+        resolveTeamIds: async () => ['team-1'],
+      })
+      expect(stub.firstCall.args[4]).to.deep.equal(['team-1'])
+    })
+
+    it('refuses a new chat in an archived project', async () => {
+      sinon
+        .stub(ProjectService, 'assertAccess')
+        .resolves({ role: 'owner', project: makeProject({ isArchived: true }) })
+      try {
+        await resolveProjectLink(ORG_ID, USER_ID, { projectId: PROJECT_ID })
+        expect.fail('Expected rejection')
+      } catch (error) {
+        expect(error).to.be.instanceOf(ConflictError)
+      }
+    })
+
     it('ignores a non-string projectId in the body', async () => {
       const result = await resolveProjectLink(ORG_ID, USER_ID, { projectId: 123 })
       expect(result).to.deep.equal({})
@@ -381,6 +455,18 @@ describe('project-context', () => {
   // loadProjectForSession
   // -----------------------------------------------------------------------
   describe('loadProjectForSession', () => {
+    it('runs a follow-up without project context while Projects is turned off, keeping the link', async () => {
+      projectsEnabled.resolves(false)
+      const accessStub = sinon.stub(ProjectService, 'assertAccess')
+      const updateStub = sinon.stub(ChatSession, 'updateOne')
+      const result = await loadProjectForSession(ORG_ID, USER_ID, PROJECT_ID, {
+        conversationId: new mongoose.Types.ObjectId(),
+      })
+      expect(result).to.be.undefined
+      expect(accessStub.called).to.equal(false)
+      expect(updateStub.called).to.equal(false)
+    })
+
     it('returns undefined when projectId is undefined', async () => {
       const result = await loadProjectForSession(ORG_ID, USER_ID, undefined)
       expect(result).to.be.undefined
@@ -412,11 +498,71 @@ describe('project-context', () => {
       }
     })
 
+    it('unlinks the chat when its owner lost access to a project still in use', async () => {
+      const conversationId = new mongoose.Types.ObjectId()
+      sinon.stub(ProjectService, 'assertAccess').rejects(new NotFoundError('Project not found'))
+      sinon.stub(Project, 'exists').resolves({ _id: PROJECT_ID } as any)
+      const unlinkStub = sinon.stub(ChatSession, 'updateOne').resolves({} as any)
+
+      const result = await loadProjectForSession(ORG_ID, USER_ID, PROJECT_ID, { conversationId })
+
+      expect(result).to.be.undefined
+      const [filter, update] = unlinkStub.firstCall.args as any[]
+      expect(filter._id.toString()).to.equal(conversationId.toString())
+      expect(filter.projectId.toString()).to.equal(PROJECT_ID)
+      expect(update).to.deep.equal({ $unset: { projectId: '', projectVisibility: '' } })
+    })
+
+    it('keeps the link when the project has team members, since a failed team lookup looks the same', async () => {
+      sinon.stub(ProjectService, 'assertAccess').rejects(new NotFoundError('Project not found'))
+      sinon.stub(Project, 'exists').resolves(null)
+      const unlinkStub = sinon.stub(ChatSession, 'updateOne').resolves({} as any)
+
+      await loadProjectForSession(ORG_ID, USER_ID, PROJECT_ID, {
+        conversationId: new mongoose.Types.ObjectId(),
+      })
+
+      expect(unlinkStub.called).to.equal(false)
+    })
+
+    it('refuses a follow-up from a token without project:read instead of dropping the project', async () => {
+      try {
+        await loadProjectForSession(ORG_ID, USER_ID, PROJECT_ID, {
+          caller: { ...NO_TEAMS, oauthScopes: [] },
+        })
+        expect.fail('Expected rejection')
+      } catch (error) {
+        expect(error).to.be.instanceOf(ForbiddenError)
+      }
+    })
+
     it('accepts an ObjectId projectId (as stored on the session row)', async () => {
       const project = makeProject()
       const stub = sinon.stub(ProjectService, 'assertAccess').resolves({ role: 'viewer', project })
       await loadProjectForSession(ORG_ID, USER_ID, new mongoose.Types.ObjectId(PROJECT_ID))
       expect(stub.calledWith(ORG_ID, USER_ID, PROJECT_ID, 'viewer')).to.equal(true)
+    })
+  })
+
+  describe('accessibleProjectIdsFor', () => {
+    it('skips the team lookup when no project in the org is shared with a team', async () => {
+      sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
+      const idsStub = sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
+      const resolveTeamIds = sinon.stub().resolves(['team-1'])
+
+      await accessibleProjectIdsFor(ORG_ID, USER_ID, { resolveTeamIds })
+
+      expect(resolveTeamIds.called).to.equal(false)
+      expect(idsStub.firstCall.args[2]).to.deep.equal([])
+    })
+
+    it('passes the caller\'s teams when the org shares projects with teams', async () => {
+      sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(true)
+      const idsStub = sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
+
+      await accessibleProjectIdsFor(ORG_ID, USER_ID, { resolveTeamIds: async () => ['team-1'] })
+
+      expect(idsStub.firstCall.args[2]).to.deep.equal(['team-1'])
     })
   })
 })

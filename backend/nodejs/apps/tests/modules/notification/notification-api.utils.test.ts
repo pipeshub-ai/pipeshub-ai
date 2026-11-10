@@ -2,8 +2,6 @@
 import { expect } from 'chai';
 import mongoose from 'mongoose';
 import {
-  buildCursorFilter,
-  buildRetentionFilter,
   clampPageSize,
   decodeCursor,
   encodeCursor,
@@ -24,47 +22,15 @@ describe('notification/notification-api.utils', () => {
     expect(cutoff.toISOString()).to.equal(expected.toISOString());
   });
 
-  it('buildRetentionFilter scopes to org, user and retention window', () => {
-    const orgOid = new mongoose.Types.ObjectId();
-    const userOid = new mongoose.Types.ObjectId();
-    const before = retentionCutoff().getTime();
-    const filter = buildRetentionFilter(orgOid, userOid, null);
-    const after = retentionCutoff().getTime();
-    expect(filter.orgId).to.equal(orgOid);
-    expect(filter.assignedTo).to.equal(userOid);
-    expect(filter.isDeleted).to.equal(false);
-    const createdAtFilter = filter.createdAt as { $gte: Date };
-    expect(createdAtFilter.$gte).to.be.instanceOf(Date);
-    const cutoffMs = createdAtFilter.$gte.getTime();
-    expect(cutoffMs).to.be.at.least(before);
-    expect(cutoffMs).to.be.at.most(after);
-    // Default (no status, includeArchived=false) excludes archived docs.
-    expect(filter.status).to.deep.equal({ $ne: 'archived' });
-  });
-
-  it('buildRetentionFilter includes all statuses when includeArchived=true', () => {
-    const orgOid = new mongoose.Types.ObjectId();
-    const userOid = new mongoose.Types.ObjectId();
-    const filter = buildRetentionFilter(orgOid, userOid, null, true);
-    expect(filter.status).to.be.undefined;
-  });
-
-  it('buildRetentionFilter includes status when provided', () => {
-    const orgOid = new mongoose.Types.ObjectId();
-    const userOid = new mongoose.Types.ObjectId();
-    const filter = buildRetentionFilter(orgOid, userOid, 'unread');
-    expect(filter.status).to.equal('unread');
-  });
-
-  it('resolveNotificationAuthContext returns ObjectIds for a valid user', () => {
+  it('resolveNotificationAuthContext returns string ids for a valid user', () => {
     const userId = new mongoose.Types.ObjectId().toString();
     const orgId = new mongoose.Types.ObjectId().toString();
     const context = resolveNotificationAuthContext({ userId, orgId });
     if (!context) {
       throw new Error('expected resolveNotificationAuthContext to return a context');
     }
-    expect(context.userOid.toString()).to.equal(userId);
-    expect(context.orgOid.toString()).to.equal(orgId);
+    expect(context.userId).to.equal(userId);
+    expect(context.orgId).to.equal(orgId);
   });
 
   it('resolveNotificationAuthContext returns null when userId is missing or invalid', () => {
@@ -98,10 +64,10 @@ describe('notification/notification-api.utils', () => {
   it('encodeCursor and decodeCursor round-trip', () => {
     const createdAt = new Date('2026-05-20T10:30:00.000Z');
     const id = new mongoose.Types.ObjectId();
-    const encoded = encodeCursor({ createdAt, _id: id });
+    const encoded = encodeCursor({ createdAt, _id: id.toString() });
     const decoded = decodeCursor(encoded);
     expect(decoded.createdAt.toISOString()).to.equal(createdAt.toISOString());
-    expect(decoded._id.toString()).to.equal(id.toString());
+    expect(decoded._id).to.equal(id.toString());
   });
 
   it('decodeCursor rejects invalid values', () => {
@@ -125,18 +91,6 @@ describe('notification/notification-api.utils', () => {
       JSON.stringify({ c: 'not-a-date', i: new mongoose.Types.ObjectId().toString() }),
     ).toString('base64url');
     expect(() => decodeCursor(badDate)).to.throw(InvalidNotificationCursorError);
-  });
-
-  it('buildCursorFilter uses $or tie-break', () => {
-    const createdAt = new Date('2026-05-20T10:30:00.000Z');
-    const id = new mongoose.Types.ObjectId();
-    const filter = buildCursorFilter({ createdAt, _id: id });
-    expect(filter).to.deep.equal({
-      $or: [
-        { createdAt: { $lt: createdAt } },
-        { createdAt, _id: { $lt: id } },
-      ],
-    });
   });
 
   it('paginateResults slices and sets hasMore', () => {

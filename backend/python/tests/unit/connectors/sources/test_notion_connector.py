@@ -1,48 +1,53 @@
 """Tests for the Notion connector and block parser."""
 
 import asyncio
-
 from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import IndexingFilterKey
 from app.connectors.sources.notion.block_parser import NotionBlockParser
-from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.notion.connector import (
     NotionConnector,
     UnconvertibleImageError,
     _DatabaseGone,
 )
-from app.sources.client.notion.notion import NotionRESTClientViaOAuth
-from app.utils.public_http import PublicFetchResponse
 from app.models.blocks import (
     Block,
+    BlockComment,
     BlockGroup,
     BlockSubType,
     BlockType,
-    DataFormat,
-)
-from app.models.entities import FileRecord, RecordType, WebpageRecord
-from fastapi import HTTPException
-from app.models.blocks import (
-    BlockComment,
     ChildRecord,
     ChildType,
     CommentAttachment,
+    DataFormat,
     GroupSubType,
     TableRowMetadata,
 )
 from app.models.entities import (
+    FileRecord,
     RecordGroupType,
+    RecordType,
+    WebpageRecord,
 )
-
+from app.sources.client.notion.notion import NotionRESTClientViaOAuth
+from app.utils.public_http import PublicFetchResponse
+from tests.support.data_store import runs_in_its_transaction
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_connector():
     """Build a NotionConnector with all dependencies mocked."""
@@ -51,13 +56,15 @@ def _make_connector():
     data_entities_processor.org_id = "org-1"
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
+    data_entities_processor.on_record_content_update = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.reindex_existing_records = AsyncMock()
     data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
     data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)
     data_entities_processor.get_user_by_source_id = AsyncMock(return_value=None)
     data_entities_processor.get_records_by_record_type = AsyncMock(return_value=[])
-    data_store_provider = MagicMock()
+    runs_in_its_transaction(data_entities_processor.data_store_provider)
+    data_store_provider = runs_in_its_transaction(MagicMock())
     config_service = AsyncMock()
     connector_id = "notion-conn-1"
     connector = NotionConnector(
@@ -921,6 +928,92 @@ class TestNotionConnectorCleanup:
         )
 
 
+class TestNotionReindexKnowsTheBots:
+    @pytest.mark.asyncio
+    async def test_a_reindex_before_any_user_sync_loads_the_bots_before_it_reads_pages(self) -> None:
+        """A fresh connector that reindexes first must still mark a page's untyped bot author as a bot."""
+        connector = _make_connector()
+        connector.workspace_id = "ws-1"
+        bots = _make_api_response(success=True, data={
+            "results": [{"id": "person-1", "type": "person"}, {"id": "bot-1", "type": "bot"}],
+            "has_more": False, "next_cursor": None,
+        })
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock(return_value=bots)
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        seen: list[set] = []
+
+        async def fetch(_record: object) -> None:
+            seen.append(set(connector._bot_user_ids))  # what the page's authorship would be judged by
+
+        connector._check_and_fetch_updated_record = AsyncMock(side_effect=fetch)
+        record = MagicMock()
+        record.id = "rec-1"
+        record.external_record_id = "page-1"
+        record.record_type = RecordType.FILE
+
+        await connector.reindex_records([record])
+
+        assert seen == [{"bot-1"}]
+
+    @pytest.mark.asyncio
+    async def test_a_reindex_after_the_user_sync_does_not_list_users_again(self) -> None:
+        connector = _make_connector()
+        connector.workspace_id = "ws-1"
+        connector._bot_user_ids = {"bot-1"}
+        connector._bot_ids_complete = True
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock()
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        connector._check_and_fetch_updated_record = AsyncMock(return_value=None)
+
+        await connector.reindex_records([MagicMock(id="rec-1", external_record_id="page-1", record_type=RecordType.FILE)])
+
+        mock_ds.list_users.assert_not_awaited()
+
+
+class TestNotionAnIncompleteBotListLinksNoUnresolvedUser:
+    @pytest.mark.asyncio
+    async def test_a_failed_second_page_leaves_the_list_incomplete_and_its_bot_unlinked(self) -> None:
+        from app.connectors.sources.notion.connector import notion_person
+
+        connector = _make_connector()
+        first = _make_api_response(success=True, data={
+            "results": [{"id": "bot-1", "type": "bot"}], "has_more": True, "next_cursor": "c2",
+        })
+        failed = _make_api_response(success=False, error="rate limited")
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock(side_effect=[first, failed])
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        await connector._load_bot_user_ids()
+
+        assert connector._bot_user_ids == {"bot-1"} and connector._bot_ids_complete is False
+        # "bot-2" was on the page that failed: untyped, it is left out rather than linked as a person.
+        assert notion_person({"object": "user", "id": "bot-2"}, connector._bot_user_ids,
+                             bots_known=connector._bot_ids_complete) is None
+        assert notion_person({"object": "user", "id": "bot-1"}, connector._bot_user_ids,
+                             bots_known=connector._bot_ids_complete).is_service_account is True
+
+    @pytest.mark.asyncio
+    async def test_the_next_reindex_tries_the_list_again(self) -> None:
+        connector = _make_connector()
+        connector.workspace_id = "ws-1"
+        connector._bot_user_ids = {"bot-1"}  # a partial list from a failed load
+        done = _make_api_response(success=True, data={
+            "results": [{"id": "bot-1", "type": "bot"}, {"id": "bot-2", "type": "bot"}],
+            "has_more": False, "next_cursor": None,
+        })
+        mock_ds = MagicMock()
+        mock_ds.list_users = AsyncMock(return_value=done)
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        connector._check_and_fetch_updated_record = AsyncMock(return_value=None)
+
+        await connector.reindex_records([MagicMock(id="rec-1", external_record_id="page-1", record_type=RecordType.FILE)])
+
+        assert connector._bot_user_ids == {"bot-1", "bot-2"} and connector._bot_ids_complete is True
+
+
 class TestNotionSyncUsersWorkspace:
     @pytest.mark.asyncio
     async def test_sync_users_person_and_bot(self):
@@ -961,6 +1054,8 @@ class TestNotionSyncUsersWorkspace:
         # Verify workspace was extracted from bot user
         assert connector.workspace_id == "ws-1"
         assert connector.workspace_name == "My Workspace"
+        assert connector._bot_user_ids == {"bot-1"}  # so a page's untyped partial bot user is no person
+        assert connector._bot_ids_complete is True
         connector._create_workspace_record_group.assert_awaited_once()
         connector.data_entities_processor.on_new_app_users.assert_awaited()
         connector._add_users_to_workspace_permissions.assert_awaited_once_with(
@@ -2422,13 +2517,15 @@ def _make_connector_fullcov():
     dep.org_id = "org-1"
     dep.on_new_app_users = AsyncMock()
     dep.on_new_records = AsyncMock()
+    dep.on_record_content_update = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)
     dep.get_record_group_by_external_id = AsyncMock(return_value=None)
     dep.get_user_by_source_id = AsyncMock(return_value=None)
     dep.get_records_by_record_type = AsyncMock(return_value=[])
-    dsp = MagicMock()
+    runs_in_its_transaction(dep.data_store_provider)
+    dsp = runs_in_its_transaction(MagicMock())
     mock_tx = MagicMock()
     mock_tx.get_record_group_by_external_id = AsyncMock(return_value=None)
     tx_cm = AsyncMock()
@@ -2986,16 +3083,40 @@ class TestReindexRecords:
         )
 
     @pytest.mark.asyncio
-    async def test_updated_record_goes_through_on_new_records(self):
+    async def test_updated_record_publishes_a_content_update(self):
         conn = _make_connector_fullcov()
         record = _make_webpage_record(external_revision_id="old")
         updated = _make_webpage_record(external_revision_id="new")
         conn._check_and_fetch_updated_record = AsyncMock(return_value=(updated, []))
         await conn.reindex_records([record])
-        conn.data_entities_processor.on_new_records.assert_awaited_once_with(
-            [(updated, [])]
-        )
+        conn.data_entities_processor.on_record_content_update.assert_awaited_once_with(updated)
+        conn.data_entities_processor.on_new_records.assert_not_awaited()
         conn.data_entities_processor.reindex_existing_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_changed_page_publishes_a_content_update(self) -> None:
+        conn = _make_connector_fullcov()
+        stored = _make_webpage_record(external_revision_id="old", version=2)
+        incoming = _make_webpage_record(external_revision_id="new", version=0)
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=stored)
+
+        await conn._save_content_records([(incoming, [])])
+
+        conn.data_entities_processor.on_record_content_update.assert_awaited_once_with(incoming)
+        conn.data_entities_processor.on_new_records.assert_not_awaited()
+        assert incoming.version == 3
+
+    @pytest.mark.asyncio
+    async def test_an_unchanged_page_stays_an_upsert(self) -> None:
+        conn = _make_connector_fullcov()
+        stored = _make_webpage_record(external_revision_id="same", version=2)
+        incoming = _make_webpage_record(external_revision_id="same", version=0)
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=stored)
+
+        await conn._save_content_records([(incoming, [])])
+
+        conn.data_entities_processor.on_new_records.assert_awaited_once_with([(incoming, [])])
+        conn.data_entities_processor.on_record_content_update.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_is_raised(self):
@@ -6809,8 +6930,10 @@ class TestReindexSuppressesGoneRecords:
 
         await conn.reindex_records([gone, stale, same])
 
-        conn.data_entities_processor.on_new_records.assert_awaited_once_with([(updated, [])])
+        conn.data_entities_processor.on_record_content_update.assert_awaited_once_with(updated)
+        conn.data_entities_processor.on_new_records.assert_not_awaited()
         conn.data_entities_processor.reindex_existing_records.assert_awaited_once_with([same])
+        assert updated.version == 2
 
 
 class TestCheckAndFetchGoneVerdict:
@@ -7179,6 +7302,12 @@ class TestRetireDatabaseContainer:
         assert ds_child.parent_record_type == RecordType.WEBPAGE
         assert row.parent_external_record_id == "ds-real"
         assert row.parent_record_type == RecordType.DATASOURCE
+        # Only the parent field, so a rerun can't write back state indexing changed since.
+        sent = [node for c in conn._mock_tx.batch_update_nodes.await_args_list for node in c.args[0]]
+        assert sorted(sent, key=lambda n: n["_key"]) == sorted([
+            {"_key": ds_child.id, "externalParentId": "page-parent"},
+            {"_key": row.id, "externalParentId": "ds-real"},
+        ], key=lambda n: n["_key"])
         conn._mock_tx.delete_parent_child_edge_to_record.assert_any_await(ds_child.id)
         conn._mock_tx.delete_parent_child_edge_to_record.assert_any_await(row.id)
         conn._mock_tx.create_record_relation.assert_any_await(
@@ -7374,7 +7503,6 @@ class TestDatabaseParentLookupFailures:
 
 
 import re  # noqa: E402
-
 
 # ===================================================================
 # Delta checkpoint boundary: Notion truncates last_edited_time to the

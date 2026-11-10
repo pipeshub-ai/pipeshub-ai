@@ -83,12 +83,16 @@ class TestKnowledgeGraphFindRecordsByValueDelegation:
             new_callable=AsyncMock,
         ) as mock_exec:
             mock_exec.return_value = (True, '{"status": "success", "records": []}')
-            await tool.find_records_by_value(amount_min=5000, currency="USD", quantity_max=2.5, percent_min=0.2)
+            await tool.find_records_by_value(
+                entity_ids=["e-1"], amount_min=5000, currency="USD", quantity_max=2.5, percent_min=0.2,
+                record_types=["FILE"], source_ids=["kb-1"], limit=30, cursor="40",
+            )
         assert mock_exec.await_args.kwargs == {
-            "kinds": None, "name": None, "date_from": None, "date_to": None,
+            "kinds": None, "name": None, "entity_ids": ["e-1"], "date_from": None, "date_to": None,
             "amount_min": 5000, "amount_max": None, "currency": "USD",
             "quantity_min": None, "quantity_max": 2.5, "dimension": None,
             "percent_min": 0.2, "percent_max": None,
+            "record_types": ["FILE"], "source_ids": ["kb-1"], "limit": 30, "cursor": "40",
         }
 
 
@@ -113,3 +117,26 @@ class TestKnowledgeGraphFindRecordsByEntityDelegation:
             cursor="40",
         )
         assert result == (True, "Records connected to this department")
+
+
+def test_people_are_named_in_the_entity_tool_descriptions() -> None:
+    """KG-13: the model can only ask for a type it is told exists."""
+    from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
+
+    search = KnowledgeGraph.search_entities._agent_tool_meta
+    params = {p.name: p.description for p in search.parameters}
+    assert "people" in search.short_description and "people" in search.description
+    assert "'person'" in params["entity_types"]
+    assert "person" in KnowledgeGraph.find_records_by_entity._agent_tool_meta.description
+
+
+def test_organizations_are_named_in_the_entity_tool_descriptions() -> None:
+    from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
+
+    search = KnowledgeGraph.search_entities._agent_tool_meta
+    params = {p.name: p.description for p in search.parameters}
+    assert "organizations" in search.short_description and "organizations" in search.description
+    assert "'organization'" in params["entity_types"]
+    find = KnowledgeGraph.find_records_by_entity._agent_tool_meta
+    assert "organization" in find.description
+    assert "'organization'" in {p.name: p.description for p in find.parameters}["entity_type"]

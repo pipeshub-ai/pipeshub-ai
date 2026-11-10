@@ -1,6 +1,7 @@
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 
 import asyncio
+import functools
 import logging
 import os
 import traceback
@@ -21,6 +22,7 @@ from app.edition_config import (
 )
 from app.core.envelope import configure_from_config as configure_envelope
 from app.core.org_context import spawn_detached, for_org, system
+from app.core.org_jobs import for_each_org
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.modules.demo_data.router import demo_data_router
 from app.utils.logger import install_log_redaction
@@ -63,7 +65,8 @@ from app.connectors.core.sync.task_manager import (
 )
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.connectors.api.artifacts_router import artifacts_router
-from app.connectors.sources.localKB.api.kb_router import kb_router
+from app.connectors.sources.localKB.api.kb_router import install_push_routes, kb_router
+from app.connectors.sources.web.crawl4ai_fetcher import close_shared_fetcher  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.connectors.sources.localKB.api.knowledge_hub_router import (
     get_knowledge_hub_service,
     knowledge_hub_router,
@@ -196,35 +199,58 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
     It also gets pendingResync: nothing finished that run, so the request it
     was serving is still owed, and that is what lets the boot resume restart it
     on a MANUAL connector too (see ``resumes_interrupted_full_sync``).
+
+    Org by org: the startup task binds no org, and the graph is org-scoped on
+    Postgres (an unbound read raises).
     """
+    try:
+        await for_each_org(
+            graph_provider, "stale_sync_reset",
+            functools.partial(_reset_org_stale_sync_state, graph_provider, logger), logger,
+        )
+    except Exception as e:
+        logger.error(f"Startup sweep for stale sync state failed: {e}", exc_info=True)
+
+
+def _of_org(docs: list[dict] | None, org_id: str) -> list[dict]:
+    """The bound org's docs: Arango and Neo4j ignore the bound org and answer for every org.
+
+    A doc with no orgId is kept: on Postgres it is in the bound org's partition (a
+    legacy App nothing backfilled), and elsewhere the first org's pass resets it once.
+    """
+    return [d for d in docs or [] if d.get("orgId") in (org_id, None)]
+
+
+async def _reset_org_stale_sync_state(graph_provider: IGraphDBProvider, logger: logging.Logger, org_id: str) -> None:
+    """One org's part of ``reset_stale_sync_state``, called under that org."""
     try:
         # Both lookups go through get_nodes_by_field_in: it is the one that
         # translates _key back to "id" on both providers (Arango stores _key,
         # so a filters-based lookup would hand back {"id": None} there).
-        stuck = await graph_provider.get_nodes_by_field_in(
+        stuck = _of_org(await graph_provider.get_nodes_by_field_in(
             CollectionNames.APPS.value,
             "status",
             [AppStatus.SYNCING.value, AppStatus.FULL_SYNCING.value],
-            ["id", "status"],
-        )
-        locked = await graph_provider.get_nodes_by_field_in(
+            ["id", "status", "orgId"],
+        ), org_id)
+        locked = _of_org(await graph_provider.get_nodes_by_field_in(
             CollectionNames.APPS.value,
             "isLocked",
             [True],
-            ["id", "status"],
-        )
+            ["id", "status", "orgId"],
+        ), org_id)
 
-        stuck_keys = {doc["id"] for doc in (stuck or []) if doc.get("id")}
+        stuck_keys = {doc["id"] for doc in stuck if doc.get("id")}
         full_sync_keys = {
             doc["id"]
-            for doc in (stuck or [])
+            for doc in stuck
             if doc.get("id") and doc.get("status") == AppStatus.FULL_SYNCING.value
         }
         # A locked doc mid-deletion keeps its DELETING status; only the stuck
         # lock is released for it.
         locked_only = {
             doc["id"]: doc.get("status")
-            for doc in (locked or [])
+            for doc in locked
             if doc.get("id") and doc["id"] not in stuck_keys
         }
         if not stuck_keys and not locked_only:
@@ -305,7 +331,9 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
                 f"they resume in full: {owed}"
             )
     except Exception as e:
-        logger.error(f"Startup sweep for stale sync state failed: {e}", exc_info=True)
+        # ERROR, not the helper's WARNING: this runs once per boot, and the org's
+        # locked connectors keep answering 409 until the next one.
+        logger.error(f"Startup sweep for stale sync state failed org={org_id}: {e}", exc_info=True)
 
 
 async def resume_sync_services(app_container: ConnectorAppContainer, data_store: GraphDataStore = None) -> bool:
@@ -343,7 +371,6 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
 
                 # Get users for this organization
                 users = await graph_provider.get_users(org_id, active=True)
-                logger.info(f"User: {users}")
                 if not users:
                     logger.info("No users found for organization %s", org_id)
                     continue
@@ -866,6 +893,12 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
         except Exception as e:
             logger.error(f"Error closing configuration service: {e}")
 
+        # After the syncs above were cancelled: an idle close would otherwise outlive the loop.
+        try:
+            await close_shared_fetcher()
+        except Exception as e:
+            logger.warning(f"Error closing the shared headless browser: {e}")
+
         # Last, and the only place the shared pool is ever shut down — connector
         # cleanup() only drains its own lease, since other connectors share this.
         thread_pool = getattr(container, "connector_thread_pool", None)
@@ -931,6 +964,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning(f"❌ Failed to register accessible-records invalidator: {e}")
 
+    from app.services.permissions.wiring import register_viewer_scope_version
+
+    await register_viewer_scope_version(app_container.config_service(), logger)
+    from app.services.permissions.wiring import register_scope_generation
+
+    await register_scope_generation(app_container.config_service(), logger)
+
     try:
         await telemetry.bind(app_container.config_service(), logger).start()
     except Exception as e:
@@ -994,7 +1034,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
 
         repair_result = await run_connector_oauth_toolset_fields_repair(
-            app_container.config_service(), oauth_registry, logger
+            app_container.config_service(), oauth_registry, logger, graph_provider
         )
         if not repair_result.get("skipped"):
             logger.info(
@@ -1185,7 +1225,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         run_flat_storage_migration,
     )
 
-    app.state.flat_storage_migration_task = asyncio.create_task(
+    app.state.flat_storage_migration_task = spawn_detached(
         run_flat_storage_migration(app_container, graph_provider), name="flat_storage_migration",
     )
 
@@ -1291,7 +1331,6 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
     try:
         logger.debug(f"Applying authentication for path: {request_path}")
         authenticated_request = await authMiddleware(request)
-        return await call_next(authenticated_request)
 
     except HTTPException as exc:
         # Handle authentication errors
@@ -1300,6 +1339,16 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
     except Exception as e:
         # Handle unexpected errors
         logger.error(f"Unexpected error during authentication for {request_path}: {str(e)}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "Internal server error"},
+        )
+
+    try:
+        return await call_next(authenticated_request)
+    except Exception:
+        # call_next re-raises the route's exception; log it once here, inside the request context.
+        logger.exception("Unhandled exception while processing %s %s", request.method, request_path)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"detail": "Internal server error"},
@@ -1350,6 +1399,9 @@ async def health_check() -> JSONResponse:
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
+
+
+PG_PROBE_TIMEOUT_SEC = 3.0
 
 
 @app.get("/health/graph-db")
@@ -1490,6 +1542,29 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
                 },
             )
 
+    # ── PostgreSQL ────────────────────────────────────────────────────────────
+    if data_store == "postgres":
+        try:
+            # Under Node's 5s graph timeout (also the Helm probe budget): a saturated pool must answer 503, not hang the probe.
+            # Not wait_for: that also waits for the cancelled ping to finish, and a stalled unit can take seconds to roll back.
+            ping = spawn_detached(request.app.state.graph_provider.ping(), name="pg_graph_health_ping")
+            try:
+                done, _ = await asyncio.wait({ping}, timeout=PG_PROBE_TIMEOUT_SEC)
+            finally:  # a timeout or the handler's own cancellation: do not leave the ping holding a pooled connection
+                if not ping.done():
+                    ping.cancel()
+                    ping.add_done_callback(lambda t: t.cancelled() or t.exception())  # retrieved, so nothing logs "never retrieved"
+            if not done:
+                raise TimeoutError("PostgreSQL graph ping timed out")
+            ping.result()
+            return JSONResponse(status_code=200, content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()})
+        except Exception:
+            request.app.container.logger().error("PostgreSQL graph health check failed", exc_info=True)
+            return JSONResponse(
+                status_code=503,
+                content={"status": "unhealthy", "error": "PostgreSQL graph health check failed", "timestamp": get_epoch_timestamp_in_ms()},
+            )
+
     # Unknown DATA_STORE value — treat as healthy so we don't block deployments.
     return JSONResponse(
         status_code=200,
@@ -1622,6 +1697,7 @@ app.include_router(toolsets_router)
 app.include_router(mcp_servers_router)
 app.include_router(api_toolsets_router)
 app.include_router(kb_router)
+install_push_routes(app)  # the push routes and the ENABLE_KB_PUSH gate (off by default)
 app.include_router(knowledge_hub_router)
 app.include_router(demo_data_router)
 app.include_router(connector_router)

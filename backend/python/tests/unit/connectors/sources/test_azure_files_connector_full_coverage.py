@@ -109,7 +109,7 @@ def cfg():
     svc = AsyncMock()
     svc.get_config = AsyncMock(return_value={
         "auth": {
-            "connectionString": "DefaultEndpointsProtocol=https;AccountName=teststorage;AccountKey=abc;EndpointSuffix=core.windows.net"
+            "connectionString": "DefaultEndpointsProtocol=https;AccountName=teststorage;AccountKey=YWJj;EndpointSuffix=core.windows.net"
         },
         "scope": "TEAM",
     })
@@ -254,7 +254,7 @@ class TestInitBranches:
         mock_ds.return_value = MagicMock()
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         conn.config_service.get_config = AsyncMock(return_value={
-            "auth": {"connectionString": "AccountName=teststorage;AccountKey=abc"},
+            "auth": {"connectionString": "AccountName=teststorage;AccountKey=YWJj"},
             "scope": "TEAM",
             "created_by": "user-1",
         })
@@ -272,7 +272,7 @@ class TestInitBranches:
         mock_ds.return_value = MagicMock()
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         conn.config_service.get_config = AsyncMock(return_value={
-            "auth": {"connectionString": "AccountName=teststorage;AccountKey=abc"},
+            "auth": {"connectionString": "AccountName=teststorage;AccountKey=YWJj"},
             "scope": "PERSONAL",
             "created_by": "user-1",
         })
@@ -290,7 +290,7 @@ class TestInitBranches:
         mock_ds.return_value = MagicMock()
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         conn.config_service.get_config = AsyncMock(return_value={
-            "auth": {"connectionString": "AccountName=teststorage;AccountKey=abc"},
+            "auth": {"connectionString": "AccountName=teststorage;AccountKey=YWJj"},
         })
         result = await conn.init()
         assert result is True

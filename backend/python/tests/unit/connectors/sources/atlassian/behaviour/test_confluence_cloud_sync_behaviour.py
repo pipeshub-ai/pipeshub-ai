@@ -2376,6 +2376,7 @@ class TestFullListingMisses:
         await connector._sync_spaces_content([ENG])
 
         rewritten = {r.external_record_id for batch in db.record_batches[writes_before:] for r in batch}
+        rewritten.update(r.external_record_id for r in db.content_updates)
         assert {"10", "11"} <= rewritten, "the missed page is written again, so the full sync sees it"
         assert connector.full_sync_coverage().complete is True
 

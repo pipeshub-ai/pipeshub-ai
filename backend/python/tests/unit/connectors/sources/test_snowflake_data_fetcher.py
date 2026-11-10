@@ -1,984 +1,482 @@
-"""Comprehensive tests for app.connectors.sources.snowflake.data_fetcher."""
-from __future__ import annotations
-
-# Patch typing.override for Python 3.10 compatibility before any app imports
-import typing as _typing
-
-if not hasattr(_typing, "override"):
-    try:
-        from typing_extensions import override as _override
-
-        _typing.override = _override  # type: ignore[attr-defined]
-    except ImportError:
-        def _override(fn):  # type: ignore[misc]
-            return fn
-
-        _typing.override = _override  # type: ignore[attr-defined]
+"""SnowflakeDataFetcher: catalog SQL and how its rows map to dataclasses."""
 
 import json
-from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
-from unittest.mock import AsyncMock, MagicMock, mock_open, patch
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from app.connectors.core.sql.key_flags import KeyDefinition
 from app.connectors.sources.snowflake.data_fetcher import (
-    ForeignKey,
-    SnowflakeDatabase,
     SnowflakeDataFetcher,
     SnowflakeFetchError,
-    SnowflakeFile,
-    SnowflakeFolder,
-    SnowflakeHierarchy,
-    SnowflakeSchema,
-    SnowflakeStage,
     SnowflakeTable,
-    SnowflakeView,
-    unreadable_key,
+    schema_key,
 )
+from app.sources.external.snowflake.statements import SnowflakeColumn, SnowflakeResult
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
-def _resp(
-    success: bool = True,
-    data: Any = None,
-    error: Optional[str] = None,
-    status_code: Optional[int] = None,
-    sql_state: Optional[str] = None,
-) -> SimpleNamespace:
-    """Create a mock SnowflakeResponse-like object."""
-    return SimpleNamespace(
-        success=success,
-        data=data,
-        error=error,
-        status_code=status_code,
-        sql_state=sql_state,
+def result(rows: list[dict[str, Any]]) -> SnowflakeResult:
+    names = list(rows[0].keys()) if rows else []
+    return SnowflakeResult(
+        columns=[SnowflakeColumn(name, "text") for name in names],
+        rows=[[row[name] for name in names] for row in rows],
     )
 
 
-# ===========================================================================
-# Dataclass tests
-# ===========================================================================
+class FakeRunner:
+    """Answers statements by the first registered substring they contain."""
+
+    def __init__(self) -> None:
+        self.answers: list[tuple[str, Callable[[], SnowflakeResult]]] = []
+        self.statements: list[str] = []
+
+    def on(self, fragment: str, rows: list[dict] | None = None, error: Exception | None = None) -> None:
+        def answer() -> SnowflakeResult:
+            if error:
+                raise error
+            return result(rows or [])
+        self.answers.append((fragment, answer))
+
+    async def run(self, statement: str, **_: object) -> SnowflakeResult:
+        self.statements.append(statement)
+        for fragment, answer in self.answers:
+            if fragment in statement:
+                return answer()
+        return result([])
 
 
-class TestSnowflakeDatabase:
-    def test_required_field_only(self) -> None:
-        db = SnowflakeDatabase(name="MYDB")
-        assert db.name == "MYDB"
-        assert db.owner is None
-        assert db.comment is None
-        assert db.created_at is None
+@pytest.fixture
+def runner() -> FakeRunner:
+    return FakeRunner()
 
-    def test_all_fields(self) -> None:
-        db = SnowflakeDatabase(
-            name="MYDB", owner="admin", comment="a comment", created_at="2024-01-01"
+
+@pytest.fixture
+def fetcher(runner: FakeRunner) -> SnowflakeDataFetcher:
+    return SnowflakeDataFetcher(runner)  # type: ignore[arg-type]
+
+
+REFUSED = SnowflakeFetchError("Insufficient privileges", sqlstate="42501")
+
+
+class TestDatabases:
+    async def test_show_databases_maps_rows_and_skips_system_ones(self, runner, fetcher) -> None:
+        # SHOW output columns are lowercase.
+        runner.on("SHOW DATABASES", [
+            {"name": "SALES", "kind": "STANDARD", "owner": "SYSADMIN", "comment": "", "created_on": "2024-01-01"},
+            {"name": "SNOWFLAKE", "kind": "APPLICATION", "owner": "", "comment": "", "created_on": None},
+            {"name": "APP_DB", "kind": "APPLICATION", "owner": "", "comment": "", "created_on": None},
+            {"name": "USER$ME", "kind": "PERSONAL DATABASE", "owner": "", "comment": "", "created_on": None},
+            {"name": "PKG", "kind": "APPLICATION PACKAGE", "owner": "", "comment": "", "created_on": None},
+            {"name": "SHARED", "kind": "IMPORTED DATABASE", "owner": "", "comment": "x", "created_on": None},
+        ])
+        databases = await fetcher.list_databases()
+        assert [d.name for d in databases] == ["SALES", "SHARED"]
+        assert databases[0].owner == "SYSADMIN"
+        assert databases[0].comment is None
+
+
+class TestSchemaObjects:
+    async def test_schemas_exclude_information_schema(self, runner, fetcher) -> None:
+        runner.on("SCHEMATA", [{"SCHEMA_NAME": "PUBLIC", "SCHEMA_OWNER": "R", "CREATED": "t", "COMMENT": None}])
+        schemas = await fetcher.list_schemas("My DB")
+        assert [s.name for s in schemas] == ["PUBLIC"]
+        assert 'FROM "My DB".INFORMATION_SCHEMA.SCHEMATA' in runner.statements[0]
+        assert "<> 'INFORMATION_SCHEMA'" in runner.statements[0]
+
+    async def test_tables_filter_the_schema_as_a_literal_and_map_metadata(self, runner, fetcher) -> None:
+        runner.on("INFORMATION_SCHEMA.TABLES", [{
+            "TABLE_NAME": "ORDERS", "TABLE_TYPE": "BASE TABLE", "ROW_COUNT": 10, "BYTES": 2048,
+            "TABLE_OWNER": "R", "COMMENT": None, "CREATED": "2024-01-01T00:00:00+00:00",
+            "LAST_ALTERED": "2024-02-01T00:00:00+00:00", "LAST_DDL": "2024-01-15T00:00:00+00:00",
+        }])
+        (table,) = await fetcher.list_tables("DB", "it's")
+        statement = runner.statements[0]
+        assert "TABLE_SCHEMA = 'it''s'" in statement
+        assert "TABLE_TYPE IN ('BASE TABLE', 'EXTERNAL TABLE')" in statement
+        assert (table.name, table.row_count, table.bytes) == ("ORDERS", 10, 2048)
+        assert (table.created_at, table.last_altered, table.last_ddl) == (
+            "2024-01-01T00:00:00+00:00", "2024-02-01T00:00:00+00:00", "2024-01-15T00:00:00+00:00",
         )
-        assert db.owner == "admin"
-        assert db.comment == "a comment"
-        assert db.created_at == "2024-01-01"
+        assert table.fqn == "DB.it's.ORDERS"
+
+    async def test_views_map_definition_and_secure_flag(self, runner, fetcher) -> None:
+        runner.on("INFORMATION_SCHEMA.VIEWS", [
+            {"TABLE_NAME": "V1", "VIEW_DEFINITION": "select 1", "IS_SECURE": "NO",
+             "TABLE_OWNER": "R", "COMMENT": "c", "CREATED": "t", "LAST_ALTERED": "t"},
+            {"TABLE_NAME": "V2", "VIEW_DEFINITION": None, "IS_SECURE": "YES",
+             "TABLE_OWNER": "R", "COMMENT": None, "CREATED": "t", "LAST_ALTERED": "t"},
+        ])
+        v1, v2 = await fetcher.list_views("DB", "S")
+        assert (v1.definition, v1.is_secure) == ("select 1", False)
+        assert (v2.definition, v2.is_secure) == (None, True)
+
+    async def test_get_view_reads_one_view(self, runner, fetcher) -> None:
+        runner.on("INFORMATION_SCHEMA.VIEWS", [
+            {"TABLE_NAME": "V1", "VIEW_DEFINITION": "select 1", "IS_SECURE": "NO",
+             "TABLE_OWNER": "R", "COMMENT": None, "CREATED": "t", "LAST_ALTERED": "t"},
+        ])
+        view = await fetcher.get_view("DB", "S", "V1")
+        assert view is not None and view.name == "V1"
+        assert "AND TABLE_NAME = 'V1'" in runner.statements[0]
+
+    async def test_get_view_returns_none_when_absent(self, fetcher) -> None:
+        assert await fetcher.get_view("DB", "S", "V1") is None
+
+    async def test_stages_map_type_case_insensitively(self, runner, fetcher) -> None:
+        runner.on("INFORMATION_SCHEMA.STAGES", [
+            {"STAGE_NAME": "EXT", "STAGE_TYPE": "External Named", "STAGE_URL": "s3://b",
+             "STAGE_OWNER": "R", "COMMENT": None, "CREATED": "t"},
+            {"STAGE_NAME": "INT", "STAGE_TYPE": "Internal Named", "STAGE_URL": "",
+             "STAGE_OWNER": "R", "COMMENT": None, "CREATED": "t"},
+        ])
+        ext, internal = await fetcher.list_stages("DB", "S")
+        assert (ext.stage_type, ext.url) == ("EXTERNAL", "s3://b")
+        assert (internal.stage_type, internal.url) == ("INTERNAL", None)
+
+    async def test_stage_files_read_the_quoted_directory(self, runner, fetcher) -> None:
+        runner.on("DIRECTORY(", [
+            {"RELATIVE_PATH": "a/b.csv", "SIZE": 12, "LAST_MODIFIED": "t", "MD5": "m", "FILE_URL": "u"},
+            {"RELATIVE_PATH": None, "SIZE": 0, "LAST_MODIFIED": None, "MD5": None, "FILE_URL": None},
+        ])
+        (file,) = await fetcher.list_stage_files("DB", "S", "my stage")
+        assert 'DIRECTORY(@"DB"."S"."my stage")' in runner.statements[0]
+        assert (file.relative_path, file.size, file.md5, file.file_name) == ("a/b.csv", 12, "m", "b.csv")
+
+    async def test_object_names_read_a_whole_database_at_once(self, runner, fetcher) -> None:
+        runner.on("INFORMATION_SCHEMA.TABLES", [
+            {"TABLE_SCHEMA": "S", "TABLE_NAME": "T"},
+            {"TABLE_SCHEMA": "a.b", "TABLE_NAME": "T"},
+        ])
+        names = await fetcher.object_names("DB", "tables")
+        assert names == ["DB.S.T", 'DB."a.b".T']
+        assert "TABLE_SCHEMA =" not in runner.statements[0]
+
+    async def test_stage_object_names(self, runner, fetcher) -> None:
+        runner.on("INFORMATION_SCHEMA.STAGES", [{"STAGE_SCHEMA": "S", "STAGE_NAME": "ST"}])
+        assert await fetcher.object_names("DB", "stages") == ["DB.S.ST"]
 
 
-class TestSnowflakeSchema:
-    def test_required_fields(self) -> None:
-        s = SnowflakeSchema(name="PUBLIC", database_name="DB1")
-        assert s.name == "PUBLIC"
-        assert s.database_name == "DB1"
+class TestColumnsAndKeys:
+    async def test_columns_grouped_by_table_in_ordinal_order(self, runner, fetcher) -> None:
+        runner.on("INFORMATION_SCHEMA.COLUMNS", [
+            {"TABLE_NAME": "T", "COLUMN_NAME": "ID", "ORDINAL_POSITION": 1, "DATA_TYPE": "NUMBER",
+             "CHARACTER_MAXIMUM_LENGTH": None, "NUMERIC_PRECISION": 38, "NUMERIC_SCALE": 0,
+             "IS_NULLABLE": "NO", "COLUMN_DEFAULT": None, "COMMENT": None},
+            {"TABLE_NAME": "T", "COLUMN_NAME": "NAME", "ORDINAL_POSITION": 2, "DATA_TYPE": "TEXT",
+             "CHARACTER_MAXIMUM_LENGTH": 255, "NUMERIC_PRECISION": None, "NUMERIC_SCALE": None,
+             "IS_NULLABLE": "YES", "COLUMN_DEFAULT": None, "COMMENT": "who"},
+        ])
+        columns = await fetcher.columns_by_table("DB", "S")
+        assert [(c.name, c.ordinal_position) for c in columns["T"]] == [("ID", 1), ("NAME", 2)]
+        assert columns["T"][0].nullable is False and columns["T"][1].nullable is True
+        assert columns["T"][0].numeric_precision == 38 and columns["T"][1].comment == "who"
+        # Precision and scale tell an integer key from a measure.
+        assert (columns["T"][0].data_type, columns["T"][1].data_type) == ("NUMBER(38,0)", "TEXT")
+        assert "ORDER BY TABLE_NAME, ORDINAL_POSITION" in runner.statements[0]
 
+    async def test_columns_of_one_table(self, runner, fetcher) -> None:
+        await fetcher.columns_by_table("DB", "S", "T'x")
+        assert "AND TABLE_NAME = 'T''x'" in runner.statements[0]
 
-class TestSnowflakeTable:
-    def test_fqn(self) -> None:
-        t = SnowflakeTable(name="T1", database_name="DB", schema_name="S")
-        assert t.fqn == "DB.S.T1"
-
-    def test_column_signature_empty(self) -> None:
-        t = SnowflakeTable(name="T", database_name="DB", schema_name="S")
-        assert t.column_signature == ""
-
-    def test_column_signature_stable(self) -> None:
-        t1 = SnowflakeTable(
-            name="T",
-            database_name="DB",
-            schema_name="S",
-            columns=[{"name": "b", "data_type": "VARCHAR"}, {"name": "a", "data_type": "INT"}],
-        )
-        t2 = SnowflakeTable(
-            name="T",
-            database_name="DB",
-            schema_name="S",
-            columns=[{"name": "a", "data_type": "INT"}, {"name": "b", "data_type": "VARCHAR"}],
-        )
-        # Order shouldn't matter because sorted in implementation
-        assert t1.column_signature == t2.column_signature
-        assert len(t1.column_signature) == 32  # md5 hex length
-
-    def test_column_signature_differs_by_type(self) -> None:
-        t1 = SnowflakeTable(
-            name="T",
-            database_name="DB",
-            schema_name="S",
-            columns=[{"name": "a", "data_type": "INT"}],
-        )
-        t2 = SnowflakeTable(
-            name="T",
-            database_name="DB",
-            schema_name="S",
-            columns=[{"name": "a", "data_type": "VARCHAR"}],
-        )
-        assert t1.column_signature != t2.column_signature
-
-
-class TestSnowflakeView:
-    def test_fqn(self) -> None:
-        v = SnowflakeView(name="V", database_name="DB", schema_name="S")
-        assert v.fqn == "DB.S.V"
-        assert v.source_tables == []
-        assert v.is_secure is False
-
-
-class TestSnowflakeStage:
-    def test_fqn_and_default_type(self) -> None:
-        s = SnowflakeStage(name="STG", database_name="DB", schema_name="SC")
-        assert s.fqn == "DB.SC.STG"
-        assert s.stage_type == "INTERNAL"
-
-
-class TestSnowflakeFile:
-    def test_is_folder_true(self) -> None:
-        f = SnowflakeFile(
-            relative_path="folder/",
-            stage_name="STG",
-            database_name="DB",
-            schema_name="SC",
-        )
-        assert f.is_folder is True
-
-    def test_is_folder_false(self) -> None:
-        f = SnowflakeFile(
-            relative_path="file.csv",
-            stage_name="STG",
-            database_name="DB",
-            schema_name="SC",
-        )
-        assert f.is_folder is False
-
-    def test_file_name_root(self) -> None:
-        f = SnowflakeFile(
-            relative_path="data.csv",
-            stage_name="STG",
-            database_name="DB",
-            schema_name="SC",
-        )
-        assert f.file_name == "data.csv"
-
-    def test_file_name_nested(self) -> None:
-        f = SnowflakeFile(
-            relative_path="a/b/c/data.csv",
-            stage_name="STG",
-            database_name="DB",
-            schema_name="SC",
-        )
-        assert f.file_name == "data.csv"
-
-    def test_file_name_trailing_slash(self) -> None:
-        f = SnowflakeFile(
-            relative_path="a/b/",
-            stage_name="STG",
-            database_name="DB",
-            schema_name="SC",
-        )
-        assert f.file_name == "b"
-
-    def test_parent_folder_none(self) -> None:
-        f = SnowflakeFile(
-            relative_path="data.csv",
-            stage_name="STG",
-            database_name="DB",
-            schema_name="SC",
-        )
-        assert f.parent_folder is None
-
-    def test_parent_folder_nested(self) -> None:
-        f = SnowflakeFile(
-            relative_path="a/b/data.csv",
-            stage_name="STG",
-            database_name="DB",
-            schema_name="SC",
-        )
-        assert f.parent_folder == "a/b"
-
-
-class TestSnowflakeFolder:
-    def test_name_root(self) -> None:
-        f = SnowflakeFolder(path="a", stage_name="STG", database_name="DB", schema_name="SC")
-        assert f.name == "a"
-
-    def test_name_nested(self) -> None:
-        f = SnowflakeFolder(
-            path="a/b/c",
-            stage_name="STG",
-            database_name="DB",
-            schema_name="SC",
-            parent_path="a/b",
-        )
-        assert f.name == "c"
-
-
-class TestForeignKey:
-    def test_source_and_target_fqn(self) -> None:
-        fk = ForeignKey(
-            constraint_name="fk1",
-            database_name="DB",
-            source_schema="S1",
-            source_table="T1",
-            source_column="c1",
-            target_schema="S2",
-            target_table="T2",
-            target_column="c2",
-        )
-        assert fk.source_fqn == "DB.S1.T1"
-        assert fk.target_fqn == "DB.S2.T2"
-
-
-class TestSnowflakeHierarchy:
-    def test_empty_summary(self) -> None:
-        h = SnowflakeHierarchy()
-        s = h.summary()
-        assert s["databases"] == 0
-        assert s["schemas"] == 0
-        assert s["tables"] == 0
-        assert s["views"] == 0
-        assert s["stages"] == 0
-        assert s["files"] == 0
-        assert s["folders"] == 0
-        assert s["foreign_keys"] == 0
-
-    def test_populated_summary(self) -> None:
-        h = SnowflakeHierarchy(
-            databases=[SnowflakeDatabase(name="A"), SnowflakeDatabase(name="B")],
-            schemas={"A": [SnowflakeSchema(name="s1", database_name="A")]},
-            tables={"A.s1": [SnowflakeTable(name="t", database_name="A", schema_name="s1")]},
-            views={"A.s1": [SnowflakeView(name="v", database_name="A", schema_name="s1")]},
-            stages={"A.s1": [SnowflakeStage(name="stg", database_name="A", schema_name="s1")]},
-            files={"A.s1.stg": [SnowflakeFile(relative_path="f", stage_name="stg", database_name="A", schema_name="s1")]},
-            folders={"A.s1.stg": [SnowflakeFolder(path="p", stage_name="stg", database_name="A", schema_name="s1")]},
-            foreign_keys=[
-                ForeignKey(
-                    constraint_name="fk",
-                    database_name="A",
-                    source_schema="s1",
-                    source_table="t",
-                    source_column="c",
-                    target_schema="s1",
-                    target_table="t2",
-                    target_column="id",
-                )
+    async def test_key_definitions_group_by_constraint_in_key_order(self, runner, fetcher) -> None:
+        runner.on("SHOW PRIMARY KEYS", [
+            {"table_name": "T", "column_name": "B", "key_sequence": 2, "constraint_name": "PK_T"},
+            {"table_name": "T", "column_name": "A", "key_sequence": 1, "constraint_name": "PK_T"},
+            {"table_name": "U", "column_name": "ID", "key_sequence": 1, "constraint_name": "PK_U"},
+        ])
+        runner.on("SHOW UNIQUE KEYS", [
+            {"table_name": "T", "column_name": "CODE", "key_sequence": 1, "constraint_name": "UQ_CODE"},
+            {"table_name": "T", "column_name": "Y", "key_sequence": 2, "constraint_name": "UQ_XY"},
+            {"table_name": "T", "column_name": "X", "key_sequence": 1, "constraint_name": "UQ_XY"},
+        ])
+        keys = await fetcher.key_definitions("DB", "my schema")
+        assert keys == {
+            "T": [
+                KeyDefinition("primary", ("A", "B")),
+                KeyDefinition("unique", ("CODE",)),
+                KeyDefinition("unique", ("X", "Y")),
             ],
-        )
-        s = h.summary()
-        assert s["databases"] == 2
-        assert s["schemas"] == 1
-        assert s["tables"] == 1
-        assert s["views"] == 1
-        assert s["stages"] == 1
-        assert s["files"] == 1
-        assert s["folders"] == 1
-        assert s["foreign_keys"] == 1
-
-    def test_to_dict_roundtrip(self) -> None:
-        h = SnowflakeHierarchy(
-            fetched_at="now",
-            databases=[SnowflakeDatabase(name="A")],
-        )
-        d = h.to_dict()
-        assert d["fetched_at"] == "now"
-        assert d["databases"][0]["name"] == "A"
-        assert "summary" in d
-        # Ensure fully JSON-serializable
-        assert json.dumps(d)
-
-
-# ===========================================================================
-# SnowflakeDataFetcher tests
-# ===========================================================================
-
-
-def _make_fetcher(warehouse: Optional[str] = "WH1") -> SnowflakeDataFetcher:
-    ds = MagicMock()
-    # Pre-create AsyncMock attributes for used methods
-    ds.list_databases = AsyncMock()
-    ds.list_schemas = AsyncMock()
-    ds.list_tables = AsyncMock()
-    ds.list_views = AsyncMock()
-    ds.list_stages = AsyncMock()
-    ds.list_stage_files = AsyncMock()
-    ds.execute_sql = AsyncMock()
-    return SnowflakeDataFetcher(ds, warehouse=warehouse)
-
-
-class TestClearCache:
-    def test_clears_both_caches(self) -> None:
-        f = _make_fetcher()
-        f._schema_cache["DB"] = [SnowflakeSchema(name="s", database_name="DB")]
-        f._columns_cache["DB.s"] = {"t": [{"name": "c"}]}
-        f._clear_cache()
-        assert f._schema_cache == {}
-        assert f._columns_cache == {}
-
-
-class TestExtractItems:
-    def test_none(self) -> None:
-        assert _make_fetcher()._extract_items(None) == []
-
-    def test_empty(self) -> None:
-        assert _make_fetcher()._extract_items([]) == []
-
-    def test_list(self) -> None:
-        items = [{"a": 1}, {"b": 2}]
-        assert _make_fetcher()._extract_items(items) == items
-
-    def test_dict_with_data(self) -> None:
-        items = [{"a": 1}]
-        assert _make_fetcher()._extract_items({"data": items}) == items
-
-    def test_dict_with_rowset(self) -> None:
-        items = [{"x": 1}]
-        assert _make_fetcher()._extract_items({"rowset": items}) == items
-
-    def test_dict_with_items_key(self) -> None:
-        items = [{"y": 2}]
-        assert _make_fetcher()._extract_items({"items": items}) == items
-
-    def test_dict_no_known_key(self) -> None:
-        assert _make_fetcher()._extract_items({"other": [1]}) == []
-
-    def test_string_returns_empty(self) -> None:
-        assert _make_fetcher()._extract_items("hello") == []
-
-
-class TestParseSqlResult:
-    def test_none(self) -> None:
-        assert _make_fetcher()._parse_sql_result(None) == []
-
-    def test_not_dict(self) -> None:
-        assert _make_fetcher()._parse_sql_result([1, 2]) == []
-
-    def test_list_rows(self) -> None:
-        data = {
-            "resultSetMetaData": {"rowType": [{"name": "A"}, {"name": "B"}]},
-            "data": [[1, "x"], [2, "y"]],
+            "U": [KeyDefinition("primary", ("ID",))],
         }
-        result = _make_fetcher()._parse_sql_result(data)
-        assert result == [{"A": 1, "B": "x"}, {"A": 2, "B": "y"}]
-
-    def test_dict_rows(self) -> None:
-        data = {
-            "resultSetMetaData": {"rowType": [{"name": "A"}]},
-            "data": [{"A": 1}, {"A": 2}],
-        }
-        result = _make_fetcher()._parse_sql_result(data)
-        assert result == [{"A": 1}, {"A": 2}]
-
-    def test_missing_metadata(self) -> None:
-        result = _make_fetcher()._parse_sql_result({"data": [[1, 2]]})
-        # No metadata => columns is empty, but zip empty gives no keys
-        assert result == [{}]
-
-
-class TestFetchDatabases:
-    @pytest.mark.asyncio
-    async def test_success(self) -> None:
-        f = _make_fetcher()
-        f.data_source.list_databases.return_value = _resp(
-            data=[{"name": "DB1", "owner": "a", "comment": "c", "created_on": "2024-01-01"}]
-        )
-        dbs = await f._fetch_databases()
-        assert len(dbs) == 1
-        assert dbs[0].name == "DB1"
-        assert dbs[0].owner == "a"
-        assert dbs[0].created_at == "2024-01-01"
-
-    @pytest.mark.asyncio
-    async def test_failure(self) -> None:
-        f = _make_fetcher()
-        f.data_source.list_databases.return_value = _resp(success=False, error="bad")
-        dbs = await f._fetch_databases()
-        assert dbs == []
-
-
-class TestFetchSchemas:
-    @pytest.mark.asyncio
-    async def test_caches(self) -> None:
-        f = _make_fetcher()
-        f.data_source.list_schemas.return_value = _resp(
-            data=[{"name": "PUBLIC"}]
-        )
-        first = await f._fetch_schemas("DB1")
-        second = await f._fetch_schemas("DB1")
-        assert first == second
-        # Should only call once due to cache
-        assert f.data_source.list_schemas.await_count == 1
-
-    @pytest.mark.asyncio
-    async def test_failure(self) -> None:
-        f = _make_fetcher()
-        f.data_source.list_schemas.return_value = _resp(success=False, error="no")
-        schemas = await f._fetch_schemas("DB1")
-        assert schemas == []
-
-
-class TestFetchTables:
-    @pytest.mark.asyncio
-    async def test_success(self) -> None:
-        f = _make_fetcher()
-        f.data_source.list_tables.return_value = _resp(
-            data=[
-                {
-                    "name": "T",
-                    "rows": 10,
-                    "bytes": 200,
-                    "kind": "TABLE",
-                    "created_on": "2024-01-01T00:00:00.000-07:00",
-                }
-            ]
-        )
-        tables = await f._fetch_tables("DB", "S")
-        assert len(tables) == 1
-        assert tables[0].row_count == 10
-        assert tables[0].bytes == 200
-        assert tables[0].table_type == "TABLE"
-        # SHOW TABLES has no last-altered column; fetch_all reads it from INFORMATION_SCHEMA.
-        assert tables[0].last_altered is None
-
-    @pytest.mark.asyncio
-    async def test_failure(self) -> None:
-        f = _make_fetcher()
-        f.data_source.list_tables.return_value = _resp(success=False, error="bad")
-        assert await f._fetch_tables("DB", "S") == []
-
-
-_LAST_ALTERED_ROW_TYPE = {"rowType": [{"name": "TABLE_NAME"}, {"name": "LAST_ALTERED"}]}
-
-
-class TestFetchLastAlteredInSchema:
-    @pytest.mark.asyncio
-    async def test_reads_every_result_partition(self) -> None:
-        f = _make_fetcher()
-        f.data_source.execute_sql.return_value = _resp(data={
-            "statementHandle": "h-1",
-            "resultSetMetaData": {
-                **_LAST_ALTERED_ROW_TYPE,
-                "partitionInfo": [{"rowCount": 1}, {"rowCount": 1}],
-            },
-            "data": [["T1", "1759400000.000000000"]],
-        })
-        f.data_source.get_statement_status = AsyncMock(
-            return_value=_resp(data=[["T2", "1759403600.000000000"]])
-        )
-
-        assert await f._fetch_last_altered_in_schema("DB", "S") == {
-            "T1": "1759400000.000000000",
-            "T2": "1759403600.000000000",
-        }
-        statement = f.data_source.execute_sql.await_args.kwargs["statement"]
-        assert "DB.INFORMATION_SCHEMA.TABLES" in statement
-        assert "TABLE_SCHEMA = 'S'" in statement
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("unread", ["refused", "partition"])
-    async def test_an_unread_result_marks_the_schema_unreadable(self, unread: str) -> None:
-        f = _make_fetcher()
-        f.data_source.list_databases.return_value = _resp(data=[{"name": "DB"}])
-        f.data_source.list_schemas.return_value = _resp(data=[{"name": "S"}])
-        f.data_source.list_tables.return_value = _resp(data=[{"name": "T1", "rows": 1, "bytes": 1}])
-        f.data_source.list_views.return_value = _resp(data=[])
-        f.data_source.list_stages.return_value = _resp(data=[])
-        f.data_source.get_statement_status = AsyncMock(return_value=_resp(success=False, error="gone"))
-
-        async def execute_sql(statement: str, **_: object) -> SimpleNamespace:
-            if "INFORMATION_SCHEMA.TABLES" not in statement:
-                return _resp(data={"resultSetMetaData": {"rowType": []}, "data": []})
-            if unread == "refused":
-                return _resp(success=False, error="denied", status_code=422, sql_state="42501")
-            return _resp(data={
-                "statementHandle": "h-1",
-                "resultSetMetaData": {
-                    **_LAST_ALTERED_ROW_TYPE,
-                    "partitionInfo": [{"rowCount": 1}, {"rowCount": 1}],
-                },
-                "data": [["T1", "1759400000.000000000"]],
-            })
-
-        f.data_source.execute_sql.side_effect = execute_sql
-
-        h = await f.fetch_all(include_files=False, include_relationships=True)
-
-        assert unreadable_key("last_altered", "DB.S") in h.unreadable
-        assert h.tables["DB.S"][0].last_altered is None
-
-
-class TestFetchViews:
-    @pytest.mark.asyncio
-    async def test_success(self) -> None:
-        f = _make_fetcher()
-        f.data_source.list_views.return_value = _resp(
-            data=[{"name": "V", "text": "SELECT 1", "is_secure": True}]
-        )
-        views = await f._fetch_views("DB", "S")
-        assert len(views) == 1
-        assert views[0].definition == "SELECT 1"
-        assert views[0].is_secure is True
-
-    @pytest.mark.asyncio
-    async def test_failure(self) -> None:
-        f = _make_fetcher()
-        f.data_source.list_views.return_value = _resp(success=False, error="err")
-        assert await f._fetch_views("DB", "S") == []
-
-
-class TestFetchStages:
-    @pytest.mark.asyncio
-    async def test_internal(self) -> None:
-        f = _make_fetcher()
-        f.data_source.list_stages.return_value = _resp(
-            data=[{"name": "STG", "type": "INTERNAL"}]
-        )
-        stages = await f._fetch_stages("DB", "S")
-        assert stages[0].stage_type == "INTERNAL"
-
-    @pytest.mark.asyncio
-    async def test_external(self) -> None:
-        f = _make_fetcher()
-        f.data_source.list_stages.return_value = _resp(
-            data=[{"name": "STG", "type": "AWS_S3_EXTERNAL", "url": "s3://b"}]
-        )
-        stages = await f._fetch_stages("DB", "S")
-        assert stages[0].stage_type == "EXTERNAL"
-        assert stages[0].url == "s3://b"
-
-    @pytest.mark.asyncio
-    async def test_failure(self) -> None:
-        f = _make_fetcher()
-        f.data_source.list_stages.return_value = _resp(success=False, error="boom")
-        assert await f._fetch_stages("DB", "S") == []
-
-
-class TestFetchStageFiles:
-    @pytest.mark.asyncio
-    async def test_no_warehouse(self) -> None:
-        f = _make_fetcher(warehouse=None)
-        files = await f._fetch_stage_files("DB", "S", "STG")
-        assert files == []
-        f.data_source.list_stage_files.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_failure(self) -> None:
-        f = _make_fetcher()
-        f.data_source.list_stage_files.return_value = _resp(success=False, error="bad")
-        files = await f._fetch_stage_files("DB", "S", "STG")
-        assert files == []
-
-    @pytest.mark.asyncio
-    async def test_success(self) -> None:
-        f = _make_fetcher()
-        f.data_source.list_stage_files.return_value = _resp(
-            data={
-                "data": [
-                    ["file1.csv", "123", "2024-01-01", "md5hash", "extra", "http://u"],
-                    ["file2.csv", "456"],
-                ]
-            }
-        )
-        files = await f._fetch_stage_files("DB", "S", "STG")
-        assert len(files) == 2
-        assert files[0].relative_path == "file1.csv"
-        assert files[0].size == 123
-        assert files[0].md5 == "md5hash"
-        assert files[0].file_url == "http://u"
-        assert files[1].size == 456
-
-    @pytest.mark.asyncio
-    async def test_non_dict_data(self) -> None:
-        f = _make_fetcher()
-        f.data_source.list_stage_files.return_value = _resp(data=[])
-        files = await f._fetch_stage_files("DB", "S", "STG")
-        assert files == []
-
-
-class TestDeduceFolders:
-    def test_flat_files(self) -> None:
-        f = _make_fetcher()
-        files = [
-            SnowflakeFile(relative_path="a.csv", stage_name="S", database_name="D", schema_name="SC"),
+        assert runner.statements == [
+            'SHOW PRIMARY KEYS IN SCHEMA "DB"."my schema"',
+            'SHOW UNIQUE KEYS IN SCHEMA "DB"."my schema"',
         ]
-        folders = f._deduce_folders(files, "D", "SC", "S")
-        assert folders == []
 
-    def test_nested(self) -> None:
-        f = _make_fetcher()
-        files = [
-            SnowflakeFile(relative_path="a/b/data.csv", stage_name="S", database_name="D", schema_name="SC"),
-            SnowflakeFile(relative_path="a/c/other.csv", stage_name="S", database_name="D", schema_name="SC"),
+    async def test_a_key_column_without_its_position_is_unreadable(self, runner, fetcher) -> None:
+        runner.on("SHOW PRIMARY KEYS", [{"table_name": "T", "column_name": "A", "key_sequence": None}])
+        with pytest.raises(SnowflakeFetchError):
+            await fetcher.key_definitions("DB", "S")
+
+    async def test_keys_of_one_table(self, runner, fetcher) -> None:
+        await fetcher.key_definitions("DB", "S", "T")
+        await fetcher.foreign_keys("DB", "S", "T")
+        assert runner.statements == [
+            'SHOW PRIMARY KEYS IN TABLE "DB"."S"."T"',
+            'SHOW UNIQUE KEYS IN TABLE "DB"."S"."T"',
+            'SHOW IMPORTED KEYS IN TABLE "DB"."S"."T"',
         ]
-        folders = f._deduce_folders(files, "D", "SC", "S")
-        paths = {fo.path for fo in folders}
-        assert paths == {"a", "a/b", "a/c"}
-        parents = {fo.path: fo.parent_path for fo in folders}
-        assert parents["a"] is None
-        assert parents["a/b"] == "a"
 
+    async def test_foreign_keys_keep_the_target_database(self, runner, fetcher) -> None:
+        runner.on("SHOW IMPORTED KEYS", [{
+            "fk_name": "FK1", "fk_database_name": "DB", "fk_schema_name": "S", "fk_table_name": "ORDERS",
+            "fk_column_name": "CUSTOMER_ID", "pk_database_name": "OTHER", "pk_schema_name": "CRM",
+            "pk_table_name": "CUSTOMERS", "pk_column_name": "ID",
+        }, {
+            "fk_name": "", "fk_database_name": "", "fk_schema_name": "", "fk_table_name": "",
+            "fk_column_name": "", "pk_database_name": "", "pk_schema_name": "", "pk_table_name": "X",
+            "pk_column_name": "",
+        }])
+        (fk,) = await fetcher.foreign_keys("DB", "S")
+        assert fk.target_fqn == "OTHER.CRM.CUSTOMERS"
+        assert (fk.source_table, fk.source_column, fk.target_column) == ("ORDERS", "CUSTOMER_ID", "ID")
 
-class TestFetchAllColumnsInSchema:
-    @pytest.mark.asyncio
-    async def test_no_warehouse(self) -> None:
-        f = _make_fetcher(warehouse=None)
-        assert await f._fetch_all_columns_in_schema("DB", "S") == {}
-
-    @pytest.mark.asyncio
-    async def test_caching(self) -> None:
-        f = _make_fetcher()
-        f.data_source.execute_sql.return_value = _resp(
-            data={
-                "resultSetMetaData": {
-                    "rowType": [
-                        {"name": "TABLE_NAME"},
-                        {"name": "COLUMN_NAME"},
-                        {"name": "DATA_TYPE"},
-                        {"name": "CHARACTER_MAXIMUM_LENGTH"},
-                        {"name": "NUMERIC_PRECISION"},
-                        {"name": "NUMERIC_SCALE"},
-                        {"name": "IS_NULLABLE"},
-                        {"name": "COLUMN_DEFAULT"},
-                        {"name": "COMMENT"},
-                    ]
-                },
-                "data": [
-                    ["T1", "c1", "VARCHAR", 100, None, None, "YES", None, None],
-                    ["T1", "c2", "NUMBER", None, 10, 2, "NO", "0", "comment"],
-                    ["T2", "id", "NUMBER", None, 38, 0, "NO", None, None],
-                ],
-            }
+    async def test_get_ddl_quotes_the_name_inside_a_literal(self, runner, fetcher) -> None:
+        runner.on("GET_DDL", [{"DDL": "create table ..."}])
+        assert await fetcher.get_table_ddl("DB", "S", "it's a \\ table") == "create table ..."
+        assert runner.statements[0] == (
+            "SELECT GET_DDL('TABLE', '\"DB\".\"S\".\"it''s a \\\\ table\"') AS DDL"
         )
-        cols = await f._fetch_all_columns_in_schema("DB", "S")
-        assert set(cols.keys()) == {"T1", "T2"}
-        assert cols["T1"][1]["nullable"] is False
-        assert cols["T1"][0]["nullable"] is True
-        # Second call should use cache
-        cols2 = await f._fetch_all_columns_in_schema("DB", "S")
-        assert cols2 is cols
-        assert f.data_source.execute_sql.await_count == 1
 
-    @pytest.mark.asyncio
-    async def test_failure(self) -> None:
-        f = _make_fetcher()
-        f.data_source.execute_sql.return_value = _resp(success=False, error="bad")
-        cols = await f._fetch_all_columns_in_schema("DB", "S")
-        assert cols == {}
+    async def test_get_ddl_without_text_is_none(self, runner, fetcher) -> None:
+        runner.on("GET_DDL", [{"DDL": ""}])
+        assert await fetcher.get_ddl("VIEW", "DB", "S", "V") is None
 
-    @pytest.mark.asyncio
-    async def test_strict_failure_keeps_sqlstate_and_drops_the_422(self) -> None:
-        f = _make_fetcher()
-        f.data_source.execute_sql.return_value = _resp(
-            success=False,
-            error="Insufficient privileges to operate on schema 'S'",
-            status_code=422,
-            sql_state="42501",
+    async def test_presigned_url(self, runner, fetcher) -> None:
+        runner.on("GET_PRESIGNED_URL", [{"URL": "https://signed"}])
+        assert await fetcher.presigned_url("DB", "S", "ST", "it's.csv") == "https://signed"
+        assert runner.statements[0] == (
+            "SELECT GET_PRESIGNED_URL(@\"DB\".\"S\".\"ST\", 'it''s.csv', 3600) AS URL"
         )
-        with pytest.raises(SnowflakeFetchError) as ei:
-            await f._fetch_all_columns_in_schema("DB", "S", strict=True)
-        assert ei.value.sqlstate == "42501"
-        assert ei.value.status_code is None
 
-    @pytest.mark.asyncio
-    async def test_strict_transport_failure_keeps_the_status(self) -> None:
-        f = _make_fetcher()
-        f.data_source.execute_sql.return_value = _resp(
-            success=False, error="unauthorized", status_code=401
+
+class TestValueCountsAndSamples:
+    async def test_exact_value_counts_quote_their_aliases(self, runner, fetcher) -> None:
+        runner.on("GROUP BY", [{"value": 3, "count": 10}, {"value": None, "count": 2}])
+        counts = await fetcher.column_value_counts("DB", "S", "T", "STATUS", limit=5, approximate=False)
+        assert counts == [{"value": "3", "count": 10}, {"value": None, "count": 2}]
+        assert runner.statements[0] == (
+            'SELECT "STATUS" AS "value", COUNT(*) AS "count" FROM "DB"."S"."T" '
+            "GROUP BY 1 ORDER BY 2 DESC, 1 NULLS LAST LIMIT 5"
         )
-        with pytest.raises(SnowflakeFetchError) as ei:
-            await f._fetch_all_columns_in_schema("DB", "S", strict=True)
-        assert ei.value.status_code == 401
-        assert ei.value.sqlstate is None
+
+    async def test_approximate_value_counts(self, runner, fetcher) -> None:
+        runner.on("APPROX_TOP_K", [{"top": json.dumps([["OPEN", 9], [7, 3], ["bad"], [None, 4]])}])
+        counts = await fetcher.column_value_counts("DB", "S", "T", "STATUS", limit=5, approximate=True)
+        assert counts == [{"value": "OPEN", "count": 9}, {"value": "7", "count": 3}]
+        assert 'APPROX_TOP_K("STATUS", 5, 50)' in runner.statements[0]
+
+    async def test_a_sample_ordered_by_key(self, runner, fetcher) -> None:
+        runner.on("SELECT *", [{"ID": 1, "NAME": "a"}])
+        names, rows = await fetcher.sample_rows("DB", "S", "T", limit=10, order_by=["ID"], max_bytes=1000)
+        assert (names, rows) == (["ID", "NAME"], [[1, "a"]])
+        assert runner.statements[0] == 'SELECT * FROM "DB"."S"."T" ORDER BY "ID" LIMIT 10'
+
+    async def test_a_sample_without_a_key_is_ordered_by_row_hash_and_the_hash_dropped(self, runner, fetcher) -> None:
+        runner.on("SELECT *", [{"ID": 1, "_pipeshub_row_hash": 99}])
+        names, rows = await fetcher.sample_rows("DB", "S", "T", limit=10, order_by=[], max_bytes=1000)
+        assert (names, rows) == (["ID"], [[1]])
+        assert 'ORDER BY "_pipeshub_row_hash"' in runner.statements[0]
+
+    async def test_an_unordered_sample(self, runner, fetcher) -> None:
+        runner.on("SELECT *", [{"ID": 1}])
+        await fetcher.sample_rows("DB", "S", "T", limit=10, order_by=None, max_bytes=1000)
+        assert runner.statements[0] == 'SELECT * FROM "DB"."S"."T" LIMIT 10'
+
+    async def test_the_byte_cap_drops_later_rows(self, runner, fetcher) -> None:
+        runner.on("SELECT *", [{"V": "x" * 40}, {"V": "y" * 40}, {"V": "z" * 40}])
+        _, rows = await fetcher.sample_rows("DB", "S", "T", limit=10, order_by=None, max_bytes=100)
+        assert rows == [["x" * 40], ["y" * 40]]
 
 
-class TestGetTableDdl:
-    @pytest.mark.asyncio
-    async def test_no_warehouse(self) -> None:
-        f = _make_fetcher(warehouse=None)
-        assert await f.get_table_ddl("DB", "S", "T") is None
-
-    @pytest.mark.asyncio
-    async def test_success(self) -> None:
-        f = _make_fetcher()
-        f.data_source.execute_sql.return_value = _resp(
-            data={
-                "resultSetMetaData": {"rowType": [{"name": "DDL"}]},
-                "data": [["CREATE TABLE ..."]],
-            }
-        )
-        assert await f.get_table_ddl("DB", "S", "T") == "CREATE TABLE ..."
-
-    @pytest.mark.asyncio
-    async def test_empty_rows(self) -> None:
-        f = _make_fetcher()
-        f.data_source.execute_sql.return_value = _resp(
-            data={
-                "resultSetMetaData": {"rowType": [{"name": "DDL"}]},
-                "data": [],
-            }
-        )
-        assert await f.get_table_ddl("DB", "S", "T") is None
-
-    @pytest.mark.asyncio
-    async def test_failure(self) -> None:
-        f = _make_fetcher()
-        f.data_source.execute_sql.return_value = _resp(success=False, error="bad")
-        assert await f.get_table_ddl("DB", "S", "T") is None
-
-
-class TestFetchForeignKeys:
-    @pytest.mark.asyncio
-    async def test_no_warehouse(self) -> None:
-        f = _make_fetcher(warehouse=None)
-        assert await f._fetch_foreign_keys_in_schema("DB", "S") == []
-
-    @pytest.mark.asyncio
-    async def test_failure(self) -> None:
-        f = _make_fetcher()
-        f.data_source.execute_sql.return_value = _resp(success=False, error="bad")
-        assert await f._fetch_foreign_keys_in_schema("DB", "S") == []
-
-    @pytest.mark.asyncio
-    async def test_success_lowercase(self) -> None:
-        f = _make_fetcher()
-        f.data_source.execute_sql.return_value = _resp(
-            data={
-                "resultSetMetaData": {
-                    "rowType": [
-                        {"name": "fk_schema_name"},
-                        {"name": "fk_table_name"},
-                        {"name": "fk_column_name"},
-                        {"name": "pk_schema_name"},
-                        {"name": "pk_table_name"},
-                        {"name": "pk_column_name"},
-                        {"name": "fk_name"},
-                    ]
-                },
-                "data": [["S", "T1", "c1", "S", "T2", "id", "fk1"]],
-            }
-        )
-        fks = await f._fetch_foreign_keys_in_schema("DB", "S")
-        assert len(fks) == 1
-        assert fks[0].constraint_name == "fk1"
-        assert fks[0].source_table == "T1"
-        assert fks[0].target_table == "T2"
-
-    @pytest.mark.asyncio
-    async def test_missing_target_table(self) -> None:
-        f = _make_fetcher()
-        f.data_source.execute_sql.return_value = _resp(
-            data={
-                "resultSetMetaData": {
-                    "rowType": [
-                        {"name": "fk_table_name"},
-                        {"name": "fk_column_name"},
-                        {"name": "pk_table_name"},
-                        {"name": "pk_column_name"},
-                    ]
-                },
-                "data": [["T1", "c", "", ""]],
-            }
-        )
-        fks = await f._fetch_foreign_keys_in_schema("DB", "S")
-        assert fks == []
-
-
-class TestFetchPrimaryKeys:
-    @pytest.mark.asyncio
-    async def test_no_warehouse(self) -> None:
-        f = _make_fetcher(warehouse=None)
-        assert await f._fetch_primary_keys_in_schema("DB", "S") == []
-
-    @pytest.mark.asyncio
-    async def test_failure(self) -> None:
-        f = _make_fetcher()
-        f.data_source.execute_sql.return_value = _resp(success=False, error="oops")
-        assert await f._fetch_primary_keys_in_schema("DB", "S") == []
-
-    @pytest.mark.asyncio
-    async def test_success(self) -> None:
-        f = _make_fetcher()
-        f.data_source.execute_sql.return_value = _resp(
-            data={
-                "resultSetMetaData": {
-                    "rowType": [{"name": "table_name"}, {"name": "column_name"}]
-                },
-                "data": [["T1", "id"], ["T2", "key"]],
-            }
-        )
-        pks = await f._fetch_primary_keys_in_schema("DB", "S")
-        assert {"table": "T1", "column": "id"} in pks
-        assert {"table": "T2", "column": "key"} in pks
+class TestErrorsRaise:
+    @pytest.mark.parametrize(
+        "read",
+        [
+            lambda f: f.list_databases(),
+            lambda f: f.list_schemas("DB"),
+            lambda f: f.list_tables("DB", "S"),
+            lambda f: f.list_views("DB", "S"),
+            lambda f: f.list_stages("DB", "S"),
+            lambda f: f.list_stage_files("DB", "S", "ST"),
+            lambda f: f.columns_by_table("DB", "S"),
+            lambda f: f.key_definitions("DB", "S"),
+            lambda f: f.foreign_keys("DB", "S"),
+            lambda f: f.get_table_ddl("DB", "S", "T"),
+        ],
+    )
+    async def test_every_read_raises_when_refused(self, runner, fetcher, read) -> None:
+        runner.on("", error=REFUSED)
+        with pytest.raises(SnowflakeFetchError):
+            await read(fetcher)
 
 
 class TestFetchAll:
-    @pytest.mark.asyncio
-    async def test_full_flow_with_filters(self) -> None:
-        f = _make_fetcher()
-        f.data_source.list_databases.return_value = _resp(
-            data=[{"name": "DB1"}, {"name": "DB2"}]
+    @staticmethod
+    def catalog(runner: FakeRunner) -> None:
+        runner.on("SHOW DATABASES", [
+            {"name": "DB", "kind": "STANDARD", "owner": "", "comment": "", "created_on": None},
+            {"name": "SKIP", "kind": "STANDARD", "owner": "", "comment": "", "created_on": None},
+        ])
+        runner.on("SCHEMATA", [
+            {"SCHEMA_NAME": "GOOD", "SCHEMA_OWNER": "", "CREATED": None, "COMMENT": None},
+            {"SCHEMA_NAME": "BAD", "SCHEMA_OWNER": "", "CREATED": None, "COMMENT": None},
+        ])
+
+    async def test_one_unreadable_schema_is_skipped_and_counted(self, runner, fetcher) -> None:
+        self.catalog(runner)
+        runner.on("TABLE_SCHEMA = 'BAD'", error=REFUSED)
+        runner.on("INFORMATION_SCHEMA.TABLES", [{
+            "TABLE_NAME": "T", "TABLE_TYPE": "BASE TABLE", "ROW_COUNT": 1, "BYTES": 1,
+            "TABLE_OWNER": "", "COMMENT": None, "CREATED": None, "LAST_ALTERED": None, "LAST_DDL": None,
+        }])
+        hierarchy = await fetcher.fetch_all(include_database=lambda d: d == "DB", include_files=False, include_relationships=False)
+        assert [d.name for d in hierarchy.databases] == ["DB"]
+        assert [t.name for t in hierarchy.tables[schema_key("DB", "GOOD")]] == ["T"]
+        assert schema_key("DB", "BAD") not in hierarchy.tables
+        assert hierarchy.errors == 1
+        assert hierarchy.unreadable_schemas == {schema_key("DB", "BAD")}
+
+    async def test_a_stage_without_a_directory_table_leaves_the_schema_synced(self, runner, fetcher) -> None:
+        self.catalog(runner)
+        runner.on("INFORMATION_SCHEMA.STAGES", [
+            {"STAGE_NAME": "NODIR", "STAGE_TYPE": "Internal Named", "STAGE_URL": "",
+             "STAGE_OWNER": "", "COMMENT": None, "CREATED": None},
+        ])
+        runner.on("DIRECTORY(", error=SnowflakeFetchError(
+            'DIRECTORY not enabled for the stage "DB"."GOOD"."NODIR"', sqlstate="55000", code="393901",
+        ))
+        runner.on("INFORMATION_SCHEMA.TABLES", [{
+            "TABLE_NAME": "T", "TABLE_TYPE": "BASE TABLE", "ROW_COUNT": 1, "BYTES": 1,
+            "TABLE_OWNER": "", "COMMENT": None, "CREATED": None, "LAST_ALTERED": None, "LAST_DDL": None,
+        }])
+        hierarchy = await fetcher.fetch_all(
+            include_database=lambda d: d == "DB",
+            include_schema=lambda key: key == schema_key("DB", "GOOD"),
+            include_relationships=False,
         )
+        assert [t.name for t in hierarchy.tables[schema_key("DB", "GOOD")]] == ["T"]
+        # No files to list is not a failed listing: nothing is kept back, and a full sync is complete.
+        assert hierarchy.files == {"DB.GOOD.NODIR": []}
+        assert hierarchy.errors == 0
+        assert hierarchy.unreadable_stages == set()
 
-        async def schemas_side_effect(database: str):
-            return _resp(data=[{"name": "PUBLIC"}])
-
-        f.data_source.list_schemas.side_effect = schemas_side_effect
-
-        f.data_source.list_tables.return_value = _resp(
-            data=[{"name": "T1", "rows": 5, "bytes": 100}]
+    async def test_a_stage_whose_files_could_not_be_listed_is_unreadable(self, runner, fetcher) -> None:
+        self.catalog(runner)
+        runner.on("INFORMATION_SCHEMA.STAGES", [
+            {"STAGE_NAME": "DOCS", "STAGE_TYPE": "Internal Named", "STAGE_URL": "",
+             "STAGE_OWNER": "", "COMMENT": None, "CREATED": None},
+        ])
+        runner.on("DIRECTORY(", error=REFUSED)
+        hierarchy = await fetcher.fetch_all(
+            include_database=lambda d: d == "DB",
+            include_schema=lambda key: key == schema_key("DB", "GOOD"),
+            include_relationships=False,
         )
-        f.data_source.list_views.return_value = _resp(data=[])
-        f.data_source.list_stages.return_value = _resp(data=[])
+        assert hierarchy.files == {}
+        assert hierarchy.errors == 1
+        assert hierarchy.unreadable_stages == {"DB.GOOD.DOCS"}
 
-        # Columns, fks, pks via execute_sql - return empty for simplicity
-        f.data_source.execute_sql.return_value = _resp(
-            data={"resultSetMetaData": {"rowType": []}, "data": []}
-        )
+    async def test_schema_filter_skips_reading_other_schemas(self, runner, fetcher) -> None:
+        self.catalog(runner)
+        await fetcher.fetch_all(include_schema=lambda key: key.endswith(".GOOD"), include_files=False)
+        object_reads = [s for s in runner.statements if "TABLE_SCHEMA = " in s or "IN SCHEMA" in s]
+        assert object_reads and all("BAD" not in s for s in object_reads)
 
-        h = await f.fetch_all(database_filter=["DB1"])
-        assert len(h.databases) == 1
-        assert h.databases[0].name == "DB1"
-        assert h.schemas["DB1"][0].name == "PUBLIC"
+    @staticmethod
+    def relationships(runner: FakeRunner) -> None:
+        runner.on("INFORMATION_SCHEMA.COLUMNS", [
+            {"TABLE_NAME": "ORDERS", "COLUMN_NAME": "ID", "ORDINAL_POSITION": 1, "DATA_TYPE": "NUMBER",
+             "CHARACTER_MAXIMUM_LENGTH": None, "NUMERIC_PRECISION": None, "NUMERIC_SCALE": None,
+             "IS_NULLABLE": "NO", "COLUMN_DEFAULT": None, "COMMENT": None},
+            {"TABLE_NAME": "ORDERS", "COLUMN_NAME": "LINE", "ORDINAL_POSITION": 2, "DATA_TYPE": "NUMBER",
+             "CHARACTER_MAXIMUM_LENGTH": None, "NUMERIC_PRECISION": None, "NUMERIC_SCALE": None,
+             "IS_NULLABLE": "NO", "COLUMN_DEFAULT": None, "COMMENT": None},
+            {"TABLE_NAME": "CUSTOMERS", "COLUMN_NAME": "ID", "ORDINAL_POSITION": 1, "DATA_TYPE": "NUMBER",
+             "CHARACTER_MAXIMUM_LENGTH": None, "NUMERIC_PRECISION": None, "NUMERIC_SCALE": None,
+             "IS_NULLABLE": "NO", "COLUMN_DEFAULT": None, "COMMENT": None},
+            {"TABLE_NAME": "CUSTOMERS", "COLUMN_NAME": "CODE", "ORDINAL_POSITION": 2, "DATA_TYPE": "TEXT",
+             "CHARACTER_MAXIMUM_LENGTH": None, "NUMERIC_PRECISION": None, "NUMERIC_SCALE": None,
+             "IS_NULLABLE": "NO", "COLUMN_DEFAULT": None, "COMMENT": None},
+        ])
+        runner.on("SHOW IMPORTED KEYS", [{
+            "fk_name": "FK", "fk_database_name": "DB", "fk_schema_name": "S", "fk_table_name": "ORDERS",
+            "fk_column_name": "CID", "pk_database_name": "DB", "pk_schema_name": "S",
+            "pk_table_name": "CUSTOMERS", "pk_column_name": "ID",
+        }])
 
-    @pytest.mark.asyncio
-    async def test_schema_filter(self) -> None:
-        f = _make_fetcher()
-        f.data_source.list_databases.return_value = _resp(data=[{"name": "DB"}])
-        f.data_source.list_schemas.return_value = _resp(
-            data=[{"name": "A"}, {"name": "B"}]
-        )
-        f.data_source.list_tables.return_value = _resp(data=[])
-        f.data_source.list_views.return_value = _resp(data=[])
-        f.data_source.list_stages.return_value = _resp(data=[])
-        f.data_source.execute_sql.return_value = _resp(
-            data={"resultSetMetaData": {"rowType": []}, "data": []}
-        )
+    async def test_relationships_are_attached_per_table(self, runner, fetcher) -> None:
+        tables = [SnowflakeTable("ORDERS", "DB", "S"), SnowflakeTable("CUSTOMERS", "DB", "S")]
+        self.relationships(runner)
+        runner.on("SHOW PRIMARY KEYS", [
+            {"table_name": "CUSTOMERS", "column_name": "ID", "key_sequence": 1, "constraint_name": "PK_C"},
+            {"table_name": "ORDERS", "column_name": "ID", "key_sequence": 1, "constraint_name": "PK_O"},
+            {"table_name": "ORDERS", "column_name": "LINE", "key_sequence": 2, "constraint_name": "PK_O"},
+        ])
+        runner.on("SHOW UNIQUE KEYS", [
+            {"table_name": "CUSTOMERS", "column_name": "CODE", "key_sequence": 1, "constraint_name": "UQ"},
+        ])
+        assert await fetcher.attach_relationships("DB", "S", tables) == 0
+        orders, customers = tables
+        assert (orders.columns_read, orders.keys_read, orders.foreign_keys_read) == (True, True, True)
+        assert orders.fully_read
+        assert [c.name for c in orders.columns] == ["ID", "LINE"]
+        assert [fk.target_table for fk in orders.foreign_keys] == ["CUSTOMERS"]
+        assert orders.primary_keys == ["ID", "LINE"]
+        assert all(c.is_part_of_composite_primary_key and not c.is_unique for c in orders.columns)
+        assert customers.primary_keys == ["ID"] and customers.foreign_keys == []
+        code = customers.columns[1]
+        assert (code.is_unique, code.is_primary_key) == (True, False)
 
-        h = await f.fetch_all(schema_filter=["DB.A"])
-        assert len(h.schemas["DB"]) == 1
-        assert h.schemas["DB"][0].name == "A"
+    async def test_unread_keys_leave_the_columns(self, runner, fetcher) -> None:
+        tables = [SnowflakeTable("ORDERS", "DB", "S")]
+        self.relationships(runner)
+        runner.on("SHOW UNIQUE KEYS", error=REFUSED)
+        assert await fetcher.attach_relationships("DB", "S", tables) == 1
+        (orders,) = tables
+        assert (orders.columns_read, orders.keys_read) == (True, False)
+        assert [c.name for c in orders.columns] == ["ID", "LINE"]
+        assert orders.foreign_keys
 
-    @pytest.mark.asyncio
-    async def test_without_files_and_relationships(self) -> None:
-        f = _make_fetcher()
-        f.data_source.list_databases.return_value = _resp(data=[{"name": "DB"}])
-        f.data_source.list_schemas.return_value = _resp(data=[{"name": "PUBLIC"}])
-        f.data_source.list_tables.return_value = _resp(data=[{"name": "T"}])
-        f.data_source.list_views.return_value = _resp(data=[])
-        f.data_source.list_stages.return_value = _resp(
-            data=[{"name": "STG", "type": "INTERNAL"}]
-        )
+    async def test_unread_foreign_keys_are_flagged(self, runner, fetcher) -> None:
+        tables = [SnowflakeTable("ORDERS", "DB", "S")]
+        self.relationships(runner)
+        runner.on("SHOW IMPORTED KEYS", error=REFUSED)
+        runner.answers.insert(0, runner.answers.pop())
+        assert await fetcher.attach_relationships("DB", "S", tables) == 1
+        (orders,) = tables
+        assert (orders.columns_read, orders.keys_read, orders.foreign_keys_read) == (True, True, False)
+        assert not orders.fully_read
 
-        h = await f.fetch_all(include_files=False, include_relationships=False)
-        assert h.tables["DB.PUBLIC"][0].name == "T"
-        # Files should not be populated because include_files=False
-        assert h.files == {}
-        # Relationships not populated
-        assert h.foreign_keys == []
-        # execute_sql must not have been called for fks/pks/columns
-        assert f.data_source.execute_sql.await_count == 0
+    async def test_an_unreadable_database_is_reported(self, runner, fetcher) -> None:
+        runner.on("SHOW DATABASES", [{"name": "DB", "kind": "STANDARD", "owner": "", "comment": "", "created_on": None}])
+        runner.on("SCHEMATA", error=REFUSED)
+        hierarchy = await fetcher.fetch_all()
+        assert hierarchy.unreadable_databases == {"DB"} and hierarchy.schemas == {}
 
-    @pytest.mark.asyncio
-    async def test_relationships_populate_foreign_keys(self) -> None:
-        f = _make_fetcher()
-        f.data_source.list_databases.return_value = _resp(data=[{"name": "DB"}])
-        f.data_source.list_schemas.return_value = _resp(data=[{"name": "S"}])
-        f.data_source.list_tables.return_value = _resp(
-            data=[{"name": "T1"}, {"name": "T2"}]
-        )
-        f.data_source.list_views.return_value = _resp(data=[])
-        f.data_source.list_stages.return_value = _resp(data=[])
+    async def test_unread_columns_leave_the_keys(self, runner, fetcher) -> None:
+        tables = [SnowflakeTable("ORDERS", "DB", "S")]
+        runner.on("INFORMATION_SCHEMA.COLUMNS", error=REFUSED)
+        assert await fetcher.attach_relationships("DB", "S", tables) == 1
+        assert (tables[0].columns_read, tables[0].keys_read) == (False, True)
 
-        # Mock execute_sql responses for columns, fks, pks
-        call_counter = {"n": 0}
+    async def test_a_table_missing_from_the_column_listing_is_not_read(self, runner, fetcher) -> None:
+        tables = [SnowflakeTable("GHOST", "DB", "S")]
+        self.relationships(runner)
+        await fetcher.attach_relationships("DB", "S", tables)
+        assert tables[0].columns_read is False
 
-        async def execute_side_effect(**kwargs):
-            call_counter["n"] += 1
-            stmt = kwargs.get("statement", "").upper()
-            if "INFORMATION_SCHEMA.COLUMNS" in stmt:
-                return _resp(
-                    data={
-                        "resultSetMetaData": {
-                            "rowType": [
-                                {"name": "TABLE_NAME"},
-                                {"name": "COLUMN_NAME"},
-                                {"name": "DATA_TYPE"},
-                                {"name": "CHARACTER_MAXIMUM_LENGTH"},
-                                {"name": "NUMERIC_PRECISION"},
-                                {"name": "NUMERIC_SCALE"},
-                                {"name": "IS_NULLABLE"},
-                                {"name": "COLUMN_DEFAULT"},
-                                {"name": "COMMENT"},
-                            ]
-                        },
-                        "data": [
-                            ["T1", "c1", "VARCHAR", None, None, None, "YES", None, None],
-                        ],
-                    }
-                )
-            if "IMPORTED KEYS" in stmt:
-                return _resp(
-                    data={
-                        "resultSetMetaData": {
-                            "rowType": [
-                                {"name": "fk_table_name"},
-                                {"name": "fk_column_name"},
-                                {"name": "pk_table_name"},
-                                {"name": "pk_column_name"},
-                                {"name": "fk_name"},
-                            ]
-                        },
-                        "data": [["T1", "c1", "T2", "id", "myfk"]],
-                    }
-                )
-            if "PRIMARY KEYS" in stmt:
-                return _resp(
-                    data={
-                        "resultSetMetaData": {
-                            "rowType": [{"name": "table_name"}, {"name": "column_name"}]
-                        },
-                        "data": [["T2", "id"]],
-                    }
-                )
-            return _resp(data={"resultSetMetaData": {"rowType": []}, "data": []})
+    async def test_include_objects_false_reads_only_databases_and_schemas(self, runner, fetcher) -> None:
+        self.catalog(runner)
+        hierarchy = await fetcher.fetch_all(include_objects=False)
+        assert set(hierarchy.schemas) == {"DB", "SKIP"}
+        assert hierarchy.tables == {}
+        assert all("SHOW DATABASES" in s or "SCHEMATA" in s for s in runner.statements)
 
-        f.data_source.execute_sql.side_effect = execute_side_effect
-
-        h = await f.fetch_all(include_files=False, include_relationships=True)
-        assert len(h.foreign_keys) == 1
-        t1 = next(t for t in h.tables["DB.S"] if t.name == "T1")
-        assert t1.foreign_keys and t1.foreign_keys[0]["references_table"] == "T2"
-        t2 = next(t for t in h.tables["DB.S"] if t.name == "T2")
-        assert t2.primary_keys == ["id"]
-        assert t1.columns and t1.columns[0]["name"] == "c1"
-
-
-class TestSaveToFile:
-    def test_writes_json(self, tmp_path) -> None:
-        f = _make_fetcher()
-        f.hierarchy = SnowflakeHierarchy(
-            fetched_at="now",
-            databases=[SnowflakeDatabase(name="X")],
-        )
-        out = tmp_path / "sub" / "out.json"
-        f.save_to_file(str(out))
-        assert out.exists()
-        content = json.loads(out.read_text(encoding="utf-8"))
-        assert content["databases"][0]["name"] == "X"
-
-
-class TestPrintSummary:
-    def test_prints(self, capsys) -> None:
-        f = _make_fetcher()
-        f.print_summary()
-        out = capsys.readouterr().out
-        assert "Snowflake Data Summary" in out
-        assert "databases: 0" in out
+    async def test_an_unreadable_database_listing_raises(self, runner, fetcher) -> None:
+        runner.on("SHOW DATABASES", error=REFUSED)
+        with pytest.raises(SnowflakeFetchError):
+            await fetcher.fetch_all()

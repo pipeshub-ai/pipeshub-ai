@@ -92,7 +92,8 @@ class TestFetchSingleUrlExtensionFilter:
             return_value="tiff",
         ):
             result = await parser._fetch_single_url(
-                _fetcher(content_type="image/tiff"), "https://example.com/image.tiff"
+                _fetcher(content_type="image/tiff"), "https://example.com/image.tiff",
+                allow_remote_fetch=True
             )
 
         assert result is None
@@ -105,7 +106,8 @@ class TestFetchSingleUrlExtensionFilter:
             return_value="gif",
         ):
             result = await parser._fetch_single_url(
-                _fetcher(content_type="image/gif"), "https://example.com/anim.gif"
+                _fetcher(content_type="image/gif"), "https://example.com/anim.gif",
+                allow_remote_fetch=True
             )
 
         assert result is None
@@ -122,6 +124,7 @@ class TestFetchSingleUrlHttpErrors:
             _fetcher(status=403),
             "https://s3.amazonaws.com/bucket/key?X-Amz-Expires=3600",
             logger=parser.logger,
+            allow_remote_fetch=True
         )
         assert result is None
         call_msg = parser.logger.warning.call_args[0][0]
@@ -131,7 +134,7 @@ class TestFetchSingleUrlHttpErrors:
     @pytest.mark.parametrize("status", [403, 404, 429, 500])
     async def test_http_error_logs_keep_the_query_string_out(self, parser, status):
         url = "https://bucket.example.com/a.png?X-Amz-Expires=60&X-Amz-Signature=secret-sig"
-        result = await parser._fetch_single_url(_fetcher(status=status), url, logger=parser.logger)
+        result = await parser._fetch_single_url(_fetcher(status=status), url, logger=parser.logger, allow_remote_fetch=True)
         assert result is None
         call_msg = parser.logger.warning.call_args[0][0]
         assert "https://bucket.example.com/a.png" in call_msg
@@ -144,14 +147,15 @@ class TestFetchSingleUrlHttpErrors:
             "app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype",
             return_value="png",
         ):
-            result = await parser._fetch_single_url(_fetcher(content=b""), url, logger=parser.logger)
+            result = await parser._fetch_single_url(_fetcher(content=b""), url, logger=parser.logger, allow_remote_fetch=True)
         assert result is None
         assert "secret-token" not in parser.logger.info.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_403_without_signed_url(self, parser):
         result = await parser._fetch_single_url(
-            _fetcher(status=403), "https://example.com/protected.png", logger=parser.logger
+            _fetcher(status=403), "https://example.com/protected.png", logger=parser.logger,
+            allow_remote_fetch=True
         )
         assert result is None
         assert "insufficient permissions" in parser.logger.warning.call_args[0][0]
@@ -159,27 +163,29 @@ class TestFetchSingleUrlHttpErrors:
     @pytest.mark.asyncio
     async def test_500_server_error(self, parser):
         result = await parser._fetch_single_url(
-            _fetcher(status=500), "https://example.com/server-error.png", logger=parser.logger
+            _fetcher(status=500), "https://example.com/server-error.png", logger=parser.logger,
+            allow_remote_fetch=True
         )
         assert result is None
         assert "Server error" in parser.logger.warning.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_502_server_error(self, parser):
-        result = await parser._fetch_single_url(_fetcher(status=502), "https://example.com/gateway.png")
+        result = await parser._fetch_single_url(_fetcher(status=502), "https://example.com/gateway.png", allow_remote_fetch=True)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_other_http_error(self, parser):
         result = await parser._fetch_single_url(
-            _fetcher(status=429), "https://example.com/rate-limited.png", logger=parser.logger
+            _fetcher(status=429), "https://example.com/rate-limited.png", logger=parser.logger,
+            allow_remote_fetch=True
         )
         assert result is None
         assert "HTTP error (429)" in parser.logger.warning.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_unfollowed_3xx_is_not_an_image(self, parser):
-        result = await parser._fetch_single_url(_fetcher(status=304), "https://example.com/cached.png")
+        result = await parser._fetch_single_url(_fetcher(status=304), "https://example.com/cached.png", allow_remote_fetch=True)
         assert result is None
 
     @pytest.mark.asyncio
@@ -188,7 +194,8 @@ class TestFetchSingleUrlHttpErrors:
         fetcher.get = AsyncMock(side_effect=PublicFetchError("connection refused"))
 
         result = await parser._fetch_single_url(
-            fetcher, "https://example.com/unreachable.png", logger=parser.logger
+            fetcher, "https://example.com/unreachable.png", logger=parser.logger,
+            allow_remote_fetch=True
         )
         assert result is None
         assert "Network error" in parser.logger.warning.call_args[0][0]
@@ -199,7 +206,8 @@ class TestFetchSingleUrlHttpErrors:
         fetcher.get = AsyncMock(side_effect=UnsafeUrlError("Blocked unsafe URL address: 127.0.0.1"))
 
         result = await parser._fetch_single_url(
-            fetcher, "http://127.0.0.1/x.png?token=secret", logger=parser.logger
+            fetcher, "http://127.0.0.1/x.png?token=secret", logger=parser.logger,
+            allow_remote_fetch=True
         )
         assert result is None
         call_msg = parser.logger.warning.call_args[0][0]
@@ -419,7 +427,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(svg_b64)
+            ImageParser._svg_to_png_in_process(svg_b64)
             call_kwargs = mock_svg2png.call_args[1]
             assert call_kwargs["output_width"] == 800
             assert call_kwargs["output_height"] == 600
@@ -433,7 +441,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(svg_b64, output_width=300)
+            ImageParser._svg_to_png_in_process(svg_b64, output_width=300)
             call_kwargs = mock_svg2png.call_args[1]
             assert call_kwargs["output_width"] == 300
             assert call_kwargs["output_height"] == 200
@@ -447,7 +455,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(svg_b64, output_height=400)
+            ImageParser._svg_to_png_in_process(svg_b64, output_height=400)
             call_kwargs = mock_svg2png.call_args[1]
             assert call_kwargs["output_width"] == 100
             assert call_kwargs["output_height"] == 400
@@ -461,7 +469,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(svg_b64)
+            ImageParser._svg_to_png_in_process(svg_b64)
             call_kwargs = mock_svg2png.call_args[1]
             assert call_kwargs["output_width"] == 800
             assert call_kwargs["output_height"] == 600
@@ -475,7 +483,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(svg_b64)
+            ImageParser._svg_to_png_in_process(svg_b64)
             call_kwargs = mock_svg2png.call_args[1]
             assert call_kwargs["output_width"] == 500
             assert call_kwargs["output_height"] == 600
@@ -489,7 +497,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(svg_b64)
+            ImageParser._svg_to_png_in_process(svg_b64)
             call_kwargs = mock_svg2png.call_args[1]
             assert call_kwargs["output_width"] == 800
             assert call_kwargs["output_height"] == 400
@@ -503,7 +511,7 @@ class TestSvgBase64ToPngBase64DimensionFallback:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(
+            ImageParser._svg_to_png_in_process(
                 svg_b64, output_width=1000, output_height=2000
             )
             call_kwargs = mock_svg2png.call_args[1]
@@ -523,7 +531,7 @@ class TestSvgBase64ToPngBase64Errors:
         b64_str = base64.b64encode(raw_bytes).decode("ascii")
 
         with pytest.raises(DocumentProcessingError, match="Cannot decode SVG content"):
-            ImageParser.svg_base64_to_png_base64(b64_str)
+            ImageParser._svg_to_png_in_process(b64_str)
 
     def test_svg2png_conversion_error(self):
         """When svg2png itself raises, the exception is wrapped."""
@@ -535,7 +543,7 @@ class TestSvgBase64ToPngBase64Errors:
             side_effect=RuntimeError("cairo error"),
         ):
             with pytest.raises(DocumentProcessingError, match="SVG to PNG conversion failed"):
-                ImageParser.svg_base64_to_png_base64(svg_b64)
+                ImageParser._svg_to_png_in_process(svg_b64)
 
     def test_xml_only_content_recognized(self):
         """Content starting with <?xml is recognized as SVG."""
@@ -546,7 +554,7 @@ class TestSvgBase64ToPngBase64Errors:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"fake-png",
         ):
-            result = ImageParser.svg_base64_to_png_base64(svg_b64)
+            result = ImageParser._svg_to_png_in_process(svg_b64)
         assert result == base64.b64encode(b"fake-png").decode()
 
     def test_with_scale_and_background(self):
@@ -558,7 +566,7 @@ class TestSvgBase64ToPngBase64Errors:
             "app.modules.parsers.image_parser.image_parser.svg2png",
             return_value=b"png-data",
         ) as mock_svg2png:
-            ImageParser.svg_base64_to_png_base64(
+            ImageParser._svg_to_png_in_process(
                 svg_b64, scale=2.0, background_color="#FFFFFF"
             )
             call_kwargs = mock_svg2png.call_args[1]
@@ -578,10 +586,10 @@ class TestFetchSingleUrlAdditional:
 
         with patch.object(
             ImageParser,
-            "svg_base64_to_png_base64",
-            side_effect=Exception("conversion failed"),
+            "svg_base64_to_png_base64_async",
+            AsyncMock(side_effect=Exception("conversion failed")),
         ):
-            result = await parser._fetch_single_url(fetcher, svg_data_url)
+            result = await parser._fetch_single_url(fetcher, svg_data_url, allow_remote_fetch=True)
         # Falls through to generic exception handler
         assert result is None
 
@@ -597,8 +605,8 @@ class TestFetchSingleUrlAdditional:
         with patch(
             "app.modules.parsers.image_parser.image_parser.get_extension_from_mimetype",
             return_value="svg",
-        ), patch.object(ImageParser, "svg_base64_to_png_base64", return_value=fake_png_b64):
-            result = await parser._fetch_single_url(fetcher, "https://example.com/icon")
+        ), patch.object(ImageParser, "svg_base64_to_png_base64_async", AsyncMock(return_value=fake_png_b64)):
+            result = await parser._fetch_single_url(fetcher, "https://example.com/icon", allow_remote_fetch=True)
 
         assert result == f"data:image/png;base64,{fake_png_b64}"
 
@@ -610,7 +618,8 @@ class TestFetchSingleUrlAdditional:
             return_value="png",
         ):
             result = await parser._fetch_single_url(
-                _fetcher(content_type="image/png; charset=binary"), "https://example.com/img.png"
+                _fetcher(content_type="image/png; charset=binary"), "https://example.com/img.png",
+                allow_remote_fetch=True
             )
 
         assert result is not None
@@ -628,7 +637,7 @@ class TestUrlsToBase64Edge:
         with patch.object(
             ImageParser, "_fetch_single_url", new_callable=AsyncMock, return_value=fake
         ):
-            result = await parser.urls_to_base64(["https://example.com/img.png"])
+            result = await parser.urls_to_base64(["https://example.com/img.png"], allow_remote_fetch=True)
         assert result == [fake]
 
     @pytest.mark.asyncio
@@ -638,7 +647,8 @@ class TestUrlsToBase64Edge:
             ImageParser, "_fetch_single_url", new_callable=AsyncMock, return_value=None
         ):
             result = await parser.urls_to_base64(
-                ["https://a.com/1.png", "https://b.com/2.png"]
+                ["https://a.com/1.png", "https://b.com/2.png"],
+                allow_remote_fetch=True
             )
         assert result == [None, None]
 

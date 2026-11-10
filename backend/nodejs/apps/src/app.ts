@@ -5,9 +5,6 @@ import express, { Express, Response } from 'express';
 import path from 'path';
 import helmet from 'helmet';
 import cors from 'cors';
-import morgan from 'morgan';
-import { IncomingMessage } from 'http';
-import { redactSensitiveQueryParams } from './libs/utils/log-redaction.utils';
 import http from 'http';
 import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
@@ -15,10 +12,12 @@ import { Logger } from './libs/services/logger.service';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
 import { ConfigService } from './modules/tokens_manager/services/cm.service';
 import { createCodeGraphRouter } from './modules/enterprise_search/routes/code-graph.routes';
+import { createGraphViewRouter } from './modules/enterprise_search/routes/graph-view.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
 import { registerOAuthTokenService } from './libs/services/oauth-token-service.provider';
 import { requestContextMiddleware } from './libs/middlewares/request.context';
+import { accessLog } from './libs/middlewares/access-log.middleware';
 import {
   runWithRequestContext,
   newSystemRoot,
@@ -27,10 +26,11 @@ import { metricsMiddleware } from './libs/middlewares/telemetry.middleware';
 import { configureEnvelopeFromSecret } from './libs/context/envelope';
 import { startOrgMetricsRefresh } from './modules/user_management/services/metrics.refresh.service';
 import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
+import { TtlSweeper } from './libs/services/ttl-sweeper.service';
+import { docStore } from './libs/repositories/store-select';
 import { IMessageProducer } from './libs/types/messaging.types';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 import { operatorKeyGuardMiddleware } from './libs/middlewares/operator-key-guard.middleware';
-import { isApiPath } from './libs/utils/api-path.utils';
 
 import { loadConfigurationManagerConfig } from './modules/configuration_manager/config/config';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
@@ -97,6 +97,10 @@ import {
   createSlackEventsRateLimiter,
   slackEventsRateLimitPerMinute,
 } from './libs/middlewares/rate-limit.middleware';
+import {
+  noFraming,
+  UNFRAMEABLE_PAGE_PATHS,
+} from './libs/middlewares/no-framing.middleware';
 import { ApiDocsContainer } from './modules/api-docs/docs.container';
 import { createApiDocsRouter } from './modules/api-docs/docs.routes';
 import { CrawlingManagerContainer } from './modules/crawling_manager/container/cm_container';
@@ -107,13 +111,17 @@ import { StoreType } from './libs/keyValueStore/constants/KeyValueStoreType';
 import { createTeamsRouter } from './modules/user_management/routes/teams.routes';
 import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth.provider.container';
 import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
+import { createAgentRegistrationRouter } from './modules/oauth_provider/routes/agent-registration.routes';
 import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
 import { createServiceAccountsRouter } from './modules/user_management/routes/service-accounts.routes';
 import { createServiceTokenRouter } from './modules/oauth_provider/routes/service-token.routes';
 import { ServiceAccountsService } from './modules/user_management/services/service-accounts.service';
 import { ServiceTokenService } from './modules/oauth_provider/services/service-token.service';
 import { createPatRouter } from './modules/oauth_provider/routes/pat.routes';
-import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
+import {
+  createAuthMdRouter,
+  createOIDCDiscoveryRouter,
+} from './modules/oauth_provider/routes/oid.provider.routes';
 import {
   resolveMessageBrokerConfig,
   ensureMessageTopicsExist,
@@ -172,6 +180,7 @@ export class Application {
   private notificationContainer!: Container;
   private desktopProxyContainer!: Container;
   private outboxDispatcher: OutboxDispatcher | null = null;
+  private ttlSweeper: TtlSweeper | null = null;
   private scheduleRepairTimer: NodeJS.Timeout | null = null;
   private scheduleRepairPass: Promise<void> | null = null;
   private crawlingManagerContainer!: Container;
@@ -361,6 +370,12 @@ export class Application {
       );
       this.outboxDispatcher.start();
 
+      // Mongo expires old notifications by itself; on PostgreSQL this does it (as the jobs role).
+      if (docStore() === 'postgres' && process.env.PG_JOBS_URL) {
+        this.ttlSweeper = new TtlSweeper(this.logger);
+        this.ttlSweeper.start();
+      }
+
       this.notificationContainer
         .get<NotificationService>(NotificationService)
         .initialize(this.server);
@@ -372,6 +387,8 @@ export class Application {
       this.bootstrapNotificationBrokerConsumer();
       this.bootstrapMailBrokerConsumer();
       editionBoot.startWorkers(this.logger);
+
+      this.app.use(UNFRAMEABLE_PAGE_PATHS, noFraming);
 
       // Serve static frontend files\
       const publicDir = path.join(__dirname, 'public');
@@ -543,6 +560,9 @@ export class Application {
       }),
     );
 
+    // One access line per request; before the body parsers so their 400/413 are logged too.
+    this.app.use(accessLog());
+
     // Body parsing. /mcp has its own, smaller limit, and it must come first:
     // a JSON parser skips a body an earlier one has read, and one that came
     // after the shared 10 MB parser would never get to apply its limit.
@@ -550,36 +570,6 @@ export class Application {
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true }));
     this.app.use(xssSanitizationMiddleware);
-
-    // Logging — only log API requests, skip static assets.
-    // 'combined' logs the full request URL, and OAuth callbacks arrive as
-    // ?code=<authorization code> — a credential exchangeable for tokens by
-    // whoever reads the log. Same format, with those values redacted.
-    morgan.token('url-redacted', (req: IncomingMessage) =>
-      redactSensitiveQueryParams((req as { originalUrl?: string; url?: string }).originalUrl ?? req.url ?? ''),
-    );
-    // The Referer is client-supplied and can itself be an OAuth callback or a
-    // presigned URL, so it carries the same credentials the request line does.
-    morgan.token('referrer-redacted', (req: IncomingMessage) => {
-      const referrer = req.headers.referer ?? req.headers.referrer;
-      return typeof referrer === 'string'
-        ? redactSensitiveQueryParams(referrer)
-        : '-';
-    });
-    const combinedRedacted =
-      ':remote-addr - :remote-user [:date[clf]] ":method :url-redacted ' +
-      'HTTP/:http-version" :status :res[content-length] ":referrer-redacted" ' +
-      '":user-agent"';
-    this.app.use(
-      morgan(combinedRedacted, {
-        stream: {
-          write: (message: string) => this.logger.info(message.trim()),
-        },
-        // Evaluated after the response: a mounted router has rewritten req.path
-        // to its own mount-relative path by then, originalUrl keeps the full one.
-        skip: (req) => !isApiPath(req.originalUrl.split('?')[0] ?? ''),
-      }),
-    );
 
     // Global rate limiter - applies to all routes
     this.app.use(
@@ -699,6 +689,9 @@ export class Application {
       createCodeGraphRouter(this.esAgentContainer),
     );
 
+    // the graph explorer's reads: expand and revalidate (permission-aware, never cached)
+    this.app.use('/api/v1/graph', createGraphViewRouter(this.esAgentContainer));
+
     // enterprise search connectors routes — pass the crawling container
     // whole so the route factory can resolve any crawling-side service it
     // needs (currently the scheduler).
@@ -812,6 +805,12 @@ export class Application {
       createOAuthProviderRouter(this.oauthProviderContainer),
     );
 
+    // auth.md agent registration (service_auth)
+    this.app.use(
+      '/api/v1/agent',
+      createAgentRegistrationRouter(this.oauthProviderContainer),
+    );
+
     // OAuth Clients routes (OAuth app management)
     this.app.use(
       '/api/v1/oauth-clients',
@@ -869,6 +868,11 @@ export class Application {
     //          GET /.well-known/oauth-authorization-server
     //          GET /.well-known/oauth-protected-resource
     //          GET /.well-known/jwks.json
+    // How an agent gets a credential, for agents that look for /auth.md.
+    const authMd = createAuthMdRouter(this.oauthProviderContainer, (origin) =>
+      editionBoot.authMdSections(origin),
+    );
+    this.app.use(['/auth.md', '/.well-known/auth.md'], authMd);
     this.app.use(
       '/.well-known',
       createOIDCDiscoveryRouter(this.oauthProviderContainer),
@@ -1062,6 +1066,8 @@ export class Application {
       // containers below are about to disconnect.
       await this.outboxDispatcher?.stop();
       this.outboxDispatcher = null;
+      await this.ttlSweeper?.stop();
+      this.ttlSweeper = null;
 
       await NotificationContainer.dispose();
       await StorageContainer.dispose();

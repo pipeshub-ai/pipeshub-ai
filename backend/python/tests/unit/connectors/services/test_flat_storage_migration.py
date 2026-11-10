@@ -10,6 +10,7 @@ from app.connectors.services.flat_storage_migration import (
     MAX_PASSES,
     FlatStorageMigration,
 )
+from app.core import org_context
 
 KEY = "/services/storageMigration/flatToHierarchical/org-1"
 MOVE = "app.connectors.services.flat_storage_migration.post_move_tree"
@@ -170,3 +171,23 @@ async def test_a_copy_describing_a_record_that_is_gone_goes_where_handover_would
     with patch(MOVE, new_callable=AsyncMock, return_value={"moved": 2}) as move:
         await m.run_org("org-1")
     assert move.await_args.args[4] == "records/conn/r-b"
+
+
+@pytest.mark.asyncio
+async def test_orgs_are_listed_cross_org_and_each_runs_inside_its_own_org() -> None:
+    m, _ = _migration([_docs("v1")], {"v1": [_holder("r1")]})
+    seen: list[tuple[str, str | None]] = []
+
+    async def orgs() -> list[dict]:
+        seen.append(("orgs", org_context.current_or_system().kind))
+        return [{"id": "org-1"}]
+
+    async def storage_config(org_id: str) -> tuple:
+        seen.append(("storage", org_context.current_org_id()))
+        return {}, "http://node", "local"
+
+    m.graph_provider.get_all_orgs = orgs
+    m.blob_storage._get_auth_and_config = storage_config
+    with patch(MOVE, new_callable=AsyncMock, return_value={"moved": 2}):
+        assert await m.run_all_orgs() is True
+    assert seen == [("orgs", "system"), ("storage", "org-1")]

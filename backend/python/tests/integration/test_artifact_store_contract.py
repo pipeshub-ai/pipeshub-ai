@@ -119,6 +119,7 @@ async def test_a_revision_round_trips_through_the_storage_service(blob: BlobStor
 
     written = await ArtifactWriter(store, logger, part_max_bytes=4096).write_revision(
         record, ORG_ID, vrid, rev, record.block_containers,
+        stored_run="gen-it:run",
         reconciliation_metadata={"hash_to_block_ids": {"h": [blocks[0].id]}, "block_id_to_index": {blocks[0].id: 0}},
     )
 
@@ -156,6 +157,7 @@ async def test_more_files_than_one_presign_takes_land_in_one_revision(blob: Blob
 
     written = await ArtifactWriter(store, logger, upload_concurrency=32).write_revision(
         record, ORG_ID, vrid, rev, record.block_containers,
+        stored_run="gen-it:run",
     )
 
     assert written is not None
@@ -202,7 +204,7 @@ async def test_a_sidecar_lands_in_its_revisions_document(blob: BlobStorage) -> N
     rev = uuid.uuid4().hex[:16]
     record = _record(vrid, [Block(index=0, type=BlockType.TEXT, data="one paragraph")])
     store = NodeArtifactStore(blob, logger)
-    written = await ArtifactWriter(store, logger).write_revision(record, ORG_ID, vrid, rev, record.block_containers)
+    written = await ArtifactWriter(store, logger).write_revision(record, ORG_ID, vrid, rev, record.block_containers, stored_run="gen-it:run")
     assert written is not None
     payload = {"summary": "a contract", "topics": ["Renewal", "Ünïcode"]}
 
@@ -230,7 +232,7 @@ async def test_retention_retires_old_revisions_through_the_storage_service(blob:
     written = {}
     for i, rev in enumerate(revs):
         record = _record(vrid, [Block(index=0, type=BlockType.TEXT, data=f"version {i}")])
-        written[rev] = await writer.write_revision(record, ORG_ID, vrid, rev, record.block_containers)
+        written[rev] = await writer.write_revision(record, ORG_ID, vrid, rev, record.block_containers, stored_run="gen-it:run")
     graph = MagicMock()
     graph.get_revision_pointers = AsyncMock(return_value=[
         {"virtualRecordId": vrid, "orgId": ORG_ID, "currentRev": revs[3], "previousRev": revs[2]},

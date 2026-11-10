@@ -24,10 +24,18 @@ from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agents.agent_loop.mcp_access import ResolvedMCPServer
 from app.agents.agent_loop.mcp_tool_adapter import MCPToolAdapter
 from app.agents.mcp.client import MCPConnectionError
+from app.agents.mcp.errors import MCPHttpStatusError, MCPToolNotOfferedError
 from app.agents.mcp.models import MCPToolInfo
 from app.agents.mcp.oauth_client import MCPOAuthError
 from app.agents.mcp.token_refresh import MCPTokenRefreshError
+from app.utils.logger import log_record_fields
 from tests.unit.agents.adapter.conftest import make_context
+from tests.unit.agents.mcp.refresh_failures import (
+    BODY_SECRET,
+    TOKEN_HOST,
+    lock_contention_error,
+    token_endpoint_error,
+)
 
 
 def _server() -> ResolvedMCPServer:
@@ -317,7 +325,133 @@ class TestValidate:
             }),
             _FakeSessionManager(),
         )
-        adapter.validate({"query": "x", "limit": None})  # must not raise
+        kwargs = {"query": "x", "limit": None}
+        adapter.validate(kwargs)  # must not raise
+        assert kwargs == {"query": "x"}
+
+
+def _adapter_with(properties: dict[str, Any], required: list[str], manager: _FakeSessionManager | None = None) -> MCPToolAdapter:
+    return MCPToolAdapter(
+        _server(),
+        _tool_info(input_schema={"type": "object", "properties": properties, "required": required}),
+        manager or _FakeSessionManager(),
+    )
+
+
+class TestUnsetOptionalArgumentsAreLeftOut:
+    """Models write `null` (or the string `"null"`) for optional arguments they
+    mean to leave unset. In JSON Schema an absent key and a null differ, so a
+    server that checks its own schema (Metabase's `browse_data`) refused the
+    whole call — `"limit": should be an integer` — and after three refusals
+    `ToolErrorTracker` blocked the tool for the rest of the conversation."""
+
+    BROWSE_DATA = {
+        "query": {"type": "string"},
+        "limit": {"type": "integer"},
+        "database_id": {"type": "integer"},
+        "table_ids": {"type": "array", "items": {"type": "integer"}},
+        "fields": {"type": "object"},
+        "response_format": {"type": "string", "enum": ["concise", "detailed"]},
+    }
+
+    async def test_the_server_never_sees_the_nulls(self) -> None:
+        manager = _FakeSessionManager(result=_call_result(texts=("ok",)))
+        adapter = _adapter_with(self.BROWSE_DATA, ["query"], manager)
+        registry = ToolRegistry()
+        registry.register_tool(adapter)
+        arguments = {
+            "query": "orders", "limit": None, "database_id": None, "table_ids": None,
+            "fields": None, "response_format": "null",
+        }
+
+        result = await ToolExecutor(registry).call_tool(ToolCall(id="c1", name=adapter.name, arguments=arguments))
+
+        assert result.is_error is False
+        assert manager.calls[0][2] == {"query": "orders"}
+
+    def test_an_omitted_argument_stays_omitted(self) -> None:
+        kwargs = {"query": "orders"}
+        _adapter_with(self.BROWSE_DATA, ["query"]).validate(kwargs)
+        assert kwargs == {"query": "orders"}
+
+    @pytest.mark.parametrize(
+        "schema",
+        [
+            {"type": ["string", "null"]},
+            {"type": "string", "nullable": True},
+            {"anyOf": [{"type": "integer"}, {"type": "null"}]},
+            {"oneOf": [{"type": "string"}, {"type": "null"}]},
+            {"enum": ["alice", None]},
+            {"description": "anything"},
+            # OpenAPI 3.0's way to write a nullable reference.
+            {"nullable": True, "allOf": [{"type": "object"}]},
+        ],
+    )
+    def test_a_schema_that_accepts_null_still_gets_it(self, schema: dict[str, Any]) -> None:
+        """Here null can mean "clear this field" (unassign), so leaving it out would turn
+        the call into "change nothing"."""
+        kwargs = {"assignee": None}
+        _adapter_with({"assignee": schema}, []).validate(kwargs)
+        assert kwargs == {"assignee": None}
+
+    def test_a_union_without_a_null_arm_drops_it(self) -> None:
+        kwargs = {"fields": None}
+        _adapter_with({"fields": {"anyOf": [{"type": "string"}, {"type": "array"}]}}, []).validate(kwargs)
+        assert kwargs == {}
+
+    def test_an_all_of_that_refuses_null_drops_it(self) -> None:
+        """No top-level `type`, but every `allOf` arm must hold, and this one refuses null."""
+        kwargs = {"limit": None}
+        _adapter_with({"limit": {"allOf": [{"type": "integer"}]}}, []).validate(kwargs)
+        assert kwargs == {}
+
+    def test_the_enclosing_type_refuses_null_even_when_the_arms_are_untyped(self) -> None:
+        """JSON Schema applies the property's own type and its union together."""
+        kwargs = {"owner": None}
+        _adapter_with(
+            {"owner": {"type": "object", "anyOf": [{"required": ["id"]}, {"required": ["name"]}]}}, [],
+        ).validate(kwargs)
+        assert kwargs == {}
+
+    def test_the_string_null_for_an_enum_holding_null_is_left_out(self) -> None:
+        """The fuzzy enum match used to call `.lower()` on the null member and crash."""
+        kwargs = {"assignee": "null"}
+        _adapter_with({"assignee": {"enum": ["alice", None]}}, []).validate(kwargs)
+        assert kwargs == {}
+
+    def test_a_wrong_value_for_a_numeric_enum_is_a_validation_error(self) -> None:
+        with pytest.raises(ToolValidationError, match=r"must be one of \[1, 2\], got 'three'"):
+            _adapter_with({"level": {"enum": [1, 2]}}, []).validate({"level": "three"})
+
+    def test_null_for_a_required_argument_is_still_sent(self) -> None:
+        """Leaving it out would only swap the server's answer for "missing"."""
+        kwargs = {"query": None}
+        _adapter_with(self.BROWSE_DATA, ["query"]).validate(kwargs)
+        assert kwargs == {"query": None}
+
+    @pytest.mark.parametrize("text", ["null", " NULL "])
+    def test_the_string_null_for_an_optional_enum_is_left_out(self, text: str) -> None:
+        kwargs = {"query": "orders", "response_format": text}
+        _adapter_with(self.BROWSE_DATA, ["query"]).validate(kwargs)
+        assert kwargs == {"query": "orders"}
+
+    def test_the_string_null_for_an_optional_integer_is_left_out(self) -> None:
+        kwargs = {"query": "orders", "limit": "null"}
+        _adapter_with(self.BROWSE_DATA, ["query"]).validate(kwargs)
+        assert kwargs == {"query": "orders"}
+
+    def test_the_string_null_is_kept_where_the_schema_takes_a_string(self) -> None:
+        kwargs = {"query": "null"}
+        _adapter_with(self.BROWSE_DATA, []).validate(kwargs)
+        assert kwargs == {"query": "null"}
+
+    def test_the_string_null_for_a_required_enum_still_fails(self) -> None:
+        with pytest.raises(ToolValidationError, match=r"must be one of \['concise', 'detailed'\], got 'null'"):
+            _adapter_with(self.BROWSE_DATA, ["response_format"]).validate({"response_format": "null"})
+
+    def test_any_other_wrong_value_for_an_optional_enum_still_fails(self) -> None:
+        with pytest.raises(ToolValidationError, match="must be one of"):
+            _adapter_with(self.BROWSE_DATA, []).validate({"response_format": "short"})
 
 
 class TestValidateSkipsNonAuthoritativeTypes:
@@ -388,6 +522,38 @@ class TestValidateSkipsNonAuthoritativeTypes:
         adapter.validate({"assignee": None})  # must not raise
         with pytest.raises(ToolValidationError, match="expected type 'string'"):
             adapter.validate({"assignee": {"id": 1}})
+
+    def test_a_union_is_not_held_to_its_first_arms_enum(self) -> None:
+        """`parameters` copies the enum of the first arm only; the integer arm takes any
+        integer, and the server decides about a string."""
+        adapter = _adapter_with(
+            {"order": {"anyOf": [{"type": "string", "enum": ["asc", "desc"]}, {"type": "integer"}]}}, [],
+        )
+        for value in (5, "null"):
+            kwargs = {"order": value}
+            adapter.validate(kwargs)
+            assert kwargs == {"order": value}
+
+    def test_a_unions_own_enum_is_enforced(self) -> None:
+        """An enum beside the union applies to every arm, so it is checked, and "null" outside
+        it is left out like any other optional "null"."""
+        adapter = _adapter_with(
+            {"mode": {"anyOf": [{"type": "string"}, {"type": "integer"}], "enum": ["allowed"]}}, [],
+        )
+        with pytest.raises(ToolValidationError, match=r"must be one of \['allowed'\], got 7"):
+            adapter.validate({"mode": 7})
+        kwargs = {"mode": "null"}
+        adapter.validate(kwargs)
+        assert kwargs == {}
+
+    def test_a_nullable_enum_is_still_enforced(self) -> None:
+        """One non-null arm is the whole contract, so its enum still applies."""
+        adapter = _adapter_with({"status": {"anyOf": [{"type": "string", "enum": ["open", "closed"]}, {"type": "null"}]}}, [])
+        kwargs = {"status": "Open"}
+        adapter.validate(kwargs)
+        assert kwargs == {"status": "open"}
+        with pytest.raises(ToolValidationError, match="must be one of"):
+            adapter.validate({"status": "archived"})
 
     def test_enum_is_enforced_even_on_an_untyped_property(self) -> None:
         """Skipping the TYPE check must not skip the enum check — an `enum`
@@ -503,13 +669,17 @@ class TestExecuteSuccess:
 
 
 class TestAFailedCallIsLoggedSafely:
-    """SEC-11: an expected failure logs one line, URLs without their query; a bug keeps its stack."""
+    """SEC-11: a failed call is one `tool_call.end` from the executor, by class, with no stack for an
+    expected failure and never the error's text (a URL with an API key, the arguments); a bug keeps its stack."""
 
-    async def _failure_record(self, exc: Exception, caplog: pytest.LogCaptureFixture) -> logging.LogRecord:
+    async def _end_record(self, exc: Exception, caplog: pytest.LogCaptureFixture) -> logging.LogRecord:
         adapter = _make_adapter(_FakeSessionManager(exc=exc))
-        with caplog.at_level(logging.WARNING, logger="app.agents.agent_loop.mcp_tool_adapter"):
-            await adapter.execute(query="PA")
-        (record,) = [r for r in caplog.records if "MCP tool" in r.getMessage()]
+        registry = ToolRegistry()
+        registry.register_tool(adapter)
+        with caplog.at_level(logging.DEBUG):
+            await ToolExecutor(registry).call_tool(ToolCall(id="t1", name=adapter.name, arguments={"query": "PA"}))
+        (record,) = [r for r in caplog.records if r.getMessage() == "tool_call.end"]
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING and r is not record]
         return record
 
     async def test_an_http_error_logs_no_stack_and_no_api_key(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -519,29 +689,88 @@ class TestAFailedCallIsLoggedSafely:
             request=request, response=httpx.Response(500, request=request),
         )
 
-        record = await self._failure_record(error, caplog)
+        record = await self._end_record(error, caplog)
 
-        assert not record.exc_info
-        assert "secret" not in record.getMessage()
-        assert "https://mcp.example.com/mcp" in record.getMessage()
-        assert "(unreachable)" in record.getMessage()
+        assert record.levelno == logging.WARNING and not record.exc_text
+        assert "secret" not in caplog.text
+        fields = log_record_fields(record)
+        assert isinstance(fields.pop("duration_ms"), int)
+        assert fields == {
+            "tool": "mcp_jira_mcp_search", "tool_call_id": "t1", "mcp_server_id": "inst-1",
+            "outcome": "failure", "reason": "tool_error", "kind": "mcp",
+            "error_class": "upstream_5xx", "mcp_reason": "unreachable", "error_type": "HTTPStatusError",
+        }
+
+    async def test_a_401_says_so(self, caplog: pytest.LogCaptureFixture) -> None:
+        record = await self._end_record(MCPHttpStatusError(401, "The MCP server answered HTTP 401"), caplog)
+
+        fields = log_record_fields(record)
+        assert record.levelno == logging.WARNING and not record.exc_text
+        assert (fields["error_class"], fields["mcp_reason"], fields["status"]) == ("auth_expired", "unauthorized", 401)
 
     async def test_a_timeout_logs_no_stack(self, caplog: pytest.LogCaptureFixture) -> None:
-        record = await self._failure_record(asyncio.TimeoutError(), caplog)
+        record = await self._end_record(asyncio.TimeoutError(), caplog)
 
-        assert not record.exc_info
-        assert "(timeout)" in record.getMessage()
+        assert record.levelno == logging.WARNING and not record.exc_text
+        assert log_record_fields(record)["error_class"] == "timeout"
 
     async def test_an_expired_sign_in_logs_no_stack(self, caplog: pytest.LogCaptureFixture) -> None:
-        record = await self._failure_record(MCPTokenRefreshError("no refresh token"), caplog)
+        record = await self._end_record(MCPTokenRefreshError("no refresh token"), caplog)
 
-        assert not record.exc_info
+        assert record.levelno == logging.WARNING and not record.exc_text
+        assert log_record_fields(record)["error_class"] == "auth_expired"
+
+    async def test_a_rejected_oauth_client_is_our_misconfiguration(self, caplog: pytest.LogCaptureFixture) -> None:
+        record = await self._end_record(MCPOAuthError("rejected", error_code="invalid_client"), caplog)
+
+        assert record.levelno == logging.ERROR
+        assert log_record_fields(record)["error_class"] == "misconfigured"
+
+    async def test_a_servers_refusal_is_a_warning_without_its_text(self, caplog: pytest.LogCaptureFixture) -> None:
+        record = await self._end_record(MCPError(INVALID_PARAMS, "bad sentinel-q", data={"echo": "sentinel-q"}), caplog)
+
+        assert record.levelno == logging.WARNING and not record.exc_text
+        assert log_record_fields(record)["error_class"] == "bad_request"
+        assert "sentinel-q" not in caplog.text
+
+    async def test_a_stale_tool_list_is_a_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        record = await self._end_record(MCPToolNotOfferedError("gone"), caplog)
+
+        assert record.levelno == logging.WARNING
+        assert log_record_fields(record)["error_class"] == "not_found"
+
+    async def test_a_refresh_the_provider_couldnt_answer_is_tagged_unreachable(self, caplog: pytest.LogCaptureFixture) -> None:
+        record = await self._end_record(await token_endpoint_error(503, {"error": "temporarily_unavailable"}), caplog)
+
+        assert record.levelno == logging.WARNING and not record.exc_text
+        fields = log_record_fields(record)
+        assert (fields["error_class"], fields["mcp_reason"]) == ("unavailable", "unreachable")
 
     async def test_an_unexpected_error_keeps_its_stack(self, caplog: pytest.LogCaptureFixture) -> None:
-        record = await self._failure_record(KeyError("structuredContent"), caplog)
+        record = await self._end_record(KeyError("structuredContent"), caplog)
 
-        assert record.exc_info
-        assert "(error)" in record.getMessage()
+        assert record.levelno == logging.ERROR and record.exc_text
+        assert log_record_fields(record)["error_class"] == "internal"
+        assert "error_message" not in log_record_fields(record)
+
+    async def test_an_is_error_result_is_a_warning_without_its_text(self, caplog: pytest.LogCaptureFixture) -> None:
+        adapter = _make_adapter(_FakeSessionManager(result=_call_result(is_error=True, texts=("sentinel-r",))))
+        registry = ToolRegistry()
+        registry.register_tool(adapter)
+        with caplog.at_level(logging.DEBUG):
+            result = await ToolExecutor(registry).call_tool(ToolCall(id="t2", name=adapter.name, arguments={"query": "q"}))
+
+        (record,) = [r for r in caplog.records if r.getMessage() == "tool_call.end"]
+        assert record.levelno == logging.WARNING
+        assert log_record_fields(record)["reason"] == "server_error"
+        assert "error_class" not in log_record_fields(record)
+        assert "sentinel-r" not in caplog.text and result.content == "sentinel-r"
+
+    async def test_the_adapter_says_what_kind_of_tool_it_is(self) -> None:
+        adapter = _make_adapter(_FakeSessionManager())
+
+        assert adapter.log_kind == "mcp"
+        assert adapter.log_ids == {"mcp_server_id": "inst-1"}
 
 
 class TestExecuteFailure:
@@ -570,6 +799,34 @@ class TestExecuteFailure:
         assert output.success is False
         assert "Reconnect it in Workspace" in output.error
         assert "/services/mcp" not in output.error
+
+    async def test_a_provider_outage_during_the_refresh_asks_to_try_again(self) -> None:
+        outage = await token_endpoint_error(503, {"error": "temporarily_unavailable", "trace": BODY_SECRET})
+        adapter = _make_adapter(_FakeSessionManager(exc=outage))
+
+        output = await adapter.execute(query="PA")
+
+        assert output.error == (
+            "The sign-in to the Jira MCP MCP server couldn't be renewed: its sign-in provider is down or busy. "
+            "Try again in a few minutes."
+        )
+        assert BODY_SECRET not in output.error and TOKEN_HOST not in output.error
+
+    async def test_another_processs_refresh_asks_to_try_again(self) -> None:
+        adapter = _make_adapter(_FakeSessionManager(exc=await lock_contention_error()))
+
+        output = await adapter.execute(query="PA")
+
+        assert "Try again in a few minutes" in output.error
+        assert "Reconnect" not in output.error
+        assert "/services/mcp" not in output.error
+
+    async def test_a_refused_refresh_still_asks_to_reconnect(self) -> None:
+        adapter = _make_adapter(_FakeSessionManager(exc=await token_endpoint_error(400, {"error": "invalid_grant"})))
+
+        output = await adapter.execute(query="PA")
+
+        assert "Reconnect it in Workspace" in output.error
 
     async def test_oauth_error_never_shows_the_token_endpoint_body(self) -> None:
         adapter = _make_adapter(
@@ -795,6 +1052,7 @@ class TestStopInterruptsACall:
 
         assert output.success is False
         assert "Stopped before the Jira MCP MCP server answered" in output.error
+        assert output.end_fields == {"reason": "stopped", "error_class": "cancelled"}
         assert session_manager.cancelled is True
 
     async def test_without_a_stop_the_result_comes_back(self) -> None:

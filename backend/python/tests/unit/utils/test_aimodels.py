@@ -290,6 +290,31 @@ class TestReasoningEffortKwargs:
         )
         assert result == {"reasoning_effort": "xhigh"}
 
+    @pytest.mark.parametrize("base_url", [
+        "https://us.api.openai.com/v1",
+        "https://eu.api.openai.com/v1",
+        "https://US.API.OPENAI.COM/v1/",
+    ])
+    @pytest.mark.parametrize("provider", ["openAI", "openAICompatible"])
+    def test_openai_regional_host_uses_responses_api(self, provider, base_url) -> None:
+        """Data-residency projects are served from regional subdomains of
+        api.openai.com, which reject reasoning_effort with tools on Chat
+        Completions exactly like the main host."""
+        for model in ("gpt-5.6-luna", "o4-mini"):
+            result = _reasoning_effort_kwargs(
+                "high", {"isReasoning": True}, provider=provider,
+                base_url=base_url, model_name=model,
+            )
+            assert result == {"reasoning": {"effort": "high"}, "use_responses_api": True}, model
+
+    def test_openai_regional_host_keeps_responses_api_with_reasoning_off(self) -> None:
+        result = _reasoning_effort_kwargs(
+            None, {"isReasoning": False}, provider="openAI",
+            base_url="https://us.api.openai.com/v1", model_name="gpt-6-luna",
+            api_mode=LLMApiMode.RESPONSES.value,
+        )
+        assert result == {"use_responses_api": True}
+
     def test_host_match_is_exact_not_substring(self):
         """A lookalike host must not be mistaken for OpenAI's official API."""
         config = {"isReasoning": True}
@@ -297,6 +322,8 @@ class TestReasoningEffortKwargs:
             "https://api.openai.com.evil.example/v1",
             "https://not-api.openai.com/v1",
             "https://api.openai.company/v1",
+            "https://us.api.openai.com.evil.example/v1",
+            "https://evilapi.openai.com/v1",
         ):
             result = _reasoning_effort_kwargs(
                 "high", config, provider="openAICompatible", base_url=spoof,
@@ -659,6 +686,13 @@ class TestReasoningEffortKwargs:
             "use_responses_api": True,
         }
 
+    def test_allow_disabled_reasoning_keeps_none_on_chat_completions(self) -> None:
+        config = {"isReasoning": True, "allowDisabledReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "none", config, provider="azureOpenAI", model_name="gpt-5.4-mini",
+        )
+        assert result == {"reasoning_effort": "none"}
+
 
 # ---------------------------------------------------------------------------
 # get_default_embedding_model
@@ -861,8 +895,8 @@ class TestGetEmbeddingModel:
         self, mock_cls
     ):
         """The model name does not rescue a router host. tiktoken-encoded
-        `input` is accepted only by api.openai.com (see
-        `_TOKEN_ARRAY_EMBEDDING_HOSTS`); Requesty rejects it with a 400 no
+        `input` is accepted only by OpenAI's own API (see
+        `is_openai_api_url`); Requesty rejects it with a 400 no
         matter which upstream model it forwards to."""
         mock_cls.return_value = MagicMock()
         config = self._base_config("openai/text-embedding-3-large")
@@ -880,6 +914,15 @@ class TestGetEmbeddingModel:
         get_embedding_model(EmbeddingProvider.OPENAI_COMPATIBLE.value, config)
         call_kwargs = mock_cls.call_args.kwargs
         assert call_kwargs["check_embedding_ctx_length"] is True
+
+    @patch("langchain_openai.embeddings.OpenAIEmbeddings")
+    def test_openai_regional_endpoint_keeps_ctx_length_check(self, mock_cls) -> None:
+        """A regional OpenAI host is OpenAI's own API and accepts token arrays."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("text-embedding-3-large")
+        config["configuration"]["endpoint"] = "https://eu.api.openai.com/v1"
+        get_embedding_model(EmbeddingProvider.OPENAI_COMPATIBLE.value, config)
+        assert mock_cls.call_args.kwargs["check_embedding_ctx_length"] is True
 
     @patch("app.utils.custom_embeddings.TogetherEmbeddings")
     def test_together(self, mock_cls):
@@ -2018,6 +2061,54 @@ class TestModelDefaultReasoningEffort:
             None, config, provider_in_bedrock="openai", model_name="openai.gpt-oss-120b-1:0",
         )
         assert fields == {"reasoning_effort": "low"}
+
+    @pytest.mark.parametrize(
+        ("provider", "model_name", "expected"),
+        [
+            ("anthropic", "anthropic.claude-3-7-sonnet-20250219-v1:0", {}),
+            ("anthropic", "anthropic.claude-opus-4-8", {}),
+            ("anthropic", "anthropic.claude-sonnet-5", {"thinking": {"type": "disabled"}}),
+            ("anthropic", "anthropic.claude-sonnet-5-5", {"thinking": {"type": "between_tools"}}),
+            (
+                "anthropic",
+                "anthropic.claude-opus-5-5",
+                {"thinking": {"type": "adaptive"}, "output_config": {"effort": "low"}},
+            ),
+            ("openai", "global.openai.gpt-5.4", {"reasoning": {"effort": "none"}}),
+            ("openai", "openai.gpt-oss-120b-1:0", {"reasoning_effort": "low"}),
+        ],
+    )
+    def test_bedrock_none_with_reasoning_allowed_off(
+        self, provider: str, model_name: str, expected: dict
+    ) -> None:
+        from app.utils.aimodels import _bedrock_additional_model_request_fields
+
+        config = {"isReasoning": True, "allowDisabledReasoning": True}
+        fields = _bedrock_additional_model_request_fields(
+            "none", config, provider_in_bedrock=provider, model_name=model_name,
+        )
+        assert fields == expected
+
+    @pytest.mark.parametrize(
+        ("model_name", "expected"),
+        [
+            # Claude 4.8 and older only think when asked.
+            ("claude-sonnet-4-5", {}),
+            ("claude-opus-4-8", {}),
+            # Claude 5 thinks when the field is left out, so it is turned off explicitly.
+            ("claude-opus-5", {"thinking": {"type": "disabled"}}),
+            ("claude-haiku-5-5", {"thinking": {"type": "disabled"}}),
+            ("claude-sonnet-5-5", {"thinking": {"type": "between_tools"}}),
+            # These always think; the lowest effort is the closest to none.
+            ("claude-opus-5-5", {"reasoning_effort": "low"}),
+            ("claude-fable-5-1", {"reasoning_effort": "low"}),
+        ],
+    )
+    def test_anthropic_none_with_reasoning_allowed_off(self, model_name: str, expected: dict) -> None:
+        config = {"isReasoning": True, "allowDisabledReasoning": True}
+        assert _reasoning_effort_kwargs(
+            "none", config, provider="anthropic", model_name=model_name,
+        ) == expected
 
     def test_bedrock_request_effort_overrides_model_default(self) -> None:
         from app.utils.aimodels import _bedrock_additional_model_request_fields

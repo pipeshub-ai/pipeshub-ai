@@ -6,13 +6,17 @@ from app.config.ai_models.types import CAPABILITY_TO_MODEL_TYPE
 from app.services.ai_models.discovery.cache import DiscoveryCache
 from app.services.ai_models.discovery.classifier import classify
 from app.services.ai_models.discovery.http import MAX_MODELS, DiscoveryHttp
-from app.services.ai_models.discovery.registry import DiscoveryRegistry, discovery_registry
+from app.services.ai_models.discovery.registry import (
+    DiscoveryRegistry,
+    discovery_registry,
+)
 from app.services.ai_models.discovery.types import (
     DiscoveryErrorCode,
     DiscoveryHttpError,
     DiscoveryRequest,
     DiscoveryResult,
 )
+from app.utils.openai_hosts import endpoint_path_problem
 
 
 class ModelDiscoveryService:
@@ -46,6 +50,13 @@ class ModelDiscoveryService:
                 message="Fill in " + ", ".join(missing) + " before fetching models.",
             )
         endpoint = str(request.configuration.get("endpoint") or "")
+        path_problem = endpoint_path_problem(request.provider, endpoint)
+        if path_problem is not None:
+            return DiscoveryResult(
+                supported=True,
+                error_code=DiscoveryErrorCode.INVALID_RESPONSE,
+                message=path_problem,
+            )
         credential = str(
             request.configuration.get("apiKey")
             or request.configuration.get("awsAccessSecretKey")

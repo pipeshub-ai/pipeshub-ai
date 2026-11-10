@@ -84,6 +84,7 @@ def _request(limit: dict | None = LIMIT, graph: AsyncMock | None = None) -> Magi
     request = MagicMock()
     request.state.user = user
     request.app.state.graph_provider = graph
+    request.app.container.redis_provider = AsyncMock(return_value=None)
     return request
 
 
@@ -224,7 +225,7 @@ class TestRecordsById:
              patch("app.api.routes.records._fetch_multiple_records_impl", fetch):
             with pytest.raises(HTTPException) as exc:
                 await read_record_content("rec-out", self._reader_request(graph), mode="record", query=None,
-                                          start_block=None, start_record=0, max_chars=40_000)
+                                          start_block=None, start_record=0, max_chars=40_000, extract=False)
         assert exc.value.status_code == 403 and exc.value.detail == CONNECTION_OUTSIDE_MESSAGE
         fetch.assert_not_awaited()
 
@@ -234,7 +235,7 @@ class TestRecordsById:
         with patch("app.api.routes.records.is_hidden_demo_record", AsyncMock(return_value=True)):
             with pytest.raises(HTTPException) as exc:
                 await read_record_content("rec-out", self._reader_request(graph), mode="record", query=None,
-                                          start_block=None, start_record=0, max_chars=40_000)
+                                          start_block=None, start_record=0, max_chars=40_000, extract=False)
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
@@ -250,7 +251,7 @@ class TestRecordsById:
              patch("app.api.routes.records._fetch_thread_records_impl", fetch), \
              patch("app.api.routes.records.read_thread", AsyncMock(return_value={"content": ""})):
             await read_record_content("rec-in", self._reader_request(graph), mode="thread", query=None,
-                                      start_block=None, start_record=0, max_chars=40_000)
+                                      start_block=None, start_record=0, max_chars=40_000, extract=False)
         state = fetch.call_args.kwargs["scope_state"]
         assert await ids_within_scope(state, graph, "ukey-1", "org-1", ["rec-in", "rec-out"]) == {"rec-in"}
 
@@ -942,7 +943,7 @@ class TestWhatAReadNamesBesideTheRecord:
              patch("app.api.routes.records._fetch_multiple_records_impl", fetch), \
              patch("app.api.routes.records.read_record", AsyncMock(return_value={"content": ""})):
             await read_record_content("rec-in", request, mode="record", query=None,
-                                      start_block=None, start_record=0, max_chars=40_000)
+                                      start_block=None, start_record=0, max_chars=40_000, extract=False)
         assert fetch.await_args.kwargs["connection_sources"] == limit
 
     @staticmethod
@@ -1105,6 +1106,7 @@ class TestReviewFindingsOnTheRelatedStack:
         assert response["kb"] == {} and record["recordName"] == "budget.xlsx"
         for field in ("parentNodeId", "externalParentId", "recordGroupId", "externalGroupId"):
             assert record[field] is None, field
+        assert response["userPermission"] is None   # unknown, not "NONE": that reads as a revoked permission
 
     @pytest.mark.asyncio
     async def test_an_unlimited_update_whose_enrichment_fails_is_unchanged(self) -> None:

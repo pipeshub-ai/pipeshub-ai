@@ -1,12 +1,16 @@
 """Unit tests for app.core.celery_app module."""
 
 import threading
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.core.celery_app import CeleryApp
 from app.services.messaging.config import RedisConfig
+
+if TYPE_CHECKING:
+    from app.utils.request_context import RequestContext
 
 
 def _make_config_service(host="redis-host", port=6380, password=None, db=1):
@@ -318,3 +322,37 @@ class TestStartBeat:
             app=celery_app.app, loglevel="INFO"
         )
         mock_beat_instance.run.assert_called_once()
+
+
+class TestTaskTraceContext:
+    """task_prerun seeds the log context from the enqueuer's kwargs."""
+
+    def _context_for(self, kwargs: dict[str, object]) -> "RequestContext | None":
+        from app.core.celery_app import (
+            _celery_reset_trace_context,
+            _celery_set_trace_context,
+        )
+        from app.utils.request_context import get_context
+
+        _celery_set_trace_context(task_id="t1", kwargs=kwargs)
+        try:
+            return get_context()
+        finally:
+            _celery_reset_trace_context(task_id="t1")
+
+    def test_request_id_and_org_are_honored(self) -> None:
+        ctx = self._context_for({"requestId": "root-1", "orgId": "org-1"})
+        assert ctx is not None
+        assert (ctx.root_id, ctx.org_id) == ("root-1", "org-1")
+
+    def test_org_survives_without_a_request_id(self) -> None:
+        ctx = self._context_for({"orgId": "org-1"})
+        assert ctx is not None
+        assert ctx.root_id.startswith("sys-")
+        assert ctx.org_id == "org-1"
+
+    def test_no_kwargs_gets_a_system_root(self) -> None:
+        ctx = self._context_for({})
+        assert ctx is not None
+        assert ctx.root_id.startswith("sys-")
+        assert ctx.org_id is None

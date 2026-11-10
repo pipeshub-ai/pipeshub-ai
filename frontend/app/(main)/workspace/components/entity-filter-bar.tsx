@@ -39,13 +39,14 @@ export function EntityFilterBar({ filters, renderFilter }: EntityFilterBarProps)
         // Below desktop: one row that scrolls sideways instead of clipping chips.
         flexWrap: compact ? 'nowrap' : undefined,
         overflowX: compact ? 'auto' : undefined,
-        height: '40px',
-        padding: '0 var(--space-4)',
-        borderBottom: '1px solid var(--olive-6)',
-        backgroundColor: 'var(--olive-2)',
+        // 12px around the 28px chips
+        minHeight: 52,
+        flexShrink: 0,
+        padding: '0 var(--space-3)',
+        borderBottom: '1px solid var(--olive-3)',
       }}
     >
-      <MaterialIcon name="filter_list" size={16} color="var(--slate-9)" />
+      <MaterialIcon name="filter_list" size={16} color="var(--olive-9)" />
 
       {filters.map((filter) =>
         renderFilter ? (

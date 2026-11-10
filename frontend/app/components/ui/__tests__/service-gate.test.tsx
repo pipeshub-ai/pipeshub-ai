@@ -2,6 +2,7 @@ import React from 'react';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
+import '@/lib/__tests__/test-i18n';
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: vi.fn() }),
@@ -18,7 +19,6 @@ vi.mock('@/lib/store/services-health-store', () => ({
   useServicesHealthStore: (selector: (state: unknown) => unknown) => selector(undefined),
   selectAppServices: () => ({ query: 'unhealthy', connector: 'healthy' }),
   APP_SERVICE_LABELS: { query: 'Query Service', connector: 'Connector Service' },
-  formatServiceList: (labels: string[]) => labels.join(' and '),
 }));
 
 import { ServiceGate } from '../service-gate';

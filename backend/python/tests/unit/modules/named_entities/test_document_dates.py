@@ -44,6 +44,19 @@ async def _dates(
 
 class TestHeaderDates:
     @pytest.mark.asyncio
+    async def test_an_ordinal_date_line_dates_it(self) -> None:
+        dates = await _dates("Minutes", "Date: May 3rd, 2025", "Body.")
+        assert dates == DocumentDates(created_ms=_day(2025, 5, 3), modified_ms=_day(2025, 5, 3))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("written", ["31-Dec-2025", "2025/12/31", "31.12.2025"])
+    async def test_a_numeric_or_day_mon_year_date_line_dates_it(self, written: str) -> None:
+        """dateparser read these too, but marked them as anchored to the record, so a
+        header written this way never dated the document."""
+        dates = await _dates("Minutes", f"Date: {written}", "Body.")
+        assert dates == DocumentDates(created_ms=_day(2025, 12, 31), modified_ms=_day(2025, 12, 31))
+
+    @pytest.mark.asyncio
     async def test_an_emails_date_line_dates_it(self) -> None:
         dates = await _dates(
             "Fwd: Question about token accounting discrepancy",
@@ -130,6 +143,11 @@ class TestNoDocumentDate:
     @pytest.mark.asyncio
     async def test_a_date_without_a_year_is_ambiguous(self) -> None:
         assert await _dates("Notes", "Date: Feb 11", "Body.") is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stated", ["May 20–22, 2025", "2025-05-20/2025-05-22"])
+    async def test_a_date_range_names_no_day_of_writing(self, stated: str) -> None:
+        assert await _dates("Offsite", f"Date: {stated}", "Body.") is None
 
     @pytest.mark.asyncio
     async def test_a_date_after_the_upload_is_not_believed(self) -> None:

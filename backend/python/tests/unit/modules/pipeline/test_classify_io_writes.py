@@ -17,6 +17,7 @@ from app.modules.pipeline.stage import Deadline
 from app.modules.pipeline.stages.classify_io import GraphClassifyIO
 from app.modules.pipeline.stages.entities_io import GraphEntitiesIO
 from app.modules.pipeline.stages.record_io import StoredRecordMissing
+from app.modules.transformers.stored_write import classification_sidecar_token_path
 from app.modules.transformers.transformer import TransformContext
 from app.services.resource_governor.models import ParseTier
 
@@ -31,21 +32,40 @@ def _job(stage: str = "classify") -> StageJob:
 
 
 class _Blob:
-    """An in-memory stored record: ``save_semantic_metadata`` replaces its metadata, as the real one does."""
+    """An in-memory stored record: ``rewrite_semantic_metadata`` reads it once, replaces its metadata and
+    writes it back, as the real one does; it records the layout and sidecar each write was given."""
 
-    def __init__(self, stored: dict[str, Any] | None) -> None:
+    def __init__(self, stored: dict[str, Any] | None, *, flags: dict[str, bool] | None = None) -> None:
         self.stored = stored
         self.saves = 0
+        self.writes: list[dict[str, Any]] = []
+        self.config_service = MagicMock()
+        self.config_service.get_config = AsyncMock(
+            return_value={"featureFlags": flags or {}, "artifactReadGeneration": "gen-1"}
+        )
         self.get_record_from_storage = AsyncMock(side_effect=self._get)
-        self.save_semantic_metadata = AsyncMock(side_effect=self._save)
+        self.rewrite_semantic_metadata = AsyncMock(side_effect=self._rewrite)
 
     async def _get(self, virtual_record_id: str, org_id: str) -> dict[str, Any] | None:
         return None if self.stored is None else {**self.stored}
 
-    async def _save(self, org_id: str, record_id: str, virtual_record_id: str, metadata: dict[str, Any]) -> None:
-        assert self.stored is not None
-        self.stored = {**self.stored, "semantic_metadata": metadata}
+    async def _rewrite(
+        self, org_id: str, record_id: str, virtual_record_id: str, transform: Any, *, stored_write: Any, sidecar: Any = None,  # noqa: ANN401
+    ) -> dict[str, Any] | None:
+        from app.modules.transformers.blob_storage import StoredRecordNotFound
+
+        if self.stored is None:
+            raise StoredRecordNotFound("no stored record")
+        new = await transform({**self.stored})
+        self.writes.append({"record_id": record_id, "layout": stored_write.layout, "sidecar": sidecar})
+        if new is None:
+            return None
+        if sidecar is not None and stored_write.layout == "cow":
+            # Filed before the mapping switches to the stored record that has the same classification.
+            _ = await sidecar.write(classification_sidecar_token_path(sidecar.stage_version), "gen-1:run-1", new)
+        self.stored = {**self.stored, "semantic_metadata": new}
         self.saves += 1
+        return self.stored
 
 
 def _graph(rev: str) -> MagicMock:
@@ -361,6 +381,15 @@ class _Sidecars:
         })
         return True
 
+    async def write_at(
+        self, org_id: str, virtual_record_id: str, rev: str | None, path: str, payload: dict[str, Any],
+    ) -> bool:
+        self.calls.append({
+            "at": (org_id, virtual_record_id, rev, path), "payload": payload,
+            "held": "record:rec-1" in self._manager.held, "saves": self._blob.saves,
+        })
+        return True
+
 
 def _with_sidecars(
     blob: _Blob, *, rev: str = "rev-a", entities: bool = False, sink: MagicMock | None = None,
@@ -378,17 +407,32 @@ def _with_sidecars(
 
 
 @pytest.mark.asyncio
-async def test_classify_files_its_sidecar_under_the_lease_after_the_stored_record() -> None:
-    blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}})
+async def test_classify_files_its_sidecar_under_the_lease_before_the_switch_that_names_it() -> None:
+    blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}}, flags={"ENABLE_ARTIFACT_READ_SHADOW": True})
     io, sidecars = _with_sidecars(blob)
     metadata = SemanticMetadata(summary="s", topics=["VPN"], named_entities={"entities": []})
 
     await io.save(_job(), ["rec-1"], metadata)  # type: ignore[arg-type]
 
     [call] = sidecars.calls
-    assert call["at"] == ("org-1", "vr-1", "rev-a", "classification", 1)
-    assert call["held"] is True and call["saves"] == 1
-    assert call["payload"] == metadata.model_dump(mode="json", exclude={"named_entities"})
+    org, vrid, rev, path = call["at"]
+    assert (org, vrid, rev) == ("org-1", "vr-1", "rev-a")
+    assert path.startswith("enrich/classification.") and path.endswith("@1.json")
+    # The sidecar exists before the stored record that has the same classification is switched in.
+    assert call["held"] is True and call["saves"] == 0 and blob.saves == 1
+    classification = metadata.model_dump(mode="json", exclude={"named_entities"})
+    assert call["payload"] == {"storedRun": "gen-1:run-1", "storedMeta": path, "classification": classification}
+
+
+@pytest.mark.asyncio
+async def test_classify_in_place_files_no_sidecar() -> None:
+    blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}})
+    io, sidecars = _with_sidecars(blob)
+
+    await io.save(_job(), ["rec-1"], SemanticMetadata(summary="s"))  # type: ignore[arg-type]
+
+    assert sidecars.calls == [] and blob.saves == 1
+    assert [w["layout"] for w in blob.writes] == ["in_place"]
 
 
 @pytest.mark.asyncio
@@ -403,7 +447,7 @@ async def test_classify_files_no_sidecar_when_the_stored_record_was_not_written(
         await io.save(_job(), ["rec-1"], SemanticMetadata(summary="s"))  # type: ignore[arg-type]
 
     failing_blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}})
-    failing_blob.save_semantic_metadata = AsyncMock(side_effect=RuntimeError("storage down"))
+    failing_blob.rewrite_semantic_metadata = AsyncMock(side_effect=RuntimeError("storage down"))
     io, failed = _with_sidecars(failing_blob)
     with pytest.raises(RuntimeError):
         await io.save(_job(), ["rec-1"], SemanticMetadata(summary="s"))  # type: ignore[arg-type]
@@ -413,7 +457,7 @@ async def test_classify_files_no_sidecar_when_the_stored_record_was_not_written(
 
 @pytest.mark.asyncio
 async def test_a_restored_classification_files_its_sidecar_for_the_jobs_revision() -> None:
-    blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}})
+    blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}}, flags={"ENABLE_ARTIFACT_READ_SHADOW": True})
     io, sidecars = _with_sidecars(blob)
 
     async def superseded() -> bool:
@@ -425,8 +469,8 @@ async def test_a_restored_classification_files_its_sidecar_for_the_jobs_revision
 
     await io.restore_stored_metadata(_job(), SemanticMetadata(summary="kept"))  # type: ignore[union-attr]
     [call] = sidecars.calls
-    assert call["at"] == ("org-1", "vr-1", "rev-a", "classification", 1)
-    assert call["held"] is True and call["saves"] == 1 and call["payload"]["summary"] == "kept"
+    assert call["at"][:3] == ("org-1", "vr-1", "rev-a") and call["at"][3].startswith("enrich/classification.")
+    assert call["held"] is True and call["saves"] == 0 and call["payload"]["classification"]["summary"] == "kept"
 
 
 @pytest.mark.asyncio

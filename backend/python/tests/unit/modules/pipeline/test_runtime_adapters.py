@@ -117,10 +117,12 @@ class TestGraphClassifyIO:
         sink.write_enrichment = AsyncMock()
         graph.get_document = AsyncMock(side_effect=lambda rid, _c: {"_key": rid, "contentRev": "rev-a"})
         blob.get_record_from_storage = AsyncMock(return_value={"block_containers": {"blocks": [], "block_groups": []}})
+        blob.config_service.get_config = AsyncMock(return_value={})
+        blob.rewrite_semantic_metadata = AsyncMock(return_value={"semantic_metadata": {}})
         metadata = SemanticMetadata(summary="A VPN plan.", categories=["Security"])
         await _io(graph=graph, blob=blob, sink=sink).save(_job(), ["rec-1", "rec-2"], metadata)
-        blob.save_semantic_metadata.assert_awaited_once()
-        assert blob.save_semantic_metadata.await_args.args[:3] == ("org-1", "rec-1", "vr-1")
+        blob.rewrite_semantic_metadata.assert_awaited_once()
+        assert blob.rewrite_semantic_metadata.await_args.args[:3] == ("org-1", "rec-1", "vr-1")
         sink.prepare_enrichment.assert_awaited_once()
         calls = sink.write_enrichment.await_args_list
         assert [call.args[0].record.id for call in calls] == ["rec-1", "rec-2"]

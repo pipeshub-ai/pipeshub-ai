@@ -544,7 +544,7 @@ def _account(client: PipeshubClient, email: str, name: str) -> SecondUser:
     graph_id = str(graph_user.get("id") or "")
     if not user_id or not graph_id:
         raise RuntimeError(f"no usable PipesHub account for {email}: created={created} graph={graph_user}")
-    _seed_password(client.org_id, user_id)
+    _seed_password(client.org_id, user_id, email)
     token = log_in(client.base_url, email, client.timeout_seconds)
     return SecondUser(user_id=user_id, graph_id=graph_id, email=email, token=token,
                       base_url=client.base_url, timeout=client.timeout_seconds)

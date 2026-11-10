@@ -64,6 +64,7 @@ _AGENTS = "/api/v1/agents"
 _SERVICE_ACCOUNTS = "/api/v1/service-accounts"
 _USERS = "/api/v1/users"
 _SKILLS = "/api/v1/skills"
+_TEAMS = "/api/v1/teams"
 _GONE_TIMEOUT_SEC = 120.0
 _GONE_POLL_SEC = 2.0
 MCP_FLAG = "ENABLE_MCP"
@@ -341,6 +342,8 @@ class World:
             return str(self._create_toolset(
                 self._unique_name("toolset"), KEYED_TOOLSET_TYPE, "API_TOKEN", {}, caller=CREATOR, scope="personal",
             )["_id"])
+        if key == "fresh_creator_team":
+            return self._create_team(CREATOR, "a member's test team for one case")
         if key in ("fresh_mcp", "fresh_personal_mcp"):
             self._switch_on(MCP_FLAG)
             if key == "fresh_mcp":
@@ -675,6 +678,27 @@ class World:
             # the agent.
             "member_agent": self._create_agent(CREATOR, "the member's test agent"),
         }
+
+    # ------------------------------------------------------------------- teams
+
+    def _create_team(self, caller: str, what: str) -> str:
+        body = self._json(caller, "POST", _TEAMS, f"Creating {what}", ok=(200, 201),
+                          json={"name": self._unique_name("team")})
+        data = body.get("data")
+        team_id = str(data.get("id") or "") if isinstance(data, dict) else ""
+        if not team_id:
+            raise RuntimeError(f"Creating {what} returned no id.")
+        # A case may have deleted it already.
+        self._later(
+            what,
+            lambda: self._json(caller, "DELETE", f"{_TEAMS}/{team_id}", f"Deleting {what}",
+                               ok=(200, 404)),
+        )
+        return team_id
+
+    def _build_teams(self) -> dict[str, str]:
+        # A team a member made and owns, which the other member has no role on.
+        return {"creator_team": self._create_team(CREATOR, "the member's test team")}
 
     # ---------------------------------------------------------------- teardown
 

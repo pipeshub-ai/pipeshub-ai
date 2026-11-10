@@ -12,6 +12,7 @@ from app.connectors.sources.network_share.entry import DirectoryEntry
 from app.connectors.sources.network_share.errors import (
     AccessDeniedError,
     DirectoryListingError,
+    NetworkShareAuthError,
 )
 from app.connectors.sources.network_share.filters import (
     date_bounds,
@@ -276,6 +277,10 @@ class ShareWalker:
                         finally:
                             if tracked:
                                 open_dirs.pop()
+                except NetworkShareAuthError:
+                    # The server refused the account: every folder after this one fails the
+                    # same way, and none of them is a folder that went away.
+                    raise
                 except Exception:
                     mark_unread(join_rel_path(directory_path, entry.name) or directory_path)
                     self.logger.exception(
@@ -300,6 +305,8 @@ class ShareWalker:
                 path = "/".join(parts[: index + 1])
                 try:
                     info = await self.data_source.stat(share, path, follow=False)
+                except NetworkShareAuthError:
+                    raise
                 except Exception as exc:
                     mark_unread(directory_path)
                     self.logger.error(

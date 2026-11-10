@@ -65,6 +65,23 @@ describe('AgentActivityTimeline — narration text', () => {
     expect(screen.getByText('Let me check the test file first.')).toBeTruthy();
   });
 
+  it('renders two narration parts of the same run without a duplicate React key', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    renderTimeline([
+      { type: 'text', content: 'I will find the CSV first.', runId: 'run-1' },
+      { type: 'tool_call', toolCallId: 'call-1', toolName: 'search', status: 'done' },
+      { type: 'text', content: 'Found it, reading the first rows.', runId: 'run-1' },
+    ]);
+
+    expect(screen.getByText('I will find the CSV first.')).toBeTruthy();
+    expect(screen.getByText('Found it, reading the first rows.')).toBeTruthy();
+    const duplicateKeyWarnings = errorSpy.mock.calls.filter((args) =>
+      String(args[0]).includes('Encountered two children with the same key'),
+    );
+    errorSpy.mockRestore();
+    expect(duplicateKeyWarnings).toEqual([]);
+  });
+
   it('hides the root-level text part marked isFinal', () => {
     const { container } = renderTimeline([
       { type: 'text', content: 'Let me check the test file first.' },

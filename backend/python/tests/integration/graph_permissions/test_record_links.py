@@ -18,6 +18,8 @@ from .loaders import load_into_arango, load_into_neo4j
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+pytestmark = pytest.mark.integration
+
 RECORDS = CollectionNames.RECORDS.value
 RELATIONS = CollectionNames.NODE_RELATIONS.value
 LINKS = CollectionNames.RECORD_LINKS.value

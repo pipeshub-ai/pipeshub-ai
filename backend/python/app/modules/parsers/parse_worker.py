@@ -89,6 +89,14 @@ def _exit_with_parent(parent_pid: int) -> None:
 
 
 def main(request_fd: int, reply_fd: int) -> None:
+    # When memory runs out the kernel should kill the worker, which fails one
+    # file, not the service beside it. Before the non-dumpable mark, which
+    # hands /proc/self to root.
+    try:
+        with open("/proc/self/oom_score_adj", "w") as adj:
+            adj.write("1000")
+    except OSError:
+        pass
     # This process was handed the service's environment, secrets included, and
     # exec reset the non-dumpable mark the service set on itself. Without it a
     # same-uid process (a tool the service runs) can read /proc/<pid>/environ.

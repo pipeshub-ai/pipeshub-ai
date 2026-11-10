@@ -21,12 +21,19 @@ from redis.asyncio.retry import Retry
 from redis.backoff import default_backoff
 from redis.crc import key_slot
 
-from app.services.redis.config import ClientOptions, RedisConnectionConfig
+from app.services.redis.config import (
+    RESP_PROTOCOL,
+    ClientOptions,
+    RedisConnectionConfig,
+)
 from app.services.redis.connection_provider import IRedisConnectionProvider
 from app.utils.logger import create_logger
 
 logger = create_logger("redis_cluster_provider")
 
+
+# Matches what a non-blocking standalone client gets: no per-node cap in practice.
+_UNBOUNDED_NODE_CONNECTIONS = 2**31
 
 class ClusterRedisProvider(IRedisConnectionProvider):
     def __init__(self, config: RedisConnectionConfig) -> None:
@@ -65,11 +72,13 @@ class ClusterRedisProvider(IRedisConnectionProvider):
         # RedisCluster's per-node pool has no wait at all -- the first command
         # over the cap raises MaxConnectionsError instantly, which under the
         # indexing worker's fan-out turned every config read into a failure.
-        # redis-py's default (effectively unbounded) matches what standalone
-        # gives a non-blocking client today.
+        # The cap is set explicitly because redis-py 6+ lowered the default
+        # from 2**31 to 100 per node, below that fan-out.
         kwargs: dict[str, Any] = {
             "startup_nodes": self._startup_nodes(),
+            "max_connections": _UNBOUNDED_NODE_CONNECTIONS,
             "decode_responses": options.decode_responses,
+            "protocol": RESP_PROTOCOL,
             "socket_timeout": options.socket_timeout_seconds,
             "socket_connect_timeout": options.socket_connect_timeout_seconds,
             "read_from_replicas": self._config.scale_reads in ("slave", "all"),
@@ -185,7 +194,7 @@ class ClusterRedisProvider(IRedisConnectionProvider):
         return startup.host, startup.port
 
     async def publish(self, channel: str, message: str) -> int:
-        # redis-py 5.x's async RedisCluster has no publish() and PUBLISH is
+        # redis-py 5.x's async RedisCluster has no publish() (6+ does) and PUBLISH is
         # keyless, so a bare execute_command has no slot to route by and
         # raises. Any node will do -- regular PUBLISH propagates cluster-wide.
         result = await self.get_client().execute_command(

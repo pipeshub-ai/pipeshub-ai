@@ -247,6 +247,24 @@ describe('OrgController', () => {
       expect(res.send.calledOnce).to.be.true;
     });
 
+    it('serves the logo so an SVG opened as a page cannot run script', async () => {
+      sinon.stub(OrgLogos, 'findOne').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves({
+            logo: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>').toString('base64'),
+            mimeType: 'image/svg+xml',
+          }),
+        }),
+      } as any);
+
+      await controller.getOrgLogo(req, res, next);
+
+      expect(res.setHeader.calledWith('X-Content-Type-Options', 'nosniff')).to.be.true;
+      const csp = res.setHeader.args.find((a: any[]) => a[0] === 'Content-Security-Policy');
+      expect(csp?.[1]).to.match(/sandbox/);
+      expect(csp?.[1]).to.match(/default-src 'none'/);
+    });
+
     it('should return 204 when no logo found', async () => {
       sinon.stub(OrgLogos, 'findOne').returns({
         lean: sinon.stub().returns({
@@ -1828,7 +1846,7 @@ describe('OrgController - additional coverage 2', () => {
       } as any)
 
       await controller.getOrgLogo(req, res, next)
-      expect(res.setHeader.called).to.be.false
+      expect(res.setHeader.calledWith('Content-Type')).to.be.false
       expect(res.status.calledWith(200)).to.be.true
     })
   })

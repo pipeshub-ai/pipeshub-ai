@@ -1,7 +1,6 @@
-import { Types } from 'mongoose';
 import { UnauthorizedError } from '../../../libs/errors/http.errors';
-import { Users } from '../../user_management/schema/users.schema';
-import { ServiceAccountDelegation } from '../schema/service-account-delegation.schema';
+import { getUserRepository } from '../../../libs/repositories/user';
+import { getDelegationRepository } from '../../../libs/repositories/delegation';
 
 /**
  * The rules that let a delegated token be issued, re-checked while it is used.
@@ -25,9 +24,9 @@ import { ServiceAccountDelegation } from '../schema/service-account-delegation.s
  * value to clamp that both halves would agree on.
  */
 export async function assertDelegationStillHolds(
-  actorId: string | Types.ObjectId,
-  subjectUserId: string | Types.ObjectId,
-  orgId: string | Types.ObjectId,
+  actorId: string | { toString(): string },
+  subjectUserId: string | { toString(): string },
+  orgId: string | { toString(): string },
   subject: { role?: string; kind?: string; isDisabled?: boolean },
 ): Promise<void> {
   // Checked here as well as by the callers that load the subject for their
@@ -50,15 +49,12 @@ export async function assertDelegationStillHolds(
     throw new UnauthorizedError('This token acts for a service account');
   }
 
-  const actor = await Users.findOne({
-    _id: { $eq: actorId },
-    orgId: { $eq: orgId },
-    kind: 'service',
-    isDeleted: false,
-  })
-    .select('isDisabled')
-    .lean()
-    .exec();
+  const actor = await getUserRepository().getLiveFields(
+    String(orgId),
+    String(actorId),
+    ['isDisabled'],
+    { serviceOnly: true, strict: true },
+  );
 
   // Also closes the race the issuing path cannot: an exchange that read the
   // service account as enabled can still insert its token after the disable
@@ -79,14 +75,11 @@ export async function assertDelegationStillHolds(
   // allow-list and then writes a token; a revocation landing between the two
   // produces a token that never had a live row behind it, and revoking rows
   // at that moment cannot catch an insert that has not happened yet.
-  const stillAllowed = await ServiceAccountDelegation.findOne({
-    orgId: { $eq: orgId },
-    serviceAccountId: { $eq: actorId },
-    subjectUserId: { $eq: subjectUserId },
-  })
-    .select('_id')
-    .lean()
-    .exec();
+  const stillAllowed = await getDelegationRepository().isAllowed(
+    String(orgId),
+    String(actorId),
+    String(subjectUserId),
+  );
 
   if (!stillAllowed) {
     throw new UnauthorizedError(

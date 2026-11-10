@@ -301,8 +301,8 @@ class TestTheBootSweep:
         from app.connectors_main import reset_stale_sync_state
 
         docs = [
-            {"id": "full", "status": AppStatus.FULL_SYNCING.value},
-            {"id": "incr", "status": AppStatus.SYNCING.value},
+            {"id": "full", "status": AppStatus.FULL_SYNCING.value, "orgId": "o1"},
+            {"id": "incr", "status": AppStatus.SYNCING.value, "orgId": "o1"},
         ]
 
         async def _by_field(
@@ -315,6 +315,7 @@ class TestTheBootSweep:
         gp = AsyncMock()
         gp.get_nodes_by_field_in = AsyncMock(side_effect=_by_field)
         gp.batch_upsert_nodes = AsyncMock()
+        gp.get_all_orgs = AsyncMock(return_value=[{"_key": "o1"}])
         coordinator = MagicMock()
         coordinator.reports_liveness = True
         coordinator.peek_many = AsyncMock(return_value=set())
@@ -401,12 +402,16 @@ async def _consume(
     container.messaging_producer = AsyncMock()
     svc = EventService(MagicMock(spec=logging.Logger), container, graph)
 
+    started: list[str] = []
+
     async def _spawn(_lease: SyncLease, coro: object) -> MagicMock:
+        started.append(coro.cr_frame.f_locals["start_status"])
         coro.close()  # the sync itself is not under test here
         return MagicMock(name="task")
 
     lease = SyncLease("c1", "tok", 1)
     coordinator = MagicMock()
+    coordinator.started = started
     coordinator.begin = AsyncMock(
         return_value=(admission, lease if admission is Admission.GRANTED else None)
     )
@@ -574,8 +579,9 @@ class TestAFailedReadNeitherDropsNorStartsTheResume:
         graph.delete_sync_points_by_connector_id.assert_awaited_once()
         graph.delete_connector_sync_edges.assert_not_awaited()
         coordinator.spawn.assert_awaited_once()
-        # Consumed, so the next sync does not run the full-sync prep again.
-        assert {_FULL: False} in [c.args[2] for c in graph.update_node.await_args_list]
+        # Consumed by the full sync's start write (run_sync_task clears
+        # pendingFullSync there), so the next sync does not run the prep again.
+        assert coordinator.started == [AppStatus.FULL_SYNCING.value]
 
     @pytest.mark.asyncio
     async def test_a_failed_read_at_capacity_redelivers_without_queueing(self) -> None:

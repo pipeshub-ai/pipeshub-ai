@@ -94,6 +94,17 @@ async def storage() -> AsyncIterator[FakeStorage]:
     await fake.stop()
 
 
+@pytest.fixture(autouse=True)
+def _run_for_every_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every write names the stored write it was built from; most of these tests do not care which."""
+    real = ArtifactWriter.write_revision
+
+    async def write_revision(self, *args, stored_run: str = "gen:run", **kwargs):  # noqa: ANN202
+        return await real(self, *args, stored_run=stored_run, **kwargs)
+
+    monkeypatch.setattr(ArtifactWriter, "write_revision", write_revision)
+
+
 def _writer(fake: FakeStorage, **kwargs: int) -> ArtifactWriter:
     logger = logging.getLogger("artifact-writer-test")
     return ArtifactWriter(NodeArtifactStore(fake.blob_storage(), logger), logger, **kwargs)
@@ -246,6 +257,27 @@ class TestWriteRevision:
             await _writer(storage).write_revision(record, "org-1", "vr-1", REV, record.block_containers)
 
         assert MANIFEST_PATH not in storage.put_order
+
+    @pytest.mark.parametrize(
+        ("answers", "files_go_up", "manifest_stored"),
+        [([False], False, False), ([True, False], True, False), ([True, True], True, True)],
+        ids=["replaced_before_the_files", "replaced_before_the_manifest", "still_current"],
+    )
+    async def test_a_write_another_stored_write_took_over_stops(
+        self, storage: FakeStorage, answers: list[bool], files_go_up: bool, manifest_stored: bool,
+    ) -> None:
+        record = _record(_text_blocks(5, 10))
+        replies = iter(answers)
+
+        async def still_current() -> bool:
+            return next(replies)
+
+        written = await _writer(storage).write_revision(record, "org-1", "vr-1", REV, record.block_containers, still_current=still_current)
+
+        assert (written is not None) is manifest_stored
+        assert (MANIFEST_PATH in storage.put_order) is manifest_stored
+        assert any(path != MANIFEST_PATH for path in storage.put_order) is files_go_up
+        assert next(replies, None) is None
 
     async def test_more_files_than_one_presign_takes(self, storage: FakeStorage) -> None:
         images = [_image_block(i, _uri("image/png", PNG + i.to_bytes(4, "big"))) for i in range(1200)]

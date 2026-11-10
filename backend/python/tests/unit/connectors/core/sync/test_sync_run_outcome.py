@@ -76,6 +76,29 @@ async def test_the_run_records_how_it_ended(run_sync, outcome: str) -> None:
     assert idle[Keys.LAST_SYNC_FINISHED_AT] >= start[Keys.LAST_SYNC_STARTED_AT]
 
 
+@pytest.mark.parametrize(
+    "start_status, cleared",
+    [(AppStatus.FULL_SYNCING.value, True), (AppStatus.SYNCING.value, False)],
+)
+async def test_a_full_sync_clears_the_full_sync_it_owed_in_its_start_write(
+    start_status: str, cleared: bool
+) -> None:
+    """One write to the app doc. A second writer clearing pendingFullSync at the
+    same moment failed one of the two in ArangoDB (write-write conflict)."""
+    gp = _graph_provider()
+
+    await run_sync_task(_connector(_ok), "c1", gp, _LOG, start_status=start_status)
+
+    start = _start_write(gp)
+    assert start["status"] == start_status
+    if cleared:
+        assert start[Keys.PENDING_FULL_SYNC] is False
+    else:
+        assert Keys.PENDING_FULL_SYNC not in start
+    assert not [c for c in gp.update_node.await_args_list if Keys.PENDING_FULL_SYNC in c.args[2]
+                and c.args[2][Keys.PENDING_FULL_SYNC] is False]
+
+
 async def test_a_stopped_run_is_recorded_as_stopped() -> None:
     gp = _graph_provider()
     started = asyncio.Event()

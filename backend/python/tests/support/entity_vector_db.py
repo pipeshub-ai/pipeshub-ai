@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 import fakeredis.aioredis
 
+from app.services.vector_db.filters import ScopeFilterUnsupported
 from app.services.vector_db.models import (
     CollectionConfig,
     HybridSearchRequest,
@@ -192,7 +193,7 @@ class FakeEntityVectorDB:
                 id=point.id, dense_vector=list(point.dense_vector or []), payload=copy.deepcopy(point.payload),
             )
 
-    async def update_payload_by_ids(self, collection_name: str, ids: list[str], payload: dict) -> None:
+    async def update_payload_by_ids(self, collection_name: str, ids: list[str], payload: dict, *, org_id) -> None:
         self._require(collection_name)
         for point_id in ids:
             if point_id in self.points:
@@ -201,6 +202,9 @@ class FakeEntityVectorDB:
     async def query_nearest_points(
         self, collection_name: str, requests: list[HybridSearchRequest],
     ) -> list[list[SearchResult]]:
+        for request in requests:
+            if request.scope_filter is not None:          # a double that ignored the filter would answer more than the real stores do
+                raise ScopeFilterUnsupported(f"{type(self).__name__} does not evaluate a scope filter")
         self._require(collection_name)
         batch = []
         for request in requests:

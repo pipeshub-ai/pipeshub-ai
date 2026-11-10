@@ -19,11 +19,13 @@ from app.connectors.sources.network_share.errors import (
     ShareListingError,
 )
 from app.sources.client.iclient import IClient
+from app.sources.client.smb.errors import describe, is_sign_in_refusal, nt_status
 from app.sources.client.smb.share_enum import enumerate_shares
 from app.utils.url_fetcher import (
     HostCheckError,
     check_addresses,
     literal_ip,
+    public_address_refusal,
     resolved_addresses,
 )
 
@@ -42,6 +44,34 @@ LOOKUP_TIMEOUT_SECONDS = 5
 # getaddrinfo has no timeout. A lookup left running here does not hold a client's lock.
 _lookups = ThreadPoolExecutor(max_workers=4, thread_name_prefix="smb-lookup")
 _T = TypeVar("_T")
+
+
+class _Active(threading.local):
+    # The address rules of the clients whose lock this thread holds, innermost last.
+    public_only: list[bool]
+
+    def __init__(self) -> None:
+        self.public_only = []
+
+
+_active = _Active()
+
+
+class _ClientLock:
+    """The client's re-entrant lock. While held, sessions smbclient opens on this thread
+    (DFS referrals go through the global pool) follow the client's address rule."""
+
+    def __init__(self, *, public_only: bool) -> None:
+        self._lock = threading.RLock()
+        self._public_only = public_only
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+        _active.public_only.append(self._public_only)
+
+    def __exit__(self, *exc: object) -> None:
+        _active.public_only.pop()
+        self._lock.release()
 
 
 def _as_datetime(value: object) -> datetime | None:
@@ -68,7 +98,7 @@ def _stat_time(result: object, field: str) -> datetime | None:
     return _as_datetime(getattr(result, field, None))
 
 
-def dial_address(server: str) -> str:
+def dial_address(server: str, *, public_only: bool = False) -> str:
     """The address to connect to for ``server``, looked up once.
 
     Every path is then built on this address, so a second lookup cannot move the
@@ -78,10 +108,14 @@ def dial_address(server: str) -> str:
     addresses are never a file server either. Sessions authenticate with NTLM (the image
     has no Kerberos), which does not need the server's name.
 
+    ``public_only`` (personal connectors) allows public addresses only, whatever the
+    deployment setting, and refuses with one message whatever the reason.
+
     Raises:
         NetworkShareAuthError: the name doesn't resolve or an address is refused.
     """
     literal = literal_ip(server)
+    refusal = public_address_refusal(server) if public_only else None
     try:
         addresses = (
             [literal]
@@ -89,20 +123,20 @@ def dial_address(server: str) -> str:
             else _lookups.submit(resolved_addresses, server).result(timeout=LOOKUP_TIMEOUT_SECONDS)
         )
     except TimeoutError as exc:
-        raise NetworkShareAuthError(f'Looking up "{server}" timed out. Check the server name.') from exc
+        raise NetworkShareAuthError(refusal or f'Looking up "{server}" timed out. Check the server name.') from exc
     if not addresses:
-        raise NetworkShareAuthError(f'Could not find a server named "{server}". Check the server name.')
+        raise NetworkShareAuthError(refusal or f'Could not find a server named "{server}". Check the server name.')
     plain = [
         a.ipv4_mapped if isinstance(a, ipaddress.IPv6Address) and a.ipv4_mapped is not None else a
         for a in addresses
     ]
     if any(a.is_loopback or a.is_unspecified or a.is_multicast for a in plain):
-        raise NetworkShareAuthError(
+        raise NetworkShareAuthError(refusal or (
             f"The SMB server address {server} is not allowed: loopback, link-local and multicast "
             "addresses cannot be used."
-        )
+        ))
     try:
-        check_addresses(server, addresses)
+        check_addresses(server, addresses, public_only=public_only)
     except HostCheckError as exc:
         raise NetworkShareAuthError(str(exc)) from exc
     return str(next((a for a in plain if a.version == 4), plain[0]))
@@ -120,7 +154,9 @@ def _vet_every_session(pool: ModuleType) -> None:
         return
 
     def register_session(server: str, *args: object, **kwargs: object) -> object:
-        return original(dial_address(server), *args, **kwargs)
+        # No client holding its lock on this thread: the strict rule, not the deployment default.
+        public_only = _active.public_only[-1] if _active.public_only else True
+        return original(dial_address(server, public_only=public_only), *args, **kwargs)
 
     register_session.vetted = True  # type: ignore[attr-defined]
     pool.register_session = register_session
@@ -144,6 +180,7 @@ class SmbClient(IClient):
         domain: str = "",
         share: str | None = None,
         logger: Logger | None = None,
+        public_only: bool = False,
     ) -> None:
         # smbclient takes an IPv6 address without the brackets a URL would use.
         self.server = server.removeprefix("[").removesuffix("]")
@@ -159,7 +196,8 @@ class SmbClient(IClient):
         # smbprotocol does not wait for SMB credits. Requests from several
         # threads on one connection fail with "requires 1 credits but only 0
         # credits are available" and can leave the connection at zero for good.
-        self._io_lock = threading.RLock()
+        self._io_lock = _ClientLock(public_only=public_only)
+        self.public_only = public_only
 
     def get_client(self) -> dict[str, Any]:
         return self._connection_cache
@@ -187,17 +225,25 @@ class SmbClient(IClient):
         with self._io_lock:
             if self._registered:
                 return
-            self.host = dial_address(self.server)
+            self.host = dial_address(self.server, public_only=self.public_only)
             smbclient = self._smbclient()
-            smbclient.register_session(
-                self.host,
-                username=self.username,
-                password=self.password,
-                port=self.port,
-                connection_timeout=CONNECTION_TIMEOUT_SECONDS,
-                connection_cache=self._connection_cache,
-            )
+            try:
+                smbclient.register_session(
+                    self.host,
+                    username=self.username,
+                    password=self.password,
+                    port=self.port,
+                    connection_timeout=CONNECTION_TIMEOUT_SECONDS,
+                    connection_cache=self._connection_cache,
+                )
+            except Exception as exc:
+                if is_sign_in_refusal(exc):
+                    raise NetworkShareAuthError(self._describe(exc)) from exc
+                raise
             self._registered = True
+
+    def _describe(self, exc: BaseException) -> str:
+        return describe(exc, server=self.server, share=self.default_share, port=self.port)
 
     def close(self) -> None:
         with self._io_lock:
@@ -234,12 +280,18 @@ class SmbClient(IClient):
         except Exception as exc:
             # smbclient raises SMBOSError (ntstatus), smbprotocol SMBResponseException (status). The
             # message reads "Unknown NtStatus error returned 'STATUS_ACCESS_DENIED'", not "access denied".
+            # A refused sign-in also arrives here when smbclient reconnects a dropped session.
+            if is_sign_in_refusal(exc):
+                raise NetworkShareAuthError(self._describe(exc)) from exc
             if STATUS_ACCESS_DENIED in (getattr(exc, "ntstatus", None), getattr(exc, "status", None)):
                 raise AccessDeniedError(share, path, str(exc)) from exc
             message = str(exc).lower()
             if "not found" in message or "no such" in message:
                 raise FileNotFoundError(target) from exc
-            if "logon" in message or "access denied" in message or "unsuccessful" in message:
+            # The walk stops on an auth error, so only a logon failure may become one; "access
+            # denied" or "unsuccessful" here is this folder's own failure. An error with an NT
+            # status was judged above, and its text names the path, which may contain "logon".
+            if nt_status(exc) is None and "logon" in message:
                 raise NetworkShareAuthError(str(exc)) from exc
             raise DirectoryListingError(share, path, str(exc)) from exc
         return entries
@@ -257,6 +309,8 @@ class SmbClient(IClient):
         except FileNotFoundError:
             return None
         except Exception as exc:
+            if is_sign_in_refusal(exc):
+                raise NetworkShareAuthError(self._describe(exc)) from exc
             message = str(exc).lower()
             if "not found" in message or "no such" in message:
                 return None
@@ -326,6 +380,8 @@ class SmbClient(IClient):
         logger: Logger,
         config_service: ConfigurationService,
         connector_instance_id: str,
+        *,
+        public_only: bool = False,
     ) -> "SmbClient":
         config = await config_service.get_config(
             ConfigPaths.CONNECTOR_CONFIG_PATH.format(connector_id=connector_instance_id)
@@ -349,6 +405,7 @@ class SmbClient(IClient):
             domain=domain,
             share=share,
             logger=logger,
+            public_only=public_only,
         )
         await asyncio.to_thread(client.register)
         return client

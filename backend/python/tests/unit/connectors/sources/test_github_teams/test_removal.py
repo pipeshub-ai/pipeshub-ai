@@ -40,9 +40,11 @@ if TYPE_CHECKING:
 
 
 def _record(rid: str, external_id: str, record_type: str = RecordType.TICKET.value,
-            updated_ms: int = 0) -> SimpleNamespace:
+            updated_ms: int = 0, *, name: str | None = None, placeholder: bool = False,
+            connector_id: str | None = None) -> SimpleNamespace:
     return SimpleNamespace(id=rid, external_record_id=external_id, record_type=record_type,
-                           source_updated_at=updated_ms)
+                           source_updated_at=updated_ms, record_name=name or external_id,
+                           is_placeholder=placeholder, connector_id=connector_id)
 
 
 def _processor() -> MagicMock:
@@ -615,3 +617,57 @@ async def test_attachments_and_images_are_fetched_without_the_token(monkeypatch)
     chunks = [c async for c in ds.get_attachment_files_content("https://github.com/user-attachments/files/1/a.txt")]
     assert b"".join(chunks) == b"data"
     assert seen == [None, None]
+
+
+class TestStubTitlesFromBeforeLinksStoppedCarryingThem:
+    """A stub stored before a link to another repository stopped carrying the linked title is named by its id."""
+
+    CONNECTOR = "github-conn-1"  # the id the mock connector carries
+
+    async def _settle(self, records: list[SimpleNamespace]) -> MagicMock:
+        c = make_mock_connector()
+        assert c.connector_id == self.CONNECTOR
+        c.data_entities_processor.get_records_in_record_group = AsyncMock(return_value=records)
+        c.data_entities_processor.note_kept_records = MagicMock()
+        c.data_entities_processor.batch_update_nodes = AsyncMock()
+        await CommentsHelper(c).settle_stored_attachments("1001-work-items")
+        return c
+
+    def _stub(self, rid: str, external_id: str, name: str, connector_id: str | None = None) -> SimpleNamespace:
+        return _record(rid, external_id, name=name, placeholder=True, connector_id=connector_id or self.CONNECTOR)
+
+    async def test_a_stub_of_another_repository_is_named_by_its_id(self) -> None:
+        c = await self._settle([self._stub("s1", "2002/issues/7", "Acquire Contoso (board only)")])
+        c.data_entities_processor.batch_update_nodes.assert_awaited_once_with(
+            [{"id": "s1", "recordName": "2002/issues/7"}], "records",
+        )
+
+    async def test_an_id_that_names_no_repository_counts_as_another_one(self) -> None:
+        c = await self._settle([self._stub("s1", "orphan", "A title")])
+        c.data_entities_processor.batch_update_nodes.assert_awaited_once_with(
+            [{"id": "s1", "recordName": "orphan"}], "records",
+        )
+
+    async def test_a_stub_of_the_same_repository_keeps_its_title(self) -> None:
+        c = await self._settle([self._stub("s1", "1001/issues/7", "Same repository")])
+        c.data_entities_processor.batch_update_nodes.assert_not_awaited()
+
+    async def test_a_real_record_and_another_connectors_stub_are_left_alone(self) -> None:
+        real = _record("r1", "2002/issues/7", name="Real issue", connector_id=self.CONNECTOR)
+        elsewhere = self._stub("s2", "2002/issues/8", "Other connector", connector_id="other")
+        c = await self._settle([real, elsewhere])
+        c.data_entities_processor.batch_update_nodes.assert_not_awaited()
+
+    async def test_a_second_run_has_nothing_to_rename(self) -> None:
+        c = await self._settle([self._stub("s1", "2002/issues/7", "2002/issues/7")])
+        c.data_entities_processor.batch_update_nodes.assert_not_awaited()
+
+    async def test_a_failed_write_does_not_fail_the_settle(self) -> None:
+        c = make_mock_connector()
+        c.data_entities_processor.get_records_in_record_group = AsyncMock(
+            return_value=[self._stub("s1", "2002/issues/7", "A title")]
+        )
+        c.data_entities_processor.note_kept_records = MagicMock()
+        c.data_entities_processor.batch_update_nodes = AsyncMock(side_effect=RuntimeError("down"))
+        await CommentsHelper(c).settle_stored_attachments("1001-work-items")
+        c.data_entities_processor.note_kept_records.assert_called_once()

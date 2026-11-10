@@ -75,6 +75,7 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
 )
+from app.modules.code_graph.synced_commit import record_synced_commit
 from app.modules.parsers.code_parser.file_role import FileRole, classify_file_role
 from app.modules.parsers.code_parser.gitattributes import (
     LinguistExclusions,
@@ -152,8 +153,8 @@ class ReposSync:
         return code_branch(self.c.sync_filters) or repo.default_branch
 
     async def run(self, repo: GhObject) -> bool:
-        """Sync a repo's code: incremental when a checkpoint exists and the
-        synced branch hasn't changed, full sync (re-baseline) otherwise.
+        """Sync a repo's code: incremental from the checkpoint's commit, full
+        sync when there is none or the incremental pass fails.
         Returns False when the code could not be brought up to date."""
         c = self.c
         owner, name = repo.owner.login, repo.name
@@ -201,17 +202,21 @@ class ReposSync:
             return ok
 
         if last_branch and last_branch != branch:
+            # The delta between the two branch heads is all that changes in the
+            # index. Compare reports a diverged or behind branch as untrusted, so
+            # `_incremental_sync` takes the two-tree diff for those, and a full
+            # walk stays the fallback below.
             self.logger.info(
-                "Synced branch changed for %s (%s -> %s); re-baselining with full sync",
+                "Synced branch changed for %s (%s -> %s); syncing the difference",
                 repo.full_name, last_branch, branch,
             )
-            ok = await self._full_sync(repo, current_sha)
-            if ok:
+            if last_sha == current_sha:
                 await self._update_checkpoint(repo, current_sha, branch)
-            return ok
-
-        if last_sha == current_sha:
+                return True
+        elif last_sha == current_sha:
             self.logger.debug("Code repo unchanged for %s (HEAD %s); skipping", repo.full_name, current_sha[:8])
+            # A repo synced before the stamp existed gets it here, without a resync.
+            await self._record_synced_commit(repo, current_sha)
             return True
 
         ok = await self._incremental_sync(repo, last_sha, current_sha)
@@ -316,6 +321,12 @@ class ReposSync:
                 GitHubLiterals.SYNCED_BRANCH.value: branch,
                 GitHubLiterals.FULL_NAME.value: repo.full_name,
             },
+        )
+        await self._record_synced_commit(repo, commit_sha)
+
+    async def _record_synced_commit(self, repo: GhObject, commit_sha: str) -> None:
+        await record_synced_commit(
+            self.c.data_entities_processor, self.c.connector_id, f"{repo.id}-code-repository", commit_sha,
         )
 
     # ------------------------------------------------------------------

@@ -1,6 +1,7 @@
 """Unit tests for the shared embedding retry policy and the embedding server client."""
 
 import logging
+from collections.abc import Callable, Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import openai
@@ -603,3 +604,113 @@ class TestGetEmbeddingServerEmbeddings:
             trust_remote_code=True,
         )
         assert result is mock_instance
+
+
+
+class _FakeEmbeddingServer:
+    """A real HTTP server answering what the client asks of the embedding server."""
+
+    def __init__(self, models: list[dict], counts: dict | None = None, fail_models: bool = False) -> None:
+        import json
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        outer = self
+        self.requests: list[tuple[str, str, dict]] = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def _send(self, status: int, body: dict) -> None:
+                data = json.dumps(body).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self) -> None:
+                outer.requests.append(("GET", self.path, {"auth": self.headers.get("Authorization")}))
+                if fail_models:
+                    self._send(500, {"error": {"message": "down"}})
+                else:
+                    self._send(200, {"object": "list", "data": models})
+
+            def do_POST(self) -> None:
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                outer.requests.append(("POST", self.path, body))
+                self._send(200, {"model": body["model"], "counts": [(counts or {}).get(t, 1) for t in body["input"]]})
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        self.httpd = HTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.httpd.server_port}"
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+@pytest.fixture
+def embedding_server(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., _FakeEmbeddingServer]]:
+    servers: list[_FakeEmbeddingServer] = []
+
+    def start(*args: object, **kwargs: object) -> _FakeEmbeddingServer:
+        server = _FakeEmbeddingServer(*args, **kwargs)
+        servers.append(server)
+        monkeypatch.setenv("EMBEDDING_SERVER_URL", server.url)
+        return server
+
+    yield start
+    for server in servers:
+        server.close()
+
+
+def _model(name: str, limit: int | None) -> dict:
+    return {"id": name, "object": "model", "created": 1, "owned_by": "pipeshub", "max_seq_length": limit}
+
+
+class TestMaxInputTokens:
+    @pytest.mark.asyncio
+    async def test_reads_the_limit_of_its_own_model_over_http(self, embedding_server) -> None:
+        server = embedding_server([_model("other", 128), _model("m", 512)])
+        client = EmbeddingServerEmbeddings(model="m")
+        assert await client.max_input_tokens() == 512
+        assert server.requests[0][:2] == ("GET", "/v1/models")
+        assert server.requests[0][2]["auth"] == "Bearer not-needed"
+
+    @pytest.mark.asyncio
+    async def test_reads_the_prompt_overhead_next_to_the_limit(self, embedding_server) -> None:
+        embedding_server([{**_model("m", 512), "prompt_tokens": 9}])
+        client = EmbeddingServerEmbeddings(model="m")
+        assert client.prompt_tokens == 0
+        assert await client.max_input_tokens() == 512
+        assert client.prompt_tokens == 9
+
+    @pytest.mark.asyncio
+    async def test_none_when_the_server_does_not_say(self, embedding_server) -> None:
+        embedding_server([_model("m", None)])
+        assert await EmbeddingServerEmbeddings(model="m").max_input_tokens() is None
+        assert await EmbeddingServerEmbeddings(model="not-loaded").max_input_tokens() is None
+
+    @pytest.mark.asyncio
+    async def test_none_and_logged_when_the_server_errors(self, embedding_server, caplog: pytest.LogCaptureFixture) -> None:
+        embedding_server([], fail_models=True)
+        with caplog.at_level(logging.ERROR):
+            assert await EmbeddingServerEmbeddings(model="m").max_input_tokens() is None
+        assert "did not report" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_the_default_model_client_reports_the_limit(self, embedding_server) -> None:
+        from app.utils.aimodels import get_default_embedding_model
+
+        embedding_server([_model(DEFAULT_EMBEDDING_MODEL, 512)])
+        assert await get_default_embedding_model().max_input_tokens() == 512
+
+
+class TestCountTokens:
+    def test_counts_come_from_the_servers_tokenizer(self, embedding_server) -> None:
+        server = embedding_server([], counts={"a": 3, "b": 9})
+        assert EmbeddingServerEmbeddings(model="m").count_tokens(["a", "b"]) == [3, 9]
+        method, path, body = server.requests[0]
+        assert (method, path, body["model"], body["input"]) == ("POST", "/v1/tokenize", "m", ["a", "b"])

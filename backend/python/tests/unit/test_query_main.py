@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.modules.parsers import parse_pool
 from app.services.messaging.config import MessageBrokerType
 from tests.support.host_header import POISONED_HOSTS, request_with_host
 
@@ -415,9 +416,12 @@ class TestLifespan:
                 async with lifespan(mock_app):
                     # Inside lifespan — app should have container set
                     assert mock_app.container is mock_container
+                    # Chat attachment PDFs parse in killable worker processes.
+                    assert parse_pool.parse_pool_workers() > 0
 
             # After shutdown, config_service.close should be called
             mock_config_service.close.assert_awaited_once()
+            assert parse_pool.parse_pool_workers() == 0
 
     async def test_startup_no_orgs(self):
         """When no orgs found, retrieval_service is NOT invoked."""

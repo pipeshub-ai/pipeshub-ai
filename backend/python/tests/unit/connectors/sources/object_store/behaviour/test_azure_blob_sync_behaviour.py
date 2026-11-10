@@ -531,7 +531,8 @@ class TestFailureReports:
         sent = connector.notify.await_args.kwargs
         assert sent["type"] == NotificationType.CONNECTOR_AUTH_ERROR
         assert sent["title"].endswith("Credentials rejected")
-        assert "HTTP 403 AuthenticationFailed: Server failed to authenticate the request." in sent["message"]
+        assert "Azure refused the credentials" in sent["message"]
+        assert "(HTTP 403 AuthenticationFailed)" in sent["message"]
         assert_nothing_secret(sent["message"])
         assert_nothing_secret(caplog.text)
         assert path("a.txt") in db.paths()

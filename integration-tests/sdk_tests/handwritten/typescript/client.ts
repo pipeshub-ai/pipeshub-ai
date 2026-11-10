@@ -21,6 +21,14 @@ export function createBearerClient(token: string): Pipeshub {
   return new Pipeshub({ serverURL: SERVER_URL, security: { bearerAuth: token } });
 }
 
+/**
+ * Team connectors and OAuth configurations are admin-only, and the OAuth app's tokens act as a
+ * service account, which is never an admin.
+ */
+export function createAdminClient(): Pipeshub {
+  return createSessionClient();
+}
+
 /** The OAuth app and personal access token routes accept only an interactive session. */
 export function createSessionClient(): Pipeshub {
   return createBearerClient(process.env["PIPESHUB_SESSION_TOKEN"] ?? "");

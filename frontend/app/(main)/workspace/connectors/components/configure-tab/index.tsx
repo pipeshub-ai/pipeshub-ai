@@ -3,6 +3,7 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Callout, Flex } from '@radix-ui/themes';
+import { ConnectorConfigureExtras } from '@/config';
 import { useConnectorsStore } from '../../store';
 import { InstanceHeader } from './instance-header';
 import { SyncSettingsSection } from './sync-settings-section';
@@ -20,6 +21,7 @@ export function ConfigureTab({ readOnly = false }: { readOnly?: boolean }) {
     connectorConfig,
     panelConnector,
     panelConnectorId,
+    instanceName,
     formData,
     formErrors,
     setSyncFormValue,
@@ -78,6 +80,14 @@ export function ConfigureTab({ readOnly = false }: { readOnly?: boolean }) {
       )}
 
       <FiltersSection key={panelConnectorId ?? 'new'} readOnly={readOnly} />
+
+      <ConnectorConfigureExtras
+        connectorId={panelConnectorId ?? null}
+        connectorType={panelConnector.type}
+        // A new instance's panel still holds the catalog entry; prefer the instance's own name.
+        connectorName={connectorConfig?.name || instanceName.trim() || panelConnector.name}
+        scope={panelConnector.scope}
+      />
     </Flex>
   );
 }

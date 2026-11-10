@@ -2,6 +2,7 @@ import { InternalServerError } from "../errors/http.errors";
 import {
   injectRequestHeaders,
   HEADER_REQUEST_ID,
+  HEADER_MCP_RELAY,
 } from "../context/request-context";
 
 export interface ICommand<T> {
@@ -85,6 +86,7 @@ export abstract class BaseCommand<T> implements ICommand<T> {
       'content-type',
       'authorization',
       HEADER_REQUEST_ID,
+      HEADER_MCP_RELAY,
       'client-name'
     ]);
     // Normalize to lowercase keys so case-variants (e.g. content-type from

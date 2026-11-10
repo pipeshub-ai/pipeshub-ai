@@ -50,6 +50,7 @@ describe('OAuthDeviceService', () => {
     allowedScopes: ['user:read'],
     allowedGrantTypes: [OAuthGrantType.DEVICE_CODE],
     name: 'CLI',
+    isDynamic: true, // usable from every org; the cross-org case below uses a private app
   }
 
   beforeEach(() => {
@@ -155,6 +156,7 @@ describe('OAuthDeviceService', () => {
       lastPolledAt: undefined,
       save: sinon.stub().resolves(),
     } as any)
+    sinon.stub(OAuthDeviceCode, 'updateOne').resolves({} as any)
 
     try {
       await service.poll('cid', undefined, 'device-code')
@@ -216,33 +218,34 @@ describe('OAuthDeviceService', () => {
     expect((create.firstCall.args[0] as any).knowledgeLimit).to.deep.equal(shown);
 
     const pending: any = {
+      _id: new Types.ObjectId(),
       status: OAuthDeviceCodeStatus.PENDING,
       expiresAt: new Date(Date.now() + 60_000),
       clientId: 'cid',
       knowledgeLimit: shown,
       scopes: ['user:read'],
-      save: sinon.stub().resolves(),
     };
     const findOne = sinon.stub(OAuthDeviceCode, 'findOne').resolves(pending);
+    const update = sinon.stub(OAuthDeviceCode, 'updateOne').resolves({} as any);
     const ids = [new Types.ObjectId().toString(), new Types.ObjectId().toString()];
     await service.approve('ABCD-EFGH', ids[0], ids[1], 'granted');
-    expect(pending.status).to.equal(OAuthDeviceCodeStatus.APPROVED);
+    expect((update.firstCall.args[1] as any).$set.status).to.equal(OAuthDeviceCodeStatus.APPROVED);
 
     mockOAuthAppService.getAppByClientId.resolves({
       ...app,
       knowledgeLimit: { apps: [], recordGroups: [], records: [] },
     });
-    const again = { ...pending, status: OAuthDeviceCodeStatus.PENDING, save: sinon.stub().resolves() };
-    findOne.resolves(again);
+    update.resetHistory();
+    findOne.resolves({ ...pending });
     try {
       await service.approve('ABCD-EFGH', ids[0], ids[1], 'granted');
       expect.fail('should have thrown');
     } catch (err) {
       expect(err).to.be.instanceOf(InvalidGrantError);
     }
-    expect(again.status).to.equal(OAuthDeviceCodeStatus.PENDING);
+    expect(update.called).to.equal(false);
 
-    const approved = { ...pending, _id: new Types.ObjectId(), userId: new Types.ObjectId(), orgId: new Types.ObjectId() };
+    const approved = { ...pending, status: OAuthDeviceCodeStatus.APPROVED, _id: new Types.ObjectId(), userId: new Types.ObjectId(), orgId: new Types.ObjectId() };
     findOne.resolves(approved);
     sinon.stub(OAuthDeviceCode, 'findOneAndDelete').resolves(approved as any);
     try {
@@ -263,13 +266,13 @@ describe('OAuthDeviceService', () => {
       clientId: 'cid',
       knowledgeLimit: shown,
       scopes: ['user:read'],
-      save: sinon.stub().resolves(),
     };
     const findOne = sinon.stub(OAuthDeviceCode, 'findOne').resolves(pending);
+    const update = sinon.stub(OAuthDeviceCode, 'updateOne').resolves({} as any);
     await service.approve('ABCD-EFGH', new Types.ObjectId().toString(), new Types.ObjectId().toString(), 'granted');
-    expect(pending.status).to.equal(OAuthDeviceCodeStatus.APPROVED);
+    expect((update.firstCall.args[1] as any).$set.status).to.equal(OAuthDeviceCodeStatus.APPROVED);
 
-    const approved = { ...pending, _id: new Types.ObjectId(), userId: new Types.ObjectId(), orgId: new Types.ObjectId() };
+    const approved = { ...pending, status: OAuthDeviceCodeStatus.APPROVED, _id: new Types.ObjectId(), userId: new Types.ObjectId(), orgId: new Types.ObjectId() };
     findOne.resolves(approved);
     sinon.stub(OAuthDeviceCode, 'findOneAndDelete').resolves(approved as any);
     stubLookup(Users, { fullName: 'Ada' });
@@ -473,6 +476,7 @@ describe('OAuthDeviceService', () => {
       lastPolledAt: undefined,
       save: sinon.stub().resolves(),
     } as any)
+    sinon.stub(OAuthDeviceCode, 'updateOne').resolves({} as any)
     try {
       await service.poll('cid', undefined, plaintext)
       expect.fail('should have thrown')
@@ -543,6 +547,7 @@ describe('OAuthDeviceService', () => {
       lastPolledAt: undefined,
       save: sinon.stub().resolves(),
     } as any)
+    sinon.stub(OAuthDeviceCode, 'updateOne').resolves({} as any)
     try {
       await service.poll('cid', undefined, 'device-code')
       expect.fail('should have thrown')
@@ -557,28 +562,29 @@ describe('OAuthDeviceService', () => {
   it('should set userId and orgId on grant, and not on deny', async () => {
     const userId = new Types.ObjectId().toString()
     const orgId = new Types.ObjectId().toString()
-    const granted: any = {
+    const grantedId = new Types.ObjectId()
+    const deniedId = new Types.ObjectId()
+    const pending = (_id: Types.ObjectId): any => ({
+      _id,
       status: OAuthDeviceCodeStatus.PENDING,
       expiresAt: new Date(Date.now() + 60_000),
       clientId: 'cid',
-      save: sinon.stub().resolves(),
-    }
-    const denied: any = {
-      status: OAuthDeviceCodeStatus.PENDING,
-      expiresAt: new Date(Date.now() + 60_000),
-      clientId: 'cid',
-      save: sinon.stub().resolves(),
-    }
+    })
     const findOne = sinon.stub(OAuthDeviceCode, 'findOne')
-    findOne.onFirstCall().resolves(granted)
-    findOne.onSecondCall().resolves(denied)
+    findOne.onFirstCall().resolves(pending(grantedId))
+    findOne.onSecondCall().resolves(pending(deniedId))
+    const update = sinon.stub(OAuthDeviceCode, 'updateOne').resolves({} as any)
 
     await service.approve('ABCD-EFGH', userId, orgId, 'granted')
+    expect(update.firstCall.args[0]).to.deep.equal({ _id: grantedId })
+    const granted = (update.firstCall.args[1] as any).$set
     expect(granted.status).to.equal(OAuthDeviceCodeStatus.APPROVED)
     expect(granted.userId.toString()).to.equal(userId)
     expect(granted.orgId.toString()).to.equal(orgId)
 
     await service.approve('ABCD-EFGH', userId, orgId, 'denied')
+    expect(update.secondCall.args[0]).to.deep.equal({ _id: deniedId })
+    const denied = (update.secondCall.args[1] as any).$set
     expect(denied.status).to.equal(OAuthDeviceCodeStatus.DENIED)
     expect(denied.userId).to.equal(undefined)
     expect(mockOAuthTokenService.generateTokens.called).to.be.false

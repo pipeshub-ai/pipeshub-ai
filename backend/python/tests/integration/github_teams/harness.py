@@ -340,15 +340,15 @@ class World:
             self.pending_full_sync = True
 
     def set_branch(self, branch: str | None) -> None:
-        """The admin picks the branch to sync (None clears it): a filter change."""
+        """The admin picks the branch to sync (None clears it). Unlike other filter
+        changes it asks for no full sync (``sync_filters_changed_beyond_branch``): the
+        next sync sees the checkpoint's branch differ and syncs the difference."""
         values = self.config["filters"]["sync"]["values"]
         if branch is None:
             values.pop("branch", None)
         else:
             values["branch"] = {"operator": "in", "type": "select", "value": [branch]}
         self.branch = branch
-        if self.synced_once:
-            self.pending_full_sync = True
 
     def set_indexing(self, **values: bool) -> None:
         self.config["filters"]["indexing"]["values"] = {

@@ -770,7 +770,7 @@ class TestAppDisabled:
                 "createdAtTimestamp": 123456,
             }
         )
-        graph_provider.batch_upsert_nodes = AsyncMock()
+        graph_provider.update_node = AsyncMock()
 
         svc = _make_entity_service(graph_provider=graph_provider)
 
@@ -787,14 +787,35 @@ class TestAppDisabled:
             result = await svc.process_event("appDisabled", payload)
             assert result is True
 
-            # App should be marked inactive
-            call_args = graph_provider.batch_upsert_nodes.call_args
-            app_data = call_args[0][0][0]
-            assert app_data["isActive"] is False
+            # App is marked inactive with a partial update: only the changed fields are written
+            key, collection, updates = graph_provider.update_node.call_args[0]
+            assert (key, collection) == ("conn-1", "apps")
+            assert updates["isActive"] is False
+            assert set(updates) == {"isActive", "updatedAtTimestamp"}
 
             # Stop is requested without awaiting the unwind: this runs on the
             # serial entity consumer, so waiting would stall every later event.
             mock_stm.request_stop.assert_awaited_once_with("conn-1")
+
+    @pytest.mark.asyncio
+    async def test_a_legacy_app_without_type_or_group_is_disabled_without_writing_them(self) -> None:
+        # Rebuilding the document from the stored one would send None for these fields,
+        # which the apps schema rejects: the disable must write only what it changes.
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={"_key": "conn-1", "name": "Legacy"})
+        graph_provider.update_node = AsyncMock()
+        svc = _make_entity_service(graph_provider=graph_provider)
+
+        with patch("app.services.messaging.kafka.handlers.entity.get_coordinator") as _gc:
+            _gc.return_value.request_stop = AsyncMock()
+            result = await svc.process_event(
+                "appDisabled", {"orgId": "org-1", "apps": ["Legacy"], "connectorId": "conn-1"}
+            )
+
+        assert result is True
+        updates = graph_provider.update_node.call_args[0][2]
+        assert set(updates) == {"isActive", "updatedAtTimestamp"}
+        graph_provider.batch_upsert_nodes.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_missing_org_id_returns_false(self):
@@ -1442,6 +1463,7 @@ class TestHandleAppDisabledExtended:
 
             mock_stm = _gc_mock_stm.return_value
             mock_stm.request_stop = AsyncMock()
+            mock_stm.is_running = AsyncMock(return_value=False)
             result = await svc.process_event(
                 "appDisabled",
                 {"orgId": "org-1", "apps": ["Gmail"], "connectorId": "c1"},
@@ -1468,6 +1490,7 @@ class TestHandleAppDisabledExtended:
             mock_stm.request_stop = AsyncMock(
                 side_effect=Exception("cancel failed")
             )
+            mock_stm.is_running = AsyncMock(return_value=False)
             result = await svc.process_event(
                 "appDisabled",
                 {"orgId": "org-1", "apps": ["Gmail"], "connectorId": "c1"},

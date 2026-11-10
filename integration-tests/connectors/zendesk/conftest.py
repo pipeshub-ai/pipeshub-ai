@@ -61,6 +61,17 @@ def ai_models_configured(pipeshub_client: PipeshubClient) -> SeededAIModel:
 def _access_token() -> str:
     token_file = os.getenv("ZENDESK_TEST_ACCESS_TOKEN_FILE")
     if token_file:
+        # The workflow names the file before minting; a failed mint leaves it unwritten.
+        if not Path(token_file).is_file():
+            source_unavailable(
+                "The Zendesk access token was not minted: see the 'Mint Zendesk test token'"
+                " step's log for why.",
+                secrets=[
+                    "ZENDESK_TEST_SUBDOMAIN",
+                    "ZENDESK_TEST_CLIENT_ID",
+                    "ZENDESK_TEST_CLIENT_SECRET",
+                ],
+            )
         token = Path(token_file).read_text().strip()
     else:
         token = os.getenv("ZENDESK_TEST_ACCESS_TOKEN", "").strip()

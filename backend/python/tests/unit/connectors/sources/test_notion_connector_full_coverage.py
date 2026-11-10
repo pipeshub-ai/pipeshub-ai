@@ -1,6 +1,4 @@
 """Comprehensive tests for the Notion connector."""
-from app.connectors.sources.notion.connector import _DatabaseUnavailable
-
 import asyncio
 from collections import defaultdict
 from collections.abc import AsyncIterator
@@ -10,10 +8,17 @@ import aiohttp
 import pytest
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import (
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
-from app.connectors.sources.notion.connector import NotionConnector
-from app.utils.public_http import PublicFetchResponse
+from app.connectors.sources.notion.connector import (
+    NotionConnector,
+    _DatabaseUnavailable,
+)
 from app.models.blocks import (
     Block,
     BlockComment,
@@ -39,6 +44,8 @@ from app.models.entities import (
     RecordType,
     WebpageRecord,
 )
+from app.utils.public_http import PublicFetchResponse
+from tests.support.data_store import runs_in_its_transaction
 
 
 def _make_connector():
@@ -47,13 +54,15 @@ def _make_connector():
     dep.org_id = "org-1"
     dep.on_new_app_users = AsyncMock()
     dep.on_new_records = AsyncMock()
+    dep.on_record_content_update = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)
     dep.get_record_group_by_external_id = AsyncMock(return_value=None)
     dep.get_user_by_source_id = AsyncMock(return_value=None)
     dep.get_records_by_record_type = AsyncMock(return_value=[])
-    dsp = MagicMock()
+    runs_in_its_transaction(dep.data_store_provider)
+    dsp = runs_in_its_transaction(MagicMock())
     mock_tx = MagicMock()
     mock_tx.get_record_group_by_external_id = AsyncMock(return_value=None)
     tx_cm = AsyncMock()

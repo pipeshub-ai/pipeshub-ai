@@ -12,12 +12,13 @@ Targets:
 import asyncio
 import logging
 from collections.abc import Coroutine
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
 from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.connectors.services.event_service import EventService
+from app.models.entities import FileRecord, RecordType
 from tests.unit.connectors.services.coordinator_stub import installed_stub, spawned
 
 # ---------------------------------------------------------------------------
@@ -299,6 +300,36 @@ class TestRunReindexModes:
         # Verify indexing_status was cleared in memory
         assert rec1.indexing_status == ProgressStatus.NOT_STARTED.value
         assert rec2.indexing_status == ProgressStatus.NOT_STARTED.value
+
+    @pytest.mark.asyncio
+    async def test_reindex_marks_folders_completed_not_pending(self, service) -> None:
+        """A folder is set COMPLETED, not NOT_STARTED: connectors may never publish it."""
+        connector = AsyncMock()
+        connector.reindex_records = AsyncMock()
+
+        folder = FileRecord(
+            id="dir", record_name="src", record_type=RecordType.FILE,
+            external_record_id="repo/src", version=0, origin="CONNECTOR",
+            connector_name="GITHUB", connector_id="c1", is_file=False,
+            indexing_status=ProgressStatus.COMPLETED.value,
+        )
+        file_rec = _make_mock_record("f1", indexing_status=ProgressStatus.COMPLETED.value)
+        service.graph_provider.get_records_by_status = AsyncMock(side_effect=[[folder, file_rec], []])
+
+        await service._run_reindex(
+            connector=connector, connector_name="github", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id=None, depth=0, user_key=None,
+            status_filters=[ProgressStatus.COMPLETED.value],
+        )
+
+        update = service.graph_provider.update_indexing_status_for_record_ids
+        assert update.await_args_list == [
+            call(["f1"], ProgressStatus.NOT_STARTED.value),
+            call(["dir"], ProgressStatus.COMPLETED.value),
+        ]
+        assert folder.indexing_status == ProgressStatus.COMPLETED.value
+        assert file_rec.indexing_status == ProgressStatus.NOT_STARTED.value
+        connector.reindex_records.assert_awaited_once_with([folder, file_rec])
 
     @pytest.mark.asyncio
     async def test_reindex_skips_placeholder_records(self, service):

@@ -6,6 +6,7 @@ GitHub in ``sim/``; see README.md.
 """
 
 import contextlib
+from uuid import uuid4
 
 import pytest
 
@@ -51,6 +52,7 @@ async def test_upgrade_rekeys_attachments_written_by_url(world, org) -> None:
     legacy = world.connector.comments._attachment_file_update(
         {"type": "pdf", "href": url, "filename": "spec.pdf"}, ticket, None, ticket.id).record
     legacy.external_record_id = url
+    legacy.id = str(uuid4())  # older versions gave every new record a random id
     for key in list((await world.by_type("FILE")).keys()):
         if key.startswith("https://"):
             await world.processor.on_records_deleted_cascade([(await world.record(key)).id], world.connector_id)

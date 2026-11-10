@@ -43,6 +43,16 @@ export const SmtpApi = {
     await apiClient.post(SMTP_URL, payload);
   },
 
+  /** DELETE /api/v1/configurationManager/smtpConfig — admin only. */
+  async deleteSmtpConfig(): Promise<void> {
+    await apiClient.delete(SMTP_URL);
+  },
+
+  /** PUT /api/v1/configurationManager/smtpConfig/enabled — turns sending off or on, keeping the settings. */
+  async setSmtpEnabled(enabled: boolean): Promise<void> {
+    await apiClient.put(`${SMTP_URL}/enabled`, { enabled });
+  },
+
   /**
    * GET /api/v1/configurationManager/smtpConfig/status
    * Convenience: returns true if SMTP is configured. Unlike `getSmtpConfig`,

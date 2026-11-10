@@ -1,14 +1,15 @@
 'use client';
 
 import React, { useMemo } from 'react';
-import { Box, Flex, Grid, Heading, SegmentedControl, Text, TextField } from '@radix-ui/themes';
+import { Box, Flex, Grid, Heading, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import type { ActionCatalogItem } from '../types';
 import { ActionCard, type ActionCardCta } from './action-card';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { pagePaddingX } from '@/app/components/ui/responsive';
-import { MOBILE_PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
+import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
+import { SegmentedTabs } from '@/app/components/ui/segmented-tabs';
 
 interface SegmentedTab {
   value: string;
@@ -144,7 +145,7 @@ export function ActionsCatalogLayout({
       style={{
         width: '100%',
         height: '100%',
-        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 64,
+        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP,
         paddingBottom: 64,
         paddingInline: pagePaddingX(100),
         overflowY: 'auto',
@@ -181,18 +182,12 @@ export function ActionsCatalogLayout({
       <Flex align="center" justify="between" wrap="wrap" gap="3" style={{ width: '100%' }}>
         {/* Phones: scroll the tab row sideways instead of pushing it off-screen */}
         <Box className="no-scrollbar tab-scroll-fade" style={{ maxWidth: '100%', overflowX: 'auto' }}>
-          <SegmentedControl.Root
+          <SegmentedTabs
             value={activeTab}
             onValueChange={(value) => onTabChange(value)}
-            size="2"
+            items={tabs.map((tab) => ({ value: tab.value, label: `${tab.label} (${tabCounts[tab.value] ?? 0})` }))}
             style={{ minWidth: 'max-content' }}
-          >
-            {tabs.map((tab) => (
-              <SegmentedControl.Item key={tab.value} value={tab.value}>
-                {tab.label} ({tabCounts[tab.value] ?? 0})
-              </SegmentedControl.Item>
-            ))}
-          </SegmentedControl.Root>
+          />
         </Box>
         {!isMobile && trailingAction}
       </Flex>

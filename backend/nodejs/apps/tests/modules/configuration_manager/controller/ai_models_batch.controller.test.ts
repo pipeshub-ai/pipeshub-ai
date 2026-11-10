@@ -410,6 +410,30 @@ describe('ai model discover, batch, and rotate', () => {
     expect(byModel.get('gpt-b')?.modelFriendlyName).to.equal('Bee');
   });
 
+  it("stores a model's own settings over the shared ones, but never its own credentials", async () => {
+    const store = memoryStore();
+    execute.callsFake(healthyUnless('none'));
+
+    await runBatch(store, {
+      configuration: { apiKey: 'sk', defaultReasoningEffort: 'low' },
+      models: [
+        {
+          model: 'gpt-a',
+          isMultimodal: false,
+          isReasoning: true,
+          configuration: { defaultReasoningEffort: 'high', apiKey: 'other', model: 'gpt-z' },
+        },
+        { model: 'gpt-b', isMultimodal: false, isReasoning: true },
+      ],
+    });
+
+    const byModel = new Map((store.snapshot()?.llm ?? []).map((entry) => [entry.configuration.model, entry]));
+    expect(byModel.get('gpt-a')?.configuration.defaultReasoningEffort).to.equal('high');
+    expect(byModel.get('gpt-a')?.configuration.apiKey).to.equal('sk');
+    expect(byModel.get('gpt-b')?.configuration.defaultReasoningEffort).to.equal('low');
+    expect(byModel.has('gpt-z')).to.equal(false);
+  });
+
   it('still sets exactly one default when the chosen default fails in an empty bucket', async () => {
     const store = memoryStore();
     execute.callsFake(healthyUnless('bad'));

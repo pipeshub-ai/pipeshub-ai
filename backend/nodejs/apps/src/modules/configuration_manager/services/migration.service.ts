@@ -12,14 +12,15 @@ import { CrawlingSchedulerService } from '../../crawling_manager/services/crawli
 import { AppConfig } from '../../tokens_manager/config/config';
 import { ScheduledJobsBackfillMigration } from './migrations/scheduled_jobs_backfill.migration';
 import { ChatKbFiltersMigration } from './migrations/chat_kb_filters.migration';
+import { docStore } from '../../../libs/repositories/store-select';
 import { AdminRoleMigration } from './migrations/admin_role.migration';
 import { DocumentOrgIdBackfillMigration } from './migrations/document_orgid_backfill.migration';
 import { ChatSessionsMigration } from './migrations/chat_sessions.migration';
 import { UserGroupNameIndexMigration } from './migrations/user_group_name_index.migration';
+import { getOrgRepository } from '../../../libs/repositories/org';
 import { SignInMethodsRemovalMigration } from './migrations/sign_in_methods_removal.migration';
 import { DelegationLogRetentionMigration } from './migrations/delegation_log_retention.migration';
 import { ServiceAccountKindBackfillMigration } from './migrations/service_account_kind_backfill.migration';
-import { Org } from '../../user_management/schema/org.schema';
 
 const DEFAULT_CHAT_SESSIONS_MIGRATION_BATCH_SIZE = 10;
 
@@ -87,6 +88,8 @@ export class MigrationService {
   }
 
   async adminRoleMigration(): Promise<void> {
+    // The PostgreSQL schema has the role column from the start.
+    if (docStore() === 'postgres') return;
     this.logger.info('Migrating admin group membership to user.role');
     try {
       const result = await new AdminRoleMigration(
@@ -110,6 +113,8 @@ export class MigrationService {
   }
 
   async signInMethodsRemovalMigration(): Promise<void> {
+    // A PostgreSQL install never held the removed methods.
+    if (docStore() === 'postgres') return;
     this.logger.info('Removing SAML and OAuth from sign-in policies');
     try {
       const result = await new SignInMethodsRemovalMigration(
@@ -133,17 +138,23 @@ export class MigrationService {
   }
 
   async userGroupNameIndexMigration(): Promise<void> {
+    // PostgreSQL enforces one live group name per organisation with a partial unique index of its own.
+    if (docStore() === 'postgres') return;
     // run() logs its own outcome and never throws.
     await new UserGroupNameIndexMigration(this.logger).run();
   }
 
   async delegationLogRetentionMigration(): Promise<void> {
+    // The MongoDB TTL index is the only thing this moves; PostgreSQL events are removed by the TTL sweeper.
+    if (docStore() === 'postgres') return;
     // Changing the retention constant does not move an index that already
     // exists; this does. run() logs its own outcome and never throws.
     await new DelegationLogRetentionMigration(this.logger).run();
   }
 
   async chatKbFiltersMigration(): Promise<void> {
+    // These read legacy MongoDB collections that a PostgreSQL install never had.
+    if (docStore() === 'postgres') return;
     this.logger.info('Migrating chat KB filters');
     try {
       const result = await new ChatKbFiltersMigration(
@@ -169,6 +180,7 @@ export class MigrationService {
   }
 
   async chatSessionsMigration(): Promise<void> {
+    if (docStore() === 'postgres') return;
     this.logger.info('Migrating legacy conversations into chatSessions');
     try {
       const configuredBatchSize = Number.parseInt(
@@ -201,6 +213,7 @@ export class MigrationService {
   }
 
   async documentOrgIdMigration(): Promise<void> {
+    if (docStore() === 'postgres') return;
     this.logger.info('Migrating document orgId backfill');
     try {
       const result = await new DocumentOrgIdBackfillMigration(
@@ -234,7 +247,7 @@ export class MigrationService {
       // immediately rather than trying to reach the (possibly still booting)
       // Python connector service — this makes cold-start faster and avoids
       // unnecessary retry noise in the logs.
-      const orgCount = await Org.countDocuments();
+      const orgCount = await getOrgRepository().count();
       if (orgCount === 0) {
         this.logger.info(
           'No organisation found — fresh setup detected. ' +

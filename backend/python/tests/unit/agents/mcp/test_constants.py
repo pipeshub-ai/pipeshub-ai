@@ -7,6 +7,7 @@ from app.agents.constants.mcp_server_constants import (
     get_mcp_instance_credentials_prefix,
     get_mcp_instance_path,
     get_mcp_instances_prefix,
+    get_mcp_logo_path,
     get_mcp_oauth_client_config_path,
     get_mcp_oauth_state_claim_path,
     get_mcp_oauth_state_path,
@@ -62,6 +63,7 @@ class TestCredentialPaths:
 class TestOAuthClientConfigPath:
     def test_path(self) -> None:
         assert get_mcp_oauth_client_config_path("inst-1") == "/services/mcp/oauth-clients/inst-1"
+        assert get_mcp_logo_path("inst-1") == "/services/mcp/logos/inst-1"
 
 
 class TestOAuthStatePaths:

@@ -31,11 +31,9 @@ _MD_MODULE = DoclingMarkdownParser.parse_string.__globals__["markdown_lib"]
 
 @pytest.fixture
 def parser():
-    with patch.dict("sys.modules", _DOCLING_MOCKS):
-        with patch(
-            "app.modules.parsers.markdown.docling_markdown_parser.DocumentConverter"
-        ):
-            return DoclingMarkdownParser()
+    parser = DoclingMarkdownParser()
+    parser.converter = MagicMock()
+    return parser
 
 
 @pytest.fixture
@@ -43,7 +41,7 @@ def parser_with_logger():
     logger = logging.getLogger("test.docling_markdown_parser")
     with patch.dict("sys.modules", _DOCLING_MOCKS):
         with patch(
-            "app.modules.parsers.markdown.docling_markdown_parser.DocumentConverter"
+            "docling.document_converter.DocumentConverter"
         ):
             return DoclingMarkdownParser(logger=logger, config_service={"key": "value"})
 
@@ -150,7 +148,7 @@ class TestDoclingMarkdownParserParse:
             mock_processor_cls.return_value.parse_document = AsyncMock(return_value=mock_doc)
             result = await parser.parse(b"# Hi", "readme.md")
 
-        mock_b64.assert_awaited_once_with(["https://example.com/a.png"])
+        mock_b64.assert_awaited_once_with(["https://example.com/a.png"], allow_remote_fetch=True)
         assert result.metadata["caption_map"] == {"Image_1": "data:image/png;base64,ENC"}
 
     @pytest.mark.asyncio
@@ -318,28 +316,16 @@ class TestApplyCaptionMap:
         assert block.data is None
 
 
-class TestReferencePositionGuard:
-    def test_inline_replacer_skips_reference_positions(self):
-        import app.modules.parsers.markdown.image_references as mod
-
-        captured: dict[str, object] = {}
-        real_sub = mod.re.sub
-
-        def intercept_sub(pattern, repl, string, count=0, flags=0):
-            if r"\(" in pattern:
-                captured["inline_repl"] = repl
-            return real_sub(pattern, repl, string, count=count, flags=flags)
-
-        md = "![ref][id]\n\n[id]: https://example.com/img.png"
-        with patch.object(mod.re, "sub", side_effect=intercept_sub):
-            _extract_and_replace_images(md)
-
-        inline_repl = captured["inline_repl"]
-        mock_match = MagicMock()
-        mock_match.start.return_value = 0
-        mock_match.group.return_value = "![unchanged](url.png)"
-
-        assert inline_repl(mock_match) == "![unchanged](url.png)"
+class TestReferenceAndInlineImagesTogether:
+    def test_an_inline_image_is_reported_even_where_a_reference_image_started(self):
+        # The reference image's alt is rewritten first, which moves later text;
+        # an inline image must not be mistaken for the reference image that
+        # started at its new offset.
+        md = "/![][/>![a](u)![a][r]"
+        _, images = _extract_and_replace_images(md)
+        assert sorted(i["url"] for i in images) == sorted(
+            ["u", "[unknown reference: r]", "[unknown reference: />![a]"]
+        )
 
 
 class TestDoclingMarkdownParserParseFile:

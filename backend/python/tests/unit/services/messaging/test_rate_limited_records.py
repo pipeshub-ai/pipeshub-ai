@@ -229,6 +229,7 @@ class Setup:
                 run_coordination=run_coordination,
                 concurrency_manager=None,
                 page_size=100,
+                org_id="org-1",
             )
         return sent
 
@@ -397,7 +398,12 @@ class TestARateLimitedRecordWaits:
 
 async def _run(setup: Setup, record_id: str) -> list[str]:
     payload = dict(_envelope(record_id)["payload"], is_final_failure=False)
-    return [event.event.value async for event in setup.handler.process_event("newRecord", payload)]
+    # START_DOWNLOAD is for the consumer's admission, not an outcome of the record.
+    return [
+        event.event.value
+        async for event in setup.handler.process_event("newRecord", payload)
+        if event.event != IndexingEvent.START_DOWNLOAD
+    ]
 
 
 class TestWhatIsNotDeferred:

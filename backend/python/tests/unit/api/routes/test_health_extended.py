@@ -637,7 +637,7 @@ class TestHealthCheckEndpointTtsStt:
     async def test_tts_type_dispatches(self, mock_request):
         from fastapi.responses import JSONResponse
 
-        config = {"provider": "openAI", "configuration": {"model": "tts-1"}}
+        config = {"provider": "openAI", "configuration": {"model": "tts-1", "apiKey": "k"}}
         with patch(
             f"{MODULE}.perform_tts_health_check",
             new_callable=AsyncMock,
@@ -652,7 +652,7 @@ class TestHealthCheckEndpointTtsStt:
     async def test_stt_type_dispatches(self, mock_request):
         from fastapi.responses import JSONResponse
 
-        config = {"provider": "openAI", "configuration": {"model": "whisper-1"}}
+        config = {"provider": "openAI", "configuration": {"model": "whisper-1", "apiKey": "k"}}
         with patch(
             f"{MODULE}.perform_stt_health_check",
             new_callable=AsyncMock,
@@ -667,7 +667,7 @@ class TestHealthCheckEndpointTtsStt:
     async def test_image_generation_type_dispatches(self, mock_request):
         from fastapi.responses import JSONResponse
 
-        config = {"provider": "openAI", "configuration": {"model": "dall-e-3"}}
+        config = {"provider": "openAI", "configuration": {"model": "dall-e-3", "apiKey": "k"}}
         with patch(
             f"{MODULE}.perform_image_generation_health_check",
             new_callable=AsyncMock,

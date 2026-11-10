@@ -2,21 +2,17 @@
 
 DocParser, PPTParser and XLSParser each convert legacy Office formats
 (.doc/.ppt/.xls) to their OOXML equivalents via headless LibreOffice before
-handing off to the OOXML-capable parser. The synchronous versions of that
-conversion (``subprocess.run``) live on each of those classes for backward
-compatibility with callers outside the standalone parsing service (e.g.
-``app/events/processor.py``, ``app/agents/actions/util/parse_file.py``).
-
-This module provides the async equivalent — ``asyncio.create_subprocess_exec``
-instead of ``subprocess.run`` — for use inside the parsing service, where
-LibreOffice's ~seconds-long runtime must not block the event loop nor
-occupy a slot in the bounded parsing thread pool.
+handing off to the OOXML-capable parser. The conversion uses
+``asyncio.create_subprocess_exec`` so LibreOffice's ~seconds-long runtime
+neither blocks the event loop nor occupies a slot in a bounded thread pool.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
+import signal
 import tempfile
 import time
 from contextlib import contextmanager
@@ -25,17 +21,27 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.services.llm_gateway.limiter import CrossLoopSemaphore
 from app.services.parsing.interface import (
     ParseError,
     ParseErrorCode,
     UnsupportedFormatError,
 )
+from app.utils.env_config import env_int
 from app.utils.user_errors import unsupported_file_type
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
 LIBREOFFICE_CONVERT_TIMEOUT_SECONDS = 60
+_STOP_GRACE_SECONDS = 5.0
+# Each LibreOffice process takes a few hundred MB; callers without their own
+# gate (agent file tools, Gmail and Drive PDF previews) would otherwise start
+# one per concurrent request. Shared by every event loop and by both
+# conversion paths (here and pdf_stream_conversion) in the process.
+conversion_slots = CrossLoopSemaphore(
+    max(1, env_int("LIBREOFFICE_MAX_CONCURRENT_CONVERSIONS", max(1, (os.cpu_count() or 2) // 2)))
+)
 # Printed by LibreOffice (desktop/source/app/dispatchwatcher.cxx) when loading
 # the input leaves no document: a damaged file, but also a missing import filter
 # or an I/O error, so it only blames the file once the probe below passes.
@@ -91,8 +97,10 @@ def unreadable_file_as_parse_error(input_ext: str) -> Iterator[None]:
     Left as a plain exception it reaches the parsing service as a 500, which
     the indexer retries and counts against its circuit breaker as an outage.
     Every other LibreOffice failure (not installed, timed out, killed, profile
-    or disk errors) propagates unchanged and is retried: those are about the
-    deployment or the load, not the file.
+    or disk errors) propagates unchanged: the parsing service answers it with
+    a 500 and the indexer retries it, while an in-process caller sees a
+    DocumentProcessingError, which the message error classifier treats as
+    terminal.
     """
     try:
         yield
@@ -104,6 +112,45 @@ def unreadable_file_as_parse_error(input_ext: str) -> Iterator[None]:
             "save a fresh copy, and upload it again.",
             details=exc.details,
         ) from exc
+
+
+def _leads_own_group(process: asyncio.subprocess.Process) -> bool:
+    # Group 0 is our own and group 1 is init's (a MagicMock pid indexes as 1):
+    # killpg on either takes down far more than this conversion.
+    pid = process.pid
+    return type(pid) is int and pid > 1 and pid != os.getpgrp()
+
+
+def _signal(process: asyncio.subprocess.Process, sig: signal.Signals, *, group: bool) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        if group:
+            os.killpg(process.pid, sig)
+        elif sig == signal.SIGKILL:
+            process.kill()
+        else:
+            process.terminate()
+
+
+async def stop_process(process: asyncio.subprocess.Process) -> None:
+    """Terminate, then kill, ``process`` and, when it was spawned with
+    ``start_new_session=True``, its whole process group, never waiting without a bound.
+
+    The launcher (oosplash) is not the converter: killing it alone leaves
+    soffice.bin running, so a group is killed even when the launcher has
+    already exited. A process without its own group is killed only if it
+    outlives the grace period.
+    """
+    group = _leads_own_group(process)
+    _signal(process, signal.SIGTERM, group=group)
+    try:
+        await asyncio.wait_for(process.wait(), timeout=_STOP_GRACE_SECONDS)
+        if not group:
+            return
+    except asyncio.TimeoutError:
+        pass
+    _signal(process, signal.SIGKILL, group=group)
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(process.wait(), timeout=_STOP_GRACE_SECONDS)
 
 
 async def _run_subprocess(*args: str) -> tuple[int, bytes]:
@@ -134,29 +181,34 @@ async def _run_libreoffice(binary: bytes, input_ext: str, output_ext: str, stem:
         # A private profile per conversion: runs that share the default profile
         # lock each other out, and the loser fails or exits having written nothing.
         profile_url = Path(temp_dir, "lo-profile").as_uri()
-        convert_proc = await asyncio.create_subprocess_exec(
-            "libreoffice",
-            f"-env:UserInstallation={profile_url}",
-            "--headless",
-            "--convert-to",
-            output_ext,
-            "--outdir",
-            temp_dir,
-            input_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                convert_proc.communicate(), timeout=LIBREOFFICE_CONVERT_TIMEOUT_SECONDS
+        async with conversion_slots.slot():
+            convert_proc = await asyncio.create_subprocess_exec(
+                "libreoffice",
+                f"-env:UserInstallation={profile_url}",
+                "--headless",
+                "--convert-to",
+                output_ext,
+                "--outdir",
+                temp_dir,
+                input_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
-        except asyncio.TimeoutError as e:
-            convert_proc.kill()
-            await convert_proc.wait()
-            raise DocumentProcessingError(
-                f"LibreOffice conversion timed out after {LIBREOFFICE_CONVERT_TIMEOUT_SECONDS} seconds",
-                details={"timeout": f"{LIBREOFFICE_CONVERT_TIMEOUT_SECONDS}s"},
-            ) from e
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    convert_proc.communicate(), timeout=LIBREOFFICE_CONVERT_TIMEOUT_SECONDS
+                )
+            except asyncio.TimeoutError as e:
+                await stop_process(convert_proc)
+                raise DocumentProcessingError(
+                    f"LibreOffice conversion timed out after {LIBREOFFICE_CONVERT_TIMEOUT_SECONDS} seconds",
+                    details={"timeout": f"{LIBREOFFICE_CONVERT_TIMEOUT_SECONDS}s"},
+                ) from e
+            except asyncio.CancelledError:
+                # temp_dir is removed next; LibreOffice must not outlive it.
+                await stop_process(convert_proc)
+                raise
 
         output = None
         if os.path.exists(output_path):

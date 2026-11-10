@@ -1,4 +1,4 @@
-"""Decision model clients: OpenAI Decisions API, TypeSafe (Jev) and Microsoft Foundry.
+"""Decision model clients: OpenAI Decisions API, TypeSafe (Jev), Microsoft Foundry and OpenRouter.
 
 Each client turns the shared question types into its provider's wire format and
 the provider's answers back into ``DecisionResult``.
@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 OPENAI_BASE_URL = "https://api.openai.com/v1"
 TYPESAFE_BASE_URL = "https://api.typesafe.ai"
+OPENROUTER_BASE_URL = "https://openrouter.ai"
 
 _REQUEST_TIMEOUT_S = 30.0
 # 529 is TypeSafe's "temporarily overloaded".
@@ -163,7 +164,11 @@ class DecisionModel(ABC):
 
 
 class OpenAIDecisionModel(DecisionModel):
-    """OpenAI ``POST /v1/decisions``."""
+    """OpenAI ``POST /v1/decisions``.
+
+    Gateways that serve the same API (LiteLLM Proxy, OpenAI-compatible servers) use
+    this client with their own ``base_url`` and ``provider``.
+    """
 
     provider = "openAI"
 
@@ -173,8 +178,11 @@ class OpenAIDecisionModel(DecisionModel):
         api_key: str,
         base_url: str | None = None,
         organization: str | None = None,
+        provider: str | None = None,
     ) -> None:
         super().__init__(model_name)
+        if provider:
+            self.provider = provider
         self._api_key = api_key
         self._base_url = (base_url or OPENAI_BASE_URL).rstrip("/")
         self._organization = organization
@@ -263,6 +271,21 @@ class AzureOpenAIDecisionModel(TypeSafeDecisionModel):
 
     def _headers(self) -> dict[str, str]:
         return {"api-key": self._api_key}
+
+
+class OpenRouterDecisionModel(TypeSafeDecisionModel):
+    """Decision models on OpenRouter (Jev), in the System One format: ``POST /api/alpha/decisions``.
+
+    OpenRouter serves them only there; its chat completions endpoint refuses them.
+    """
+
+    provider = "openRouter"
+
+    def __init__(self, model_name: str, api_key: str) -> None:
+        super().__init__(model_name, api_key, base_url=OPENROUTER_BASE_URL)
+
+    def _url(self) -> str:
+        return f"{self._base_url}/api/alpha/decisions"
 
 
 def _azure_resource_root(endpoint: str) -> str:

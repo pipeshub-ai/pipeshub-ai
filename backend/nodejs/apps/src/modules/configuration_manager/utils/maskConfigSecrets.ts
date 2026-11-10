@@ -1,3 +1,4 @@
+import { EXTRA_AI_PUBLIC_CONFIG_KEYS } from '../../../edition';
 import type { AIModelConfiguration } from '../types/ai-models.types';
 
 /** Placeholder shown in API responses when sensitive values are hidden. */
@@ -96,7 +97,8 @@ export function stripAiModelSecrets(entry: AIModelConfiguration): AIModelConfigu
 
   const src = cfg as Record<string, unknown>;
   const safeCfg: Record<string, unknown> = {};
-  for (const key of AI_PUBLIC_CONFIG_KEYS) {
+  const publicKeys = [...AI_PUBLIC_CONFIG_KEYS, ...EXTRA_AI_PUBLIC_CONFIG_KEYS];
+  for (const key of publicKeys) {
     if (key in src) {
       safeCfg[key] = src[key];
     }

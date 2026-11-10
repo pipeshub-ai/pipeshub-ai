@@ -390,20 +390,40 @@ class TestPages:
         assert pages == [([{"id": "c1"}], None, False)]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("data", [
-        {},
-        {"issue": None},
-        {"issue": {"comments": None}},
-        {"issue": {"comments": {"nodes": None, "pageInfo": None}}},
-    ])
-    async def test_absent_connection_is_one_empty_page(self, data) -> None:
+    async def test_connection_without_nodes_or_page_info_is_one_empty_page(self) -> None:
         gateway, datasource, _, _ = _make_gateway()
-        datasource.execute_operation = AsyncMock(return_value=_ok(data))
+        datasource.execute_operation = AsyncMock(
+            return_value=_ok({"issue": {"comments": {"nodes": None, "pageInfo": None}}}))
 
         pages = await _collect(gateway.pages("issueComments", ["issue", "comments"], {"id": "i1"}))
 
         assert pages == [([], None, False)]
         datasource.execute_operation.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("data", [None, {}, {"issue": None}, {"issue": {"comments": None}}])
+    async def test_absent_connection_on_the_first_page_is_an_incomplete_listing(self, data) -> None:
+        """Taken for an empty list, the reconciler would remove every stored record."""
+        gateway, datasource, _, _ = _make_gateway()
+        datasource.execute_operation = AsyncMock(return_value=GraphQLResponse(success=True, data=data))
+
+        with pytest.raises(LinearPaginationError, match="issue.comments"):
+            await _collect(gateway.pages("issueComments", ["issue", "comments"], {"id": "i1"}))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("data", [{}, {"team": None}, {"team": {"members": None}}])
+    async def test_absent_connection_on_a_later_page_is_an_incomplete_listing(self, data) -> None:
+        """Taken for the end, it would keep only the pages already read."""
+        gateway, datasource, _, _ = _make_gateway()
+        datasource.execute_operation = AsyncMock(side_effect=[
+            _ok({"team": {"members": _page([{"id": "m1"}], True, "c1")}}),
+            _ok(data),
+        ])
+
+        with pytest.raises(LinearPaginationError):
+            await _collect(gateway.pages("teamMembers", ["team", "members"], {"id": "t1"}))
+
+        assert datasource.execute_operation.await_count == 2
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("end_cursor", [None, "", "start"])
@@ -609,6 +629,19 @@ class TestComplete:
         assert await gateway.complete(parent, "comments", "issueComments", ["issue", "comments"]) == []
         assert parent["comments"]["nodes"] == []
         datasource.execute_operation.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("data", [{}, {"team": None}, {"team": {"members": None}}])
+    async def test_follow_up_page_without_the_connection_raises(self, data) -> None:
+        gateway, datasource, _, _ = _make_gateway()
+        datasource.execute_operation = AsyncMock(return_value=_ok(data))
+        original = _page([{"id": "m1"}], True, "cursor-1")
+        team = {"id": "t1", "members": original}
+
+        with pytest.raises(LinearPaginationError):
+            await gateway.complete(team, "members", "teamMembers", ["team", "members"])
+
+        assert team["members"] is original
 
     @pytest.mark.asyncio
     async def test_failed_follow_up_page_raises_and_leaves_the_parent_alone(self) -> None:

@@ -12,7 +12,7 @@ import {
   runWithRequestContext,
   newSystemRoot,
 } from '../../../libs/context/request-context';
-import { Org } from '../../user_management/schema/org.schema';
+import { getOrgRepository } from '../../../libs/repositories/org';
 import {
   ambientOrg,
   forOrg,
@@ -84,11 +84,7 @@ export class CrawlingWorkerService {
       });
       return;
     }
-    const org = await Org.findOne({ _id: orgId, isDeleted: { $ne: true } })
-      .select('_id')
-      .lean()
-      .exec();
-    if (!org) {
+    if (!(await getOrgRepository().isActive(orgId))) {
       this.logger.warn(
         'Skipping crawling job: org does not exist or is not active',
         {

@@ -1,7 +1,5 @@
-import { Types } from 'mongoose';
-import { Users } from '../schema/users.schema';
-import { UserCredentials } from '../../auth/schema/userCredentials.schema';
-import { escapeRegExp } from '../../../utils/escape-regexp';
+import { getUserRepository } from '../../../libs/repositories/user';
+import { getCredentialRepository } from '../../../libs/repositories/credential';
 
 /** Reserved domain of the bundled demo personas (RFC 2606 `.example`). */
 export const DEMO_ACCOUNT_DOMAIN = 'acme-demo.example';
@@ -12,8 +10,6 @@ export function isDemoAccountEmail(email: unknown): boolean {
     email.trim().toLowerCase().endsWith(`@${DEMO_ACCOUNT_DOMAIN}`)
   );
 }
-
-const DEMO_EMAIL = new RegExp(`@${escapeRegExp(DEMO_ACCOUNT_DOMAIN)}$`, 'i');
 
 /**
  * Let the org's sample accounts (Alice, Bob, ...) sign in, or stop them.
@@ -26,18 +22,12 @@ export async function setSampleAccountsSignIn(
   callerUserId: string,
   enabled: boolean,
 ): Promise<number> {
-  const filter: Record<string, unknown> = {
+  return getUserRepository().setDisabledByEmailDomain(
     orgId,
-    isDeleted: false,
-    email: DEMO_EMAIL,
-  };
-  if (Types.ObjectId.isValid(callerUserId)) {
-    filter._id = { $ne: new Types.ObjectId(callerUserId) };
-  }
-  const result = await Users.updateMany(filter, {
-    $set: { isDisabled: !enabled },
-  });
-  return result.modifiedCount;
+    DEMO_ACCOUNT_DOMAIN,
+    callerUserId,
+    !enabled,
+  );
 }
 
 /**
@@ -51,19 +41,12 @@ export async function clearRemovedSampleAccount(
 ): Promise<void> {
   // This org's leftovers only. An address held by another org's removed
   // account stays theirs; the unique index then refuses the create.
-  const stale = await Users.find({ email, orgId, isDeleted: true })
-    .select('_id')
-    .lean();
-  for (const { _id } of stale) {
+  const users = getUserRepository();
+  for (const id of await users.listRemovedIdsByEmail(orgId, email)) {
     // An invite may restore the account meanwhile: its credentials go only
     // with an account that was still removed when deleted.
-    const removed = await Users.findOneAndDelete({
-      _id,
-      orgId,
-      isDeleted: true,
-    })
-      .select('_id')
-      .lean();
-    if (removed) await UserCredentials.deleteMany({ userId: String(_id) });
+    if (await users.deleteRemoved(orgId, id)) {
+      await getCredentialRepository().deleteForUser(id, email);
+    }
   }
 }

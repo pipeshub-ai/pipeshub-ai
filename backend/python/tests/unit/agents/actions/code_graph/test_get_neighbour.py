@@ -202,6 +202,15 @@ class TestWholeFile:
         ]
 
     @pytest.mark.asyncio
+    async def test_a_fallback_names_the_indexed_file_it_walked(self, graph) -> None:
+        result = await get_neighbour_impl(
+            graph_provider=graph, connector_id=CONN, org_id=ORG, user_id=USER,
+            file_path="repo/src/b.py", direction="outbound", edge_types=["INHERITS"],
+        )
+        assert result["file_path"] == "src/b.py"
+        assert result["symbols_walked"] == 3
+
+    @pytest.mark.asyncio
     async def test_two_symbols_reaching_one_node_are_both_reported(self, graph) -> None:
         graph.edges = [
             {"_from": f"{BLOCKS}/k_target", "_to": f"{BLOCKS}/k_caller", "relationshipType": "CALLS"},

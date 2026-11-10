@@ -79,6 +79,10 @@ from config import MONGO_DB_NAME, MONGO_URI, TEST_USER_PASSWORD  # noqa: E402
 
 logger = logging.getLogger("user-account-integration-test")
 
+# MAX_WRONG_CREDENTIAL_ATTEMPTS in the Node credential types: the tenth wrong
+# password locks the account.
+WRONG_ATTEMPTS_TO_BLOCK = 10
+
 
 # ------------------------------------------------------------------ #
 # Base test class
@@ -400,7 +404,7 @@ class TestResetPassword(UserAccountTestBase):
 
     def test_reset_password_negative_tests(self) -> None:
         """Missing Authorization; empty body with token — ErrorResponse."""
-        # No Authorization header — userValidator / validateJwt → 400 + ErrorResponse
+        # No Authorization header — authMiddleware.authenticate → 401 + ErrorResponse
         resp = self.account.post(
             "/password/reset",
             json={
@@ -409,13 +413,13 @@ class TestResetPassword(UserAccountTestBase):
             },
             auth=False,
         )
-        assert resp.status_code == 400, (
-            f"Expected 400 (missing Authorization), got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 401, (
+            f"Expected 401 (missing Authorization), got {resp.status_code}: {resp.text}"
         )
         reset_password_missing_auth_error_body = resp.json()
         assert "error" in reset_password_missing_auth_error_body, resp.text
         assert reset_password_missing_auth_error_body["error"]["message"] == (
-            "Authorization header not found"
+            "No token provided"
         )
         assert_response_matches_openapi_ref(
             reset_password_missing_auth_error_body,
@@ -481,15 +485,15 @@ class TestLogoutManual(UserAccountTestBase):
 
     def test_logout_negative_tests(self) -> None:
         """Without Authorization — ErrorResponse; success-shaped operation rejects error body."""
-        # No Authorization — userValidator → 400 Authorization header not found + ErrorResponse
+        # No Authorization — authMiddleware.authenticate → 401 No token provided + ErrorResponse
         resp = self.account.post("/logout/manual", auth=False)
-        assert resp.status_code == 400, (
-            f"Expected 400 (missing Authorization), got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 401, (
+            f"Expected 401 (missing Authorization), got {resp.status_code}: {resp.text}"
         )
         logout_missing_authorization_error_body = resp.json()
         assert "error" in logout_missing_authorization_error_body, resp.text
         assert logout_missing_authorization_error_body["error"]["message"] == (
-            "Authorization header not found"
+            "No token provided"
         )
         assert_response_matches_openapi_ref(
             logout_missing_authorization_error_body,
@@ -597,7 +601,7 @@ class TestBlockInvalidatesExistingSessions(UserAccountTestBase):
     once the block takes effect — see issue #3239."""
 
     def test_a_token_issued_before_the_block_is_rejected(self) -> None:
-        """Log in once (valid token). Trigger a real auto-block via 5 wrong
+        """Log in once (valid token). Trigger a real auto-block via 10 wrong
         passwords through the actual API. The pre-block token must then
         be rejected, not accepted until its natural 24h expiry."""
         client = self.client
@@ -659,10 +663,10 @@ class TestBlockInvalidatesExistingSessions(UserAccountTestBase):
                 f"{baseline_resp.status_code}: {baseline_resp.text}"
             )
             
-            # 3. Trigger the real auto-block path: 5 wrong-password
+            # 3. Trigger the real auto-block path: 10 wrong-password
             #    attempts through the actual authenticate route — this
             #    exercises the exact controller code the fix touches.
-            for attempt in range(5):
+            for attempt in range(WRONG_ATTEMPTS_TO_BLOCK):
                 init_resp = self.account.init_auth(email)
                 assert init_resp.status_code == 200, init_resp.text
                 session_token = init_resp.headers.get("x-session-token")

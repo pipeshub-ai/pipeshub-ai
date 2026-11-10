@@ -23,6 +23,7 @@ import { YourConnectorsIcon } from '@/app/components/ui/your-connectors-icon';
 import { BetaBadge } from '@/app/components/ui/beta-badge';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
+import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 
 // ========================================
 // Route constants (labels resolved at render via i18n)
@@ -249,6 +250,13 @@ export default function WorkspaceSidebar() {
               isActive={isActive(item.route)}
             />
           ))}
+          {/* The API reference is a page the backend serves, so it opens on the API host. */}
+          <WorkspaceSidebarItem
+            icon={<MaterialIcon name="menu_book" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />}
+            label={t('workspace.sidebar.nav.apiDocumentation')}
+            onClick={() => window.open(`${getApiBaseUrl().replace(/\/+$/, '')}/api/v1/docs`, '_blank', 'noopener,noreferrer')}
+            rightSlot={<MaterialIcon name="open_in_new" size={ICON_SIZE_DEFAULT} color="var(--slate-9)" />}
+          />
         </Flex>
 
         {/* ── Personal section ── */}

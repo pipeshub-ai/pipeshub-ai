@@ -47,7 +47,9 @@ describe('mcpLiveView', () => {
 
   it.each([
     ['needs_connect', { authMode: 'oauth', isAuthenticated: false }],
-    ['needs_reconnect', { toolsErrorCode: 'auth_expired', toolsError: 'expired', tools: [] }],
+    ['needs_reconnect', { authMode: 'oauth', toolsErrorCode: 'auth_expired', toolsError: 'expired', tools: [] }],
+    // Set to No authentication, it has no sign-in to renew: an administrator picks its auth mode.
+    ['waiting_for_admin', { toolsErrorCode: 'unauthorized', toolsError: 'asks for a sign-in', tools: [] }],
     ['slow', { toolsErrorCode: 'timeout', toolsTimedOut: true, tools: [] }],
     ['unreachable', { toolsErrorCode: 'unreachable', toolsError: 'down', tools: [] }],
   ] as const)('a server that is %s has no tool list to go by', (state, overrides) => {

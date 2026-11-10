@@ -26,6 +26,7 @@ from app.connectors.core.base.data_processor.storage_cleanup import (
     StorageCleanupHelper,
     choose_storage_owner,
 )
+from app.core.org_context import for_org, system
 from app.modules.artifacts.reader import record_artifact_reader
 from app.utils.storage_move import post_move_tree
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -69,10 +70,15 @@ class FlatStorageMigration:
         if not await self.lock.try_acquire():
             return False
         try:
-            for org in await self.graph_provider.get_all_orgs() or []:
+            with system("flat_storage_migration"):
+                orgs = await self.graph_provider.get_all_orgs() or []
+            for org in orgs:
                 org_id = org.get("id") or org.get("_key")
-                if org_id and not await self.run_org(str(org_id)):
-                    return False
+                if not org_id:
+                    continue
+                with for_org(str(org_id), job="flat_storage_migration"):
+                    if not await self.run_org(str(org_id)):
+                        return False
             return True
         finally:
             await self.storage.close()

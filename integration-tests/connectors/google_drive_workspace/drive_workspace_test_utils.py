@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
+import pytest
 from google.auth.transport import requests as google_auth_requests  # type: ignore[import-not-found]
 from google.oauth2 import service_account  # type: ignore[import-not-found]
 from googleapiclient.discovery import build  # type: ignore[import-not-found]
@@ -114,6 +115,30 @@ def require_drive_workspace_env() -> tuple[str, str, str]:
             "Drive Workspace credentials not set: " + ", ".join(missing)
         )
     return sa_json, admin_email, test_user
+
+
+# Which ordered TestDrive*FolderFilter case stores each key the later cases read.
+_FOLDER_FILTER_STATE_SET_BY = {
+    "new_file_id": "TC-FF-002",
+    "leave_file_id": "TC-FF-004",
+    "leave_file_name": "TC-FF-004",
+    "movable_folder_id": "TC-FF-006",
+    "movable_inside_file_id": "TC-FF-006",
+}
+
+
+def folder_filter_state(ctx: dict[str, Any], key: str) -> Any:
+    """Read a value an earlier folder-filter case stored on the class fixture.
+
+    Fails with the case that should have stored it, rather than a bare KeyError.
+    """
+    if key not in ctx:
+        pytest.fail(
+            f"{key} is not set: {_FOLDER_FILTER_STATE_SET_BY[key]} stores it and must "
+            "pass earlier in this class on the same pytest worker. Look for its "
+            "failure or skip above, or for the class being split across xdist workers."
+        )
+    return ctx[key]
 
 
 def load_service_account_info(sa_json: str, admin_email: str) -> dict[str, Any]:
@@ -1197,8 +1222,10 @@ async def sync_until(
     check: Callable[[], Awaitable[bool]],
     *,
     description: str,
+    timeout: float | None = None,
 ) -> None:
-    """Sync, and sync again, until ``check`` holds.
+    """Sync, and sync again, until ``check`` holds, for ``timeout`` seconds in all
+    (default GOOGLE_DRIVE_WORKSPACE_SYNC_TIMEOUT).
 
     An edit made through the Drive API can take a while to reach the changes
     feed an incremental sync reads. A sync started straight after the edit may
@@ -1209,12 +1236,13 @@ async def sync_until(
     # covers the restart pauses plus the slowest sync wait, and the wait is
     # given what remains after the restart. When no round fits any more, the
     # graph is still polled until the deadline.
-    deadline = time.monotonic() + _SYNC_TIMEOUT_SEC
+    budget = _SYNC_TIMEOUT_SEC if timeout is None else timeout
+    deadline = time.monotonic() + budget
     restart_sec = sum(_RESTART_SYNC_PAUSE_SEC)
     round_sec = restart_sec + _SYNC_WAIT_FLOOR_SEC
-    if round_sec > _SYNC_TIMEOUT_SEC:
+    if round_sec > budget:
         raise ValueError(
-            f"sync timeout {_SYNC_TIMEOUT_SEC}s is shorter than one sync round "
+            f"sync timeout {budget}s is shorter than one sync round "
             f"({round_sec}s); raise GOOGLE_DRIVE_WORKSPACE_SYNC_TIMEOUT"
         )
     last_sync_error: TimeoutError | None = None
@@ -1241,7 +1269,7 @@ async def sync_until(
             detail = f" (last sync wait: {last_sync_error})" if last_sync_error else ""
             raise TimeoutError(
                 f"Timed out waiting for {description} for connector {connector_id}: "
-                f"not seen within {_SYNC_TIMEOUT_SEC}s of re-syncing{detail}"
+                f"not seen within {budget}s of re-syncing{detail}"
             )
         if remaining >= round_sec:
             # Shortened if need be, so the pause never costs the last round.

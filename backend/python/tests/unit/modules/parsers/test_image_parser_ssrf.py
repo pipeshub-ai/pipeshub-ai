@@ -64,7 +64,7 @@ async def test_a_redirect_to_the_metadata_service_is_refused() -> None:
         lambda _req: httpx.Response(302, headers={"Location": "http://169.254.169.254/latest/meta-data/"})
     )
 
-    assert await ImageParser._fetch_single_url(fetcher, "https://example.com/a.png") is None
+    assert await ImageParser._fetch_single_url(fetcher, "https://example.com/a.png", allow_remote_fetch=True) is None
     assert len(seen) == 1
 
 
@@ -72,7 +72,7 @@ async def test_a_redirect_to_the_metadata_service_is_refused() -> None:
 async def test_a_literal_loopback_url_is_never_requested() -> None:
     fetcher, seen = _fetcher(_png())
 
-    assert await ImageParser._fetch_single_url(fetcher, "http://127.0.0.1:8529/x.png") is None
+    assert await ImageParser._fetch_single_url(fetcher, "http://127.0.0.1:8529/x.png", allow_remote_fetch=True) is None
     assert seen == []
 
 
@@ -80,7 +80,7 @@ async def test_a_literal_loopback_url_is_never_requested() -> None:
 async def test_a_name_resolving_to_a_private_address_is_never_requested() -> None:
     fetcher, seen = _fetcher(_png())
 
-    assert await ImageParser._fetch_single_url(fetcher, "https://wiki.internal.example.com/logo.png") is None
+    assert await ImageParser._fetch_single_url(fetcher, "https://wiki.internal.example.com/logo.png", allow_remote_fetch=True) is None
     assert seen == []
 
 
@@ -93,7 +93,7 @@ async def test_an_allowed_redirect_is_followed_and_pinned() -> None:
 
     fetcher, seen = _fetcher(handler)
 
-    result = await ImageParser._fetch_single_url(fetcher, "https://example.com/a.png")
+    result = await ImageParser._fetch_single_url(fetcher, "https://example.com/a.png", allow_remote_fetch=True)
 
     assert result is not None and result.startswith("data:image/png;base64,")
     assert [r.url.path for r in seen] == ["/a.png", "/cdn/a.png"]
@@ -106,7 +106,7 @@ async def test_a_redirect_loop_stops() -> None:
         lambda _req: httpx.Response(302, headers={"Location": "https://example.com/again.png"})
     )
 
-    assert await ImageParser._fetch_single_url(fetcher, "https://example.com/a.png") is None
+    assert await ImageParser._fetch_single_url(fetcher, "https://example.com/a.png", allow_remote_fetch=True) is None
     assert len(seen) == image_parser._IMAGE_FETCH_LIMITS.max_redirects + 1
 
 
@@ -128,7 +128,7 @@ class TestImageSizeLimit:
             )
         )
 
-        assert await ImageParser._fetch_single_url(fetcher, "https://example.com/big.png") is None
+        assert await ImageParser._fetch_single_url(fetcher, "https://example.com/big.png", allow_remote_fetch=True) is None
         assert stream.yielded == 0
 
     @pytest.mark.asyncio
@@ -140,7 +140,7 @@ class TestImageSizeLimit:
             lambda _req: httpx.Response(200, headers={"content-type": "image/png"}, stream=stream)
         )
 
-        assert await ImageParser._fetch_single_url(fetcher, "https://example.com/big.png") is None
+        assert await ImageParser._fetch_single_url(fetcher, "https://example.com/big.png", allow_remote_fetch=True) is None
         assert stream.yielded == 3  # stopped just past the limit, not at the end
 
     @pytest.mark.asyncio
@@ -148,5 +148,5 @@ class TestImageSizeLimit:
         monkeypatch.setattr(image_parser, "_IMAGE_FETCH_LIMITS", PublicFetchLimits(max_bytes=16))
         fetcher, _ = _fetcher(_png(b"png-bytes"))
 
-        result = await ImageParser._fetch_single_url(fetcher, "https://example.com/ok.png")
+        result = await ImageParser._fetch_single_url(fetcher, "https://example.com/ok.png", allow_remote_fetch=True)
         assert result is not None and result.startswith("data:image/png;base64,")

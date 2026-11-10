@@ -666,6 +666,13 @@ describe('tokens_manager/services/cm.service', () => {
         const result = await configService.getSmtpConfig()
         expect(result).to.deep.equal(smtpData)
       })
+
+      it('should return null while an admin has email turned off', async () => {
+        const smtpData = { host: 'smtp.test.com', port: 587, fromEmail: 'test@test.com', enabled: false }
+        mockKvStore.get.resolves('encrypted:' + JSON.stringify(smtpData))
+        const result = await configService.getSmtpConfig()
+        expect(result).to.be.null
+      })
     })
 
     describe('getKafkaConfig', () => {

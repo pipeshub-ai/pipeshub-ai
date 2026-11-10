@@ -3,7 +3,7 @@
 import { asArray, lower } from '@/lib/utils/safe';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Button, Flex, Grid, Heading, SegmentedControl, Text, TextField } from '@radix-ui/themes';
+import { Box, Button, Flex, Grid, Heading, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { WorkspaceHeaderIconButton, HeaderOverflowMenu } from '../../../components';
@@ -15,7 +15,8 @@ import { McpServerCard } from './mcp-server-card';
 import { EnterpriseFeatureNotice } from '@/config';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { pagePaddingX } from '@/app/components/ui/responsive';
-import { MOBILE_PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
+import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
+import { SegmentedTabs } from '@/app/components/ui/segmented-tabs';
 
 // ========================================
 // Types
@@ -163,7 +164,7 @@ export function McpCatalogLayout({
       style={{
         width: '100%',
         height: '100%',
-        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 64,
+        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP,
         paddingBottom: 64,
         paddingInline: pagePaddingX(100),
         overflowY: 'auto',
@@ -211,18 +212,12 @@ export function McpCatalogLayout({
       <Flex align="center" justify="between" gap="3" wrap="wrap" style={{ width: '100%' }}>
         {/* Phones: scroll the tab row sideways instead of pushing it off-screen */}
         <Box className="no-scrollbar tab-scroll-fade" style={{ maxWidth: '100%', overflowX: 'auto' }}>
-          <SegmentedControl.Root
+          <SegmentedTabs
             value={tab}
-            onValueChange={(value) => setTab(value as Tab)}
-            size="2"
+            onValueChange={(value) => setTab(value)}
+            items={TABS.map((id) => ({ value: id, label: `${t(`workspace.actions.tabs.${id}`)} (${counts[id]})` }))}
             style={{ minWidth: 'max-content' }}
-          >
-            {TABS.map((id) => (
-              <SegmentedControl.Item key={id} value={id}>
-                {t(`workspace.actions.tabs.${id}`)} ({counts[id]})
-              </SegmentedControl.Item>
-            ))}
-          </SegmentedControl.Root>
+          />
         </Box>
         {!isMobile && (
           <Flex align="center" gap="2" wrap="wrap" style={{ flexShrink: 0 }}>

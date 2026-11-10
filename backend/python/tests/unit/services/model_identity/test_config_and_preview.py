@@ -39,7 +39,10 @@ FLAT = (
 
 @pytest.mark.parametrize("provider_id", GATEWAYS)
 def test_gateway_providers_offer_the_forwarding_fields_for_every_capability(provider_id) -> None:
-    by_capability = ai_model_registry.get_provider_schema(provider_id)["fields"]
+    by_capability = dict(ai_model_registry.get_provider_schema(provider_id)["fields"])
+    # Decision calls go out on their own HTTP client, which forwarding does not instrument.
+    decision_fields = by_capability.pop("decision")
+    assert not set(FLAT) & {f["name"] for f in decision_fields}
     assert len(by_capability) == 5
     for capability, fields in by_capability.items():
         assert set(FLAT) <= {f["name"] for f in fields}, capability

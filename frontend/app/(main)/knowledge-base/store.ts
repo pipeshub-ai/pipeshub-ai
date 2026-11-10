@@ -220,6 +220,8 @@ interface KnowledgeBaseActions {
 
   // Table data actions
   setTableData: (data: KnowledgeHubApiResponse | null) => void;
+  /** Shows a rename in the open table, header, breadcrumbs and chat scope before the next reload. */
+  applyNodeRename: (nodeId: string, newName: string) => void;
   setIsLoadingTableData: (loading: boolean) => void;
   setTableDataError: (error: string | null) => void;
   setSelectedNode: (node: { nodeType: string; nodeId: string } | null) => void;
@@ -744,6 +746,40 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
       setTableData: (data) =>
         set((state) => {
           state.tableData = data;
+        }),
+
+      applyNodeRename: (nodeId, newName) =>
+        set((state) => {
+          for (const data of [state.tableData, state.allRecordsTableData]) {
+            if (!data) continue;
+            if (data.currentNode?.id === nodeId) data.currentNode.name = newName;
+            if (data.parentNode?.id === nodeId) data.parentNode.name = newName;
+            for (const crumb of data.breadcrumbs ?? []) {
+              if (crumb.id === nodeId) crumb.name = newName;
+            }
+            for (const item of data.items ?? []) {
+              if (item.id === nodeId) item.name = newName;
+            }
+          }
+          const selection = state.allRecordsSidebarSelection;
+          if (selection?.type === 'collection' && selection.id === nodeId) {
+            selection.name = newName;
+          }
+          // The sidebar trees also feed the duplicate-name check, which must see
+          // the new name even when the tree refresh after a rename fails.
+          const renameInTree = (tree: FolderTreeNode[]): void => {
+            for (const node of tree) {
+              if (node.id === nodeId) node.name = newName;
+              if (node.children?.length) renameInTree(node.children);
+            }
+          };
+          if (state.categorizedNodes) {
+            renameInTree(state.categorizedNodes.shared);
+            renameInTree(state.categorizedNodes.private);
+          }
+          for (const node of state.nodes) {
+            if (node.id === nodeId) node.name = newName;
+          }
         }),
 
       setIsLoadingTableData: (loading) =>

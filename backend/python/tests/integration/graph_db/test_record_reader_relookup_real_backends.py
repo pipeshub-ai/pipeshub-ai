@@ -1,10 +1,12 @@
 """The reader's fresh lookup after a replaced document, on a real Neo4j and ArangoDB.
 
-The mapping is written with ``store_virtual_record_mapping`` and read back with
+The mapping is written with the stored write's own switch (``_switch_mapping``) and read back with
 ``get_document_id_by_virtual_record_id`` through the production providers, so
 what the re-lookup sees is what a second write really left in the graph. Storage
 is a stand-in that answers 404 for retired documents: the storage routers are
 checked in ``tests/integration/test_record_reader_relookup_storage.py``.
+
+Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
 """
 
 from __future__ import annotations
@@ -62,7 +64,12 @@ class _World:
         self.live.add(doc)
         if vrid not in self.vrids:
             self.vrids.append(vrid)
-        await self.blob.store_virtual_record_mapping("org", vrid, doc, size)
+        # As a stored write switches the mapping to a document: one compare-and-set on what was read.
+        node = await self.graph.get_document(vrid, MAPPING)
+        fields = self.blob._switch_fields(
+            node, document_id=doc, file_size_bytes=size, stored_rev=None, run="none:it", replaced=None, now=1,
+        )
+        assert await self.blob._switch_mapping("org", vrid, node, fields)
 
 
 @pytest.fixture(params=["neo4j", "arango"])

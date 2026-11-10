@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Button, Flex, Text, IconButton, SegmentedControl } from '@radix-ui/themes';
+import { Box, Button, Flex, Text, IconButton } from '@radix-ui/themes';
+import { SegmentedTabs } from '@/app/components/ui/segmented-tabs';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 
@@ -22,6 +23,13 @@ import {
 } from './types';
 import type { FilePreviewProps, PaginationControls } from './types';
 import { useCitationsColumnResize } from './use-citations-column-resize';
+import {
+  PREVIEW_TOOLBAR_BAR,
+  PREVIEW_TOOLBAR_BUTTON,
+  PREVIEW_TOOLBAR_DIVIDER,
+  PREVIEW_TOOLBAR_PAGE,
+  PREVIEW_TOOLBAR_VALUE,
+} from './preview-toolbar-styles';
 
 export function FilePreviewFullscreen({
   source: _source,
@@ -150,7 +158,7 @@ export function FilePreviewFullscreen({
         style={{
           padding: 'var(--space-2) var(--space-3)',
           borderBottom: '1px solid var(--slate-6)',
-          backdropFilter: 'blur(8px)',
+          backdropFilter: 'var(--frost-filter-subtle)',
           backgroundColor: 'var(--color-panel-translucent)',
           height: '40px',
         }}
@@ -256,14 +264,15 @@ export function FilePreviewFullscreen({
 
       {stackCitations && (
         <Box style={{ padding: 'var(--space-2) var(--space-3)', borderBottom: '1px solid var(--slate-6)' }}>
-          <SegmentedControl.Root
+          <SegmentedTabs<'document' | 'citations'>
+            fill
             value={stackedView}
-            onValueChange={(value) => setStackedView(value === 'citations' ? 'citations' : 'document')}
-            style={{ width: '100%' }}
-          >
-            <SegmentedControl.Item value="document">{t('filePreview.preview')}</SegmentedControl.Item>
-            <SegmentedControl.Item value="citations">{t('chat.citations')}</SegmentedControl.Item>
-          </SegmentedControl.Root>
+            onValueChange={setStackedView}
+            items={[
+              { value: 'document', label: t('filePreview.preview') },
+              { value: 'citations', label: t('chat.citations') },
+            ]}
+          />
         </Box>
       )}
 
@@ -337,13 +346,13 @@ export function FilePreviewFullscreen({
             <Flex
               align="center"
               justify="center"
-              gap="2"
+              gap="1"
               style={{
                 position: 'absolute',
                 bottom: 'var(--space-6)',
                 left: '50%',
                 transform: 'translateX(-50%)',
-                padding: 'var(--space-2)',
+                ...PREVIEW_TOOLBAR_BAR,
                 backgroundColor: 'var(--color-panel-solid)',
                 border: '1px solid var(--slate-3)',
                 borderRadius: 'var(--radius-1)',
@@ -360,21 +369,12 @@ export function FilePreviewFullscreen({
                 size="1"
                 onClick={handlePdfZoomOut}
                 disabled={pdfScale <= PDF_ZOOM_MIN}
-                style={{
-                  width: '24px',
-                  height: '24px',
-                  padding: 0,
-                }}
+                style={PREVIEW_TOOLBAR_BUTTON}
                 aria-label={t('chat.zoomOut')}
               >
                 <MaterialIcon name="remove" size={ICON_SIZES.SECONDARY} />
               </IconButton>
-              <Box
-                style={{
-                  minWidth: '40px',
-                  textAlign: 'center',
-                }}
-              >
+              <Box style={PREVIEW_TOOLBAR_VALUE}>
                 <Text
                   as="span"
                   size="2"
@@ -390,11 +390,7 @@ export function FilePreviewFullscreen({
                 size="1"
                 onClick={handlePdfZoomIn}
                 disabled={pdfScale >= PDF_ZOOM_MAX}
-                style={{
-                  width: '24px',
-                  height: '24px',
-                  padding: 0,
-                }}
+                style={PREVIEW_TOOLBAR_BUTTON}
                 aria-label={t('chat.zoomIn')}
               >
                 <MaterialIcon name="add" size={ICON_SIZES.SECONDARY} />
@@ -405,11 +401,7 @@ export function FilePreviewFullscreen({
                 color="gray"
                 size="1"
                 onClick={toggleZoomLock}
-                style={{
-                  width: '24px',
-                  height: '24px',
-                  padding: 0,
-                }}
+                style={PREVIEW_TOOLBAR_BUTTON}
                 title={isZoomLocked ? t('filePreview.unlockZoom') : t('filePreview.lockZoom')}
                 aria-label={isZoomLocked ? t('filePreview.unlockZoom') : t('filePreview.lockZoom')}
                 aria-pressed={isZoomLocked}
@@ -421,15 +413,7 @@ export function FilePreviewFullscreen({
                 />
               </IconButton>
 
-              <Box
-                style={{
-                  width: '1px',
-                  height: '16px',
-                  backgroundColor: 'var(--slate-4)',
-                  flexShrink: 0,
-                }}
-                aria-hidden
-              />
+              <Box style={PREVIEW_TOOLBAR_DIVIDER} aria-hidden />
 
               <IconButton
                 variant="ghost"
@@ -437,23 +421,12 @@ export function FilePreviewFullscreen({
                 size="1"
                 onClick={handlePrevPage}
                 disabled={currentPage === 1}
-                style={{
-                  width: '24px',
-                  height: '24px',
-                  padding: 0,
-                }}
+                style={PREVIEW_TOOLBAR_BUTTON}
               >
                 <MaterialIcon name="chevron_left" size={ICON_SIZES.SECONDARY} />
               </IconButton>
 
-              <Box
-                style={{
-                  backgroundColor: 'var(--slate-2)',
-                  border: '1px solid var(--slate-3)',
-                  borderRadius: 'var(--radius-1)',
-                  padding: '4px 12px',
-                }}
-              >
+              <Box style={PREVIEW_TOOLBAR_PAGE}>
                 <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
                   {totalPages === null ? `${currentPage}/?` : `${currentPage}/${totalPages}`}
                 </Text>
@@ -465,11 +438,7 @@ export function FilePreviewFullscreen({
                 size="1"
                 onClick={handleNextPage}
                 disabled={totalPages === null || currentPage === totalPages}
-                style={{
-                  width: '24px',
-                  height: '24px',
-                  padding: 0,
-                }}
+                style={PREVIEW_TOOLBAR_BUTTON}
               >
                 <MaterialIcon name="chevron_right" size={ICON_SIZES.SECONDARY} />
               </IconButton>

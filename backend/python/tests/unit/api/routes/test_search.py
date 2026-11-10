@@ -37,6 +37,13 @@ def _one_search_per_request(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(DATE_FILTER_SAFETY_NET_ENV_VAR, "false")
 
 
+@pytest.fixture(autouse=True)
+def _no_lookup_by_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The lookup of records found by name has its own tests
+    # (test_search_unindexed_matches.py); here it must not add to the request's logs.
+    monkeypatch.setattr("app.api.routes.search._unindexed_matches", AsyncMock(return_value=[]))
+
+
 # ---------------------------------------------------------------------------
 # Pydantic model validation tests
 # ---------------------------------------------------------------------------
@@ -1173,10 +1180,10 @@ class TestSearchWithoutQueryRewrite:
         lines = [
             call.args[0] % call.args[1:]
             for call in logger.info.call_args_list
-            if call.args and str(call.args[0]).startswith("⏱")
+            if call.args and str(call.args[0]).startswith("%s total=")
         ]
         assert len(lines) == 1
-        assert lines[0].startswith("⏱ search total=")
+        assert lines[0].startswith("search total=")
         assert "query_transform=" in lines[0] and "retrieval=" in lines[0]
         assert lines[0].endswith("| rewrite=off queries=1")
 

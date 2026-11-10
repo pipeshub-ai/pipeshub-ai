@@ -570,14 +570,12 @@ class TestGetServices:
         mock_retrieval = MagicMock()
         mock_retrieval.llm = MagicMock()  # LLM is already set
         mock_graph = MagicMock()
-        mock_reranker = MagicMock()
         mock_config = MagicMock()
         mock_logger = MagicMock()
 
         container = MagicMock()
         container.retrieval_service = AsyncMock(return_value=mock_retrieval)
         container.graph_provider = AsyncMock(return_value=mock_graph)
-        container.reranker_service.return_value = mock_reranker
         container.config_service.return_value = mock_config
         container.logger.return_value = mock_logger
 
@@ -588,7 +586,7 @@ class TestGetServices:
 
         assert result["retrieval_service"] is mock_retrieval
         assert result["graph_provider"] is mock_graph
-        assert result["reranker_service"] is mock_reranker
+        assert "reranker_service" not in result
         assert result["config_service"] is mock_config
         assert result["logger"] is mock_logger
         assert "llm" not in result
@@ -601,7 +599,6 @@ class TestGetServices:
         container = MagicMock()
         container.retrieval_service = AsyncMock(return_value=retrieval)
         container.graph_provider = AsyncMock(return_value=graph)
-        container.reranker_service.return_value = MagicMock()
         container.config_service.return_value = MagicMock()
         container.logger.return_value = MagicMock()
         request = MagicMock()
@@ -2999,7 +2996,9 @@ class TestUpdateAgent:
         from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
-        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
+        services["graph_provider"].check_agent_permission = AsyncMock(
+            return_value={"can_edit": True, "can_share": True, "user_role": "OWNER"}
+        )
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_edit": True, "shareWithOrg": False})
         services["graph_provider"].update_agent = AsyncMock(return_value=True)
         services["graph_provider"].batch_create_edges = AsyncMock(return_value=True)
@@ -4618,7 +4617,7 @@ class TestServiceAccountAgentRoutes:
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
         services["graph_provider"].check_agent_permission = AsyncMock(
-            return_value={"can_edit": True}
+            return_value={"can_edit": True, "can_share": True, "user_role": "OWNER"}
         )
         services["graph_provider"].get_agent = AsyncMock(
             return_value={"name": "A1", "isServiceAccount": False, "shareWithOrg": False}

@@ -36,6 +36,9 @@ SEARCH_TOOL_NAME = "knowledgegraph__search"
 SEARCH_ENTITIES_TOOL_NAME = "knowledgegraph__search_entities"
 FIND_RECORDS_BY_ENTITY_TOOL_NAME = "knowledgegraph__find_records_by_entity"
 FIND_RECORDS_BY_VALUE_TOOL_NAME = "knowledgegraph__find_records_by_value"
+FIND_CO_MENTIONED_TOOL_NAME = "knowledgegraph__find_co_mentioned_entities"
+# Tools that read only named entities: left out with extraction off, where they could only fail.
+_NAMED_ENTITY_ONLY_TOOLS = frozenset({FIND_RECORDS_BY_VALUE_TOOL_NAME, FIND_CO_MENTIONED_TOOL_NAME})
 
 
 @dataclass(frozen=True)
@@ -77,23 +80,25 @@ _VARIANTS: dict[str, _Variant] = {
                 "and record titles, and the organizations, products, events, places and other "
                 "named things mentioned inside documents (entityType 'named_entity'; narrow with "
                 "named_entity_kinds). People are found by name with "
-                "knowledgegraph__search_by_entities. Only entities backed by records you can "
+                "knowledgegraph__search_by_entities (records that mention them) or "
+                "knowledgegraph__find_records_by_person (records they are assigned, reported, "
+                "created or lead). Only entities backed by records you can "
                 "access are returned.",
             ),
             _Edit(
-                "a project or space, a document title — to find the matching entity, alongside or "
+                "a project or space, a colleague, a customer, a document title — to find the matching entity, alongside or "
                 "before a content search.",
-                "a project or space, a document title, a customer or product — to find the "
+                "a project or space, a colleague, a customer, a document title, or a product — to find the "
                 "matching entity, alongside or before a content search. A named entity on a few "
                 "records narrows the search well; one on most records narrows nothing.",
             ),
             _Edit(
-                "department/category/subcategory/topic/language or record_group entity.",
-                "department/category/subcategory/topic/language, record_group or named entity.",
+                "department/category/subcategory/topic/language, record_group, person or organization entity.",
+                "department/category/subcategory/topic/language, record_group, person, organization or named entity.",
             ),
         ),
         parameters=(
-            ("entity_types", (_Edit("'record_group', 'record'. Omit", "'record_group', 'record', 'named_entity'. Omit"),)),
+            ("entity_types", (_Edit("'record_group', 'person', 'organization', 'record'. Omit", "'record_group', 'person', 'organization', 'record', 'named_entity'. Omit"),)),
             ("named_entity_kinds", (_Edit(
                 "Optional kinds when searching extracted named entities "
                 "(person, organization, product, date, currency, ...). "
@@ -121,30 +126,30 @@ _VARIANTS: dict[str, _Variant] = {
         optional=("query",),
         args_summary=lambda args: _searched_entities_for(args),
     ),
+    FIND_CO_MENTIONED_TOOL_NAME: _Variant(
+        description=(_Edit(
+            "entity_ids search_entities returned for that one entity",
+            "entity_ids search_entities or search_by_entities returned for that one entity",
+        ),),
+        parameters=(("entity_ids", (_Edit(
+            "that search_entities returned", "that search_entities or search_by_entities returned",
+        ),)),),
+    ),
     FIND_RECORDS_BY_ENTITY_TOOL_NAME: _Variant(
         description=(
             _Edit(
-                "every record directly inside a record_group, or the record itself",
-                "every record directly inside a record_group, every record that mentions a "
-                "named entity, or the record itself",
+                "every record directly inside a record_group, every record naming a person, every "
+                "record of an organization's account or naming the organization, or the record itself",
+                "every record directly inside a record_group, every record naming a person, every "
+                "record of an organization's account or naming the organization, every record that "
+                "mentions a named entity, or the record itself",
             ),
         ),
         parameters=(
             ("entity_type", (_Edit(
-                "'language', 'record_group' or 'record'. Optional",
-                "'language', 'record_group', 'record' or 'named_entity'. Optional",
+                "'language', 'record_group', 'person', 'organization' or 'record'. Optional",
+                "'language', 'record_group', 'person', 'organization', 'record' or 'named_entity'. Optional",
             ),)),
-        ),
-    ),
-    FIND_RECORDS_BY_VALUE_TOOL_NAME: _Variant(
-        description=(
-            _Edit(
-                "an amount in a currency, a quantity, or a percentage. Requires",
-                "an amount in a currency, a quantity, or a percentage. Use it when the question "
-                "is about a value rather than words (\"deals over $50k\", \"incidents in March "
-                "2026\", \"latency above 200 ms\"): it finds a record however the value is "
-                "written there. Requires",
-            ),
         ),
     ),
 }
@@ -164,7 +169,7 @@ def tools_for_request(
     return [
         _without_named_entity_kinds(instance, tool)
         for tool in served
-        if tool.name != FIND_RECORDS_BY_VALUE_TOOL_NAME
+        if tool.name not in _NAMED_ENTITY_ONLY_TOOLS
     ]
 
 

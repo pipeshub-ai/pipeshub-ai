@@ -59,6 +59,7 @@ from app.agents.actions.slack.slack import (
     UpdateMessageInput,
     UploadFileToChannelInput,
 )
+from app.services.record_content.models import ResolvedRecordContent
 
 
 # ---------------------------------------------------------------------------
@@ -972,6 +973,89 @@ class TestUploadFileToChannelInput:
         )
         assert data.title is None
         assert data.initial_comment is None
+
+
+class TestUploadFileToChannelAttachments:
+    """A PipesHub record is uploaded as its stored bytes, and a file that never reached Slack is
+    reported instead of the call claiming success."""
+
+    @staticmethod
+    def _record(record_id: str = "rec-1", content: bytes = b"x" * 106) -> ResolvedRecordContent:
+        return ResolvedRecordContent(
+            record_id=record_id, filename="notes.txt", mime_type="text/plain",
+            size_bytes=len(content), content=content, version=None, source="blob",
+        )
+
+    async def _upload(self, slack: Slack, bundle: object, **kwargs: object) -> tuple[bool, str]:
+        with patch.object(slack, "_resolve_channel", AsyncMock(return_value="C1234ABCD")), patch(
+            "app.agents.actions.slack.slack.resolve_attachments", AsyncMock(return_value=bundle),
+        ), patch("app.agents.actions.util.attachments.emit_attachment_audit"):
+            return await slack.upload_file_to_channel("#general", **kwargs)
+
+    @pytest.mark.asyncio
+    async def test_the_records_stored_bytes_are_uploaded(self) -> None:
+        from app.agents.actions.util.attachments import AttachmentBundle
+
+        slack = _build_slack()
+        slack.chat_state = {"org_id": "o", "user_id": "u"}
+        slack.client.files_upload_v2 = AsyncMock(
+            return_value=SlackResponse(success=True, data={"files": [{"id": "F1"}]}),
+        )
+        ok, payload = await self._upload(
+            slack, AttachmentBundle(resolved=[self._record()]), attachment_record_ids=["rec-1"],
+        )
+        assert ok is True
+        assert json.loads(payload)["data"]["message"] == "1 file(s) uploaded"
+        kwargs = slack.client.files_upload_v2.await_args.kwargs
+        assert kwargs["content"] == b"x" * 106
+        assert kwargs["channel"] == "C1234ABCD"
+
+    @pytest.mark.asyncio
+    async def test_a_record_that_cannot_be_read_fails_the_call(self) -> None:
+        from app.agents.actions.util.attachments import AttachmentBundle
+        from app.services.record_content.models import AttachmentFailure
+
+        slack = _build_slack()
+        slack.chat_state = {"org_id": "o", "user_id": "u"}
+        slack.client.files_upload_v2 = AsyncMock()
+        bundle = AttachmentBundle(failures=[AttachmentFailure("rec-1", "access denied", "PermissionError")])
+        ok, payload = await self._upload(slack, bundle, attachment_record_ids=["rec-1"])
+        assert ok is False
+        assert "rec-1: access denied" in json.loads(payload)["error"]
+        slack.client.files_upload_v2.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_upload_fails_the_call(self) -> None:
+        from app.agents.actions.util.attachments import AttachmentBundle
+
+        slack = _build_slack()
+        slack.chat_state = {"org_id": "o", "user_id": "u"}
+        slack.client.files_upload_v2 = AsyncMock(
+            return_value=SlackResponse(success=False, error="not_in_channel"),
+        )
+        ok, payload = await self._upload(
+            slack, AttachmentBundle(resolved=[self._record()]), attachment_record_ids=["rec-1"],
+        )
+        assert ok is False
+        assert "notes.txt: not_in_channel" in json.loads(payload)["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_partial_failure_is_reported_alongside_the_success(self) -> None:
+        from app.agents.actions.util.attachments import AttachmentBundle
+        from app.services.record_content.models import AttachmentFailure
+
+        slack = _build_slack()
+        slack.chat_state = {"org_id": "o", "user_id": "u"}
+        slack.client.files_upload_v2 = AsyncMock(
+            return_value=SlackResponse(success=True, data={"files": [{"id": "F1"}]}),
+        )
+        bundle = AttachmentBundle(
+            resolved=[self._record()],
+            failures=[AttachmentFailure("rec-2", "not found", "KeyError")],
+        )
+        ok, payload = await self._upload(slack, bundle, attachment_record_ids=["rec-1", "rec-2"])
+        assert ok is True
+        assert "rec-2: not found" in json.loads(payload)["message"]
 
 
 # ===========================================================================

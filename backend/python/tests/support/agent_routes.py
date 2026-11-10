@@ -489,9 +489,6 @@ class FakeContainer:
             raise self.graph_provider_error
         return self.graph
 
-    def reranker_service(self) -> object:
-        return object()
-
     def config_service(self) -> FakeConfigService:
         return self.config
 

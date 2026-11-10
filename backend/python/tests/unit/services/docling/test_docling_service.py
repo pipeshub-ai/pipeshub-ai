@@ -287,7 +287,10 @@ class TestHealthCheckEndpoint:
     async def test_health_endpoint(self):
         from app.services.docling.docling_service import health_check
         result = await health_check()
-        assert result == {"status": "healthy", "service": "docling"}
+        assert result["status"] == "healthy"
+        assert result["service"] == "docling"
+        assert result["parse_tasks_in_flight"] == 0
+        assert result["oldest_parse_age_seconds"] == 0.0
 
 
 class TestResourceGovernorWiring:
@@ -434,6 +437,70 @@ class TestParsePdfEndpoint:
             assert resp.status_code == 200
             trim.assert_called_once_with()
         finally:
+            mod.docling_service = original
+
+    @pytest.mark.asyncio
+    async def test_a_timed_out_parse_keeps_its_permit_until_the_thread_ends(self) -> None:
+        import threading
+
+        import app.services.docling.docling_service as mod
+
+        in_use = 0
+        released: list[int] = []
+
+        async def acquire(*_a: object) -> tuple[bool, int]:
+            nonlocal in_use
+            if in_use >= 1:  # a gate with room for one heavy parse
+                return False, 0
+            in_use += 1
+            return True, 1
+
+        def release(cost: int) -> None:
+            nonlocal in_use
+            if cost:
+                in_use -= cost
+                released.append(cost)
+
+        stop_thread = threading.Event()
+        svc = DoclingService()
+
+        async def parse(*_a: object, **_k: object) -> object:
+            await asyncio.to_thread(stop_thread.wait, 10)
+            return MagicMock()
+
+        svc.parse_pdf_only = parse  # type: ignore[method-assign]
+
+        async def call() -> object:
+            return await mod.parse_pdf_endpoint(
+                background_tasks=BackgroundTasks(),
+                file=_make_upload_file(b"data"),
+                record_name="a.pdf",
+                start_page=None,
+                end_page=None,
+            )
+
+        original = mod.docling_service
+        mod.docling_service = svc
+        try:
+            with (
+                patch.object(mod, "_acquire_docling_gate", acquire),
+                patch.object(mod, "_release_docling_gate", release),
+                patch.object(mod, "PDF_PARSING_TIMEOUT_SECONDS", 0.2),
+            ):
+                first = await call()
+                assert first.status_code == 422  # the caller is answered at its deadline
+                assert released == []
+                # The conversion thread is still running: nothing else is admitted.
+                assert (await call()).status_code == 429
+                stop_thread.set()
+                for _ in range(100):
+                    if released:
+                        break
+                    await asyncio.sleep(0.05)
+                assert released == [1]
+                assert (await call()).status_code != 429
+        finally:
+            stop_thread.set()
             mod.docling_service = original
 
     @pytest.mark.asyncio

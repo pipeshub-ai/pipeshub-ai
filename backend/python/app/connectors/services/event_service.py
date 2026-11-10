@@ -5,12 +5,14 @@ import logging
 import os
 import time
 from collections import OrderedDict
+from collections.abc import Coroutine
 from typing import Any, cast
 
 from dependency_injector import providers
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    FOLDER_MIME_TYPES,
     AppStatus,
     CollectionNames,
     Connectors,
@@ -52,17 +54,26 @@ from app.connectors.services.vector_cleanup_events import (
     log_cleanup_publish_failure,
 )
 from app.containers.connector import ConnectorAppContainer
+from app.core.org_context import spawn_detached
 from app.edition_services import (
     get_data_entities_processor_cls,
     sync_executor_enabled,
 )
+from app.models.entities import FileRecord
 from app.modules.pipeline.models import RETRYABLE_STAGES, HeadlineField, stage_state_rev
+from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.lanes.lifecycle import free_lane_of_deleted_connector
+from app.utils.logging_fields import log_event, log_fields
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Bounded because this runs inline in the sync consumer loop: a longer wait
 # stalls every other connector's events behind one delete.
+
+
+def _stored_type(connector_doc: dict[str, Any] | None) -> str:
+    """The instance's stored type as a registry name ("Google Drive" -> "googledrive"), or ""."""
+    return ((connector_doc or {}).get("type") or "").replace(" ", "").lower()
 
 
 def _message_timestamp_ms(payload: dict[str, Any]) -> int | None:
@@ -84,9 +95,9 @@ def _message_timestamp_ms(payload: dict[str, Any]) -> int | None:
 def _running_here(connector_id: str) -> bool:
     """Is a sync for this connector running in *this* process?
 
-    Deliberately the local question, and deliberately synchronous: both callers
+    Deliberately the local question, and deliberately synchronous: its callers
     are protecting an in-process object (a connector's HTTP sessions) from being
-    closed underneath a running sync, and one of them is a plain `def`. The
+    closed underneath a running sync, and some of them are plain `def`s. The
     question that reaches other processes costs a round trip and would answer
     something they are not asking.
     """
@@ -94,9 +105,75 @@ def _running_here(connector_id: str) -> bool:
     return coordinator is not None and coordinator.is_running_here(connector_id)
 
 
+def _is_folder(record: object) -> bool:
+    """Same folder rule the indexing service applies to record events."""
+    return (isinstance(record, FileRecord) and record.is_file is False) or (
+        getattr(record, "mime_type", None) in FOLDER_MIME_TYPES
+    )
+
+
 def _reindexing_here(connector_id: str) -> bool:
     prefix = f"reindex:{connector_id}:"
     return any(key.startswith(prefix) for key in reindex_task_manager.active_keys())
+
+
+def _runs_holding(connector_id: str) -> list[Coroutine[Any, Any, object]]:
+    """Waits that end with the local sync and reindexes now running for this connector.
+
+    Captured at eviction so a deferred dispose waits for *those* runs only: a run
+    started later under the same id uses the rebuilt instance, not this one.
+    """
+    coordinator = get_coordinator()
+    lease = coordinator.lease_here(connector_id) if coordinator is not None else None
+    reindexes = reindex_task_manager.tasks_with_prefix(f"reindex:{connector_id}:")
+    runs: list[Coroutine[Any, Any, object]] = [lease.ended.wait()] if lease is not None else []
+    if reindexes:
+        # asyncio.wait neither raises a task's error nor cancels the task.
+        runs.append(asyncio.wait(reindexes))
+    return runs
+
+
+async def _dispose_after(
+    runs: list[Coroutine[Any, Any, object]],
+    connector_id: str,
+    connector: object,
+    logger: logging.Logger,
+) -> None:
+    for run in runs:
+        await run
+    try:
+        await dispose_connector(connector)
+        logger.info(f"Cleaned up connector instance {connector_id}")
+    except Exception as cleanup_err:
+        logger.error(f"Error cleaning up connector {connector_id}: {cleanup_err}")
+
+
+async def evict_cached_connector(
+    container: ConnectorAppContainer,
+    connector_id: str,
+    logger: logging.Logger,
+) -> None:
+    """Drop the in-memory connector so the next lookup rebuilds it from current config.
+
+    The entry always goes, but a sync or reindex in this process may still hold
+    the instance, so its cleanup() waits until the runs live at eviction end
+    rather than closing the client under them.
+    """
+    if connector_id not in getattr(container, "connectors_map", {}):
+        return
+    logger.info(f"Removing connector {connector_id} from connectors_map")
+    existing_connector = container.connectors_map.pop(connector_id)
+    runs = _runs_holding(connector_id)
+    if not runs:
+        await _dispose_after(runs, connector_id, existing_connector, logger)
+        return
+    logger.info(f"Disposing connector {connector_id} once its running sync/reindex ends")
+    task = spawn_detached(
+        _dispose_after(runs, connector_id, existing_connector, logger),
+        name=f"dispose_connector_{connector_id}",
+    )
+    _evict_tasks.add(task)
+    task.add_done_callback(_evict_tasks.discard)
 
 
 def connector_cache_max() -> int:
@@ -371,7 +448,7 @@ class EventService:
         request body, so it could build one connector's class over another
         instance's config and credentials.
         """
-        stored = (connector_doc.get("type") or "").replace(" ", "").lower()
+        stored = _stored_type(connector_doc)
         if not stored:
             return event_name
         if stored != event_name:
@@ -456,21 +533,24 @@ class EventService:
             connector_name = parts[0].replace(" ", "").lower()
             action = parts[1].lower()
 
-            self.logger.info(f"Handling {connector_name} connector event: {action}")
+            # Every line of the event, and of the tasks it starts, names the instance.
+            # The event's name is only a fallback: the start path re-binds the stored type.
+            with log_fields(connector_id=payload.get("connectorId"), connector_type=connector_name):
+                self.logger.info(f"Handling {connector_name} connector event: {action}")
 
-            if action == "init":
-                return await self._handle_init(connector_name, payload)
-            elif action == "start":
-                return await self._handle_start_sync(connector_name, payload)
-            elif action == "resync":
-                return await self._handle_start_sync(connector_name, payload)
-            elif action == "reindex":
-                return await self._handle_reindex(connector_name, payload)
-            elif action == "delete":
-                return await self._handle_delete(connector_name, payload)
-            else:
-                self.logger.error(f"Unknown {connector_name.capitalize()} connector event type: {action}")
-                return False
+                if action == "init":
+                    return await self._handle_init(connector_name, payload)
+                elif action == "start":
+                    return await self._handle_start_sync(connector_name, payload)
+                elif action == "resync":
+                    return await self._handle_start_sync(connector_name, payload)
+                elif action == "reindex":
+                    return await self._handle_reindex(connector_name, payload)
+                elif action == "delete":
+                    return await self._handle_delete(connector_name, payload)
+                else:
+                    self.logger.error(f"Unknown {connector_name.capitalize()} connector event type: {action}")
+                    return False
 
         except Exception as e:
             self.logger.error(f"Error handling connector event {event_type}: {e}", exc_info=True)
@@ -536,17 +616,17 @@ class EventService:
             )
 
             if not connector:
-                self.logger.error(f"❌ Failed to create {connector_name} connector")
+                self.logger.error(f"Failed to create {connector_name} connector")
                 return False
 
             is_initialized = await connector.init()
 
             if not is_initialized:
-                self.logger.error(f"❌ Failed to initialize {connector_name} connector (init returned False). Not storing in container.")
+                self.logger.error(f"Failed to initialize {connector_name} connector (init returned False). Not storing in container.")
                 await self._dispose_unstored(connector_name, connector)
                 return False
 
-            self.logger.info(f"✅ Successfully initialized {connector_name} connector")
+            self.logger.info(f"Successfully initialized {connector_name} connector")
 
             await self._store_connector(connector_id, connector)
 
@@ -694,6 +774,7 @@ class EventService:
         if admission is not Admission.GRANTED or lease is None:
             # REFUSED_BY_STOP: the user asked to stop this very request while it
             # was in flight. Recording intent here would undo their stop.
+            log_event(self.logger, "sync_run.refused", reason=admission.value)
             return True
 
         try:
@@ -751,135 +832,200 @@ class EventService:
             document_key=connector_id,
             collection=CollectionNames.APPS.value,
         )
-
-        # Ahead of _ensure_connector, which does OAuth and HTTP: no point paying
-        # for an init on a connector the database has already disabled.
-        if connector_doc and (
-            connector_doc.get(ConnectorStateKeys.IS_ACTIVE) is False
-            or connector_doc.get(ConnectorStateKeys.IS_AUTHENTICATED) is False
-            or connector_doc.get("status") == "DELETING"
-        ):
-            self.logger.warning(
-                f"Skipping {connector_name} sync for {connector_id}: connector is "
-                "disabled, being deleted, or requires re-authentication"
-            )
-            # A queue entry for it is owed nothing now; left QUEUED, every drain
-            # would publish it again.
-            await self._drop_queued_intent(connector_id, connector_doc)
-            # Acked, not retried: this is a deliberate state, so redelivering
-            # would stall the partition behind a connector that will never run.
-            # Re-enabling publishes a fresh event.
-            return True, False
-
-        connector = await self._ensure_connector(connector_name, connector_id)
-        if not connector:
-            self.logger.error(f"{connector_name.capitalize()} {connector_id} connector could not be initialized")
-            return False, False
-
-        synced_by = payload.get("syncedBy", "")
-        if synced_by:
-            await self.graph_provider.update_node(
-                connector_id, CollectionNames.APPS.value,
-                {"lastSyncedBy": synced_by},
-            )
-            connector.last_synced_by = synced_by
-
-        pending_full_sync = False
-        if connector_doc:
-            pending_full_sync = bool(connector_doc.get(ConnectorStateKeys.PENDING_FULL_SYNC, False))
-
-        # Merge payload fullSync with pending flag - if either is true, do full sync
-        effective_full_sync = bool(full_sync) or pending_full_sync
-
-        if pending_full_sync:
-            self.logger.info(f"Connector {connector_id} has pendingFullSync flag set, will perform full sync")
-
-        self.logger.info(f"Starting {connector_name} sync service for org_id: {org_id}, full_sync: {effective_full_sync} (payload: {full_sync}, pending: {pending_full_sync})")
-
-        if lease.stop_requested.is_set():
-            # Stopped while _ensure_connector ran. The full-sync prep below is
-            # destructive (sync points), and the caller was already
-            # told the sync stopped. A start that came from the drain left the
-            # row QUEUED; /sync/stop saw the lease and did not repair it, so the
-            # drain's stale arm would start it again two minutes later.
-            self.logger.info(f"Sync for {connector_id} stopped before it started")
-            # Re-read: connector_doc predates _ensure_connector, and a delete in
-            # that window both stops this lease and writes DELETING, which the
-            # stale QUEUED would overwrite with IDLE.
-            await self._drop_queued_intent(connector_id)
-            return True, False
-
-        if payload.get("bootResume"):
-            # Checked again before admission too, but _ensure_connector above
-            # does OAuth and HTTP and can take seconds. A /sync/stop in that
-            # window finds no running task to stop and only clears
-            # pendingResync, and the prep below would delete the sync points of
-            # a sync the person stopped. Events nobody marked (the Sync button,
-            # the drain, schedules) never get here.
-            owed = await self._boot_resume_still_owed(connector_id)
-            if owed is None:
-                return False, False
-            if not owed:
-                self.logger.info(
-                    f"Not resuming {connector_id}: its interrupted full sync is no "
-                    "longer owed (stopped, disabled or already run since boot)"
+        # The stored type, not the event's (the resync route takes that from the request body).
+        # Scoped here: a caller outside process_event must not keep it on its task (the consumer loop).
+        with log_fields(connector_type=_stored_type(connector_doc) or None):
+            # Ahead of _ensure_connector, which does OAuth and HTTP: no point paying
+            # for an init on a connector the database has already disabled.
+            if connector_doc and (
+                connector_doc.get(ConnectorStateKeys.IS_ACTIVE) is False
+                or connector_doc.get(ConnectorStateKeys.IS_AUTHENTICATED) is False
+                or connector_doc.get("status") == "DELETING"
+            ):
+                self.logger.warning(
+                    f"Skipping {connector_name} sync for {connector_id}: connector is "
+                    "disabled, being deleted, or requires re-authentication"
                 )
+                # A queue entry for it is owed nothing now; left QUEUED, every drain
+                # would publish it again.
+                await self._drop_queued_intent(connector_id, connector_doc)
+                # Acked, not retried: this is a deliberate state, so redelivering
+                # would stall the partition behind a connector that will never run.
+                # Re-enabling publishes a fresh event.
                 return True, False
-            # Owed means this fresh read found pendingFullSync. The event itself
-            # carries fullSync false, and connector_doc above was read without
-            # raise_on_error, so a failed read there left both of these false:
-            # the resume would run incrementally first, and a full one would
-            # leave the flag set for the next sync to redo the prep.
-            pending_full_sync = True
-            effective_full_sync = True
 
-        if effective_full_sync:
-            # No "is one already running" check here: begin() above already
-            # settled admission, and it is this call that holds the claim. Asking
-            # again declined every full sync against its own lease -- a newly
-            # created connector never synced at all.
-            # --- Full sync: acquire lock for the prep phase ---
-            try:
-                await self._update_app_status(
-                    connector_id,
-                    status=AppStatus.FULL_SYNCING.value,
-                    is_locked=True,
-                )
-                self.logger.info(f"🔒 Set status=FULL_SYNCING, isLocked=True for connector {connector_id}")
-            except Exception as lock_err:
-                self.logger.error(f"❌ Failed to set lock for connector {connector_id}: {lock_err}")
+            connector = await self._ensure_connector(connector_name, connector_id)
+            if not connector:
+                self.logger.error(f"{connector_name.capitalize()} {connector_id} connector could not be initialized")
                 return False, False
 
-            # The prep below deletes sync edges before the sync task runs: the knowledge hub stops listing this
-            # connector from its precomputed scopes first.
-            prep_generation = await self._kh_scope_begin(connector_id)
+            synced_by = payload.get("syncedBy", "")
+            if synced_by:
+                await self.graph_provider.update_node(
+                    connector_id, CollectionNames.APPS.value,
+                    {"lastSyncedBy": synced_by},
+                )
+                connector.last_synced_by = synced_by
 
-            try:
-                # Delete sync points
-                self.logger.info(f"Full sync requested - deleting sync points for connector {connector_id}")
-                try:
-                    deleted_count, success = await self.graph_provider.delete_sync_points_by_connector_id(
-                        connector_id=connector_id
+            pending_full_sync = False
+            if connector_doc:
+                pending_full_sync = bool(connector_doc.get(ConnectorStateKeys.PENDING_FULL_SYNC, False))
+
+            # Merge payload fullSync with pending flag - if either is true, do full sync
+            effective_full_sync = bool(full_sync) or pending_full_sync
+
+            if pending_full_sync:
+                self.logger.info(f"Connector {connector_id} has pendingFullSync flag set, will perform full sync")
+
+            self.logger.info(f"Starting {connector_name} sync service for org_id: {org_id}, full_sync: {effective_full_sync} (payload: {full_sync}, pending: {pending_full_sync})")
+
+            if lease.stop_requested.is_set():
+                # Stopped while _ensure_connector ran. The full-sync prep below is
+                # destructive (sync points), and the caller was already
+                # told the sync stopped. A start that came from the drain left the
+                # row QUEUED; /sync/stop saw the lease and did not repair it, so the
+                # drain's stale arm would start it again two minutes later.
+                self.logger.info(f"Sync for {connector_id} stopped before it started")
+                # Re-read: connector_doc predates _ensure_connector, and a delete in
+                # that window both stops this lease and writes DELETING, which the
+                # stale QUEUED would overwrite with IDLE.
+                await self._drop_queued_intent(connector_id)
+                return True, False
+
+            if payload.get("bootResume"):
+                # Checked again before admission too, but _ensure_connector above
+                # does OAuth and HTTP and can take seconds. A /sync/stop in that
+                # window finds no running task to stop and only clears
+                # pendingResync, and the prep below would delete the sync points of
+                # a sync the person stopped. Events nobody marked (the Sync button,
+                # the drain, schedules) never get here.
+                owed = await self._boot_resume_still_owed(connector_id)
+                if owed is None:
+                    return False, False
+                if not owed:
+                    self.logger.info(
+                        f"Not resuming {connector_id}: its interrupted full sync is no "
+                        "longer owed (stopped, disabled or already run since boot)"
                     )
-                    if success:
-                        self.logger.info(f"✅ Successfully deleted {deleted_count} sync points for connector {connector_id}")
+                    return True, False
+                # Owed means this fresh read found pendingFullSync. The event itself
+                # carries fullSync false, and connector_doc above was read without
+                # raise_on_error, so a failed read there left both of these false:
+                # the resume would run incrementally first, and a full one would
+                # leave the flag set for the next sync to redo the prep.
+                pending_full_sync = True
+                effective_full_sync = True
+
+            if effective_full_sync:
+                # No "is one already running" check here: begin() above already
+                # settled admission, and it is this call that holds the claim. Asking
+                # again declined every full sync against its own lease -- a newly
+                # created connector never synced at all.
+                # --- Full sync: acquire lock for the prep phase ---
+                try:
+                    await self._update_app_status(
+                        connector_id,
+                        status=AppStatus.FULL_SYNCING.value,
+                        is_locked=True,
+                    )
+                    self.logger.info(f"Set status=FULL_SYNCING, isLocked=True for connector {connector_id}")
+                except Exception as lock_err:
+                    self.logger.error(f"Failed to set lock for connector {connector_id}: {lock_err}")
+                    return False, False
+
+                # The prep below deletes sync edges before the sync task runs: the knowledge hub stops listing this
+                # connector from its precomputed scopes first.
+                prep_generation = await self._kh_scope_begin(connector_id)
+
+                try:
+                    # Delete sync points
+                    self.logger.info(f"Full sync requested - deleting sync points for connector {connector_id}")
+                    try:
+                        deleted_count, success = await self.graph_provider.delete_sync_points_by_connector_id(
+                            connector_id=connector_id
+                        )
+                        if success:
+                            self.logger.info(f"Successfully deleted {deleted_count} sync points for connector {connector_id}")
+                        else:
+                            self.logger.warning(f"Failed to delete sync points for connector {connector_id}, continuing with sync")
+                    except Exception as sync_point_error:
+                        self.logger.error(f"Error deleting sync points for connector {connector_id}: {sync_point_error}")
+                        self.logger.warning("Continuing with sync despite sync point deletion failure")
+
+                    # The connector's links are not deleted here. Deleting them up front
+                    # left everything a sync cut off partway had not reached yet
+                    # readable by nobody, and emptied the connector's stats until the
+                    # sync re-linked it. The sync replaces each node's links as it
+                    # re-reads it, and once it has run to the end removes the links of
+                    # the nodes it did not see (run_sync_task).
+
+                    # Schedule the background sync task. Holding the lease means
+                    # no other task in this process can be running this connector,
+                    # so start_if_idle declining here is a bug state, not a race —
+                    # it is logged loudly rather than treated as normal.
+                    task = await coordinator.spawn(
+                        lease,
+                        run_sync_task(
+                            connector,
+                            connector_id,
+                            self.graph_provider,
+                            self.logger,
+                            start_status=AppStatus.FULL_SYNCING.value,
+                            lease=lease,
+                            coordinator=coordinator,
+                            close_connector=not cacheable,
+                            resync_spec=SyncSpec(
+                                connector_id=connector_id,
+                                connector_name=connector_name,
+                                org_id=org_id,
+                            ),
+                        ),
+                    )
+
+                    if task is None:
+                        # A sync is already running for this connector in this
+                        # process. Declining beats cancelling and restarting it —
+                        # that discards work already done, and a sync slower than its
+                        # own trigger interval would restart for ever and never
+                        # finish. Record the intent so it is re-issued rather than
+                        # silently dropped; the running sync hands it back from its
+                        # finalizer.
+                        self.logger.info(
+                            f"Full sync for {connector_id} declined: one is already running. "
+                            f"Recorded pendingResync for re-issue when it finishes."
+                        )
+                        await self._persist_pending_resync(connector_id, full_sync=True)
+                        # The running sync ends only its own mark, not this one.
+                        await self._kh_scope_end(connector_id, prep_generation, stamp=False)
                     else:
-                        self.logger.warning(f"⚠️ Failed to delete sync points for connector {connector_id}, continuing with sync")
-                except Exception as sync_point_error:
-                    self.logger.error(f"❌ Error deleting sync points for connector {connector_id}: {sync_point_error}")
-                    self.logger.warning("Continuing with sync despite sync point deletion failure")
+                        handed_off = True
+                        # The task's first status write clears pendingFullSync. Clearing
+                        # it here as well wrote the app doc at the same moment, and
+                        # ArangoDB failed one of the two writes.
+                        self.logger.info(f"Started full sync task for {connector_name} {connector_id}")
 
-                # The connector's links are not deleted here. Deleting them up front
-                # left everything a sync cut off partway had not reached yet
-                # readable by nobody, and emptied the connector's stats until the
-                # sync re-linked it. The sync replaces each node's links as it
-                # re-reads it, and once it has run to the end removes the links of
-                # the nodes it did not see (run_sync_task).
+                except Exception as e:
+                    self.logger.error(f"Failed during full sync prep for {connector_id}: {e}")
+                    # No sync task will end this mark; the next stamp picks up whatever the prep deleted.
+                    await self._kh_scope_end(connector_id, prep_generation, stamp=False)
+                    # Release lock immediately so the connector is not stuck
+                    try:
+                        await self._update_app_status(connector_id, status=AppStatus.IDLE.value, is_locked=False)
+                    except Exception as revert_err:
+                        self.logger.error(f"Failed to revert lock for connector {connector_id}: {revert_err}")
+                    return False, False
 
-                # Schedule the background sync task. Holding the lease means
-                # no other task in this process can be running this connector,
-                # so start_if_idle declining here is a bug state, not a race —
-                # it is logged loudly rather than treated as normal.
+                # Prep done and task scheduled — release the lock now.
+                # Status stays FULL_SYNCING until run_sync() finishes.
+                try:
+                    if await self._release_full_sync_lock(connector_id):
+                        self.logger.info(f"Released lock for connector {connector_id} (status remains FULL_SYNCING)")
+                except Exception as unlock_err:
+                    self.logger.error(f"Failed to release lock for connector {connector_id}: {unlock_err}")
+                    # Non-fatal: sync task is already running; log and continue
+
+            else:
+                # --- Normal sync: run_sync_task writes SYNCING as its first act ---
                 task = await coordinator.spawn(
                     lease,
                     run_sync_task(
@@ -887,7 +1033,6 @@ class EventService:
                         connector_id,
                         self.graph_provider,
                         self.logger,
-                        start_status=AppStatus.FULL_SYNCING.value,
                         lease=lease,
                         coordinator=coordinator,
                         close_connector=not cacheable,
@@ -898,90 +1043,19 @@ class EventService:
                         ),
                     ),
                 )
-
                 if task is None:
-                    # A sync is already running for this connector in this
-                    # process. Declining beats cancelling and restarting it —
-                    # that discards work already done, and a sync slower than its
-                    # own trigger interval would restart for ever and never
-                    # finish. Record the intent so it is re-issued rather than
-                    # silently dropped; the running sync hands it back from its
-                    # finalizer.
+                    # Same reasoning as the full-sync path above: decline, record,
+                    # re-issue on completion.
                     self.logger.info(
-                        f"Full sync for {connector_id} declined: one is already running. "
+                        f"Sync for {connector_id} declined: one is already running. "
                         f"Recorded pendingResync for re-issue when it finishes."
                     )
-                    await self._persist_pending_resync(connector_id, full_sync=True)
-                    # The running sync ends only its own mark, not this one.
-                    await self._kh_scope_end(connector_id, prep_generation, stamp=False)
+                    await self._persist_pending_resync(connector_id)
                 else:
                     handed_off = True
-                    self.logger.info(f"Started full sync task for {connector_name} {connector_id}")
+                    self.logger.info(f"Started sync task for {connector_name} {connector_id}")
 
-                    # Clear only when we consumed a persisted pending flag (avoids redundant writes on manual full sync).
-                    if pending_full_sync:
-                        try:
-                            await self.graph_provider.update_node(
-                                connector_id,
-                                CollectionNames.APPS.value,
-                                {ConnectorStateKeys.PENDING_FULL_SYNC: False},
-                            )
-                            self.logger.info(f"Cleared pendingFullSync flag for connector {connector_id}")
-                        except Exception as clear_err:
-                            self.logger.error(f"Failed to clear pendingFullSync flag for connector {connector_id}: {clear_err}")
-
-            except Exception as e:
-                self.logger.error(f"❌ Failed during full sync prep for {connector_id}: {e}")
-                # No sync task will end this mark; the next stamp picks up whatever the prep deleted.
-                await self._kh_scope_end(connector_id, prep_generation, stamp=False)
-                # Release lock immediately so the connector is not stuck
-                try:
-                    await self._update_app_status(connector_id, status=AppStatus.IDLE.value, is_locked=False)
-                except Exception as revert_err:
-                    self.logger.error(f"❌ Failed to revert lock for connector {connector_id}: {revert_err}")
-                return False, False
-
-            # Prep done and task scheduled — release the lock now.
-            # Status stays FULL_SYNCING until run_sync() finishes.
-            try:
-                if await self._release_full_sync_lock(connector_id):
-                    self.logger.info(f"🔓 Released lock for connector {connector_id} (status remains FULL_SYNCING)")
-            except Exception as unlock_err:
-                self.logger.error(f"❌ Failed to release lock for connector {connector_id}: {unlock_err}")
-                # Non-fatal: sync task is already running; log and continue
-
-        else:
-            # --- Normal sync: run_sync_task writes SYNCING as its first act ---
-            task = await coordinator.spawn(
-                lease,
-                run_sync_task(
-                    connector,
-                    connector_id,
-                    self.graph_provider,
-                    self.logger,
-                    lease=lease,
-                    coordinator=coordinator,
-                    close_connector=not cacheable,
-                    resync_spec=SyncSpec(
-                        connector_id=connector_id,
-                        connector_name=connector_name,
-                        org_id=org_id,
-                    ),
-                ),
-            )
-            if task is None:
-                # Same reasoning as the full-sync path above: decline, record,
-                # re-issue on completion.
-                self.logger.info(
-                    f"Sync for {connector_id} declined: one is already running. "
-                    f"Recorded pendingResync for re-issue when it finishes."
-                )
-                await self._persist_pending_resync(connector_id)
-            else:
-                handed_off = True
-                self.logger.info(f"Started sync task for {connector_name} {connector_id}")
-
-        return True, handed_off
+            return True, handed_off
 
     async def _org_affinity_bounced(
         self, connector_name: str, payload: dict[str, Any], org_id: str | None
@@ -1189,7 +1263,7 @@ class EventService:
         try:
             return await self.graph_provider.kh_scope_mark_stale(connector_id)
         except Exception as e:
-            self.logger.error(f"❌ Could not mark knowledge hub scopes stale for {connector_id}: {e}")
+            self.logger.error(f"Could not mark knowledge hub scopes stale for {connector_id}: {e}")
             return None
 
     async def _kh_scope_end(self, connector_id: str, generation: int | None, *, stamp: bool) -> None:
@@ -1201,7 +1275,7 @@ class EventService:
             if stamp and await self.graph_provider.kh_scope_enabled():
                 await self.graph_provider.kh_scope_stamp(connector_id)
         except Exception as e:
-            self.logger.error(f"❌ Knowledge hub scope stamp failed for {connector_id}: {e}")
+            self.logger.error(f"Knowledge hub scope stamp failed for {connector_id}: {e}")
 
     @staticmethod
     def _reindex_task_key(
@@ -1482,16 +1556,19 @@ class EventService:
                     break
                 continue
 
-            record_ids_to_update = [r.id for r in records if r.id]
-            if record_ids_to_update:
-                await self.graph_provider.update_indexing_status_for_record_ids(
-                    record_ids_to_update, ProgressStatus.NOT_STARTED.value
-                )
-
             # Connectors that publish via on_new_records drop AUTO_INDEX_OFF records;
             # reindex is an explicit user action, so clear that in memory too.
+            # A folder has nothing to index: indexing marks it COMPLETED, and some
+            # connectors never publish it at all, so NOT_STARTED would stick forever.
             for record in records:
-                record.indexing_status = ProgressStatus.NOT_STARTED.value
+                record.indexing_status = (
+                    ProgressStatus.COMPLETED.value if _is_folder(record)
+                    else ProgressStatus.NOT_STARTED.value
+                )
+            for status in (ProgressStatus.NOT_STARTED.value, ProgressStatus.COMPLETED.value):
+                ids = [r.id for r in records if r.id and r.indexing_status == status]
+                if ids:
+                    await self.graph_provider.update_indexing_status_for_record_ids(ids, status)
 
             await connector.reindex_records(records)
 
@@ -1500,7 +1577,7 @@ class EventService:
             if fetched_count < batch_size:
                 break
 
-        self.logger.info(f"✅ Completed reindex for {connector_name} {connector_id} connector. Total records processed: {total_processed}")
+        self.logger.info(f"Completed reindex for {connector_name} {connector_id} connector. Total records processed: {total_processed}")
 
     async def _rerun_stage_by_state(
         self,
@@ -1555,7 +1632,7 @@ class EventService:
                     total += len(records)
                 if len(page) < batch_size:
                     break
-        self.logger.info(f"✅ Re-ran {stages} for {total} records of connector {connector_id}")
+        self.logger.info(f"Re-ran {stages} for {total} records of connector {connector_id}")
 
     async def _release_storage(
         self,
@@ -1590,7 +1667,7 @@ class EventService:
             self.logger.error("'orgId' and 'connectorId' are required in the delete payload")
             return False
 
-        self.logger.info(f"🗑️ Processing async deletion for {connector_name} connector {connector_id}")
+        self.logger.info(f"Processing async deletion for {connector_name} connector {connector_id}")
 
         graph_deleted = False
         try:
@@ -1651,10 +1728,14 @@ class EventService:
             )
 
             # Delete from graph DB
-            result = await self.graph_provider.delete_connector_instance(
-                connector_id=connector_id,
-                org_id=org_id
-            )
+            try:
+                result = await self.graph_provider.delete_connector_instance(
+                    connector_id=connector_id,
+                    org_id=org_id
+                )
+            finally:
+                # Whether or not it finished, the cascade may have removed the app's grants.
+                await notify_principals_changed(org_id)
 
             if not result.get("success"):
                 # The intent stays either way: the reconciler drops it once stale
@@ -1674,7 +1755,7 @@ class EventService:
             graph_deleted = True
 
             self.logger.info(
-                f"✅ Graph DB deletion complete for connector {connector_id}. "
+                f"Graph DB deletion complete for connector {connector_id}. "
                 f"Records: {result.get('deleted_records_count', 0)}"
             )
 
@@ -1729,12 +1810,12 @@ class EventService:
             _storage_release_tasks.add(task)
             task.add_done_callback(_storage_release_tasks.discard)
 
-            self.logger.info(f"✅ Async deletion complete for connector {connector_id}")
+            self.logger.info(f"Async deletion complete for connector {connector_id}")
             return True
 
         except Exception as e:
             self.logger.error(
-                f"❌ Async deletion failed for connector {connector_id}: {e}",
+                f"Async deletion failed for connector {connector_id}: {e}",
                 exc_info=True
             )
             if graph_deleted:
@@ -1759,10 +1840,10 @@ class EventService:
                     }],
                     CollectionNames.APPS.value
                 )
-                self.logger.info(f"↩️ Reverted status for connector {connector_id}")
+                self.logger.info(f"Reverted status for connector {connector_id}")
             except Exception as revert_err:
                 self.logger.error(
-                    f"❌ Failed to revert status for connector {connector_id}: {revert_err}. "
+                    f"Failed to revert status for connector {connector_id}: {revert_err}. "
                     f"Connector may be stuck in DELETING state."
                 )
             return False

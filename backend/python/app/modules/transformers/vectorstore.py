@@ -15,17 +15,27 @@ No LangChain QdrantVectorStore is imported or used.
 
 import asyncio
 import codecs
+import contextlib
+import hashlib
+import inspect
 import json
 import logging
+import math
 import os
 import time
 import uuid
+from collections.abc import Awaitable, Callable, Iterator
+from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple
 
+import openai
 from langchain_core.documents import Document
 
+from app.config.constants.ai_models import TOKENIZE_MAX_CHARS, TOKENIZE_MAX_ITEMS
 from app.config.constants.arangodb import CollectionNames
+from app.core.org_context import MissingOrgContext, current_or_system, for_org
 from app.exceptions.indexing_exceptions import (
+    ChunkingError,
     DocumentProcessingError,
     EmbeddingError,
     EmbeddingModelUnavailableError,
@@ -34,12 +44,38 @@ from app.exceptions.indexing_exceptions import (
     VectorStoreError,
 )
 from app.exceptions.non_retryable import NonRetryableError
-from app.models.blocks import Block, BlocksContainer, BlockType, SemanticMetadata
+from app.models.blocks import (
+    Block,
+    BlocksContainer,
+    BlockType,
+    GroupSubType,
+    SemanticMetadata,
+)
 from app.models.entities import Record
+from app.modules.indexing.embed_resume import (
+    EMBED_DELIVERY_ID,
+    EMBED_DIGEST,
+    EMBED_KEY,
+    EMBED_REV,
+    EMBED_STARTED_MS,
+    EMBED_TOTAL,
+    EMBED_VRID,
+    POINT_KEY,
+    POINT_REV,
+    EmbedAttempt,
+    current_attempt,
+    digest_of,
+)
 from app.modules.parsers.link_text import anchor_text_only
 from app.modules.parsers.table_titles import table_titles
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
-from app.modules.transformers.code_units import code_units
+from app.modules.transformers.code_units import (
+    RESIDUE_UNIT_KIND,
+    class_header_unit,
+    code_units,
+    group_members,
+    residue_pieces,
+)
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.embeddings.multimodal.config import MultimodalProviderConfig
 from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactory
@@ -47,19 +83,26 @@ from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
 from app.services.messaging.error_classifier import format_exception_chain
+from app.services.permissions.mode import scope_fields_enabled
 from app.services.resource_governor.feedback import get_default_downstream_feedback
 from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
 from app.services.vector_db.collection_registry import CollectionRegistry
+from app.services.vector_db.const.const import VIRTUAL_RECORD_ID_FIELD
+from app.services.vector_db.filters import org_for_filter
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.membership import (
+    STALE_SCOPE,
+    mark_scope_stale,
     reset_membership_context,
     resolve_virtual_record_state,
     rewrite_or_delete_virtual_record,
+    scope_fields_for_state,
+    scope_org_id,
     set_membership_context,
     sync_vector_membership,
     vector_point_payload,
 )
-from app.services.vector_db.models import SparseVector, VectorPoint
+from app.services.vector_db.models import SparseVector, VectorChunkPayload, VectorPoint
 from app.services.vector_db.sparse_embeddings import SparseEmbedder
 from app.services.vector_db.strategy import RecordContext
 from app.utils.aimodels import (
@@ -77,8 +120,10 @@ from app.utils.embedding_retry import (
 from app.utils.image_utils import normalize_image_to_base64
 from app.utils.indexing_timing import stage
 from app.utils.llm import load_ai_models
+from app.utils.openai_hosts import is_openai_api_url
 
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
+CODE_RESIDUE_BLOCK_ID_SUFFIX = "_code_residue"
 
 # Point ids are derived from what a point represents rather than minted per
 # write, so a retried or partially applied upsert overwrites its own points
@@ -115,6 +160,8 @@ def deterministic_point_id(metadata: dict[str, object], page_content: str) -> st
     return str(uuid.uuid5(_POINT_ID_NAMESPACE, name))
 
 _DEFAULT_DOCUMENT_BATCH_SIZE = 50
+# Residue units read back per scroll page when checking which records already have them.
+_RESIDUE_UNIT_SCAN_PAGE = 500
 
 
 def _resolve_batch_concurrency(env_value: str | None, *, default: int = 5) -> int:
@@ -177,6 +224,9 @@ _TOKEN_BATCH_MAX_TOKENS = 25_000
 # points are still removed by _cleanup_orphaned_embeddings_if_needed.
 _RECORD_PRESENCE_MAX_AGE_S = 2.0
 
+# Ids per existence request: bounds the request on every backend (one mget, one pipeline, one query).
+_EXISTENCE_CHUNK = 500
+
 # Blocks are already capped at this size by the parsers (text_splitting.MAX_TEXT_BLOCK_CHARS),
 # but connector-authored blocks can bypass that path — guard defensively here too.
 _MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT = 50_000
@@ -184,6 +234,164 @@ _OVERSIZED_CHUNK_SIZE = 1500
 _OVERSIZED_CHUNK_OVERLAP = 200
 _LANGUAGE_DETECTION_SAMPLE_CHARS = 2000
 _DEFAULT_SENTENCE_EMBED_MIN_WORDS = 100
+
+# How a record's text becomes points (``EMBED_POINT_POLICY``):
+#   A (default) sentence points plus the block, one point per table row.
+#   B           one point per text block, no sentence points.
+#   C           B, and ``EMBED_TABLE_ROWS_PER_POINT`` table rows per point.
+_POINT_POLICY_ENV = "EMBED_POINT_POLICY"
+_ROW_GROUP_META = "_rowGroup"
+def _point_policy() -> str:
+    p = os.getenv(_POINT_POLICY_ENV, "A").strip().upper()
+    return p if p in ("A", "B", "C") else "A"
+
+
+@dataclass(frozen=True)
+class _Window:
+    """How long one point may be, and how to count it.
+
+    ``count`` is the embedding model's own tokenizer (through the embedding
+    server); None means cl100k, which is what hosted providers get.
+    """
+    limit: int
+    count: Callable[[list[str]], list[int]] | None = None
+
+
+# bge read at most 2.13 times the cl100k count on the worst text measured (Russian, code).
+_WORST_CASE_TOKEN_RATIO = 2.13
+_tokenize_unavailable = False
+# Fewest tokens of text a window must have room for; below this no useful point can be cut.
+_MIN_TEXT_TOKENS = 16
+
+
+def _tokenize_chunks(texts: list[str]) -> Iterator[list[str]]:
+    """*texts* in requests the server accepts: at most TOKENIZE_MAX_ITEMS texts and
+    TOKENIZE_MAX_CHARS characters each (one text longer than that goes alone)."""
+    chunk: list[str] = []
+    chars = 0
+    for t in texts:
+        if chunk and (len(chunk) >= TOKENIZE_MAX_ITEMS or chars + len(t) > TOKENIZE_MAX_CHARS):
+            yield chunk
+            chunk, chars = [], 0
+        chunk.append(t)
+        chars += len(t)
+    if chunk:
+        yield chunk
+
+
+def _ask_chunk(ask_server: Callable[[list[str]], list[int]], chunk: list[str]) -> list[int]:
+    try:
+        return ask_server(chunk)
+    except openai.APIStatusError as exc:
+        if exc.status_code != 413 or len(chunk) < 2:
+            raise
+        # The client sent more than the server takes: a bug in the limits, not a reason
+        # to give up exact counts.
+        _module_logger.error("Embedding server refused %d texts as too large; splitting", len(chunk))
+        mid = len(chunk) // 2
+        return _ask_chunk(ask_server, chunk[:mid]) + _ask_chunk(ask_server, chunk[mid:])
+
+
+def _server_counts(
+    ask_server: Callable[[list[str]], list[int]], texts: list[str], overhead: int = 0,
+) -> list[int]:
+    """Model token counts from the embedding server.
+
+    A server without ``/v1/tokenize`` (404 or 405: an older image, or another
+    OpenAI-compatible server) switches this process for good, with one warning,
+    to the cl100k count scaled by the worst measured ratio. Any other failure
+    (a 5xx, a timeout) uses that count for this call only; the next call asks
+    the server again.
+    """
+    global _tokenize_unavailable  # noqa: PLW0603
+    if not _tokenize_unavailable:
+        try:
+            return [n for chunk in _tokenize_chunks(texts) for n in _ask_chunk(ask_server, chunk)]
+        except openai.OpenAIError as exc:
+            if getattr(exc, "status_code", None) in (404, 405):
+                _tokenize_unavailable = True
+                _module_logger.warning(
+                    "Embedding server has no token counting; windows are sized from "
+                    "cl100k counts x %s from now on", _WORST_CASE_TOKEN_RATIO,
+                )
+            else:
+                _module_logger.warning(
+                    "Embedding server could not count tokens (%s); this call uses cl100k x %s",
+                    exc, _WORST_CASE_TOKEN_RATIO,
+                )
+    return [math.ceil(_token_len(t) * _WORST_CASE_TOKEN_RATIO) + overhead for t in texts]
+
+
+async def _model_window(embeddings: object) -> _Window | None:
+    """The window of the local embedding model, or None for any other provider.
+
+    shortcut: hosted providers expose neither a limit nor a tokenizer, so they
+    use the ceiling (``PIPESHUB_EMBED_TOKEN_LIMIT``, default 8191) counted with
+    cl100k; set that variable for a hosted model with a smaller window.
+    """
+    ask = getattr(embeddings, "max_input_tokens", None)
+    if _point_policy() == "A" or not inspect.iscoroutinefunction(ask):
+        return None
+    limit = await ask()
+    if not isinstance(limit, int) or limit <= 0:
+        return None
+    limit = min(limit, _embed_token_ceiling())
+    overhead = getattr(embeddings, "prompt_tokens", 0)
+    overhead = overhead if isinstance(overhead, int) else 0
+    if limit - overhead < _MIN_TEXT_TOKENS:
+        raise EmbeddingNotConfiguredError(
+            f"Embedding model {getattr(embeddings, 'model', 'unknown')!r} leaves {limit - overhead} tokens "
+            f"for text: its input limit is {limit} and its default prompt takes {overhead} "
+            f"(at least {_MIN_TEXT_TOKENS} are needed). Use a model with a longer input or no default prompt.",
+            details={"limit": limit, "prompt_tokens": overhead},
+        )
+    ask_server = embeddings.count_tokens
+    # The model's default prompt is read in front of every input and counts against the limit.
+
+    def count(texts: list[str]) -> list[int]:
+        # A token covers at least one byte, so a text of limit - 2 - overhead bytes
+        # or fewer fits without asking the server.
+        sizes: list[int | None] = [
+            n if (n := len(t.encode("utf-8")) + 2 + overhead) <= limit else None for t in texts
+        ]
+        todo = [t for t, n in zip(texts, sizes) if n is None]
+        asked = iter(_server_counts(ask_server, todo, overhead) if todo else [])
+        return [n if n is not None else next(asked) for n in sizes]
+
+    return _Window(limit, count)
+
+
+def _with_whole_tables(blocks: list, changed: set, *, any_deleted: bool) -> set:
+    """Policy C: *changed* plus every row of each table that has a changed row.
+
+    A group point holds several rows but is stored and deleted under its first
+    row's id, so a changed row can only be replaced by re-grouping its table.
+    A deleted row's table is not in *blocks*, so after any deletion every table
+    is re-grouped.
+    """
+    rows = [b for b in blocks if str(getattr(b.type, "value", b.type)).lower() == BlockType.TABLE_ROW.value]
+    tables = {b.parent_index for b in rows if any_deleted or b.id in changed}
+    return changed | {b.id for b in rows if b.parent_index in tables}
+
+
+def _row_group_meta(parent_index: object) -> dict:
+    # Only C needs the table tag; A's and B's payload stays as it was.
+    return {_ROW_GROUP_META: parent_index} if _point_policy() == "C" else {}
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+def _rows_per_point() -> int:
+    return _env_positive_int("EMBED_TABLE_ROWS_PER_POINT", 5)
+
+
+def _max_row_points_per_table() -> int:
+    return _env_positive_int("EMBED_MAX_TABLE_POINTS", 200)
 
 # Safety-net timeouts — prevent any single step from blocking the pipeline forever.
 # asyncio.to_thread / run_in_executor cannot actually kill the underlying thread on
@@ -235,16 +443,9 @@ def _batch_documents_by_size(
     return batches
 
 
-_OPENAI_API_HOST = "api.openai.com"
-
-
 def _is_openai_api(endpoint: str) -> bool:
     """True for no endpoint (the SDK's default) or OpenAI's own API host."""
-    if not endpoint:
-        return True
-    from urllib.parse import urlparse
-
-    return (urlparse(endpoint).hostname or "").lower() == _OPENAI_API_HOST
+    return not endpoint or is_openai_api_url(endpoint)
 
 
 def _batch_documents_by_tokens(
@@ -440,7 +641,9 @@ def _slice_on_character_boundaries(text: str, step: int) -> List[str]:
     return pieces
 
 
-def _split_to_token_ceiling(text: str, ceiling: int) -> List[str]:
+def _split_to_token_ceiling(
+    text: str, ceiling: int, count: Callable[[list[str]], list[int]] | None = None,
+) -> list[str]:
     """Split *text* so every piece embeds. Last line of defence.
 
     Applies to input the sentence splitter could not break up -- a table row, a
@@ -455,17 +658,30 @@ def _split_to_token_ceiling(text: str, ceiling: int) -> List[str]:
     "small" is not a bound -- so each attempt is measured and the step halved
     until every piece fits.
     """
-    if not _exceeds_token_ceiling(text, ceiling):
+    def fits(parts: list[str]) -> bool:
+        if count is not None:
+            return all(n <= ceiling for n in count(parts))
+        return all(not _exceeds_token_ceiling(p, ceiling) for p in parts)
+
+    if fits([text]):
         return [text]
 
     step = ceiling
     pieces = [text]
     for _ in range(_MAX_SPLIT_ATTEMPTS):
         pieces = _slice_on_character_boundaries(text, step)
-        if all(not _exceeds_token_ceiling(p, ceiling) for p in pieces):
+        if fits(pieces):
             return pieces
         step = max(1, step // 2)
 
+    if count is not None:
+        # The model's own count says these pieces would be cut off by the model:
+        # fail the record visibly rather than index a truncated tail.
+        raise ChunkingError(
+            f"Could not cut a {len(text)}-character text into pieces of at most {ceiling} "
+            f"model tokens after {_MAX_SPLIT_ATTEMPTS} attempts",
+            details={"characters": len(text), "limit": ceiling},
+        )
     _module_logger.warning(
         "Could not split a %d-character block under the %d-token ceiling after "
         "%d attempts; emitting %d piece(s) anyway.",
@@ -523,6 +739,97 @@ def _with_title(title: str | None, text: str) -> str:
     return f"{title}: {text}" if title else text
 
 
+def _prefetched(window: _Window | None, texts: list[str]) -> _Window | None:
+    """*window* with its counts for *texts* fetched in one batch and remembered.
+
+    Without it every group or block would ask the embedding server on its own;
+    this way a record costs one request for all its texts, plus one per attempt
+    to cut a text that is too long.
+    """
+    if window is None or window.count is None:
+        return window
+    cache: dict[str, int] = {}
+    count = window.count
+
+    def cached(batch: list[str]) -> list[int]:
+        missing = list(dict.fromkeys(t for t in batch if t not in cache))
+        if missing:
+            cache.update(zip(missing, count(missing), strict=True))
+        return [cache[t] for t in batch]
+
+    cached(texts)
+    return _Window(window.limit, cached)
+
+
+def _window_pieces(text: str, window: _Window | None) -> list[str]:
+    """*text* cut into the fewest pieces that fit one point."""
+    if window is None:
+        return _split_to_token_ceiling(text, _embed_token_ceiling())
+    return _split_to_token_ceiling(text, window.limit, window.count)
+
+
+def _row_group_points(part: list[Document], window: _Window | None) -> list[Document]:
+    """Points for consecutive rows of one table: one point, or several windows.
+
+    Each point lists only the rows its own text covers, and takes its block id
+    and index from the first of them, so a partial update that re-embeds those
+    rows replaces exactly this point.
+    """
+    texts = [d.page_content for d in part]
+    pieces = _window_pieces("\n".join(texts), window)
+    spans, at = [], 0
+    for t in texts:
+        spans.append((at, at + len(t)))
+        at += len(t) + 1
+    out: list[Document] = []
+    off = 0
+    for piece in pieces:
+        lo, hi = off, off + len(piece)
+        off = hi
+        rows = [d for d, (a, b) in zip(part, spans) if a < hi and b > lo] or [part[-1]]
+        meta = {k: v for k, v in rows[0].metadata.items() if k != _ROW_GROUP_META}
+        if len(rows) > 1:
+            meta["rowBlockIds"] = [d.metadata["blockId"] for d in rows]
+        out.append(Document(page_content=piece, metadata=meta))
+    return out
+
+
+def _group_table_row_documents(documents: list, window: _Window | None = None) -> list:
+    """Policy C: merge consecutive TABLE_ROW documents of one table into points
+    of ``_rows_per_point()`` rows. A table with more rows than the cap allows
+    gets larger groups, so it has at most ``_max_row_points_per_table()``
+    groups (a group longer than the model's window is cut further, see
+    ``_row_group_points``). A point lists its rows' ids in ``rowBlockIds``, which
+    readers use to cite the rows."""
+    # Documents passed through, and lists of rows that become one group each.
+    items: list = []
+    run: list[Document] = []
+
+    def flush() -> None:
+        if not run:
+            return
+        size = max(_rows_per_point(), -(-len(run) // _max_row_points_per_table()))
+        items.extend(run[i:i + size] for i in range(0, len(run), size))
+        run.clear()
+
+    for d in documents:
+        is_row = isinstance(d, Document) and d.metadata.get("blockType") == BlockType.TABLE_ROW.value
+        if is_row and run and run[-1].metadata.get(_ROW_GROUP_META) != d.metadata.get(_ROW_GROUP_META):
+            flush()
+        if is_row:
+            run.append(d)
+        else:
+            flush()
+            items.append(d)
+    flush()
+    groups = [g for g in items if isinstance(g, list)]
+    window = _prefetched(window, ["\n".join(d.page_content for d in g) for g in groups])
+    out: list = []
+    for item in items:
+        out.extend(_row_group_points(item, window) if isinstance(item, list) else [item])
+    return out
+
+
 def _bounded_documents(text: str, metadata: dict) -> list[Document]:
     """Documents for one piece of table or SQL text, split to the model's token
     ceiling. Table rows, summaries, DDL and view text are otherwise unbounded,
@@ -542,23 +849,30 @@ def _build_text_documents(
     virtual_record_id: str,
     org_id: str,
     language: str,
+    window: _Window | None = None,
 ) -> List[Document]:
     """Sentence-split each text block into embeddable Documents.
+
+    Under policies B and C a block over the model's window is cut into as few
+    windows as fit, all carrying the block's id and index.
 
     CPU-bound (regex/rule-based sentence segmentation); callers should run
     this via ``asyncio.to_thread`` to keep the event loop responsive.
     """
     documents: List[Document] = []
-    for block in text_blocks:
+    policy = _point_policy()
+    # Links stay in the stored block for citations; only the embedded
+    # text loses their targets.
+    block_texts = [anchor_text_only(b.data or "") for b in text_blocks]
+    if policy != "A":
+        window = _prefetched(window, [t for t in block_texts if t.strip()])
+    for block, block_text in zip(text_blocks, block_texts, strict=True):
         # A text block can legitimately carry no text. Blob storage strips keys
         # whose value is "" (_clean_top_level_empty_values), so a block that was
         # empty at parse time re-hydrates with data=None — which is why this only
         # shows up on the blob-backed reindex path and not during normal
         # indexing. There is nothing to embed either way: an empty document would
         # just be a useless retrieval unit.
-        # Links stay in the stored block for citations; only the embedded
-        # text loses their targets.
-        block_text = anchor_text_only(block.data or "")
         if not block_text.strip():
             continue
         metadata = {
@@ -569,6 +883,13 @@ def _build_text_documents(
             "isBlockGroup": False,
             "blockType": BlockType.TEXT.value,
         }
+
+        if policy != "A":
+            documents.extend(
+                Document(page_content=piece, metadata={**metadata, "isBlock": i == 0})
+                for i, piece in enumerate(_window_pieces(block_text, window))
+            )
+            continue
 
         # The character cap stays as a cheap upper guard for pathological
         # blocks; the ceiling that decides whether this can embed as one
@@ -634,6 +955,85 @@ def _record_context_line(record: "Record | None") -> str:
     return " — ".join(parts)
 
 
+def _code_header(context: str, item: object) -> str:
+    """``context · qualifiedName``: the line that leads every code unit."""
+    code_meta = getattr(item, "code_metadata", None)
+    qualified_name = (getattr(code_meta, "qualified_name", None) or "").strip()
+    return " · ".join(p for p in (context, qualified_name) if p)
+
+
+def code_documents_for_record(
+    code_blocks: list,
+    block_groups: list,
+    virtual_record_id: str,
+    org_id: str,
+    context: str = "",
+    member_blocks: list | None = None,
+) -> list[Document]:
+    """Everything a code record embeds: a unit per code block (``_build_code_documents``), a
+    header unit per class (``code_units.class_header_unit``) and the file's residue unit
+    (``code_residue_documents``). The benchmark builds its units with this same function, so what
+    it measures is what is shipped.
+
+    ``member_blocks`` is every block of the record when ``code_blocks`` and ``block_groups`` are only
+    the changed ones (a reconciliation): a re-indexed class still lists its unchanged members, and the
+    residue is rebuilt from the whole file.
+    """
+    documents = _build_code_documents(code_blocks, virtual_record_id, org_id, context)
+    members_from = code_blocks if member_blocks is None else member_blocks
+    documents.extend(code_residue_documents(members_from, virtual_record_id, org_id, context))
+    for group in block_groups:
+        if group.sub_type != GroupSubType.CODE_CLASS:
+            continue
+        unit = class_header_unit(group, group_members(group, members_from), _code_header(context, group),
+                                 token_len=_token_len, split_long_line=_split_to_token_ceiling)
+        if unit is None:
+            continue
+        documents.append(Document(page_content=unit.text, metadata={
+            "virtualRecordId": virtual_record_id,
+            "blockId": group.id,
+            "orgId": org_id,
+            "isBlock": False,
+            "isBlockGroup": True,
+            "blockGroupIndex": group.index,
+            "unitKind": "class",
+        }))
+    return documents
+
+
+def _is_code_block(block: object) -> bool:
+    kind = getattr(block, "type", None)
+    return str(getattr(kind, "value", kind)).lower() == BlockType.CODE.value
+
+
+def code_residue_block_id(virtual_record_id: str) -> str:
+    """The residue unit's ``blockId``: one per record, like the summary's, so a reconcile can replace it."""
+    return f"{virtual_record_id}{CODE_RESIDUE_BLOCK_ID_SUFFIX}"
+
+
+def code_residue_documents(blocks: list, virtual_record_id: str, org_id: str, context: str = "") -> list[Document]:
+    """The file's residue unit (``code_units.residue_pieces``), from all of its code blocks. Not a symbol: it
+    has no ``blockIndex``, and search_semantic and chat leave it out; the keyword index is what reads it."""
+    code = [b for b in blocks if _is_code_block(b)]
+    # A long line cut across two block units leaves the cut words whole in neither; the residue holds them.
+    cut = (w for unit in _code_units_of(code, context) for w in unit.cut_words)
+    pieces = residue_pieces(code, context, token_len=_token_len, split_long_line=_split_to_token_ceiling,
+                            cut_words=cut)
+    return [Document(page_content=piece, metadata={
+        "virtualRecordId": virtual_record_id,
+        "blockId": code_residue_block_id(virtual_record_id),
+        "orgId": org_id,
+        "isBlock": False,
+        "isBlockGroup": False,
+        "unitKind": RESIDUE_UNIT_KIND,
+    }) for piece in pieces]
+
+
+def _code_units_of(code_blocks: list, context: str) -> list:
+    return code_units(code_blocks, lambda block: _code_header(context, block), exceeds=_exceeds_token_ceiling,
+                      token_len=_token_len, split_long_line=_split_to_token_ceiling)
+
+
 def _build_code_documents(
     code_blocks: List,
     virtual_record_id: str,
@@ -647,14 +1047,8 @@ def _build_code_documents(
     contains. A symbol over the unit budget becomes several Documents, each
     repeating its signature; the block's subtokens go to keyword search only.
     """
-    def header_of(block: object) -> str:
-        code_meta = getattr(block, "code_metadata", None)
-        qualified_name = (getattr(code_meta, "qualified_name", None) or "").strip()
-        return " · ".join(p for p in (context, qualified_name) if p)
-
     documents: List[Document] = []
-    for unit in code_units(code_blocks, header_of, exceeds=_exceeds_token_ceiling,
-                           token_len=_token_len, split_long_line=_split_to_token_ceiling):
+    for unit in _code_units_of(code_blocks, context):
         metadata = {
             "virtualRecordId": virtual_record_id,
             "blockId": unit.block.id,
@@ -673,6 +1067,7 @@ def _process_text_blocks(
     text_blocks: List,
     virtual_record_id: str,
     org_id: str,
+    window: _Window | None = None,
 ) -> List[Document]:
     """Detect language and build embeddable Documents for a record's text blocks.
 
@@ -680,7 +1075,7 @@ def _process_text_blocks(
     ``asyncio.to_thread`` call (see call site in ``index_documents``).
     """
     language = _detect_record_language(text_blocks)
-    return _build_text_documents(text_blocks, virtual_record_id, org_id, language)
+    return _build_text_documents(text_blocks, virtual_record_id, org_id, language, window)
 
 
 def _storage_reconcile_enabled() -> bool:
@@ -715,6 +1110,7 @@ class _RecordPresence:
         self._present_since: float | None = None
 
     async def check(self) -> bool:
+        """Whether the record exists. A failed read raises: it must not read as a deletion."""
         async with self._lock:
             started = time.monotonic()
             if (
@@ -723,13 +1119,15 @@ class _RecordPresence:
             ):
                 return True
             record_doc = await self._graph_provider.get_document(
-                self._record_id, CollectionNames.RECORDS.value
+                self._record_id, CollectionNames.RECORDS.value, raise_on_error=True
             )
             self._present_since = started if record_doc is not None else None
             return record_doc is not None
 
 
 class VectorStore(Transformer):
+    # The embedding model's input window, once known; None until then and under policy A.
+    model_window: _Window | None = None
 
     def __init__(
         self,
@@ -811,8 +1209,9 @@ class VectorStore(Transformer):
         org_id = record.org_id
         block_ids_to_delete = None
         is_reconciliation = False
-        # A changed row's heading may be an unchanged block left out below.
+        # A changed row's heading, or a re-indexed class's members, may be unchanged blocks left out below.
         titles = table_titles(block_containers.blocks, block_containers.block_groups)
+        member_blocks = block_containers.blocks
 
         if (
             ctx.reconciliation_context
@@ -829,6 +1228,10 @@ class VectorStore(Transformer):
                 return True
 
             # Shallow copy with only blocks/block_groups that need indexing
+            if _point_policy() == "C":
+                blocks_to_index_ids = _with_whole_tables(
+                    block_containers.blocks, blocks_to_index_ids, any_deleted=bool(block_ids_to_delete)
+                )
             block_containers = BlocksContainer(
                 blocks=[b for b in block_containers.blocks if b.id in blocks_to_index_ids],
                 block_groups=[
@@ -846,6 +1249,7 @@ class VectorStore(Transformer):
             is_reconciliation=is_reconciliation,
             record=record,
             titles=titles,
+            member_blocks=member_blocks,
         )
 
     # ------------------------------------------------------------------
@@ -965,6 +1369,31 @@ class VectorStore(Transformer):
         # self.dense_embeddings is still None and the first use surfaces as an
         # AttributeError far from its cause, after the delete below has already
         # dropped the old summary block.
+        collection_name = await self._collection_with_model(org_id, record)
+
+        summary_block_id_set = {f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"}
+        with stage("vector.delete"):
+            await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name, org_id=org_id)
+        # The stamp is computed under the organisation of the record (enforced context checks read the ambient one), so a caller
+        # with none bound gets the one it names; a context already bound is left as it is.
+        try:
+            current_or_system()
+            org_scope: contextlib.AbstractContextManager = contextlib.nullcontext()
+        except MissingOrgContext:
+            org_scope = for_org(org_id, job="index_record_summary") if org_id else contextlib.nullcontext()
+        with org_scope:
+            tokens = await self._bind_membership(virtual_record_id, org_id=org_id)
+            try:
+                await self._process_document_chunks([summary_doc], record_id, collection_name)
+            finally:
+                reset_membership_context(tokens)
+            # The membership and the stamp were read before the embedding: what changed meanwhile is applied now, as for the other points
+            await self._resync_membership_after_write(virtual_record_id, record_id)
+        self.logger.debug("✅ Indexed record summary for record %s", record_id)
+
+    async def _collection_with_model(self, org_id: str, record: Optional["Record"]) -> str:
+        """The record's collection, with the embedding model built on this instance first: a path
+        outside the index phase (enrichment, a backfill) can reach here without it."""
         with stage("embed.setup"):
             if self.dense_embeddings is None:
                 try:
@@ -974,18 +1403,101 @@ class VectorStore(Transformer):
                         "Failed to get embedding model instance",
                         details={"error": str(e)},
                     ) from e
+            return await self._ensure_collection(org_id, record, self.embedding_size)
 
-            collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
+    async def index_class_units(
+        self,
+        record_id: str,
+        virtual_record_id: str,
+        org_id: str,
+        block_containers: BlocksContainer,
+        record: object | None = None,
+        stored_now: Callable[[], Awaitable[BlocksContainer | None]] | None = None,
+    ) -> int:
+        """Embed only the class header units and the residue unit of a stored record; returns how many
+        were written.
 
-        summary_block_id_set = {f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"}
-        with stage("vector.delete"):
-            await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name)
-        tokens = await self._bind_membership(virtual_record_id)
+        For records indexed before those units existed (the class-units backfill). The record's block
+        points, its blob and its pipeline stages are left as they are; point ids are derived from the
+        unit, so a second call overwrites rather than duplicates. ``record`` needs only the fields the
+        collection and the units' context line read (connector, name, external id).
+
+        ``stored_now`` is asked once the units are written: the stored record as it is now. Units a reindex
+        superseded meanwhile are dropped again and not counted (``_drop_superseded_units``).
+        """
+        groups = [g for g in block_containers.block_groups if g.sub_type == GroupSubType.CODE_CLASS]
+        context = _record_context_line(record)
+        documents = await asyncio.to_thread(
+            code_documents_for_record,
+            [], groups, virtual_record_id, org_id, context, member_blocks=block_containers.blocks,
+        )
+        if not documents:
+            return 0
+        collection_name = await self._collection_with_model(org_id, record)
+        tokens = await self._bind_membership(virtual_record_id, org_id=org_id)
         try:
-            await self._process_document_chunks([summary_doc], record_id, collection_name)
+            await self._process_document_chunks(documents, record_id, collection_name)
+            stale = await self._drop_superseded_units(
+                documents, groups, await stored_now(), record_id, virtual_record_id, org_id, context, collection_name,
+            ) if stored_now else set()
         finally:
             reset_membership_context(tokens)
-        self.logger.debug("✅ Indexed record summary for record %s", record_id)
+        # What changed in the membership while the units were embedded is applied now, as for the other points.
+        await self._resync_membership_after_write(virtual_record_id, record_id)
+        return sum(d.metadata["blockId"] not in stale for d in documents)
+
+    async def _drop_superseded_units(
+        self, documents: list[Document], groups: list, now: BlocksContainer | None, record_id: str,
+        virtual_record_id: str, org_id: str, context: str, collection_name: str,
+    ) -> set[str]:
+        """Remove the units just written that the stored record ``now`` no longer holds; returns their ids.
+
+        A class id it no longer holds is removed (a kept id's unit stays: no reconcile re-embeds an
+        unchanged class), and a residue built from older text is replaced by the current one.
+        """
+        stale = {g.id for g in groups} - {
+            g.id for g in (now.block_groups if now else []) if g.sub_type == GroupSubType.CODE_CLASS}
+        residue = [d for d in documents if d.metadata.get("unitKind") == RESIDUE_UNIT_KIND]
+        residue_now = await asyncio.to_thread(
+            code_residue_documents, now.blocks, virtual_record_id, org_id, context) if now else []
+        if [d.page_content for d in residue_now] != [d.page_content for d in residue]:
+            stale.add(code_residue_block_id(virtual_record_id))
+        if stale:
+            # Nothing else would remove them: no stored metadata names these ids any more.
+            await self.delete_blocks_by_ids(stale, virtual_record_id, collection_name, org_id=org_id)
+        if residue_now and code_residue_block_id(virtual_record_id) in stale:
+            await self._process_document_chunks(residue_now, record_id, collection_name)
+        return stale
+
+    async def virtual_records_with_residue_units(self, records: list[tuple[str, str, object]]) -> set[str]:
+        """Which of ``records`` ((org id, virtual record id, record)) already have a residue unit, so were indexed
+        by code that writes it and the class units both: one scroll per collection for all of them, never one
+        query per record. It filters on ``blockId`` and ``virtualRecordId``, as block deletes do, so it needs no
+        payload index of its own."""
+        by_collection: dict[str, list[str]] = {}
+        for org_id, virtual_record_id, record in records:
+            name = await self._collection_with_model(org_id, record)
+            by_collection.setdefault(name, []).append(virtual_record_id)
+        found: set[str] = set()
+        for name, virtual_record_ids in by_collection.items():
+            scroll_filter = await self.vector_db_service.filter_collection(
+                must={"virtualRecordId": virtual_record_ids,
+                      "blockId": [code_residue_block_id(v) for v in virtual_record_ids]},
+            )
+            offset = None
+            while True:
+                page = await self.vector_db_service.scroll(
+                    collection_name=name, scroll_filter=scroll_filter, limit=_RESIDUE_UNIT_SCAN_PAGE,
+                    offset=offset, with_payload=[VIRTUAL_RECORD_ID_FIELD],
+                )
+                for point in page.points or []:
+                    vrid = VectorChunkPayload.from_dict(point.payload or {}).metadata.virtualRecordId
+                    if vrid:
+                        found.add(vrid)
+                if not page.next_offset or page.next_offset == offset:
+                    break
+                offset = page.next_offset
+        return found
 
     # ------------------------------------------------------------------
     # Collection resolution (delegates lifecycle to CollectionRegistry so a
@@ -1137,6 +1649,7 @@ class VectorStore(Transformer):
                 e,
                 exc_info=True,
             )
+            await mark_scope_stale(self.vector_db_service, self.collection_locator, virtual_record_id, self.logger)
 
     async def _record_is_gone(self, record_id: str) -> bool:
         """True only when the graph positively reports the record as absent.
@@ -1157,7 +1670,7 @@ class VectorStore(Transformer):
             return False
 
     async def _bind_membership(
-        self, virtual_record_id: str, record: Optional["Record"] = None
+        self, virtual_record_id: str, record: Optional["Record"] = None, org_id: str | None = None
     ):
         """Resolve VRID membership and bind it for the points about to be written.
 
@@ -1190,8 +1703,15 @@ class VectorStore(Transformer):
                 "vector filters until backfilled",
                 virtual_record_id,
             )
+        # Scope fields (permission model): written only while ACL_SCOPE_FIELDS is on. A failure never fails indexing; the
+        # point is marked stale and the post-index resync or the back-fill recomputes it.
+        scope = None
+        if scope_fields_enabled():
+            # the summary point has no record in hand: its caller names the org, then the ambient one
+            org_id = getattr(record, "org_id", None) or org_id or scope_org_id()
+            scope = await scope_fields_for_state(self.graph_provider, state, org_id, self.logger) if org_id else STALE_SCOPE
         return set_membership_context(
-            connector_ids, record_group_ids, root_record_group_ids
+            connector_ids, record_group_ids, root_record_group_ids, scope
         )
 
     # ------------------------------------------------------------------
@@ -1275,6 +1795,7 @@ class VectorStore(Transformer):
 
         await self._ensure_sparse_embeddings()
 
+        self.model_window = await _model_window(dense_embeddings)
         self.dense_embeddings = dense_embeddings
         self.embedding_provider = provider
         self.embedding_size = embedding_size
@@ -1364,14 +1885,15 @@ class VectorStore(Transformer):
         )
 
     async def delete_blocks_by_ids(
-        self, block_ids: set, virtual_record_id: str, collection_name: str
+        self, block_ids: set, virtual_record_id: str, collection_name: str, *, org_id: str | None = None,
     ) -> None:
         """Delete embeddings for specific block IDs scoped to a virtual record."""
         if not block_ids:
             return
+        org_id = org_for_filter(org_id, match_bound=True)
         try:
             filter_dict = await self.vector_db_service.filter_collection(
-                must={"blockId": list(block_ids), "virtualRecordId": virtual_record_id}
+                must={"orgId": org_id, "blockId": list(block_ids), "virtualRecordId": virtual_record_id}
             )
             await self.vector_db_service.delete_points(collection_name, filter_dict)
             self.logger.info(
@@ -1388,10 +1910,11 @@ class VectorStore(Transformer):
     # Embeddings deletion (full record)
     # ------------------------------------------------------------------
 
-    async def delete_embeddings(self, virtual_record_id: str, collection_name: str) -> None:
+    async def delete_embeddings(self, virtual_record_id: str, collection_name: str, *, org_id: str | None = None) -> None:
+        org_id = org_for_filter(org_id, match_bound=True)
         try:
             filter_dict = await self.vector_db_service.filter_collection(
-                must={"virtualRecordId": virtual_record_id}
+                must={"orgId": org_id, "virtualRecordId": virtual_record_id}
             )
             await self.vector_db_service.delete_points(collection_name, filter_dict)
             self.logger.debug(
@@ -1409,7 +1932,7 @@ class VectorStore(Transformer):
         """Delete all vector points for a record, resolving the collection internally."""
         ctx = self._record_context(org_id, record)
         collection_name = self.collection_registry.resolve_write_collection(ctx)
-        await self.delete_embeddings(virtual_record_id, collection_name)
+        await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
 
     # ------------------------------------------------------------------
     # Image embedding (provider dispatch via MultimodalEmbeddingFactory)
@@ -1487,7 +2010,7 @@ class VectorStore(Transformer):
         Guard: skip entirely if the record was deleted mid-flight.
         """
         record_doc = await self.graph_provider.get_document(
-            record_id, CollectionNames.RECORDS.value
+            record_id, CollectionNames.RECORDS.value, raise_on_error=True
         )
         if record_doc is None:
             self.logger.warning(
@@ -1669,13 +2192,16 @@ class VectorStore(Transformer):
                 for doc in documents
             ])
 
+        # Added after the id is derived from the metadata, so it never changes an id.
+        attempt = current_attempt()
+        stamp = (attempt.stamp if attempt is not None else None) or {}
         points: List[VectorPoint] = [
             VectorPoint(
                 id=deterministic_point_id(doc.metadata, doc.page_content),
                 dense_vector=dense,
                 sparse_vector=sparse,
                 payload=vector_point_payload(
-                    {k: v for k, v in doc.metadata.items() if k != _SPARSE_EXTRA},
+                    {**{k: v for k, v in doc.metadata.items() if k != _SPARSE_EXTRA}, **stamp},
                     doc.page_content,
                 ),
             )
@@ -1759,6 +2285,146 @@ class VectorStore(Transformer):
                     ) from result
 
     # ------------------------------------------------------------------
+    # Resumable embedding
+    # ------------------------------------------------------------------
+
+    def _embed_key(self) -> str:
+        """Identity of the embedding setup: points written under another one must not be kept beside these."""
+        parts = (
+            self.embedding_provider or "",
+            self.model_name or "",
+            str(self.embedding_size),
+            str(bool(self.is_multimodal_embedding)),
+            SparseEmbedder.__name__ if self._capabilities.supports_sparse_vectors else "",
+            _point_policy(),
+            str(_rows_per_point()),
+            str(_max_row_points_per_table()),
+        )
+        return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:16]
+
+    async def _existing_ids(self, collection_name: str, ids: list[str]) -> set[str]:
+        found: set[str] = set()
+        for start in range(0, len(ids), _EXISTENCE_CHUNK):
+            found |= await self.vector_db_service.existing_point_ids(
+                collection_name, ids[start:start + _EXISTENCE_CHUNK]
+            )
+        return found
+
+    async def _write_embed_marker(self, record_id: str, fields: dict[str, Any]) -> None:
+        if not await self.graph_provider.update_node(record_id, CollectionNames.RECORDS.value, fields):
+            raise IndexingError(
+                f"Could not record the embedding progress of record {record_id}",
+                details={"record_id": record_id},
+            )
+
+    async def _embed_resumably(
+        self,
+        attempt: EmbedAttempt,
+        documents: list[Document],
+        record_id: str,
+        virtual_record_id: str,
+        collection_name: str,
+        org_id: str | None,
+    ) -> None:
+        """Embed ``documents`` so that a retry of this event embeds only what is missing.
+
+        The marker is written before the first point, and only then are old points removed, so
+        whatever a cut leaves behind is described by a marker. A retry that is the same event,
+        revision and embedding setup, and needs the same points, keeps the points that exist and
+        embeds the rest; anything else is today's full replace. Errors after the first write never
+        remove points: they fail the attempt, and the next one converges.
+        """
+        point_ids = [deterministic_point_id(d.metadata, d.page_content) for d in documents]
+        digest = digest_of(point_ids)
+        key = self._embed_key()
+        prior = attempt.prior
+        resuming = bool(
+            attempt.resume
+            and prior.get(EMBED_DIGEST) == digest
+            and prior.get(EMBED_KEY) == key
+        )
+        if resuming and not self.collection_registry.fence_ready(collection_name):
+            self.logger.warning(
+                "Record %s: the revision and setup fields of collection %s are not indexed; "
+                "embedding everything again", record_id, collection_name,
+            )
+            resuming = False
+        if attempt.resume and not resuming:
+            self.logger.warning(
+                "Record %s: the stored blocks or the embedding setup differ from the interrupted run "
+                "(digest %s -> %s, key %s -> %s); embedding everything again",
+                record_id, prior.get(EMBED_DIGEST), digest, prior.get(EMBED_KEY), key,
+            )
+        attempt.stamp = {POINT_REV: attempt.rev, POINT_KEY: key}
+
+        if not resuming:
+            await self._write_embed_marker(record_id, {
+                EMBED_VRID: virtual_record_id,
+                EMBED_REV: attempt.rev,
+                EMBED_KEY: key,
+                EMBED_DIGEST: digest,
+                EMBED_TOTAL: len(set(point_ids)),
+                EMBED_DELIVERY_ID: attempt.delivery_id,
+                EMBED_STARTED_MS: int(time.time() * 1000),
+            })
+            with stage("vector.delete"):
+                await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
+            todo = documents
+        else:
+            with stage("vector.exists"):
+                present = await self._existing_ids(collection_name, list(dict.fromkeys(point_ids)))
+            todo = [d for d, pid in zip(documents, point_ids) if pid not in present]
+            self.logger.info(
+                "Record %s: resuming embedding, %d of %d points exist, %d to embed",
+                record_id, len(present), len(set(point_ids)), len(todo),
+            )
+
+        if todo:
+            await self._process_document_chunks(todo, record_id, collection_name)
+
+        if not resuming:
+            return
+        await self._fence_and_verify(
+            attempt, key, point_ids, record_id, virtual_record_id, collection_name, org_id
+        )
+
+    async def _fence_and_verify(
+        self,
+        attempt: EmbedAttempt,
+        key: str,
+        point_ids: list[str],
+        record_id: str,
+        virtual_record_id: str,
+        collection_name: str,
+        org_id: str | None,
+    ) -> None:
+        """End of a resumed run: drop points of another revision or setup, and require every wanted point.
+
+        A pod that lost its lease can still land a write after this run began, and points written
+        before the revision and setup were recorded on them carry neither field; a missing field
+        counts as different. Both deletes pin the org and the virtual record.
+        """
+        org = org_for_filter(org_id, match_bound=True)
+        with stage("vector.delete"):
+            for field, value in ((POINT_REV, attempt.rev), (POINT_KEY, key)):
+                stale = await self.vector_db_service.filter_collection(
+                    must={"orgId": org, "virtualRecordId": virtual_record_id},
+                    must_not={field: value},
+                )
+                await self.vector_db_service.delete_points(collection_name, stale)
+        wanted = list(dict.fromkeys(point_ids))
+        with stage("vector.exists"):
+            present = await self._existing_ids(collection_name, wanted)
+        if len(present) != len(wanted):
+            if await self._record_is_gone(record_id):
+                return
+            raise IndexingError(
+                f"Embedding of record {record_id} is incomplete: {len(wanted) - len(present)} "
+                f"of {len(wanted)} points are missing",
+                details={"record_id": record_id},
+            )
+
+    # ------------------------------------------------------------------
     # Embedding creation entry point
     # ------------------------------------------------------------------
 
@@ -1768,6 +2434,7 @@ class VectorStore(Transformer):
         record_id: str,
         virtual_record_id: str,
         collection_name: str,
+        org_id: str | None = None,
     ) -> None:
         if not chunks:
             raise EmbeddingError("No chunks provided for embedding creation")
@@ -1781,9 +2448,33 @@ class VectorStore(Transformer):
             else:
                 image_chunks.append(chunk)
 
+        attempt = current_attempt()
+        if (
+            attempt is not None
+            and attempt.eligible
+            and attempt.vrid == virtual_record_id
+            and langchain_docs
+            and not image_chunks
+        ):
+            try:
+                await self._embed_resumably(
+                    attempt, langchain_docs, record_id, virtual_record_id, collection_name, org_id
+                )
+            except NonRetryableError:
+                raise
+            except (IndexingError, VectorStoreError):
+                raise
+            except Exception as e:
+                raise VectorStoreError(
+                    "Failed to store documents in vector store",
+                    details={"error": str(e)},
+                ) from e
+            self.logger.info(f"Embeddings created and stored for record '{record_id}'")
+            return
+
         # Delete existing embeddings first (full replace, non-reconciliation path)
         with stage("vector.delete"):
-            await self.delete_embeddings(virtual_record_id, collection_name)
+            await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
 
         self.logger.debug(
             f"📊 Processing {len(langchain_docs)} text + {len(image_chunks)} image chunks"
@@ -1823,6 +2514,7 @@ class VectorStore(Transformer):
         is_reconciliation: bool = False,
         record: Optional["Record"] = None,
         titles: dict[int, str] | None = None,
+        member_blocks: list | None = None,
     ) -> bool | None:
         try:
             with stage("embed.setup"):
@@ -1850,7 +2542,7 @@ class VectorStore(Transformer):
                 summary_block_id_set = {
                     f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"
                 }
-                await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name)
+                await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name, org_id=org_id)
 
                 if record is not None:
                     semantic_metadata = getattr(record, "semantic_metadata", None)
@@ -1861,9 +2553,22 @@ class VectorStore(Transformer):
                         if summary_doc:
                             await self._process_document_chunks([summary_doc], record_id, collection_name)
 
+                # The residue spans the whole file, so any change replaces it. The code documents below
+                # rebuild it; with no code block or class re-indexed (only deletions) it is rebuilt here.
+                code_members = [b for b in member_blocks or [] if _is_code_block(b)]
+                if code_members:
+                    await self.delete_blocks_by_ids(
+                        {code_residue_block_id(virtual_record_id)}, virtual_record_id, collection_name, org_id=org_id)
+                    if not any(map(_is_code_block, blocks)) and not any(
+                            g.sub_type == GroupSubType.CODE_CLASS for g in block_groups):
+                        residue = await asyncio.to_thread(code_residue_documents, code_members, virtual_record_id,
+                                                          org_id, _record_context_line(record))
+                        if residue:
+                            await self._process_document_chunks(residue, record_id, collection_name)
+
             if not blocks and not block_groups:
                 if block_ids_to_delete:
-                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name)
+                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id)
                 await self._cleanup_orphaned_embeddings_if_needed(
                     record_id, virtual_record_id, org_id, record
                 )
@@ -1917,12 +2622,15 @@ class VectorStore(Transformer):
 
             documents_to_embed: List = []
 
-            # ── Code blocks ──
-            if code_blocks:
+            # ── Code blocks and classes ──
+            class_groups = [g for g in block_groups if g.sub_type == GroupSubType.CODE_CLASS]
+            if code_blocks or class_groups:
+                # Tokenizing every block is CPU work, kept off the loop the consumers share.
                 documents_to_embed.extend(
-                    _build_code_documents(
-                        code_blocks, virtual_record_id, org_id,
-                        _record_context_line(record),
+                    await asyncio.to_thread(
+                        code_documents_for_record,
+                        code_blocks, class_groups, virtual_record_id, org_id,
+                        _record_context_line(record), member_blocks=member_blocks,
                     )
                 )
                 self.logger.info("✅ Added code documents for embedding")
@@ -1933,7 +2641,8 @@ class VectorStore(Transformer):
                     with stage("chunk", detail=f"{len(text_blocks)} text blocks"):
                         text_documents = await asyncio.wait_for(
                             asyncio.to_thread(
-                                _process_text_blocks, text_blocks, virtual_record_id, org_id
+                                _process_text_blocks, text_blocks, virtual_record_id, org_id,
+                                self.model_window,
                             ),
                             timeout=_TEXT_PROCESSING_TIMEOUT_S,
                         )
@@ -2115,6 +2824,7 @@ class VectorStore(Transformer):
                             "isBlock": True,
                             "isBlockGroup": False,
                             "blockType": BlockType.TABLE_ROW.value,
+                            **_row_group_meta(block.parent_index),
                         },
                     ))
                     sql_rows_embedded += 1
@@ -2164,8 +2874,15 @@ class VectorStore(Transformer):
                                     "isBlock": True,
                                     "isBlockGroup": False,
                                     "blockType": BlockType.TABLE_ROW.value,
+                                    **_row_group_meta(block.parent_index),
                                 },
                             ))
+
+            if _point_policy() == "C":
+                # Counting tokens is a blocking request to the embedding server.
+                documents_to_embed = await asyncio.to_thread(
+                    _group_table_row_documents, documents_to_embed, self.model_window
+                )
 
             # Record summary (only on fresh full index, not reconciliation/partial update)
             if record is not None and not (is_reconciliation or block_ids_to_delete):
@@ -2176,7 +2893,7 @@ class VectorStore(Transformer):
             if not documents_to_embed:
                 self.logger.warning("⚠️ No documents to embed after filtering by block type")
                 if block_ids_to_delete:
-                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name)
+                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id)
                 await self._cleanup_orphaned_embeddings_if_needed(
                     record_id, virtual_record_id, org_id, record
                 )
@@ -2190,7 +2907,7 @@ class VectorStore(Transformer):
                 # sit beside their replacements, so they go first.
                 reindexed_ids = {b.id for b in blocks} | {bg.id for bg in block_groups}
                 with stage("vector.delete"):
-                    await self.delete_blocks_by_ids(reindexed_ids, virtual_record_id, collection_name)
+                    await self.delete_blocks_by_ids(reindexed_ids, virtual_record_id, collection_name, org_id=org_id)
                 if block_ids_to_delete:
                     # A block id in both sets was just replaced; deleting it now would drop
                     # the new points.
@@ -2206,12 +2923,12 @@ class VectorStore(Transformer):
                     )
                     await self._store_image_points(points, collection_name)
             else:
-                await self._create_embeddings(documents_to_embed, record_id, virtual_record_id, collection_name)
+                await self._create_embeddings(documents_to_embed, record_id, virtual_record_id, collection_name, org_id=org_id)
 
             if block_ids_to_delete:
                 self.logger.debug(f"📊 Deleting {len(block_ids_to_delete)} removed blocks")
                 with stage("vector.delete"):
-                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name)
+                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id)
 
             self.logger.debug(
                 f"✅ Indexing complete for record {record_id}: "

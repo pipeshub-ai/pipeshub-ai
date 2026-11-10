@@ -33,6 +33,23 @@ export const DocumentIdParams = z.object({
   }),
 });
 
+/**
+ * `GET /internal/:documentId`: `verify=1` (or `true`) asks for the stored object's real size and ETag and a trusted fingerprint.
+ * Any other value is refused, so a typo is not read as "unverified".
+ */
+export const DocumentInfoParams = z.object({
+  params: z.object({
+    documentId: documentIdSchema,
+  }),
+  headers: Headers,
+  query: z.object({
+    verify: z.enum(['1', 'true']).optional(),
+  }),
+  body: z.object({
+    fileBuffer: z.any().optional(),
+  }),
+});
+
 // Purges delete for good, so only a well-formed id may reach the query.
 export const PurgeDocumentParams = z.object({
   params: z.object({
@@ -257,6 +274,8 @@ export const DocumentIdParamsWithVersion = z.object({
           message: `expirationTimeInSeconds must be between 1 and ${MAX_SIGNED_URL_TTL_SECONDS} (7 days)`,
         },
       ),
+    // Local storage only: the file identity (ETag) the caller verified; a download of any other file identity answers 412.
+    ifMatch: z.string().min(1).max(200).optional(),
   }),
 });
 

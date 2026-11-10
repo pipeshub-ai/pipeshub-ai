@@ -9,32 +9,41 @@ connector needs a special lookup method, one row in the table.
 Resolution order for each identifier:
 1. ``resolve_canonical_ref`` → ``RefKind`` + optional connector hint.
 2. Walk ``STRATEGY_TABLE[kind]`` in order; execute each strategy over the
-   catalog-filtered connector set; stop on first non-empty result.
+   catalog-filtered connector set; stop on the first that yields a match the
+   user may open and the turn may read (step 5), so a ticket denied or out of
+   the turn's scope does not end the search.
 3. If the input was a URL and canonical strategies all missed, fall back to
-   ``get_record_by_weburl(normalized)`` then ``(raw)`` — so connectors with
-   no dedicated extractor still resolve via their indexed ``webUrl``.
-4. Bare non-URL inputs that miss every strategy fall back to
-   ``get_record_by_external_id`` across the full catalog.
-5. Every candidate passes ``get_knowledge_hub_node_access`` (org + user ACL).
+   ``get_records_by_weburls(normalized)`` then ``(raw)`` — so connectors with
+   no dedicated extractor still resolve via their indexed ``webUrl``. Every
+   record at the URL is a candidate: several connectors can sync one page.
+4. Bare non-URL inputs that miss every strategy fall back to a name match
+   over the catalog's knowledge bases: a KB upload has no source key, so the
+   ticket key or title it is about is only in its name.
+5. Every candidate passes ``get_knowledge_hub_node_access`` (org + user ACL)
+   and the caller's ``within_scope`` (what the turn is limited to).
 
-Lookup scope is the **org-wide user-accessible catalog** (not restricted to
-the agent/filter scope) so a Jira key found inside a Confluence page can
-resolve even when the session filter is scoped to Confluence only.
-Agent-scoped connectors are sorted first for performance; out-of-scope
-matches are labelled by connector name in the output.
+Lookup searches the **org-wide user-accessible catalog**; agent-scoped
+connectors are sorted first for performance.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
+    Connectors,
 )
+from app.connectors.sources.localKB.api.knowledge_hub_models import NodeType
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+    KnowledgeHubService,
+)
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import Record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
@@ -42,6 +51,9 @@ from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurre
 from .catalog import ConnectorCatalog, ConnectorInfo
 from .identifiers import CanonicalRef, RefKind, normalize_weburl, resolve_canonical_ref
 from .models import LookupMatch, LookupResult
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +70,7 @@ class LookupStrategy:
     method:
         "external_id" — get_record_by_external_id(connector_id, value)
         "issue_key"   — get_record_by_issue_key(connector_id, value)
-        "weburl"      — get_record_by_weburl(value, org_id)
+        "weburl"      — get_records_by_weburls([value], org_id), each row read by id
         "slack_ts"    — find_slack_burst_record_by_ts(connector_id, group, ts),
                         in the reply's thread group, else the channel
 
@@ -117,6 +129,25 @@ STRATEGY_TABLE: dict[RefKind, list[LookupStrategy]] = {
     ],
 }
 
+# The name search matches substrings, so a key inside longer ones (HELP-3307 in
+# HELP-33071, HELP-33072, ...) can push its own record past the first page. Pages
+# are read by number, each walking from the first, so the walk is capped.
+_KB_NAME_SEARCH_LIMIT = 200
+_KB_NAME_SEARCH_PAGES = 5
+# Matches read per identifier: each costs a record read and an ACL check.
+_KB_NAME_MATCH_LIMIT = 10
+# Records read per URL, for the same reason. Past it, a URL with more copies than this
+# misses a copy the user can open only when none of the first ones is readable.
+_WEBURL_MATCH_LIMIT = 10
+
+
+def _holds_token(name: str, token: str) -> bool:
+    """Whether ``token`` is in ``name`` with no letter or digit run into it.
+
+    Underscores separate too: upload names join their parts with them.
+    """
+    return re.search(rf"(?<![^\W_]){re.escape(token)}(?![^\W_])", name, re.IGNORECASE) is not None
+
 
 # ---------------------------------------------------------------------------
 # Match building
@@ -129,7 +160,7 @@ def _record_to_match(
     """Convert a record dict/object to a LookupMatch; None on bad data.
 
     Provider lookups (``get_record_by_issue_key``/``get_record_by_external_id``/
-    ``get_record_by_weburl``) return the Pydantic ``Record`` model from
+    ``get_record_by_id``) return the Pydantic ``Record`` model from
     ``app.models.entities``, which is snake_case throughout — this branches
     on ``isinstance(record, Record)`` first (rather than the previous
     duck-typed ``hasattr(record, "id")``, which matched but then read
@@ -194,9 +225,16 @@ class RecordResolver:
         connector_name_hint: str | None = None,
         frontend_url: str | None = None,
         excluded_app_ids: frozenset[str] = frozenset(),
+        within_scope: Callable[[list[str]], Awaitable[set[str]]] | None = None,
     ) -> None:
         self._graph = graph_provider
+        self._within_scope = within_scope
         self._excluded_app_ids = excluded_app_ids
+        self._hub = KnowledgeHubService(
+            logger=logger,
+            graph_provider=graph_provider,
+            excluded_app_ids=excluded_app_ids,
+        )
         self._catalog = catalog
         self._org_id = org_id
         self._user_id = user_id
@@ -226,6 +264,8 @@ class RecordResolver:
 
         seen_ids: set[str] = set()
         for ident, result in zip(identifiers, per_ident):
+            if isinstance(result, PermissionVerificationUnavailableError):
+                raise result                      # the scope could not be read: not the same as "not found"
             if isinstance(result, BaseException):
                 logger.warning("resolve_one failed for %r: %s", ident, result)
                 not_found.append(ident)
@@ -269,9 +309,24 @@ class RecordResolver:
             return [], []
 
         logger.debug("resolve_one(%r): ref=%s/%s hint=%s", raw, ref.kind, ref.value, ref.connector_hint)
-        candidates, searched = await self._fetch_candidates(raw, ref)
-        logger.debug("resolve_one(%r): %d candidate(s), searched=%s", raw, len(candidates), searched)
+        matches, searched = await self._fetch_candidates(raw, ref)
+        logger.debug("resolve_one(%r): %d match(es), searched=%s", raw, len(matches), searched)
+        return matches, searched
 
+    async def _admitted(self, raw: str, candidates: list[LookupMatch]) -> list[LookupMatch]:
+        """The candidates the user may open and the turn may read."""
+        gated = await self._gated(raw, candidates)
+        inside = set(await self._in_scope([m.id for m in gated]))
+        return [m for m in gated if m.id in inside]
+
+    async def _in_scope(self, ids: list[str]) -> list[str]:
+        if self._within_scope is None or not ids:
+            return ids
+        inside = await self._within_scope(ids)
+        return [i for i in ids if i in inside]
+
+    async def _gated(self, raw: str, candidates: list[LookupMatch]) -> list[LookupMatch]:
+        """The candidates the user may open (``get_knowledge_hub_node_access``), with gaps filled from the node."""
         gated: list[LookupMatch] = []
         for match in candidates:
             node = await self._graph.get_knowledge_hub_node_access(
@@ -280,7 +335,10 @@ class RecordResolver:
                 org_id=self._org_id,
                 folder_mime_types=self._folder_mime_types,
             )
-            if node and await self._in_excluded_app(match.id):
+            if node and node.get("isPlaceholder") is True:
+                # Listed for browsing, but not a record to open: the same answer as for one the user cannot read.
+                logger.debug("resolve_one(%r): candidate %s is a placeholder", raw, match.id)
+            elif node and await self._in_excluded_app(match.id):
                 logger.debug("resolve_one(%r): candidate %s is switched-off demo data", raw, match.id)
             elif node:
                 if not match.record_type:
@@ -297,7 +355,7 @@ class RecordResolver:
                     "resolve_one(%r): candidate %s denied/missing by ACL", raw, match.id,
                 )
 
-        return gated, searched
+        return gated
 
     async def _in_excluded_app(self, record_id: str) -> bool:
         if not self._excluded_app_ids:
@@ -308,7 +366,7 @@ class RecordResolver:
     async def _fetch_candidates(
         self, raw: str, ref: CanonicalRef
     ) -> tuple[list[LookupMatch], list[str]]:
-        """Walk the strategy table for *ref*; return (matches, searched-type-names)."""
+        """Walk the strategy table for *ref*; return (admitted matches, searched-type-names)."""
         is_url = raw.startswith(("http://", "https://"))
         strategies = STRATEGY_TABLE.get(ref.kind, [])
 
@@ -332,7 +390,7 @@ class RecordResolver:
             searched_types.append(type_label)
 
             matches = await self._execute_strategy(strategy.method, connectors, ref, raw)
-            all_matches.extend(matches)
+            all_matches.extend(await self._admitted(raw, matches))
             if all_matches:
                 break  # first successful strategy wins
 
@@ -340,12 +398,14 @@ class RecordResolver:
         if is_url and not all_matches and ref.kind != RefKind.WEB_URL:
             searched_types.append("weburl-fallback")
             url_matches = await self._by_weburl(ref.value if ref.kind == RefKind.WEB_URL else raw)
-            all_matches.extend(url_matches)
+            all_matches.extend(await self._admitted(raw, url_matches))
 
-        # Bare external-id fallback: if non-URL input missed its canonical path
-        if not is_url and not all_matches and ref.kind == RefKind.EXTERNAL_ID:
-            # Already covered by the strategy table; this is a no-op guard
-            pass
+        # A KB upload has no source key: the key or title it is about is in its name.
+        kbs = [c for c in self._catalog.connectors if c.type == Connectors.KNOWLEDGE_BASE.value]
+        if kbs and not is_url and not all_matches:
+            searched_types.append(Connectors.KNOWLEDGE_BASE.value)
+            # Already limited to the turn's scope, before the match cap.
+            all_matches.extend(await self._gated(raw, await self._by_kb_name(ref.value, kbs, raw)))
 
         return all_matches, searched_types
 
@@ -409,10 +469,35 @@ class RecordResolver:
         m = _record_to_match(rec, raw, self._frontend_url)
         return [m] if m and m.id else []
 
+    async def _by_kb_name(
+        self, name_part: str, kbs: list[ConnectorInfo], raw: str,
+    ) -> list[LookupMatch]:
+        """Records of ``kbs`` the user can open whose name holds ``name_part``
+        as a whole token (``2019-04-02_HELP-3307-printer-jam.md`` for HELP-3307)."""
+        ids: list[str] = []
+        for page_number in range(1, _KB_NAME_SEARCH_PAGES + 1):
+            page = await self._hub.get_nodes(
+                user_id=self._user_id,
+                org_id=self._org_id,
+                q=name_part,
+                connector_ids=[kb.id for kb in kbs],
+                node_types=[NodeType.RECORD.value],
+                page=page_number,
+                limit=_KB_NAME_SEARCH_LIMIT,
+                sort_by="name",
+                sort_order="asc",
+                flattened=True,
+            )
+            ids += await self._in_scope([item.id for item in page.items if _holds_token(item.name, name_part)])
+            if len(ids) >= _KB_NAME_MATCH_LIMIT or not (page.pagination and page.pagination.hasNext):
+                break
+        found = await asyncio.gather(*(self._by_record_id(i, raw) for i in ids[:_KB_NAME_MATCH_LIMIT]))
+        return [m for matches in found for m in matches]
+
     async def _typed(self, rec: Record) -> Record:
         """Swap a base ``Record`` for its typed subclass when it has one.
 
-        ``get_record_by_weburl`` and ``get_record_by_external_id`` return a
+        ``get_record_by_external_id`` returns a
         base ``Record`` on both graph providers, so its ``to_llm_context()``
         carries no type-specific fields: a pull request looked up by URL showed
         no merge state, a ticket no status. ``get_record_by_id`` joins the type
@@ -469,7 +554,12 @@ class RecordResolver:
         return matches
 
     async def _by_weburl(self, weburl: str) -> list[LookupMatch]:
-        """``get_record_by_weburl``: normalized first, then raw."""
+        """Every live record stored under the URL (``get_records_by_weburls``), normalized first, then raw.
+
+        Several connectors can sync one page, each to its own record. All of them go to the
+        caller's ACL gate: one record picked for the whole org could be a copy the user cannot
+        open while another copy is readable.
+        """
         normalized = normalize_weburl(weburl)
         candidates_to_try = [normalized]
         if normalized != weburl:
@@ -477,15 +567,41 @@ class RecordResolver:
 
         for url in candidates_to_try:
             try:
-                rec = await self._graph.get_record_by_weburl(url, org_id=self._org_id)
+                rows = await self._graph.get_records_by_weburls([url], self._org_id, per_address=_WEBURL_MATCH_LIMIT)
             except Exception as exc:
                 logger.debug("_by_weburl(%r): %s", url, exc)
                 continue
-            if rec:
-                m = _record_to_match(await self._typed(rec), weburl, self._frontend_url)
-                if m and m.id:
-                    return [m]
+            found = await gather_with_concurrency(
+                GRAPH_FANOUT_CONCURRENCY,
+                *(self._weburl_match(row, weburl) for row in rows if row.get("id")),
+                return_exceptions=True,
+            )
+            # One copy that cannot be built must not hide the others: the whole URL would read as not found.
+            for failure in (f for f in found if isinstance(f, BaseException)):
+                logger.debug("_by_weburl(%r): a record could not be read: %s", url, failure)
+            matches = [m for m in found if isinstance(m, LookupMatch) and m.id]
+            if matches:
+                return matches
         return []
+
+    async def _weburl_match(self, row: dict[str, Any], weburl: str) -> LookupMatch | None:
+        """The typed record of a URL row, else its base record, else the row itself.
+
+        Only a read of the row's own id may stand in for it: the caller's ACL gate runs on that id.
+        """
+        record_id = str(row["id"])
+        typed = [m for m in await self._by_record_id(record_id, weburl) if m.id == record_id]
+        if typed:
+            return typed[0]
+        base: Record | None = None
+        try:
+            doc = await self._graph.get_document(record_id, CollectionNames.RECORDS.value)
+            base = Record.from_arango_base_record(doc) if doc else None
+        except Exception as exc:
+            logger.debug("_weburl_match(%r): %s", record_id, exc)
+        if base is not None and base.id == record_id:
+            return _record_to_match(base, weburl, self._frontend_url)
+        return _record_to_match(row, weburl, self._frontend_url)
 
     async def _by_slack_ts(
         self, ref: CanonicalRef, connectors: list[ConnectorInfo]

@@ -75,6 +75,9 @@ class LocalFsPullBatch(BaseModel):
     hasMore: bool
     events: list[LocalFsFileEvent] = []
     rootPath: str | None = None
+    # An empty page the desktop sends while it is still walking the folder for
+    # a full run, so the pull does not time out. Progress, not a stall.
+    preparing: bool = False
 
 
 class LocalFsFileEventBatchStats(BaseModel):

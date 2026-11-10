@@ -925,7 +925,7 @@ class TestLinearSyncIssuesForTeams:
         assert failed == []
         # ...and once its whole list is stored, the checkpoint (kept under the team's
         # id) moves to the moment the run started.
-        assert c.issues_sync_point.store["team_issues_team-1"]["last_sync_time"] == 1_700_000_000_000
+        assert c.issues_sync_point.store["team_issues_v2_team-1"]["last_sync_time"] == 1_700_000_000_000
 
     @pytest.mark.asyncio
     async def test_sync_issues_error_continues(self):
@@ -935,7 +935,7 @@ class TestLinearSyncIssuesForTeams:
         team_rg2, perms2 = _make_team_record_group("team-2", "DES")
 
         async def read(key) -> dict:
-            if key == "team_issues_team-1":
+            if key == "team_issues_v2_team-1":
                 raise Exception("checkpoint error")
             return {}
 
@@ -953,8 +953,8 @@ class TestLinearSyncIssuesForTeams:
         assert full_sync_team_ids == {"team-2"}
         assert fetch.call_count == 1
         assert fetch.call_args.kwargs["team_id"] == "team-2"
-        assert "team_issues_team-1" not in c.issues_sync_point.store
-        assert c.issues_sync_point.store["team_issues_team-2"]["last_sync_time"] == 1_700_000_000_000
+        assert "team_issues_v2_team-1" not in c.issues_sync_point.store
+        assert c.issues_sync_point.store["team_issues_v2_team-2"]["last_sync_time"] == 1_700_000_000_000
 
     @pytest.mark.asyncio
     async def test_sync_issues_auth_error_stops_the_sync(self) -> None:
@@ -1457,20 +1457,20 @@ class TestLinearFilterOptions:
         c.data_source = MagicMock()
         mock_ds = MagicMock()
         # Linear applies the search; it returns only what matched.
-        mock_ds.teams = AsyncMock(return_value=_mock_teams_response(
+        mock_ds.execute_operation = AsyncMock(return_value=_mock_teams_response(
             [{"id": "t1", "name": "Engineering", "key": "ENG"}],
             has_next=False,
         ))
         with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             result = await c.get_filter_options("team_ids", search="  eng ")
-        mock_ds.teams.assert_awaited_once_with(
-            first=20,
-            after=None,
-            filter={"or": [
+        mock_ds.execute_operation.assert_awaited_once_with("teamList", {
+            "first": 20,
+            "after": None,
+            "filter": {"or": [
                 {"name": {"containsIgnoreCase": "eng"}},
                 {"key": {"containsIgnoreCase": "eng"}},
             ]},
-        )
+        })
         assert len(result.options) == 1
         assert "Engineering" in result.options[0].label
 
@@ -1479,7 +1479,7 @@ class TestLinearFilterOptions:
         c = _make_connector()
         c.data_source = MagicMock()
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(return_value=_mock_teams_response(
+        mock_ds.execute_operation = AsyncMock(return_value=_mock_teams_response(
             [
                 {"id": "t1", "name": "Engineering", "key": "ENG"},
                 {"id": "t2", "name": "Design", "key": "DES"},
@@ -1488,7 +1488,7 @@ class TestLinearFilterOptions:
         ))
         with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             result = await c.get_filter_options("team_ids")
-        mock_ds.teams.assert_awaited_once_with(first=20, after=None, filter=None)
+        mock_ds.execute_operation.assert_awaited_once_with("teamList", {"first": 20, "after": None, "filter": None})
         assert [o.id for o in result.options] == ["t1", "t2"]
 
     @pytest.mark.asyncio
@@ -1499,7 +1499,7 @@ class TestLinearFilterOptions:
         failed = MagicMock()
         failed.success = False
         failed.message = "API error"
-        mock_ds.teams = AsyncMock(return_value=failed)
+        mock_ds.execute_operation = AsyncMock(return_value=failed)
         with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             with pytest.raises(RuntimeError, match="Failed to fetch team options"):
                 await c.get_filter_options("team_ids")
@@ -2437,7 +2437,7 @@ class TestLinearPlaceholderSweep:
         team_rg, perms = _make_team_record_group()
         team_rg2, perms2 = _make_team_record_group("team-2", "DES")
         # team-2 completed a run before; team-1 never did.
-        c.issues_sync_point.store["team_issues_team-2"] = {"last_sync_time": 1_700_000_000_000}
+        c.issues_sync_point.store["team_issues_v2_team-2"] = {"last_sync_time": 1_700_000_000_000}
 
         async def fake_fetch(*args, **kwargs):
             if False:

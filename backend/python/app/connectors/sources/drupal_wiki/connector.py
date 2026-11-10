@@ -333,8 +333,8 @@ class DrupalWikiConnector(BaseConnector):
         # Partial failures collected across one run: a space or group that failed is
         # reported at the end, and its checkpoint is held back, but the run continues.
         self._failures: list[str] = []
-        # Emails the user directory marks DISABLED, or None when it could not be read
-        # this run (then nobody is dropped from a private space on its account).
+        # Emails the user directory marks DISABLED, or None when it could not be
+        # read this run. Private spaces are then left as they were.
         self._disabled_emails: set[str] | None = None
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
@@ -693,7 +693,11 @@ class DrupalWikiConnector(BaseConnector):
     # ------------------------------------------------------------------
 
     async def _sync_spaces(self) -> dict[int, dict[str, Any]]:
-        """Spaces become record groups; their permissions are replaced every run."""
+        """Spaces become record groups; their permissions are replaced every run.
+
+        A private space is skipped when the user directory or its member list
+        could not be read, so stored grants stay put.
+        """
         allowed_ids, exclude_ids = self._get_space_id_filters()
         spaces: dict[int, dict[str, Any]] = {}
         unreadable_spaces: list[str] = []
@@ -720,6 +724,15 @@ class DrupalWikiConnector(BaseConnector):
 
                 members = None
                 if (space.get("accessStatus") or "").upper() == SPACE_ACCESS_PRIVATE:
+                    if self._disabled_emails is None:
+                        # Same as an unreadable member list: writing grants without
+                        # a directory would guess. A space first seen this run waits
+                        # for a run that loaded users.
+                        self._fail(
+                            f"Could not read the list of people from Drupal Wiki, so "
+                            f"the space '{space_name}' was left as it is this time."
+                        )
+                        continue
                     try:
                         members = await self.graphql.get_space_members(space_id)
                     except DrupalWikiGraphQLError as e:

@@ -28,6 +28,7 @@ _ROUTERS = {
     "health": ("app.api.routes.health", "router"),
     "ai_models_registry": ("app.api.routes.ai_models_registry", "router"),
     "code_graph": ("app.api.routes.code_graph", "router"),
+    "graph_view": ("app.api.routes.graph_view", "router"),
     "entity": ("app.api.routes.entity", "router"),
     "mcp_servers": ("app.api.routes.mcp_servers", "router"),
     "api_toolsets": ("app.api.routes.api_toolsets", "router"),
@@ -51,6 +52,7 @@ _SERVICE_TOKEN_ROUTES = {
     ("chatbot", "DELETE", "/chat/attachments/permissions"): {"conversation:permissions"},
     ("chatbot", "POST", "/chat/artifacts/permissions"): {"conversation:permissions"},
     ("chatbot", "DELETE", "/chat/artifacts/permissions"): {"conversation:permissions"},
+    ("chatbot", "POST", "/chat/records/access"): {"conversation:permissions"},
     (
         "connectors",
         "GET",

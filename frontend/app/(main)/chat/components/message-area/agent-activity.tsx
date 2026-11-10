@@ -131,7 +131,9 @@ function groupConsecutiveToolCalls(parts: MessagePart[]): RenderItem[] {
       }
       i = j;
     } else {
-      items.push({ kind: 'part', part, key: `part-${part.type}-${part.runId ?? i}` });
+      // One run emits several narration parts with the same runId, so the
+      // index keeps their keys apart; parts are only ever appended.
+      items.push({ kind: 'part', part, key: `part-${part.type}-${part.runId ?? 'root'}-${i}` });
       i += 1;
     }
   }

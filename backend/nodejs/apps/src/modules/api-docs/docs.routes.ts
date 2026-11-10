@@ -56,351 +56,116 @@ function getDocumentationHtml(): string {
   <title>PipesHub API Documentation</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined" rel="stylesheet">
   <style>
+    /* PipesHub theme: the dashboard's Radix olive grays and emerald accent (frontend/app/globals.css). */
     :root {
-      --bg-primary: #ffffff;
-      --bg-secondary: #f8fafc;
-      --bg-tertiary: #f1f5f9;
-      --bg-sidebar: #f8fafc;
-      --text-primary: #0f172a;
-      --text-secondary: #475569;
-      --text-muted: #94a3b8;
-      --border-color: #e2e8f0;
-      --accent-primary: #00ac3a;
-      --accent-blue: #0099ff;
-      --accent-green: #00ac3a;
-      --accent-orange: #f97316;
-      --accent-red: #ef4444;
-      --accent-purple: #8b5cf6;
-      --method-get: #00ac3a;
-      --method-post: #0099ff;
-      --method-put: #f97316;
-      --method-patch: #8b5cf6;
-      --method-delete: #ef4444;
-      --code-bg: #1f1f1f;
-      --code-text: #e2e8f0;
-      --scrollbar-bg: #f1f5f9;
-      --scrollbar-thumb: #cbd5e1;
+      --gray-1: #fcfdfc; --gray-2: #f8faf8; --gray-3: #eff1ef; --gray-4: #e7e9e7; --gray-5: #dfe2df;
+      --gray-6: #d7dad7; --gray-7: #cccfcc; --gray-8: #b9bcb8; --gray-9: #898e87; --gray-11: #60655f; --gray-12: #1d211c;
+      --accent-3: #d4f7eb; --accent-6: #7edabb; --accent-9: #047857; --accent-10: #10674c; --accent-11: #035e44;
+      --accent-a3: rgba(4, 120, 87, 0.13); --accent-a4: rgba(4, 120, 87, 0.22);
+      --red-3: #feebec; --red-6: #fdbdbe; --red-9: #e5484d; --red-11: #ce2c31;
+      --amber-3: #fff7c2; --amber-6: #f3d673; --amber-11: #ab6400;
+      --blue-3: #e6f4fe; --blue-6: #acd8fc; --blue-11: #0d74ce;
+      --violet-3: #f4f0fe; --violet-11: #6550b9;
+      --orange-3: #ffefd6; --orange-11: #cc4e00;
+
+      --bg: #ffffff;
+      --bg-sidebar: var(--gray-1);
+      --bg-panel: var(--gray-2);
+      --bg-hover: var(--gray-3);
+      --bg-active: var(--gray-4);
+      --surface: #ffffff;
+      --border: var(--gray-4);
+      --border-strong: var(--gray-6);
+      --text: var(--gray-12);
+      --text-2: var(--gray-11);
+      --text-3: var(--gray-9);
+      --code-bg: var(--gray-2);
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 2px 8px rgba(0, 0, 0, 0.04);
+      --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2360655f' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+
+      --font-sans: 'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'JetBrains Mono', monospace;
+      --radius-1: 3px; --radius-2: 4px; --radius-3: 6px; --radius-4: 8px; --radius-5: 12px;
+      color-scheme: light;
     }
 
     [data-theme="dark"] {
-      --bg-primary: #0a0a0a;
-      --bg-secondary: #1f1f1f;
-      --bg-tertiary: #2e2e2e;
-      --bg-sidebar: #1f1f1f;
-      --text-primary: #f8fafc;
-      --text-secondary: #cbd5e1;
-      --text-muted: #6b7280;
-      --border-color: #2e2e2e;
-      --code-bg: #0a0a0a;
-      --code-text: #e2e8f0;
-      --scrollbar-bg: #1f1f1f;
-      --scrollbar-thumb: #404040;
+      --gray-1: #111210; --gray-2: #181917; --gray-3: #212220; --gray-4: #282a27; --gray-5: #2f312e;
+      --gray-6: #383a36; --gray-7: #454843; --gray-8: #5c625b; --gray-9: #687066; --gray-11: #afb5ad; --gray-12: #eceeec;
+      --accent-3: #0c3126; --accent-6: #145c49; --accent-10: #17906c; --accent-11: #3dd9a0;
+      --accent-a3: rgba(0, 255, 162, 0.07); --accent-a4: rgba(0, 255, 170, 0.21);
+      --red-3: #3b1219; --red-6: #72232d; --red-11: #ff9592;
+      --amber-3: #302008; --amber-6: #5c3d05; --amber-11: #ffca16;
+      --blue-3: #0d2847; --blue-6: #104d87; --blue-11: #70b8ff;
+      --violet-3: #291f43; --violet-11: #baa7ff;
+      --orange-3: #331e0b; --orange-11: #ffa057;
+
+      --bg: var(--gray-1);
+      --bg-sidebar: var(--gray-1);
+      --surface: rgba(0, 0, 0, 0.25);
+      --code-bg: #0c0d0c;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.3);
+      --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23afb5ad' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+      color-scheme: dark;
     }
 
-    [data-theme="dark"] .method-get { background: rgba(0, 172, 58, 0.15); color: #00d147; }
-    [data-theme="dark"] .method-post { background: rgba(0, 153, 255, 0.15); color: #3db5ff; }
-    [data-theme="dark"] .method-put { background: rgba(249, 115, 22, 0.15); color: #fdba74; }
-    [data-theme="dark"] .method-patch { background: rgba(139, 92, 246, 0.15); color: #c4b5fd; }
-    [data-theme="dark"] .method-delete { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
 
-    [data-theme="dark"] .response-code-2xx { background: rgba(0, 172, 58, 0.15); color: #00d147; }
-    [data-theme="dark"] .response-code-4xx { background: rgba(249, 115, 22, 0.15); color: #fdba74; }
-    [data-theme="dark"] .response-code-5xx { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
-
-    [data-theme="dark"] .param-required { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
-
-    [data-theme="dark"] .response-status.success { background: rgba(0, 172, 58, 0.15); color: #00d147; }
-    [data-theme="dark"] .response-status.error { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
-
-    [data-theme="dark"] .response-headers-section { background: rgba(0,0,0,0.3); border-color: rgba(255,255,255,0.1); }
-    [data-theme="dark"] .response-headers-toggle { background: rgba(0,0,0,0.4); }
-    [data-theme="dark"] .response-headers-toggle:hover { background: rgba(0,0,0,0.5); }
-    [data-theme="dark"] .response-headers-toggle-left { color: var(--code-text); }
-    [data-theme="dark"] .response-headers-count { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.7); }
-    [data-theme="dark"] .response-headers-content { background: rgba(0,0,0,0.2); }
-    [data-theme="dark"] .header-row { border-color: rgba(255,255,255,0.1); }
-    [data-theme="dark"] .header-value { color: var(--code-text); }
-
-    [data-theme="dark"] .body-field-group {
-      background: rgba(0,0,0,0.2);
-      border-color: rgba(255,255,255,0.05);
-    }
-
-    [data-theme="dark"] .body-field-input input,
-    [data-theme="dark"] .body-field-input select,
-    [data-theme="dark"] .body-field-input textarea {
-      background: rgba(0,0,0,0.3);
-      border-color: rgba(255,255,255,0.1);
-      color: var(--code-text);
-    }
-
-    [data-theme="dark"] .body-field-input input::placeholder,
-    [data-theme="dark"] .body-field-input textarea::placeholder {
-      color: rgba(255,255,255,0.3);
-    }
-
-    [data-theme="dark"] .body-field-input select {
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-    }
-
-    [data-theme="dark"] .body-field-label {
-      color: var(--code-text);
-    }
-
-    [data-theme="dark"] .body-field-label .field-type {
-      color: rgba(255,255,255,0.4);
-    }
-
-    [data-theme="dark"] .body-field-desc {
-      color: rgba(255,255,255,0.4);
-    }
-
-    [data-theme="dark"] .nested-object {
-      background: rgba(0,0,0,0.15);
-    }
-
-    [data-theme="dark"] .param-input-label {
-      color: var(--code-text);
-    }
-
-    [data-theme="dark"] .array-add-btn,
-    [data-theme="dark"] .array-remove-btn {
-      background: rgba(255,255,255,0.1);
-      border-color: rgba(255,255,255,0.1);
-      color: var(--code-text);
-    }
-
-    [data-theme="dark"] .array-add-btn:hover {
-      background: rgba(255,255,255,0.15);
-    }
-
-    [data-theme="dark"] .array-remove-btn {
-      background: rgba(239, 68, 68, 0.2);
-      border-color: rgba(239, 68, 68, 0.3);
-      color: #fca5a5;
-    }
-
-    [data-theme="dark"] .array-remove-btn:hover {
-      background: rgba(239, 68, 68, 0.3);
-    }
-
-    [data-theme="dark"] .response-pre {
-      background: rgba(0,0,0,0.3);
-      border-color: rgba(255,255,255,0.1);
-      color: var(--code-text);
-    }
-
-    [data-theme="dark"] .module-card {
-      background: var(--bg-secondary);
-      border-color: var(--border-color);
-    }
-
-    [data-theme="dark"] .module-card:hover {
-      border-color: var(--accent-green);
-      box-shadow: 0 4px 12px rgba(0, 172, 58, 0.1);
-    }
-
-    [data-theme="dark"] .logo-icon {
-      background: var(--bg-tertiary);
-    }
-
-    [data-theme="dark"] .search-input {
-      color: var(--text-primary);
-    }
-
-    [data-theme="dark"] .search-input::placeholder {
-      color: var(--text-muted);
-    }
-
-    [data-theme="dark"] .params-table th {
-      background: var(--bg-tertiary);
-    }
-
-    [data-theme="dark"] .response-header {
-      background: var(--bg-tertiary);
-    }
-
-    [data-theme="dark"] .code-block {
-      background: rgba(0,0,0,0.4);
-    }
-
-    [data-theme="dark"] .code-block-header {
-      background: rgba(0,0,0,0.3);
-    }
-
-    [data-theme="dark"] pre {
-      background: transparent;
-    }
-
-    [data-theme="dark"] .module-card-icon {
-      background: var(--bg-tertiary);
-    }
-
-    [data-theme="dark"] .tag-count {
-      background: var(--bg-secondary);
-    }
-
-    [data-theme="dark"] .endpoint-path {
-      background: var(--bg-tertiary);
-    }
-
-    [data-theme="dark"] .try-it-input,
-    [data-theme="dark"] .try-it-textarea {
-      background: rgba(0,0,0,0.4);
-      border-color: rgba(255,255,255,0.15);
-    }
-
-    [data-theme="dark"] .response-item {
-      border-color: var(--border-color);
-    }
-
-    /* Light mode code panel styles */
-    :root:not([data-theme="dark"]) .code-panel,
-    html:not([data-theme="dark"]) .code-panel {
-      background: #ffffff;
-      border-left: 1px solid var(--border-color);
-    }
-
-    :root:not([data-theme="dark"]) .code-panel-header,
-    html:not([data-theme="dark"]) .code-panel-header {
-      border-bottom: 1px solid var(--border-color);
-    }
-
-    :root:not([data-theme="dark"]) .code-tab,
-    html:not([data-theme="dark"]) .code-tab {
-      color: var(--text-secondary);
-    }
-
-    :root:not([data-theme="dark"]) .code-tab.active,
-    html:not([data-theme="dark"]) .code-tab.active {
-      color: var(--text-primary);
-      background: var(--bg-tertiary);
-    }
-
-    :root:not([data-theme="dark"]) .try-it-label,
-    html:not([data-theme="dark"]) .try-it-label {
-      color: var(--text-secondary);
-    }
-
-    :root:not([data-theme="dark"]) .try-it-input,
-    html:not([data-theme="dark"]) .try-it-input,
-    :root:not([data-theme="dark"]) .try-it-textarea,
-    html:not([data-theme="dark"]) .try-it-textarea {
-      background: var(--bg-secondary);
-      border: 1px solid var(--border-color);
-      color: var(--text-primary);
-    }
-
-    :root:not([data-theme="dark"]) .try-it-input::placeholder,
-    html:not([data-theme="dark"]) .try-it-input::placeholder {
-      color: var(--text-muted);
-    }
-
-    :root:not([data-theme="dark"]) .file-upload-input,
-    html:not([data-theme="dark"]) .file-upload-input {
-      background: var(--bg-secondary);
-      border-color: var(--border-color);
-      color: var(--text-primary);
-    }
-
-    :root:not([data-theme="dark"]) .code-block,
-    html:not([data-theme="dark"]) .code-block {
-      background: var(--bg-secondary);
-    }
-
-    :root:not([data-theme="dark"]) .code-block-header,
-    html:not([data-theme="dark"]) .code-block-header {
-      background: var(--bg-tertiary);
-      border-bottom: 1px solid var(--border-color);
-    }
-
-    :root:not([data-theme="dark"]) .code-block-title,
-    html:not([data-theme="dark"]) .code-block-title {
-      color: var(--text-secondary);
-    }
-
-    :root:not([data-theme="dark"]) .code-block pre,
-    html:not([data-theme="dark"]) .code-block pre {
-      background: var(--bg-secondary);
-      color: var(--text-primary);
-    }
-
-    :root:not([data-theme="dark"]) #tryItPanel,
-    html:not([data-theme="dark"]) #tryItPanel {
-      background: #ffffff;
-    }
-
-    :root:not([data-theme="dark"]) #codeExamplesPanel,
-    html:not([data-theme="dark"]) #codeExamplesPanel {
-      background: #ffffff;
-    }
-
-    :root:not([data-theme="dark"]) #codeExamplesPanel pre,
-    html:not([data-theme="dark"]) #codeExamplesPanel pre {
-      background: var(--bg-secondary);
-      color: var(--text-primary);
-    }
-
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
+    html, body { height: 100%; }
 
     body {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-      background: var(--bg-primary);
-      color: var(--text-primary);
-      line-height: 1.6;
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.5;
+      background: var(--bg);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
     }
 
-    /* Scrollbar styles */
-    ::-webkit-scrollbar {
-      width: 8px;
-      height: 8px;
+    button, input, select, textarea { font: inherit; color: inherit; }
+
+    code, pre { font-family: var(--font-mono); }
+
+    code, pre, input, select, textarea { font-variant-ligatures: none; }
+
+    a { color: var(--accent-11); }
+
+    .material-icons-outlined {
+      font-size: 18px;
+      line-height: 1;
+      user-select: none;
+      flex-shrink: 0;
     }
 
-    ::-webkit-scrollbar-track {
-      background: var(--scrollbar-bg);
-    }
+    :focus-visible { outline: 2px solid var(--accent-9); outline-offset: 1px; }
 
-    ::-webkit-scrollbar-thumb {
-      background: var(--scrollbar-thumb);
-      border-radius: 4px;
-    }
-
-    ::-webkit-scrollbar-thumb:hover {
-      background: #94a3b8;
-    }
-
-    [data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
-      background: #64748b;
-    }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--gray-6); border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--gray-8); }
 
     /* Layout */
-    .app-container {
-      display: flex;
-      height: 100vh;
-    }
+    .app-container { display: flex; height: 100vh; overflow: hidden; }
 
-    /* Sidebar */
     .sidebar {
       width: 280px;
-      min-width: 200px;
+      min-width: 220px;
       max-width: 500px;
       background: var(--bg-sidebar);
-      border-right: 1px solid var(--border-color);
+      border-right: 1px solid var(--border);
       display: flex;
       flex-direction: column;
       flex-shrink: 0;
     }
 
-    /* Resize handles */
+    .sidebar-backdrop { display: none; }
+
     .resize-handle {
       width: 6px;
-      background: transparent;
+      margin: 0 -3px;
       cursor: col-resize;
       flex-shrink: 0;
       position: relative;
@@ -408,562 +173,559 @@ function getDocumentationHtml(): string {
       transition: background 0.15s;
     }
 
-    .resize-handle:hover,
-    .resize-handle.dragging {
-      background: var(--accent-green);
-    }
+    .resize-handle:hover, .resize-handle.dragging { background: var(--accent-a4); }
 
-    .resize-handle::before {
-      content: '';
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      width: 2px;
-      height: 40px;
-      background: var(--border-color);
-      border-radius: 1px;
-      opacity: 0;
-      transition: opacity 0.15s;
-    }
+    body.resizing { user-select: none; cursor: col-resize; }
+    body.resizing * { cursor: col-resize !important; }
 
-    .resize-handle:hover::before,
-    .resize-handle.dragging::before {
-      opacity: 1;
-      background: white;
-    }
-
-    .resize-handle-right {
-      margin-left: -3px;
-      margin-right: -3px;
-    }
-
-    .resize-handle-left {
-      margin-left: -3px;
-      margin-right: -3px;
-    }
-
-    /* Prevent text selection while resizing */
-    body.resizing {
-      user-select: none;
-      cursor: col-resize;
-    }
-
-    body.resizing * {
-      cursor: col-resize !important;
-    }
-
+    /* Same height as .content-header so the two bottom borders line up. */
     .sidebar-header {
-      padding: 20px;
-      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      height: 56px;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
     }
+
+    .sidebar-header .logo { flex: 1; min-width: 0; }
 
     .logo {
       display: flex;
       align-items: center;
       gap: 10px;
-      font-family: 'Manrope', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       font-weight: 700;
-      font-size: 18px;
-      color: var(--text-primary);
+      font-size: 16px;
+      color: var(--text);
       text-decoration: none;
     }
 
     .logo-icon {
-      width: 32px;
-      height: 32px;
-      background: var(--bg-primary);
-      border-radius: 8px;
+      width: 28px;
+      height: 28px;
       display: flex;
       align-items: center;
       justify-content: center;
+      color: var(--accent-9);
     }
 
-    .logo-icon svg {
-      width: 24px;
-      height: 24px;
+    .logo-icon svg { width: 22px; height: 22px; }
+
+    [data-theme="dark"] .logo-icon { color: var(--accent-11); }
+
+    .logo-tag {
+      margin-left: auto;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent-11);
+      background: var(--accent-a3);
+      border-radius: 999px;
     }
 
-    .search-box {
-      margin-top: 16px;
-      position: relative;
-    }
+    .search-box { padding: 12px 16px 4px; position: relative; flex-shrink: 0; }
 
     .search-input {
       width: 100%;
-      padding: 10px 12px 10px 36px;
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
-      font-size: 14px;
-      background: var(--bg-primary);
-      color: var(--text-primary);
+      height: 32px;
+      padding: 0 10px 0 32px;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-3);
+      font-size: 13px;
+      background: var(--surface);
       outline: none;
-      transition: border-color 0.2s;
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
 
-    .search-input::placeholder {
-      color: var(--text-muted);
-    }
+    .search-input::placeholder { color: var(--text-3); }
 
-    .search-input:focus {
-      border-color: var(--accent-green);
-    }
+    .search-input:focus { border-color: var(--accent-9); box-shadow: 0 0 0 3px var(--accent-a3); }
 
     .search-icon {
       position: absolute;
-      left: 12px;
-      top: 50%;
+      left: 25px;
+      top: 28px;
       transform: translateY(-50%);
-      color: var(--text-muted);
+      color: var(--text-3);
+      pointer-events: none;
     }
 
-    .sidebar-nav {
-      flex: 1;
-      overflow-y: auto;
-      padding: 16px 0;
-    }
+    .sidebar-nav { flex: 1; overflow-y: auto; padding: 8px; }
 
-    .nav-category {
-      margin-bottom: 8px;
-    }
+    .nav-category + .nav-category { margin-top: 12px; }
 
     .category-header {
-      padding: 8px 20px;
+      padding: 8px 8px 4px;
       font-size: 11px;
       font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: var(--text-muted);
+      letter-spacing: 0.06em;
+      color: var(--text-3);
     }
 
     .nav-item {
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 8px 20px;
+      min-height: 32px;
+      padding: 0 8px;
+      border-radius: var(--radius-3);
       cursor: pointer;
-      transition: background 0.15s;
-      text-decoration: none;
-      color: var(--text-secondary);
+      color: var(--text-2);
       font-size: 14px;
-    }
-
-    .nav-item:hover {
-      background: var(--bg-tertiary);
-      color: var(--text-primary);
-    }
-
-    .nav-item.active {
-      background: var(--bg-tertiary);
-      color: var(--accent-green);
       font-weight: 500;
+      text-decoration: none;
+      transition: background 0.12s, color 0.12s;
     }
 
-    .nav-item-icon {
-      width: 18px;
-      height: 18px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
+    .nav-item:hover { background: var(--bg-hover); color: var(--text); }
 
-    .endpoint-item {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 20px 6px 40px;
-      cursor: pointer;
-      transition: background 0.15s;
-      font-size: 13px;
-      color: var(--text-secondary);
-    }
+    .nav-item.active { background: var(--accent-a3); color: var(--accent-11); }
 
-    .endpoint-item:hover {
-      background: var(--bg-tertiary);
-    }
+    .nav-item-icon { display: flex; align-items: center; justify-content: center; width: 20px; }
 
-    .endpoint-item.active {
-      background: var(--bg-tertiary);
-      color: var(--text-primary);
-    }
+    .nav-item-chevron { margin-left: auto; color: var(--text-3); transition: transform 0.15s; }
 
-    /* Tag sections in sidebar */
-    .tag-section {
-      margin-bottom: 4px;
-    }
+    .nav-item.active .nav-item-chevron { transform: rotate(90deg); color: var(--accent-11); }
+
+    .endpoint-list { padding: 2px 0 6px 18px; margin-left: 10px; border-left: 1px solid var(--border); }
+
+    .tag-section + .tag-section { margin-top: 1px; }
 
     .tag-header {
       display: flex;
       align-items: center;
-      gap: 6px;
-      padding: 6px 20px 6px 28px;
-      font-size: 12px;
+      gap: 4px;
+      min-height: 28px;
+      padding: 0 6px 0 4px;
+      border-radius: var(--radius-3);
+      font-size: 13px;
       font-weight: 500;
-      color: var(--text-muted);
+      color: var(--text-2);
       cursor: pointer;
-      transition: all 0.15s;
+      transition: background 0.12s, color 0.12s;
     }
 
-    .tag-header .tag-count {
-      margin-left: auto;
-    }
+    .tag-header:hover { background: var(--bg-hover); color: var(--text); }
 
-    .tag-header:hover {
-      color: var(--text-secondary);
-      background: var(--bg-tertiary);
-    }
-
-    .tag-name {
-      text-transform: capitalize;
-    }
+    .tag-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     .tag-count {
-      background: var(--bg-tertiary);
-      padding: 2px 6px;
-      border-radius: 10px;
-      font-size: 10px;
-      font-weight: 600;
-    }
-
-    .tag-endpoints {
-      display: none;
-    }
-
-    .tag-section.expanded .tag-endpoints {
-      display: block;
-    }
-
-    .tag-section.expanded .tag-header {
-      color: var(--text-primary);
-    }
-
-    .tag-chevron {
-      transition: transform 0.2s;
       flex-shrink: 0;
-    }
-
-    .tag-section.expanded .tag-chevron {
-      transform: rotate(90deg);
-    }
-
-    /* Breadcrumb clickable styles */
-    .breadcrumb-link {
-      cursor: pointer;
-      transition: color 0.15s;
-    }
-
-    .breadcrumb-link:hover {
-      color: var(--accent-green);
-    }
-
-    /* Theme toggle */
-    .theme-toggle {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 8px 12px;
-      background: var(--bg-tertiary);
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
-      cursor: pointer;
-      color: var(--text-secondary);
-      font-size: 13px;
-      transition: all 0.2s;
-    }
-
-    .theme-toggle:hover {
-      background: var(--border-color);
-      color: var(--text-primary);
-    }
-
-    .theme-toggle svg {
-      width: 16px;
-      height: 16px;
-    }
-
-    .theme-toggle .sun-icon { display: none; }
-    .theme-toggle .moon-icon { display: block; }
-
-    [data-theme="dark"] .theme-toggle .sun-icon { display: block; }
-    [data-theme="dark"] .theme-toggle .moon-icon { display: none; }
-
-    /* Method badges */
-    .method-badge {
-      padding: 2px 6px;
-      border-radius: 4px;
-      font-size: 10px;
+      min-width: 20px;
+      padding: 0 6px;
+      font-size: 11px;
       font-weight: 600;
-      text-transform: uppercase;
-      font-family: 'JetBrains Mono', monospace;
+      line-height: 18px;
+      text-align: center;
+      color: var(--text-2);
+      background: var(--bg-active);
+      border-radius: 999px;
     }
 
-    .method-get { background: rgba(0, 172, 58, 0.12); color: #00862d; }
-    .method-post { background: rgba(0, 153, 255, 0.12); color: #0077cc; }
-    .method-put { background: rgba(249, 115, 22, 0.12); color: #9a3412; }
-    .method-patch { background: rgba(139, 92, 246, 0.12); color: #5b21b6; }
-    .method-delete { background: rgba(239, 68, 68, 0.12); color: #991b1b; }
+    .tag-chevron { color: var(--text-3); transition: transform 0.15s; }
+
+    .tag-endpoints { display: none; padding: 2px 0 4px; }
+
+    .tag-section.expanded .tag-endpoints { display: block; }
+
+    .tag-section.expanded > .tag-header { color: var(--text); }
+
+    .tag-section.expanded .tag-chevron { transform: rotate(90deg); }
+
+    .endpoint-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 5px 6px 5px 8px;
+      border-radius: var(--radius-3);
+      cursor: pointer;
+      font-size: 13px;
+      line-height: 18px;
+      color: var(--text-2);
+      transition: background 0.12s, color 0.12s;
+    }
+
+    .endpoint-item:hover { background: var(--bg-hover); color: var(--text); }
+
+    .endpoint-item.active { background: var(--accent-a3); color: var(--text); }
+
+    .endpoint-item .method-badge { width: 46px; margin-top: 1px; }
+
+    .sidebar-empty {
+      padding: 24px 12px;
+      text-align: center;
+      font-size: 13px;
+      color: var(--text-3);
+    }
+
+    /* Method badges: Radix soft badges */
+    .method-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      height: 18px;
+      padding: 0 5px;
+      border-radius: var(--radius-2);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    .method-get { background: var(--accent-a3); color: var(--accent-11); }
+    .method-post { background: var(--blue-3); color: var(--blue-11); }
+    .method-put { background: var(--amber-3); color: var(--amber-11); }
+    .method-patch { background: var(--violet-3); color: var(--violet-11); }
+    .method-delete { background: var(--red-3); color: var(--red-11); }
+    .method-head, .method-options { background: var(--bg-active); color: var(--text-2); }
+
+    .method-badge.large { height: 26px; padding: 0 10px; font-size: 13px; border-radius: var(--radius-3); }
 
     /* Main content */
-    .main-content {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-    }
+    .main-content { flex: 1; display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
 
     .content-header {
-      padding: 16px 24px;
-      border-bottom: 1px solid var(--border-color);
       display: flex;
       align-items: center;
-      justify-content: space-between;
+      gap: 12px;
+      height: 56px;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
     }
 
     .breadcrumb {
       display: flex;
       align-items: center;
-      gap: 8px;
-      font-size: 14px;
-      color: var(--text-muted);
-    }
-
-    .breadcrumb-separator {
-      color: var(--border-color);
-    }
-
-    .breadcrumb-current {
-      color: var(--text-primary);
-      font-weight: 500;
-    }
-
-    .content-body {
+      gap: 6px;
+      min-width: 0;
       flex: 1;
-      display: flex;
+      font-size: 13px;
+      color: var(--text-3);
+      white-space: nowrap;
       overflow: hidden;
     }
 
-    /* Documentation panel */
-    .doc-panel {
-      flex: 1;
-      overflow-y: auto;
-      padding: 32px;
-    }
+    .breadcrumb > span { overflow: hidden; text-overflow: ellipsis; }
 
-    .endpoint-header {
-      margin-bottom: 24px;
-    }
+    .breadcrumb-separator { color: var(--gray-7); flex-shrink: 0; }
 
-    .endpoint-title {
-      display: flex;
+    .breadcrumb-current { color: var(--text); font-weight: 600; }
+
+    .breadcrumb-link { cursor: pointer; flex-shrink: 0; transition: color 0.12s; }
+
+    .breadcrumb-link:hover { color: var(--accent-11); }
+
+    .icon-btn {
+      display: inline-flex;
       align-items: center;
-      gap: 12px;
-      margin-bottom: 8px;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      flex-shrink: 0;
+      background: transparent;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-3);
+      color: var(--text-2);
+      cursor: pointer;
+      transition: background 0.12s, color 0.12s;
     }
 
-    .endpoint-title h1 {
-      font-family: 'Manrope', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-      font-size: 24px;
-      font-weight: 600;
-    }
+    .icon-btn:hover { background: var(--bg-hover); color: var(--text); }
+
+    .menu-toggle { display: none; }
+
+    .theme-toggle .sun-icon { display: none; }
+    [data-theme="dark"] .theme-toggle .sun-icon { display: inline; }
+    [data-theme="dark"] .theme-toggle .moon-icon { display: none; }
+
+    .content-body { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+
+    /* Documentation panel */
+    .doc-panel { flex: 1; min-width: 0; overflow-y: auto; padding: 32px 40px 64px; }
+
+    .doc-panel > * { max-width: 920px; }
+
+    .endpoint-header { margin-bottom: 8px; }
+
+    .endpoint-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+    .endpoint-title h1 { font-size: 24px; font-weight: 700; line-height: 1.3; letter-spacing: -0.01em; }
 
     .endpoint-path {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 14px;
-      color: var(--text-secondary);
-      background: var(--bg-secondary);
-      padding: 8px 12px;
-      border-radius: 6px;
-      margin-top: 12px;
-    }
-
-    .endpoint-description {
-      color: var(--text-secondary);
-      font-size: 14px;
-      margin-top: 16px;
-      line-height: 1.7;
-    }
-
-    .endpoint-description b {
-      color: var(--text-primary);
-      font-weight: 600;
-      display: inline-block;
-      margin-top: 12px;
-    }
-
-    .endpoint-description code {
-      font-family: 'JetBrains Mono', monospace;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 14px;
+      padding: 8px 8px 8px 12px;
+      font-family: var(--font-mono);
       font-size: 13px;
-      background: var(--bg-tertiary);
-      color: var(--accent-purple);
-      padding: 2px 6px;
-      border-radius: 4px;
+      color: var(--text);
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-3);
+      word-break: break-all;
     }
 
-    .endpoint-description pre {
-      font-family: 'JetBrains Mono', monospace;
+    .endpoint-path-base { color: var(--text-3); }
+
+    .endpoint-path .copy-btn { margin-left: auto; }
+
+    /* Rendered Markdown from the spec */
+    .md { color: var(--text-2); font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }
+
+    .md > * + * { margin-top: 10px; }
+
+    .md strong, .md b { color: var(--text); font-weight: 600; }
+
+    .md h3, .md h4, .md h5 { color: var(--text); font-size: 14px; font-weight: 700; margin-top: 16px; }
+
+    .md ul, .md ol { padding-left: 20px; }
+
+    .md li + li { margin-top: 4px; }
+
+    .md code {
+      font-size: 0.88em;
+      padding: 1px 5px;
+      color: var(--text);
+      background: var(--bg-hover);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-2);
+      overflow-wrap: anywhere;
+    }
+
+    .md pre {
+      padding: 12px 14px;
       font-size: 12px;
+      line-height: 1.6;
+      color: var(--text);
       background: var(--code-bg);
-      color: var(--code-text);
-      padding: 12px 16px;
-      border-radius: 6px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-4);
       overflow-x: auto;
-      margin: 8px 0;
-      white-space: pre-wrap;
     }
 
-    .endpoint-description ul,
-    .endpoint-description ol {
-      margin: 8px 0;
-      padding-left: 24px;
-    }
+    .md pre code { padding: 0; background: none; border: 0; font-size: inherit; overflow-wrap: normal; }
 
-    .endpoint-description li {
-      margin: 4px 0;
-    }
+    .md a { color: var(--accent-11); text-decoration: underline; text-underline-offset: 2px; }
+
+    .md.small { font-size: 12.5px; line-height: 1.55; }
+
+    .md.small > * + * { margin-top: 6px; }
+
+    .endpoint-description { margin-top: 20px; }
 
     /* Sections */
-    .doc-section {
-      margin-top: 32px;
-    }
+    .doc-section { margin-top: 36px; }
 
     .section-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
       font-size: 16px;
-      font-weight: 600;
-      margin-bottom: 16px;
-      padding-bottom: 8px;
-      border-bottom: 1px solid var(--border-color);
+      font-weight: 700;
+      margin-bottom: 12px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
     }
+
+    .section-subtitle { font-size: 12px; font-weight: 500; color: var(--text-3); }
+
+    .content-type {
+      margin-left: auto;
+      padding: 2px 8px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-2);
+      background: var(--bg-hover);
+      border-radius: 999px;
+    }
+
+    .section-note { margin-bottom: 12px; }
 
     /* Parameters table */
     .params-table {
       width: 100%;
-      border-collapse: collapse;
+      border-collapse: separate;
+      border-spacing: 0;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-4);
+      overflow: hidden;
+      font-size: 13px;
     }
 
-    .params-table th,
-    .params-table td {
-      padding: 12px 16px;
+    .params-table th, .params-table td {
+      padding: 10px 14px;
       text-align: left;
-      border-bottom: 1px solid var(--border-color);
+      vertical-align: top;
+      border-bottom: 1px solid var(--border);
     }
+
+    .params-table tr:last-child td { border-bottom: none; }
 
     .params-table th {
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: var(--text-muted);
-      background: var(--bg-secondary);
+      letter-spacing: 0.06em;
+      color: var(--text-3);
+      background: var(--bg-panel);
     }
 
-    .param-name {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 13px;
-      color: var(--accent-blue);
-    }
+    .param-name { font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--text); }
 
-    .param-type {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 12px;
-      color: var(--text-muted);
-    }
+    .param-in { display: block; margin-top: 2px; font-size: 11px; color: var(--text-3); }
 
-    .param-required {
+    .param-type { font-family: var(--font-mono); font-size: 12px; color: var(--violet-11); }
+
+    .param-required, .schema-field-required {
       display: inline-block;
-      padding: 2px 6px;
-      background: rgba(239, 68, 68, 0.12);
-      color: #991b1b;
+      margin-left: 6px;
+      padding: 0 5px;
       font-size: 10px;
       font-weight: 600;
-      border-radius: 4px;
-      margin-left: 8px;
+      line-height: 16px;
+      vertical-align: 1px;
+      color: var(--red-11);
+      background: var(--red-3);
+      border-radius: var(--radius-2);
     }
 
-    /* Response section */
+    /* Responses */
     .response-item {
-      margin-bottom: 16px;
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
+      margin-bottom: 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-4);
       overflow: hidden;
+      background: var(--bg);
     }
 
     .response-header {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       gap: 12px;
-      padding: 12px 16px;
-      background: var(--bg-secondary);
-      cursor: pointer;
+      padding: 12px 14px;
+      background: var(--bg-panel);
     }
+
+    .response-item > .schema-block { margin: 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; }
 
     .response-code {
-      font-family: 'JetBrains Mono', monospace;
-      font-weight: 600;
-      padding: 4px 8px;
-      border-radius: 4px;
+      flex-shrink: 0;
+      min-width: 44px;
+      padding: 1px 8px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 20px;
+      text-align: center;
+      border-radius: var(--radius-2);
     }
 
-    .response-code-2xx { background: rgba(0, 172, 58, 0.12); color: #00862d; }
-    .response-code-4xx { background: rgba(249, 115, 22, 0.12); color: #9a3412; }
-    .response-code-5xx { background: rgba(239, 68, 68, 0.12); color: #991b1b; }
+    .response-header .md { flex: 1; min-width: 0; }
 
-    .response-body {
-      padding: 16px;
-      display: none;
+    .response-code-2xx { background: var(--accent-a3); color: var(--accent-11); }
+    .response-code-3xx { background: var(--blue-3); color: var(--blue-11); }
+    .response-code-4xx { background: var(--amber-3); color: var(--amber-11); }
+    .response-code-5xx { background: var(--red-3); color: var(--red-11); }
+    .response-code-default { background: var(--bg-active); color: var(--text-2); }
+
+    /* Tag overview: endpoint rows */
+    .endpoint-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      transition: background 0.12s;
     }
 
-    .response-item.expanded .response-body {
-      display: block;
+    .endpoint-row:last-child { border-bottom: none; }
+
+    .endpoint-row:hover { background: var(--bg-hover); }
+
+    .endpoint-row .method-badge { width: 56px; }
+
+    .endpoint-row-summary { flex: 1; min-width: 0; font-weight: 600; color: var(--text); }
+
+    .endpoint-row-path {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-3);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 45%;
     }
 
-    /* Code panel */
+    .endpoint-rows { border: 1px solid var(--border); border-radius: var(--radius-4); overflow: hidden; }
+
+    /* Code / Try It panel */
     .code-panel {
       width: 480px;
-      min-width: 300px;
+      min-width: 340px;
       max-width: 800px;
-      background: var(--code-bg);
-      border-left: 1px solid var(--border-color);
+      background: var(--bg-sidebar);
+      border-left: 1px solid var(--border);
       display: flex;
       flex-direction: column;
       flex-shrink: 0;
+      min-height: 0;
     }
 
     .code-panel-header {
-      padding: 16px;
-      border-bottom: 1px solid rgba(255,255,255,0.1);
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 2px;
+      height: 48px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--border);
+      overflow-x: auto;
+      flex-shrink: 0;
     }
 
     .code-tab {
-      padding: 6px 12px;
+      position: relative;
+      display: flex;
+      align-items: center;
+      height: 100%;
+      padding: 0 10px;
       font-size: 13px;
-      color: var(--code-text);
-      opacity: 0.6;
+      font-weight: 500;
+      color: var(--text-2);
       cursor: pointer;
-      border-radius: 6px;
-      transition: all 0.15s;
+      white-space: nowrap;
+      transition: color 0.12s;
     }
 
-    .code-tab:hover {
-      opacity: 0.8;
+    .code-tab:hover { color: var(--text); }
+
+    .code-tab.active { color: var(--text); font-weight: 600; }
+
+    .code-tab.active::after {
+      content: '';
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: -1px;
+      height: 2px;
+      background: var(--accent-9);
+      border-radius: 2px;
     }
 
-    .code-tab.active {
-      background: rgba(255,255,255,0.1);
-      opacity: 1;
-    }
+    [data-theme="dark"] .code-tab.active::after { background: var(--accent-11); }
 
-    .code-content {
-      flex: 1;
-      overflow: auto;
-      padding: 16px;
-    }
+    .code-content { flex: 1; overflow: auto; padding: 16px; }
 
     .code-block {
-      background: rgba(0,0,0,0.2);
-      border-radius: 8px;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-4);
       overflow: hidden;
     }
 
@@ -971,1291 +733,744 @@ function getDocumentationHtml(): string {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 12px 16px;
-      background: rgba(0,0,0,0.2);
-      border-bottom: 1px solid rgba(255,255,255,0.1);
+      padding: 6px 8px 6px 14px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-panel);
     }
 
-    .code-block-title {
-      font-size: 12px;
-      color: var(--code-text);
-      opacity: 0.6;
+    .code-block-title { font-size: 12px; font-weight: 600; color: var(--text-2); }
+
+    .code-block pre {
+      margin: 0;
+      padding: 14px;
+      font-size: 12.5px;
+      line-height: 1.6;
+      color: var(--text);
+      overflow-x: auto;
+      white-space: pre;
     }
+
+    .code-block .raw-json-textarea { border: 0; border-radius: 0; min-height: 320px; background: transparent; }
+
+    .code-block-footer { padding: 12px; border-top: 1px solid var(--border); }
 
     .copy-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      height: 26px;
+      padding: 0 8px;
       background: none;
       border: none;
-      color: var(--code-text);
-      opacity: 0.6;
-      cursor: pointer;
-      padding: 4px 8px;
+      border-radius: var(--radius-2);
+      color: var(--text-2);
       font-size: 12px;
-      border-radius: 4px;
-      transition: all 0.15s;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.12s, color 0.12s;
     }
 
-    .copy-btn:hover {
-      background: rgba(255,255,255,0.1);
-      opacity: 1;
-    }
+    .copy-btn .material-icons-outlined { font-size: 15px; }
 
-    pre {
-      margin: 0;
-      padding: 16px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 13px;
-      line-height: 1.6;
-      color: var(--code-text);
-      overflow-x: auto;
-    }
+    .copy-btn:hover { background: var(--bg-hover); color: var(--text); }
 
-    code {
-      font-family: 'JetBrains Mono', monospace;
-    }
-
-    /* Try It Panel Styles */
-    .try-it-panel {
-      padding: 8px;
-    }
-
-    .try-it-section {
-      margin-bottom: 16px;
-    }
+    /* Try It form */
+    .try-it-section { margin-bottom: 20px; }
 
     .try-it-label {
-      display: block;
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--code-text);
-      opacity: 0.8;
+      display: flex;
+      align-items: center;
+      gap: 8px;
       margin-bottom: 8px;
+      font-size: 11px;
+      font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
+      letter-spacing: 0.06em;
+      color: var(--text-3);
     }
 
-    .try-it-input {
+    .try-it-input, .try-it-textarea, .raw-json-textarea,
+    .body-field-input input, .body-field-input select, .body-field-input textarea {
       width: 100%;
-      padding: 10px 12px;
-      background: rgba(0,0,0,0.3);
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 6px;
-      color: var(--code-text);
-      font-family: 'JetBrains Mono', monospace;
+      padding: 7px 10px;
+      background: var(--surface);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-3);
+      font-family: var(--font-mono);
       font-size: 13px;
+      color: var(--text);
       outline: none;
-      transition: border-color 0.2s;
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
 
-    .try-it-input:focus {
-      border-color: var(--accent-green);
+    .try-it-input, .body-field-input input, .body-field-input select { height: 34px; }
+
+    .try-it-input:focus, .try-it-textarea:focus, .raw-json-textarea:focus,
+    .body-field-input input:focus, .body-field-input select:focus, .body-field-input textarea:focus {
+      border-color: var(--accent-9);
+      box-shadow: 0 0 0 3px var(--accent-a3);
     }
 
-    .try-it-input::placeholder {
-      color: rgba(255,255,255,0.3);
+    .try-it-input::placeholder, .raw-json-textarea::placeholder,
+    .body-field-input input::placeholder, .body-field-input textarea::placeholder { color: var(--text-3); }
+
+    .try-it-textarea, .raw-json-textarea, .body-field-input textarea { resize: vertical; line-height: 1.55; }
+
+    .raw-json-textarea { min-height: 220px; }
+
+    .body-field-input textarea { min-height: 84px; }
+
+    .body-field-input select, select.try-it-input {
+      appearance: none;
+      cursor: pointer;
+      padding-right: 32px;
+      background-image: var(--select-chevron);
+      background-repeat: no-repeat;
+      background-position: right 10px center;
     }
 
-    .try-it-textarea {
-      width: 100%;
-      min-height: 150px;
-      padding: 12px;
-      background: rgba(0,0,0,0.3);
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 6px;
-      color: var(--code-text);
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 13px;
-      outline: none;
-      resize: vertical;
-      transition: border-color 0.2s;
-    }
+    .raw-json-textarea.error { border-color: var(--red-9); }
 
-    .try-it-textarea:focus {
-      border-color: var(--accent-green);
-    }
+    .raw-json-error { margin-top: 6px; font-size: 12px; color: var(--red-11); }
 
     .input-mode-toggle {
       display: flex;
-      gap: 0;
       margin-bottom: 12px;
-      background: rgba(0,0,0,0.2);
-      border-radius: 6px;
-      padding: 3px;
+      padding: 2px;
+      background: var(--bg-active);
+      border-radius: var(--radius-3);
     }
 
     .input-mode-btn {
       flex: 1;
-      padding: 6px 12px;
+      height: 28px;
       background: transparent;
       border: none;
-      border-radius: 4px;
-      color: var(--text-muted);
+      border-radius: var(--radius-2);
+      color: var(--text-2);
       font-size: 12px;
-      font-weight: 500;
+      font-weight: 600;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: background 0.12s, color 0.12s;
     }
 
-    .input-mode-btn:hover {
-      color: var(--text-secondary);
-    }
+    .input-mode-btn:hover { color: var(--text); }
 
-    .input-mode-btn.active {
-      background: var(--accent-green);
-      color: white;
-    }
+    .input-mode-btn.active { background: var(--bg); color: var(--text); box-shadow: var(--shadow); }
 
-    [data-theme="dark"] .input-mode-toggle {
-      background: rgba(0,0,0,0.3);
-    }
+    [data-theme="dark"] .input-mode-btn.active { background: var(--gray-6); }
 
-    :root:not([data-theme="dark"]) .input-mode-toggle {
-      background: var(--bg-tertiary);
-    }
-
-    :root:not([data-theme="dark"]) .input-mode-btn {
-      color: var(--text-muted);
-    }
-
-    :root:not([data-theme="dark"]) .input-mode-btn:hover {
-      color: var(--text-secondary);
-    }
-
-    :root:not([data-theme="dark"]) .input-mode-btn.active {
-      background: var(--accent-green);
-      color: white;
-    }
-
-    .raw-json-textarea {
-      width: 100%;
-      min-height: 200px;
-      padding: 12px;
-      background: rgba(0,0,0,0.3);
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 6px;
-      color: var(--code-text);
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 13px;
-      outline: none;
-      resize: vertical;
-      transition: border-color 0.2s;
-    }
-
-    .raw-json-textarea:focus {
-      border-color: var(--accent-green);
-    }
-
-    .raw-json-textarea.error {
-      border-color: var(--accent-red);
-    }
-
-    .raw-json-error {
-      color: var(--accent-red);
-      font-size: 12px;
-      margin-top: 4px;
-    }
-
-    [data-theme="dark"] .raw-json-textarea {
-      background: rgba(0,0,0,0.4);
-      border-color: rgba(255,255,255,0.15);
-    }
-
-    :root:not([data-theme="dark"]) .raw-json-textarea {
-      background: var(--bg-secondary);
-      border: 1px solid var(--border-color);
-      color: var(--text-primary);
-    }
-
-    .file-upload-container {
-      width: 100%;
-      position: relative;
-    }
-
-    .file-upload-input {
-      width: 100%;
-      padding: 20px;
-      background: rgba(0,0,0,0.3);
-      border: 2px dashed rgba(255,255,255,0.2);
-      border-radius: 8px;
-      color: var(--code-text);
-      font-family: 'Inter', sans-serif;
-      font-size: 14px;
-      outline: none;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-
-    .file-upload-input:hover {
-      border-color: var(--accent-green);
-      background: rgba(0, 172, 58, 0.1);
-    }
-
-    .file-upload-input:focus {
-      border-color: var(--accent-green);
-    }
-
-    .file-upload-input::file-selector-button {
-      padding: 8px 16px;
-      margin-right: 12px;
-      background: var(--accent-green);
-      border: none;
-      border-radius: 6px;
-      color: white;
-      font-weight: 500;
-      cursor: pointer;
-      transition: background 0.2s;
-    }
-
-    .file-upload-input::file-selector-button:hover {
-      background: #009933;
-    }
-
-    .file-upload-label {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 20px;
-      background: rgba(0,0,0,0.3);
-      border: 2px dashed rgba(255,255,255,0.2);
-      border-radius: 8px;
-      color: rgba(255,255,255,0.6);
-      font-size: 14px;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-
-    .file-upload-label:hover {
-      border-color: var(--accent-green);
-      background: rgba(0, 172, 58, 0.1);
-      color: var(--accent-green);
-    }
-
-    .file-upload-label.has-file {
-      border-color: var(--accent-green);
-      background: rgba(34, 197, 94, 0.1);
-      color: var(--accent-green);
-    }
-
-    .file-upload-icon {
-      width: 24px;
-      height: 24px;
-    }
-
-    .file-selected-info {
-      margin-top: 8px;
-      padding: 8px 12px;
-      background: rgba(34, 197, 94, 0.1);
-      border-radius: 6px;
-      font-size: 12px;
-      color: var(--accent-green);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    .file-selected-info .file-name {
-      font-family: 'JetBrains Mono', monospace;
-      word-break: break-all;
-    }
-
-    .file-selected-info .file-size {
-      color: rgba(255,255,255,0.5);
-      margin-left: 8px;
-    }
-
-    .file-clear-btn {
-      background: transparent;
-      border: none;
-      color: rgba(255,255,255,0.5);
-      cursor: pointer;
-      padding: 4px;
-      font-size: 16px;
-    }
-
-    .file-clear-btn:hover {
-      color: var(--accent-red);
-    }
-
-    .file-upload-hint {
-      margin-top: 8px;
-      font-size: 12px;
-      color: rgba(255,255,255,0.4);
-    }
-
-    .param-input-group {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 8px;
-    }
+    .param-input-group { margin-bottom: 12px; }
 
     .param-input-label {
-      min-width: 120px;
-      font-size: 13px;
-      color: var(--text-primary);
-      font-family: 'JetBrains Mono', monospace;
-    }
-
-    .param-input-label .required {
-      color: var(--accent-red);
-      margin-left: 4px;
-    }
-
-    .body-field-group {
-      margin-bottom: 12px;
-      padding: 12px;
-      background: var(--bg-secondary);
-      border-radius: 8px;
-      border: 1px solid var(--border-color);
-    }
-
-    .body-field-row {
       display: flex;
-      align-items: flex-start;
-      gap: 12px;
-      margin-bottom: 10px;
+      align-items: baseline;
+      gap: 6px;
+      margin-bottom: 5px;
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--text);
+      overflow-wrap: anywhere;
     }
 
-    .body-field-row:last-child {
-      margin-bottom: 0;
-    }
+    .param-input-label .field-type { font-weight: 400; color: var(--text-3); font-size: 11px; }
+
+    .required { color: var(--red-11); margin-left: 2px; }
+
+    .body-field-group { display: flex; flex-direction: column; gap: 14px; }
 
     .body-field-label {
-      min-width: 140px;
-      padding-top: 10px;
-      font-size: 13px;
-      color: var(--text-primary);
-      font-family: 'JetBrains Mono', monospace;
+      display: flex;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 5px;
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--text);
+      overflow-wrap: anywhere;
     }
 
-    .body-field-label .required {
-      color: var(--accent-red);
-      margin-left: 4px;
-    }
+    .body-field-label .field-type { font-size: 11px; font-weight: 400; color: var(--text-3); }
 
-    .body-field-label .field-type {
-      display: block;
-      font-size: 11px;
-      color: var(--text-muted);
-      margin-top: 2px;
-      font-weight: normal;
-    }
+    .body-field-desc { margin-top: 5px; }
 
-    .body-field-input {
-      flex: 1;
-    }
-
-    .body-field-input input,
-    .body-field-input select,
-    .body-field-input textarea {
-      width: 100%;
-      padding: 10px 12px;
-      background: var(--bg-primary);
-      border: 1px solid var(--border-color);
-      border-radius: 6px;
-      color: var(--text-primary);
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 13px;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-
-    .body-field-input input:focus,
-    .body-field-input select:focus,
-    .body-field-input textarea:focus {
-      border-color: var(--accent-green);
-    }
-
-    .body-field-input input::placeholder,
-    .body-field-input textarea::placeholder {
-      color: var(--text-muted);
-    }
-
-    .body-field-input textarea {
-      min-height: 80px;
-      resize: vertical;
-    }
-
-    .body-field-input select {
-      cursor: pointer;
-      appearance: none;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23475569' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-      background-repeat: no-repeat;
-      background-position: right 12px center;
-      padding-right: 36px;
-    }
-
-    .body-field-desc {
-      font-size: 11px;
-      color: var(--text-secondary);
-      margin-top: 4px;
-    }
+    .body-field-desc.md { font-size: 12px; line-height: 1.5; color: var(--text-3); }
 
     .nested-object {
-      margin-left: 0;
-      margin-top: 8px;
-      padding: 12px;
-      background: var(--bg-tertiary);
-      border-radius: 6px;
-      border-left: 2px solid var(--accent-blue);
+      padding: 12px 0 2px 12px;
+      border-left: 2px solid var(--accent-6);
     }
 
     .nested-object-label {
+      margin-bottom: 10px;
       font-size: 11px;
       font-weight: 600;
-      color: var(--accent-blue);
+      letter-spacing: 0.06em;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
-      margin-bottom: 10px;
+      color: var(--text-3);
     }
 
-    .array-field-container {
-      margin-top: 8px;
-    }
+    .array-item { display: flex; align-items: flex-start; gap: 6px; margin-bottom: 6px; }
 
-    .array-item {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 8px;
-    }
+    .array-item input, .array-item textarea { flex: 1; min-width: 0; }
 
-    .array-item input {
-      flex: 1;
-    }
+    .array-item textarea { min-height: 150px; }
 
-    .array-add-btn,
-    .array-remove-btn {
-      padding: 8px 12px;
-      background: var(--bg-tertiary);
-      border: 1px solid var(--border-color);
-      border-radius: 6px;
-      color: var(--text-primary);
+    .array-add-btn, .array-remove-btn, .secondary-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      height: 30px;
+      padding: 0 10px;
+      background: var(--bg);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-3);
+      color: var(--text);
       font-size: 12px;
+      font-weight: 600;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: background 0.12s, color 0.12s, border-color 0.12s;
     }
 
-    .array-add-btn:hover {
-      background: var(--border-color);
+    .array-add-btn .material-icons-outlined, .array-remove-btn .material-icons-outlined { font-size: 16px; }
+
+    .array-add-btn:hover, .secondary-btn:hover { background: var(--bg-hover); }
+
+    .array-remove-btn { width: 34px; height: 34px; padding: 0; color: var(--text-2); }
+
+    .array-remove-btn:hover { color: var(--red-11); border-color: var(--red-6); background: var(--red-3); }
+
+    /* File upload */
+    .file-upload-input {
+      width: 100%;
+      padding: 6px;
+      background: var(--surface);
+      border: 1px dashed var(--border-strong);
+      border-radius: var(--radius-4);
+      font-size: 13px;
+      color: var(--text-2);
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
     }
 
-    .array-remove-btn {
-      padding: 8px 10px;
-      background: rgba(239, 68, 68, 0.1);
-      border-color: rgba(239, 68, 68, 0.3);
-      color: #991b1b;
+    .body-field-input input.file-upload-input { height: auto; font-family: var(--font-sans); }
+
+    .file-upload-input:hover { border-color: var(--accent-9); background: var(--accent-a3); }
+
+    .file-upload-input::file-selector-button {
+      height: 30px;
+      margin-right: 12px;
+      padding: 0 12px;
+      background: var(--bg);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-3);
+      color: var(--text);
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
     }
 
-    .array-remove-btn:hover {
-      background: rgba(239, 68, 68, 0.2);
+    .file-selected-info {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 8px;
+      padding: 6px 6px 6px 10px;
+      font-size: 12px;
+      color: var(--accent-11);
+      background: var(--accent-a3);
+      border-radius: var(--radius-3);
     }
 
-    .execute-btn {
+    .file-selected-info .file-name { font-family: var(--font-mono); word-break: break-all; }
+
+    .file-selected-info .file-size { margin-left: 6px; color: var(--text-2); }
+
+    .file-clear-btn {
+      display: inline-flex;
+      background: transparent;
+      border: none;
+      color: var(--text-2);
+      cursor: pointer;
+      border-radius: var(--radius-2);
+    }
+
+    .file-clear-btn:hover { color: var(--red-11); }
+
+    /* Buttons */
+    .execute-btn, .primary-btn {
       display: flex;
       align-items: center;
       justify-content: center;
-      gap: 8px;
+      gap: 6px;
       width: 100%;
-      padding: 12px;
-      background: var(--accent-green);
-      color: white;
+      height: 36px;
+      background: var(--accent-9);
+      color: #ffffff;
       border: none;
-      border-radius: 8px;
+      border-radius: var(--radius-3);
       font-size: 14px;
       font-weight: 600;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: background 0.12s;
     }
 
-    .execute-btn:hover {
-      background: #009933;
-    }
+    .execute-btn:hover, .primary-btn:hover { background: var(--accent-10); }
 
-    .execute-btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
+    .execute-btn:disabled { opacity: 0.6; cursor: progress; }
 
-    .execute-btn.loading {
-      pointer-events: none;
-    }
+    /* Live response */
+    .response-section { margin-top: 20px; scroll-margin-top: 16px; }
 
     .response-pre {
-      background: var(--bg-secondary);
-      border-radius: 6px;
-      padding: 16px;
-      max-height: 400px;
+      max-height: 420px;
       overflow: auto;
+      padding: 12px 14px;
       font-size: 12px;
+      line-height: 1.55;
       white-space: pre-wrap;
       word-break: break-word;
-      color: var(--text-primary);
-      border: 1px solid var(--border-color);
+      color: var(--text);
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-4);
     }
 
     .response-status {
-      font-size: 12px;
-      padding: 2px 8px;
-      border-radius: 4px;
-      margin-left: 8px;
+      padding: 1px 8px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: none;
+      border-radius: var(--radius-2);
     }
 
-    .response-status.success {
-      background: rgba(0, 172, 58, 0.12);
-      color: #00862d;
-    }
+    .response-status.success { background: var(--accent-a3); color: var(--accent-11); }
 
-    .response-status.error {
-      background: rgba(239, 68, 68, 0.12);
-      color: #991b1b;
-    }
+    .response-status.error { background: var(--red-3); color: var(--red-11); }
 
-    /* Response headers section */
+    .response-time { margin-left: auto; font-weight: 500; text-transform: none; letter-spacing: 0; }
+
     .response-headers-section {
-      margin-top: 12px;
-      background: var(--bg-secondary);
-      border-radius: 8px;
+      margin-top: 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-4);
       overflow: hidden;
-      border: 1px solid var(--border-color);
     }
 
     .response-headers-toggle {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 10px 14px;
-      background: var(--bg-tertiary);
+      padding: 8px 12px;
+      background: var(--bg-panel);
       cursor: pointer;
-      transition: background 0.15s;
       user-select: none;
     }
 
-    .response-headers-toggle:hover {
-      background: var(--border-color);
-    }
+    .response-headers-toggle:hover { background: var(--bg-hover); }
 
     .response-headers-toggle-left {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       font-size: 12px;
       font-weight: 600;
-      color: var(--text-primary);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
+      color: var(--text-2);
     }
 
-    .response-headers-toggle-icon {
-      transition: transform 0.2s;
-    }
+    .response-headers-toggle-icon { transition: transform 0.15s; }
 
-    .response-headers-section.expanded .response-headers-toggle-icon {
-      transform: rotate(90deg);
-    }
+    .response-headers-section.expanded .response-headers-toggle-icon { transform: rotate(90deg); }
 
     .response-headers-count {
+      padding: 0 7px;
       font-size: 11px;
-      padding: 2px 8px;
-      background: var(--bg-tertiary);
-      border-radius: 10px;
-      color: var(--text-secondary);
+      font-weight: 600;
+      line-height: 18px;
+      color: var(--text-2);
+      background: var(--bg-active);
+      border-radius: 999px;
     }
 
-    .response-headers-content {
-      display: none;
-      padding: 12px 14px;
-      background: var(--bg-primary);
-    }
+    .response-headers-content { display: none; padding: 4px 12px; border-top: 1px solid var(--border); }
 
-    .response-headers-section.expanded .response-headers-content {
-      display: block;
-    }
+    .response-headers-section.expanded .response-headers-content { display: block; }
 
     .header-row {
       display: flex;
+      gap: 12px;
       padding: 6px 0;
-      border-bottom: 1px solid var(--border-color);
-      font-family: 'JetBrains Mono', monospace;
+      border-bottom: 1px solid var(--border);
+      font-family: var(--font-mono);
       font-size: 12px;
     }
 
-    .header-row:last-child {
-      border-bottom: none;
-    }
+    .header-row:last-child { border-bottom: none; }
 
-    .header-name {
-      min-width: 180px;
-      color: var(--accent-blue);
-      font-weight: 500;
-    }
+    .header-name { flex: 0 0 40%; color: var(--text-2); font-weight: 600; word-break: break-all; }
 
-    .header-value {
-      flex: 1;
-      color: var(--text-primary);
-      word-break: break-all;
-    }
+    .header-value { flex: 1; color: var(--text); word-break: break-all; }
 
-    /* Schema display */
+    /* Schemas */
     .schema-block {
-      background: var(--bg-secondary);
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
-      overflow: hidden;
       margin-top: 8px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-4);
+      overflow: hidden;
     }
 
     .schema-header {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      padding: 10px 16px;
-      background: var(--bg-tertiary);
-      border-bottom: 1px solid var(--border-color);
+      gap: 6px;
+      padding: 8px 12px;
+      background: var(--bg-panel);
       cursor: pointer;
+      user-select: none;
+      transition: background 0.12s;
     }
 
-    .schema-header:hover {
-      background: var(--border-color);
-    }
+    .schema-header:hover { background: var(--bg-hover); }
 
-    .schema-name {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 13px;
-      color: var(--accent-blue);
-      font-weight: 500;
-    }
+    .schema-header .material-icons-outlined { color: var(--text-3); transition: transform 0.15s; }
 
-    .schema-toggle {
-      font-size: 12px;
-      color: var(--text-muted);
-    }
+    .schema-block.expanded > .schema-header .material-icons-outlined { transform: rotate(90deg); }
 
-    .schema-content {
-      padding: 16px;
-      display: none;
-    }
+    .schema-name { font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; color: var(--text); }
 
-    .schema-block.expanded .schema-content {
-      display: block;
-    }
+    .schema-toggle { margin-left: auto; font-size: 12px; color: var(--text-3); }
 
-    .schema-property {
-      display: flex;
-      padding: 8px 0;
-      border-bottom: 1px solid var(--border-color);
-    }
+    .schema-content { display: none; border-top: 1px solid var(--border); overflow-x: auto; }
 
-    .schema-property:last-child {
-      border-bottom: none;
-    }
+    .schema-block.expanded > .schema-content { display: block; }
 
-    .schema-prop-name {
-      min-width: 150px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 13px;
-      color: var(--text-primary);
-    }
-
-    .schema-prop-type {
-      min-width: 100px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 12px;
-      color: var(--accent-purple);
-    }
-
-    .schema-prop-desc {
-      flex: 1;
-      font-size: 13px;
-      color: var(--text-secondary);
-    }
-
-    /* Enhanced Schema Table */
-    .schema-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 13px;
-    }
+    .schema-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 
     .schema-table th {
+      padding: 8px 12px;
       text-align: left;
-      padding: 10px 12px;
-      background: var(--bg-tertiary);
-      color: var(--text-secondary);
-      font-weight: 500;
       font-size: 11px;
+      font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 0.5px;
-      border-bottom: 1px solid var(--border-color);
+      letter-spacing: 0.06em;
+      color: var(--text-3);
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
     }
 
-    .schema-table td {
-      padding: 12px;
-      border-bottom: 1px solid var(--border-color);
-      vertical-align: top;
-    }
+    .schema-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
 
-    .schema-table tr:last-child td {
-      border-bottom: none;
-    }
+    .schema-table td:first-child { width: 28%; }
 
-    .schema-table tr:hover {
-      background: var(--bg-secondary);
-    }
+    .schema-table td:nth-child(2) { width: 18%; }
 
-    .schema-field-name {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 13px;
-      color: var(--text-primary);
-      font-weight: 500;
-    }
+    .schema-table tr:last-child > td { border-bottom: none; }
 
-    .schema-field-required {
-      color: var(--accent-red);
-      font-size: 11px;
-      font-weight: 500;
-      margin-left: 4px;
-    }
+    .schema-table .schema-table { border: 1px solid var(--border); border-radius: var(--radius-3); }
+
+    .schema-field-name { font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
 
     .schema-field-type {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 12px;
-      color: var(--accent-purple);
-      background: var(--bg-tertiary);
-      padding: 2px 6px;
-      border-radius: 4px;
       display: inline-block;
-    }
-
-    .schema-field-desc {
-      color: var(--text-secondary);
-      line-height: 1.5;
-    }
-
-    .schema-field-example {
-      font-family: 'JetBrains Mono', monospace;
+      font-family: var(--font-mono);
       font-size: 12px;
-      color: var(--accent-green);
-      background: var(--bg-tertiary);
-      padding: 4px 8px;
-      border-radius: 4px;
-      margin-top: 6px;
-      display: inline-block;
-      word-break: break-all;
-    }
-
-    .schema-field-enum {
-      margin-top: 6px;
-    }
-
-    .schema-field-enum-value {
-      display: inline-block;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 11px;
-      background: var(--bg-tertiary);
-      color: var(--accent-orange);
-      padding: 2px 6px;
-      border-radius: 3px;
-      margin: 2px 4px 2px 0;
-    }
-
-    .schema-nested {
-      margin-left: 20px;
-      border-left: 2px solid var(--border-color);
-      padding-left: 16px;
-      margin-top: 8px;
-    }
-
-    .schema-nested-header {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      cursor: pointer;
-      padding: 6px 0;
-      color: var(--text-secondary);
-      font-size: 12px;
-    }
-
-    .schema-nested-header:hover {
-      color: var(--text-primary);
-    }
-
-    .schema-nested-toggle {
-      width: 16px;
-      height: 16px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: var(--bg-tertiary);
-      border-radius: 3px;
-      transition: transform 0.15s;
-    }
-
-    .schema-nested-toggle.expanded {
-      transform: rotate(90deg);
-    }
-
-    .schema-nested-content {
-      display: none;
-      margin-top: 8px;
-    }
-
-    .schema-nested-content.expanded {
-      display: block;
-    }
-
-    .schema-oneof-container {
-      margin-top: 8px;
-    }
-
-    .schema-oneof-tabs {
-      display: flex;
-      gap: 4px;
-      margin-bottom: 8px;
-      flex-wrap: wrap;
-    }
-
-    .schema-oneof-tab {
-      padding: 6px 12px;
-      font-size: 12px;
-      background: var(--bg-tertiary);
-      border: 1px solid var(--border-color);
-      border-radius: 4px;
-      cursor: pointer;
-      color: var(--text-secondary);
-      font-family: 'JetBrains Mono', monospace;
-    }
-
-    .schema-oneof-tab:hover {
-      background: var(--bg-secondary);
-      color: var(--text-primary);
-    }
-
-    .schema-oneof-tab.active {
-      background: var(--accent-blue);
-      color: white;
-      border-color: var(--accent-blue);
-    }
-
-    .schema-oneof-content {
-      display: none;
-      border: 1px solid var(--border-color);
-      border-radius: 6px;
-      padding: 12px;
-      background: var(--bg-secondary);
-    }
-
-    .schema-oneof-content.active {
-      display: block;
-    }
-
-    .schema-constraints {
-      margin-top: 6px;
-      font-size: 11px;
-      color: var(--text-muted);
-    }
-
-    .schema-constraints span {
-      display: inline-block;
-      background: var(--bg-tertiary);
-      padding: 2px 6px;
-      border-radius: 3px;
-      margin-right: 6px;
-      margin-bottom: 4px;
+      color: var(--violet-11);
+      overflow-wrap: anywhere;
     }
 
     .schema-format-badge {
-      font-family: 'JetBrains Mono', monospace;
+      display: inline-block;
+      margin-left: 4px;
+      padding: 0 5px;
+      font-family: var(--font-mono);
       font-size: 10px;
-      background: var(--accent-blue);
-      color: white;
-      padding: 2px 5px;
-      border-radius: 3px;
-      margin-left: 6px;
-      vertical-align: middle;
+      line-height: 16px;
+      color: var(--blue-11);
+      background: var(--blue-3);
+      border-radius: var(--radius-2);
     }
 
-    /* Try it button */
-    .try-it-btn {
-      display: flex;
+    .schema-field-desc { color: var(--text-2); }
+
+    .schema-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+
+    .schema-meta span, .schema-field-enum-value {
+      display: inline-block;
+      padding: 0 6px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 18px;
+      color: var(--text-2);
+      background: var(--bg-hover);
+      border-radius: var(--radius-2);
+      word-break: break-all;
+    }
+
+    .schema-meta .schema-field-example { color: var(--accent-11); background: var(--accent-a3); }
+
+    .schema-field-enum { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 6px; font-size: 12px; color: var(--text-3); }
+
+    .schema-nested { margin-top: 8px; }
+
+    .schema-nested-header {
+      display: inline-flex;
       align-items: center;
-      gap: 6px;
-      padding: 10px 20px;
-      background: var(--accent-green);
-      color: white;
-      border: none;
-      border-radius: 8px;
-      font-size: 14px;
-      font-weight: 500;
+      gap: 2px;
+      padding: 2px 6px 2px 2px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--accent-11);
+      border-radius: var(--radius-2);
       cursor: pointer;
-      transition: all 0.15s;
     }
 
-    .try-it-btn:hover {
-      background: #009933;
+    .schema-nested-header:hover { background: var(--accent-a3); }
+
+    .schema-nested-toggle { transition: transform 0.15s; }
+
+    .schema-nested-toggle.expanded { transform: rotate(90deg); }
+
+    .schema-nested-content { display: none; margin-top: 8px; }
+
+    .schema-nested-content.expanded { display: block; }
+
+    .schema-oneof-container { margin-top: 8px; }
+
+    .schema-oneof-caption { margin-bottom: 6px; font-size: 11px; color: var(--text-3); }
+
+    .schema-oneof-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+
+    .schema-oneof-tab {
+      padding: 2px 8px;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--text-2);
+      background: var(--bg);
+      border: 1px solid var(--border-strong);
+      border-radius: 999px;
+      cursor: pointer;
     }
 
-    /* Loading state */
-    .loading {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      height: 100%;
-      color: var(--text-muted);
-    }
+    .schema-oneof-tab:hover { color: var(--text); background: var(--bg-hover); }
+
+    .schema-oneof-tab.active { color: var(--accent-11); background: var(--accent-a3); border-color: var(--accent-6); }
+
+    .schema-oneof-content { display: none; }
+
+    .schema-oneof-content.active { display: block; }
+
+    .schema-scalar { padding: 10px 12px; color: var(--text-2); }
+
+    /* Loading */
+    .loading { display: flex; align-items: center; justify-content: center; gap: 10px; height: 100%; padding: 24px; color: var(--text-3); }
 
     .spinner {
-      width: 40px;
-      height: 40px;
-      border: 3px solid var(--border-color);
-      border-top-color: var(--accent-green);
+      width: 28px;
+      height: 28px;
+      border: 2px solid var(--border-strong);
+      border-top-color: var(--accent-9);
       border-radius: 50%;
-      animation: spin 1s linear infinite;
+      animation: spin 0.8s linear infinite;
     }
 
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* Welcome screen */
-    .welcome-screen {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: 100%;
-      text-align: center;
-      padding: 40px;
-    }
+    /* Welcome */
+    .welcome-screen { padding: 24px 0 8px; }
 
     .welcome-icon {
-      width: 80px;
-      height: 80px;
-      background: #00ac3a;
-      border-radius: 20px;
       display: flex;
       align-items: center;
       justify-content: center;
-      margin-bottom: 24px;
+      width: 48px;
+      height: 48px;
+      margin-bottom: 20px;
+      color: var(--accent-9);
+      background: var(--accent-a3);
+      border-radius: var(--radius-5);
     }
 
-    .welcome-icon svg {
-      width: 50px;
-      height: 50px;
-    }
+    [data-theme="dark"] .welcome-icon { color: var(--accent-11); }
 
-    .welcome-title {
-      font-family: 'Manrope', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-      font-size: 28px;
-      font-weight: 700;
-      margin-bottom: 12px;
-    }
+    .welcome-icon svg { width: 28px; height: 28px; }
 
-    .welcome-description {
-      color: var(--text-secondary);
-      font-size: 16px;
-      max-width: 500px;
-      line-height: 1.7;
-    }
+    .welcome-title { font-size: 28px; font-weight: 700; line-height: 1.25; letter-spacing: -0.015em; margin-bottom: 8px; }
 
-    /* Module card */
-    .module-list {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-      gap: 16px;
-      margin-top: 24px;
-    }
+    .welcome-description { max-width: 620px; color: var(--text-2); font-size: 15px; line-height: 1.65; }
+
+    .quickstart { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-top: 28px; }
+
+    .quickstart-card { padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-4); background: var(--bg-panel); }
+
+    .quickstart-card .material-icons-outlined { color: var(--accent-11); font-size: 20px; }
+
+    .quickstart-card h3 { margin: 10px 0 4px; font-size: 14px; font-weight: 700; }
+
+    .quickstart-card p { color: var(--text-2); font-size: 13px; line-height: 1.55; }
+
+    .quickstart-card code { font-size: 12px; padding: 0 4px; background: var(--bg-active); border-radius: var(--radius-2); }
+
+    /* Module overview cards */
+    .module-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
 
     .module-card {
-      padding: 20px;
-      background: var(--bg-primary);
-      border: 1px solid var(--border-color);
-      border-radius: 12px;
-      cursor: pointer;
-      transition: all 0.2s;
-    }
-
-    .module-card:hover {
-      border-color: var(--accent-green);
-      box-shadow: 0 4px 12px rgba(0, 172, 58, 0.08);
-    }
-
-    .module-card-header {
       display: flex;
       align-items: center;
       gap: 12px;
-      margin-bottom: 12px;
+      padding: 14px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-4);
+      cursor: pointer;
+      transition: border-color 0.12s, box-shadow 0.12s, background 0.12s;
     }
+
+    .module-card:hover { border-color: var(--accent-6); background: var(--bg-panel); box-shadow: var(--shadow); }
 
     .module-card-icon {
-      width: 40px;
-      height: 40px;
-      background: var(--bg-secondary);
-      border-radius: 10px;
       display: flex;
       align-items: center;
       justify-content: center;
+      width: 36px;
+      height: 36px;
+      flex-shrink: 0;
+      color: var(--accent-11);
+      background: var(--accent-a3);
+      border-radius: var(--radius-3);
     }
 
-    .module-card-title {
-      font-family: 'Manrope', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-      font-weight: 600;
-      font-size: 16px;
-    }
+    .module-card-header { flex: 1; min-width: 0; }
 
-    .module-card-description {
-      color: var(--text-secondary);
-      font-size: 14px;
-      line-height: 1.6;
-    }
+    .module-card-title { font-weight: 700; font-size: 14px; overflow-wrap: anywhere; }
 
-    .module-card-meta {
-      display: flex;
-      gap: 16px;
-      margin-top: 16px;
-      font-size: 12px;
-      color: var(--text-muted);
-    }
+    .module-card-meta { margin-top: 2px; font-size: 12px; color: var(--text-3); }
 
-    /* Health Section */
+    .module-card-arrow { color: var(--text-3); }
+
+    /* Health */
     .health-section {
-      margin-top: 32px;
-      padding: 24px;
-      background: var(--bg-secondary);
-      border: 1px solid var(--border-color);
-      border-radius: 12px;
+      margin-top: 28px;
+      padding: 20px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-5);
     }
 
-    .health-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 20px;
-    }
+    .health-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
 
-    .health-title {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      font-family: 'Manrope', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-      font-size: 18px;
-      font-weight: 600;
-    }
+    .health-title { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 700; }
 
     .health-title-icon {
-      width: 32px;
-      height: 32px;
-      background: var(--bg-tertiary);
-      border-radius: 8px;
       display: flex;
       align-items: center;
       justify-content: center;
+      width: 30px;
+      height: 30px;
+      color: var(--accent-11);
+      background: var(--accent-a3);
+      border-radius: var(--radius-3);
     }
 
-    .health-refresh-btn {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 8px 16px;
-      background: var(--bg-tertiary);
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
-      color: var(--text-secondary);
-      font-size: 13px;
-      cursor: pointer;
-      transition: all 0.15s;
-    }
+    .health-refresh-btn { flex-shrink: 0; }
 
-    .health-refresh-btn:hover {
-      background: var(--border-color);
-      color: var(--text-primary);
-    }
+    .health-refresh-btn.loading { pointer-events: none; opacity: 0.7; }
 
-    .health-refresh-btn.loading {
-      pointer-events: none;
-      opacity: 0.7;
-    }
-
-    .health-refresh-btn.loading svg {
-      animation: spin 1s linear infinite;
-    }
+    .health-refresh-btn.loading .material-icons-outlined { animation: spin 0.8s linear infinite; }
 
     .health-overall {
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 8px;
-      margin-bottom: 20px;
-      padding: 12px 16px;
-      background: var(--bg-primary);
-      border-radius: 8px;
+      margin-bottom: 14px;
     }
 
-    .health-overall-label {
-      font-size: 13px;
-      color: var(--text-muted);
-    }
+    .health-overall-label { font-size: 13px; color: var(--text-2); }
 
-    .health-overall-status {
-      font-weight: 600;
-      font-size: 14px;
-      padding: 4px 12px;
-      border-radius: 20px;
-    }
+    .health-overall-status { padding: 1px 10px; font-size: 12px; font-weight: 700; line-height: 20px; border-radius: 999px; }
 
-    .health-overall-status.healthy {
-      background: rgba(0, 172, 58, 0.12);
-      color: #00ac3a;
-    }
+    .health-overall-status.healthy { background: var(--accent-a3); color: var(--accent-11); }
+    .health-overall-status.degraded { background: var(--amber-3); color: var(--amber-11); }
+    .health-overall-status.unhealthy { background: var(--red-3); color: var(--red-11); }
 
-    .health-overall-status.degraded {
-      background: rgba(249, 115, 22, 0.12);
-      color: #f97316;
-    }
+    .health-timestamp { margin-left: auto; font-size: 12px; color: var(--text-3); }
 
-    .health-overall-status.unhealthy {
-      background: rgba(239, 68, 68, 0.12);
-      color: #ef4444;
-    }
-
-    [data-theme="dark"] .health-overall-status.healthy {
-      background: rgba(0, 172, 58, 0.15);
-      color: #00d147;
-    }
-
-    [data-theme="dark"] .health-overall-status.degraded {
-      background: rgba(249, 115, 22, 0.15);
-      color: #fdba74;
-    }
-
-    [data-theme="dark"] .health-overall-status.unhealthy {
-      background: rgba(239, 68, 68, 0.15);
-      color: #fca5a5;
-    }
-
-    .health-timestamp {
-      margin-left: auto;
-      font-size: 12px;
-      color: var(--text-muted);
-    }
-
-    .health-services {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-      gap: 12px;
-    }
+    .health-services { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
 
     .health-service-card {
       display: flex;
       align-items: center;
-      gap: 12px;
-      padding: 16px;
-      background: var(--bg-primary);
-      border: 1px solid var(--border-color);
-      border-radius: 10px;
-      transition: all 0.15s;
+      gap: 10px;
+      padding: 10px 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-4);
     }
 
-    .health-service-card:hover {
-      border-color: var(--accent-green);
+    .health-service-indicator { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+    .health-service-indicator.healthy { background: var(--accent-9); box-shadow: 0 0 0 3px var(--accent-a3); }
+    .health-service-indicator.unhealthy { background: var(--red-9); box-shadow: 0 0 0 3px var(--red-3); }
+    .health-service-indicator.unknown { background: var(--gray-8); }
+
+    [data-theme="dark"] .health-service-indicator.healthy { background: var(--accent-11); }
+
+    .health-service-info { flex: 1; min-width: 0; }
+
+    .health-service-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .health-service-details { font-size: 12px; color: var(--text-3); text-transform: capitalize; }
+
+    .health-loading { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 24px; color: var(--text-3); }
+
+    .health-loading .spinner { width: 18px; height: 18px; }
+
+    /* Responsive: below 1100px the Try It panel stacks under the docs */
+    @media (max-width: 1100px) {
+      .content-body { flex-direction: column; overflow-y: auto; }
+      .doc-panel { flex: none; overflow: visible; padding: 24px 24px 32px; }
+      .code-panel { width: auto !important; max-width: none; min-width: 0; border-left: 0; border-top: 1px solid var(--border); }
+      .code-content { overflow: visible; }
+      .resize-handle-left { display: none !important; }
     }
 
-    .health-service-indicator {
-      width: 12px;
-      height: 12px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
-
-    .health-service-indicator.healthy {
-      background: #00ac3a;
-      box-shadow: 0 0 8px rgba(0, 172, 58, 0.4);
-    }
-
-    .health-service-indicator.unhealthy {
-      background: #ef4444;
-      box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
-    }
-
-    .health-service-indicator.unknown {
-      background: #6b7280;
-    }
-
-    .health-service-info {
-      flex: 1;
-      min-width: 0;
-    }
-
-    .health-service-name {
-      font-weight: 500;
-      font-size: 14px;
-      margin-bottom: 2px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .health-service-details {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 12px;
-      color: var(--text-muted);
-    }
-
-    .health-service-port {
-      font-family: 'JetBrains Mono', monospace;
-      background: var(--bg-tertiary);
-      padding: 2px 6px;
-      border-radius: 4px;
-    }
-
-    .health-service-time {
-      color: var(--text-muted);
-    }
-
-    .health-service-error {
-      font-size: 11px;
-      color: #ef4444;
-      margin-top: 4px;
-    }
-
-    [data-theme="dark"] .health-service-error {
-      color: #fca5a5;
-    }
-
-    .health-loading {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 40px;
-      color: var(--text-muted);
-    }
-
-    .health-loading .spinner {
-      width: 24px;
-      height: 24px;
-      border-width: 2px;
-      margin-right: 12px;
-    }
-
-    /* Responsive */
-    @media (max-width: 1200px) {
-      .code-panel {
-        display: none;
-      }
-    }
-
-    @media (max-width: 768px) {
+    /* Below 900px the sidebar becomes a drawer */
+    @media (max-width: 900px) {
       .sidebar {
         position: fixed;
-        left: -280px;
         top: 0;
         bottom: 0;
-        z-index: 100;
-        transition: left 0.3s;
-      }
-
-      .sidebar.open {
         left: 0;
+        z-index: 100;
+        width: min(320px, 85vw) !important;
+        transform: translateX(-100%);
+        transition: transform 0.2s ease;
+        box-shadow: var(--shadow);
       }
+      .sidebar.open { transform: none; }
+      .sidebar-backdrop.open { display: block; position: fixed; inset: 0; z-index: 99; background: rgba(0, 0, 0, 0.4); }
+      .resize-handle-right { display: none; }
+      .menu-toggle { display: inline-flex; }
+      .breadcrumb-link, .breadcrumb-separator { display: none; }
+      .content-header { padding: 0 12px; }
+      .doc-panel { padding: 20px 16px 28px; }
+      .code-content { padding: 16px 12px; }
+      .endpoint-title h1 { font-size: 20px; }
+      .welcome-title { font-size: 24px; }
+      .endpoint-row { flex-wrap: wrap; }
+      .endpoint-row-path { max-width: 100%; flex-basis: 100%; padding-left: 68px; }
+      .schema-table { min-width: 520px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { transition: none !important; animation-duration: 0.01ms !important; }
     }
   </style>
   <script>
@@ -2272,31 +1487,17 @@ function getDocumentationHtml(): string {
 </head>
 <body>
   <div id="app" class="app-container">
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
         <a href="/api/v1/docs" class="logo">
-          <div class="logo-icon">
-            <svg width="24" height="24" viewBox="0 0 614 614" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path fill-rule="evenodd" clip-rule="evenodd" d="M110.72 110.72V186.212L186.217 186.212L186.217 110.72L110.72 110.72Z" fill="#00ac3a"/>
-              <path fill-rule="evenodd" clip-rule="evenodd" d="M110.72 427.786V503.277L186.217 503.277L186.217 427.786L110.72 427.786Z" fill="#00ac3a"/>
-              <path fill-rule="evenodd" clip-rule="evenodd" d="M427.783 110.72V186.212L503.28 186.212L503.28 110.72L427.783 110.72Z" fill="#00ac3a"/>
-              <path fill-rule="evenodd" clip-rule="evenodd" d="M427.779 427.786V503.277L503.275 503.277L503.275 427.786L427.779 427.786Z" fill="#00ac3a"/>
-              <path d="M306.998 447.914L362.358 503.277L306.998 558.64L251.637 503.277L306.998 447.914Z" fill="#00ac3a"/>
-              <path d="M306.998 55.3602L362.358 110.723L306.998 166.085L251.637 110.723L306.998 55.3602Z" fill="#00ac3a"/>
-              <path d="M306.998 251.642L362.358 307.005L306.998 362.367L251.637 307.005L306.998 251.642Z" fill="#00ac3a"/>
-              <path d="M503.275 251.637L558.635 307L503.275 362.363L447.914 307L503.275 251.637Z" fill="#00ac3a"/>
-              <path d="M110.72 251.637L166.081 307L110.72 362.363L55.3602 307L110.72 251.637Z" fill="#00ac3a"/>
-            </svg>
-          </div>
+          <span class="logo-icon"><svg viewBox="0 0 614 614" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M110.72 110.72V186.212L186.217 186.212L186.217 110.72Z"/><path d="M110.72 427.786V503.277L186.217 503.277L186.217 427.786Z"/><path d="M427.783 110.72V186.212L503.28 186.212L503.28 110.72Z"/><path d="M427.779 427.786V503.277L503.275 503.277L503.275 427.786Z"/><path d="M306.998 447.914L362.358 503.277L306.998 558.64L251.637 503.277Z"/><path d="M306.998 55.3602L362.358 110.723L306.998 166.085L251.637 110.723Z"/><path d="M306.998 251.642L362.358 307.005L306.998 362.367L251.637 307.005Z"/><path d="M503.275 251.637L558.635 307L503.275 362.363L447.914 307Z"/><path d="M110.72 251.637L166.081 307L110.72 362.363L55.3602 307Z"/></svg></span>
           <span>PipesHub API</span>
+          <span class="logo-tag" id="apiVersion"></span>
         </a>
-        <div class="search-box">
-          <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="11" cy="11" r="8"></circle>
-            <path d="M21 21l-4.35-4.35"></path>
-          </svg>
-          <input type="text" class="search-input" placeholder="Search endpoints..." id="searchInput">
-        </div>
+      </div>
+      <div class="search-box">
+        <span class="material-icons-outlined search-icon" aria-hidden="true">search</span>
+        <input type="search" class="search-input" placeholder="Search endpoints, paths, tags" id="searchInput" aria-label="Search endpoints">
       </div>
       <nav class="sidebar-nav" id="sidebarNav">
         <div class="loading">
@@ -2304,81 +1505,26 @@ function getDocumentationHtml(): string {
         </div>
       </nav>
     </aside>
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
     <div class="resize-handle resize-handle-right" id="sidebarResizeHandle"></div>
 
     <main class="main-content">
       <header class="content-header">
-        <div class="breadcrumb" id="breadcrumb">
-          <span>API Reference</span>
-        </div>
-        <div style="display: flex; align-items: center; gap: 12px;">
-          <button class="theme-toggle" id="themeToggle" title="Toggle dark mode">
-            <svg class="moon-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
-            </svg>
-            <svg class="sun-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="5"></circle>
-              <line x1="12" y1="1" x2="12" y2="3"></line>
-              <line x1="12" y1="21" x2="12" y2="23"></line>
-              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
-              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
-              <line x1="1" y1="12" x2="3" y2="12"></line>
-              <line x1="21" y1="12" x2="23" y2="12"></line>
-              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
-              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
-            </svg>
-          </button>
-          <button class="try-it-btn" id="tryItBtn" style="display: none;">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polygon points="5 3 19 12 5 21 5 3"></polygon>
-          </svg>
-          Try It
+        <button class="icon-btn menu-toggle" id="menuToggle" type="button" aria-label="Open navigation">
+          <span class="material-icons-outlined">menu</span>
         </button>
+        <div class="breadcrumb" id="breadcrumb">
+          <span class="breadcrumb-current">API Reference</span>
         </div>
+        <button class="icon-btn theme-toggle" id="themeToggle" type="button" title="Toggle dark mode" aria-label="Toggle dark mode">
+          <span class="material-icons-outlined moon-icon">dark_mode</span>
+          <span class="material-icons-outlined sun-icon">light_mode</span>
+        </button>
       </header>
 
       <div class="content-body">
-        <div class="doc-panel" id="docPanel">
-          <div class="welcome-screen">
-            <div class="welcome-icon">
-              <svg viewBox="0 0 614 614" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path fill-rule="evenodd" clip-rule="evenodd" d="M110.72 110.72V186.212L186.217 186.212L186.217 110.72L110.72 110.72Z" fill="white"/>
-                <path fill-rule="evenodd" clip-rule="evenodd" d="M110.72 427.786V503.277L186.217 503.277L186.217 427.786L110.72 427.786Z" fill="white"/>
-                <path fill-rule="evenodd" clip-rule="evenodd" d="M427.783 110.72V186.212L503.28 186.212L503.28 110.72L427.783 110.72Z" fill="white"/>
-                <path fill-rule="evenodd" clip-rule="evenodd" d="M427.779 427.786V503.277L503.275 503.277L503.275 427.786L427.779 427.786Z" fill="white"/>
-                <path d="M306.998 447.914L362.358 503.277L306.998 558.64L251.637 503.277L306.998 447.914Z" fill="white"/>
-                <path d="M306.998 55.3602L362.358 110.723L306.998 166.085L251.637 110.723L306.998 55.3602Z" fill="white"/>
-                <path d="M306.998 251.642L362.358 307.005L306.998 362.367L251.637 307.005L306.998 251.642Z" fill="white"/>
-                <path d="M503.275 251.637L558.635 307L503.275 362.363L447.914 307L503.275 251.637Z" fill="white"/>
-                <path d="M110.72 251.637L166.081 307L110.72 362.363L55.3602 307L110.72 251.637Z" fill="white"/>
-              </svg>
-            </div>
-            <h1 class="welcome-title">Welcome to PipesHub API</h1>
-            <p class="welcome-description">
-              Explore our comprehensive API documentation. Select a module from the sidebar
-              to view available endpoints and learn how to integrate with PipesHub.
-            </p>
-          </div>
-
-          <!-- Health Section - Initial Loading State -->
-          <div class="health-section" id="healthSection">
-            <div class="health-header">
-              <div class="health-title">
-                <div class="health-title-icon">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>
-                  </svg>
-                </div>
-                <span>Service Health</span>
-              </div>
-            </div>
-            <div class="health-loading">
-              <div class="spinner"></div>
-              <span>Checking service health...</span>
-            </div>
-          </div>
-        </div>
+        <div class="doc-panel" id="docPanel"></div>
 
         <div class="resize-handle resize-handle-left" id="codePanelResizeHandle" style="display: none;"></div>
 
@@ -2391,56 +1537,51 @@ function getDocumentationHtml(): string {
             <div class="code-tab" data-tab="requestbody" id="requestBodyTab" style="display: none;">Request Body</div>
           </div>
           <div class="code-content" id="codeContent">
-            <!-- Try It Panel -->
             <div id="tryItPanel" class="try-it-panel">
               <div class="try-it-section">
-                <label class="try-it-label">Base URL</label>
-                <input type="text" id="baseUrlInput" class="try-it-input" placeholder="https://api.example.com">
+                <label class="try-it-label" for="baseUrlInput">Base URL</label>
+                <input type="text" id="baseUrlInput" class="try-it-input" placeholder="https://your-pipeshub-host">
               </div>
               <div class="try-it-section">
-                <label class="try-it-label">Authorization Token</label>
-                <input type="text" id="authTokenInput" class="try-it-input" placeholder="Bearer your-token-here">
+                <label class="try-it-label" for="authTokenInput">Authorization token</label>
+                <input type="password" id="authTokenInput" class="try-it-input" placeholder="Bearer token or personal access token" autocomplete="off">
               </div>
               <div id="headersSection" class="try-it-section" style="display: none;">
                 <label class="try-it-label">Headers</label>
                 <div id="headersInputs"></div>
               </div>
               <div id="pathParamsSection" class="try-it-section" style="display: none;">
-                <label class="try-it-label">Path Parameters</label>
+                <label class="try-it-label">Path parameters</label>
                 <div id="pathParamsInputs"></div>
               </div>
               <div id="queryParamsSection" class="try-it-section" style="display: none;">
-                <label class="try-it-label">Query Parameters</label>
+                <label class="try-it-label">Query parameters</label>
                 <div id="queryParamsInputs"></div>
               </div>
               <div id="requestBodySection" class="try-it-section" style="display: none;">
-                <label class="try-it-label">Request Body</label>
+                <label class="try-it-label">Request body</label>
                 <div class="input-mode-toggle" id="inputModeToggle">
                   <button type="button" class="input-mode-btn active" data-mode="form">Form</button>
                   <button type="button" class="input-mode-btn" data-mode="raw">Raw JSON</button>
                 </div>
                 <div id="requestBodyInputs"></div>
                 <div id="rawJsonInput" style="display: none;">
-                  <textarea id="rawJsonTextarea" class="raw-json-textarea" placeholder='{"key": "value"}'></textarea>
+                  <textarea id="rawJsonTextarea" class="raw-json-textarea" spellcheck="false" placeholder='{"key": "value"}'></textarea>
                   <div id="rawJsonError" class="raw-json-error" style="display: none;"></div>
                 </div>
               </div>
-              <button id="executeBtn" class="execute-btn">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polygon points="5 3 19 12 5 21 5 3"></polygon>
-                </svg>
-                Execute
+              <button id="executeBtn" class="execute-btn" type="button">
+                <span class="material-icons-outlined">play_arrow</span>
+                Send request
               </button>
-              <div id="responseSection" class="try-it-section" style="display: none;">
-                <label class="try-it-label">Response <span id="responseStatus"></span></label>
+              <div id="responseSection" class="try-it-section response-section" style="display: none;">
+                <label class="try-it-label">Response <span id="responseStatus"></span><span id="responseTime" class="response-time"></span></label>
                 <pre id="responseBody" class="response-pre"></pre>
                 <div id="responseHeadersSection" class="response-headers-section">
                   <div class="response-headers-toggle">
                     <div class="response-headers-toggle-left">
-                      <svg class="response-headers-toggle-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polyline points="9 18 15 12 9 6"></polyline>
-                      </svg>
-                      <span>Response Headers</span>
+                      <span class="material-icons-outlined response-headers-toggle-icon">chevron_right</span>
+                      <span>Response headers</span>
                     </div>
                     <span id="responseHeadersCount" class="response-headers-count">0</span>
                   </div>
@@ -2448,7 +1589,6 @@ function getDocumentationHtml(): string {
                 </div>
               </div>
             </div>
-            <!-- Code Examples Panel -->
             <div id="codeExamplesPanel" style="display: none;"></div>
           </div>
         </div>
@@ -2457,6 +1597,8 @@ function getDocumentationHtml(): string {
   </div>
 
   <script>
+    const LOGO_SVG = '<svg viewBox="0 0 614 614" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M110.72 110.72V186.212L186.217 186.212L186.217 110.72Z"/><path d="M110.72 427.786V503.277L186.217 503.277L186.217 427.786Z"/><path d="M427.783 110.72V186.212L503.28 186.212L503.28 110.72Z"/><path d="M427.779 427.786V503.277L503.275 503.277L503.275 427.786Z"/><path d="M306.998 447.914L362.358 503.277L306.998 558.64L251.637 503.277Z"/><path d="M306.998 55.3602L362.358 110.723L306.998 166.085L251.637 110.723Z"/><path d="M306.998 251.642L362.358 307.005L306.998 362.367L251.637 307.005Z"/><path d="M503.275 251.637L558.635 307L503.275 362.363L447.914 307Z"/><path d="M110.72 251.637L166.081 307L110.72 362.363L55.3602 307Z"/></svg>';
+
     // Global state
     let apiDocs = null;
     let currentModule = null;
@@ -2476,53 +1618,8 @@ function getDocumentationHtml(): string {
       setupEventListeners();
       loadSavedConfig();
       initializeResizeHandles();
-
-      // Load initial health status
-      loadInitialHealthStatus();
+      showWelcomeScreen();
     });
-
-    // Load health status on page load
-    async function loadInitialHealthStatus() {
-      try {
-        const response = await fetch('/api/v1/docs/health');
-        if (!response.ok) throw new Error('Health check failed');
-        const healthData = await response.json();
-
-        const healthSection = document.getElementById('healthSection');
-        if (healthSection) {
-          healthSection.outerHTML = renderHealthSection(healthData);
-        }
-      } catch (error) {
-        console.error('Failed to load initial health status:', error);
-        // Keep the loading state or show error
-        const healthSection = document.getElementById('healthSection');
-        if (healthSection) {
-          healthSection.innerHTML =
-            '<div class="health-header">' +
-            '<div class="health-title">' +
-            '<div class="health-title-icon">' +
-            '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
-            '<path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>' +
-            '</svg>' +
-            '</div>' +
-            '<span>Service Health</span>' +
-            '</div>' +
-            '<button class="health-refresh-btn" onclick="refreshHealth()">' +
-            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
-            '<path d="M23 4v6h-6"></path>' +
-            '<path d="M1 20v-6h6"></path>' +
-            '<path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>' +
-            '</svg>' +
-            '<span>Retry</span>' +
-            '</button>' +
-            '</div>' +
-            '<div class="health-overall">' +
-            '<span class="health-overall-label">Status:</span>' +
-            '<span class="health-overall-status unhealthy">Unable to check</span>' +
-            '</div>';
-        }
-      }
-    }
 
     // Initialize resizable panels
     function initializeResizeHandles() {
@@ -2652,11 +1749,12 @@ function getDocumentationHtml(): string {
       try {
         const response = await fetch('/api/v1/docs/json');
         apiDocs = await response.json();
+        if (apiDocs.info?.version) document.getElementById('apiVersion').textContent = 'v' + apiDocs.info.version;
         renderSidebar();
       } catch (error) {
         console.error('Failed to load API docs:', error);
         document.getElementById('sidebarNav').innerHTML =
-          '<div class="loading" style="color: var(--accent-red);">Failed to load documentation</div>';
+          '<div class="sidebar-empty" style="color: var(--red-11);">Failed to load documentation</div>';
       }
     }
 
@@ -2724,7 +1822,7 @@ function getDocumentationHtml(): string {
     function renderSchema(schema, name = null) {
       const resolved = resolveSchema(schema);
       if (!resolved) {
-        return '<div class="code-block" style="background: var(--bg-secondary);"><pre style="color: var(--text-primary);">' + escapeHtml(JSON.stringify(schema, null, 2)) + '</pre></div>';
+        return '<div class="code-block"><pre>' + escapeHtml(JSON.stringify(schema, null, 2)) + '</pre></div>';
       }
 
       let html = '<div class="schema-block">';
@@ -2732,8 +1830,9 @@ function getDocumentationHtml(): string {
       // Schema header
       const schemaName = name || (schema.$ref ? schema.$ref.replace('#/components/schemas/', '') : 'Schema');
       html += '<div class="schema-header">';
+      html += icon('chevron_right');
       html += '<span class="schema-name">' + escapeHtml(schemaName) + '</span>';
-      html += '<span class="schema-toggle">Click to expand</span>';
+      html += '<span class="schema-toggle">' + schemaSummary(resolved) + '</span>';
       html += '</div>';
 
       html += '<div class="schema-content">';
@@ -2745,9 +1844,17 @@ function getDocumentationHtml(): string {
       return html;
     }
 
+    function schemaSummary(schema) {
+      if (schema.properties) {
+        const n = Object.keys(schema.properties).length;
+        return n + (n === 1 ? ' field' : ' fields');
+      }
+      return escapeHtml(getSchemaType(schema));
+    }
+
     // Render schema as detailed table
     function renderSchemaTable(schema, requiredFields, depth) {
-      if (depth > 6) return '<div style="color: var(--text-muted); font-size: 12px;">...</div>';
+      if (depth > 6) return '<div class="schema-scalar">...</div>';
 
       const resolved = resolveSchema(schema);
       if (!resolved) return '';
@@ -2763,14 +1870,14 @@ function getDocumentationHtml(): string {
         }
       } else if (resolved.type === 'array' && resolved.items) {
         html += '<tr><td colspan="3">';
-        html += '<div style="color: var(--text-muted); font-size: 12px; margin-bottom: 8px;">Array items:</div>';
+        html += '<div class="schema-oneof-caption">Array of <span class="schema-field-type">' + escapeHtml(getSchemaType(resolved.items)) + '</span></div>';
         html += renderSchemaTable(resolved.items, [], depth + 1);
         html += '</td></tr>';
       } else {
-        html += '<tr><td colspan="3" style="color: var(--text-muted);">';
-        html += '<span class="schema-field-type">' + escapeHtml(resolved.type || 'any') + '</span>';
+        html += '<tr><td colspan="3">';
+        html += '<span class="schema-field-type">' + escapeHtml(getSchemaType(resolved)) + '</span>';
         if (resolved.description) {
-          html += '<div style="margin-top: 6px;">' + escapeHtml(resolved.description) + '</div>';
+          html += '<div class="md small" style="margin-top: 6px;">' + renderMarkdown(resolved.description) + '</div>';
         }
         html += '</td></tr>';
       }
@@ -2808,13 +1915,14 @@ function getDocumentationHtml(): string {
 
       // Description text
       if (resolved.description) {
-        html += escapeHtml(resolved.description);
+        html += '<div class="md small">' + renderMarkdown(resolved.description) + '</div>';
       }
 
       // Enum values
-      if (resolved.enum) {
-        html += '<div class="schema-field-enum">Allowed values: ';
-        for (const val of resolved.enum) {
+      const enumValues = resolved.enum || (resolved.type === 'array' && resolveSchema(resolved.items)?.enum);
+      if (enumValues) {
+        html += '<div class="schema-field-enum">One of';
+        for (const val of enumValues) {
           html += '<span class="schema-field-enum-value">' + escapeHtml(String(val)) + '</span>';
         }
         html += '</div>';
@@ -2830,25 +1938,23 @@ function getDocumentationHtml(): string {
       if (resolved.minItems !== undefined) constraints.push('minItems: ' + resolved.minItems);
       if (resolved.maxItems !== undefined) constraints.push('maxItems: ' + resolved.maxItems);
 
-      if (constraints.length > 0) {
-        html += '<div class="schema-constraints">';
+      if (resolved.default !== undefined) {
+        constraints.push('default: ' + (typeof resolved.default === 'object' ? JSON.stringify(resolved.default) : String(resolved.default)));
+      }
+      if (resolved.nullable) constraints.push('nullable');
+      if (resolved.readOnly) constraints.push('read-only');
+      if (resolved.deprecated) constraints.push('deprecated');
+
+      const example = resolved.example !== undefined
+        ? (typeof resolved.example === 'object' ? JSON.stringify(resolved.example) : String(resolved.example))
+        : null;
+      if (constraints.length > 0 || example !== null) {
+        html += '<div class="schema-meta">';
+        if (example !== null) html += '<span class="schema-field-example">e.g. ' + escapeHtml(example) + '</span>';
         for (const c of constraints) {
           html += '<span>' + escapeHtml(c) + '</span>';
         }
         html += '</div>';
-      }
-
-      // Example value
-      if (resolved.example !== undefined) {
-        const exampleStr = typeof resolved.example === 'object'
-          ? JSON.stringify(resolved.example)
-          : String(resolved.example);
-        html += '<div class="schema-field-example">Example: ' + escapeHtml(exampleStr) + '</div>';
-      } else if (resolved.default !== undefined) {
-        const defaultStr = typeof resolved.default === 'object'
-          ? JSON.stringify(resolved.default)
-          : String(resolved.default);
-        html += '<div class="schema-field-example">Default: ' + escapeHtml(defaultStr) + '</div>';
       }
 
       // Handle oneOf/anyOf
@@ -2858,7 +1964,7 @@ function getDocumentationHtml(): string {
         const variantId = 'variant_' + Math.random().toString(36).substr(2, 9);
 
         html += '<div class="schema-oneof-container">';
-        html += '<div style="color: var(--text-muted); font-size: 11px; margin-bottom: 6px;">' + variantType + ' - click to see options:</div>';
+        html += '<div class="schema-oneof-caption">' + (variantType === 'oneOf' ? 'Exactly one of' : 'Any of') + '</div>';
         html += '<div class="schema-oneof-tabs">';
 
         variants.forEach((variant, idx) => {
@@ -2882,15 +1988,12 @@ function getDocumentationHtml(): string {
           if (variantResolved) {
             if (variantResolved.properties && depth < 4) {
               html += renderSchemaTable(variantResolved, variantResolved.required || [], depth + 1);
-            } else if (variantResolved.type === 'string') {
-              html += '<div style="padding: 8px; color: var(--text-secondary);">';
-              html += '<span class="schema-field-type">string</span>';
+            } else {
+              html += '<div class="schema-scalar"><span class="schema-field-type">' + escapeHtml(getSchemaType(variantResolved)) + '</span>';
               if (variantResolved.description) {
-                html += '<div style="margin-top: 6px;">' + escapeHtml(variantResolved.description) + '</div>';
+                html += '<div class="md small" style="margin-top: 6px;">' + renderMarkdown(variantResolved.description) + '</div>';
               }
               html += '</div>';
-            } else {
-              html += '<div style="padding: 8px;"><span class="schema-field-type">' + escapeHtml(variantResolved.type || 'object') + '</span></div>';
             }
           }
 
@@ -2905,8 +2008,8 @@ function getDocumentationHtml(): string {
         const nestedId = 'nested_' + Math.random().toString(36).substr(2, 9);
         html += '<div class="schema-nested">';
         html += '<div class="schema-nested-header" data-nested-id="' + nestedId + '">';
-        html += '<span class="schema-nested-toggle">▶</span>';
-        html += '<span>Show ' + Object.keys(resolved.properties).length + ' properties</span>';
+        html += icon('chevron_right', 'schema-nested-toggle', 16);
+        html += '<span>' + Object.keys(resolved.properties).length + ' nested fields</span>';
         html += '</div>';
         html += '<div class="schema-nested-content" data-nested-id="' + nestedId + '">';
         html += renderSchemaTable(resolved, resolved.required || [], depth + 1);
@@ -2921,8 +2024,8 @@ function getDocumentationHtml(): string {
           const nestedId = 'nested_' + Math.random().toString(36).substr(2, 9);
           html += '<div class="schema-nested">';
           html += '<div class="schema-nested-header" data-nested-id="' + nestedId + '">';
-          html += '<span class="schema-nested-toggle">▶</span>';
-          html += '<span>Show array item schema</span>';
+          html += icon('chevron_right', 'schema-nested-toggle', 16);
+          html += '<span>Item fields</span>';
           html += '</div>';
           html += '<div class="schema-nested-content" data-nested-id="' + nestedId + '">';
           html += renderSchemaTable(resolved.items, itemsResolved.required || [], depth + 1);
@@ -2972,6 +2075,23 @@ function getDocumentationHtml(): string {
       // Check for explicit example or default first
       if (resolved.example !== undefined) return resolved.example;
       if (resolved.default !== undefined) return resolved.default;
+
+      // Next to properties, a oneOf/anyOf only constrains them (e.g. "password only for demo emails"), it is not the shape.
+      if (resolved.properties) {
+        // Optional fields the spec gives no example for would only add placeholders the API may refuse.
+        const required = resolved.required || [];
+        const documented = (key, value) => {
+          const v = resolveSchema(value) || {};
+          return required.includes(key) || v.example !== undefined || v.default !== undefined || v.enum !== undefined;
+        };
+        const entries = Object.entries(resolved.properties);
+        const keep = entries.some(([key, value]) => documented(key, value)) ? entries.filter(([key, value]) => documented(key, value)) : entries;
+        const obj = {};
+        for (const [key, value] of keep) {
+          obj[key] = generateExample(value, depth + 1);
+        }
+        return obj;
+      }
 
       // Handle oneOf/anyOf - pick the first option that produces a meaningful example
       if (resolved.oneOf && resolved.oneOf.length > 0) {
@@ -3090,95 +2210,67 @@ function getDocumentationHtml(): string {
         html += '</div>';
       }
 
+      html += '<div class="sidebar-empty" id="searchEmpty" style="display: none;">No endpoints match your search.</div>';
       nav.innerHTML = html;
     }
 
     // Render a single module nav item with its endpoints
     function renderModuleNavItem(module) {
       let html = '';
-      html += '<a class="nav-item" data-module="' + module.id + '">';
-      html += '  <span class="nav-item-icon">';
-      html += getModuleIcon(module.id);
-      html += '  </span>';
-      html += '  <span>' + escapeHtml(module.name) + '</span>';
+      html += '<a class="nav-item" data-module="' + escapeHtml(module.id) + '">';
+      html += '<span class="nav-item-icon">' + icon(moduleIconName(module.icon)) + '</span>';
+      html += '<span>' + escapeHtml(module.name) + '</span>';
+      html += icon('chevron_right', 'nav-item-chevron', 16);
       html += '</a>';
 
-      // Group endpoints by tag
-      const moduleEndpoints = apiDocs.endpoints.filter(e => e.moduleId === module.id);
-      if (moduleEndpoints.length > 0) {
-        // Check if this is an internal service module
-        const internalServiceIds = ['query-service', 'indexing-service', 'connector-service-internal', 'docling-service', 'embedding-service'];
-        const isInternalService = internalServiceIds.includes(module.id);
+      html += '<div class="endpoint-list" data-module="' + escapeHtml(module.id) + '" style="display: none;">';
+      for (const tag of module.tags) {
+        const endpoints = tagEndpoints(tag);
+        html += '<div class="tag-section" data-module="' + escapeHtml(module.id) + '" data-tag="' + escapeHtml(tag) + '">';
+        html += '<div class="tag-header">';
+        html += icon('chevron_right', 'tag-chevron', 16);
+        html += '<span class="tag-name">' + escapeHtml(tag) + '</span>';
+        html += '<span class="tag-count">' + endpoints.length + '</span>';
+        html += '</div>';
 
-        // Group by tag
-        const byTag = {};
-        for (const ep of moduleEndpoints) {
-          const tag = ep.tags[0] || 'Other';
-          if (!byTag[tag]) byTag[tag] = [];
-          byTag[tag].push(ep);
-        }
-
-        html += '<div class="endpoint-list" data-module="' + module.id + '" style="display: none;">';
-
-        // For internal services, render endpoints directly without tag headers
-        if (isInternalService) {
-          html += '<div class="tag-section" data-module="' + module.id + '">';
-          html += '<div class="tag-endpoints" style="display: block;">';
-          for (const endpoint of moduleEndpoints) {
-            html += '<div class="endpoint-item" data-endpoint="' + endpoint.operationId + '">';
-            html += '  <span class="method-badge method-' + endpoint.method.toLowerCase() + '">' + endpoint.method + '</span>';
-            html += '  <span>' + escapeHtml(endpoint.summary || endpoint.path) + '</span>';
-            html += '</div>';
-          }
+        html += '<div class="tag-endpoints">';
+        for (const endpoint of endpoints) {
+          html += '<div class="endpoint-item" data-endpoint="' + escapeHtml(endpoint.operationId) + '">';
+          html += methodBadge(endpoint.method);
+          html += '<span>' + escapeHtml(endpoint.summary || endpoint.path) + '</span>';
           html += '</div>';
-          html += '</div>';
-        } else {
-          // Render each tag as a subsection for non-internal services
-          for (const [tag, endpoints] of Object.entries(byTag)) {
-            html += '<div class="tag-section" data-module="' + module.id + '" data-tag="' + escapeHtml(tag) + '">';
-            html += '<div class="tag-header">';
-            html += '<svg class="tag-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>';
-            html += '<span class="tag-name">' + escapeHtml(tag) + '</span>';
-            html += '<span class="tag-count">' + endpoints.length + '</span>';
-            html += '</div>';
-
-            html += '<div class="tag-endpoints">';
-            for (const endpoint of endpoints) {
-              html += '<div class="endpoint-item" data-endpoint="' + endpoint.operationId + '">';
-              html += '  <span class="method-badge method-' + endpoint.method.toLowerCase() + '">' + endpoint.method + '</span>';
-              html += '  <span>' + escapeHtml(endpoint.summary || endpoint.path) + '</span>';
-              html += '</div>';
-            }
-            html += '</div>';
-            html += '</div>';
-          }
         }
-
+        html += '</div>';
         html += '</div>';
       }
+      html += '</div>';
 
       return html;
     }
 
-    // Get module icon SVG
-    function getModuleIcon(moduleId) {
+    // An endpoint with several tags is listed under each of them.
+    function tagEndpoints(tag) {
+      return apiDocs.endpoints.filter(e => e.tags.includes(tag));
+    }
+
+    function icon(name, className, size) {
+      return '<span class="material-icons-outlined' + (className ? ' ' + className : '') + '" aria-hidden="true"' +
+        (size ? ' style="font-size: ' + size + 'px;"' : '') + '>' + name + '</span>';
+    }
+
+    function methodBadge(method, className) {
+      const m = String(method).toLowerCase();
+      return '<span class="method-badge method-' + escapeHtml(m) + (className ? ' ' + className : '') + '">' + escapeHtml(String(method).toUpperCase()) + '</span>';
+    }
+
+    // The spec's x-pipeshub-nav names icons in its own vocabulary; map them to Material Icons, as the dashboard uses.
+    function moduleIconName(name) {
       const icons = {
-        'auth': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0110 0v4"></path></svg>',
-        'user-management': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>',
-        'storage': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"></path></svg>',
-        'knowledge-base': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"></path></svg>',
-        'enterprise-search': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><path d="M21 21l-4.35-4.35"></path></svg>',
-        'connector-manager': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>',
-        'configuration-manager': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"></path></svg>',
-        'crawling-manager': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>',
-        'mail': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>',
-        'query-service': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><path d="M21 21l-4.35-4.35"></path><path d="M11 8v6"></path><path d="M8 11h6"></path></svg>',
-        'indexing-service': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>',
-        'connector-service-internal': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path></svg>',
-        'docling-service': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V7.5L14.5 2z"></path><polyline points="14 2 14 8 20 8"></polyline><path d="M12 18v-6"></path><path d="M9 15h6"></path></svg>',
-        'embedding-service': '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"></path></svg>',
+        lock: 'lock', user: 'group', folder: 'folder', book: 'menu_book', search: 'search', code: 'hub',
+        gear: 'settings', clock: 'schedule', mail: 'mail', layers: 'layers', key: 'key', image: 'image',
+        cpu: 'smart_toy', tool: 'build', server: 'dns', activity: 'monitor_heart',
       };
-      return icons[moduleId] || '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle></svg>';
+      return icons[name] || 'description';
     }
 
     // Setup event listeners
@@ -3194,7 +2286,8 @@ function getDocumentationHtml(): string {
         const endpointItem = e.target.closest('.endpoint-item');
         if (endpointItem && endpointItem.dataset.endpoint) {
           const operationId = endpointItem.dataset.endpoint;
-          selectEndpoint(operationId);
+          selectEndpoint(operationId, endpointItem.closest('.tag-section')?.dataset.tag);
+          closeSidebar();
         }
 
         // Tag header click to expand/collapse
@@ -3229,9 +2322,14 @@ function getDocumentationHtml(): string {
           showTagEndpoints(moduleCard.dataset.moduleId, moduleCard.dataset.tag);
         }
 
-        const responseHeader = e.target.closest('.response-header');
-        if (responseHeader && responseHeader.dataset.endpoint) {
-          selectEndpoint(responseHeader.dataset.endpoint);
+        const endpointRow = e.target.closest('.endpoint-row');
+        if (endpointRow && endpointRow.dataset.endpoint) {
+          selectEndpoint(endpointRow.dataset.endpoint, endpointRow.dataset.tag);
+        }
+
+        const copyPath = e.target.closest('[data-copy]');
+        if (copyPath) {
+          copyText(copyPath.dataset.copy, copyPath);
         }
 
         // Schema block toggle
@@ -3318,6 +2416,30 @@ function getDocumentationHtml(): string {
 
       // Theme toggle
       document.getElementById('themeToggle')?.addEventListener('click', toggleTheme);
+
+      // Sidebar drawer on narrow screens
+      document.getElementById('menuToggle').addEventListener('click', () => {
+        document.getElementById('sidebar').classList.add('open');
+        document.getElementById('sidebarBackdrop').classList.add('open');
+      });
+      document.getElementById('sidebarBackdrop').addEventListener('click', closeSidebar);
+    }
+
+    function closeSidebar() {
+      document.getElementById('sidebar').classList.remove('open');
+      document.getElementById('sidebarBackdrop').classList.remove('open');
+    }
+
+    function copyText(text, button) {
+      navigator.clipboard?.writeText(text);
+      const label = button.querySelector('.copy-label');
+      if (!label) return;
+      label.textContent = 'Copied';
+      setTimeout(() => { label.textContent = 'Copy'; }, 1500);
+    }
+
+    function copyButton(text) {
+      return '<button type="button" class="copy-btn" data-copy="' + escapeHtml(text) + '">' + icon('content_copy') + '<span class="copy-label">Copy</span></button>';
     }
 
     // Switch between tabs
@@ -3418,13 +2540,12 @@ function getDocumentationHtml(): string {
       if (!currentEndpoint) return;
 
       const ep = currentEndpoint;
-      const module = apiDocs.modules.find(m => m.id === ep.moduleId);
       const configuredBaseUrl = document.getElementById('baseUrlInput').value || config.baseUrl;
       const authToken = document.getElementById('authTokenInput').value || config.authToken;
 
       // Build URL with path params - check if basePath is already a full URL
-      const isFullUrl = module.basePath.startsWith('http://') || module.basePath.startsWith('https://');
-      let url = isFullUrl ? module.basePath + ep.path : configuredBaseUrl + module.basePath + ep.path;
+      const isFullUrl = ep.basePath.startsWith('http://') || ep.basePath.startsWith('https://');
+      let url = isFullUrl ? ep.basePath + ep.path : configuredBaseUrl + ep.basePath + ep.path;
 
       // Replace path parameters
       const pathParams = ep.parameters?.filter(p => p.in === 'path') || [];
@@ -3504,7 +2625,7 @@ function getDocumentationHtml(): string {
           // Use JSON for regular requests
           // Check if using raw JSON mode and validate
           if (currentInputMode === 'raw' && !validateRawJson()) {
-            alert('Please fix the JSON syntax errors before executing.');
+            document.getElementById('rawJsonTextarea').focus();
             return;
           }
           const body = getRequestBody();
@@ -3518,8 +2639,10 @@ function getDocumentationHtml(): string {
       // Show loading state
       const executeBtn = document.getElementById('executeBtn');
       const originalText = executeBtn.innerHTML;
-      executeBtn.innerHTML = '<span>Executing...</span>';
+      executeBtn.innerHTML = '<span class="spinner" style="width: 14px; height: 14px; border-color: rgba(255,255,255,0.4); border-top-color: #fff;"></span>Sending...';
       executeBtn.disabled = true;
+      const startedAt = performance.now();
+      const responseTime = document.getElementById('responseTime');
 
       const responseSection = document.getElementById('responseSection');
       const responseStatus = document.getElementById('responseStatus');
@@ -3540,20 +2663,24 @@ function getDocumentationHtml(): string {
         responseStatus.textContent = response.status + ' ' + response.statusText;
         responseStatus.className = 'response-status ' + (response.ok ? 'success' : 'error');
         responseBody.textContent = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+        responseTime.textContent = Math.round(performance.now() - startedAt) + ' ms';
 
         // Display response headers
         displayResponseHeaders(response.headers);
       } catch (error) {
         responseSection.style.display = 'block';
-        responseStatus.textContent = 'Error';
+        responseStatus.textContent = 'Network error';
         responseStatus.className = 'response-status error';
-        responseBody.textContent = error.message;
+        responseTime.textContent = '';
+        // fetch only says "Failed to fetch"; the usual causes are a wrong base URL or CORS on another origin
+        responseBody.textContent = error.message + '\\n\\nCheck the base URL. A host other than this page must allow it through CORS.';
         // Hide headers section on error
         const headersSection = document.getElementById('responseHeadersSection');
         if (headersSection) headersSection.style.display = 'none';
       } finally {
         executeBtn.innerHTML = originalText;
         executeBtn.disabled = false;
+        responseSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       }
     }
 
@@ -3608,13 +2735,6 @@ function getDocumentationHtml(): string {
       if (headersSection) {
         headersSection.classList.toggle('expanded');
       }
-    }
-
-    // Escape HTML helper
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
     }
 
     // Collect body fields into object
@@ -3689,77 +2809,21 @@ function getDocumentationHtml(): string {
       if (!currentEndpoint) return;
 
       const ep = currentEndpoint;
-      const module = apiDocs.modules.find(m => m.id === ep.moduleId);
 
-      // Set base URL based on module - Python services have full URLs in basePath
+      // An operation whose server is an absolute URL is called there, not on this instance
       const baseUrlInput = document.getElementById('baseUrlInput');
-      const isFullUrl = module.basePath.startsWith('http://') || module.basePath.startsWith('https://');
-      if (isFullUrl) {
-        // For Python services, show the actual service URL
-        baseUrlInput.value = module.basePath;
-      } else {
-        // For Node.js services, use localhost:3000
-        baseUrlInput.value = 'http://localhost:3000';
-      }
+      const isFullUrl = ep.basePath.startsWith('http://') || ep.basePath.startsWith('https://');
+      baseUrlInput.value = isFullUrl ? ep.basePath : config.baseUrl;
+      baseUrlInput.disabled = isFullUrl;
 
-      // Header parameters
-      const headerParams = ep.parameters?.filter(p => p.in === 'header') || [];
-      const headersSection = document.getElementById('headersSection');
-      const headersInputs = document.getElementById('headersInputs');
-
-      if (headerParams.length > 0) {
-        headersSection.style.display = 'block';
-        headersInputs.innerHTML = headerParams.map(param =>
-          '<div class="param-input-group">' +
-          '<span class="param-input-label">' + escapeHtml(param.name) +
-          (param.required ? '<span class="required">*</span>' : '') +
-          '</span>' +
-          '<input type="text" class="try-it-input" data-header="' + escapeHtml(param.name) + '" ' +
-          'placeholder="' + escapeHtml(param.description || param.name) + '">' +
-          '</div>'
-        ).join('');
-      } else {
-        headersSection.style.display = 'none';
-      }
-
-      // Path parameters
-      const pathParams = ep.parameters?.filter(p => p.in === 'path') || [];
-      const pathParamsSection = document.getElementById('pathParamsSection');
-      const pathParamsInputs = document.getElementById('pathParamsInputs');
-
-      if (pathParams.length > 0) {
-        pathParamsSection.style.display = 'block';
-        pathParamsInputs.innerHTML = pathParams.map(param =>
-          '<div class="param-input-group">' +
-          '<span class="param-input-label">' + escapeHtml(param.name) +
-          (param.required ? '<span class="required">*</span>' : '') +
-          '</span>' +
-          '<input type="text" class="try-it-input" data-param="' + escapeHtml(param.name) + '" ' +
-          'placeholder="' + escapeHtml(param.description || param.name) + '">' +
-          '</div>'
-        ).join('');
-      } else {
-        pathParamsSection.style.display = 'none';
-      }
-
-      // Query parameters
-      const queryParams = ep.parameters?.filter(p => p.in === 'query') || [];
-      const queryParamsSection = document.getElementById('queryParamsSection');
-      const queryParamsInputs = document.getElementById('queryParamsInputs');
-
-      if (queryParams.length > 0) {
-        queryParamsSection.style.display = 'block';
-        queryParamsInputs.innerHTML = queryParams.map(param =>
-          '<div class="param-input-group">' +
-          '<span class="param-input-label">' + escapeHtml(param.name) +
-          (param.required ? '<span class="required">*</span>' : '') +
-          '</span>' +
-          '<input type="text" class="try-it-input" data-param="' + escapeHtml(param.name) + '" ' +
-          'placeholder="' + escapeHtml(param.description || param.name) + '">' +
-          '</div>'
-        ).join('');
-      } else {
-        queryParamsSection.style.display = 'none';
+      for (const [location, sectionId, inputsId, dataAttr] of [
+        ['header', 'headersSection', 'headersInputs', 'data-header'],
+        ['path', 'pathParamsSection', 'pathParamsInputs', 'data-param'],
+        ['query', 'queryParamsSection', 'queryParamsInputs', 'data-param'],
+      ]) {
+        const params = ep.parameters?.filter(p => p.in === location) || [];
+        document.getElementById(sectionId).style.display = params.length > 0 ? 'block' : 'none';
+        document.getElementById(inputsId).innerHTML = params.map(param => renderParamInput(param, dataAttr)).join('');
       }
 
       // Request body
@@ -3796,7 +2860,7 @@ function getDocumentationHtml(): string {
         } else if (jsonContent?.schema) {
           // Show input mode toggle and Request Body tab for JSON content
           inputModeToggle.style.display = 'flex';
-          requestBodyTab.style.display = 'block';
+          requestBodyTab.style.display = 'flex';
           const resolved = resolveSchema(jsonContent.schema);
           requestBodyInputs.innerHTML = renderBodyFields(resolved, jsonContent.schema.required || resolved?.required || []);
         } else {
@@ -3811,6 +2875,31 @@ function getDocumentationHtml(): string {
 
       // Reset response
       document.getElementById('responseSection').style.display = 'none';
+    }
+
+    function renderParamInput(param, dataAttr) {
+      const schema = resolveSchema(param.schema) || {};
+      const attr = dataAttr + '="' + escapeHtml(param.name) + '"';
+      const example = param.example !== undefined ? param.example : (schema.example !== undefined ? schema.example : schema.default);
+      let html = '<div class="param-input-group">';
+      html += '<label class="param-input-label">' + escapeHtml(param.name) +
+        (param.required ? '<span class="required">*</span>' : '') +
+        '<span class="field-type">' + escapeHtml(getSchemaType(schema)) + '</span></label>';
+      const options = schema.enum || (schema.type === 'boolean' ? [true, false] : null);
+      if (options) {
+        html += '<select class="try-it-input" ' + attr + '><option value="">' + (param.required ? 'Select a value' : 'Not set') + '</option>';
+        for (const opt of options) {
+          html += '<option value="' + escapeHtml(String(opt)) + '">' + escapeHtml(String(opt)) + '</option>';
+        }
+        html += '</select>';
+      } else {
+        html += '<input type="text" class="try-it-input" ' + attr +
+          ' placeholder="' + escapeHtml(example !== undefined ? String(example) : getSchemaType(schema)) + '">';
+      }
+      if (param.description) {
+        html += '<div class="body-field-desc md">' + renderMarkdown(param.description) + '</div>';
+      }
+      return html + '</div>';
     }
 
     // Render body fields from schema
@@ -3863,19 +2952,15 @@ function getDocumentationHtml(): string {
             html += renderBodyFields(propResolved, propResolved.required || [], fieldPath, depth + 1);
             html += '</div>';
           } else if (propResolved?.type === 'array') {
-            // Array field
-            const itemType = propResolved.items ? getFieldType(resolveSchema(propResolved.items)) : 'any';
+            // Array field: one input per item; object and array items are edited as JSON
             html += '<div class="array-field-container" data-array-field="' + escapeHtml(fieldPath) + '">';
-            html += '<div class="array-item">';
-            html += '<input type="text" class="try-it-input" placeholder="' + escapeHtml(itemType) + ' item" data-array-item="' + escapeHtml(fieldPath) + '">';
-            html += '<button type="button" class="array-remove-btn" onclick="removeArrayItem(this)">✕</button>';
-            html += '</div>';
-            html += '<button type="button" class="array-add-btn" onclick="addArrayItem(\\'' + escapeHtml(fieldPath) + '\\', \\'' + escapeHtml(itemType) + '\\')">+ Add item</button>';
+            html += renderArrayItem(fieldPath, propResolved.items);
+            html += '<button type="button" class="array-add-btn" data-add-item="' + escapeHtml(fieldPath) + '">' + icon('add') + 'Add item</button>';
             html += '</div>';
           } else if (propResolved?.type === 'integer' || propResolved?.type === 'number') {
             // Number field
             html += '<input type="number" data-body-field="' + escapeHtml(fieldPath) + '" ';
-            html += 'placeholder="' + escapeHtml(propResolved.description || propName) + '"';
+            html += 'placeholder="' + escapeHtml(propType) + '"';
             if (defaultValue !== undefined && defaultValue !== null) html += ' value="' + defaultValue + '"';
             html += '>';
           } else {
@@ -3883,19 +2968,19 @@ function getDocumentationHtml(): string {
             const isLongText = propResolved?.maxLength > 200 || propResolved?.format === 'text';
             if (isLongText) {
               html += '<textarea data-body-field="' + escapeHtml(fieldPath) + '" ';
-              html += 'placeholder="' + escapeHtml(propResolved?.description || propName) + '">';
+              html += 'placeholder="' + escapeHtml(propType) + '">';
               html += defaultValue !== undefined ? escapeHtml(String(defaultValue)) : '';
               html += '</textarea>';
             } else {
               html += '<input type="text" data-body-field="' + escapeHtml(fieldPath) + '" ';
-              html += 'placeholder="' + escapeHtml(propResolved?.description || propName) + '"';
+              html += 'placeholder="' + escapeHtml(propType) + '"';
               if (defaultValue !== undefined && defaultValue !== null) html += ' value="' + escapeHtml(String(defaultValue)) + '"';
               html += '>';
             }
           }
 
           if (propResolved?.description) {
-            html += '<div class="body-field-desc">' + escapeHtml(propResolved.description) + '</div>';
+            html += '<div class="body-field-desc md">' + renderMarkdown(propResolved.description) + '</div>';
           }
 
           html += '</div>';
@@ -3905,6 +2990,20 @@ function getDocumentationHtml(): string {
 
       html += '</div>';
       return html;
+    }
+
+    function renderArrayItem(fieldPath, itemsSchema) {
+      const items = resolveSchema(itemsSchema) || {};
+      const attr = 'data-array-item="' + escapeHtml(fieldPath) + '"';
+      let input;
+      if (items.type === 'object' || items.properties || items.type === 'array' || items.oneOf || items.anyOf) {
+        input = '<textarea class="try-it-textarea" spellcheck="false" ' + attr + '>' + escapeHtml(JSON.stringify(generateExample(itemsSchema), null, 2)) + '</textarea>';
+      } else {
+        const example = items.example !== undefined ? String(items.example) : (items.enum ? items.enum.join(' | ') : getFieldType(items));
+        input = '<input type="text" class="try-it-input" placeholder="' + escapeHtml(example) + '" ' + attr + '>';
+      }
+      return '<div class="array-item">' + input +
+        '<button type="button" class="array-remove-btn" title="Remove item" aria-label="Remove item">' + icon('close') + '</button></div>';
     }
 
     // Render multipart form fields (for file uploads)
@@ -3944,9 +3043,8 @@ function getDocumentationHtml(): string {
             html += '<input type="file" class="file-upload-input" id="fileUpload_' + escapeHtml(propName) + '" data-file-field="' + escapeHtml(propName) + '" onchange="handleFileSelect(this)">';
             html += '<div id="fileInfo_' + escapeHtml(propName) + '" class="file-selected-info" style="display: none;">';
             html += '<span><span class="file-name"></span><span class="file-size"></span></span>';
-            html += '<button type="button" class="file-clear-btn" onclick="clearFileSelection(\\'' + escapeHtml(propName) + '\\')">&times;</button>';
+            html += '<button type="button" class="file-clear-btn" onclick="clearFileSelection(\\'' + escapeHtml(propName) + '\\')" aria-label="Clear file">' + icon('close') + '</button>';
             html += '</div>';
-            html += '<div class="file-upload-hint">Maximum file size: 100MB</div>';
             html += '</div>';
           } else if (propResolved?.enum) {
             // Enum field - render as select
@@ -3958,11 +3056,11 @@ function getDocumentationHtml(): string {
             html += '</select>';
           } else {
             // Regular text field
-            html += '<input type="text" data-body-field="' + escapeHtml(propName) + '" placeholder="' + escapeHtml(propResolved?.description || propName) + '">';
+            html += '<input type="text" data-body-field="' + escapeHtml(propName) + '" placeholder="' + escapeHtml(propType || 'string') + '">';
           }
 
           if (propResolved?.description) {
-            html += '<div class="body-field-desc">' + escapeHtml(propResolved.description) + '</div>';
+            html += '<div class="body-field-desc md">' + renderMarkdown(propResolved.description) + '</div>';
           }
 
           html += '</div>';
@@ -4038,114 +3136,93 @@ function getDocumentationHtml(): string {
       return undefined;
     }
 
-    // Add array item
-    function addArrayItem(fieldPath, itemType) {
-      const container = document.querySelector('[data-array-field="' + fieldPath + '"]');
-      if (!container) return;
-
-      const newItem = document.createElement('div');
-      newItem.className = 'array-item';
-      newItem.innerHTML = '<input type="text" class="try-it-input" placeholder="' + escapeHtml(itemType) + ' item" data-array-item="' + escapeHtml(fieldPath) + '">' +
-        '<button type="button" class="array-remove-btn" onclick="removeArrayItem(this)">✕</button>';
-
-      const addBtn = container.querySelector('.array-add-btn');
-      container.insertBefore(newItem, addBtn);
-    }
-
-    // Remove array item
-    function removeArrayItem(btn) {
-      const item = btn.closest('.array-item');
-      const container = item.closest('.array-field-container');
-
-      // Keep at least one item
-      if (container.querySelectorAll('.array-item').length > 1) {
-        item.remove();
+    // Add or remove array items; the form is re-rendered per endpoint, so listen once on the panel
+    document.addEventListener('click', (e) => {
+      const add = e.target.closest('[data-add-item]');
+      if (add) {
+        const path = add.dataset.addItem;
+        const schema = arrayItemsSchema(path);
+        add.insertAdjacentHTML('beforebegin', renderArrayItem(path, schema));
+        return;
       }
+      const remove = e.target.closest('.array-remove-btn');
+      if (remove) {
+        const item = remove.closest('.array-item');
+        const container = item.closest('.array-field-container');
+        // Keep one input so the field stays visible; clearing it leaves the array out of the body
+        if (container.querySelectorAll('.array-item').length > 1) item.remove();
+        else item.querySelectorAll('input, textarea').forEach(el => { el.value = ''; });
+      }
+    });
+
+    // The items schema of the body array at a dotted path, for "Add item"
+    function arrayItemsSchema(path) {
+      let schema = resolveSchema(currentEndpoint?.requestBody?.content?.['application/json']?.schema);
+      for (const part of path.split('.')) {
+        schema = resolveSchema(schema?.properties?.[part]);
+      }
+      return schema?.items;
     }
 
-    // Make functions globally accessible
-    window.addArrayItem = addArrayItem;
-    window.removeArrayItem = removeArrayItem;
 
     // Fetch and render health status
+    // Infrastructure from /api/v1/health, the Python services from /api/v1/health/services.
     async function fetchHealthStatus() {
-      try {
-        const response = await fetch('/api/v1/docs/health');
-        if (!response.ok) throw new Error('Health check failed');
-        return await response.json();
-      } catch (error) {
-        console.error('Failed to fetch health status:', error);
-        return null;
-      }
+      const get = (url) => fetch(url).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      const [platform, python] = await Promise.all([get('/api/v1/health'), get('/api/v1/health/services')]);
+      if (!platform && !python) return null;
+      const services = [];
+      const add = (group, names) => {
+        for (const [key, status] of Object.entries((group && group.services) || {})) {
+          services.push({ name: (names && names[key]) || key, status: status === 'healthy' || status === 'unhealthy' ? status : 'unknown' });
+        }
+      };
+      add(platform, platform && platform.serviceNames);
+      add(python, { query: 'Query', connector: 'Connectors', indexing: 'Indexing', docling: 'Docling', embedding: 'Embedding', parsing: 'Parsing', extraction: 'Extraction' });
+      const platformDown = !platform || platform.status !== 'healthy';
+      const anyDown = !python || services.some((svc) => svc.status !== 'healthy');
+      return {
+        overallStatus: platformDown ? 'unhealthy' : anyDown ? 'degraded' : 'healthy',
+        timestamp: (platform && platform.timestamp) || (python && python.timestamp) || new Date().toISOString(),
+        services,
+      };
     }
 
     function renderHealthSection(healthData) {
-      if (!healthData) {
-        return '<div class="health-section">' +
-          '<div class="health-header">' +
-          '<div class="health-title">' +
-          '<div class="health-title-icon">' +
-          '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
-          '<path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>' +
-          '</svg>' +
-          '</div>' +
-          '<span>Service Health</span>' +
-          '</div>' +
-          '</div>' +
-          '<div class="health-loading">' +
-          '<div class="spinner"></div>' +
-          '<span>Checking service health...</span>' +
-          '</div>' +
-          '</div>';
+      const header = (action) =>
+        '<div class="health-header">' +
+        '<div class="health-title"><span class="health-title-icon">' + icon('monitor_heart') + '</span><span>Service health</span></div>' +
+        action +
+        '</div>';
+      const refresh = (label) =>
+        '<button type="button" class="secondary-btn health-refresh-btn" onclick="refreshHealth()">' + icon('refresh', null, 16) + '<span>' + label + '</span></button>';
+
+      if (healthData === undefined) {
+        return '<div class="health-section">' + header('') +
+          '<div class="health-loading"><div class="spinner"></div><span>Checking service health...</span></div></div>';
+      }
+      if (healthData === null) {
+        return '<div class="health-section">' + header(refresh('Retry')) +
+          '<div class="health-overall"><span class="health-overall-label">Status</span>' +
+          '<span class="health-overall-status unhealthy">Unable to check</span></div></div>';
       }
 
-      const timestamp = new Date(healthData.timestamp).toLocaleTimeString();
-      let html = '<div class="health-section">' +
-        '<div class="health-header">' +
-        '<div class="health-title">' +
-        '<div class="health-title-icon">' +
-        '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
-        '<path d="M22 12h-4l-3 9L9 3l-3 9H2"></path>' +
-        '</svg>' +
-        '</div>' +
-        '<span>Service Health</span>' +
-        '</div>' +
-        '<button class="health-refresh-btn" onclick="refreshHealth()">' +
-        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
-        '<path d="M23 4v6h-6"></path>' +
-        '<path d="M1 20v-6h6"></path>' +
-        '<path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>' +
-        '</svg>' +
-        '<span>Refresh</span>' +
-        '</button>' +
-        '</div>';
-
+      const label = healthData.overallStatus.charAt(0).toUpperCase() + healthData.overallStatus.slice(1);
+      let html = '<div class="health-section">' + header(refresh('Refresh'));
       html += '<div class="health-overall">' +
-        '<span class="health-overall-label">Overall Status:</span>' +
-        '<span class="health-overall-status ' + healthData.overallStatus + '">' +
-        healthData.overallStatus.charAt(0).toUpperCase() + healthData.overallStatus.slice(1) +
-        '</span>' +
-        '<span class="health-timestamp">Last checked: ' + timestamp + '</span>' +
+        '<span class="health-overall-label">Overall status</span>' +
+        '<span class="health-overall-status ' + escapeHtml(healthData.overallStatus) + '">' + escapeHtml(label) + '</span>' +
+        '<span class="health-timestamp">Checked at ' + escapeHtml(new Date(healthData.timestamp).toLocaleTimeString()) + '</span>' +
         '</div>';
 
       html += '<div class="health-services">';
       for (const service of healthData.services) {
         html += '<div class="health-service-card">' +
-          '<div class="health-service-indicator ' + service.status + '"></div>' +
+          '<div class="health-service-indicator ' + escapeHtml(service.status) + '"></div>' +
           '<div class="health-service-info">' +
           '<div class="health-service-name">' + escapeHtml(service.name) + '</div>' +
-          '<div class="health-service-details">' +
-          '<span class="health-service-port">:' + service.port + '</span>';
-
-        if (service.responseTime !== undefined && service.status === 'healthy') {
-          html += '<span class="health-service-time">' + service.responseTime + 'ms</span>';
-        }
-        html += '</div>';
-
-        if (service.error) {
-          html += '<div class="health-service-error">' + escapeHtml(service.error) + '</div>';
-        }
-        html += '</div></div>';
+          '<div class="health-service-details">' + escapeHtml(service.status) + '</div>' +
+          '</div></div>';
       }
       html += '</div></div>';
 
@@ -4178,40 +3255,40 @@ function getDocumentationHtml(): string {
       document.querySelectorAll('.endpoint-list').forEach(el => el.style.display = 'none');
 
       document.getElementById('breadcrumb').innerHTML = '<span class="breadcrumb-current">API Reference</span>';
-      document.getElementById('codePanel').style.display = 'none';
-      document.getElementById('codePanelResizeHandle').style.display = 'none';
-      document.getElementById('tryItBtn').style.display = 'none';
+      hideCodePanel();
 
-      document.getElementById('docPanel').innerHTML =
-        '<div class="welcome-screen">' +
-        '<div class="welcome-icon">' +
-        '<svg viewBox="0 0 614 614" fill="none" xmlns="http://www.w3.org/2000/svg">' +
-        '<path fill-rule="evenodd" clip-rule="evenodd" d="M110.72 110.72V186.212L186.217 186.212L186.217 110.72L110.72 110.72Z" fill="white"/>' +
-        '<path fill-rule="evenodd" clip-rule="evenodd" d="M110.72 427.786V503.277L186.217 503.277L186.217 427.786L110.72 427.786Z" fill="white"/>' +
-        '<path fill-rule="evenodd" clip-rule="evenodd" d="M427.783 110.72V186.212L503.28 186.212L503.28 110.72L427.783 110.72Z" fill="white"/>' +
-        '<path fill-rule="evenodd" clip-rule="evenodd" d="M427.779 427.786V503.277L503.275 503.277L503.275 427.786L427.779 427.786Z" fill="white"/>' +
-        '<path d="M306.998 447.914L362.358 503.277L306.998 558.64L251.637 503.277L306.998 447.914Z" fill="white"/>' +
-        '<path d="M306.998 55.3602L362.358 110.723L306.998 166.085L251.637 110.723L306.998 55.3602Z" fill="white"/>' +
-        '<path d="M306.998 251.642L362.358 307.005L306.998 362.367L251.637 307.005L306.998 251.642Z" fill="white"/>' +
-        '<path d="M503.275 251.637L558.635 307L503.275 362.363L447.914 307L503.275 251.637Z" fill="white"/>' +
-        '<path d="M110.72 251.637L166.081 307L110.72 362.363L55.3602 307L110.72 251.637Z" fill="white"/>' +
-        '</svg>' +
+      const origin = window.location.origin;
+      let html = '<div class="welcome-screen">' +
+        '<div class="welcome-icon">' + LOGO_SVG + '</div>' +
+        '<h1 class="welcome-title">' + escapeHtml(apiDocs?.info?.title || 'PipesHub API') + '</h1>' +
+        '<p class="welcome-description">Every endpoint this PipesHub instance serves. Pick a module in the sidebar, or search, ' +
+        'and send requests from the Try It panel with your own token.</p>' +
+        '<div class="quickstart">' +
+        '<div class="quickstart-card">' + icon('link') + '<h3>Base URL</h3><p><code>' + escapeHtml(origin) + '/api/v1</code></p></div>' +
+        '<div class="quickstart-card">' + icon('key') + '<h3>Authentication</h3><p>Send <code>Authorization: Bearer &lt;token&gt;</code> with a personal access token or an OAuth access token.</p></div>' +
+        '<div class="quickstart-card">' + icon('play_circle') + '<h3>Try It</h3><p>Requests go straight from your browser to the base URL. The token is kept in this browser only.</p></div>' +
         '</div>' +
-        '<h1 class="welcome-title">Welcome to PipesHub API</h1>' +
-        '<p class="welcome-description">' +
-        'Explore our comprehensive API documentation. Select a module from the sidebar ' +
-        'to view available endpoints and learn how to integrate with PipesHub.' +
-        '</p>' +
         '</div>' +
-        renderHealthSection(null);
+        renderHealthSection(undefined);
 
-      // Fetch and update health status asynchronously
+      if (apiDocs?.info?.description) {
+        html += '<div class="doc-section"><h2 class="section-title">Overview</h2><div class="md">' + renderMarkdown(apiDocs.info.description) + '</div></div>';
+      }
+
+      document.getElementById('docPanel').innerHTML = html;
+      document.getElementById('docPanel').scrollTop = 0;
+
       fetchHealthStatus().then(healthData => {
         const healthSection = document.querySelector('.health-section');
         if (healthSection) {
           healthSection.outerHTML = renderHealthSection(healthData);
         }
       });
+    }
+
+    function hideCodePanel() {
+      document.getElementById('codePanel').style.display = 'none';
+      document.getElementById('codePanelResizeHandle').style.display = 'none';
     }
 
     // Select module
@@ -4257,58 +3334,44 @@ function getDocumentationHtml(): string {
     // Show module overview
     function showModuleOverview(moduleId) {
       const module = apiDocs.modules.find(m => m.id === moduleId);
-      const endpoints = apiDocs.endpoints.filter(e => e.moduleId === moduleId);
 
       document.getElementById('breadcrumb').innerHTML =
         '<span class="breadcrumb-link" data-action="home">API Reference</span>' +
         '<span class="breadcrumb-separator">/</span>' +
         '<span class="breadcrumb-current">' + escapeHtml(module.name) + '</span>';
-
-      document.getElementById('codePanel').style.display = 'none';
-      document.getElementById('codePanelResizeHandle').style.display = 'none';
-      document.getElementById('tryItBtn').style.display = 'none';
+      hideCodePanel();
 
       let html = '<div class="endpoint-header">';
-      html += '<div class="endpoint-title">';
-      html += '<h1>' + escapeHtml(module.name) + '</h1>';
-      html += '</div>';
-      html += '<div class="endpoint-description">' + renderDescription(module.description) + '</div>';
+      html += '<div class="endpoint-title"><h1>' + escapeHtml(module.name) + '</h1></div>';
+      if (module.description) {
+        html += '<div class="endpoint-description md">' + renderMarkdown(module.description) + '</div>';
+      }
       html += '</div>';
 
       html += '<div class="doc-section">';
-      html += '<h2 class="section-title">Endpoints</h2>';
+      html += '<h2 class="section-title">Groups</h2>';
       html += '<div class="module-list">';
-
-      // Group endpoints by tag
-      const byTag = {};
-      for (const ep of endpoints) {
-        const tag = ep.tags[0] || 'Other';
-        if (!byTag[tag]) byTag[tag] = [];
-        byTag[tag].push(ep);
-      }
-
-      for (const [tag, tagEndpoints] of Object.entries(byTag)) {
+      for (const tag of module.tags) {
+        const endpointCount = tagEndpoints(tag).length;
         html += '<div class="module-card" data-module-id="' + escapeHtml(moduleId) + '" data-tag="' + escapeHtml(tag) + '">';
+        html += '<div class="module-card-icon">' + icon(moduleIconName(module.icon)) + '</div>';
         html += '<div class="module-card-header">';
-        html += '<div class="module-card-icon">' + getModuleIcon(moduleId) + '</div>';
         html += '<div class="module-card-title">' + escapeHtml(tag) + '</div>';
+        html += '<div class="module-card-meta">' + endpointCount + (endpointCount === 1 ? ' endpoint' : ' endpoints') + '</div>';
         html += '</div>';
-        html += '<div class="module-card-meta">';
-        html += '<span>' + tagEndpoints.length + ' endpoints</span>';
-        html += '</div>';
+        html += icon('chevron_right', 'module-card-arrow');
         html += '</div>';
       }
-
       html += '</div>';
       html += '</div>';
 
-      document.getElementById('docPanel').innerHTML = html;
+      setDocPanel(html);
     }
 
     // Show tag endpoints
     function showTagEndpoints(moduleId, tag) {
       const module = apiDocs.modules.find(m => m.id === moduleId);
-      const endpoints = apiDocs.endpoints.filter(e => e.moduleId === moduleId && (e.tags[0] || 'Other') === tag);
+      const endpoints = tagEndpoints(tag);
 
       document.getElementById('breadcrumb').innerHTML =
         '<span class="breadcrumb-link" data-action="home">API Reference</span>' +
@@ -4316,75 +3379,97 @@ function getDocumentationHtml(): string {
         '<span class="breadcrumb-link" data-action="module" data-module-id="' + escapeHtml(moduleId) + '">' + escapeHtml(module.name) + '</span>' +
         '<span class="breadcrumb-separator">/</span>' +
         '<span class="breadcrumb-current">' + escapeHtml(tag) + '</span>';
-
-      document.getElementById('codePanel').style.display = 'none';
-      document.getElementById('codePanelResizeHandle').style.display = 'none';
-      document.getElementById('tryItBtn').style.display = 'none';
+      hideCodePanel();
 
       let html = '<div class="endpoint-header">';
-      html += '<div class="endpoint-title">';
-      html += '<h1>' + escapeHtml(tag) + '</h1>';
-      html += '</div>';
+      html += '<div class="endpoint-title"><h1>' + escapeHtml(tag) + '</h1></div>';
       html += '</div>';
 
       html += '<div class="doc-section">';
+      html += '<h2 class="section-title">Endpoints <span class="section-subtitle">' + endpoints.length + '</span></h2>';
+      html += '<div class="endpoint-rows">';
       for (const ep of endpoints) {
-        html += '<div class="response-item">';
-        html += '<div class="response-header" data-endpoint="' + escapeHtml(ep.operationId) + '" style="cursor: pointer;">';
-        html += '<span class="method-badge method-' + ep.method.toLowerCase() + '">' + ep.method + '</span>';
-        html += '<span style="flex: 1; margin-left: 12px;"><strong>' + escapeHtml(ep.summary || 'Untitled') + '</strong></span>';
-        html += '<span style="font-family: monospace; font-size: 12px; color: var(--text-muted);">' + escapeHtml(ep.path) + '</span>';
-        html += '</div>';
+        html += '<div class="endpoint-row" data-endpoint="' + escapeHtml(ep.operationId) + '" data-tag="' + escapeHtml(tag) + '">';
+        html += methodBadge(ep.method);
+        html += '<span class="endpoint-row-summary">' + escapeHtml(ep.summary || ep.operationId) + '</span>';
+        html += '<span class="endpoint-row-path">' + escapeHtml(ep.path) + '</span>';
         html += '</div>';
       }
       html += '</div>';
+      html += '</div>';
 
-      document.getElementById('docPanel').innerHTML = html;
+      setDocPanel(html);
+    }
+
+    function setDocPanel(html) {
+      const panel = document.getElementById('docPanel');
+      panel.innerHTML = html;
+      panel.scrollTop = 0;
+      document.querySelector('.content-body').scrollTop = 0;
     }
 
     // Select endpoint
-    function selectEndpoint(operationId) {
+    function selectEndpoint(operationId, fromTag) {
       currentEndpoint = apiDocs.endpoints.find(e => e.operationId === operationId);
       if (!currentEndpoint) return;
 
-      const module = apiDocs.modules.find(m => m.id === currentEndpoint.moduleId);
+      const tag = currentEndpoint.tags.includes(fromTag) ? fromTag : currentEndpoint.tags[0];
+      const module = apiDocs.modules.find(m => m.tags.includes(tag));
 
       // Update active state
       document.querySelectorAll('.endpoint-item').forEach(el => {
         el.classList.toggle('active', el.dataset.endpoint === operationId);
       });
 
-      const tag = currentEndpoint.tags[0] || 'Other';
-      document.getElementById('breadcrumb').innerHTML =
-        '<span class="breadcrumb-link" data-action="home">API Reference</span>' +
-        '<span class="breadcrumb-separator">/</span>' +
-        '<span class="breadcrumb-link" data-action="module" data-module-id="' + escapeHtml(module.id) + '">' + escapeHtml(module.name) + '</span>' +
-        '<span class="breadcrumb-separator">/</span>' +
-        '<span class="breadcrumb-link" data-action="tag" data-module-id="' + escapeHtml(module.id) + '" data-tag="' + escapeHtml(tag) + '">' + escapeHtml(tag) + '</span>' +
-        '<span class="breadcrumb-separator">/</span>' +
+      let breadcrumb = '<span class="breadcrumb-link" data-action="home">API Reference</span>';
+      if (module) {
+        breadcrumb +=
+          '<span class="breadcrumb-separator">/</span>' +
+          '<span class="breadcrumb-link" data-action="module" data-module-id="' + escapeHtml(module.id) + '">' + escapeHtml(module.name) + '</span>' +
+          '<span class="breadcrumb-separator">/</span>' +
+          '<span class="breadcrumb-link" data-action="tag" data-module-id="' + escapeHtml(module.id) + '" data-tag="' + escapeHtml(tag) + '">' + escapeHtml(tag) + '</span>';
+      }
+      breadcrumb += '<span class="breadcrumb-separator">/</span>' +
         '<span class="breadcrumb-current">' + escapeHtml(currentEndpoint.summary || currentEndpoint.operationId) + '</span>';
+      document.getElementById('breadcrumb').innerHTML = breadcrumb;
 
       document.getElementById('codePanel').style.display = 'flex';
       document.getElementById('codePanelResizeHandle').style.display = 'block';
-      document.getElementById('tryItBtn').style.display = 'none'; // Hide Try It button, we have it in panel
 
       showEndpointDetails();
       setupTryItPanel();
       switchTab(currentTab);
+      document.getElementById('codeContent').scrollTop = 0;
+    }
+
+    // The body media type the docs and Try It use: JSON when offered, else the first one listed
+    function bodyContent(ep) {
+      const content = ep.requestBody?.content || {};
+      const type = content['application/json'] ? 'application/json' : Object.keys(content)[0];
+      return type ? { type, schema: content[type].schema } : null;
+    }
+
+    function responseCodeClass(code) {
+      const first = String(code).charAt(0);
+      return ['2', '3', '4', '5'].includes(first) ? first + 'xx' : 'default';
     }
 
     // Show endpoint details
     function showEndpointDetails() {
       const ep = currentEndpoint;
+      const isFullUrl = ep.basePath.startsWith('http://') || ep.basePath.startsWith('https://');
 
       let html = '<div class="endpoint-header">';
       html += '<div class="endpoint-title">';
-      html += '<span class="method-badge method-' + ep.method.toLowerCase() + '" style="font-size: 14px; padding: 6px 12px;">' + ep.method + '</span>';
+      html += methodBadge(ep.method, 'large');
       html += '<h1>' + escapeHtml(ep.summary || ep.operationId) + '</h1>';
       html += '</div>';
-      html += '<div class="endpoint-path">' + escapeHtml(ep.path) + '</div>';
+      html += '<div class="endpoint-path">';
+      html += '<span><span class="endpoint-path-base">' + escapeHtml(ep.basePath) + '</span>' + escapeHtml(ep.path) + '</span>';
+      html += copyButton((isFullUrl ? '' : window.location.origin) + ep.basePath + ep.path);
+      html += '</div>';
       if (ep.description) {
-        html += '<div class="endpoint-description">' + renderDescription(ep.description) + '</div>';
+        html += '<div class="endpoint-description md">' + renderMarkdown(ep.description) + '</div>';
       }
       html += '</div>';
 
@@ -4393,15 +3478,22 @@ function getDocumentationHtml(): string {
         html += '<div class="doc-section">';
         html += '<h2 class="section-title">Parameters</h2>';
         html += '<table class="params-table">';
-        html += '<thead><tr><th>Name</th><th>Type</th><th>Description</th></tr></thead>';
+        html += '<thead><tr><th>Name</th><th>Description</th></tr></thead>';
         html += '<tbody>';
         for (const param of ep.parameters) {
+          const schema = resolveSchema(param.schema) || {};
           html += '<tr>';
-          html += '<td><span class="param-name">' + escapeHtml(param.name) + '</span>';
+          html += '<td style="width: 32%;"><span class="param-name">' + escapeHtml(param.name) + '</span>';
           if (param.required) html += '<span class="param-required">required</span>';
+          html += '<span class="param-in">' + escapeHtml(param.in) + ' · <span class="param-type">' + escapeHtml(getSchemaType(schema)) + '</span></span>';
           html += '</td>';
-          html += '<td><span class="param-type">' + escapeHtml(param.schema?.type || param.in) + '</span></td>';
-          html += '<td>' + escapeHtml(param.description || '-') + '</td>';
+          html += '<td><div class="md small">' + (param.description ? renderMarkdown(param.description) : '<span style="color: var(--text-3);">No description</span>') + '</div>';
+          if (schema.enum) {
+            html += '<div class="schema-field-enum">One of';
+            for (const val of schema.enum) html += '<span class="schema-field-enum-value">' + escapeHtml(String(val)) + '</span>';
+            html += '</div>';
+          }
+          html += '</td>';
           html += '</tr>';
         }
         html += '</tbody></table>';
@@ -4409,19 +3501,18 @@ function getDocumentationHtml(): string {
       }
 
       // Request Body
+      const body = ep.requestBody ? bodyContent(ep) : null;
       if (ep.requestBody) {
         html += '<div class="doc-section">';
-        html += '<h2 class="section-title">Request Body</h2>';
-        if (ep.requestBody.description) {
-          html += '<p style="color: var(--text-secondary); margin-bottom: 12px;">' + escapeHtml(ep.requestBody.description) + '</p>';
+        html += '<h2 class="section-title">Request body' +
+          (ep.requestBody.required ? '<span class="param-required">required</span>' : '') +
+          (body ? '<span class="content-type">' + escapeHtml(body.type) + '</span>' : '') + '</h2>';
+        if (ep.requestBody.description && ep.requestBody.description !== 'Request payload') {
+          html += '<div class="md section-note">' + renderMarkdown(ep.requestBody.description) + '</div>';
         }
-        const content = ep.requestBody.content?.['application/json'];
-        if (content?.schema) {
-          // Get schema name from $ref or use 'Request Body'
-          const schemaName = content.schema.$ref
-            ? content.schema.$ref.replace('#/components/schemas/', '')
-            : 'Request Body';
-          html += renderSchema(content.schema, schemaName);
+        if (body?.schema) {
+          const schemaName = body.schema.$ref ? body.schema.$ref.replace('#/components/schemas/', '') : 'Body';
+          html += renderSchema(body.schema, schemaName);
         }
         html += '</div>';
       }
@@ -4431,129 +3522,102 @@ function getDocumentationHtml(): string {
         html += '<div class="doc-section">';
         html += '<h2 class="section-title">Responses</h2>';
         for (const [code, response] of Object.entries(ep.responses)) {
-          const codeClass = code.startsWith('2') ? '2xx' : code.startsWith('4') ? '4xx' : '5xx';
-          html += '<div class="response-item" style="margin-bottom: 12px;">';
-          html += '<div class="response-header" style="border-radius: 8px 8px 0 0;">';
-          html += '<span class="response-code response-code-' + codeClass + '">' + code + '</span>';
-          html += '<span style="flex: 1;">' + escapeHtml(response.description || '') + '</span>';
+          html += '<div class="response-item">';
+          html += '<div class="response-header">';
+          html += '<span class="response-code response-code-' + responseCodeClass(code) + '">' + escapeHtml(code) + '</span>';
+          html += '<div class="md small">' + renderMarkdown(response.description || '') + '</div>';
           html += '</div>';
 
-          // Show response schema if available
-          const responseContent = response.content?.['application/json'];
-          if (responseContent?.schema) {
-            html += '<div style="border: 1px solid var(--border-color); border-top: none; border-radius: 0 0 8px 8px; padding: 12px;">';
-            const schemaName = responseContent.schema.$ref
-              ? responseContent.schema.$ref.replace('#/components/schemas/', '')
-              : 'Response ' + code;
-            html += renderSchema(responseContent.schema, schemaName);
-            html += '</div>';
+          const content = response.content || {};
+          const type = content['application/json'] ? 'application/json' : Object.keys(content)[0];
+          const responseSchema = type && content[type].schema;
+          if (responseSchema) {
+            const schemaName = responseSchema.$ref
+              ? responseSchema.$ref.replace('#/components/schemas/', '')
+              : (type === 'application/json' ? 'Response body' : type);
+            html += renderSchema(responseSchema, schemaName);
           }
           html += '</div>';
         }
         html += '</div>';
       }
 
-      document.getElementById('docPanel').innerHTML = html;
+      setDocPanel(html);
     }
 
     // Update code example
     function updateCodeExample(lang) {
       if (!currentEndpoint) return;
       const ep = currentEndpoint;
-      const module = apiDocs.modules.find(m => m.id === ep.moduleId);
       const configuredBaseUrl = document.getElementById('baseUrlInput')?.value || config.baseUrl || window.location.origin;
-      // Check if basePath is already a full URL (for Python services)
-      const isFullUrl = module.basePath.startsWith('http://') || module.basePath.startsWith('https://');
-      const baseUrl = isFullUrl ? module.basePath : configuredBaseUrl + module.basePath;
+      const isFullUrl = ep.basePath.startsWith('http://') || ep.basePath.startsWith('https://');
+      const url = (isFullUrl ? ep.basePath : configuredBaseUrl + ep.basePath) + ep.path;
+      const body = ep.requestBody ? bodyContent(ep) : null;
+      const isMultipart = body?.type === 'multipart/form-data';
+      const example = body?.schema ? generateExample(body.schema) : {};
+      const bodyExample = JSON.stringify(example, null, 2);
+      const fileFields = isMultipart ? Object.entries(resolveSchema(body.schema)?.properties || {})
+        .filter(([, prop]) => { const p = resolveSchema(prop) || {}; return p.format === 'binary' || p.type === 'file'; })
+        .map(([name]) => name) : [];
+      const formFields = isMultipart ? Object.entries(example).filter(([name]) => !fileFields.includes(name)) : [];
+      const indent = (text, pad) => text.split('\\n').join('\\n' + pad);
 
       let code = '';
-      let bodyExample = '';
-
-      // Generate body example if needed
-      if (ep.requestBody) {
-        const content = ep.requestBody.content?.['application/json'];
-        if (content?.schema) {
-          const example = generateExample(content.schema);
-          bodyExample = JSON.stringify(example, null, 2);
-        } else {
-          bodyExample = '{}';
-        }
-      }
-
-      var NL = String.fromCharCode(10);
-      var BS = String.fromCharCode(92);
-
       if (lang === 'curl') {
-        code = 'curl -X ' + ep.method + ' "' + baseUrl + ep.path + '"';
-        code += ' ' + BS + NL + '  -H "Authorization: Bearer YOUR_TOKEN"';
-        code += ' ' + BS + NL + '  -H "Content-Type: application/json"';
-        if (ep.requestBody) {
-          code += ' ' + BS + NL + "  -d '" + bodyExample + "'";
+        code = 'curl -X ' + ep.method + ' "' + url + '" \\\\\\n  -H "Authorization: Bearer YOUR_TOKEN"';
+        if (isMultipart) {
+          for (const name of fileFields) code += ' \\\\\\n  -F "' + name + '=@/path/to/file"';
+          for (const [name, value] of formFields) code += ' \\\\\\n  -F "' + name + '=' + (typeof value === 'object' ? JSON.stringify(value) : value) + '"';
+        } else if (body) {
+          code += ' \\\\\\n  -H "Content-Type: application/json" \\\\\\n  -d \\'' + bodyExample.replace(/'/g, "'\\\\''") + '\\'';
         }
       } else if (lang === 'javascript') {
-        code = 'const response = await fetch("' + baseUrl + ep.path + '", {';
-        code += NL + '  method: "' + ep.method + '",';
-        code += NL + '  headers: {';
-        code += NL + '    "Authorization": "Bearer YOUR_TOKEN",';
-        code += NL + '    "Content-Type": "application/json"';
-        code += NL + '  }';
-        if (ep.requestBody) {
-          code += ',' + NL + '  body: JSON.stringify(' + bodyExample + ')';
+        if (isMultipart) {
+          code = 'const form = new FormData();\\n';
+          for (const name of fileFields) code += 'form.append("' + name + '", fileInput.files[0]);\\n';
+          for (const [name, value] of formFields) code += 'form.append("' + name + '", ' + JSON.stringify(typeof value === 'object' ? JSON.stringify(value) : String(value)) + ');\\n';
+          code += '\\n';
         }
-        code += NL + '});' + NL + NL + 'const data = await response.json();';
+        code += 'const response = await fetch("' + url + '", {\\n  method: "' + ep.method + '",\\n  headers: {\\n    "Authorization": "Bearer YOUR_TOKEN"';
+        if (body && !isMultipart) code += ',\\n    "Content-Type": "application/json"';
+        code += '\\n  }';
+        if (isMultipart) code += ',\\n  body: form';
+        else if (body) code += ',\\n  body: JSON.stringify(' + indent(bodyExample, '  ') + ')';
+        code += '\\n});\\n\\nconst data = await response.json();';
       } else if (lang === 'python') {
-        code = 'import requests';
-        code += NL + NL + 'response = requests.' + ep.method.toLowerCase() + '(';
-        code += NL + '    "' + baseUrl + ep.path + '",';
-        code += NL + '    headers={';
-        code += NL + '        "Authorization": "Bearer YOUR_TOKEN",';
-        code += NL + '        "Content-Type": "application/json"';
-        code += NL + '    }';
-        if (ep.requestBody) {
-          code += ',' + NL + '    json=' + bodyExample;
+        code = 'import requests\\n\\nresponse = requests.' + ep.method.toLowerCase() + '(\\n    "' + url + '",\\n    headers={"Authorization": "Bearer YOUR_TOKEN"}';
+        if (isMultipart) {
+          code += ',\\n    files={' + fileFields.map(name => '"' + name + '": open("/path/to/file", "rb")').join(', ') + '}';
+          if (formFields.length) code += ',\\n    data={' + formFields.map(([name, value]) => '"' + name + '": ' + JSON.stringify(typeof value === 'object' ? JSON.stringify(value) : String(value))).join(', ') + '}';
+        } else if (body) {
+          code += ',\\n    json=' + indent(toPython(example), '    ');
         }
-        code += NL + ')' + NL + NL + 'data = response.json()';
+        code += ',\\n)\\n\\ndata = response.json()';
       } else if (lang === 'requestbody') {
-        // Show editable request body JSON
-        code = bodyExample || '{}';
-
         document.getElementById('codeExamplesPanel').innerHTML =
-          '<div class="code-block" style="margin: 8px;">' +
+          '<div class="code-block">' +
           '<div class="code-block-header">' +
-          '<span class="code-block-title">Request Body (JSON)</span>' +
-          '<button class="copy-btn" id="copyBtn">Copy</button>' +
+          '<span class="code-block-title">Request body (JSON)</span>' +
+          '<button class="copy-btn" id="copyBtn" type="button">' + icon('content_copy') + '<span class="copy-label">Copy</span></button>' +
           '</div>' +
-          '<textarea id="codeBodyTextarea" class="raw-json-textarea" style="margin: 0; border-radius: 0 0 8px 8px; min-height: 300px;">' + escapeHtml(code) + '</textarea>' +
+          '<textarea id="codeBodyTextarea" class="raw-json-textarea" spellcheck="false">' + escapeHtml(bodyExample) + '</textarea>' +
           '<div id="codeBodyError" class="raw-json-error" style="display: none; padding: 0 12px 12px;"></div>' +
-          '<div style="padding: 12px; border-top: 1px solid var(--border-color);">' +
-          '<button class="execute-btn" id="useInTryItBtn" style="width: 100%;">' +
-          '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
-          '<path d="M12 5v14M5 12h14"></path>' +
-          '</svg>' +
-          'Use in Try It' +
-          '</button>' +
+          '<div class="code-block-footer">' +
+          '<button class="primary-btn" id="useInTryItBtn" type="button">' + icon('play_arrow') + 'Use in Try It</button>' +
           '</div>' +
           '</div>';
 
-        // Add copy button handler
         document.getElementById('copyBtn').onclick = function() {
-          const textarea = document.getElementById('codeBodyTextarea');
-          navigator.clipboard.writeText(textarea.value);
-          this.textContent = 'Copied!';
-          setTimeout(() => { this.textContent = 'Copy'; }, 2000);
+          copyText(document.getElementById('codeBodyTextarea').value, this);
         };
 
-        // Add "Use in Try It" button handler
         document.getElementById('useInTryItBtn').onclick = function() {
           const textarea = document.getElementById('codeBodyTextarea');
           const errorDiv = document.getElementById('codeBodyError');
           try {
             JSON.parse(textarea.value);
-            // Valid JSON - copy to raw JSON input and switch to Try It
             document.getElementById('rawJsonTextarea').value = textarea.value;
-            // Switch to raw mode
             toggleInputMode('raw');
-            // Switch to Try It tab
             document.querySelectorAll('.code-tab').forEach(t => t.classList.remove('active'));
             document.querySelector('.code-tab[data-tab="tryit"]').classList.add('active');
             currentTab = 'tryit';
@@ -4564,13 +3628,10 @@ function getDocumentationHtml(): string {
           }
         };
 
-        // Validate on input
         document.getElementById('codeBodyTextarea').addEventListener('input', function() {
           const errorDiv = document.getElementById('codeBodyError');
           try {
-            if (this.value.trim()) {
-              JSON.parse(this.value);
-            }
+            if (this.value.trim()) JSON.parse(this.value);
             this.classList.remove('error');
             errorDiv.style.display = 'none';
           } catch (e) {
@@ -4579,33 +3640,28 @@ function getDocumentationHtml(): string {
             errorDiv.style.display = 'block';
           }
         });
-
-        return; // Early return since we handled rendering differently
+        return;
       }
 
+      const titles = { curl: 'cURL', javascript: 'JavaScript', python: 'Python' };
       document.getElementById('codeExamplesPanel').innerHTML =
-        '<div class="code-block" style="margin: 8px;">' +
+        '<div class="code-block">' +
         '<div class="code-block-header">' +
-        '<span class="code-block-title">' + lang.charAt(0).toUpperCase() + lang.slice(1) + ' Example</span>' +
-        '<button class="copy-btn" id="copyBtn">Copy</button>' +
+        '<span class="code-block-title">' + titles[lang] + '</span>' +
+        '<button class="copy-btn" id="copyBtn" type="button">' + icon('content_copy') + '<span class="copy-label">Copy</span></button>' +
         '</div>' +
         '<pre>' + escapeHtml(code) + '</pre>' +
         '</div>';
 
-      // Add copy button handler
       document.getElementById('copyBtn').onclick = function() {
-        navigator.clipboard.writeText(code);
-        this.textContent = 'Copied!';
-        setTimeout(() => { this.textContent = 'Copy'; }, 2000);
+        copyText(code, this);
       };
     }
 
-    // Copy code
-    function copyCode() {
-      const pre = document.querySelector('#codeContent pre');
-      if (pre) {
-        navigator.clipboard.writeText(pre.textContent);
-      }
+    // JSON as a Python literal: true/false/null become True/False/None outside strings
+    function toPython(value) {
+      return JSON.stringify(value, null, 2).replace(/("(?:[^"\\\\]|\\\\.)*")|\\b(true|false|null)\\b/g,
+        (match, str, word) => str || { true: 'True', false: 'False', null: 'None' }[word]);
     }
 
     // Filter endpoints
@@ -4630,6 +3686,12 @@ function getDocumentationHtml(): string {
         document.querySelectorAll('.nav-category').forEach(el => {
           el.style.display = 'block';
         });
+        document.getElementById('searchEmpty').style.display = 'none';
+        // Re-open the module being viewed
+        if (currentModule) {
+          const list = document.querySelector('.endpoint-list[data-module="' + currentModule.id + '"]');
+          if (list) list.style.display = 'block';
+        }
         return;
       }
 
@@ -4646,6 +3708,7 @@ function getDocumentationHtml(): string {
         // Search in text, path, and tags
         const matches = text.includes(q) ||
           (endpoint && endpoint.path.toLowerCase().includes(q)) ||
+          operationId.toLowerCase().includes(q) ||
           (endpoint && endpoint.tags.some(t => t.toLowerCase().includes(q)));
 
         if (matches) {
@@ -4699,44 +3762,94 @@ function getDocumentationHtml(): string {
         );
         el.style.display = hasVisibleModules ? 'block' : 'none';
       });
+      document.getElementById('searchEmpty').style.display = visibleModules.size === 0 ? 'block' : 'none';
     }
 
-    // Escape HTML
+    // Escape HTML; also used for attribute values, so quotes are escaped too
     function escapeHtml(text) {
-      if (!text) return '';
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
+      if (text === null || text === undefined) return '';
+      return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
-    // Render description with safe HTML tags (b, br, code, pre, ul, li, ol, a)
-    function renderDescription(text) {
+    // The CommonMark subset the spec's descriptions use: paragraphs, headings, lists, fenced code,
+    // inline code, bold, italics and links. The text is escaped first and only this markup is added back.
+    function renderMarkdown(text) {
       if (!text) return '';
-      // First escape everything
-      let html = escapeHtml(text);
-      // Then restore safe HTML tags
-      html = html.replace(/&lt;br&gt;/gi, '<br>');
-      html = html.replace(/&lt;br\\/&gt;/gi, '<br>');
-      html = html.replace(/&lt;br ?\\/&gt;/gi, '<br>');
-      html = html.replace(/&lt;b&gt;/gi, '<b>');
-      html = html.replace(/&lt;\\/b&gt;/gi, '</b>');
-      html = html.replace(/&lt;code&gt;/gi, '<code>');
-      html = html.replace(/&lt;\\/code&gt;/gi, '</code>');
-      html = html.replace(/&lt;pre&gt;/gi, '<pre>');
-      html = html.replace(/&lt;\\/pre&gt;/gi, '</pre>');
-      html = html.replace(/&lt;ul&gt;/gi, '<ul>');
-      html = html.replace(/&lt;\\/ul&gt;/gi, '</ul>');
-      html = html.replace(/&lt;ol&gt;/gi, '<ol>');
-      html = html.replace(/&lt;\\/ol&gt;/gi, '</ol>');
-      html = html.replace(/&lt;li&gt;/gi, '<li>');
-      html = html.replace(/&lt;\\/li&gt;/gi, '</li>');
-      html = html.replace(/&lt;strong&gt;/gi, '<strong>');
-      html = html.replace(/&lt;\\/strong&gt;/gi, '</strong>');
-      html = html.replace(/&lt;em&gt;/gi, '<em>');
-      html = html.replace(/&lt;\\/em&gt;/gi, '</em>');
-      html = html.replace(/&lt;i&gt;/gi, '<i>');
-      html = html.replace(/&lt;\\/i&gt;/gi, '</i>');
-      return html;
+      const lines = String(text).replace(/\\r\\n?/g, '\\n').split('\\n');
+      const out = [];
+      let paragraph = [];
+      let list = null;
+
+      const flushParagraph = () => {
+        if (paragraph.length) out.push('<p>' + renderInline(paragraph.join(' ')) + '</p>');
+        paragraph = [];
+      };
+      const flushList = () => {
+        if (list) out.push('<' + list.tag + '>' + list.items.map(item => '<li>' + renderInline(item.join(' ')) + '</li>').join('') + '</' + list.tag + '>');
+        list = null;
+      };
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const fence = line.match(/^\\s*(\`\`\`|~~~)/);
+        if (fence) {
+          flushParagraph();
+          flushList();
+          const code = [];
+          while (++i < lines.length && !lines[i].trim().startsWith(fence[1])) code.push(lines[i]);
+          out.push('<pre><code>' + escapeHtml(code.join('\\n')) + '</code></pre>');
+          continue;
+        }
+        if (!line.trim()) {
+          flushParagraph();
+          flushList();
+          continue;
+        }
+        const heading = line.match(/^\\s{0,3}(#{1,6})\\s+(.*)$/);
+        if (heading) {
+          flushParagraph();
+          flushList();
+          const level = Math.min(heading[1].length + 2, 5);
+          out.push('<h' + level + '>' + renderInline(heading[2]) + '</h' + level + '>');
+          continue;
+        }
+        const item = line.match(/^\\s{0,3}([-*+]|\\d+[.)])\\s+(.*)$/);
+        if (item) {
+          flushParagraph();
+          const tag = /\\d/.test(item[1]) ? 'ol' : 'ul';
+          if (list && list.tag !== tag) flushList();
+          if (!list) list = { tag, items: [] };
+          list.items.push([item[2]]);
+          continue;
+        }
+        // An indented line continues the current list item; a plain line after a list ends it
+        if (list && /^\\s+/.test(line)) {
+          list.items[list.items.length - 1].push(line.trim());
+          continue;
+        }
+        flushList();
+        paragraph.push(line.trim());
+      }
+      flushParagraph();
+      flushList();
+      return out.join('');
+    }
+
+    function renderInline(text) {
+      const codes = [];
+      // Code spans first, so nothing inside them is formatted
+      let html = escapeHtml(text).replace(/\`([^\`]+)\`/g, (m, code) => {
+        codes.push('<code>' + code + '</code>');
+        return '\\u0000' + (codes.length - 1) + '\\u0000';
+      });
+      html = html
+        .replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>')
+        .replace(/__(.+?)__/g, '<strong>$1</strong>')
+        .replace(/(^|[^*\\w])\\*(?!\\s)([^*]+?)\\*(?!\\w)/g, '$1<em>$2</em>')
+        .replace(/(^|[^\\w])_(?!\\s)([^_]+?)_(?!\\w)/g, '$1<em>$2</em>')
+        .replace(/\\[([^\\]]+)\\]\\(((?:https?:\\/\\/|\\/|#)[^\\s)]*)\\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+      return html.replace(/\\u0000(\\d+)\\u0000/g, (m, i) => codes[Number(i)]);
     }
   </script>
 </body>

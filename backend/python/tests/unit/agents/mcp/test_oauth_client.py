@@ -384,20 +384,28 @@ class TestErrorsInTheResponseBody:
         _json_response(401, {"error": "invalid_client"}),
         _form_response(200, "error=incorrect_client_credentials"),
         _json_response(400, {"error": "unauthorized_client"}),
+        _json_response(400, {"error": "interaction_required", "error_description": "AADSTS50076: use MFA"}),
+        _json_response(400, {"error": "invalid_scope"}),
+        _json_response(400, {"error": "invalid_request"}),
     ])
     async def test_a_rejection_a_retry_cannot_fix_is_permanent(self, resp: MagicMock) -> None:
-        with pytest.raises(MCPRefreshTokenInvalidError):
+        with pytest.raises(MCPRefreshTokenInvalidError) as exc_info:
             await self._refresh(resp)
+        assert exc_info.value.status == resp.status_code
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("resp", [
         _json_response(503, {"error": "temporarily_unavailable"}),
         _json_response(200, {"error": "server_error"}),
+        _json_response(503, {"error": "interaction_required"}),
+        _json_response(429, {"error": "invalid_grant"}),
+        _json_response(500, {"error": "login_required"}),
     ])
     async def test_a_provider_outage_can_be_retried(self, resp: MagicMock) -> None:
         with pytest.raises(MCPOAuthError) as exc_info:
             await self._refresh(resp)
         assert not isinstance(exc_info.value, MCPRefreshTokenInvalidError)
+        assert exc_info.value.status == resp.status_code
 
     @pytest.mark.asyncio
     async def test_the_message_names_the_error_not_the_raw_body(self) -> None:

@@ -36,6 +36,7 @@ call produces a `ToolOutput`; `ToolExecutor.call_tool()` converts it into a
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -44,6 +45,8 @@ from app.agent_loop_lib.core.types import Source
 from app.agent_loop_lib.tools.errors import ToolValidationError
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from app.agent_loop_lib.core.tool_schema import ToolSchema
     from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
     from app.agent_loop_lib.modules.stores.approval.base import RiskLevel
@@ -75,7 +78,7 @@ class ParameterType(str, Enum):
 # bool is intentionally excluded from INTEGER's accepted set because
 # `isinstance(True, int)` is True in Python and would silently accept booleans
 # as integers otherwise.
-def _fuzzy_match_enum(value: object, enum: list[str]) -> str | None:
+def _fuzzy_match_enum(value: object, enum: Sequence[object]) -> str | None:
     """Case-insensitive enum matching with whitespace/underscore normalisation.
 
     Returns the canonical enum member if a match is found, None otherwise.
@@ -86,7 +89,8 @@ def _fuzzy_match_enum(value: object, enum: list[str]) -> str | None:
         return None
     normalised = value.strip().lower().replace("_", " ")
     for member in enum:
-        if member.lower().replace("_", " ") == normalised:
+        # A schema's enum can hold numbers and null too (`[1, 2]`, `["alice", null]`).
+        if isinstance(member, str) and member.lower().replace("_", " ") == normalised:
             return member
     return None
 
@@ -186,6 +190,11 @@ class ToolOutput:
     data: Any = None
     error: str | None = None
     sources: list[Source] = field(default_factory=list)
+    cause: BaseException | None = None
+    """The exception behind a failed output; the executor logs it once. Never shown to the model."""
+    end_fields: Mapping[str, object] = field(default_factory=dict)
+    """For the executor's ``tool_call.end`` line: ``reason``, ``error_class``, ``status``,
+    ``mcp_reason`` (other keys are dropped). Enums and ids only, never arguments or content."""
 
 
 class Tool(ABC):
@@ -222,6 +231,16 @@ class Tool(ABC):
     def tags(self) -> list[Tag]:
         """Key/value metadata for categorization and filtering. Optional."""
         return []
+
+    @property
+    def log_kind(self) -> str:
+        """The ``kind`` on this tool's ``tool_call.end`` line: builtin, mcp, openapi or sub_agent."""
+        return "builtin"
+
+    @property
+    def log_ids(self) -> Mapping[str, str]:
+        """``mcp_server_id`` and/or ``toolset_id``, bound on every line logged during a call to this tool."""
+        return {}
 
     @property
     def app_name(self) -> str | None:

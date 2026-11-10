@@ -24,4 +24,6 @@ VIEW = "kb_article_titles"
 # Created by the tests themselves.
 NEW_TABLE = "kb_runbooks"
 DROPPED_TABLE = "kb_scratch"
+# A table from create_table_with_rows is one record, and one per column (id, title, body).
+RECORDS_PER_TABLE = 4
 EXCLUDED_TABLE = KEYLESS_TABLE

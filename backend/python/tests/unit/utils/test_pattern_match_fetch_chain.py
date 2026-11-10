@@ -143,7 +143,8 @@ async def test_neo4j_shaped_hit_is_served_from_the_map_after_the_one_batch_acces
     assert result["ok"] is True
     graph.check_access.assert_awaited_once_with("user-key", ORG, node_ids={RECORD_ID})
     graph.check_record_access_with_details.assert_not_awaited()
-    graph.get_document.assert_not_awaited()
+    # The record is not read again; only its connector's name is looked up.
+    assert [c.args for c in graph.get_document.await_args_list] == [("conn-1", "apps")]
 
 
 async def test_a_hit_in_the_map_is_not_served_once_the_batch_check_refuses_it() -> None:

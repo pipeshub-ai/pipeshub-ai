@@ -231,6 +231,10 @@ class FakeDataStore:
     async def transaction(self, explicit: bool | None = None) -> AsyncIterator[FakeDataStore]:
         yield self
 
+    async def execute_in_transaction(self, func, *args, **kwargs) -> object:
+        async with self.transaction() as tx_store:
+            return await func(tx_store, *args, **kwargs)
+
     async def get_nodes_by_filters(
         self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None,
     ) -> list[dict[str, Any]]:

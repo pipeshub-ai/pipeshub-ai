@@ -103,6 +103,16 @@ class TestRetrieve:
         assert [c["record"]["recordId"] for c in body["chunks"]] == ["r1", "r2"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("stored", "returned"), [([None], None), ([None, 3], [3]), (None, None), (3, [3])])
+    async def test_page_numbers_are_integers_or_null(self, stored: list | int | None, returned: list | None) -> None:
+        # Records without pages (Markdown, plain text) are indexed with pageNum [None];
+        # older indexes stored a bare page number.
+        hit = _hit("r1", 0, "# Runbook")
+        hit["metadata"]["pageNum"] = stored
+        _, body, _, _ = await _retrieve(RetrieveQuery(query="q"), _results(hit))
+        assert body["chunks"][0]["citation"]["pageNum"] == returned
+
+    @pytest.mark.asyncio
     async def test_max_chunks_per_record_caps_each_record_keeping_rank(self) -> None:
         _, body, _, _ = await _retrieve(
             RetrieveQuery(query="q", maxChunksPerRecord=1),

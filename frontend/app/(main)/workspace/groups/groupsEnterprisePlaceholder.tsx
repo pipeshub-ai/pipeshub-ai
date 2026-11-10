@@ -3,7 +3,7 @@
 import { Flex, Heading, Text } from '@radix-ui/themes';
 import { pagePaddingX } from '@/app/components/ui/responsive';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { MOBILE_PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
+import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 
@@ -27,7 +27,7 @@ export default function GroupsEnterprisePlaceholder() {
       <Flex
         direction="column"
         gap="1"
-        style={{ paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 64, paddingBottom: 24 }}
+        style={{ paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP, paddingBottom: 24 }}
       >
         <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
           {t('workspace.groups.title')}

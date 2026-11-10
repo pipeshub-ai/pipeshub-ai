@@ -24,6 +24,7 @@ pytestmark = pytest.mark.unit
 def _helper() -> SmbStorageHelper:
     helper = object.__new__(SmbStorageHelper)
     helper.server, helper.port, helper._cache = "smb.test", 445, {}
+    helper._user, helper._password = "it-user", "it-password"
     return helper
 
 
@@ -113,3 +114,16 @@ def test_a_share_that_cannot_be_read_still_fails(monkeypatch, error) -> None:
     monkeypatch.setattr(smb_storage_helper.smbclient, "scandir", _scandir_raising(error))
     with pytest.raises(type(error)):
         _helper().list_objects("share", "it-access-check/")
+
+
+def test_every_call_signs_in_with_the_credentials(monkeypatch) -> None:
+    """After the server restarts, smbclient opens a new connection with what each call passes; none fails."""
+    seen: dict = {}
+
+    def scandir(path, **kwargs):
+        seen.update(kwargs)
+        return _EmptyScan()
+
+    monkeypatch.setattr(smb_storage_helper.smbclient, "scandir", scandir)
+    _helper().list_objects("share", "it-run/")
+    assert (seen["username"], seen["password"]) == ("it-user", "it-password")

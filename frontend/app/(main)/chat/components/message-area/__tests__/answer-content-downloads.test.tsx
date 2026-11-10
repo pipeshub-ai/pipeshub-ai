@@ -41,7 +41,7 @@ describe('downloading a table as CSV', () => {
     fireEvent.click(downloadCsvButtons()[0]);
 
     expect(saveTextFile).toHaveBeenCalledTimes(1);
-    expect(saveTextFile).toHaveBeenCalledWith('table.csv', '\uFEFFName,Qty\r\nApples,3\r\nPears,5\r\n', 'text/csv');
+    expect(saveTextFile).toHaveBeenCalledWith(expect.stringMatching(/^name-\d{8}-\d{6}\.csv$/), '\uFEFFName,Qty\r\nApples,3\r\nPears,5\r\n', 'text/csv');
   });
 
   it('saves only the rows the model wrote, without the source badges beside them', () => {
@@ -84,7 +84,7 @@ describe('downloading a table as CSV', () => {
     fireEvent.click(downloadCsvButtons()[0]);
 
     expect(saveTextFile).toHaveBeenCalledWith(
-      'table.csv',
+      expect.stringMatching(/^customer-\d{8}-\d{6}\.csv$/),
       '\uFEFFCustomer,Fix\r\nNorthwind,"Per project, then queue"\r\n',
       'text/csv',
     );

@@ -2,13 +2,13 @@
 
 import React, { useCallback, useMemo } from 'react';
 import type { TFunction } from 'i18next';
-import { Box, Button, Flex, Grid, Heading, IconButton, SegmentedControl, Text, TextField } from '@radix-ui/themes';
+import { Box, Button, Flex, Grid, Heading, IconButton, Text, TextField } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { useBrand } from '@/lib/branding';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { MOBILE_PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
+import { MOBILE_PAGE_PADDING_TOP, PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 import type { AIModelProvider, ConfiguredModel } from '../types';
 import type { CapabilitySection } from '../types';
 import { CAPABILITY_SECTION_ORDER, modelTypesForSection } from '../types';
@@ -16,6 +16,7 @@ import type { MainSection } from '../store';
 import { aiModelsCapabilityBadge, aiModelsCapabilityLabel, aiModelsCapabilitySectionTab } from '../capability-i18n';
 import { ProviderRow } from './provider-card';
 import { ConfiguredModelsGrid } from './configured-models-grid';
+import { SegmentedTabs } from '@/app/components/ui/segmented-tabs';
 
 export type ProviderGridLayout = 'page' | 'embedded';
 
@@ -196,7 +197,7 @@ export function ProviderGrid({
             paddingRight: 0,
           }
           : {
-            paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : pagePaddingY,
+            paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP,
             paddingBottom: pagePaddingY,
             paddingLeft: pagePaddingX,
             paddingRight: pagePaddingX,
@@ -245,38 +246,36 @@ export function ProviderGrid({
         style={{ width: '100%', minWidth: 0, flexShrink: 0 }}
       >
         <Box width={{ initial: '100%', sm: 'auto' }} minWidth="0">
-          <SegmentedControl.Root
+          <SegmentedTabs
             value={mainSection}
-            onValueChange={(v) => onMainSectionChange(v as MainSection)}
-            size="2"
-            className="segmented-fill"
-            style={{ width: '100%' }}
-          >
-            <SegmentedControl.Item value="providers">
-              <span className="segmented-fill-text">{t('workspace.aiModels.mainSectionProviders')}</span>
-            </SegmentedControl.Item>
-            <SegmentedControl.Item value="configured">
-              <span className="segmented-fill-text">{t('workspace.aiModels.mainSectionConfigured')}</span>
-              {configuredCount > 0 ? (
-                <Text
-                  as="span"
-                  size="1"
-                  weight="medium"
-                  style={{
-                    marginLeft: 6,
-                    flexShrink: 0,
-                    padding: '1px 6px',
-                    borderRadius: 999,
-                    backgroundColor: 'var(--gray-a4)',
-                    color: 'var(--gray-12)',
-                    lineHeight: '16px',
-                  }}
-                >
-                  {configuredCount}
-                </Text>
-              ) : null}
-            </SegmentedControl.Item>
-          </SegmentedControl.Root>
+            onValueChange={(v) => onMainSectionChange(v)}
+            fill={isMobile}
+            items={[
+              { value: 'providers' as MainSection, label: t('workspace.aiModels.mainSectionProviders') },
+              {
+                value: 'configured' as MainSection,
+                label: t('workspace.aiModels.mainSectionConfigured'),
+                badge:
+                  configuredCount > 0 ? (
+                    <Text
+                      as="span"
+                      size="1"
+                      weight="medium"
+                      style={{
+                        flexShrink: 0,
+                        padding: '0 6px',
+                        borderRadius: 999,
+                        backgroundColor: 'var(--gray-a4)',
+                        color: 'var(--gray-12)',
+                        lineHeight: '16px',
+                      }}
+                    >
+                      {configuredCount}
+                    </Text>
+                  ) : undefined,
+              },
+            ]}
+          />
         </Box>
         {showPageHeader ? (
           <Flex

@@ -4935,6 +4935,16 @@ class TestEnsureIndexes:
         )
 
     @pytest.mark.asyncio
+    async def test_registers_the_org_key_index_the_backfill_hints(self, connected_provider) -> None:
+        """page_record_ids_by_type hints this index by name; without it each page sorts the org."""
+        connected_provider.http_client.ensure_persistent_index = AsyncMock()
+        await connected_provider._ensure_indexes()
+        assert any(
+            c.args[:2] == ("records", ["orgId", "_key"]) and c.kwargs.get("name") == "records_org_key"
+            for c in connected_provider.http_client.ensure_persistent_index.await_args_list
+        )
+
+    @pytest.mark.asyncio
     async def test_registers_the_purge_walk_index_by_name(self, connected_provider) -> None:
         """The walk hints this index by name, so its fields and name must stay as the query expects."""
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
@@ -6030,6 +6040,21 @@ class TestGetFileRecordById:
 
 
 class TestGetUserByEmail:
+    @pytest.mark.asyncio
+    async def test_an_org_scopes_the_lookup(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql.return_value = []
+        await connected_provider.get_user_by_email("a@x.com", org_id="org-1")
+        query, kwargs = connected_provider.http_client.execute_aql.await_args.args[0], connected_provider.http_client.execute_aql.await_args.kwargs
+        assert "user.orgId == @org_id" in query
+        assert kwargs["bind_vars"] == {"email": "a@x.com", "org_id": "org-1"}
+
+    @pytest.mark.asyncio
+    async def test_without_an_org_the_lookup_is_unchanged(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql.return_value = []
+        await connected_provider.get_user_by_email("a@x.com")
+        assert "orgId" not in connected_provider.http_client.execute_aql.await_args.args[0]
+        assert connected_provider.http_client.execute_aql.await_args.kwargs["bind_vars"] == {"email": "a@x.com"}
+
     @pytest.mark.asyncio
     @pytest.mark.asyncio
     async def test_not_found(self, connected_provider):
@@ -13721,6 +13746,11 @@ class TestDeleteDriveAnyonePermissions:
 
 
 class TestDeleteConnectorInstanceFull:
+    @pytest.fixture(autouse=True)
+    def nothing_left_after_a_delete(self, connected_provider) -> None:
+        """Success is "none of the collected keys remain"; a test about a leftover says which."""
+        connected_provider.get_existing_keys = AsyncMock(return_value=set())
+
     @pytest.mark.asyncio
     async def test_connector_not_found(self, connected_provider):
         connected_provider.get_document = AsyncMock(return_value=None)
@@ -13808,6 +13838,7 @@ class TestDeleteConnectorInstanceFull:
         # Records deletion fails: 0 deleted out of 1 expected
         connected_provider._delete_nodes_by_keys = AsyncMock(return_value=(0, 0))
         connected_provider.rollback_transaction = AsyncMock()
+        connected_provider.get_existing_keys = AsyncMock(return_value={'r1'})
         result = await connected_provider.delete_connector_instance("c1", "org1")
         assert result["success"] is False
 
@@ -13863,6 +13894,7 @@ class TestDeleteConnectorInstanceFull:
         # Only 1 of 2 records deleted
         connected_provider._delete_nodes_by_keys = AsyncMock(return_value=(1, 0))
         connected_provider.rollback_transaction = AsyncMock()
+        connected_provider.get_existing_keys = AsyncMock(return_value={'r2'})
         result = await connected_provider.delete_connector_instance("c1", "org1")
         assert result["success"] is False
 
@@ -13910,6 +13942,7 @@ class TestDeleteConnectorInstanceFull:
             ]
         )
         connected_provider.rollback_transaction = AsyncMock()
+        connected_provider.get_existing_keys = AsyncMock(return_value={'rg1'})
         result = await connected_provider.delete_connector_instance("c1", "org1")
         assert result["success"] is False
 
@@ -13936,6 +13969,7 @@ class TestDeleteConnectorInstanceFull:
             ]
         )
         connected_provider.rollback_transaction = AsyncMock()
+        connected_provider.get_existing_keys = AsyncMock(return_value={'role1'})
         result = await connected_provider.delete_connector_instance("c1", "org1")
         assert result["success"] is False
 
@@ -13963,6 +13997,7 @@ class TestDeleteConnectorInstanceFull:
             ]
         )
         connected_provider.rollback_transaction = AsyncMock()
+        connected_provider.get_existing_keys = AsyncMock(return_value={'g1'})
         result = await connected_provider.delete_connector_instance("c1", "org1")
         assert result["success"] is False
 
@@ -14020,6 +14055,7 @@ class TestDeleteConnectorInstanceFull:
         )
         connected_provider._delete_nodes_by_connector_id = AsyncMock(return_value=(0, True))
         connected_provider.rollback_transaction = AsyncMock()
+        connected_provider.get_existing_keys = AsyncMock(return_value={'c1'})
         result = await connected_provider.delete_connector_instance("c1", "org1")
         assert result["success"] is False
 
@@ -14175,6 +14211,7 @@ class TestDeleteConnectorInstanceFull:
         connected_provider.begin_transaction = AsyncMock(return_value="txn1")
         connected_provider._delete_isoftype_targets_from_collected = AsyncMock(return_value=(0, True))
         connected_provider._delete_nodes_by_keys = AsyncMock(return_value=(0, 0))
+        connected_provider.get_existing_keys = AsyncMock(return_value={"r1"})
         connected_provider.rollback_transaction = AsyncMock(side_effect=Exception("rollback fail"))
         result = await connected_provider.delete_connector_instance("c1", "org1")
         assert result["success"] is False
@@ -14488,8 +14525,9 @@ class TestDeleteIsoftypeTargetsFromCollected:
             {"collection": "files", "key": "f1", "full_id": "files/f1"},
             {"collection": "files", "key": "f2", "full_id": "files/f2"},
         ]
-        # deleted fewer than expected, but no failed batches
+        # one of the two keys is still there afterwards, whatever the batch reported
         connected_provider._delete_nodes_by_keys = AsyncMock(return_value=(1, 0))
+        connected_provider.get_existing_keys = AsyncMock(return_value={"f2"})
         with pytest.raises(Exception, match="CRITICAL"):
             await connected_provider._delete_isoftype_targets_from_collected("txn1", targets, [])
 
@@ -14500,6 +14538,7 @@ class TestDeleteIsoftypeTargetsFromCollected:
             {"collection": "mails", "key": "m1", "full_id": "mails/m1"},
         ]
         connected_provider._delete_nodes_by_keys = AsyncMock(return_value=(1, 0))
+        connected_provider.get_existing_keys = AsyncMock(return_value=set())
         total, failed = await connected_provider._delete_isoftype_targets_from_collected("txn1", targets, [])
         assert total == 2
         assert failed == []

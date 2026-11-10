@@ -8,7 +8,8 @@ import {
 } from '../../api';
 import type { Connector } from '@/app/(main)/workspace/connectors/types';
 import { getConnectorIconConfig } from '@/app/components/ui/ConnectorIcon';
-import { ChatApi } from '@/chat/api';
+import { ASSISTANT_CTX } from '@/chat/store';
+import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
 import type { AvailableLlmModel } from '@/chat/types';
 import type { AgentDetail, KnowledgeHubAppNode } from '../../types';
 import { ToolsetsApi, type BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
@@ -104,7 +105,7 @@ function mapNodesToConnectors(nodes: KnowledgeHubAppNode[]): Connector[] {
 /** Models, KB, knowledge-hub nodes, the skills catalog and API toolsets — fetched once per hook mount (route remount resets the ref). */
 async function fetchStaticBuilderResources() {
   const [models, kbResult, appNodes, skills, apiToolsets] = await Promise.all([
-    ChatApi.fetchAvailableLlms(),
+    fetchModelsForContext(ASSISTANT_CTX),
     AgentsApi.getAllKnowledgeBasesForBuilder(),
     AgentsApi.getAllKnowledgeHubAppNodes().catch((err) => {
       console.error('Failed to fetch knowledge hub app nodes:', err);

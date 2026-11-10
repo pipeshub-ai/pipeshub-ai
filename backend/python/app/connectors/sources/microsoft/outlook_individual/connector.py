@@ -151,6 +151,7 @@ from app.sources.external.microsoft.outlook.outlook import (
     OutlookCalendarContactsResponse,
     OutlookMailFoldersResponse,
 )
+from app.utils.credential_refresh_log import EVENT_CHECK_FAILED, log_refresh_failure
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import (
     datetime_to_epoch_ms,
@@ -547,7 +548,7 @@ class OutlookIndividualConnector(OutlookFolderInventoryMixin, BaseConnector):
             await refresh_service.refresh_now(self.connector_id, self.connector_name.value, refresh_token)
             await self._get_fresh_graph_client()
         except Exception as e:
-            self.logger.error(f"Refreshing the access token after a 401 failed: {e}")
+            log_refresh_failure(self.logger, EVENT_CHECK_FAILED, e)
             self._token_renewal_failed = True
             return False
         if self._current_access_token == rejected:
@@ -762,8 +763,10 @@ class OutlookIndividualConnector(OutlookFolderInventoryMixin, BaseConnector):
             # Create all edges in batch
             if edges:
                 try:
-                    async with self.data_store_provider.transaction() as tx_store:
-                        await tx_store.batch_create_edges(edges, collection=CollectionNames.NODE_RELATIONS.value)
+                    # Run again on a write conflict: a later sync does not revisit these mails.
+                    await self.data_store_provider.execute_in_transaction(
+                        lambda tx_store: tx_store.batch_create_edges(edges, collection=CollectionNames.NODE_RELATIONS.value)
+                    )
                 except Exception as e:
                     self.logger.error(f"Error creating thread edges batch for user {user.email}: {e}")
                     processed_count = 0
@@ -1459,6 +1462,7 @@ class OutlookIndividualConnector(OutlookFolderInventoryMixin, BaseConnector):
                 external_record_group_id=folder_id,
                 record_group_type=RecordGroupType.MAILBOX,
                 inherit_permissions=True,
+                preview_renderable=False,
                 subject=message.subject or OutlookDefaults.SUBJECT,
                 from_email=self._extract_email_from_recipient(message.from_),
                 to_emails=[self._extract_email_from_recipient(r) for r in (message.to_recipients or [])],

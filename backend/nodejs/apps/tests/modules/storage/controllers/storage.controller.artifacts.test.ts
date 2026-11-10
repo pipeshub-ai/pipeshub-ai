@@ -793,7 +793,7 @@ describe('StorageController artifact sets', () => {
       await run('purgeVirtualRecordDocuments', request({ params: { virtualRecordId: VRID } }))
 
       const filter = (DocumentModel.find as sinon.SinonStub).firstCall.args[0]
-      expect(filter.$or).to.deep.include({ orgId, 'artifactSet.virtualRecordId': VRID })
+      expect(filter.$or).to.deep.include({ orgId: String(orgId), 'artifactSet.virtualRecordId': VRID })
     })
   })
 

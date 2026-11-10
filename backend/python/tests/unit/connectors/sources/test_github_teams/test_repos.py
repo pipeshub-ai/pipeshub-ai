@@ -1193,7 +1193,7 @@ class TestRunDispatch:
         sync._incremental_sync.assert_not_awaited()
         c.record_sync_point.update_sync_point.assert_not_awaited()
 
-    async def test_default_branch_change_forces_full_resync(self) -> None:
+    async def test_default_branch_change_syncs_the_difference(self) -> None:
         c = make_mock_connector()
         repo = make_repo(repo_id=1, default_branch="main")
         c.runtime.ds_call.return_value = ok_response(
@@ -1209,8 +1209,8 @@ class TestRunDispatch:
 
         await sync.run(repo)
 
-        sync._full_sync.assert_awaited_once()
-        sync._incremental_sync.assert_not_awaited()
+        sync._incremental_sync.assert_awaited_once()
+        sync._full_sync.assert_not_awaited()
 
     async def test_incremental_failure_falls_back_to_full_sync(self) -> None:
         c = make_mock_connector()

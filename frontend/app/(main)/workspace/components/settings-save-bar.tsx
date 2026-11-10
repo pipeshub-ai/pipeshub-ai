@@ -65,6 +65,8 @@ export function SettingsSaveBar({
     <Flex
       align="center"
       gap="2"
+      // Hidden is not enough: without inert, keyboard users could still tab to Save.
+      inert={!visible}
       style={{
         position: 'fixed',
         bottom: 'var(--space-4)',
@@ -74,8 +76,8 @@ export function SettingsSaveBar({
         pointerEvents: visible ? 'auto' : 'none',
         transition: 'transform 0.3s ease, opacity 0.3s ease',
         width: 'fit-content',
-        background: 'var(--effects-translucent)',
-        backdropFilter: 'blur(25px)',
+        background: 'var(--frost-bg-strong)',
+        backdropFilter: 'var(--frost-filter)',
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-1)',
         padding: 'var(--space-2)',

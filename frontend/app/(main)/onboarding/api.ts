@@ -1,4 +1,6 @@
+import { mutate } from 'swr';
 import { apiClient } from '@/lib/api';
+import { ORG_KEYS } from '@/app/(main)/workspace/general/api';
 import type {
   OrgProfileFormData,
   StorageFormData,
@@ -34,7 +36,8 @@ export async function getOnboardingStatus(): Promise<OnboardingStatusResponse> {
 export async function updateOnboardingStatus(
   status: Exclude<OnboardingStatus, 'notConfigured'>
 ): Promise<void> {
-  await apiClient.put('/api/v1/org/onboarding-status', { status });
+  // The onboarding page shows its own error with a retry, so skip the generic toast.
+  await apiClient.put('/api/v1/org/onboarding-status', { status }, { suppressErrorToast: true });
 }
 
 // ===============================
@@ -66,6 +69,7 @@ export async function updateOrgProfile(data: OrgProfileFormData): Promise<void> 
       country: data.country,
     },
   });
+  void mutate(ORG_KEYS.details);
 }
 
 // ===============================

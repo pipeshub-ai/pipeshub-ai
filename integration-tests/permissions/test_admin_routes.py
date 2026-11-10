@@ -6,9 +6,8 @@ sign-in settings, AI models or service tokens. Here each route in
 ``helper/admin_route_table.py`` is called twice:
 
 * as a throwaway member, who must be refused with the product's own answer:
-  403 "You need admin access to do this" from Node's ``userAdminCheck`` and
-  ``adminValidator``, or 403 from the Python services (passed through by the
-  gateway);
+  403 "You need admin access to do this" from Node's ``userAdminCheck``, or
+  403 from the Python services (passed through by the gateway);
 * as the admin, who must get past the check. The admin request is shaped so
   that whatever comes after the check (a validator, a lookup of an id that does
   not exist) stops it before anything is written.

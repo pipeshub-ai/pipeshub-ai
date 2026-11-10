@@ -252,6 +252,10 @@ class LinearGraphQLOperations:
                         private
                         visibility
                     }
+                    pageInfo {
+                        hasNextPage
+                        endCursor
+                    }
                 }
                 issues(first: 100) {
                     nodes {
@@ -412,7 +416,7 @@ class LinearGraphQLOperations:
                     teams(first: $first, after: $after, filter: $filter) {
                         nodes {
                             ...TeamFields
-                            members(first: 100) {
+                            members(first: 10) {
                                 nodes {
                                     id
                                     email
@@ -436,6 +440,26 @@ class LinearGraphQLOperations:
             """,
             "fragments": ["TeamFields"],
             "description": "Get teams with optional filtering and cursor-based pagination"
+        },
+
+        # No members: Linear multiplies a nested connection by the page size, and the team
+        # filter dropdown asks for pages of any size.
+        "teamList": {
+            "query": """
+                query teamList($first: Int, $after: String, $filter: TeamFilter) {
+                    teams(first: $first, after: $after, filter: $filter) {
+                        nodes {
+                            ...TeamFields
+                        }
+                        pageInfo {
+                            hasNextPage
+                            endCursor
+                        }
+                    }
+                }
+            """,
+            "fragments": ["TeamFields"],
+            "description": "Teams without their members"
         },
 
         "users": {
@@ -1002,6 +1026,31 @@ class LinearGraphQLOperations:
             "description": "Further pages of a project's external links"
         },
 
+        "projectTeams": {
+            "query": """
+                query projectTeams($id: String!, $first: Int, $after: String) {
+                    project(id: $id) {
+                        id
+                        teams(first: $first, after: $after) {
+                            nodes {
+                                id
+                                name
+                                key
+                                private
+                                visibility
+                            }
+                            pageInfo {
+                                hasNextPage
+                                endCursor
+                            }
+                        }
+                    }
+                }
+            """,
+            "fragments": [],
+            "description": "Further pages of a project's teams"
+        },
+
         "projectMilestones": {
             "query": """
                 query projectMilestones($id: String!, $first: Int, $after: String) {
@@ -1130,9 +1179,9 @@ class LinearGraphQLOperations:
                 query projectIds($first: Int, $after: String, $filter: ProjectFilter, $includeArchived: Boolean) {
                     projects(first: $first, after: $after, filter: $filter, includeArchived: $includeArchived) {
                         nodes {
-                            id trashed archivedAt updatedAt teams(first: 10) { nodes { id } }
-                            externalLinks(first: 50) { nodes { id updatedAt } pageInfo { hasNextPage } }
-                            projectMilestones(first: 50) { nodes { id updatedAt } pageInfo { hasNextPage } }
+                            id trashed archivedAt updatedAt teams(first: 50) { nodes { id } pageInfo { hasNextPage endCursor } }
+                            externalLinks(first: 50) { nodes { id updatedAt } pageInfo { hasNextPage endCursor } }
+                            projectMilestones(first: 50) { nodes { id updatedAt } pageInfo { hasNextPage endCursor } }
                         }
                         pageInfo {
                             hasNextPage

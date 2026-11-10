@@ -2,6 +2,8 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import { MailConsumer } from '../../../../src/modules/mail/services/mail.consumer';
+import { SmtpSettingsUnreadableError } from '../../../../src/modules/mail/services/mail.sender.service';
+import { getCurrentOrgId } from '../../../../src/libs/context/orgContext';
 import { classifyMailError } from '../../../../src/modules/mail/types/mail-event.types';
 
 describe('MailConsumer - asynchronous mail delivery', () => {
@@ -80,6 +82,55 @@ describe('MailConsumer - asynchronous mail delivery', () => {
     await deliver(payload());
 
     expect(mockSender.getSmtpConfig.firstCall.args[0]).to.equal(payload().orgId);
+  });
+
+  it('delivers inside the event org, so the audit write has an org context, and binds nothing for a job with no org', async () => {
+    const seen: Array<string | undefined> = []
+    mockSender.send.callsFake(async () => {
+      seen.push(getCurrentOrgId())
+      return { status: 'sent' }
+    })
+    await deliver(payload())
+    await deliver(payload({ orgId: undefined }))
+
+    expect(seen).to.deep.equal([payload().orgId, undefined])
+    expect(getCurrentOrgId()).to.equal(undefined)
+  });
+
+  it('retries when the SMTP settings cannot be read, instead of dropping the event as unconfigured', async () => {
+    mockSender.getSmtpConfig
+      .onFirstCall()
+      .rejects(new SmtpSettingsUnreadableError(new Error('kv down')))
+      .onSecondCall()
+      .resolves(smtp);
+
+    await runWithFakeTimers(deliver(payload()));
+
+    expect(mockSender.getSmtpConfig.callCount).to.equal(2);
+    expect(mockSender.send.calledOnce).to.be.true;
+    expect(mockNotificationProducer.publishEvent.called).to.be.false;
+    expect(mockLogger.error.calledWithMatch('Mail event dropped: SMTP configuration not set')).to.be.false;
+  });
+
+  it('reports a store that stays unreadable as a failed delivery, not as missing settings', async () => {
+    mockSender.getSmtpConfig.rejects(new SmtpSettingsUnreadableError(new Error('kv down')));
+
+    await runWithFakeTimers(deliver(payload()));
+
+    expect(mockSender.getSmtpConfig.callCount).to.be.greaterThan(1);
+    expect(mockSender.send.called).to.be.false;
+    expect(mockLogger.error.calledWithMatch('Mail failed after all retries')).to.be.true;
+    expect(mockLogger.error.calledWithMatch('Mail event dropped: SMTP configuration not set')).to.be.false;
+  });
+
+  it('drops the event without retrying when no SMTP settings are configured', async () => {
+    mockSender.getSmtpConfig.resolves(null);
+
+    await deliver(payload());
+
+    expect(mockSender.getSmtpConfig.calledOnce).to.be.true;
+    expect(mockSender.send.called).to.be.false;
+    expect(mockLogger.error.calledWithMatch('Mail event dropped: SMTP configuration not set')).to.be.true;
   });
 
   it('sends once and does not notify when delivery succeeds', async () => {

@@ -7,6 +7,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
+import pytest
+
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.connectors.core.registry.filters import (
     DatetimeOperator,
@@ -21,6 +23,7 @@ from app.connectors.sources.network_share.entry import DirectoryEntry, ShareInfo
 from app.connectors.sources.network_share.errors import (
     AccessDeniedError,
     DirectoryListingError,
+    NetworkShareAuthError,
 )
 from app.connectors.sources.network_share.record_mapper import RecordMapper, revision_id
 from app.connectors.sources.network_share.walker import ShareWalker
@@ -66,11 +69,14 @@ class FakeNetworkShareDataSource:
         files: dict[tuple[str, str], bytes | BaseException] | None = None,
         stats: dict[tuple[str, str], DirectoryEntry | None] | None = None,
         denied_dirs: set[tuple[str, str]] | None = None,
+        refused_dirs: set[tuple[str, str]] | None = None,
     ) -> None:
         self.tree = tree or {}
         self.shares = shares if shares is not None else [ShareInfo(name=SHARE, share_type="disk")]
         self.fail_dirs = fail_dirs or set()
         self.denied_dirs = denied_dirs or set()
+        # Listing these raises what a refused sign-in raises (the server rejected the account).
+        self.refused_dirs = refused_dirs or set()
         self.files = files or {}
         self.stats = stats or {}
         self.closed = False
@@ -82,6 +88,8 @@ class FakeNetworkShareDataSource:
             raise DirectoryListingError(share, path, "listing failed")
         if (share, path) in self.denied_dirs:
             raise AccessDeniedError(share, path, "STATUS_ACCESS_DENIED")
+        if (share, path) in self.refused_dirs:
+            raise NetworkShareAuthError("files.example refused the user name or password.")
         return list(self.tree.get((share, path), []))
 
     async def read_file(self, share: str, path: str, chunk_size: int = 8192):
@@ -682,3 +690,20 @@ class TestShareWalker:
         result, _upserts, _ = await _walk(ds, fail_ids={f"{SHARE}/docs"})
         assert result.complete is False
         assert result.unread == {f"{SHARE}/docs"}
+
+
+class TestShareWalkerRefusedSignIn:
+    async def test_a_refused_sign_in_in_a_subfolder_stops_the_walk(self):
+        ds = FakeNetworkShareDataSource(
+            tree={(SHARE, ""): [_entry("a", is_directory=True, file_id=3), _entry("b", is_directory=True, file_id=4)]},
+            refused_dirs={(SHARE, "a")},
+        )
+        with pytest.raises(NetworkShareAuthError):
+            await _walk(ds)
+        # Not read as one unreadable folder and walked past: every folder after it fails the same way.
+        assert (SHARE, "b") not in ds.list_calls
+
+    async def test_a_refused_sign_in_at_the_root_stops_the_walk(self):
+        ds = FakeNetworkShareDataSource(refused_dirs={(SHARE, "")})
+        with pytest.raises(NetworkShareAuthError):
+            await _walk(ds)

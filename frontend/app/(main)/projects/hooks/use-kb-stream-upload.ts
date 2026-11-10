@@ -4,12 +4,19 @@ import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { KnowledgeBaseApi } from '@/knowledge-base/api';
 import { useUploadStore, generateUploadId } from '@/lib/store/upload-store';
+import { onSessionEnd } from '@/lib/api/session-cache';
 
 interface StreamedFileEventData {
   filePath?: string;
   fileName?: string;
   errors?: string[];
   message?: string;
+}
+
+/** The key a streamed event's path matches a tracker row on: the server may echo `/a.txt` or `dir/a.txt` for `a.txt`. */
+function fileKey(path: string): string {
+  const trimmed = path.trim().replace(/\\/g, '/');
+  return trimmed.slice(trimmed.lastIndexOf('/') + 1);
 }
 
 interface UseKbStreamUploadOptions {
@@ -32,9 +39,13 @@ interface UseKbStreamUploadOptions {
 export function useKbStreamUpload({ getKbId, onUploaded }: UseKbStreamUploadOptions) {
   const { t } = useTranslation();
 
+  /**
+   * Resolves `false` when a sign-out cancelled the upload: the caller must then do nothing
+   * more for it (a follow-up request would run in the next person's session).
+   */
   const uploadFiles = useCallback(
-    async (files: File[]): Promise<void> => {
-      if (files.length === 0) return;
+    async (files: File[]): Promise<boolean> => {
+      if (files.length === 0) return true;
 
       // SSE events correlate by file name, so duplicates would collapse
       // tracker rows. Keep only the last File for each name (matches the
@@ -63,7 +74,7 @@ export function useKbStreamUpload({ getKbId, onUploaded }: UseKbStreamUploadOpti
             ],
           })),
         );
-        return;
+        return true;
       }
 
       const uploadId = generateUploadId();
@@ -98,12 +109,15 @@ export function useKbStreamUpload({ getKbId, onUploaded }: UseKbStreamUploadOpti
       // `streamUpload` falls back to each file's own `.name` as its
       // `filePath` when no `filesMetadata` is passed — matches the key used
       // here to correlate streamed per-file events back to a tracker row.
-      const storeIdByName = new Map(entries.map((e) => [e.file.name, e.storeId]));
+      const storeIdByName = new Map(entries.map((e) => [fileKey(e.file.name), e.storeId]));
 
       let gotDone = false;
       let gotError: string | null = null;
       let streamError: Error | null = null;
       let anySuccess = false;
+      // Signing out cancels the upload: its result belongs to the person who started it.
+      const upload = new AbortController();
+      const stopOnSessionEnd = onSessionEnd(() => upload.abort());
 
       try {
         await KnowledgeBaseApi.streamUpload(
@@ -112,9 +126,10 @@ export function useKbStreamUpload({ getKbId, onUploaded }: UseKbStreamUploadOpti
           entries.map((e) => e.file),
           undefined,
           {
+            signal: upload.signal,
             onEvent: (evt) => {
               const data = evt.data as StreamedFileEventData | undefined;
-              const storeId = storeIdByName.get(String(data?.filePath || data?.fileName || ''));
+              const storeId = storeIdByName.get(fileKey(String(data?.filePath || data?.fileName || '')));
               if (evt.event === 'file:succeeded') {
                 if (storeId) useUploadStore.getState().completeUpload(storeId);
                 anySuccess = true;
@@ -141,16 +156,21 @@ export function useKbStreamUpload({ getKbId, onUploaded }: UseKbStreamUploadOpti
         );
       } catch (err) {
         streamError = err instanceof Error ? err : new Error(String(err));
+      } finally {
+        stopOnSessionEnd();
       }
+      if (upload.signal.aborted) return false;
 
       // Never mark a row completed unless the server confirmed the batch
       // finished (`done`) with no error — a row whose terminal event was
-      // missed is failed instead of assumed successful.
+      // missed is failed instead of assumed successful. Once `done` has
+      // arrived the server's answer is complete: a connection that drops
+      // while the response closes is not a failed upload.
       const fallbackMessage =
-        (streamError as Error | null)?.message ||
         gotError ||
+        (streamError as Error | null)?.message ||
         t('uploadProgress.uploadIncomplete', { defaultValue: 'Upload incomplete' });
-      const succeededCleanly = gotDone && !gotError && !streamError;
+      const succeededCleanly = gotDone && !gotError;
       const items = useUploadStore.getState().items;
       entries.forEach((e) => {
         const item = items.find((i) => i.id === e.storeId);
@@ -166,6 +186,7 @@ export function useKbStreamUpload({ getKbId, onUploaded }: UseKbStreamUploadOpti
       useUploadStore.getState().finalizeSession(uploadId);
 
       if (anySuccess) onUploaded?.();
+      return true;
     },
     [getKbId, onUploaded, t],
   );

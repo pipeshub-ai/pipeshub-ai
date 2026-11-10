@@ -8,6 +8,9 @@ import app.modules.indexing.run as run_mod
 from app.modules.indexing.run import ScanResult
 
 
+pytestmark = pytest.mark.usefixtures("bound_org")
+
+
 def _scan_scope():
     from app.services.vector_db.strategy import DeleteAction, DeleteScope
 
@@ -44,6 +47,8 @@ def _make_indexing_pipeline():
             collection_registry=_make_collection_registry(),
             vector_db_service=AsyncMock(),
         )
+        # no other org holds points unless a test says so (the shared-VRID release check reads this)
+        pipeline.vector_db_service.scroll = AsyncMock(return_value=MagicMock(points=[]))
         return pipeline
 
 
@@ -205,7 +210,7 @@ class TestVectorDeletesAreScopedToTheOrg:
 
         await pipeline.bulk_delete_embeddings(["vr-1"], "org-1")
 
-        assert pipeline.vector_db_service.filter_collection.await_args.kwargs["must"] == {
+        assert pipeline.vector_db_service.filter_collection.await_args_list[0].kwargs["must"] == {
             "orgId": "org-1",
             "virtualRecordId": ["vr-1"],
         }
@@ -547,7 +552,7 @@ class TestPurgeConnectorByMembership:
             c.kwargs["filter"] for c in pipeline.vector_db_service.delete_points.await_args_list
         ]
         assert any(
-            f.get("must") == {"connectorIds": "conn-1"}
+            f.get("must") == {"orgId": "org-1", "connectorIds": "conn-1"}
             and f.get("max_values") == {"connectorIds": 1}
             for f in delete_filters
         ), delete_filters

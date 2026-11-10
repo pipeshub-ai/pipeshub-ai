@@ -120,3 +120,39 @@ def classify_access_problem(
         ):
             return AccessProblem.SIGNED_OUT
     return None
+
+
+def setup_problem_message(problem: AccessProblem | None, *, apis: str, admin_email: str | None = None,
+                          client_id: str | None = None, scopes: list[str] | None = None) -> str | None:
+    """What a Workspace admin must change for a service-account setup problem, or None when it is not one.
+
+    `apis` names the Google APIs the connector needs, e.g. "Google Drive API and the Admin SDK API".
+    `scopes` are the exact scopes the connector's delegated tokens ask for: Google refuses the whole token
+    request when the grant is missing any of them, so naming them saves the admin a guess.
+    """
+    if problem is AccessProblem.DELEGATION:
+        client = f" ({client_id})" if client_id else ""
+        # The console keeps one scope list per client ID, and another Google connector may share it.
+        wanted = (f"at least these scopes, keeping any already listed: {', '.join(scopes)}" if scopes
+                  else "the scopes listed in the PipesHub setup guide")
+        return ("Google Workspace refused access for this connector's service account, because domain-wide "
+                "delegation is not set up for it with every scope the connector needs. In the Google Admin "
+                "console, open Security > Access and data control > API controls > Domain-wide delegation, "
+                f"and authorize the service account's client ID{client} with {wanted}. "
+                "Syncing resumes on the next run.")
+    if problem is AccessProblem.SERVICE_ACCOUNT_KEY:
+        return ("Google rejected this connector's service account key. It may have been deleted or "
+                "disabled in Google Cloud. Create a new key for the service account and upload it in the "
+                "connector's settings.")
+    if problem is AccessProblem.UNREADABLE_KEY:
+        return ("The service account key in this connector's settings is not a valid JSON key file. In "
+                "Google Cloud Console, open IAM & Admin > Service accounts, create a JSON key for the "
+                "service account, and upload that file in the connector's settings.")
+    if problem is AccessProblem.ADMIN_ACCOUNT:
+        who = f" ({admin_email})" if admin_email else ""
+        return (f"The admin email in this connector's settings{who} must be an active Google Workspace "
+                "administrator who can read users and groups. Update it in the connector's settings.")
+    if problem is AccessProblem.API_DISABLED:
+        return (f"The {apis} must be turned on for this connector's Google Cloud project. Turn them on "
+                "in Google Cloud Console under APIs & Services, then sync again.")
+    return None

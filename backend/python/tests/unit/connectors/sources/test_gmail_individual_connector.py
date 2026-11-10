@@ -29,7 +29,6 @@ Targets the remaining uncovered lines to achieve 95%+ coverage by testing:
 - create_connector() classmethod
 """
 
-import asyncio
 import base64
 import logging
 from contextlib import asynccontextmanager
@@ -495,32 +494,6 @@ class TestSyncUserMailboxCoverage:
         ):
             with pytest.raises(ValueError, match="Email address not found"):
                 await connector.run_sync()
-
-# ===========================================================================
-# _convert_to_pdf - timeout with kill (lines 1130-1131)
-# ===========================================================================
-
-
-class TestConvertToPdfTimeoutKill:
-    @pytest.mark.asyncio
-    async def test_terminate_then_kill_on_timeout(self):
-        connector = _make_connector()
-        mock_process = AsyncMock()
-        mock_process.terminate = MagicMock()
-        mock_process.kill = MagicMock()
-        # wait times out too after terminate
-        mock_process.wait = AsyncMock(side_effect=asyncio.TimeoutError())
-
-        with patch(
-            "asyncio.create_subprocess_exec", return_value=mock_process
-        ), patch(
-            "asyncio.wait_for", side_effect=asyncio.TimeoutError()
-        ):
-            with pytest.raises(HTTPException) as exc_info:
-                await connector._convert_to_pdf("/tmp/test.docx", "/tmp")
-            assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-            mock_process.kill.assert_called_once()
-
 
 # ===========================================================================
 # _stream_from_drive - file_stream() async generator (lines 1230-1293)

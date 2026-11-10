@@ -25,7 +25,9 @@ from app.connectors.sources.web.connector import (
 from app.connectors.sources.web.fetch_strategy import (
     FetchResponse,
     build_stealth_headers,
+    unsafe_address_response,
 )
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.models.entities import RecordType
 from app.connectors.core.registry.filters import (
     FilterCollection,
@@ -346,7 +348,8 @@ class TestWebConnectorConnection:
         connector.session = MagicMock()
         with patch("app.connectors.sources.web.connector.fetch_url_with_fallback", new_callable=AsyncMock) as mock_fetch:
             mock_fetch.return_value = None
-            assert await connector.test_connection_and_access() is False
+            with pytest.raises(ConnectorInitError, match="could not be reached"):
+                await connector.test_connection_and_access()
 
     @pytest.mark.asyncio
     async def test_test_connection_high_status(self):
@@ -358,7 +361,30 @@ class TestWebConnectorConnection:
                 status_code=500, content_bytes=b"Error", headers={},
                 final_url="https://example.com", strategy="aiohttp",
             )
-            assert await connector.test_connection_and_access() is False
+            with pytest.raises(ConnectorInitError, match="HTTP status 500"):
+                await connector.test_connection_and_access()
+
+    @pytest.mark.asyncio
+    async def test_test_connection_private_address_says_why(self) -> None:
+        connector = _make_connector()
+        connector.url = "http://localhost:3001"
+        connector.session = MagicMock()
+        with patch("app.connectors.sources.web.connector.fetch_url_with_fallback", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = unsafe_address_response("http://localhost:3001")
+            with pytest.raises(ConnectorInitError, match="private or internal address"):
+                await connector.test_connection_and_access()
+
+    @pytest.mark.asyncio
+    async def test_test_connection_error_hides_url_secrets(self) -> None:
+        connector = _make_connector()
+        connector.url = "https://user:pw@example.com/docs?token=abc"
+        connector.session = MagicMock()
+        with patch("app.connectors.sources.web.connector.fetch_url_with_fallback", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = None
+            with pytest.raises(ConnectorInitError) as raised:
+                await connector.test_connection_and_access()
+        assert "https://example.com/docs is not accessible" in str(raised.value)
+        assert "pw" not in str(raised.value) and "token" not in str(raised.value)
 
     @pytest.mark.asyncio
     async def test_test_connection_exception(self):
@@ -367,7 +393,8 @@ class TestWebConnectorConnection:
         connector.session = MagicMock()
         with patch("app.connectors.sources.web.connector.fetch_url_with_fallback", new_callable=AsyncMock) as mock_fetch:
             mock_fetch.side_effect = Exception("network error")
-            assert await connector.test_connection_and_access() is False
+            with pytest.raises(ConnectorInitError, match="could not be reached"):
+                await connector.test_connection_and_access()
 
 
 # ===================================================================

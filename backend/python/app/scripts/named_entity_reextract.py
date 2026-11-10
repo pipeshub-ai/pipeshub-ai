@@ -1,7 +1,7 @@
 """Operator command: queue an org's indexed records to have their named entities
 extracted again from their stored blocks (see ``named_entity_completion``).
 
-    python -m app.scripts.named_entity_reextract --org ORG [--all] [--apply]
+    python -m app.scripts.named_entity_reextract --org ORG [--all | --reproject] [--apply]
         [--after-key KEY] [--limit N]
 
 By default it queues the records whose stored extraction left text unread
@@ -10,6 +10,16 @@ whole can look complete while they were not; ``--all`` queues every record that
 has a stored extraction. Nothing is queued without ``--apply``. Queuing is an
 upsert, so a run can be repeated or resumed with ``--after-key``. The background
 loop then works the queue while indexing leaves the model idle.
+
+``--reproject`` writes every record's stored extraction again instead: each record
+is queued as a named-entity persist retry that counts no failure, which the
+recovery pass re-projects under the record's lease, with no model call. As after
+any write, a record whose stored extraction left text unread is then queued to be
+completed, which does call the model. A record whose write is already pending keeps
+that write. It refuses to run while named-entity extraction is off: a write then
+clears the record's entities. Use it after an upgrade that
+changes how stored entities are written (short forms folded and learned as
+aliases), so existing records get it without paying for extraction.
 
 Output is one JSON object per page and a final summary.
 """
@@ -32,6 +42,10 @@ if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 PAGE_SIZE = 100
+EXTRACTION_OFF_MSG = (
+    "Named-entity extraction is off: writing a stored extraction now would clear the record's entities. "
+    "Turn it on before --reproject."
+)
 EXIT_FAILED = 1
 
 
@@ -50,7 +64,12 @@ def build_parser() -> argparse.ArgumentParser:
         description="Queue records to have their named entities extracted again; dry run unless --apply.",
     )
     parser.add_argument("--org", required=True)
-    parser.add_argument("--all", action="store_true", help="queue every record with a stored extraction")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--all", action="store_true", help="queue every record with a stored extraction")
+    mode.add_argument(
+        "--reproject", action="store_true",
+        help="write every record's stored extraction again, with no model call",
+    )
     parser.add_argument("--apply", action="store_true", help="queue the records (default: dry run)")
     parser.add_argument("--after-key", default=None, help="resume after this record key")
     parser.add_argument("--limit", type=int, default=None, help="stop after checking this many records")
@@ -64,6 +83,7 @@ async def queue_reextractions(
     org_id: str,
     everything: bool,
     apply: bool,
+    reproject: bool = False,
     after_key: str | None = None,
     limit: int | None = None,
     page_size: int = PAGE_SIZE,
@@ -86,9 +106,11 @@ async def queue_reextractions(
         for record in page:
             tally.checked += 1
             tally.after_key = record.get("_key")
-            if await _wants_reextract(record, graph_provider, blob_storage, tally, everything=everything):
+            if await _wants_reextract(record, graph_provider, blob_storage, tally, everything=everything or reproject):
                 tally.queued += 1
-                if apply:
+                if apply and reproject:
+                    await graph_provider.schedule_named_entity_reproject(org_id, record["_key"])
+                elif apply:
                     await graph_provider.schedule_named_entity_reextract(org_id, record["_key"])
         out.write(json.dumps({"page": len(page), "page_queued": tally.queued - queued_before, **asdict(tally)}) + "\n")
         if len(page) < size:
@@ -121,6 +143,15 @@ async def _wants_reextract(
     return everything or needs_reextract(extraction)
 
 
+async def reproject_allowed(config_service: Any) -> bool:  # noqa: ANN401 - ConfigurationService
+    """Whether a reprojection writes entities: with extraction off, the write clears them."""
+    from app.services.featureflag.platform_settings import (
+        is_named_entity_extraction_enabled,
+    )
+
+    return bool(await is_named_entity_extraction_enabled(config_service))
+
+
 async def _main(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
     from app.containers.indexing import IndexingAppContainer
@@ -135,10 +166,13 @@ async def _main(argv: list[str]) -> int:
         sys.stderr.write(json.dumps({"error": f"{type(exc).__name__}: {exc}"}) + "\n")
         return EXIT_FAILED
     try:
+        if args.reproject and args.apply and not await reproject_allowed(container.config_service()):
+            sys.stderr.write(json.dumps({"error": EXTRACTION_OFF_MSG}) + "\n")
+            return EXIT_FAILED
         blob_storage = BlobStorage(logger, container.config_service(), graph_provider)
         tally = await queue_reextractions(
             graph_provider, blob_storage, org_id=args.org, everything=args.all, apply=args.apply,
-            after_key=args.after_key, limit=args.limit,
+            reproject=args.reproject, after_key=args.after_key, limit=args.limit,
         )
         sys.stdout.write(json.dumps({"done": True, "applied": args.apply, **asdict(tally)}) + "\n")
         return 0

@@ -16,6 +16,8 @@ import logging
 from typing import Any, Dict, List, Tuple
 
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.modules.parsers.html_parser.image_sources import img_source
+from app.modules.parsers.markdown.image_references import is_inline_raster_image
 from app.services.parsing.interface import ParseResult
 from bs4 import BeautifulSoup
 
@@ -73,7 +75,9 @@ class SelectolaxHtmlParser:
         if images:
             
             urls_to_convert = [image["url"] for image in images]
-            base64_urls = await ImageParser.urls_to_base64(urls_to_convert)
+            base64_urls = await ImageParser.urls_to_base64(
+                urls_to_convert, allow_remote_fetch=True  # file bytes, not a pushed blocks document
+            )
 
             for i, image in enumerate(images):
                 if base64_urls[i]:
@@ -177,16 +181,13 @@ class SelectolaxHtmlParser:
         image_counter = 1
 
         for img_tag in soup.find_all("img"):
-            src = img_tag.get("src", "").strip()
-            if not src:
-                srcset = img_tag.get("srcset", "")
-                if srcset:
-                    first_part = srcset.split(",")[0].split()
-                    if first_part:
-                        src = first_part[0].strip()
+            src = img_source(img_tag)
             if not src:
                 continue
-            if src.startswith("data:"):
+            # A raster data: image already is the image; the converter stores it
+            # as it is. Anything else, an SVG or another data: URI, is reported
+            # for the caller to rasterise or refuse.
+            if is_inline_raster_image(src):
                 continue
 
             original_alt = img_tag.get("alt", "").strip()

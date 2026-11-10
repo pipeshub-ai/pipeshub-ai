@@ -8,6 +8,9 @@ import { PAGE_PADDING_X, pagePaddingX } from '@/app/components/ui/responsive';
 /** Top padding that clears the fixed mobile hamburger. */
 export const MOBILE_PAGE_PADDING_TOP = 'max(56px, var(--space-8))';
 
+/** Top padding of every settings page on desktop (--space-7), list and detail alike. */
+export const PAGE_PADDING_TOP = 32;
+
 /**
  * Inline padding for a full-width scroll surface whose content is capped at `maxWidth`
  * (keeps the scrollbar at the viewport edge, unlike a centered max-width box).
@@ -30,7 +33,7 @@ export function SettingsPageContainer({ children, maxWidth }: SettingsPageContai
         maxWidth,
         marginInline: 'auto',
         paddingInline: pagePaddingX(100),
-        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 64,
+        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : PAGE_PADDING_TOP,
         paddingBottom: 64,
       }}
     >

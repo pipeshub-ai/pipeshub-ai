@@ -24,7 +24,11 @@ from app.services.featureflag.platform_settings import (
     ArtifactReadMode,
     artifact_read_mode,
 )
-from app.telemetry.modules.record_storage_metrics import record_artifact_shadow_read
+from app.services.messaging.membership import reader_for
+from app.telemetry.modules.record_storage_metrics import (
+    record_artifact_read,
+    record_artifact_shadow_read,
+)
 
 if TYPE_CHECKING:
     from app.modules.transformers.blob_storage import BlobStorage
@@ -75,7 +79,13 @@ class LegacyRecordArtifactReader:
         org_id: str,
         *,
         lookup: dict[str, Any] | None = None,
+        exact: bool = False,
     ) -> dict[str, Any] | None:
+        """``exact`` reads only the document ``lookup`` names, never the mapping's current one."""
+        if exact:
+            return await self._blob_store.get_record_from_storage(
+                virtual_record_id, org_id, lookup_result=lookup, relookup=False
+            )
         return await self._blob_store.get_record_from_storage(
             virtual_record_id, org_id, lookup_result=lookup
         )
@@ -242,6 +252,12 @@ class ArtifactFirstRecordArtifactReader:
         *,
         lookup: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
+        # An older indexing member may be writing in place without the stored-write protocol, or the
+        # membership check cannot be seen: the stored record is the only safe answer.
+        reader = reader_for(getattr(getattr(self._artifact, "_blob_store", None), "config_service", None))
+        if reader is not None and not (await reader.verdict()).ok:
+            record_artifact_read("membership_hold")
+            return await self._legacy.read_record(virtual_record_id, org_id, lookup=lookup)
         try:
             return await self._artifact.read(virtual_record_id, org_id, lookup=lookup)
         except ArtifactUnavailable:

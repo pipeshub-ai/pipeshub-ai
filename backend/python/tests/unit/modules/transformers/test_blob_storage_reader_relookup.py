@@ -93,6 +93,16 @@ class TestGatewayNotFound:
         assert bs.get_document_id_by_virtual_record_id.await_count == 1
         assert _count("served", "not_found") == before + 1
 
+    async def test_exact_mode_raises_the_first_error_and_never_looks_up_again(self) -> None:
+        bs = _bs(_lookup("new"))
+        asked = _envelopes(bs, {"old": StorageDocumentNotFoundError("gone"), "new": {"record": {"x": 1}}})
+
+        with pytest.raises(StorageDocumentNotFoundError):
+            await bs.get_record_from_storage(VRID, ORG, lookup_result=_lookup("old"), relookup=False)
+
+        assert asked == ["old"]
+        bs.get_document_id_by_virtual_record_id.assert_not_awaited()
+
     async def test_t12_control_the_same_document_stays_a_404(self) -> None:
         bs = _bs(_lookup("old"))
         asked = _envelopes(bs, {"old": StorageDocumentNotFoundError("gone")})
@@ -260,12 +270,14 @@ class TestSignedUrlErrors:
         assert raised.value.may_be_retired is retirable
         assert str(raised.value) == f"Failed to retrieve record: status {status}"
 
-    async def test_a_failed_ranged_download_is_a_retirable_error(self) -> None:
+    @pytest.mark.parametrize("status", [403, 404])
+    async def test_a_failed_ranged_download_is_a_retirable_error(self, status: int) -> None:
         bs = _bs()
-        bs._download_with_range_requests = AsyncMock(side_effect=Exception("range 403"))
+        bs._download_with_range_requests = AsyncMock(side_effect=Exception(f"range {status}"))
         with pytest.raises(SignedUrlReadError) as raised:
-            await bs._record_from_signed_url(self._session(404), "https://b/x", None, VRID)
+            await bs._record_from_signed_url(self._session(status), "https://b/x", None, VRID)
         assert raised.value.ranged and raised.value.may_be_retired
+        assert raised.value.http_status == status
         assert "Both parallel and fallback downloads failed" in str(raised.value)
 
 

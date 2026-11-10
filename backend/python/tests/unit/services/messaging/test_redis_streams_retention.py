@@ -47,7 +47,7 @@ async def test_t1_backlog_is_never_trimmed_by_producer(redis) -> None:
     await fill(redis, 3000)
     await redis.xgroup_create(S, "g", id="0")
     retention = StreamRetention(redis, log, Lease())
-    assert await retention.trim_once([S]) == {}
+    assert not any((await retention.trim_once([S])).values())
     assert await redis.xlen(S) == 3000
 
 
@@ -115,6 +115,25 @@ async def test_stream_without_a_group_is_capped_by_length(redis) -> None:
     assert 100 <= await redis.xlen(S) < 300
 
 
+async def test_unread_group_without_consumers_is_capped_by_length(redis, caplog) -> None:
+    # A group made only to measure another pool's backlog must not lift the cap.
+    await fill(redis, 300)
+    await redis.xgroup_create(S, "judged", id="0")
+    with caplog.at_level(logging.WARNING):
+        await StreamRetention(redis, log, Lease(), no_group_maxlen=100).trim_once([S])
+    assert 100 <= await redis.xlen(S) < 300
+    assert "capped at 100 entries" in caplog.text and "holds back trimming" not in caplog.text
+
+
+async def test_group_that_has_read_is_not_capped_by_length(redis) -> None:
+    ids = await fill(redis, 300)
+    await redis.xgroup_create(S, "g", id="0")
+    await redis.xreadgroup("g", "c", {S: ">"}, count=1)
+    await redis.xack(S, "g", ids[0])
+    await StreamRetention(redis, log, Lease(), no_group_maxlen=100).trim_once([S])
+    assert ids[1] in [e[0] for e in await redis.xrange(S)]
+
+
 async def test_trim_once_stops_at_the_slowest_group(redis) -> None:
     """trim_once must use the lowest floor of all groups, not the highest."""
     ids = await fill(redis, 400)
@@ -153,7 +172,7 @@ async def test_t7_cluster_safe_single_key_commands(redis) -> None:
     # Each stream is touched only via single-key commands, so hash tags/slots are unaffected.
     await fill(redis, 2)
     await redis.xgroup_create(S, "g", id="0")
-    assert await StreamRetention(redis, log, Lease()).trim_once([S, "missing-stream"]) == {}
+    assert not any((await StreamRetention(redis, log, Lease()).trim_once([S, "missing-stream"])).values())
 
 
 async def test_t8_maxlen_mode_keeps_legacy_cap(caplog) -> None:

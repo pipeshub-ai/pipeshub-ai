@@ -8,18 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import FilterCollection, SyncFilterKey
-from app.connectors.sources.bookstack.connector import BookStackConnector, RecordUpdate
-from app.models.entities import (
-    AppRole,
-    AppUser,
-    FileRecord,
-    RecordGroup,
-    RecordGroupType,
-    RecordType,
-)
-from app.models.permission import EntityType, Permission, PermissionType
+from app.connectors.sources.bookstack.connector import BookStackConnector
 
 
 # ---------------------------------------------------------------------------
@@ -111,26 +101,6 @@ def _make_response(success=True, data=None, error=None, status_code=None):
 # ===========================================================================
 # RecordUpdate dataclass
 # ===========================================================================
-class TestRecordUpdateComprehensive:
-    def test_defaults(self):
-        ru = RecordUpdate(
-            record=None, is_new=True, is_updated=False,
-            is_deleted=False, metadata_changed=False,
-            content_changed=False, permissions_changed=False,
-        )
-        assert ru.old_permissions is None
-        assert ru.new_permissions is None
-        assert ru.external_record_id is None
-
-    def test_with_permissions(self):
-        perm = Permission(email="u@test.com", type=PermissionType.READ, entity_type=EntityType.USER)
-        ru = RecordUpdate(
-            record=MagicMock(), is_new=True, is_updated=False,
-            is_deleted=False, metadata_changed=False,
-            content_changed=False, permissions_changed=True,
-            new_permissions=[perm],
-        )
-        assert len(ru.new_permissions) == 1
 
 
 # ===========================================================================
@@ -165,7 +135,8 @@ class TestConnectionComprehensive:
     @pytest.mark.asyncio
     async def test_success(self, connector):
         connector.data_source = AsyncMock()
-        connector.data_source.list_books = AsyncMock(return_value=_make_response(success=True))
+        for method in ("list_books", "list_users", "list_roles", "list_audit_log"):
+            setattr(connector.data_source, method, AsyncMock(return_value=MagicMock(success=True, data={"data": [], "total": 0}, status_code=200, error=None)))
         result = await connector.test_connection_and_access()
         assert result is True
 
@@ -255,29 +226,6 @@ class TestParseTimestampComprehensive:
 # ===========================================================================
 # _build_role_permissions_map
 # ===========================================================================
-class TestBuildRolePermissionsMapComprehensive:
-    def test_builds_map(self, connector):
-        roles = [
-            {"id": 1, "display_name": "Admin", "users": [{"id": 10}, {"id": 20}]},
-            {"id": 2, "display_name": "Editor", "users": [{"id": 30}]},
-        ]
-        email_map = {10: "admin@test.com", 20: "user@test.com", 30: "editor@test.com"}
-        result = connector._build_role_permissions_map(roles, email_map)
-        assert len(result) == 2
-        assert len(result[1]) == 2
-        assert len(result[2]) == 1
-
-    def test_skips_missing_email(self, connector):
-        roles = [{"id": 1, "users": [{"id": 10}]}]
-        email_map = {}  # No emails
-        result = connector._build_role_permissions_map(roles, email_map)
-        assert 1 not in result  # No permissions created
-
-    def test_skips_role_without_id(self, connector):
-        roles = [{"users": [{"id": 10}]}]
-        email_map = {10: "u@test.com"}
-        result = connector._build_role_permissions_map(roles, email_map)
-        assert len(result) == 0
 
 
 # ===========================================================================
@@ -360,152 +308,11 @@ class TestBuildDateFilterParamsComprehensive:
 # ===========================================================================
 # _process_bookstack_page
 # ===========================================================================
-class TestProcessBookstackPageComprehensive:
-    @pytest.mark.asyncio
-    async def test_new_page_with_chapter(self, connector, mock_data_store_provider):
-        connector.bookstack_base_url = "https://bookstack.example.com"
-        connector.data_source = AsyncMock()
-        connector.data_source.get_content_permissions = AsyncMock(return_value=_make_response(
-            success=True, data={"fallback_permissions": {"inheriting": True}}
-        ))
-        page = {
-            "id": 1, "name": "Test Page", "book_id": 10, "chapter_id": 5,
-            "book_slug": "test-book", "slug": "test-page",
-            "revision_count": 3,
-            "created_at": "2025-01-10T00:00:00Z",
-            "updated_at": "2025-01-15T00:00:00Z",
-        }
-        result = await connector._process_bookstack_page(page, {}, [])
-        assert result is not None
-        assert result.is_new is True
-        assert "chapter/5" in result.record.external_record_group_id
-
-    @pytest.mark.asyncio
-    async def test_page_without_chapter(self, connector, mock_data_store_provider):
-        connector.bookstack_base_url = "https://bookstack.example.com"
-        connector.data_source = AsyncMock()
-        connector.data_source.get_content_permissions = AsyncMock(return_value=_make_response(
-            success=True, data={}
-        ))
-        page = {
-            "id": 2, "name": "Root Page", "book_id": 10,
-            "book_slug": "test-book", "slug": "root-page",
-            "revision_count": 1,
-            "created_at": "2025-01-10T00:00:00Z",
-            "updated_at": "2025-01-15T00:00:00Z",
-        }
-        result = await connector._process_bookstack_page(page, {}, [])
-        assert result is not None
-        assert "book/10" in result.record.external_record_group_id
-
-    @pytest.mark.asyncio
-    async def test_page_no_id_returns_none(self, connector):
-        page = {"name": "No ID"}
-        result = await connector._process_bookstack_page(page, {}, [])
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_existing_page_updated_name(self, connector):
-        existing = MagicMock()
-        existing.id = "rec-1"
-        existing.record_name = "Old Name"
-        existing.external_revision_id = "3"
-        existing.version = 1
-
-        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
-
-        connector.bookstack_base_url = "https://bookstack.example.com"
-        connector.data_source = AsyncMock()
-        connector.data_source.get_content_permissions = AsyncMock(return_value=_make_response(
-            success=True, data={}
-        ))
-
-        page = {
-            "id": 1, "name": "New Name", "book_id": 10,
-            "book_slug": "test-book", "slug": "test-page",
-            "revision_count": 3,
-            "created_at": "2025-01-10T00:00:00Z",
-            "updated_at": "2025-01-15T00:00:00Z",
-        }
-        result = await connector._process_bookstack_page(page, {}, [])
-        assert result is not None
-        assert result.metadata_changed is True
-        assert result.is_updated is True
 
 
 # ===========================================================================
 # _handle_record_updates
 # ===========================================================================
-class TestHandleRecordUpdatesComprehensive:
-    @pytest.mark.asyncio
-    async def test_deleted_record(self, connector, mock_data_entities_processor):
-        ru = RecordUpdate(
-            record=None, is_new=False, is_updated=False,
-            is_deleted=True, metadata_changed=False,
-            content_changed=False, permissions_changed=False,
-            external_record_id="page/1",
-        )
-        mock_data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
-        await connector._handle_record_updates(ru)
-        mock_data_entities_processor.get_record_by_external_id.assert_awaited_once_with(connector.connector_id, "page/1")
-        mock_data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
-
-    @pytest.mark.asyncio
-    async def test_new_record(self, connector, mock_data_entities_processor):
-        ru = RecordUpdate(
-            record=MagicMock(record_name="New Page"), is_new=True,
-            is_updated=False, is_deleted=False, metadata_changed=False,
-            content_changed=False, permissions_changed=False,
-        )
-        await connector._handle_record_updates(ru)
-        # New records are not processed in _handle_record_updates
-        mock_data_entities_processor.on_record_metadata_update.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_metadata_change(self, connector, mock_data_entities_processor):
-        ru = RecordUpdate(
-            record=MagicMock(record_name="Updated"), is_new=False,
-            is_updated=True, is_deleted=False, metadata_changed=True,
-            content_changed=False, permissions_changed=False,
-        )
-        await connector._handle_record_updates(ru)
-        mock_data_entities_processor.on_record_metadata_update.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_content_change(self, connector, mock_data_entities_processor):
-        ru = RecordUpdate(
-            record=MagicMock(record_name="Content Changed"), is_new=False,
-            is_updated=True, is_deleted=False, metadata_changed=False,
-            content_changed=True, permissions_changed=False,
-        )
-        await connector._handle_record_updates(ru)
-        mock_data_entities_processor.on_record_content_update.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_permissions_change(self, connector, mock_data_entities_processor):
-        perms = [Permission(email="u@test.com", type=PermissionType.READ, entity_type=EntityType.USER)]
-        ru = RecordUpdate(
-            record=MagicMock(record_name="Perms Changed"), is_new=False,
-            is_updated=True, is_deleted=False, metadata_changed=False,
-            content_changed=False, permissions_changed=True,
-            new_permissions=perms,
-        )
-        await connector._handle_record_updates(ru)
-        mock_data_entities_processor.on_updated_record_permissions.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_exception_handled(self, connector, mock_data_entities_processor):
-        mock_data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
-        mock_data_entities_processor.on_record_deleted = AsyncMock(side_effect=Exception("fail"))
-        ru = RecordUpdate(
-            record=None, is_new=False, is_updated=False,
-            is_deleted=True, metadata_changed=False,
-            content_changed=False, permissions_changed=False,
-            external_record_id="page/1",
-        )
-        # Should not raise
-        await connector._handle_record_updates(ru)
-        mock_data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
 
 # ===========================================================================
@@ -538,13 +345,11 @@ class TestStreamRecordComprehensive:
 # ===========================================================================
 class TestGetSignedUrlComprehensive:
     @pytest.mark.asyncio
-    async def test_returns_api_url(self, connector):
+    async def test_returns_no_signed_url(self, connector):
         connector.bookstack_base_url = "https://bookstack.example.com/"
         record = MagicMock()
         record.external_record_id = "page/42"
-        url = await connector.get_signed_url(record)
-        assert "42" in url
-        assert "api/pages" in url
+        assert await connector.get_signed_url(record) is None
 
 
 # ===========================================================================
@@ -594,14 +399,6 @@ class TestMiscComprehensive:
         result = connector._get_iso_time()
         assert "T" in result
 
-    def test_parse_bookstack_permissions_all_users(self, connector):
-        users = [
-            MagicMock(email="u1@test.com", source_user_id="1"),
-            MagicMock(email="u2@test.com", source_user_id="2"),
-        ]
-        perms = connector._parse_bookstack_permissions_all_users(users)
-        assert len(perms) == 2
-        assert all(p.type == PermissionType.READ for p in perms)
 
 
 # ===========================================================================

@@ -21,6 +21,7 @@ from app.models.blocks import BlocksContainer
 from app.modules.named_entities.domain.models import (
     EXTRACTOR_VERSION,
     NamedEntityExtraction,
+    model_failed,
 )
 from app.modules.pipeline.leases import RecordBusy, RevisionSuperseded
 from app.modules.pipeline.models import (
@@ -37,6 +38,16 @@ from app.modules.pipeline.stage import StageIO
 
 # Bump when the extraction prompt, its strategies or the stored section's shape change.
 ENTITIES_PROMPT_VERSION = 1
+
+
+_PROVIDER_DOWN = "Named-entity model provider unavailable"
+
+
+def _provider_down(extraction: NamedEntityExtraction) -> bool:
+    """Every failed call was the provider not serving: wait without burning attempts. A
+    failure of any other kind keeps the run on the retry path, which counts toward its limit."""
+    stats = extraction.stats
+    return 0 < stats.windows_unavailable == stats.windows_failed
 
 
 class EntitiesIO(StageIO, Protocol):
@@ -109,6 +120,8 @@ class EntitiesStage:
             return StageResult(outcome=StageOutcome.STALE)
         if extraction.status == "FAILED":
             # The model failed; the record keeps its last good entities meanwhile.
+            if _provider_down(extraction):
+                return StageResult(outcome=StageOutcome.PAUSED, reason=_PROVIDER_DOWN)
             return StageResult(
                 outcome=StageOutcome.RETRY,
                 reason=f"Named-entity extraction failed ({extraction.termination_reason})",
@@ -125,6 +138,15 @@ class EntitiesStage:
             )
         if extraction.status == "SKIPPED":
             return StageResult(outcome=StageOutcome.SKIPPED, reason="nothing to extract", record_view=job.view)
+        if model_failed(extraction):
+            # What was found is saved, or the last good entities kept; settling now would store
+            # the fingerprint, and the record would never get the names the model missed.
+            if _provider_down(extraction):
+                return StageResult(outcome=StageOutcome.PAUSED, reason=f"{_PROVIDER_DOWN}; saved what was found")
+            return StageResult(
+                outcome=StageOutcome.RETRY,
+                reason=f"Named-entity model call failed ({extraction.termination_reason}); saved what was found",
+            )
         return StageResult(
             outcome=StageOutcome.COMPLETED,
             items=len(record_ids),

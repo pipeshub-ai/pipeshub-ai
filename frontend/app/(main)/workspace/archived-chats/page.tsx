@@ -16,6 +16,7 @@ import {
 } from './components';
 import { useArchivedChatsStore } from './store';
 import type { Conversation } from './types';
+import { useChatStore } from '@/chat/store';
 
 /**
  * /workspace/archived-chats
@@ -116,6 +117,7 @@ function ArchivedChatsPageContent() {
   const handleRestored = useCallback(
     (restoredId: string, restoredAgentKey: string | null) => {
       removeConversation(restoredId, restoredAgentKey);
+      useChatStore.getState().bumpConversationsVersion();
       if (restoredAgentKey) {
         router.push(`/chat?conversationId=${restoredId}&agentId=${restoredAgentKey}`);
       } else {

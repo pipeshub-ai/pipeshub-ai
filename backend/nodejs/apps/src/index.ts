@@ -4,8 +4,10 @@ import { applyStoreUmbrella } from './libs/config/storeUmbrella';
 import { Logger } from './libs/services/logger.service';
 
 // Loads environment variables
-config();
+config({ quiet: true });
 applyStoreUmbrella();
+// The imports above created the logger before .env was loaded.
+Logger.applyEnv();
 import { Application } from './app';
 import { createGracefulShutdown } from './shutdown';
 

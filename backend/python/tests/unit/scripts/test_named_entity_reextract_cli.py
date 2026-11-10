@@ -109,3 +109,35 @@ async def test_a_revision_with_a_stage_state_is_judged_by_the_kept_output() -> N
 
     graph.schedule_named_entity_reextract.assert_awaited_once_with("o1", "p")
     assert (tally.queued, tally.without_extraction, tally.unreadable) == (1, 1, 0)
+
+
+async def test_reproject_writes_every_stored_extraction_again_with_no_model_call() -> None:
+    graph = _graph(RECORDS)
+    graph.schedule_named_entity_reproject = AsyncMock()
+
+    tally = await queue_reextractions(
+        graph, _blobs(), org_id="o1", everything=False, apply=True, reproject=True, out=io.StringIO(),
+    )
+
+    assert tally.queued == 2
+    assert [c.args for c in graph.schedule_named_entity_reproject.await_args_list] == [("o1", "a"), ("o1", "b")]
+    graph.schedule_named_entity_reextract.assert_not_awaited()
+
+
+async def test_a_reproject_dry_run_queues_nothing() -> None:
+    graph = _graph(RECORDS)
+    graph.schedule_named_entity_reproject = AsyncMock()
+
+    await queue_reextractions(graph, _blobs(), org_id="o1", everything=False, apply=False, reproject=True, out=io.StringIO())
+
+    graph.schedule_named_entity_reproject.assert_not_awaited()
+
+
+async def test_reproject_is_refused_while_extraction_is_off(monkeypatch) -> None:
+    from app.scripts import named_entity_reextract as script
+    from app.services.featureflag import platform_settings
+
+    monkeypatch.setattr(platform_settings, "is_named_entity_extraction_enabled", AsyncMock(return_value=False))
+    assert await script.reproject_allowed(object()) is False
+    monkeypatch.setattr(platform_settings, "is_named_entity_extraction_enabled", AsyncMock(return_value=True))
+    assert await script.reproject_allowed(object()) is True

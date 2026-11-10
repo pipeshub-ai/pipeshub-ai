@@ -13,6 +13,7 @@ from app.connectors.sources.localKB.api.kb_router import (
     HTTP_MAX_STATUS,
     HTTP_MIN_STATUS,
     _parse_comma_separated_str,
+    _parse_string_id_list,
     kb_router,
 )
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
@@ -72,6 +73,19 @@ class TestParseCommaSeparatedStr:
 
     def test_whitespace_only_items(self):
         assert _parse_comma_separated_str(",  ,  ,") == []
+
+
+class TestParseStringIdList:
+    def test_none(self) -> None:
+        assert _parse_string_id_list(None, "writerUserIds") is None
+
+    def test_strips_values(self) -> None:
+        assert _parse_string_id_list([" a ", "b"], "writerUserIds") == ["a", "b"]
+
+    def test_rejects_empty_string(self) -> None:
+        with pytest.raises(HTTPException) as exc:
+            _parse_string_id_list(["ok", ""], "writerUserIds")
+        assert exc.value.status_code == 400
 
 
 class TestConstants:
@@ -190,6 +204,68 @@ class TestCreateKnowledgeBase:
         client = TestClient(app)
         resp = client.post("/api/v1/kb/", json={"name": "Bad", "isHidden": 1})
         assert resp.status_code == 400
+
+    def test_owner_user_id_rejected_unless_hidden(self) -> None:
+        app, kb_svc, _ = _make_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/kb/",
+            json={"name": "Notes", "ownerUserId": "owner-1"},
+        )
+        assert resp.status_code == 400
+        kb_svc.create_knowledge_base.assert_not_called()
+
+    def test_owner_user_id_and_grants_passed_when_hidden(self) -> None:
+        app, kb_svc, _ = _make_app()
+        kb_svc.create_knowledge_base = AsyncMock(return_value={
+            "success": True, "id": "kb1", "name": "Hidden",
+            "createdAtTimestamp": 100, "updatedAtTimestamp": 100, "userRole": "WRITER"
+        })
+        client = TestClient(app)
+        resp = client.post("/api/v1/kb/", json={
+            "name": "Hidden",
+            "isHidden": True,
+            "ownerUserId": "owner-1",
+            "writerUserIds": ["editor-1"],
+            "readerUserIds": ["viewer-1"],
+            "teamIds": ["team-1"],
+        })
+        assert resp.status_code == 200
+        kwargs = kb_svc.create_knowledge_base.call_args.kwargs
+        assert kwargs["is_hidden"] is True
+        assert kwargs["owner_user_id"] == "owner-1"
+        assert kwargs["writer_user_ids"] == ["editor-1"]
+        assert kwargs["reader_user_ids"] == ["viewer-1"]
+        assert kwargs["team_ids"] == ["team-1"]
+
+    def test_writer_user_ids_must_be_strings(self) -> None:
+        app, _, _ = _make_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/kb/",
+            json={"name": "Hidden", "isHidden": True, "writerUserIds": [1]},
+        )
+        assert resp.status_code == 400
+
+    def test_empty_owner_user_id_rejected(self) -> None:
+        app, kb_svc, _ = _make_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/kb/",
+            json={"name": "Hidden", "isHidden": True, "ownerUserId": "  "},
+        )
+        assert resp.status_code == 400
+        kb_svc.create_knowledge_base.assert_not_called()
+
+    def test_grants_rejected_unless_hidden(self) -> None:
+        app, kb_svc, _ = _make_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/kb/",
+            json={"name": "Notes", "writerUserIds": ["editor-1"]},
+        )
+        assert resp.status_code == 400
+        kb_svc.create_knowledge_base.assert_not_called()
 
 
 class TestListUserKnowledgeBases:

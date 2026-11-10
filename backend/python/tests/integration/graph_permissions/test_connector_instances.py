@@ -22,6 +22,20 @@ def provider(request: pytest.FixtureRequest) -> object:
     return request.getfixturevalue(f"{request.param}_provider")
 
 
+async def _link_orgs_to_apps(provider, pairs: dict[str, str]) -> None:
+    """The org->app edge is what lists an App for an organization; each organization needs its own node and edge."""
+    await provider.batch_upsert_nodes(
+        [{"_key": org, "name": org, "accountType": "enterprise", "isActive": True, "createdAtTimestamp": TS}
+         for org in pairs],
+        collection=CollectionNames.ORGS.value,
+    )
+    await provider.batch_create_edges(
+        [{"from_id": org, "from_collection": CollectionNames.ORGS.value, "to_id": key,
+          "to_collection": CollectionNames.APPS.value, "createdAtTimestamp": TS} for org, key in pairs.items()],
+        collection=CollectionNames.ORG_APP_RELATION.value,
+    )
+
+
 async def test_another_orgs_team_connectors_are_not_listed(provider) -> None:
     suffix = uuid.uuid4().hex[:8]
     mine, theirs = f"org-a-{suffix}", f"org-b-{suffix}"
@@ -31,6 +45,7 @@ async def test_another_orgs_team_connectors_are_not_listed(provider) -> None:
         for org in (mine, theirs)
     ]
     await provider.batch_upsert_nodes(apps, collection=CollectionNames.APPS.value)
+    await _link_orgs_to_apps(provider, {mine: f"pg-{mine}", theirs: f"pg-{theirs}"})
 
     listed = await provider.get_user_connector_instances(
         collection=CollectionNames.APPS.value, user_id="u-1", org_id=mine,
@@ -68,9 +83,14 @@ async def test_the_filtered_connector_list_stays_in_the_callers_org(provider) ->
           "to_collection": CollectionNames.APPS.value, "createdAtTimestamp": TS}],
         collection=CollectionNames.ORG_APP_RELATION.value,
     )
+    await provider.batch_create_edges(
+        [{"from_id": org, "from_collection": CollectionNames.ORGS.value, "to_id": f"pgf-{org}",
+          "to_collection": CollectionNames.APPS.value, "createdAtTimestamp": TS} for org in (mine, theirs)],
+        collection=CollectionNames.ORG_APP_RELATION.value,
+    )
 
     docs, total = await provider.get_filtered_connector_instances(
-        collection=CollectionNames.APPS.value, edge_collection=CollectionNames.USER_APP_RELATION.value,
+        collection=CollectionNames.APPS.value, edge_collection=CollectionNames.ORG_APP_RELATION.value,
         org_id=mine, user_id="u-1", scope="team", search=suffix, limit=50, is_admin=True,
     )
     ids = {d.get("_key") or d.get("id") for d in docs}
@@ -79,10 +99,10 @@ async def test_the_filtered_connector_list_stays_in_the_callers_org(provider) ->
     assert total == len(ids)
 
 
-async def test_a_connector_from_before_org_ids_is_listed_after_the_backfill(provider) -> None:
+async def test_a_connector_from_before_org_ids_gets_its_org_from_the_backfill(provider) -> None:
     """Apps created before instances carried an orgId: the backfill takes it from
     the one organization linked to the App. An App linked from two organizations
-    is left alone."""
+    is left alone (the listing itself goes by the org->app edge)."""
     suffix = uuid.uuid4().hex[:8]
     mine, theirs = f"org-c-{suffix}", f"org-d-{suffix}"
     legacy, shared = f"legacy-{suffix}", f"shared-{suffix}"
@@ -103,18 +123,15 @@ async def test_a_connector_from_before_org_ids_is_listed_after_the_backfill(prov
         collection=CollectionNames.ORG_APP_RELATION.value,
     )
 
-    async def listed() -> set[str]:
-        apps = await provider.get_user_connector_instances(
-            collection=CollectionNames.APPS.value, user_id="u-1", org_id=mine,
-            team_scope="team", personal_scope="personal",
-        )
-        return {a.get("_key") or a.get("id") for a in apps}
+    async def org_of(key: str) -> str | None:
+        doc = await provider.get_document(key, CollectionNames.APPS.value)
+        return (doc or {}).get("orgId")
 
-    assert legacy not in await listed()
+    assert await org_of(legacy) is None and await org_of(shared) is None
     result = await provider.backfill_app_org_ids()
     assert result["backfilled"] >= 1 and result["ambiguous"] >= 1
-    assert legacy in await listed()
-    assert shared not in await listed()
+    assert await org_of(legacy) == mine
+    assert await org_of(shared) is None          # linked from two organizations: left alone
     assert (await provider.backfill_app_org_ids())["backfilled"] == 0
 
 

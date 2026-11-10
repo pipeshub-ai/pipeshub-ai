@@ -240,9 +240,10 @@ class TestSdkClients:
         client = module.MariaDBClient(host="db.corp", user="u", password="p")
         with patch.object(module.mariadb, "create_async_pool", new=AsyncMock()) as pool, patch(
             "socket.getaddrinfo", _dns({"db.corp": "10.1.2.3"}),
-        ):
+        ), patch.object(module, "_open_and_close") as first_connection:
             await client.connect()
         assert pool.await_args.kwargs["host"] == "10.1.2.3"
+        assert first_connection.call_args.args[0]["host"] == "10.1.2.3"
 
 
 class TestBareHttpxClients:

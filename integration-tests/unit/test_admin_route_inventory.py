@@ -376,3 +376,56 @@ def test_placeholders_are_found_and_filled_at_any_depth() -> None:
     value = {"a": "{one}/x", "b": [{"c": ("{two}", 3)}], "d": None}
     assert placeholders(value) == {"one", "two"}
     assert fill(value, str.upper) == {"a": "ONE/x", "b": [{"c": ("TWO", 3)}], "d": None}
+
+
+def test_each_router_in_a_file_gets_its_own_prefix(tmp_path: Path) -> None:
+    _write(tmp_path, "app.ts", """
+        export const OTHER_PATH = '/api/v1/other';
+        app.use('/api/v1/first', createFirstRouter(container));
+        app.use(OTHER_PATH, createSecondRouter(container));
+    """)
+    _write(tmp_path, "two.routes.ts", """
+        export function createFirstRouter(container: Container) {
+          const router = Router();
+          router.get('/:id', userAdminCheck, handler);
+          return router;
+        }
+
+        export function createSecondRouter(container: Container) {
+          const router = Router();
+          router.put('/:id', userAdminCheck, handler);
+          return router;
+        }
+    """)
+    assert {(r.method, r.path) for r in discover_admin_routes(tmp_path)} == {
+        ("GET", "/api/v1/first/:id"), ("PUT", "/api/v1/other/:id"),
+    }
+
+
+@pytest.mark.parametrize("mount", [
+    "app.use(somePath(), createGatedRouter(container));",  # not a literal or a constant
+    "app.use(TWO_VALUES, createGatedRouter(container));",  # a constant with two values
+], ids=["call", "ambiguous-constant"])
+def test_an_admin_router_whose_prefix_cannot_be_read_is_named(tmp_path: Path, mount: str) -> None:
+    _write(tmp_path, "app.ts", f"""
+        app.use('/api/v1/open', createOpenRouter(container));
+        {mount}
+    """)
+    _write(tmp_path, "a.ts", "export const TWO_VALUES = '/api/v1/a';\n")
+    _write(tmp_path, "b.ts", "export const TWO_VALUES = '/api/v1/b';\n")
+    # The router with no admin check needs no prefix; only the gated one is reported.
+    _write(tmp_path, "mixed.routes.ts", """
+        export function createOpenRouter(container: Container) {
+          const router = Router();
+          router.get('/', handler);
+          return router;
+        }
+
+        export function createGatedRouter(container: Container) {
+          const router = Router();
+          router.delete('/:id', userAdminCheck, handler);
+          return router;
+        }
+    """)
+    with pytest.raises(AssertionError, match=r"mixed\.routes\.ts \(createGatedRouter\)"):
+        discover_admin_routes(tmp_path)

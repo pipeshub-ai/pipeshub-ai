@@ -37,6 +37,23 @@ class SharedFolder:
     is_team_folder: bool
     access: dict[str, str] = field(default_factory=dict)  # team member id -> access level
     mounted: set[str] = field(default_factory=set)  # members who joined it (it has a path in their Dropbox)
+    inside_team_folder: bool = False
+    inheritance: str = "inherit"  # access_inheritance: "inherit" or "no_inherit"
+
+    @property
+    def parent_unknown(self) -> bool:
+        """Inside a team folder, but listed without its parent.
+
+        On the team member root layout ``sharing/list_folders`` gives a folder inside
+        a team folder neither a path nor ``parent_shared_folder_id``; the folder's own
+        metadata has the parent.
+        """
+        return self.inside_team_folder and self.parent_id is None
+
+    def set_parent(self, parent_id: str | None, inheritance: str) -> None:
+        self.parent_id = parent_id
+        self.inheritance = inheritance
+        self.inherits = parent_id is not None and inheritance != "no_inherit"
 
     @property
     def syncer(self) -> str:
@@ -66,6 +83,8 @@ def plan_shared_folders(listings: dict[str, Iterable]) -> dict[str, SharedFolder
                     parent_id=parent_id,
                     inherits=parent_id is not None and inheritance != "no_inherit",
                     is_team_folder=bool(getattr(entry, "is_team_folder", False)),
+                    inside_team_folder=bool(getattr(entry, "is_inside_team_folder", False)),
+                    inheritance=inheritance,
                 )
                 folders[entry.shared_folder_id] = folder
             folder.access[member_id] = getattr(getattr(entry, "access_type", None), "_tag", "viewer")
@@ -116,15 +135,23 @@ def outside_namespace(entry: object, namespace_id: str | None, shared_folder_ids
     Those are listed in their own namespace, so they are left out here: the mount
     point itself (it is a record group) and everything inside it. A member's home
     namespace is never a shared folder of the team listing, so its items stay.
+
+    In a shared folder's listing, anything Dropbox tags with another shared folder
+    is that folder's, whether or not this run plans it: written here, it would take
+    this folder's members (a folder that stopped inheriting would show its files
+    to everyone in the parent), and a member it is closed to still sees its mount
+    point, marked no_access.
     """
     info = getattr(entry, "sharing_info", None)
     if info is None:
         return False
     own = getattr(info, "shared_folder_id", None)
-    if own and own != namespace_id and own in shared_folder_ids:
-        return True
     parent = getattr(info, "parent_shared_folder_id", None)
-    return bool(parent) and parent != namespace_id and parent in shared_folder_ids
+    if namespace_id is not None:
+        return bool(own and own != namespace_id) or bool(parent and parent != namespace_id)
+    if own and own in shared_folder_ids:
+        return True
+    return bool(parent) and parent in shared_folder_ids
 
 
 def _permission(membership: object) -> PermissionType | None:

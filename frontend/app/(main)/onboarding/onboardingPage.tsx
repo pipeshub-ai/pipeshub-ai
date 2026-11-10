@@ -7,6 +7,8 @@ import { Flex, Box, Text, Button, Spinner } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useOnboardingStore } from './store';
 import { useAuthStore } from '@/config';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { toast } from '@/lib/store/toast-store';
 import { getOnboardingStatus, updateOnboardingStatus } from './api';
 import {
   OnboardingHeader,
@@ -54,6 +56,7 @@ function OnboardingPageInner() {
 
   // Auth store — real user data
   const { user, isHydrated, isAuthenticated } = useAuthStore();
+  const isAdmin = useUserStore(selectIsAdmin);
   const userName = user?.name ?? '';
   const userEmail = user?.email ?? '';
   const userInitials = userName
@@ -75,6 +78,12 @@ function OnboardingPageInner() {
     if (!isHydrated || !isAuthenticated) {
       return;
     }
+    // Only admins can save these steps; a member who lands here goes back to the app.
+    if (isAdmin === false) {
+      setOnboardingActive(false);
+      router.replace('/');
+      return;
+    }
 
     getOnboardingStatus()
       .then(({ status }) => {
@@ -90,7 +99,7 @@ function OnboardingPageInner() {
         // Match main layout: do not block the app on a failed status check
         setOnboardingGate('allowed');
       });
-  }, [isHydrated, isAuthenticated, router, setOnboardingActive]);
+  }, [isHydrated, isAuthenticated, isAdmin, router, setOnboardingActive]);
 
   // Sync URL → store with validation; redirect to safe default if step is missing or unrecognised
   useEffect(() => {
@@ -147,12 +156,15 @@ function OnboardingPageInner() {
     try {
       await updateOnboardingStatus('configured');
     } catch {
-      // Non-fatal — proceed to chat regardless
-    } finally {
-      setOnboardingActive(false);
-      router.replace('/chat');
+      // Leaving now would bring the admin straight back here on the next load.
+      // Top placement keeps the toast off the Enter button the admin retries with.
+      toast.error(t('onboarding.nav.finishFailed'), { placement: 'top' });
+      setIsFinishing(false);
+      return;
     }
-  }
+    setOnboardingActive(false);
+    router.replace('/chat');
+  };
 
   const handleStepSuccess = (nextStep: OnboardingStepId | null) => {
     // Mark current step as completed

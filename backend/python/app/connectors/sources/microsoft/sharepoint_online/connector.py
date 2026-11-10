@@ -21,6 +21,8 @@ import httpx
 from aiolimiter import AsyncLimiter
 from azure.core.exceptions import (
     ClientAuthenticationError,
+    ServiceRequestError,
+    ServiceResponseError,
 )
 from azure.identity import CredentialUnavailableError
 from azure.identity.aio import CertificateCredential, ClientSecretCredential
@@ -97,6 +99,7 @@ from app.connectors.core.registry.types import (
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
+from app.connectors.sources.microsoft.common.graph_people import source_person
 from app.connectors.sources.microsoft.common.msgraph_client import (
     MSGraphClient,
     RecordUpdate,
@@ -129,6 +132,10 @@ from app.connectors.sources.microsoft.common.sharepoint_permission_scope import 
     SHAREPOINT_REST_RETRY_STATUSES,
     ListPermissionScope,
     drive_item_unique_id,
+)
+from app.connectors.sources.microsoft.common.sign_in_errors import (
+    describe_sign_in_error,
+    known_sign_in_problem,
 )
 from app.connectors.sources.microsoft.sharepoint_online.utils import (
     clean_html_output,
@@ -690,6 +697,10 @@ class SharePointConnector(BaseConnector):
         self._rewrite_all_items = False
         # Set for a run that has to read every Entra group's members again.
         self._refresh_all_groups = False
+        # Set for a run whose user listing is not trusted and that has no earlier disabled set to fall back on.
+        self._disabled_set_unknown = False
+        # Whether this run's disabled set comes from a trusted listing, and so may become the stored one.
+        self._listing_trusted = True
 
         self.tenant_region: str = None
         self.sync_filters: FilterCollection = FilterCollection()
@@ -718,17 +729,30 @@ class SharePointConnector(BaseConnector):
         self._directory_object_types: dict[str, str | None] = {}
         self._directory_role_members: dict[str, list[dict]] = {}
 
+    @staticmethod
+    def _build_credential(credential_cls: type, **kwargs: str) -> object:
+        try:
+            return credential_cls(**kwargs)
+        except ValueError as error:
+            # azure-identity checks the tenant ID's format here, before any request; other ValueErrors
+            # (such as a certificate it cannot parse) are not about the tenant.
+            if "tenant" not in str(error).lower():
+                raise
+            raise ConnectorInitError(
+                "The Directory (Tenant) ID is not valid. Check it in the app registration."
+            ) from error
+
     async def init(self) -> bool:
         config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
 
         if not config:
             self.logger.error("❌ SharePoint Online credentials not found")
-            raise ValueError("SharePoint Online credentials not found")
+            raise ConnectorInitError("SharePoint Online credentials not found")
 
         credentials_config = config.get("auth", {})
         if not credentials_config:
             self.logger.error("❌ SharePoint Online credentials not found")
-            raise ValueError("SharePoint Online credentials not found")
+            raise ConnectorInitError("SharePoint Online credentials not found")
 
         # Load credentials from config
         tenant_id = credentials_config.get("tenantId")
@@ -768,7 +792,7 @@ class SharePointConnector(BaseConnector):
         # Validation
         if not all((tenant_id, client_id, sharepoint_domain)):
             self.logger.error("❌ Incomplete SharePoint Online credentials. Ensure tenantId, clientId, and sharepointDomain are configured.")
-            raise ValueError("Incomplete SharePoint Online credentials. Ensure tenantId, clientId, and sharepointDomain are configured.")
+            raise ConnectorInitError("Incomplete SharePoint Online credentials. Ensure tenantId, clientId, and sharepointDomain are configured.")
 
         # Check for one valid authentication method
         has_certificate = certificate_data and private_key_data
@@ -776,7 +800,7 @@ class SharePointConnector(BaseConnector):
 
         if not (has_certificate or has_client_secret):
             self.logger.error("❌ Authentication credentials missing. Provide either clientSecret or certificate + private key.")
-            raise ValueError("Authentication credentials missing. Provide either clientSecret or certificate + private key.")
+            raise ConnectorInitError("Authentication credentials missing. Provide either clientSecret or certificate + private key.")
 
         credentials = SharePointCredentials(
             tenant_id=tenant_id,
@@ -839,7 +863,8 @@ class SharePointConnector(BaseConnector):
                 self.logger.info(f"✅ Created combined PEM file at: {self.temp_cert_file.name}")
 
                 # Create credential with the combined certificate file
-                self.credential = CertificateCredential(
+                self.credential = self._build_credential(
+                    CertificateCredential,
                     tenant_id=credentials.tenant_id,
                     client_id=credentials.client_id,
                     certificate_path=self.temp_cert_file.name,
@@ -859,10 +884,16 @@ class SharePointConnector(BaseConnector):
                         os.unlink(self.temp_cert_file.name)
                     except OSError:  # <--- The fix
                         pass
-                raise ValueError(f"Failed to set up certificate authentication: {cert_error}")
+                if isinstance(cert_error, ConnectorInitError):
+                    raise
+                raise ConnectorInitError(
+                    "The certificate or private key in the connector's settings could not be read. Paste the "
+                    "certificate and its private key in PEM format, then try again."
+                ) from cert_error
 
         elif has_client_secret:
-            self.credential = ClientSecretCredential(
+            self.credential = self._build_credential(
+                ClientSecretCredential,
                 tenant_id=credentials.tenant_id,
                 client_id=credentials.client_id,
                 client_secret=credentials.client_secret,
@@ -882,23 +913,32 @@ class SharePointConnector(BaseConnector):
         except Exception as token_error:
             sanitized_error = sanitize_azure_error(token_error)
             self.logger.error(f"❌ Failed to initialize credential: {sanitized_error}")
+            await self._notify_token_failure(*self._token_failure_notice(token_error, for_sharepoint=False))
             # Clean up temp certificate file if it was created
             if self.temp_cert_file:
                 try:
                     os.unlink(self.temp_cert_file.name)
                 except OSError:
                     pass
+            # An AADSTS code not in the table may be transient (e.g. AADSTS90033), so it stays a 5xx.
+            problem = known_sign_in_problem(token_error)
+            if problem:
+                raise ConnectorInitError(problem) from token_error
             raise ValueError(
                 f"Failed to initialize SharePoint credential: {sanitized_error}"
             )
         
-        sharepoint_token = await self._get_sharepoint_access_token()
-        if not sharepoint_token:
-            self.logger.error("❌ Failed to obtain SharePoint access token during initialization")
-            raise ValueError(
-                "Unable to acquire a SharePoint access token. Please verify "
-                "SharePoint host URL and authentication settings."
-            )
+        try:
+            await self._get_sharepoint_access_token(raise_errors=True)
+        except Exception as token_error:
+            sanitized_error = sanitize_azure_error(token_error)
+            self.logger.error(f"❌ Failed to obtain SharePoint access token during initialization: {sanitized_error}")
+            problem = known_sign_in_problem(token_error, resource_setting="SharePoint domain")
+            if problem:
+                raise ConnectorInitError(
+                    f"Could not get a SharePoint access token for {self.sharepoint_domain}. {problem}"
+                ) from token_error
+            raise ValueError(f"Unable to acquire a SharePoint access token: {sanitized_error}") from token_error
 
         # Initialize Graph Client
         self.client = GraphServiceClient(
@@ -1732,6 +1772,8 @@ class SharePointConnector(BaseConnector):
                 crc32_hash=hashes.get('crc32_hash'),
                 sha1_hash=hashes.get('sha1_hash'),
                 sha256_hash=hashes.get('sha256_hash'),
+                authored_by=source_person(getattr(item, 'created_by', None)),
+                last_modified_by=source_person(getattr(item, 'last_modified_by', None)),
             )
 
         except Exception as e:
@@ -2142,7 +2184,9 @@ class SharePointConnector(BaseConnector):
                 weburl=getattr(item, 'web_url', None),
                 parent_external_record_id=list_id,
                 external_record_group_id=site_id,
-                semantic_metadata=metadata
+                semantic_metadata=metadata,
+                authored_by=source_person(getattr(item, 'created_by', None)),
+                last_modified_by=source_person(getattr(item, 'last_modified_by', None)),
             )
 
         except Exception as e:
@@ -2310,6 +2354,8 @@ class SharePointConnector(BaseConnector):
                 inherit_permissions=True,
                 semantic_metadata=metadata,
                 preview_renderable=False,
+                authored_by=source_person(getattr(page, 'created_by', None)),
+                last_modified_by=source_person(getattr(page, 'last_modified_by', None)),
             )
 
         except Exception as e:
@@ -2529,40 +2575,59 @@ class SharePointConnector(BaseConnector):
 
         return modified_after, modified_before, created_after, created_before
 
-    async def _get_sharepoint_access_token(self, resource_host: str = None) -> Optional[str]:
+    async def _get_sharepoint_access_token(
+        self, resource_host: str = None, *, raise_errors: bool = False
+    ) -> Optional[str]:
         """An app-only token for SharePoint REST on a host (default: the tenant's SharePoint domain).
 
         The connector's credential keeps its tokens until they are close to expiring, so this asks the
-        token endpoint once per host per hour instead of once per SharePoint call.
+        token endpoint once per host per hour instead of once per SharePoint call. A failure returns None,
+        or with ``raise_errors`` is raised as it came, so the caller can tell its cause.
         """
         parsed = urllib.parse.urlparse(resource_host or self.sharepoint_domain or "")
         host = parsed.hostname or (self.sharepoint_domain or "").replace('https://', '').replace('http://', '').strip('/')
         resource = f"https://{host}"
         try:
-            token = await self.credential.get_token(f"{resource}/.default")
-            return token.token
-        except CredentialUnavailableError as credential_error:
-            self.logger.error(
-                f"❌ SharePoint credential unavailable for {resource}: {sanitize_azure_error(credential_error)}"
+            return (await self.credential.get_token(f"{resource}/.default")).token
+        except Exception as error:
+            self.logger.error(f"❌ Failed to get a SharePoint token for {resource}: {sanitize_azure_error(error)}")
+            await self._notify_token_failure(*self._token_failure_notice(error, for_sharepoint=True))
+            if raise_errors:
+                raise
+            return None
+
+    @staticmethod
+    def _token_failure_notice(error: Exception, *, for_sharepoint: bool) -> tuple[str, str]:
+        """The title and message of the notice telling the connector's creator a token request failed.
+
+        ``for_sharepoint`` says the token was for the SharePoint host rather than Microsoft Graph, so only
+        then can the SharePoint host URL be to blame.
+        """
+        if isinstance(error, (ServiceRequestError, ServiceResponseError)):
+            return (
+                "SharePoint could not reach Microsoft",
+                "Unable to reach Microsoft to get an access token. This is usually a temporary network problem, "
+                "not a problem with the connector's settings. If it keeps happening, check that the PipesHub "
+                "server can reach login.microsoftonline.com.",
             )
-            await self._notify_token_failure(
+        if isinstance(error, CredentialUnavailableError):
+            return (
                 "SharePoint authentication failed",
                 "Unable to authenticate using current credentials. Please verify the connector authentication credentials.",
             )
-            return None
-        except ClientAuthenticationError as auth_error:
-            title, message = get_sharepoint_auth_notification(auth_error)
-            self.logger.error(f"❌ Error getting SharePoint token for {resource}: {sanitize_azure_error(auth_error)}")
-            await self._notify_token_failure(title, message)
-            return None
-        except Exception as e:
-            self.logger.error(f"❌ Unexpected error getting SharePoint token for {resource}: {sanitize_azure_error(e)}")
-            await self._notify_token_failure(
-                "SharePoint authentication Failed",
-                "Unable to acquire a SharePoint access token. Please verify SharePoint host URL "
-                "and connector authentication credentials.",
+        if not for_sharepoint:
+            return (
+                "SharePoint authentication failed",
+                describe_sign_in_error(error) or "Unable to acquire a Microsoft Graph access token. Please verify "
+                "the connector authentication credentials.",
             )
-            return None
+        if isinstance(error, ClientAuthenticationError):
+            return get_sharepoint_auth_notification(error)
+        return (
+            "SharePoint authentication Failed",
+            "Unable to acquire a SharePoint access token. Please verify SharePoint host URL "
+            "and connector authentication credentials.",
+        )
 
     async def _notify_token_failure(self, title: str, message: str) -> None:
         if self._token_failure_notified:
@@ -2571,7 +2636,7 @@ class SharePointConnector(BaseConnector):
         await self.notify(
             type=NotificationType.CONNECTOR_AUTH_ERROR,
             severity=NotificationSeverity.ERROR,
-            title=title,
+            title=f"{self.display_name}: {title}",
             message=message,
             recipient_user_ids=[self.created_by],
         )
@@ -3328,9 +3393,10 @@ class SharePointConnector(BaseConnector):
                     sync_point_key,
                     {"nextLink": None, "deltaLink": new_delta_link}
                 )
-                await self.user_sync_point.update_sync_point(
-                    INACTIVE_USERS_SYNC_POINT_KEY, sync_point_data={"emails": sorted(self._inactive_emails)}
-                )
+                if self._listing_trusted:
+                    await self.user_sync_point.update_sync_point(
+                        INACTIVE_USERS_SYNC_POINT_KEY, sync_point_data={"emails": sorted(self._inactive_emails)}
+                    )
         else:
             await self._perform_delta_sync(delta_link, sync_point_key)
 
@@ -3547,6 +3613,43 @@ class SharePointConnector(BaseConnector):
         else:
             return PermissionType.READ
 
+    async def _withdraw_unlisted_app_users(self, listed: list[AppUser]) -> bool:
+        """Take the connector away from stored users (guest accounts included) the complete
+        user read no longer lists and that Microsoft confirms are gone (a 404 on the user
+        itself): a stale listing cannot withdraw anyone, nor can a failed or throttled read
+        of the user. Only called after a complete read; an empty list withdraws nobody (the
+        directory always has users), and so does a failed read of the stored users.
+        Restoring the account saves the user again.
+
+        Returns whether the listing can be trusted: every stored account it does not list was
+        confirmed gone. An empty listing, a failed read of the stored users, and an unlisted
+        account that was found or whose read failed make it untrusted."""
+        if not listed:
+            return False
+        try:
+            stored = await self.data_entities_processor.get_app_user_links(self.connector_id)
+        except Exception as e:
+            self.logger.error(f"Could not read the stored users; no user loses access this run: {e}")
+            return False
+        kept = {u.source_user_id for u in listed}
+        gone = []
+        trusted = True
+        for u in stored:
+            if not u.source_user_id or u.source_user_id in kept:
+                continue
+            try:
+                if await self.msgraph_client.get_user_status(u.source_user_id) != "gone":
+                    trusted = False
+                    continue
+            except Exception as e:
+                self.logger.error(f"Could not confirm user {u.source_user_id} is gone; keeping the access: {e}")
+                trusted = False
+                continue
+            gone.append(u)
+        if gone:
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+        return trusted
+
     async def _sync_users(self) -> None:
         """Sync the tenant's users, note who is disabled, and rewrite the tenant-wide claim groups.
 
@@ -3568,13 +3671,28 @@ class SharePointConnector(BaseConnector):
             )
             raise
         await self.data_entities_processor.on_new_app_users(users)
-        self._inactive_emails = {user.email.lower() for user in users if user.email and user.is_active is False}
+        trusted = getattr(users, "complete", True) and await self._withdraw_unlisted_app_users(users)
         stored = await self.user_sync_point.read_sync_point(INACTIVE_USERS_SYNC_POINT_KEY)
-        # Saved once every group has been read with the new set (_sync_azure_ad_groups).
-        self._refresh_all_groups = set((stored or {}).get("emails") or []) != self._inactive_emails
-        await self.data_entities_processor.on_new_user_groups(
-            everyone_groups(self.connector_name, self.connector_id, users)
-        )
+        stored_emails = set((stored or {}).get("emails") or [])
+        if trusted:
+            self._inactive_emails = {user.email.lower() for user in users if user.email and user.is_active is False}
+            # Saved once every group has been read with the new set (_sync_azure_ad_groups).
+            self._refresh_all_groups = stored_emails != self._inactive_emails
+            self._disabled_set_unknown = False
+            self._listing_trusted = True
+            await self.data_entities_processor.on_new_user_groups(
+                everyone_groups(self.connector_name, self.connector_id, users)
+            )
+        else:
+            # Unknown is not empty: a listing that may be cut or stale replaces no membership and no disabled set.
+            self.logger.warning("User listing is not trusted; no user loses access and the claim groups keep their members this run")
+            # The accounts a cut listing shows as disabled are disabled; the rest is the last good set. Used this run, never saved.
+            self._inactive_emails = stored_emails | {user.email.lower() for user in users if user.email and user.is_active is False}
+            self._refresh_all_groups = False
+            self._listing_trusted = False
+            # Without an earlier set nobody is known to be enabled either: no group is read until a trusted listing.
+            self._disabled_set_unknown = stored is None
+            self._health.skipped("user listing", "not trusted; the claim groups and the disabled set were not rewritten")
         self.logger.info(f"✅ Successfully synced {len(users)} users")
 
     # Record update handling
@@ -3699,7 +3817,10 @@ class SharePointConnector(BaseConnector):
             await self._sync_users()
 
             sites = await self._get_all_sites()
-            await self._sync_user_groups(sites)
+            if self._disabled_set_unknown:
+                self.logger.warning("The disabled accounts are not known yet; no group is read until a trusted user listing")
+            else:
+                await self._sync_user_groups(sites)
             await self._remove_deleted_sites()
             await self._remove_filtered_out(FILTERED_SITES_SYNC_POINT_KEY, self._filtered_out_site_ids, self._forget_site)
 

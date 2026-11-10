@@ -1,7 +1,6 @@
-import { Types } from 'mongoose';
-import { OrgAuthConfig } from '../schema/orgAuthConfiguration.schema';
-import { UserCredentials } from '../schema/userCredentials.schema';
-import { Users } from '../../user_management/schema/users.schema';
+import { getCredentialRepository } from '../../../libs/repositories/credential';
+import { getOrgAuthConfigRepository } from '../../../libs/repositories/org-auth-config';
+import { getUserRepository } from '../../../libs/repositories/user';
 
 export interface PersonWithoutPassword {
   userId: string;
@@ -23,40 +22,27 @@ export interface SignInRemovalNotice {
 export async function findSignInRemovalNotice(
   orgId: string,
 ): Promise<SignInRemovalNotice> {
-  const policy = await OrgAuthConfig.findOne({ orgId, isDeleted: false })
-    .select('removedSignInMethods')
-    .lean<{ removedSignInMethods?: string[] }>();
-  const removedMethods = policy?.removedSignInMethods ?? [];
+  const removedMethods =
+    await getOrgAuthConfigRepository().removedSignInMethods(orgId);
   if (removedMethods.length === 0) {
     return { removedMethods, peopleWithoutPassword: [] };
   }
 
   // Only people who may sign in: not disabled accounts or service accounts.
-  const people = await Users.find({
-    orgId,
-    isDeleted: { $ne: true },
-    hasLoggedIn: true,
-    isDisabled: { $ne: true },
-    kind: { $ne: 'service' },
-  })
-    .select('_id fullName email')
-    .lean<{ _id: Types.ObjectId; fullName?: string; email: string }[]>();
-  const withPassword = await UserCredentials.find({
-    orgId,
-    isDeleted: { $ne: true },
-    userId: { $in: people.map((p) => p._id.toHexString()) },
-    hashedPassword: { $exists: true, $nin: [null, ''] },
-  })
-    .select('userId')
-    .lean<{ userId: string }[]>();
-  const hasPassword = new Set(withPassword.map((c) => c.userId));
+  const people = await getUserRepository().listSignInEligible(orgId);
+  const hasPassword = new Set(
+    await getCredentialRepository().userIdsWithPassword(
+      orgId,
+      people.map((p) => p._id),
+    ),
+  );
 
   return {
     removedMethods,
     peopleWithoutPassword: people
-      .filter((p) => !hasPassword.has(p._id.toHexString()))
+      .filter((p) => !hasPassword.has(p._id))
       .map((p) => ({
-        userId: p._id.toHexString(),
+        userId: p._id,
         ...(p.fullName ? { fullName: p.fullName } : {}),
         email: p.email,
       })),

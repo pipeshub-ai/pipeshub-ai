@@ -27,6 +27,7 @@ from app.connectors.core.thread_pool import (
 )
 from app.models.entities import AppUser, AppUserGroup, Record
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.cache.invalidation_hooks import notify_principals_changed
 from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin, NotificationRecipientRole, NotificationOutcome
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.services.notification.notification_service import NotificationService
@@ -92,6 +93,11 @@ class ConnectorSyncSkippedError(Exception):
     def __init__(self, code: str, message: str = "") -> None:
         super().__init__(message or code)
         self.code = code
+
+
+class IncompleteSyncError(RuntimeError):
+    """A sync that finished without writing every project it read: the run fails, but a full sync still removes
+    what it saw gone from the parts it read in full (the runner), and the parts it kept as stored stay linked."""
 
 
 # Held by a sync for its whole run and by a user-link pass, so the two never overlap on one
@@ -305,11 +311,15 @@ class BaseConnector(ABC):
 
     @classmethod
     async def check_connection(
-        cls, auth_config: dict[str, Any], logger: Logger
+        cls, auth_config: dict[str, Any], logger: Logger, *, public_only: bool = True
     ) -> ConnectionCheckResult:
         """Try auth settings the user has typed but not saved, without creating an instance.
 
-        Connectors that override this get a connection check in the setup form."""
+        Connectors that override this get a connection check in the setup form.
+
+        ``public_only`` is the address rule of the scope being set up: personal scope may
+        reach public addresses only, team scope follows the deployment setting. A connector
+        that dials a host the user typed must apply it before dialling."""
         raise NotImplementedError(f"{cls.__name__} has no connection check")
 
     @classmethod
@@ -365,7 +375,8 @@ class BaseConnector(ABC):
         records and groups that sync did not write are then removed, except what
         this says it did not read. The default says it read everything, so a node
         it did not write is gone from the source. A connector whose sync reads
-        only a date window, or that carries on past errors, should say so here.
+        only a date window, that carries on past errors, or whose source only ever
+        lists part of itself (a feed), should say so here.
         """
         return FullSyncCoverage()
 
@@ -385,6 +396,10 @@ class BaseConnector(ABC):
         connector syncs. The steps are the sync's own, so the source alone decides what the
         new user may reach; they must be idempotent.
         """
+        # A personal connector inherits a team class's steps, but its records inherit the app:
+        # linking other source users would hand them the creator's records.
+        if self.scope == ConnectorScope.PERSONAL.value:
+            return
         for step in self.user_link_steps:
             await getattr(self, step)()
 
@@ -533,6 +548,22 @@ class BaseConnector(ABC):
                 e,
             )
 
+    async def withdraw_app_users_except_creator(self) -> None:
+        """Remove every user-app edge of this connector but the creator's.
+
+        For personal connectors whose records inherit the app and that never link an
+        authenticated source account: any other edge is access nobody granted (a link
+        pass before ``link_new_users`` skipped personal connectors wrote them).
+
+        Fails closed: with no creator email every edge goes, and a failed read or
+        withdrawal raises, so the sync stops before writing content those edges reach.
+        """
+        creator = (self.creator_email or "").lower()
+        users = await self.data_entities_processor.get_all_app_users(self.connector_id, raise_on_error=True)
+        others = [u for u in users if not creator or (u.email or "").lower() != creator]
+        if others:
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, others)
+
     async def ensure_connector_group_permission(self) -> Optional[Permission]:
         """Upsert the creator's ``USER_APP_RELATION`` edge and a pseudo
         ``AppUserGroup`` named ``ConnectorGroup`` for this connector, then
@@ -668,6 +699,7 @@ class BaseConnector(ABC):
             external_id=source_group_id,
             type=PermissionType.READ,
         )
+        await notify_principals_changed(org_id)  # the creator's app link and group membership are new edges
         self.logger.info(
             "ConnectorGroup ensured for connector %s (members: %s)",
             self.connector_id,

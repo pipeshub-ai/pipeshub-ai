@@ -9,7 +9,7 @@ NAMED_ENTITY_NAMESPACE = uuid.UUID("c3a1e7b2-4d58-4f0a-9b6e-2a7d8c1f0e55")
 
 # Names the recipe that builds norm keys. It stays out of the hash so that a new
 # scheme forks only the keys whose recipe actually changed.
-KEY_SCHEME = 1
+KEY_SCHEME = 2
 
 
 # A key is built from a base kind, never an ontology class: a class is a label in

@@ -35,6 +35,7 @@ except ImportError:
     )
 
 from app.sources.client.azure.azure_files import AzureFilesClient, AzureFilesResponse
+from app.sources.client.azure.connection_string import INVALID_ACCOUNT_KEY
 from app.utils.url_redaction import redact_urls_in_text
 
 # Not a storage x-ms-error-code: an Entra ID token request that failed carries none of its own.
@@ -52,6 +53,9 @@ def describe_error(exc: Exception) -> str:
     Never ``str(exc)``: azure-core appends the whole response body to it, which an
     endpoint can fill with anything and which must not reach logs or the user.
     """
+    # Matched by name: the SDK defines it in a private module of each storage package.
+    if isinstance(exc, ClientAuthenticationError) and type(exc).__name__ == "AzureSigningError":
+        return INVALID_ACCOUNT_KEY
     message = getattr(exc, "message", None) if isinstance(exc, HttpResponseError) else None
     first_line = (str(message or exc) or type(exc).__name__).strip().splitlines()[0]
     reason = redact_urls_in_text(first_line[:_MAX_REASON_CHARS])

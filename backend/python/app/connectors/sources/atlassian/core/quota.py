@@ -42,7 +42,7 @@ class QuotaAwarePolicy(ResiliencePolicy):
         self.quota_reset_at: float | None = None
         self._last_status: int | None = None
 
-    def note_response_status(self, status: int) -> None:
+    def note_response_status(self, status: int, headers: object = None) -> None:
         """The status of the response the next ``note_retry`` is about (set by the transport)."""
         self._last_status = status
 

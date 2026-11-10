@@ -8,7 +8,7 @@ export const getIndexStatusIcon = (status: string): string => {
       PAUSED: 'pause_circle',
       FILE_TYPE_NOT_SUPPORTED: 'block',
       AUTO_INDEX_OFF: 'timer_off',
-      EMPTY: 'folder_open',
+      EMPTY: 'draft',
       PASSWORD_PROTECTED: 'lock',
     };
     return iconMap[status] || 'help';

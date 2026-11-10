@@ -15,6 +15,7 @@ from app.modules.named_entities.graph_ops import (
     REDIRECTS_AQL,
     NamedEntityGraph,
     NamedEntityQuery,
+    filter_constraints,
 )
 from app.modules.named_entities.graph_writer import NamedEntityGraphWriter
 from app.modules.named_entities.keys import named_entity_key
@@ -303,11 +304,13 @@ async def test_a_kind_of_the_typed_constraint_narrows_it_and_others_stand_alone(
     assert (amount["kinds"], standalone["kinds"]) == (["currency"], ["date"])
 
 
-async def test_a_name_with_only_value_kinds_matches_nothing():
-    graph, calls = _value_graph({"amount": [], "date": [], "kinds": []})
-    result = await graph.records_for("org", None, NamedEntityQuery(kinds=["currency"], name_prefix="acme"), limit=10)
-    assert result == {"hits": [], "truncated": False}
-    assert not any(call["statement"] == MATCHED_KEYS_AQL for call in calls)
+def test_a_name_with_only_value_kinds_is_the_name_and_a_value_of_that_kind():
+    """A name only matches an entity node, so a value kind is a constraint of its own:
+    records naming Acme that also state an amount, not an impossible filter."""
+    constraints = filter_constraints(None, NamedEntityQuery(kinds=["currency"], name_prefix="acme"))
+    assert [[(part.source, part.binds.get("prefix") or part.binds.get("kinds")) for part in c] for c in constraints] == [
+        [("node", "acme")], [("value", ["currency"])],
+    ]
 
 
 async def test_records_for_skips_the_lookup_when_nothing_matched():
@@ -395,8 +398,14 @@ def test_selector_failure_ladder():
 async def test_an_unusable_filter_is_refused_before_any_lookup(raw, error):
     graph = _Records({"hits": [], "truncated": False})
     match = await EntityFilterResolver(graph).match("org", raw)
-    assert match.error == error
+    assert match.error is not None and match.error.startswith(error)
     assert graph.calls == 0
+
+
+async def test_an_unknown_kind_lists_the_kinds_and_says_they_are_not_document_types() -> None:
+    match = await EntityFilterResolver(_Records({"hits": [], "truncated": False})).match("org", {"kinds": ["invoice"]})
+    assert match.error.startswith("Unknown entity kind: invoice.")
+    assert "not document types" in match.error and "currency" in match.error and "organization" in match.error
 
 
 async def test_kinds_and_currency_are_read_case_insensitively_and_dates_as_iso():
@@ -513,3 +522,13 @@ async def test_a_caller_may_list_more_matches_than_the_default_page_up_to_the_sc
     assert listed["truncated"] is False and len(listed["hits"]) == 6000
     capped = await graph.records_for("org", None, query, limit=10**9)
     assert capped["truncated"] is False
+
+
+async def test_a_named_filter_reaches_related_kinds_but_kinds_alone_stay_exact() -> None:
+    graph = _Records({"hits": [], "truncated": False})
+    await EntityFilterResolver(graph).match("org", {"kinds": ["product"], "name": "halcyon"})
+    named = graph.args[1]
+    await EntityFilterResolver(graph).match("org", {"kinds": ["product"]})
+    alone = graph.args[1]
+    assert set(named.kinds) == {"product", "organization"} and named.name_prefix == "halcyon"
+    assert alone.kinds == ["product"]

@@ -2,6 +2,11 @@ import { Document, Types, Model } from 'mongoose';
 import { ConfidenceLevel, ReasoningEffort } from '../constants/constants';
 import { ICitation } from '../schema/citation.schema';
 
+export interface AiSearchResponse {
+  searchResults: ICitation[];
+  records: Record<string, unknown>;
+}
+
 export interface IFollowUpQuestion {
   question: string;
   confidence: string;
@@ -334,6 +339,10 @@ export interface IChatSession {
   projectId?: Types.ObjectId;
   /** Per-conversation override of the project's default chat-sharing visibility. */
   projectVisibility?: 'private' | 'project';
+  /** Compare models: set on a hidden branch, the chat it branched from. */
+  compareOf?: Types.ObjectId;
+  /** Compare models: the parent's `user_query` the branch re-asks. */
+  compareFromMessageId?: Types.ObjectId;
 }
 
 export interface IChatSessionDocument extends Document, IChatSession {
@@ -397,6 +406,8 @@ export interface IAIResponse {
     reason?: string;
   };
   modelInfo?: IAIModel;
+  /** Set when a search of the run was answered with less than the full search (see `searchDegradedMeta`). */
+  searchDegraded?: boolean;
   // Reference data for follow-up queries (IDs from tool responses)
   referenceData?: IReferenceDataItem[];
   /** Present only when `PIPESHUB_PERSIST_REASONING=true` on the Python side. */
@@ -415,4 +426,6 @@ export interface IAIModel {
   modelFriendlyName?: string;
   /** Forwarded to the Python LLM factory. */
   reasoningEffort?: ReasoningEffort;
+  /** On an answer, a short note the AI service added about the model that answered. */
+  modelNote?: string;
 }

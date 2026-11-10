@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import logging
 import math
 import os
@@ -29,6 +30,8 @@ from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailable
 from app.models.blocks import GroupType
 from app.models.entities import substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
+from app.modules.pipeline.first_use import classify_on_first_use_later
+from app.modules.retrieval import degraded_notice
 from app.modules.retrieval.entity_filters import (
     TOO_BROAD_MESSAGE,
     EntityFilterResolver,
@@ -111,6 +114,7 @@ from app.utils.aimodels import (
 )
 from app.utils.chat_helpers import (
     GRAPH_BATCH_CHUNK_SIZE,
+    attach_connector_instance_names,
     describe_search_records,
     get_flattened_results,
     get_record,
@@ -122,7 +126,6 @@ from app.utils.embedding_retry import await_with_retry
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.query_instruction import instruct_query
 from app.utils.stage_timer import span, spanned
-from app.utils.text_fragments.cache import TtlCache
 
 # OPTIMIZATION: User data cache with TTL
 _user_cache: dict[str, tuple] = {}  # {user_id: (user_data, timestamp)}
@@ -254,6 +257,10 @@ class _RecordIdSearch:
     empty_scope: bool = False
 
 
+# The scope filter of the shadow comparison's search, set only inside that task: a real search never sees one.
+_SHADOW_SCOPE_FILTER: contextvars.ContextVar[Any] = contextvars.ContextVar("acl_shadow_scope_filter", default=None)
+
+
 @dataclass
 class _QueryPlan:
     """Per-search cache so a re-query does not pay for embeddings twice.
@@ -281,6 +288,8 @@ class _QueryPlan:
     # the page because the access check denied too much of it: the caller
     # searches again with the record-id filter.
     narrow_shortfall: bool = False
+    # A provider answered some search of this request with less than its full search (``SearchResult.degraded``).
+    degraded: bool = False
 
     def incomplete_notice(self) -> str | None:
         if not self.failed_collections:
@@ -449,18 +458,11 @@ _SELECTION_REQUEST_KEYS = frozenset(
     (*SELECTION_FILTER_KEYS, *ALLOWED_FILTER_KEYS, SELECTION_APPS_FILTER_KEY)
 )
 
-# Connector names only label citations; a slow graph must not hold up the search.
-CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS = 2.0
-
-# Connector instance display names for citations. Each search looked up the App
-# of every connector in its results, one query each; a rename shows within a minute.
-_connector_name_cache = TtlCache(maxsize=10_000, ttl_seconds=60.0)
-
-
 class RetrievalService:
     # Local models may load or download on first use, so their queries get no deadline.
     # A class default, so an instance built without __init__ (as some tests do) has it too.
     _cached_embedding_is_local = True
+    _shadow = None
 
     def __init__(
         self,
@@ -488,6 +490,8 @@ class RetrievalService:
         self.blob_store = blob_store
         self.vector_db_service = vector_db_service
         self.collection_registry = collection_registry
+        # Compares the scope filter with the post-check on the side (ACL_FILTER_MODE=shadow); None in every other mode.
+        self._shadow = self._build_shadow(graph_provider)
 
         # Capability negotiation — determines which embedding legs are needed.
         self._capabilities = vector_db_service.get_capabilities()
@@ -509,6 +513,43 @@ class RetrievalService:
             f"supports_sparse={self._capabilities.supports_sparse_vectors}, "
             f"supports_text_search={self._capabilities.supports_server_side_text_search}"
         )
+
+    def _build_shadow(self, graph_provider: IGraphDBProvider) -> object | None:
+        """The shadow comparator in shadow mode, else None. An invalid setting raises ValueError here, at start-up, naming the setting."""
+        from app.services.permissions.wiring import build_shadow_comparator
+
+        return build_shadow_comparator(graph_provider)
+
+    def _submit_shadow(
+        self, queries, filter, asked: int, org_id: str, user_id: str | None, user_key: str | None,  # noqa: A002, ANN001
+        scope_connector_ids: frozenset[str] | None, scopes: Sequence[SelectionScope], plan: "_QueryPlan",
+        returned_vids: set[str], accessible: dict[str, str],
+    ) -> None:
+        """Hand the finished search to the shadow comparator (once per search, from the attempt that was kept), which repeats it with
+        the viewer's scope filter in a detached task. It gets a plan of its own (the embeddings are reused, nothing of the real plan is written) and never changes what this call returns."""
+        from app.services.permissions.shadow import ShadowIncomplete
+
+        shadow_plan = _QueryPlan(dense=plan.dense, sparse=plan.sparse, collections=plan.collections)
+
+        async def run_scoped(flt: Any) -> list[dict[str, Any]]:  # noqa: ANN401
+            token = _SHADOW_SCOPE_FILTER.set(flt)
+            try:
+                found = await self._execute_parallel_searches(queries, filter, asked, org_id, user_id, plan=shadow_plan)
+            finally:
+                _SHADOW_SCOPE_FILTER.reset(token)
+            if shadow_plan.failed_collections:      # a collection that failed to answer would read as recall loss
+                raise ShadowIncomplete
+            return found
+
+        async def check(vrids: set[str]) -> set[str]:
+            found = await self.graph_provider.check_access(
+                user_key or "", org_id, virtual_record_ids=vrids, indexed_only=True, connector_ids=scope_connector_ids, scopes=scopes)
+            return set(found.records_by_vrid)
+
+        try:
+            self._shadow.submit(org_id, user_key or "", returned_vids, set(accessible), run_scoped, check)
+        except Exception as exc:  # the shadow must never cost a search
+            self.logger.warning("acl shadow comparison not started: %s", type(exc).__name__)
 
     @property
     def _result_merger(self) -> ResultMerger:
@@ -853,6 +894,8 @@ class RetrievalService:
                     # as nothing matching.
                     response["message"] = f"{incomplete} {message}"
                     response["searchIncomplete"] = incomplete
+                if plan.degraded:
+                    response["searchDegraded"] = True
                 return response
 
             # Graph key for KH permission_role checks (Location trails).
@@ -1095,16 +1138,10 @@ class RetrievalService:
                         r["webUrl"], user_email, r.get("connectorName")
                     )
 
-            await self._attach_connector_instance_names(fetched_records)
-            limit_sources = connection_sources_of(filter_groups)
-            if limit_sources is not None:
-                # The app's own name is its source's or collection's name: shown
-                # only when the limit covers that app whole, as the Location
-                # trail and record details show it.
-                whole_apps = set(limit_sources.get("apps") or ())
-                for r in fetched_records:
-                    if r and r.get("connectorId") not in whole_apps:
-                        r.pop("connectorInstanceName", None)
+            with span("records"):
+                await attach_connector_instance_names(
+                    self.graph_provider, fetched_records, connection_sources_of(filter_groups)
+                )
 
             record_id_to_record_map = {}
             for r in fetched_records:
@@ -1142,10 +1179,9 @@ class RetrievalService:
             for idx, result in enumerate(search_results):
                 if not result or not isinstance(result, dict):
                     continue
-                if not result.get("metadata"):
-                    self.logger.warning(f"Result has no metadata: {result}")
-                    continue
-                virtual_id = result["metadata"].get("virtualRecordId")
+                # Normalisation gives every hit metadata, and a payload without it cannot pass
+                # the metadata.orgId filter; a hit lacking it has no record and falls to the else.
+                virtual_id = (result.get("metadata") or {}).get("virtualRecordId")
                 if virtual_id is not None and virtual_id in virtual_to_record_map:
                     record_id = virtual_to_record_map[virtual_id].get("_key")
                     record = record_id_to_record_map.get(record_id)
@@ -1495,6 +1531,8 @@ class RetrievalService:
                 incomplete = plan.incomplete_notice()
                 if incomplete:
                     response_data["searchIncomplete"] = incomplete
+                if plan.degraded:
+                    response_data["searchDegraded"] = True
 
                 # Add KB filtering info to response if KB filtering was applied
                 if kb_ids:
@@ -1503,6 +1541,7 @@ class RetrievalService:
                         "kb_count": len(kb_ids)
                     }
 
+                classify_on_first_use_later(response_data, org_id, self.config_service, self.logger)
                 return response_data
             else:
                 return empty("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
@@ -1578,6 +1617,7 @@ class RetrievalService:
                         plan=candidate_plan,
                         user_key=user_key,
                         scopes=scopes,
+                        compare=False,
                     )
                     if degraded:
                         return [], {}
@@ -1589,6 +1629,8 @@ class RetrievalService:
         except Exception as exc:
             self.logger.warning("source diversity: deeper read failed, keeping the plain result: %s", exc)
             return [], {}
+        # These hits can join the response, so a partial search behind them is the response's too.
+        plan.degraded = plan.degraded or candidate_plan.degraded
         kept = [
             hit for hit in hits
             if isinstance(hit, dict) and hit_record_id(hit) in accessible
@@ -2032,8 +2074,12 @@ class RetrievalService:
         plan: "_QueryPlan | None" = None,
         user_key: str | None = None,
         scopes: Sequence[SelectionScope] = (),
+        compare: bool = True,
     ) -> tuple[list[dict[str, Any]], dict[str, str], bool]:
         """Search under a container filter, then resolve what the user may read.
+
+        ``compare``: hand the finished search to the shadow comparison (when it is on). The deeper read for source diversity passes False: it
+        is the same search read at a greater depth, and one search is compared once.
 
         Returns ``(results, accessible_map, verification_degraded)``. The third
         element is what stops a graph outage being reported as an empty corpus.
@@ -2060,6 +2106,7 @@ class RetrievalService:
         best_surviving = -1
         best_degraded = False
         best_failed: list[str] = []
+        best_shadow: tuple[int, set[str], dict[str, str]] | None = None      # what the shadow comparison needs from the kept attempt
 
         for attempt in range(MAX_SEARCH_ATTEMPTS):
             # Per attempt, not per loop: a later attempt that fails verification
@@ -2140,6 +2187,7 @@ class RetrievalService:
                 )
                 best_degraded = attempt_degraded
                 best_failed = plan.failed_collections
+                best_shadow = None if attempt_degraded else (asked, returned_vids, accessible)
 
             if attempt_degraded:
                 # Retrying would hammer a graph that has just failed to answer.
@@ -2180,6 +2228,8 @@ class RetrievalService:
             )
 
         plan.failed_collections = best_failed
+        if compare and best_shadow is not None and self._shadow is not None and plan.dense is not None and self.vector_db_service.supports_scope_filter:
+            self._submit_shadow(queries, filter, best_shadow[0], org_id, user_id, user_key, scope_connector_ids, scopes, plan, best_shadow[1], best_shadow[2])
         # Over-fetching is a means, not a promise: drop the headroom this path
         # added, best-scoring first, or by record under the record cut.
         # `budget` is the record-id path's *ceiling*, not its typical output —
@@ -2293,9 +2343,10 @@ class RetrievalService:
         batches: list[list] = [[] for _ in queries]
         capped = [False] * len(queries)
         failed_collections = searched_collections = 0
+        degraded: list[bool] = []
         if requests:
             per_collection, failed_collections = await self._lexical_fan_out(
-                await self._resolve_search_collections(org_id, user_id), requests, limit,
+                await self._resolve_search_collections(org_id, user_id), requests, limit, degraded=degraded,
             )
             searched_collections = len(per_collection) + failed_collections
             for j, i in enumerate(sent):
@@ -2364,10 +2415,12 @@ class RetrievalService:
             empty_query=[sparse is None and text is None for sparse, text in requests_legs],
             failed_collections=failed_collections,
             searched_collections=searched_collections,
+            degraded=bool(degraded),
         )
 
     async def _lexical_fan_out(
         self, collections: list[str], requests: list[HybridSearchRequest], limit: int,
+        *, degraded: list[bool] | None = None,
     ) -> tuple[list[tuple[str, list[list]]], int]:
         """Each collection's own per-request results, and how many collections
         could not be searched. Raises when none could."""
@@ -2375,8 +2428,9 @@ class RetrievalService:
 
         async def _one(name: str) -> list[list]:
             async with semaphore:
-                return await self._fan_out_searches([name], requests, limit)
+                return await self._fan_out_searches([name], requests, limit, degraded=degraded)
 
+        degraded_notice.track()
         outcomes = await asyncio.gather(*(_one(name) for name in collections), return_exceptions=True)
         answered = [(name, out) for name, out in zip(collections, outcomes) if not isinstance(out, BaseException)]
         failures = [out for out in outcomes if isinstance(out, BaseException)]
@@ -2689,6 +2743,7 @@ class RetrievalService:
                 filter=filter,
                 limit=fused_limit,
                 fusion_method=FusionMethod.RRF,
+                scope_filter=_SHADOW_SCOPE_FILTER.get(),
             )
             for query, dense_embedding, sparse_embedding in zip(
                 queries, dense_query_embeddings, sparse_query_embeddings
@@ -2702,12 +2757,15 @@ class RetrievalService:
             if plan is not None:
                 plan.collections = collections
         failed_collections: list[str] = []
+        degraded: list[bool] = []
         search_results = await self._fan_out_searches(
-            collections, requests, fused_limit, failed=failed_collections,
+            collections, requests, fused_limit, failed=failed_collections, degraded=degraded,
         )
         if plan is not None:
             plan.failed_collections = failed_collections
             plan.collections_searched = len(collections)
+        if degraded and plan is not None:
+            plan.degraded = True
         if record_cut is not None:
             search_results = self._cut_batches(record_cut, search_results, limit)
         # Measured after the cut, so "exhausted" still means a query came back
@@ -2751,6 +2809,7 @@ class RetrievalService:
         limit: int,
         *,
         failed: list[str] | None = None,
+        degraded: list[bool] | None = None,
     ) -> list[list]:
         """Query every collection in parallel and reduce each query to one top-K.
 
@@ -2763,11 +2822,15 @@ class RetrievalService:
         A collection that fails degrades the result set instead of failing the
         search — a search over three collections should not error because one
         is briefly unreachable. Each one it could not search is appended to
-        ``failed``, so the caller can say the results are incomplete.
+        ``failed``, so the caller can say the results are incomplete. A store that
+        answered from a partial search (``degraded_notice``, by a note or by a marked hit)
+        appends to ``degraded``.
         """
         if not collections:
             return [[] for _ in requests]
 
+        degraded_notice.track()
+        noted_before = degraded_notice.count()
         semaphore = asyncio.Semaphore(SEARCH_FANOUT_CONCURRENCY)
 
         async def _search(collection_name: str) -> list[list]:
@@ -2797,11 +2860,20 @@ class RetrievalService:
                     outcome,
                 )
                 continue
+            for batch in outcome:
+                for hit in batch:
+                    if isinstance(reason := getattr(hit, "degraded", None), str):
+                        degraded_notice.note(reason)
+                        break
             for i, batch in enumerate(outcome):
                 if i < len(per_query):
                     per_query[i].append(
                         CollectionResults(collection_name=collection_name, results=batch)
                     )
+
+        # Read before the merge trims: a store that found nothing, or whose hits fall below the cut, still counts.
+        if degraded is not None and degraded_notice.count() > noted_before:
+            degraded.append(True)
 
         # Degrading when one collection is unreachable is the point of
         # return_exceptions; degrading when *every* one failed is not — that is
@@ -2847,46 +2919,6 @@ class RetrievalService:
             "status_code": status_code,
             "message": message,
         }
-
-    @spanned("records")
-    async def _attach_connector_instance_names(self, records: list[dict[str, Any]]) -> None:
-        """Set ``connectorInstanceName``: the name the admin gave the record's connector.
-
-        ``connectorName`` is only the type code (WEB), shared by every instance
-        of that type. A missing or unreadable instance leaves the field unset,
-        and the UI falls back to the type.
-        """
-        records = [r for r in records if isinstance(r, dict)]
-        connector_ids = sorted({r["connectorId"] for r in records if r.get("connectorId")})
-        if not connector_ids:
-            return
-        names: dict[str, str | None] = {}
-        for cid in connector_ids:
-            hit, name = _connector_name_cache.get(cid)
-            if hit:
-                names[cid] = name
-        to_fetch = [cid for cid in connector_ids if cid not in names]
-        if to_fetch:
-            try:
-                apps = await asyncio.wait_for(
-                    asyncio.gather(
-                        *(self.graph_provider.get_document(cid, CollectionNames.APPS.value) for cid in to_fetch),
-                        return_exceptions=True,
-                    ),
-                    timeout=CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS,
-                )
-            except Exception as e:
-                # Labels only: search results stay correct, the UI shows the type code.
-                self.logger.warning("Could not resolve connector names for citations: %s", e)
-                apps = []
-            for cid, app in zip(to_fetch, apps):
-                if isinstance(app, dict):
-                    names[cid] = app.get("name")
-                    _connector_name_cache.set(cid, app.get("name"))
-        for r in records:
-            name = names.get(r.get("connectorId"))
-            if name:
-                r["connectorInstanceName"] = name
 
     def _create_virtual_to_record_mapping(
         self,

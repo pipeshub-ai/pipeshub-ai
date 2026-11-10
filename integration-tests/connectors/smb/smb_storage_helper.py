@@ -31,13 +31,21 @@ class SmbStorageHelper:
         self.server = server
         self.port = port
         self._cache: dict = {}
-        user = f"{domain}\\{username}" if domain else username
+        self._user = f"{domain}\\{username}" if domain else username
+        self._password = password
         smbclient.register_session(
             server,
-            username=user,
+            username=self._user,
             password=password,
             port=port,
             connection_cache=self._cache,
+        )
+
+    def reconnect(self) -> None:
+        """Drop every cached connection and sign in again, after the server closed them (a share closed or renamed)."""
+        smbclient.reset_connection_cache(fail_on_error=False, connection_cache=self._cache)
+        smbclient.register_session(
+            self.server, username=self._user, password=self._password, port=self.port, connection_cache=self._cache
         )
 
     def _unc(self, share: str, rel: str = "") -> str:
@@ -47,7 +55,9 @@ class SmbStorageHelper:
         return rf"\\{self.server}\{share}"
 
     def _kwargs(self) -> dict:
-        return {"connection_cache": self._cache, "port": self.port}
+        # The credentials go with every call: when the server restarts, smbclient opens a new connection and
+        # signs in again with them, instead of trying with none.
+        return {"connection_cache": self._cache, "port": self.port, "username": self._user, "password": self._password}
 
     def list_objects(self, share: str, prefix: str = "") -> list[str]:
         keys: list[str] = []

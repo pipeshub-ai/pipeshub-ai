@@ -110,6 +110,7 @@ from app.connectors.core.base.data_store import (
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+from app.core.org_context import OrgContext, bind
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -953,13 +954,13 @@ async def test_a_failed_permission_upgrade_keeps_the_old_permission(world: _Worl
             alice, CollectionNames.USERS.value, record.id, CollectionNames.RECORDS.value, permission
         )
 
-    # Neither store can write this edge: Neo4j takes no map as a property value,
-    # and ArangoDB's schema wants a number.
+    # Neither store can write this edge: both refuse a map for createdAtTimestamp, which the
+    # permissions schema wants as a number (Neo4j through the shared schema, before any statement).
     refused = Permission.model_construct(
         type=PermissionType.WRITE, entity_type=EntityType.USER, created_at={"refused": True},
         updated_at=get_epoch_timestamp_in_ms(),
     )
-    expected = "Property values can only be of primitive types" if w.neo4j else "permissions schema"
+    expected = "is not of type 'number'" if w.neo4j else "permissions schema"
     assert expected in await _failure(lambda: upgrade(refused))
 
     assert await _roles(w, alice, record.id) == ["READER"]
@@ -1612,13 +1613,17 @@ async def test_a_failed_team_create_leaves_no_team(world: _World) -> None:
         hold = _neo4j_hold(w, "MATCH (u:User {id: $id}) SET u.heldByTest = true RETURN count(u) AS n", {"id": member})
     else:
         hold = _arango_unique(w, CollectionNames.PERMISSION.value, ["_to"])
+    # The auth middleware binds the caller's org; this calls the route directly.
+    caller_org = OrgContext(w.org_id, creator, "user", "jwt", "req-test")
     async with hold:
-        assert await _route_failure(lambda: create_team(_route_request(w, creator, body))) == 500
+        with bind(caller_org):
+            assert await _route_failure(lambda: create_team(_route_request(w, creator, body))) == 500
 
     teams = await w.graph.get_nodes_by_filters(CollectionNames.TEAMS.value, {"orgId": w.org_id}, raise_on_error=True)
     assert teams == []
 
-    response = await create_team(_route_request(w, creator, body))
+    with bind(caller_org):
+        response = await create_team(_route_request(w, creator, body))
     assert response.status_code == 200
     (team,) = await w.graph.get_nodes_by_filters(CollectionNames.TEAMS.value, {"orgId": w.org_id})
     w.ids.add(team.get("id") or team.get("_key"))

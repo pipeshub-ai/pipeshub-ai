@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 from app.connectors.sources.google.common.access_problems import (
     AccessProblem,
     classify_access_problem,
+    setup_problem_message,
 )
 from app.services.notification.types import NotificationSeverity, NotificationType
 
@@ -45,17 +46,26 @@ class DriveNotice:
 
 
 def message_for_connection_failure(error: BaseException, *, personal: bool, admin_email: str | None = None,
-                                   client_id: str | None = None) -> str | None:
+                                   client_id: str | None = None, scopes: list[str] | None = None) -> str | None:
     """Words for a connection test Google refused, or None when the failure may pass on its own."""
     problem = classify_access_problem(error, personal=personal)
     if problem is None:
         return None
-    notice = notice_for(problem, personal=personal, admin_email=admin_email, client_id=client_id)
+    notice = notice_for(problem, personal=personal, admin_email=admin_email, client_id=client_id, scopes=scopes)
     return None if notice is None else notice.message
 
 
+_SETUP_EVENTS = {
+    AccessProblem.DELEGATION: "domain-wide delegation is not set up",
+    AccessProblem.SERVICE_ACCOUNT_KEY: "the service account key is not accepted",
+    AccessProblem.UNREADABLE_KEY: "the service account key is not valid",
+    AccessProblem.ADMIN_ACCOUNT: "the admin account cannot read the directory",
+    AccessProblem.API_DISABLED: "a Google API is turned off",
+}
+
+
 def notice_for(problem: AccessProblem, *, personal: bool, admin_email: str | None = None,
-               client_id: str | None = None) -> DriveNotice | None:
+               client_id: str | None = None, scopes: list[str] | None = None) -> DriveNotice | None:
     """The notice for a setup problem, or None for one nobody needs to act on."""
     auth = NotificationType.CONNECTOR_AUTH_ERROR
     error = NotificationSeverity.ERROR
@@ -67,41 +77,21 @@ def notice_for(problem: AccessProblem, *, personal: bool, admin_email: str | Non
         return DriveNotice(auth, error, "Google Drive access was not granted",
                            "The Google sign-in for this connector does not allow reading Google Drive files. Open "
                            "the connector, sign in again, and allow access to your Drive files.")
-    if problem is AccessProblem.DELEGATION:
-        client = f" ({client_id})" if client_id else ""
-        return DriveNotice(auth, error, "domain-wide delegation is not set up",
-                           "Google Workspace refused access for this connector's service account. In the Google "
-                           f"Admin console, open Security > API controls > Domain-wide delegation, and authorize the "
-                           f"service account's client ID{client} with the scopes listed in the PipesHub setup guide. "
-                           "Syncing resumes on the next run.")
-    if problem is AccessProblem.SERVICE_ACCOUNT_KEY:
-        return DriveNotice(auth, error, "the service account key is not accepted",
-                           "Google rejected this connector's service account key. It may have been deleted or "
-                           "disabled in Google Cloud. Create a new key for the service account and upload it in the "
-                           "connector's settings.")
-    if problem is AccessProblem.UNREADABLE_KEY:
-        return DriveNotice(auth, error, "the service account key is not valid",
-                           "The service account key in this connector's settings is not a valid JSON key file. In "
-                           "Google Cloud Console, open IAM & Admin > Service accounts, create a JSON key for the "
-                           "service account, and upload that file in the connector's settings.")
-    if problem is AccessProblem.ADMIN_ACCOUNT:
-        who = f" ({admin_email})" if admin_email else ""
-        return DriveNotice(auth, error, "the admin account cannot read the directory",
-                           f"The admin email in this connector's settings{who} must be an active Google Workspace "
-                           "administrator who can read users and groups. Update it in the connector's settings.")
-    if problem is AccessProblem.API_DISABLED:
-        apis = "Google Drive API" if personal else "Google Drive API and the Admin SDK API"
-        return DriveNotice(auth, error, "a Google API is turned off",
-                           f"The {apis} must be turned on for this connector's Google Cloud project. Turn them on "
-                           "in Google Cloud Console under APIs & Services, then sync again.")
-    return None
+    event = _SETUP_EVENTS.get(problem)
+    if event is None:
+        return None
+    apis = "Google Drive API" if personal else "Google Drive API and the Admin SDK API"
+    return DriveNotice(auth, error, event, setup_problem_message(problem, apis=apis, admin_email=admin_email,
+                                                                 client_id=client_id, scopes=scopes))
+
 
 
 class DriveRunReport:
     """Collects one run's setup problems and gaps, and tells the connector's owners at the end."""
 
     def __init__(self, *, personal: bool, notify: Notify, title: Callable[[str], str], sync_point: SyncPoint,
-                 logger: Logger, admin_email: str | None = None, client_id: str | None = None) -> None:
+                 logger: Logger, admin_email: str | None = None, client_id: str | None = None,
+                 scopes: list[str] | None = None) -> None:
         self.personal = personal
         self._notify = notify
         self._title = title
@@ -109,8 +99,11 @@ class DriveRunReport:
         self._logger = logger
         self._admin_email = admin_email
         self._client_id = client_id
+        self._scopes = scopes
         self.problem: AccessProblem | None = None
         self.unreadable_folders: list[str] = []
+        # Users Google would not let the service account act as, for the run's one log line.
+        self.refused_users: set[str] = set()
 
     def note_failure(self, error: BaseException, *, impersonating_admin: bool = True) -> AccessProblem | None:
         """Classify a failure; remember the first setup problem. Returns what it was, if anything."""
@@ -118,6 +111,23 @@ class DriveRunReport:
         if problem is not None and problem is not AccessProblem.USER_UNAVAILABLE and self.problem is None:
             self.problem = problem
         return problem
+
+    def note_user_failure(self, error: BaseException, user_email: str) -> bool:
+        """A failure acting as one user. True when it is a setup problem, which the run's notice covers:
+        the caller then skips the user without logging a traceback of its own. The first one in a run is
+        logged once, as a warning; a setup problem is the same for every user, so one line says it."""
+        problem = self.note_failure(error, impersonating_admin=False)
+        if problem is None or problem is AccessProblem.USER_UNAVAILABLE:
+            return False
+        if not self.refused_users:
+            # Google's answer names the OAuth error, never the key or a token, so it is safe to log.
+            self._logger.warning(
+                "Google refused to let the service account act as %s (%s: %s); users refused the same way this "
+                "run are skipped without a further log line, and the connector's owners are told what to fix",
+                user_email, problem.value, str(error)[:300],
+            )
+        self.refused_users.add(user_email)
+        return True
 
     def note_unreadable_folders(self, folder_ids: list[str]) -> None:
         self.unreadable_folders = sorted(set(folder_ids))
@@ -130,9 +140,12 @@ class DriveRunReport:
             self._logger.warning("Could not report the Drive run's outcome: %s", e)
 
     async def _finish(self, *, complete: bool) -> None:
+        if self.refused_users:
+            self._logger.warning("Google refused the service account for %d user(s) this run",
+                                 len(self.refused_users))
         if self.problem is not None:
             notice = notice_for(self.problem, personal=self.personal, admin_email=self._admin_email,
-                                client_id=self._client_id)
+                                client_id=self._client_id, scopes=self._scopes)
             if notice is not None:
                 await self._send(notice)
         if self.unreadable_folders:

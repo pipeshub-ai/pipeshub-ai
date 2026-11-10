@@ -62,6 +62,7 @@ const linear = entry({ _id: 'lin', name: 'Linear', toolsErrorCode: 'auth_expired
 const exaShared = entry({ _id: 'exa', name: 'Exa', authMode: 'api_token', useAdminAuth: true, isAuthenticated: false });
 const exaOwnKey = entry({ _id: 'exa', name: 'Exa', typeId: 'exa', authMode: 'api_token', isAuthenticated: false });
 const notion = entry({ _id: 'notion', name: 'Notion' });
+const noAuthAsksForSignIn = entry({ _id: 'sentry', name: 'Sentry', authMode: 'none', toolsErrorCode: 'unauthorized' });
 
 beforeEach(() => {
   installBrowserShims();
@@ -94,6 +95,11 @@ describe('mcpServersToConnect', () => {
     const [server] = mcpServersToConnect([exaShared], { isAdmin: true, listed: new Set() });
     expect(server.state).toBe('shared_credential_missing');
   });
+
+  it('lists a server set to No authentication that asks for a sign-in as an administrator’s fix', () => {
+    const [server] = mcpServersToConnect([noAuthAsksForSignIn], { isAdmin: true, listed: new Set() });
+    expect(server.state).toBe('needs_auth_mode');
+  });
 });
 
 describe('McpConnectRows', () => {
@@ -118,6 +124,14 @@ describe('McpConnectRows', () => {
     expect(within(row('Linear')).getByRole('button', { name: 'Reconnect' })).toBeTruthy();
     expect(within(row('Exa')).queryByRole('button')).toBeNull();
     expect(within(row('Exa')).getByText('Waiting for admin')).toBeTruthy();
+  });
+
+  // Reported: Reconnect here opened a dialog asking for an API token the server can't take.
+  it('offers a member no sign-in for a server set to No authentication', () => {
+    const { row } = renderRows([noAuthAsksForSignIn]);
+
+    expect(within(row('Sentry')).queryByRole('button')).toBeNull();
+    expect(within(row('Sentry')).getByText('Waiting for admin')).toBeTruthy();
   });
 
   it('signs in with the popup, and the server joins the chat once it is verified', () => {

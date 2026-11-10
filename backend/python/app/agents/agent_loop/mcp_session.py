@@ -47,6 +47,7 @@ from app.agents.mcp.service import (
     instance_config_from_dict,
 )
 from app.agents.mcp.token_refresh import refresh_credential_record
+from app.utils.logging_fields import log_event
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -139,13 +140,10 @@ class MCPSessionManager:
         # Retried outside the `except`: a retry failing there would carry the first error as its context.
         if manager is not None and (request_never_reached_server(failure) or request_may_have_run(failure)):
             # Listing changes nothing on the server, so it can always be repeated.
-            self._log.info("MCPSessionManager: listing MCP instance %s failed on the connection, trying again", server.instance_id)
+            self._retry_line(server, op="list", reason="relist", failure=failure)
             manager = await self._get_or_open(server)
         elif self._should_refresh(server, failure):
-            self._log.info(
-                "MCPSessionManager: MCP instance %s rejected discovery with HTTP 401, "
-                "refreshing the token once and retrying", server.instance_id,
-            )
+            self._retry_line(server, op="list", reason="token_refresh", failure=failure)
             manager = await self._refreshed(server, token)
         else:
             raise failure
@@ -181,7 +179,7 @@ class MCPSessionManager:
             if not self._should_refresh(server, exc):
                 raise
             # The connection was refused, so the call was never sent.
-            self._log.info("MCPSessionManager: MCP instance %s refused the connection with HTTP 401, refreshing the token", server.instance_id)
+            self._retry_line(server, op="connect", reason="token_refresh", failure=exc)
             manager = await self._refreshed(server, token)
             return await manager.call_tool_in_session(tool_name, arguments, on_progress=on_progress)
         try:
@@ -190,10 +188,7 @@ class MCPSessionManager:
             failure = exc
         # Handled outside the `except`: a retry failing there would carry the first error as its context.
         if request_never_reached_server(failure):
-            self._log.info(
-                "MCPSessionManager: a call to MCP instance %s never reached it (%s), sending it again",
-                server.instance_id, type(failure).__name__,
-            )
+            self._retry_line(server, op="call", reason="resend", failure=failure)
             manager = await self._get_or_open(server)
             return await manager.call_tool_in_session(tool_name, arguments, on_progress=on_progress)
         if request_may_have_run(failure):
@@ -205,12 +200,15 @@ class MCPSessionManager:
             ) from failure
         if not self._should_refresh(server, failure):
             raise failure
-        self._log.info(
-            "MCPSessionManager: MCP instance %s rejected the call with HTTP 401, "
-            "refreshing the token once and retrying", server.instance_id,
-        )
+        self._retry_line(server, op="call", reason="token_refresh", failure=failure)
         manager = await self._refreshed(server, token)
         return await manager.call_tool_in_session(tool_name, arguments, on_progress=on_progress)
+
+    def _retry_line(self, server: "ResolvedMCPServer", *, op: str, reason: str, failure: BaseException) -> None:
+        log_event(
+            self._log, "mcp.retry", level=logging.WARNING, mcp_server_id=server.instance_id, op=op, reason=reason,
+            error_type=type(failure).__name__,
+        )
 
     async def _needs_more_scopes(self, server: "ResolvedMCPServer", exc: BaseException) -> MCPInsufficientScopeError | None:
         if isinstance(exc, MCPInsufficientScopeError):

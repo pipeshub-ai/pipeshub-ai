@@ -1,0 +1,599 @@
+# Vetted SECURITY DEFINER writers of schema kg. Format and rules: db/lib/vetted.py; shapes the catalog accepts: db/README.md "Pinned writes".
+# Only the connectors service executes them; each is pinned (kernel.vetted_write_pins), takes the org from app.org_id, and the tables have
+# the per-org row policy for the vetted role. Written by gen from the same list as the tests; edit and run
+# python -m db.lib.vetted render versions/kg/vetted/manifest.yaml
+# The statements are exactly the pinned shapes: arrays are capped at 5000 items, every key is the whole primary key.
+# A batch is sorted by key before it is written (writers that overlap take their row locks in key order, so they wait for each other instead of deadlocking),
+# and a key named twice in one batch keeps its last item. `rule`, `model`, `origin` and `via` are closed sets and refused (22023) outside them; `gtype` (a
+# permission type), `role` and `record_type` are named by the connectors and stay open. A malformed organisation in the session raises the table's
+# format check (23514) on a write and finds nothing on a delete.
+functions:
+  - name: kg.w_nodes_upsert
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.node_keys", "set": []}]
+    args:
+      - {"name": "p_colls", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 8]}
+      - {"name": "p_ids", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 256]}
+    returns: "TABLE (o_coll smallint, o_id text, o_sk bigint)"
+    reads: ["kg.node_keys"]
+    body: |
+      BEGIN
+        IF cardinality(p_colls) <> cardinality(p_ids) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+        SELECT array_agg(s.c1 ORDER BY s.c1, s.c2), array_agg(s.c2 ORDER BY s.c1, s.c2) INTO p_colls, p_ids FROM (SELECT DISTINCT ON (k.c1, k.c2) k.c1, k.c2 FROM unnest(p_colls, p_ids) WITH ORDINALITY AS k(c1, c2, n) ORDER BY k.c1, k.c2, k.n DESC) s;
+        INSERT INTO kg.node_keys (org_id, coll, id) SELECT v_org, k.a, k.b FROM unnest(p_colls, p_ids) AS k(a, b)
+          ON CONFLICT (org_id, coll, id) DO NOTHING;
+        RETURN QUERY SELECT k.coll, k.id, k.sk FROM kg.node_keys k JOIN unnest(p_colls, p_ids) AS x(c, i) ON k.coll = x.c AND k.id = x.i WHERE k.org_id = v_org LIMIT 5000;
+      END;
+
+  - name: kg.w_records_upsert
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.records", "set": ["coll", "id", "kind", "app_sk", "group_sk", "parent_sk", "rule", "model", "vrid", "name", "name_key", "updated_ms", "created_ms", "size_bytes", "record_type", "origin", "external_id", "deleted", "placeholder", "granted"]}]
+    args:
+      - {"name": "p_sks", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_colls", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
+      - {"name": "p_ids", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 256]}
+      - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
+      - {"name": "p_app_sks", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_group_sks", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_parent_sks", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_rules", "type": "text[]", "max_items": 5000, "item_enum": ["OPEN", "STRICT", "RESTRICTED"]}
+      - {"name": "p_models", "type": "text[]", "max_items": 5000, "item_enum": ["APP_LEVEL", "RECORD_LEVEL", "RECORD_GROUP_LEVEL"]}
+      - {"name": "p_vrids", "type": "text[]", "max_items": 5000, "item_length": [0, 256]}
+      - {"name": "p_names", "type": "text[]", "max_items": 5000, "item_length": [0, 4000]}
+      - {"name": "p_name_keys", "type": "text[]", "max_items": 5000, "item_length": [0, 4000]}
+      - {"name": "p_updated", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_created", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_sizes", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_record_types", "type": "text[]", "max_items": 5000, "item_length": [0, 64]}
+      - {"name": "p_origins", "type": "text[]", "max_items": 5000, "item_enum": ["CONNECTOR", "UPLOAD"]}
+      - {"name": "p_external_ids", "type": "text[]", "max_items": 5000, "item_length": [0, 2000]}
+      - {"name": "p_deleted", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_placeholders", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_granted", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.records"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_colls) <> cardinality(p_sks) OR cardinality(p_ids) <> cardinality(p_sks) OR cardinality(p_kinds) <> cardinality(p_sks) OR cardinality(p_app_sks) <> cardinality(p_sks) OR cardinality(p_group_sks) <> cardinality(p_sks) OR cardinality(p_parent_sks) <> cardinality(p_sks) OR cardinality(p_rules) <> cardinality(p_sks) OR cardinality(p_models) <> cardinality(p_sks) OR cardinality(p_vrids) <> cardinality(p_sks) OR cardinality(p_names) <> cardinality(p_sks) OR cardinality(p_name_keys) <> cardinality(p_sks) OR cardinality(p_updated) <> cardinality(p_sks) OR cardinality(p_created) <> cardinality(p_sks) OR cardinality(p_sizes) <> cardinality(p_sks) OR cardinality(p_record_types) <> cardinality(p_sks) OR cardinality(p_origins) <> cardinality(p_sks) OR cardinality(p_external_ids) <> cardinality(p_sks) OR cardinality(p_deleted) <> cardinality(p_sks) OR cardinality(p_placeholders) <> cardinality(p_sks) OR cardinality(p_granted) <> cardinality(p_sks) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+        SELECT array_agg(s.c1 ORDER BY s.c1), array_agg(s.c2 ORDER BY s.c1), array_agg(s.c3 ORDER BY s.c1), array_agg(s.c4 ORDER BY s.c1), array_agg(s.c5 ORDER BY s.c1), array_agg(s.c6 ORDER BY s.c1), array_agg(s.c7 ORDER BY s.c1), array_agg(s.c8 ORDER BY s.c1), array_agg(s.c9 ORDER BY s.c1), array_agg(s.c10 ORDER BY s.c1), array_agg(s.c11 ORDER BY s.c1), array_agg(s.c12 ORDER BY s.c1), array_agg(s.c13 ORDER BY s.c1), array_agg(s.c14 ORDER BY s.c1), array_agg(s.c15 ORDER BY s.c1), array_agg(s.c16 ORDER BY s.c1), array_agg(s.c17 ORDER BY s.c1), array_agg(s.c18 ORDER BY s.c1), array_agg(s.c19 ORDER BY s.c1), array_agg(s.c20 ORDER BY s.c1), array_agg(s.c21 ORDER BY s.c1) INTO p_sks, p_colls, p_ids, p_kinds, p_app_sks, p_group_sks, p_parent_sks, p_rules, p_models, p_vrids, p_names, p_name_keys, p_updated, p_created, p_sizes, p_record_types, p_origins, p_external_ids, p_deleted, p_placeholders, p_granted FROM (SELECT DISTINCT ON (k.c1) k.c1, k.c2, k.c3, k.c4, k.c5, k.c6, k.c7, k.c8, k.c9, k.c10, k.c11, k.c12, k.c13, k.c14, k.c15, k.c16, k.c17, k.c18, k.c19, k.c20, k.c21 FROM unnest(p_sks, p_colls, p_ids, p_kinds, p_app_sks, p_group_sks, p_parent_sks, p_rules, p_models, p_vrids, p_names, p_name_keys, p_updated, p_created, p_sizes, p_record_types, p_origins, p_external_ids, p_deleted, p_placeholders, p_granted) WITH ORDINALITY AS k(c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, n) ORDER BY k.c1, k.n DESC) s;
+        INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, group_sk, parent_sk, rule, model, vrid, name, name_key, updated_ms, created_ms, size_bytes, record_type, origin, external_id, deleted, placeholder, granted) SELECT v_org, k.a, k.b, k.c, k.d, k.e, k.f, k.g, k.h, k.i, k.j, k.k, k.l, k.m, k.n, k.o, k.p, k.q, k.r, k.s, k.t, k.u FROM unnest(p_sks, p_colls, p_ids, p_kinds, p_app_sks, p_group_sks, p_parent_sks, p_rules, p_models, p_vrids, p_names, p_name_keys, p_updated, p_created, p_sizes, p_record_types, p_origins, p_external_ids, p_deleted, p_placeholders, p_granted) AS k(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s, t, u)
+          ON CONFLICT (org_id, sk) DO UPDATE SET coll = excluded.coll, id = excluded.id, kind = excluded.kind, app_sk = excluded.app_sk, group_sk = excluded.group_sk, parent_sk = excluded.parent_sk, rule = excluded.rule, model = excluded.model, vrid = excluded.vrid, name = excluded.name, name_key = excluded.name_key, updated_ms = excluded.updated_ms, created_ms = excluded.created_ms, size_bytes = excluded.size_bytes, record_type = excluded.record_type, origin = excluded.origin, external_id = excluded.external_id, deleted = excluded.deleted, placeholder = excluded.placeholder, granted = excluded.granted;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_records_delete
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "delete", "rel": "kg.records", "key": ["sk"]}]
+    args:
+      - {"name": "p_sks", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.records"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+        SELECT array_agg(s.c1 ORDER BY s.c1) INTO p_sks FROM (SELECT DISTINCT ON (k.c1) k.c1 FROM unnest(p_sks) WITH ORDINALITY AS k(c1, n) ORDER BY k.c1, k.n DESC) s;
+        DELETE FROM kg.records t USING unnest(p_sks) AS k(a) WHERE t.org_id = v_org AND t.sk = k.a;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_links_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.links", "set": []}]
+    args:
+      - {"name": "p_parents", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 2]}
+      - {"name": "p_children", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.links"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_kinds) <> cardinality(p_parents) OR cardinality(p_children) <> cardinality(p_parents) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+        SELECT array_agg(s.c1 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c2 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c3 ORDER BY s.c1, s.c2, s.c3) INTO p_parents, p_kinds, p_children FROM (SELECT DISTINCT ON (k.c1, k.c2, k.c3) k.c1, k.c2, k.c3 FROM unnest(p_parents, p_kinds, p_children) WITH ORDINALITY AS k(c1, c2, c3, n) ORDER BY k.c1, k.c2, k.c3, k.n DESC) s;
+        INSERT INTO kg.links (org_id, parent_sk, kind, child_sk) SELECT v_org, k.a, k.b, k.c FROM unnest(p_parents, p_kinds, p_children) AS k(a, b, c)
+          ON CONFLICT (org_id, parent_sk, kind, child_sk) DO NOTHING;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_links_delete
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "delete", "rel": "kg.links", "key": ["parent_sk", "kind", "child_sk"]}]
+    args:
+      - {"name": "p_parents", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 2]}
+      - {"name": "p_children", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.links"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_kinds) <> cardinality(p_parents) OR cardinality(p_children) <> cardinality(p_parents) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+        SELECT array_agg(s.c1 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c2 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c3 ORDER BY s.c1, s.c2, s.c3) INTO p_parents, p_kinds, p_children FROM (SELECT DISTINCT ON (k.c1, k.c2, k.c3) k.c1, k.c2, k.c3 FROM unnest(p_parents, p_kinds, p_children) WITH ORDINALITY AS k(c1, c2, c3, n) ORDER BY k.c1, k.c2, k.c3, k.n DESC) s;
+        DELETE FROM kg.links t USING unnest(p_parents, p_kinds, p_children) AS k(a, b, c) WHERE t.org_id = v_org AND t.parent_sk = k.a AND t.kind = k.b AND t.child_sk = k.c;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_grants_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.scope_members", "set": ["role", "app_sk", "leaf"]}]
+    args:
+      - {"name": "p_principals", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_nodes", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_gtypes", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 64]}
+      - {"name": "p_roles", "type": "text[]", "max_items": 5000, "item_length": [0, 64]}
+      - {"name": "p_apps", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_leaves", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.scope_members"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_nodes) <> cardinality(p_principals) OR cardinality(p_gtypes) <> cardinality(p_principals) OR cardinality(p_roles) <> cardinality(p_principals) OR cardinality(p_apps) <> cardinality(p_principals) OR cardinality(p_leaves) <> cardinality(p_principals) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+        SELECT array_agg(s.c1 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c2 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c3 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c4 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c5 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c6 ORDER BY s.c1, s.c2, s.c3) INTO p_principals, p_nodes, p_gtypes, p_roles, p_apps, p_leaves FROM (SELECT DISTINCT ON (k.c1, k.c2, k.c3) k.c1, k.c2, k.c3, k.c4, k.c5, k.c6 FROM unnest(p_principals, p_nodes, p_gtypes, p_roles, p_apps, p_leaves) WITH ORDINALITY AS k(c1, c2, c3, c4, c5, c6, n) ORDER BY k.c1, k.c2, k.c3, k.n DESC) s;
+        INSERT INTO kg.scope_members (org_id, principal_sk, node_sk, gtype, role, app_sk, leaf) SELECT v_org, k.a, k.b, k.c, k.d, k.e, k.f FROM unnest(p_principals, p_nodes, p_gtypes, p_roles, p_apps, p_leaves) AS k(a, b, c, d, e, f)
+          ON CONFLICT (org_id, principal_sk, node_sk, gtype) DO UPDATE SET role = excluded.role, app_sk = excluded.app_sk, leaf = excluded.leaf;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_grants_delete
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "delete", "rel": "kg.scope_members", "key": ["principal_sk", "node_sk", "gtype"]}]
+    args:
+      - {"name": "p_principals", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_nodes", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_gtypes", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 64]}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.scope_members"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_nodes) <> cardinality(p_principals) OR cardinality(p_gtypes) <> cardinality(p_principals) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+        SELECT array_agg(s.c1 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c2 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c3 ORDER BY s.c1, s.c2, s.c3) INTO p_principals, p_nodes, p_gtypes FROM (SELECT DISTINCT ON (k.c1, k.c2, k.c3) k.c1, k.c2, k.c3 FROM unnest(p_principals, p_nodes, p_gtypes) WITH ORDINALITY AS k(c1, c2, c3, n) ORDER BY k.c1, k.c2, k.c3, k.n DESC) s;
+        DELETE FROM kg.scope_members t USING unnest(p_principals, p_nodes, p_gtypes) AS k(a, b, c) WHERE t.org_id = v_org AND t.principal_sk = k.a AND t.node_sk = k.b AND t.gtype = k.c;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_closure_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.principal_closure", "set": ["via"]}]
+    args:
+      - {"name": "p_users", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_principals", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_apps", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_vias", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_enum": ["self", "membership", "org", "link", "link_badge"]}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.principal_closure"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_principals) <> cardinality(p_users) OR cardinality(p_apps) <> cardinality(p_users) OR cardinality(p_vias) <> cardinality(p_users) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+        SELECT array_agg(s.c1 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c2 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c3 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c4 ORDER BY s.c1, s.c2, s.c3) INTO p_users, p_principals, p_apps, p_vias FROM (SELECT DISTINCT ON (k.c1, k.c2, k.c3) k.c1, k.c2, k.c3, k.c4 FROM unnest(p_users, p_principals, p_apps, p_vias) WITH ORDINALITY AS k(c1, c2, c3, c4, n) ORDER BY k.c1, k.c2, k.c3, k.n DESC) s;
+        INSERT INTO kg.principal_closure (org_id, user_sk, principal_sk, app_sk, via) SELECT v_org, k.a, k.b, k.c, k.d FROM unnest(p_users, p_principals, p_apps, p_vias) AS k(a, b, c, d)
+          ON CONFLICT (org_id, user_sk, principal_sk, app_sk) DO UPDATE SET via = excluded.via;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_closure_delete
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "delete", "rel": "kg.principal_closure", "key": ["user_sk", "principal_sk", "app_sk"]}]
+    args:
+      - {"name": "p_users", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_principals", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_apps", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.principal_closure"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_principals) <> cardinality(p_users) OR cardinality(p_apps) <> cardinality(p_users) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+        SELECT array_agg(s.c1 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c2 ORDER BY s.c1, s.c2, s.c3), array_agg(s.c3 ORDER BY s.c1, s.c2, s.c3) INTO p_users, p_principals, p_apps FROM (SELECT DISTINCT ON (k.c1, k.c2, k.c3) k.c1, k.c2, k.c3 FROM unnest(p_users, p_principals, p_apps) WITH ORDINALITY AS k(c1, c2, c3, n) ORDER BY k.c1, k.c2, k.c3, k.n DESC) s;
+        DELETE FROM kg.principal_closure t USING unnest(p_users, p_principals, p_apps) AS k(a, b, c) WHERE t.org_id = v_org AND t.user_sk = k.a AND t.principal_sk = k.b AND t.app_sk = k.c;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_changes_ack
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "delete", "rel": "kg.graph_changes", "txn": "txid"}]
+    args: []
+    returns: "int"
+    no_org: "0"
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        DELETE FROM kg.graph_changes t WHERE t.org_id = v_org AND t.txid = pg_current_xact_id();
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_changes_delete
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "delete", "rel": "kg.graph_changes", "key": ["id"]}]
+    args:
+      - {"name": "p_ids", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+        SELECT array_agg(s.c1 ORDER BY s.c1) INTO p_ids FROM (SELECT DISTINCT ON (k.c1) k.c1 FROM unnest(p_ids) WITH ORDINALITY AS k(c1, n) ORDER BY k.c1, k.n DESC) s;
+        DELETE FROM kg.graph_changes t USING unnest(p_ids) AS k(a) WHERE t.org_id = v_org AND t.id = k.a;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_projection_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.projection_state", "set": ["code_epoch", "mode", "verify_digest", "backfill_cursor", "verified_at"]}]
+    args:
+      - {"name": "p_app_sk", "type": "bigint", "range": [0, 9223372036854775807]}
+      - {"name": "p_code_epoch", "type": "int", "range": [0, 1000000]}
+      - {"name": "p_mode", "type": "text", "enum": ["legacy", "shadow", "enforce"]}
+      - {"name": "p_digest", "type": "text", "nullable": true, "length": [0, 128]}
+      - {"name": "p_cursor", "type": "text", "nullable": true, "length": [0, 512]}
+      - {"name": "p_verified_at", "type": "timestamptz", "nullable": true}
+    returns: "boolean"
+    no_org: "false"
+    body: |
+      INSERT INTO kg.projection_state (org_id, app_sk, code_epoch, mode, verify_digest, backfill_cursor, verified_at) VALUES (v_org, p_app_sk, p_code_epoch, p_mode, p_digest, p_cursor, p_verified_at)
+          ON CONFLICT (org_id, app_sk) DO UPDATE SET code_epoch = excluded.code_epoch, mode = excluded.mode, verify_digest = excluded.verify_digest, backfill_cursor = excluded.backfill_cursor, verified_at = excluded.verified_at;
+        RETURN true;
+
+  - name: kg.w_classes_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.scope_classes", "set": []}]
+    args:
+      - {"name": "p_ids", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_app_sks", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_group_sks", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_clauses", "type": "jsonb[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_hashes", "type": "bytea[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.scope_classes"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_app_sks) <> cardinality(p_ids) OR cardinality(p_group_sks) <> cardinality(p_ids) OR cardinality(p_clauses) <> cardinality(p_ids) OR cardinality(p_hashes) <> cardinality(p_ids) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        IF EXISTS (SELECT 1 FROM unnest(p_clauses) AS e WHERE jsonb_typeof(e) <> 'array') THEN
+          RAISE EXCEPTION 'w_classes_set: the clauses of a class are an array' USING ERRCODE = '22023';
+        END IF;
+        -- A class is content-addressed: an id that is named twice, or already stored, with other content is refused, never silently kept as it was.
+        IF EXISTS (SELECT 1 FROM unnest(p_ids, p_app_sks, p_group_sks, p_clauses, p_hashes) AS k(a, b, c, d, e) GROUP BY k.a HAVING count(DISTINCT (k.b, k.c, k.d, k.e)) > 1)
+           OR EXISTS (SELECT 1 FROM kg.scope_classes t JOIN unnest(p_ids, p_app_sks, p_group_sks, p_clauses, p_hashes) AS k(a, b, c, d, e) ON t.id = k.a
+                      WHERE t.org_id = v_org AND (t.app_sk <> k.b OR t.group_sk IS DISTINCT FROM k.c OR t.clauses <> k.d OR t.hash <> k.e)) THEN
+          RAISE EXCEPTION 'w_classes_set: the class id is taken by other content' USING ERRCODE = '22023';
+        END IF;
+        -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+        SELECT array_agg(s.c1 ORDER BY s.c1), array_agg(s.c2 ORDER BY s.c1), array_agg(s.c3 ORDER BY s.c1), array_agg(s.c4 ORDER BY s.c1), array_agg(s.c5 ORDER BY s.c1) INTO p_ids, p_app_sks, p_group_sks, p_clauses, p_hashes FROM (SELECT DISTINCT ON (k.c1) k.c1, k.c2, k.c3, k.c4, k.c5 FROM unnest(p_ids, p_app_sks, p_group_sks, p_clauses, p_hashes) WITH ORDINALITY AS k(c1, c2, c3, c4, c5, n) ORDER BY k.c1, k.n DESC) s;
+        INSERT INTO kg.scope_classes (org_id, id, app_sk, group_sk, clauses, hash) SELECT v_org, k.a, k.b, k.c, k.d, k.e FROM unnest(p_ids, p_app_sks, p_group_sks, p_clauses, p_hashes) AS k(a, b, c, d, e)
+          ON CONFLICT (org_id, id) DO NOTHING;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        -- A row a concurrent writer committed between the check above and the insert was skipped, not written: whatever is stored under each id is now read again,
+        -- and an id that holds other content is refused as it was above (each statement sees what has been committed since the last).
+        IF EXISTS (SELECT 1 FROM kg.scope_classes t JOIN unnest(p_ids, p_app_sks, p_group_sks, p_clauses, p_hashes) AS k(a, b, c, d, e) ON t.id = k.a
+                   WHERE t.org_id = v_org AND (t.app_sk <> k.b OR t.group_sk IS DISTINCT FROM k.c OR t.clauses <> k.d OR t.hash <> k.e)) THEN
+          RAISE EXCEPTION 'w_classes_set: the class id is taken by other content' USING ERRCODE = '22023';
+        END IF;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_class_literals_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.class_literals", "set": []}]
+    args:
+      - {"name": "p_anchors", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_classes", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.class_literals"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_classes) <> cardinality(p_anchors) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+        SELECT array_agg(s.c1 ORDER BY s.c1, s.c2), array_agg(s.c2 ORDER BY s.c1, s.c2) INTO p_anchors, p_classes FROM (SELECT DISTINCT ON (k.c1, k.c2) k.c1, k.c2 FROM unnest(p_anchors, p_classes) WITH ORDINALITY AS k(c1, c2, n) ORDER BY k.c1, k.c2, k.n DESC) s;
+        INSERT INTO kg.class_literals (org_id, anchor_sk, class_id) SELECT v_org, k.a, k.b FROM unnest(p_anchors, p_classes) AS k(a, b)
+          ON CONFLICT (org_id, anchor_sk, class_id) DO NOTHING;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_app_facts_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.projection_state", "set": ["opens", "has_group_level", "facts_set"]}]
+    args:
+      - {"name": "p_app_sk", "type": "bigint", "range": [0, 9223372036854775807]}
+      - {"name": "p_opens", "type": "boolean"}
+      - {"name": "p_group_level", "type": "boolean"}
+    returns: "boolean"
+    no_org: "false"
+    body: |
+      INSERT INTO kg.projection_state (org_id, app_sk, opens, has_group_level, facts_set) VALUES (v_org, p_app_sk, p_opens, p_group_level, true)
+          ON CONFLICT (org_id, app_sk) DO UPDATE SET opens = excluded.opens, has_group_level = excluded.has_group_level, facts_set = excluded.facts_set;
+        RETURN true;
+
+  - name: kg.w_app_cross_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.projection_state", "set": ["cross_app"]}]
+    args:
+      - {"name": "p_app_sks", "type": "bigint[]", "max_items": 5000, "item_not_null": true, "item_range": [0, 9223372036854775807]}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.projection_state"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        -- Sorted by key (locks are taken in key order) and a key named twice keeps its last item
+        SELECT array_agg(s.c1 ORDER BY s.c1) INTO p_app_sks FROM (SELECT DISTINCT ON (k.c1) k.c1 FROM unnest(p_app_sks) WITH ORDINALITY AS k(c1, n) ORDER BY k.c1, k.n DESC) s;
+        INSERT INTO kg.projection_state (org_id, app_sk, cross_app) SELECT v_org, k.a, true FROM unnest(p_app_sks) AS k(a)
+          ON CONFLICT (org_id, app_sk) DO UPDATE SET cross_app = excluded.cross_app;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_stamps_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.records", "set": ["path", "class_id", "self_lit", "seed", "own_grant", "under_deleted", "legacy_reason", "leaf"]}]
+    args:
+      - {"name": "p_sks", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_colls", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
+      - {"name": "p_ids", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 256]}
+      - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
+      - {"name": "p_paths", "type": "bytea[]", "max_items": 5000}
+      - {"name": "p_classes", "type": "bigint[]", "max_items": 5000}
+      - {"name": "p_self_lits", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_seeds", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_own_grants", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_under_deleted", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_legacy", "type": "smallint[]", "max_items": 5000, "item_range": [0, 8]}
+      - {"name": "p_leaves", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.records"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_colls) <> cardinality(p_sks) OR cardinality(p_ids) <> cardinality(p_sks) OR cardinality(p_kinds) <> cardinality(p_sks) OR cardinality(p_paths) <> cardinality(p_sks) OR cardinality(p_classes) <> cardinality(p_sks) OR cardinality(p_self_lits) <> cardinality(p_sks) OR cardinality(p_seeds) <> cardinality(p_sks) OR cardinality(p_own_grants) <> cardinality(p_sks) OR cardinality(p_under_deleted) <> cardinality(p_sks) OR cardinality(p_legacy) <> cardinality(p_sks) OR cardinality(p_leaves) <> cardinality(p_sks) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        INSERT INTO kg.records (org_id, sk, coll, id, kind, path, class_id, self_lit, seed, own_grant, under_deleted, legacy_reason, leaf) SELECT v_org, k.a, k.b, k.c, k.d, k.e, k.f, k.g, k.h, k.i, k.j, k.k, k.l FROM unnest(p_sks, p_colls, p_ids, p_kinds, p_paths, p_classes, p_self_lits, p_seeds, p_own_grants, p_under_deleted, p_legacy, p_leaves) AS k(a, b, c, d, e, f, g, h, i, j, k, l)
+          ON CONFLICT (org_id, sk) DO UPDATE SET path = excluded.path, class_id = excluded.class_id, self_lit = excluded.self_lit, seed = excluded.seed, own_grant = excluded.own_grant, under_deleted = excluded.under_deleted, legacy_reason = excluded.legacy_reason, leaf = excluded.leaf;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_fence_rows
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.records", "set": ["fence_job"]}]
+    args:
+      - {"name": "p_sks", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_colls", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
+      - {"name": "p_ids", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 256]}
+      - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
+      - {"name": "p_jobs", "type": "bigint[]", "max_items": 5000}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.records"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_colls) <> cardinality(p_sks) OR cardinality(p_ids) <> cardinality(p_sks) OR cardinality(p_kinds) <> cardinality(p_sks) OR cardinality(p_jobs) <> cardinality(p_sks) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        INSERT INTO kg.records (org_id, sk, coll, id, kind, fence_job) SELECT v_org, k.a, k.b, k.c, k.d, k.e FROM unnest(p_sks, p_colls, p_ids, p_kinds, p_jobs) AS k(a, b, c, d, e)
+          ON CONFLICT (org_id, sk) DO UPDATE SET fence_job = excluded.fence_job;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_queue_add
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.restamp_queue", "set": []}]
+    args:
+      - {"name": "p_id", "type": "bigint", "range": [1, 9223372036854775807]}
+      - {"name": "p_app_sk", "type": "bigint", "range": [0, 9223372036854775807]}
+      - {"name": "p_kind", "type": "text", "enum": ["rows", "app"]}
+      - {"name": "p_reason", "type": "text", "length": [1, 64]}
+      - {"name": "p_fenced", "type": "boolean"}
+    returns: "boolean"
+    no_org: "false"
+    body: |
+      DECLARE v_now bigint;
+      BEGIN
+        v_now := floor(extract(epoch FROM clock_timestamp()) * 1000);
+        INSERT INTO kg.restamp_queue (org_id, id, app_sk, kind, reason, fenced, enqueued_ms) VALUES (v_org, p_id, p_app_sk, p_kind, p_reason, p_fenced, v_now)
+          ON CONFLICT (org_id, id) DO NOTHING;
+        RETURN true;
+      END;
+
+  - name: kg.w_queue_touch
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "update", "rel": "kg.restamp_queue"}]
+    args:
+      - {"name": "p_id", "type": "bigint", "range": [1, 9223372036854775807]}
+      - {"name": "p_seen", "type": "bigint", "range": [0, 9223372036854775807]}
+      - {"name": "p_worker", "type": "text", "length": [1, 128]}
+      - {"name": "p_attempts", "type": "int", "range": [0, 1000000]}
+      - {"name": "p_cursor", "type": "text", "nullable": true, "length": [0, 512]}
+    returns: "bigint"
+    no_org: "0"
+    reads: ["kg.restamp_queue"]
+    body: |
+      DECLARE v_beat bigint; v_n integer;
+      BEGIN
+        v_beat := GREATEST(floor(extract(epoch FROM clock_timestamp()) * 1000), p_seen + 1);
+        UPDATE kg.restamp_queue t SET claimed_by = p_worker, heartbeat_ms = v_beat, attempts = p_attempts, cursor = p_cursor WHERE t.org_id = v_org AND t.id = p_id AND t.heartbeat_ms = p_seen;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        IF v_n = 1 THEN
+          RETURN v_beat;
+        END IF;
+        RETURN NULL;
+      END;
+
+  - name: kg.w_queue_release
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "update", "rel": "kg.restamp_queue"}]
+    args:
+      - {"name": "p_id", "type": "bigint", "range": [1, 9223372036854775807]}
+      - {"name": "p_worker", "type": "text", "length": [1, 128]}
+    returns: "boolean"
+    no_org: "false"
+    reads: ["kg.restamp_queue"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        UPDATE kg.restamp_queue t SET claimed_by = NULL WHERE t.org_id = v_org AND t.id = p_id AND t.claimed_by = p_worker;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n = 1;
+      END;
+
+  - name: kg.w_queue_done
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "delete", "rel": "kg.restamp_queue", "key": ["id"]}]
+    args:
+      - {"name": "p_id", "type": "bigint", "range": [1, 9223372036854775807]}
+    returns: "boolean"
+    no_org: "false"
+    reads: ["kg.restamp_queue"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        DELETE FROM kg.restamp_queue t WHERE t.org_id = v_org AND t.id = p_id;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n = 1;
+      END;

@@ -39,6 +39,8 @@ export function formatAuthTypeName(authType: string): string {
     ENTRA_ID: 'Microsoft Entra ID',
     IAM_ROLE: 'IAM Role (AssumeRole)',
     CUSTOM: 'Custom',
+    ACCESS_KEY: 'Access key',
+    KEY_PAIR: 'Key pair',
     NONE: 'None',
   };
   return map[authType] || authType;

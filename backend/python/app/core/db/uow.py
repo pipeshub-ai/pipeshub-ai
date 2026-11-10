@@ -74,6 +74,9 @@ _REBIND = re.compile(
 )
 _COMMENTS = re.compile(r"/\*.*?\*/|--[^\n]*", re.S)
 # Transaction control belongs to the runtime (and to tx.savepoint); a statement that ends or splits the unit is refused.
+# A statement that writes the graph's documents or edges: the guard of the projection into kg (app.services.graph_db.postgres.kg) looks at these before they run. What the unit
+# wrote is not decided by this text but by the capture trigger, which marks the transaction (kg.wrote), so a form this misses is still projected.
+_GRAPH_DML = re.compile(r'\b(?:insert\s+into|update(?:\s+only)?|delete\s+from(?:\s+only)?|merge\s+into(?:\s+only)?)\s+"?graph"?\s*\.\s*"?(?:nodes|edges)"?\b', re.I)
 _TXN_CONTROL = re.compile(r"(begin|commit|rollback|end|abort|savepoint|release|start\s+transaction|prepare\s+transaction)\b")
 # Comments, dollar-quoted bodies (DO blocks, function bodies) and string literals are blanked before looking at statements.
 _SQL_NOISE = re.compile(r"/\*.*?\*/|--[^\n]*|(\$[A-Za-z_]*\$).*?\1|'(?:[^']|'')*'", re.S)
@@ -138,16 +141,26 @@ class Tx:
             task = asyncio.current_task()
         self.cancelling_at_start = task.cancelling() if task else 0
         self.failed = False  # a statement failed and no savepoint rollback has undone it since
+        self.org_id = ""  # the org the unit is bound to
+        self.role = ""  # the database role the unit runs as
+        self.kg_dirty = False  # a statement of this unit that the guard recognised writes graph.nodes or graph.edges (the capture trigger's mark is the authority)
         self._open = True
+
+    @staticmethod
+    def _check_usage(sql: str) -> None:
+        if _REBIND.search(_COMMENTS.sub(" ", sql)):
+            raise UowUsageError("a statement may not change the unit's org, role or settings")
+        if any(_TXN_CONTROL.match(" ".join(st.lower().split())) for st in _SQL_NOISE.sub(" ", sql).split(";")):
+            raise UowUsageError("transaction control statements are not allowed inside a unit; use tx.savepoint()")
 
     async def _run(self, op: str, sql: str, *args: object, internal: bool = False) -> Any:  # noqa: ANN401
         if not self._open:
             raise RuntimeError("transaction handle used outside its unit of work")
         if not internal:
-            if _REBIND.search(_COMMENTS.sub(" ", sql)):
-                raise UowUsageError("a statement may not change the unit's org, role or settings")
-            if any(_TXN_CONTROL.match(" ".join(st.lower().split())) for st in _SQL_NOISE.sub(" ", sql).split(";")):
-                raise UowUsageError("transaction control statements are not allowed inside a unit; use tx.savepoint()")
+            self._check_usage(sql)
+            if (hook := self._db.graph_write_hook) is not None and _GRAPH_DML.search(_SQL_NOISE.sub(" ", sql)):
+                hook(self, sql)  # may refuse (strict mode): before the statement runs
+                self.kg_dirty = True
         catalog.record(sql, args)
         site = _site(sql)
         t0 = time.perf_counter()
@@ -242,6 +255,20 @@ class Tx:
                 raise FailedTransaction("a statement failed inside the savepoint block and its error was swallowed")
             await self._run("execute", f"/* pipeshub:kernel.savepoint */ RELEASE SAVEPOINT {name}", internal=True)
 
+    async def fetch_custom_plan(self, sql: str, *args: object) -> list[asyncpg.Record]:
+        """``fetch`` planned for these arguments every time, whatever the unit's plan mode. For a statement whose generic plan (what a prepared statement
+        gets from its sixth run on) reads far more than its custom plan; the rest of the unit keeps its mode, which is put back afterwards. A failed
+        statement leaves the unit failed."""
+        self._check_usage(sql)  # a refusal must come before the mode changes: nothing would put it back
+        was = await self._run("fetchval", "/* pipeshub:kernel.plan_mode */ SELECT current_setting('plan_cache_mode')", internal=True)
+        mode = "/* pipeshub:kernel.plan_mode */ SELECT set_config('plan_cache_mode', $1, true)"
+        if was != "force_custom_plan":
+            await self._run("execute", mode, "force_custom_plan", internal=True)
+        rows = await self._run("fetch", sql, *args)
+        if was != "force_custom_plan":
+            await self._run("execute", mode, was, internal=True)
+        return rows
+
     def _close(self) -> None:
         self._open = False
 
@@ -273,6 +300,10 @@ class KernelDB:
         self._side_pools: dict[asyncio.AbstractEventLoop, dict[bool, asyncio.Future[asyncpg.Pool]]] = {}
         self.capabilities: caps_mod.Capabilities | None = None
         self.profile_epoch: int | None = None
+        # set by app.services.graph_db.postgres.kg.flush.install: asked before a statement that writes the graph, and awaited before COMMIT of every write unit
+        self.graph_write_hook: Callable[[Tx, str], None] | None = None
+        self.pre_commit_hook: Callable[[Tx], Awaitable[None]] | None = None
+        self.post_commit_hook: Callable[[Tx], None] | None = None  # called, without waiting, once a write unit has committed
 
     # ---- lifecycle ---------------------------------------------------------------------------------------------
     async def start(self) -> None:
@@ -476,6 +507,7 @@ class KernelDB:
         if timeout_ms and statement_ms <= timeout_ms:      # the caller's budget covers the wait for a connection and the statement together
             statement_ms = max(1, statement_ms - int(waited * 1000))
         tx = Tx(con, self, klass=klass, idempotent=idempotent, request_id=request_id)
+        tx.org_id, tx.role = org_id, role
         txn = con.transaction(isolation=isolation, readonly=not write)
         outcome = "rollback"
         try:
@@ -488,6 +520,8 @@ class KernelDB:
                 await tx._run("execute", "/* pipeshub:kernel.lineage */ SELECT set_config('app.org_lineage', "
                               "array_to_string(kernel.org_lineage(current_setting('app.org_id')), ','), true)", internal=True)
             yield tx
+            if write and self.pre_commit_hook is not None and not tx.failed:
+                await self.pre_commit_hook(tx)
             await self._check_alive(con, tx, write=write)
             tx.commit_sent = True
             try:
@@ -496,6 +530,11 @@ class KernelDB:
                 mapped = self.map_error(e, tx)
                 raise (CommitOutcomeUnknown("connection lost after COMMIT was sent") if isinstance(mapped, ConnectionLost) else mapped) from e
             outcome = "commit"
+            if write and self.post_commit_hook is not None:
+                try:
+                    self.post_commit_hook(tx)  # the unit is committed: a hook that fails must not fail it
+                except Exception:
+                    logger.exception("post-commit hook failed")
         except BaseException:
             await self._abort(con, txn, tx)
             raise

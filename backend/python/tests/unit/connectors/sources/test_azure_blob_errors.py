@@ -7,9 +7,11 @@ error code and the first line of the message may leave the data source.
 
 import base64
 import logging
+import socket
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import NoReturn
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,6 +30,11 @@ from app.sources.client.azure.azure_blob import (
     AzureBlobClient,
     AzureBlobConnectionStringConfig,
     AzureBlobRESTClient,
+)
+from app.sources.client.azure.connection_string import (
+    ACCOUNT_NOT_FOUND,
+    CREDENTIALS_REFUSED,
+    INVALID_ACCOUNT_KEY,
 )
 from app.sources.external.azure.azure_blob import (
     AzureBlobDataSource,
@@ -64,20 +71,12 @@ def assert_nothing_secret(text: str) -> None:
 
 class TestErrorText:
 
-    def test_an_auth_failure_keeps_status_code_and_first_line_only(self) -> None:
+    def test_refused_credentials_say_so_and_keep_status_and_code(self) -> None:
         text = azure_error_text(auth_failure())
 
-        assert text == (
-            "HTTP 403 AuthenticationFailed: Server failed to authenticate the request. Make sure the value "
-            "of Authorization header is formed correctly including the signature."
-        )
+        assert text == f"{CREDENTIALS_REFUSED} (HTTP 403 AuthenticationFailed)"
+        assert text != INVALID_ACCOUNT_KEY
         assert azure_error_code(auth_failure()) == "AuthenticationFailed"
-
-    def test_a_not_found_error_reads_the_same_way(self) -> None:
-        error = HttpResponseError(message="The specified container does not exist.\nRequestId:1\nContent: <?xml?>")
-        error.status_code, error.error_code = 404, "ContainerNotFound"
-
-        assert azure_error_text(error) == "HTTP 404 ContainerNotFound: The specified container does not exist."
 
     def test_a_network_error_has_no_status_and_no_signed_url(self) -> None:
         error = ServiceRequestError("Cannot reach https://acct.blob.core.windows.net/docs/a.txt?sv=2022&sig=SECRETSIG")
@@ -92,6 +91,48 @@ class TestErrorText:
 
     def test_an_empty_message_names_the_error_type(self) -> None:
         assert azure_error_text(TimeoutError()) == "TimeoutError"
+
+
+# What the address guard reports for the account endpoint, wrapped by the client builder.
+GUARD_REASON = "Failed to create AsyncBlobServiceClient: Could not find a server named 'acct.blob.core.windows.net'."
+
+
+class TestUnknownAccount:
+    """A mistyped AccountName fails in the address guard, before the SDK sends anything."""
+
+    @pytest.fixture(autouse=True)
+    def no_proxy(self, monkeypatch) -> None:
+        for name in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+            monkeypatch.delenv(name, raising=False)
+
+    @staticmethod
+    async def list_with_resolver_error(monkeypatch, errno: int) -> str:
+        def getaddrinfo(host: str, *args: object, **kwargs: object) -> NoReturn:
+            raise socket.gaierror(errno, "resolver says no")
+
+        monkeypatch.setattr("app.utils.url_fetcher.socket.getaddrinfo", getaddrinfo)
+        ds = AzureBlobDataSource(AzureBlobClient(AzureBlobRESTClient(AzureBlobConnectionStringConfig(PUBLIC))))
+        response = await ds.list_containers()
+        assert not response.success
+        return response.error
+
+    @pytest.mark.asyncio
+    async def test_a_host_that_does_not_exist_is_named_with_the_host(self, monkeypatch) -> None:
+        text = await self.list_with_resolver_error(monkeypatch, socket.EAI_NONAME)
+
+        assert text == f"{ACCOUNT_NOT_FOUND} ({GUARD_REASON})"
+
+    @pytest.mark.asyncio
+    async def test_a_temporary_resolver_failure_is_not_called_a_missing_account(self, monkeypatch) -> None:
+        text = await self.list_with_resolver_error(monkeypatch, socket.EAI_AGAIN)
+
+        assert text == GUARD_REASON
+
+    def test_a_dns_error_from_the_sdk_is_not_blamed_on_the_account(self) -> None:
+        # Behind a proxy the guard does not look the account up; the host that failed may be the proxy.
+        reason = "Cannot connect to host proxy.corp:3128 ssl:default [Name or service not known]"
+
+        assert azure_error_text(ServiceRequestError(reason)) == reason
 
 
 class TestDataSourceResponses:
@@ -114,7 +155,7 @@ class TestDataSourceResponses:
         response = await self.failing(container=auth_failure()).get_container_properties("docs")
 
         assert not response.success
-        assert response.error.startswith("HTTP 403 AuthenticationFailed: Server failed to authenticate")
+        assert response.error.startswith(CREDENTIALS_REFUSED)
         assert response.error_code == "AuthenticationFailed"
         assert_nothing_secret(response.error)
 
@@ -160,7 +201,7 @@ class TestConnectionTest:
         with caplog.at_level(logging.DEBUG), pytest.raises(ConnectorInitError) as raised:
             await c.test_connection_and_access()
 
-        assert "Cannot list blobs in docs: HTTP 403 AuthenticationFailed: Server failed to authenticate" in str(raised.value)
+        assert f"Cannot list blobs in docs: {CREDENTIALS_REFUSED}" in str(raised.value)
         assert_nothing_secret(str(raised.value))
         assert_nothing_secret(c.notify.await_args.kwargs["message"])
         assert_nothing_secret(caplog.text)

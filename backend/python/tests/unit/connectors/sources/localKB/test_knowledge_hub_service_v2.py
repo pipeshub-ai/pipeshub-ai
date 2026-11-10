@@ -21,7 +21,7 @@ import pytest
 from app.connectors.sources.localKB.handlers.kh_search import SearchPage
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     _MAX_FILTER_SOURCES,
-    _MAX_PAGE_WALK,
+    MAX_PAGE_WALK,
     KnowledgeHubService,
 )
 from app.exceptions.graph_db_exceptions import (
@@ -570,14 +570,14 @@ async def test_the_page_walk_is_bounded_by_queries_not_items(service, provider) 
     provider.get_knowledge_hub_root_nodes_v2.return_value = envelope(
         [row("app1", "App One", node_type="app")], total=100_000, has_more=True
     )
-    refused = await service.get_nodes(user_id="u1", org_id="o1", page=_MAX_PAGE_WALK + 1, limit=1)
+    refused = await service.get_nodes(user_id="u1", org_id="o1", page=MAX_PAGE_WALK + 1, limit=1)
     assert (refused.success, refused.errorCode) == (False, 400)
     assert "invalid page" in refused.error.lower()
     provider.get_knowledge_hub_root_nodes_v2.assert_not_called()
 
-    allowed = await service.get_nodes(user_id="u1", org_id="o1", page=_MAX_PAGE_WALK, limit=1)
+    allowed = await service.get_nodes(user_id="u1", org_id="o1", page=MAX_PAGE_WALK, limit=1)
     assert allowed.success is True
-    assert provider.get_knowledge_hub_root_nodes_v2.await_count == _MAX_PAGE_WALK
+    assert provider.get_knowledge_hub_root_nodes_v2.await_count == MAX_PAGE_WALK
 
 
 def _sorted_listing(names: list[str]) -> tuple[list[dict], Callable[..., Awaitable[dict]]]:

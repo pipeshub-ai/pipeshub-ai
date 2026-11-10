@@ -97,3 +97,37 @@ def test_main_writes_an_owner_only_token_file(
     assert prepare_token.main() == 0
     assert token_file.read_text() == "new-access"
     assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+
+
+def test_a_failed_mint_removes_an_earlier_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    token_file = tmp_path / "zendesk-access-token"
+    token_file.write_text("earlier-access")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("ZENDESK_TEST_SUBDOMAIN", "inai-90216")
+    monkeypatch.setenv("ZENDESK_TEST_CLIENT_ID", "client")
+    monkeypatch.setenv("ZENDESK_TEST_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("ZENDESK_TEST_ACCESS_TOKEN_FILE", str(token_file))
+
+    def refused(*_args: object) -> str:
+        raise RuntimeError("Zendesk token request failed with HTTP 302")
+
+    monkeypatch.setattr(prepare_token, "mint_token", refused)
+    assert prepare_token.main() == 1
+    assert not token_file.exists()
+
+
+def test_missing_settings_remove_an_earlier_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    token_file = tmp_path / "zendesk-access-token"
+    token_file.write_text("earlier-access")
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("ZENDESK_TEST_SUBDOMAIN", "inai-90216")
+    monkeypatch.delenv("ZENDESK_TEST_CLIENT_ID", raising=False)
+    monkeypatch.setenv("ZENDESK_TEST_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("ZENDESK_TEST_ACCESS_TOKEN_FILE", str(token_file))
+
+    assert prepare_token.main() == 2
+    assert not token_file.exists()

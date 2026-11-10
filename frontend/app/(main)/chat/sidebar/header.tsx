@@ -13,6 +13,7 @@ import { useUserStore } from '@/lib/store/user-store';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { BrandMark } from '@/config';
+import { useChatStore } from '@/chat/store';
 
 /** A count you check rather than a place you browse to, so it rides the bar with its number on the glyph. */
 function InboxButton() {
@@ -105,6 +106,8 @@ export function SidebarHeaderActions() {
 export function ChatSidebarHeader() {
   const { t } = useTranslation();
   const profile = useUserStore((s) => s.profile);
+  const isMobile = useIsMobile();
+  const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
 
   const avatar = (
     <UserAvatar
@@ -120,7 +123,25 @@ export function ChatSidebarHeader() {
 
   return (
     <Flex align="center" justify="between" gap="2" style={{ height: '100%', padding: 'var(--space-4)' }}>
-      <BrandMark size={HEADER_ELEMENT_SIZE} color="var(--accent-11)" />
+      <Link
+        href="/chat/"
+        onClick={(e) => {
+          // A modified click opens Home elsewhere; this tab keeps its search.
+          if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+          if (isMobile) closeMobileSidebar();
+          // Search results share /chat/ with the new-chat page, so the link alone would leave them open.
+          const chat = useChatStore.getState();
+          if (chat.settings.mode === 'search') {
+            chat.setMode('chat');
+            chat.clearSearchResults();
+          }
+        }}
+        className="touch-hit"
+        aria-label={t('nav.home')}
+        style={{ lineHeight: 0, display: 'inline-flex' }}
+      >
+        <BrandMark size={HEADER_ELEMENT_SIZE} color="var(--accent-11)" />
+      </Link>
       <Flex align="center" gap="1">
         <Link href="/workspace/profile/" className="touch-hit" aria-label={t('common.openProfile')} style={{ textDecoration: 'none', lineHeight: 0, display: 'inline-flex' }}>
           {avatar}

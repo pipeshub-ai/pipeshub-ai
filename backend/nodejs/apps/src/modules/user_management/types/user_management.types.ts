@@ -82,22 +82,3 @@ export interface TeamsListResponse {
 export interface TeamUsersResponse {
   members: TeamMemberResponse[];
 }
-
-// ── MongoDB filter types ──
-
-// Loose on purpose: callers add optional clauses (search, dates) one by one and the
-// strict filter typing of Mongoose 9 rejects the string ids these carry.
-export type UserGroupFilter = {
-  orgId: unknown;
-  isDeleted: boolean;
-  name?: { $regex: string; $options: string };
-  [key: string]: unknown;
-};
-
-export type UserFilter = {
-  _id: { $in: string[] };
-  orgId?: unknown;
-  isDeleted: { $ne: boolean };
-  $or?: Array<{ fullName?: { $regex: string; $options: string }; email?: { $regex: string; $options: string } }>;
-  [key: string]: unknown;
-};

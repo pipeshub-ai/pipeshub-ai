@@ -70,15 +70,14 @@ def extract_oauth_error_message(exc: Exception) -> str:
     helper span more than just the OAuth token exchange (DB updates, cache
     refresh, scheduling), so ``exc`` may carry internal details unrelated to
     the OAuth provider. Instead it only classifies the exception against a
-    fixed allow-list of known messages, logging any provider-supplied
-    description server-side for debugging.
+    fixed allow-list of known messages. Callers log ``exc`` itself, which
+    carries the provider's full response.
 
     The function tries, in order:
       1. Parse the embedded JSON response from the exception message
-      2. Log any ``error_description``/``message`` the provider supplied (not returned)
-      3. Map the ``error`` code to a known user-friendly string
-      4. Use the HTTP status code for a generic message
-      5. Fall back to a safe generic message
+      2. Map the ``error`` code to a known user-friendly string
+      3. Use the HTTP status code for a generic message
+      4. Fall back to a safe generic message
     """
     msg = str(exc)
 
@@ -92,18 +91,7 @@ def extract_oauth_error_message(exc: Exception) -> str:
         except (json.JSONDecodeError, ValueError):
             pass
 
-    # --- 2. Log the provider's human-readable description (never returned) ---
-    if isinstance(error_body, dict):
-        # Standard OAuth / Atlassian / Google / Microsoft / GitHub / GitLab / Linear
-        description = (error_body.get("error_description") or "").strip()
-        # Notion uses "message" instead of "error_description"
-        if not description:
-            description = (error_body.get("message") or "").strip()
-        # Slack uses "error" as a code string, no separate description
-        if description:
-            logger.info(f"OAuth token exchange failed, provider description: {description[:500]}")
-
-    # --- 3. Map the error code to a known message -------------------------
+    # --- 2. Map the error code to a known message -------------------------
     error_code = ""
     if isinstance(error_body, dict):
         error_code = (error_body.get("error") or "").strip().lower()
@@ -114,14 +102,14 @@ def extract_oauth_error_message(exc: Exception) -> str:
     if error_code and error_code in _OAUTH_ERROR_CODE_MAP:
         return f"{_OAUTH_ERROR_CODE_MAP[error_code]} Please update it in the admin settings."
 
-    # --- 4. Fallback: regex scan for known codes in the raw message -------
+    # --- 3. Fallback: regex scan for known codes in the raw message -------
     # Handles cases where JSON parsing failed but the error code is in the text
     msg_lower = msg.lower()
     for code, friendly in _OAUTH_ERROR_CODE_MAP.items():
         if code in msg_lower:
             return f"{friendly} Please update it in the admin settings."
 
-    # --- 5. HTTP status code fallback -------------------------------------
+    # --- 4. HTTP status code fallback -------------------------------------
     status_match = re.search(r"status (\d{3})", msg)
     if status_match:
         status = int(status_match.group(1))
@@ -138,7 +126,7 @@ def extract_oauth_error_message(exc: Exception) -> str:
         if status >= 500:
             return "The OAuth provider is experiencing issues. Please try again later."
 
-    # --- 6. Check for common ValueError messages from handle_callback -----
+    # --- 5. Check for common ValueError messages from handle_callback -----
     if "Invalid or expired state" in msg:
         return "The authentication session has expired. Please close this window and try again."
     if "already been used" in msg:

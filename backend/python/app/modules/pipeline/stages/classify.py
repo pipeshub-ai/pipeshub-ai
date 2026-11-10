@@ -44,7 +44,8 @@ from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
 
 # Bump when the classification prompt or its output mapping changes. 2: cacheable instructions
 # with the record's name and type, natural languages only, and entity resolution.
-CLASSIFY_PROMPT_VERSION = 2
+# 3: at most 2 departments (main first), reusable topics that are never names.
+CLASSIFY_PROMPT_VERSION = 3
 
 
 class ClassifyIO(StageIO, Protocol):

@@ -157,7 +157,11 @@ class _World:
         )
         assert result["success"] is True and result["softDeleted"] is True, result
         for event in self.broker.of_type(EventTypes.SOFT_DELETE_RECORDS.value)[before:]:
-            outcome = await self.pipeline.bulk_delete_embeddings(event["payload"]["virtualRecordIds"], keep_mapping=True)
+            payload = event["payload"]
+            # As the softDeleteRecords handler calls it: the org is the event's own, no org is bound here.
+            outcome = await self.pipeline.bulk_delete_embeddings(
+                payload["virtualRecordIds"], org_id=payload.get("orgId") or None, keep_mapping=True,
+            )
             assert outcome["success"] is True, outcome
 
     async def purge(self) -> None:
@@ -259,7 +263,8 @@ async def _remove(w: _World) -> None:
                 {"ids": ids},
             )
     await w.qdrant.delete_points(
-        w.collection, await w.qdrant.filter_collection(should={"virtualRecordId": sorted(set(w.vrids.values()))})
+        w.collection, await w.qdrant.filter_collection(
+            must={"orgId": w.org_id, "virtualRecordId": sorted(set(w.vrids.values()))})
     )
 
 

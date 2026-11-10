@@ -370,6 +370,9 @@ def test_classify_token_without_org_is_401() -> None:
 # ---------------------------------------------------------------------------
 
 
+_CONFIGURED_MODELS = {"llm": [{"modelKey": "k1", "isDefault": True, "configuration": {"model": "m"}}]}
+
+
 @pytest.fixture
 def entities_app(monkeypatch: pytest.MonkeyPatch):
     from app.modules.named_entities import extractor
@@ -377,6 +380,7 @@ def entities_app(monkeypatch: pytest.MonkeyPatch):
     llm = AsyncMock(return_value=(None, None, "fake", "fake-model"))
     extract = AsyncMock(return_value=MagicMock(model_dump=MagicMock(return_value={"entities": []})))
     monkeypatch.setattr(extractor, "indexing_llm", llm)
+    monkeypatch.setattr("app.utils.llm.load_ai_models", AsyncMock(return_value=_CONFIGURED_MODELS))
     monkeypatch.setattr(extractor, "NamedEntityExtractor", MagicMock(return_value=MagicMock(extract=extract)))
     app = _build_app(MagicMock())
     app.container = SimpleNamespace(config_service=lambda: None)
@@ -433,6 +437,21 @@ def test_entities_model_calls_run_as_the_caller_named_in_the_service_token(entit
         assert seen[step] is not None, f"the {step} step ran with no caller bound"
         assert seen[step].principal.service_name == "indexing"
         assert seen[step].principal.org_id == "org-123"
+
+
+def test_entities_with_no_model_configured_look_only_for_deterministic_kinds(
+    entities_app, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.modules.named_entities.domain.kinds import semantic_kinds
+
+    app, llm, extract = entities_app
+    monkeypatch.setattr("app.utils.llm.load_ai_models", AsyncMock(return_value={}))
+
+    assert _post_entities(app, enabled_kinds=["person", "currency"]).status_code == 200
+
+    llm.assert_not_awaited()
+    kinds = extract.await_args.args[0].enabled
+    assert kinds and not semantic_kinds(kinds)
 
 
 def test_entities_failure_releases_the_slot(entities_app) -> None:

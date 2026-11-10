@@ -162,6 +162,8 @@ def _stated_day(value: object) -> int | None:
         or value.start_ms is None
         or value.anchor_source != "explicit"
         or value.granularity not in _DAY_GRANULARITIES
+        # A range ("Date: May 20–22, 2025") names no one day the document was written.
+        or "/" in value.timex
     ):
         return None
     match = _ISO_DAY.match(value.timex)

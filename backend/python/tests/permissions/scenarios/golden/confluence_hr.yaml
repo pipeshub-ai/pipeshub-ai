@@ -1,0 +1,58 @@
+# Confluence HR space (permission model doc, confluence section), written the way Confluence Cloud writes it on main.
+#   space  RESTRICTED + inherits the app, granted to its readers:
+#          atlassian/confluence_cloud/connector.py:4841-4842
+#   page   STRICT, RESTRICTED when it carries a READ restriction (edit-only stays STRICT):
+#          connector.py:2341-2343 (pages), :1239-1245 (folders)
+#   page inherits its parent page or the space (Record.inherit_permissions defaults True,
+#          models/entities.py:303; edge written at data_source_entities_processor.py:949-952)
+#   attachment / comment: OPEN, inherits its page: connector.py:7583-7585 (attachments), :8113-8115 (comments)
+#   atlassian/core/confluence_access.py:91 (apply_page_access_to_dependents) re-stamps dependents when a page's access changes.
+# Extra principals and nodes (cam, lia, finn, space:ALL, page:Onboarding) exist for the change scenarios.
+principals:
+  - {id: bob}
+  - {id: dave}
+  - {id: carol}
+  - {id: erin}
+  - {id: cam}
+  - {id: lia}
+  - {id: finn}
+  - {id: g:hr-all, kind: group}
+  - {id: g:hr-comp, kind: group}
+  - {id: g:finance, kind: group}
+  - {id: g:contractors, kind: group}
+  - {id: g:leads, kind: group}
+  - {id: g:all-staff, kind: group}
+nodes:
+  - {id: app, kind: app, app_type: CONFLUENCE}
+  - {id: space:HR, kind: group, connector: app, rule: RESTRICTED, parents: [app], inherits: [app], belongs: [app]}
+  - {id: space:ALL, kind: group, connector: app, rule: RESTRICTED, parents: [app], inherits: [app], belongs: [app]}
+  - {id: page:Handbook, kind: record, connector: app, rule: STRICT, parents: [space:HR], inherits: [space:HR], belongs: [space:HR]}
+  - {id: page:Onboarding, kind: record, connector: app, rule: STRICT, parents: [page:Handbook], inherits: [page:Handbook], belongs: [space:HR]}
+  - {id: page:Compensation, kind: record, connector: app, rule: RESTRICTED, parents: [space:HR], inherits: [space:HR], belongs: [space:HR]}
+  - {id: page:2027-bands, kind: record, connector: app, rule: RESTRICTED, parents: [page:Compensation], inherits: [page:Compensation], belongs: [space:HR]}
+  - {id: att:bands, kind: record, connector: app, rule: OPEN, parents: [{id: page:2027-bands, rel: ATTACHMENT}], inherits: [page:2027-bands], belongs: [space:HR]}
+grants:
+  - [g:hr-all, space:HR]
+  - [g:all-staff, space:ALL]
+  - [g:hr-comp, page:Compensation]
+  - [bob, page:2027-bands]
+  - [dave, page:2027-bands]
+  - [carol, page:2027-bands]
+memberships:
+  - [bob, g:hr-all]
+  - [bob, g:hr-comp]
+  - [dave, g:hr-all]
+  - [erin, g:hr-all]
+  - [carol, g:finance]
+  - [cam, g:contractors]
+  - [lia, g:hr-all]
+  - [lia, g:leads]
+  - [finn, g:all-staff]
+gates:
+  - [bob, app]
+  - [dave, app]
+  - [carol, app]
+  - [erin, app]
+  - [cam, app]
+  - [lia, app]
+  - [finn, app]

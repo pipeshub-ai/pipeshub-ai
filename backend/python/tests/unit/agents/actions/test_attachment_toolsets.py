@@ -22,7 +22,6 @@ from app.services.record_content.models import (
     ResolvedRecordContent,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -323,6 +322,29 @@ class TestSalesforceAttachments:
         sf.chat_state = state or _make_state()
         sf.api_version = "59.0"
         return sf
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("create", ["opportunity", "case"])
+    async def test_a_new_record_reports_a_file_it_could_not_attach(self, create: str) -> None:
+        """The record is created, and the answer says which file was not attached."""
+        sf = self._build_salesforce()
+        sf.instance_url = "https://acme.my.salesforce.com"
+        sf.client.sobject_create = AsyncMock(return_value=MagicMock(
+            success=True, data={"id": "006000000000001AAA", "success": True}, error=None, status_code=201))
+        with patch(
+            "app.agents.actions.salesforce.salesforce.resolve_attachments",
+            new=AsyncMock(return_value=_bundle(resolved=[], failures=[_failure("rec1", "access denied")])),
+        ):
+            if create == "opportunity":
+                ok, body = await sf.create_opportunity(
+                    name="Renewal", stage_name="Prospecting", close_date="2027-01-01", attachment_record_ids=["rec1"])
+            else:
+                ok, body = await sf.create_case(subject="Login broken", attachment_record_ids=["rec1"])
+
+        assert ok
+        attachments = json.loads(body)["data"]["attachments"]
+        assert attachments["failed"] == 1 and attachments["succeeded"] == 0
+        assert attachments["results"][0]["record_id"] == "rec1" and not attachments["results"][0]["ok"]
 
     @pytest.mark.asyncio
     async def test_denied_record_appears_in_results(self):

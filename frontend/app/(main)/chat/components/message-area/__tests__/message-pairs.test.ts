@@ -127,4 +127,14 @@ describe('buildMessagePairs', () => {
 
     expect(pairs[0].streamError).toEqual(streamError);
   });
+
+  it("shows the partial-search note from each answer's own flag, not from the last answer", () => {
+    const flagged = { ...assistant('a1', 'Old.'), metadata: { custom: { messageId: 'a1', searchDegraded: true } } };
+    const pairs = buildMessagePairs(
+      [user('u1', 'Q1'), flagged, user('u2', 'Q2'), assistant('a2', 'New.')],
+      OPTIONS,
+    );
+
+    expect(pairs.map((p) => p.searchDegraded)).toEqual([true, false]);
+  });
 });

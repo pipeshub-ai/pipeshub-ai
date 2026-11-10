@@ -3,9 +3,10 @@
 The inverse of ``writer.py``: the files the manifest lists are fetched, checked
 against the manifest's sizes and sha256s, and put back together as the dict the
 stored record would be read as, images inlined again as data URIs. The
-classification comes from the classify stage's sidecar when there is one (it
-is written after indexing, beside the stored record's own update), else from
-``metadata.json``.
+classification is the one sidecar the mapping's ``storedMeta`` names, when it
+names one (a metadata write filed it before it switched the mapping to the stored
+record that has the same classification), else ``metadata.json``. A sidecar the
+mapping does not name is never read.
 
 A set that cannot be served raises ``ArtifactUnavailable``, never a partial
 record, so the caller can read the stored record instead.
@@ -13,10 +14,10 @@ record, so the caller can read the stored record instead.
 
 import asyncio
 import base64
-import functools
 import hashlib
 import json
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
@@ -35,6 +36,8 @@ from app.modules.transformers.blob_storage import (
     clean_stored_record,
     max_decoded_record_bytes,
 )
+from app.modules.transformers.stored_write import is_none_run, run_generation
+from app.services.featureflag.platform_settings import artifact_read_state
 from app.telemetry.modules.record_storage_metrics import record_artifact_read
 
 if TYPE_CHECKING:
@@ -60,13 +63,8 @@ class ArtifactUnavailable(Exception):
         self.outcome = outcome
 
 
-@functools.cache
-def classification_sidecar_path() -> str:
-    # Imported late: the stage module pulls in the extraction client and the
-    # pipeline, which the query service otherwise never loads.
-    from app.modules.pipeline.stages.classify import ClassifyStage
-
-    return f"enrich/classification@{ClassifyStage.version}.json"
+#: A sidecar path the storage service accepts: ``enrich/<name>@<version>.json``.
+_SIDECAR_PATH = re.compile(r"^enrich/[a-z0-9_.-]+@\d+\.json$")
 
 
 def _with_classification(index_time: dict[str, Any] | None, sidecar: dict[str, Any]) -> dict[str, Any]:
@@ -88,6 +86,26 @@ def _json_object(data: bytes, what: str) -> dict[str, Any]:
 def _verify(path: str, data: bytes, expected: ArtifactFile) -> None:
     if len(data) != expected.size or hashlib.sha256(data).hexdigest() != expected.sha256:
         raise ArtifactUnavailable("integrity", path)
+
+
+def check_stored_write(lookup: dict[str, Any], generation: str | None) -> None:
+    """Raise ``ArtifactUnavailable("stale")`` unless the set is of the stored write the mapping names.
+
+    The pointer moves only after a revision's set is written, and a stored-record write whose set was
+    not (a failed write, the write flag off, an in-place write) leaves it on an older one. The run says
+    which write: the set is served only while the pointer's run is the stored record's run, the run is
+    servable (not a ``none`` run) and of the generation in force, and the revisions agree. Every field is
+    required: a mapping from before runs reads as stale.
+    """
+    current_run = lookup.get("currentRun")
+    if not isinstance(current_run, str) or lookup.get("storedRun") != current_run:
+        raise ArtifactUnavailable("stale", "the stored record is not the write this set was built from")
+    if is_none_run(current_run):
+        raise ArtifactUnavailable("stale", "the stored write is not servable")
+    if generation is None or run_generation(current_run) != generation:
+        raise ArtifactUnavailable("stale", "the run is of another generation")
+    if lookup.get("storedRev") != lookup.get("currentRev"):
+        raise ArtifactUnavailable("stale", "the stored record holds another revision")
 
 
 class ArtifactRecordBackend:
@@ -149,26 +167,32 @@ class ArtifactRecordBackend:
     ) -> dict[str, Any]:
         if lookup is None:
             lookup = await self._blob_store.get_document_id_by_virtual_record_id(virtual_record_id)
-        rev = (lookup or {}).get("currentRev")
-        document_id = (lookup or {}).get("manifestDocId")
+        lookup = lookup or {}
+        rev = lookup.get("currentRev")
+        document_id = lookup.get("manifestDocId")
         if not rev or not document_id:
             raise ArtifactUnavailable("no_pointer")
-        # The pointer moves only after a revision's set is written; a stored-record
-        # write whose set was not (a failed write, the write flag off) leaves it on
-        # an older revision than the stored record and its vectors hold.
-        if (lookup or {}).get("storedRev") != rev:
-            raise ArtifactUnavailable("stale", "the stored record holds another revision")
+        # One read of the settings per artifact read: a run is served only under the generation in force.
+        state = await artifact_read_state(getattr(self._blob_store, "config_service", None))
+        check_stored_write(lookup, state.generation)
 
         limit = asyncio.Semaphore(self._read_concurrency)
-        sidecar_path = classification_sidecar_path()
+        stored_meta = lookup.get("storedMeta") or None
+        if stored_meta is not None and not _SIDECAR_PATH.match(str(stored_meta)):
+            raise ArtifactUnavailable("stale_sidecar", "the mapping names no sidecar path a set can hold")
         # Every revision has these, or may: signed and fetched with the manifest
         # in one round, so a record without images or a second blocks part needs
-        # one read-urls call and one round of downloads.
-        first = [MANIFEST_PATH, RECORD_PATH, GROUPS_PATH, _FIRST_BLOCKS_PART, METADATA_PATH, sidecar_path]
+        # one read-urls call and one round of downloads. The classification is exactly the sidecar the
+        # mapping names, when it names one: it is known from the lookup, so it costs no extra round.
+        first = [MANIFEST_PATH, RECORD_PATH, GROUPS_PATH, _FIRST_BLOCKS_PART, METADATA_PATH]
+        if stored_meta is not None:
+            first.append(stored_meta)
         urls = await self._store.read_urls(org_id, document_id, first)
         fetched = await self._fetch(urls, first, limit, optional=True)
 
         manifest = self._manifest(fetched.get(MANIFEST_PATH), virtual_record_id, rev, org_id)
+        if manifest.storedRun != lookup["currentRun"]:
+            raise ArtifactUnavailable("stale", "the set was built from another stored write")
         wanted = self._wanted_files(manifest)
         total = sum(f.size for f in wanted.values())
         limit_bytes = max_decoded_record_bytes()
@@ -184,7 +208,10 @@ class ArtifactRecordBackend:
         for path, expected in wanted.items():
             _verify(path, fetched[path], expected)
 
-        return self._assemble(manifest, fetched, wanted, fetched.get(sidecar_path))
+        classification = (
+            self._classification(fetched.get(stored_meta), lookup, str(stored_meta)) if stored_meta is not None else None
+        )
+        return self._assemble(manifest, fetched, wanted, classification)
 
     async def _fetch(
         self,
@@ -228,6 +255,29 @@ class ArtifactRecordBackend:
         return manifest
 
     @staticmethod
+    def _classification(data: bytes | None, lookup: dict[str, Any], path: str) -> dict[str, Any]:
+        """The classification of the sidecar the mapping names, if that file is the one it names.
+
+        The envelope must say it was written for the stored write the mapping holds (``storedRun``)
+        and at this very path (``storedMeta``): a sidecar of another write, or one copied to another
+        path, is never served over this stored record.
+        """
+        if data is None:
+            raise ArtifactUnavailable("stale_sidecar", "the sidecar the mapping names is not stored")
+        try:
+            envelope = json.loads(data)
+        except ValueError:
+            raise ArtifactUnavailable("stale_sidecar", "the sidecar is not JSON") from None
+        classification = envelope.get("classification") if isinstance(envelope, dict) else None
+        if (
+            not isinstance(classification, dict)
+            or envelope.get("storedRun") != lookup.get("currentRun")
+            or envelope.get("storedMeta") != path
+        ):
+            raise ArtifactUnavailable("stale_sidecar", "the sidecar is not of this stored write")
+        return classification
+
+    @staticmethod
     def _wanted_files(manifest: Manifest) -> dict[str, ArtifactFile]:
         artifacts = manifest.artifacts
         wanted: dict[str, ArtifactFile] = {}
@@ -252,7 +302,7 @@ class ArtifactRecordBackend:
         manifest: Manifest,
         fetched: dict[str, bytes | None],
         wanted: dict[str, ArtifactFile],
-        sidecar: bytes | None,
+        classification: dict[str, Any] | None,
     ) -> dict[str, Any]:
         def data(path: str) -> bytes:
             raw = fetched[path]
@@ -287,10 +337,8 @@ class ArtifactRecordBackend:
         record["block_containers"] = containers
 
         index_time = _json_object(data(METADATA_PATH), METADATA_PATH) if METADATA_PATH in wanted else None
-        if sidecar is not None:
-            record["semantic_metadata"] = _with_classification(
-                index_time, _json_object(sidecar, classification_sidecar_path())
-            )
+        if classification is not None:
+            record["semantic_metadata"] = _with_classification(index_time, classification)
         elif index_time is not None:
             record["semantic_metadata"] = index_time
         return clean_stored_record(record)

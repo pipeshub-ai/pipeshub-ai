@@ -33,6 +33,7 @@ def mock_deps():
     data_entities_processor.on_new_app_users = AsyncMock()
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
+    data_entities_processor.on_record_content_update = AsyncMock()
     data_entities_processor.on_new_user_groups = AsyncMock()
     data_entities_processor.reindex_existing_records = AsyncMock()
     data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)

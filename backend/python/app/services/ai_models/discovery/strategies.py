@@ -1064,9 +1064,9 @@ _VOYAGE = _static([
     ("voyage-code-3", ["embedding"]),
 ])
 _VERTEX = _static([
-    ("gemini-2.5-pro", ["llm"]),
-    ("gemini-2.5-flash", ["llm"]),
-    ("gemini-2.0-flash", ["llm"]),
+    ("gemini-3.8-flash", ["llm"]),
+    ("gemini-3.5-flash", ["llm"]),
+    ("gemini-3.1-flash-lite", ["llm"]),
     ("text-embedding-005", ["embedding"]),
     ("imagen-3.0-generate-002", ["imageGeneration"]),
 ])

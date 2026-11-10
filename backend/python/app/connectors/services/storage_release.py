@@ -13,13 +13,15 @@ service, under a Redis leader lease like the trash purge.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.connector_intents import ConnectorIntentStore
-from app.core.org_context import for_org
+from app.connectors.sources.localKB.handlers.delete_lease import lease_is_held
+from app.core.org_context import for_org, spawn_in_request
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
@@ -32,6 +34,7 @@ if TYPE_CHECKING:
     from logging import Logger
 
     from app.config.configuration_service import ConfigurationService
+    from app.connectors.services.kafka_service import KafkaService
     from app.modules.indexing.vector_membership_backfill import LeaderLock
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -50,6 +53,9 @@ STALE_MS = 24 * 60 * 60 * 1000
 TICK_SECONDS = 5 * 60.0
 STARTUP_GRACE_SECONDS = 120.0
 LEASE_TTL_SECONDS = 30 * 60
+# The leader lock is renewed this often while a KB delete is finished, so a long delete never
+# lets a second replica start the same one.
+HEARTBEAT_SECONDS = 5 * 60.0
 _MAX_BACKOFF_MULTIPLIER = 4
 
 
@@ -158,8 +164,14 @@ class StorageReleaseReconciler:
         lock: LeaderLock,
         now_ms: Callable[[], int] = get_epoch_timestamp_in_ms,
         config_service_for: Callable[[str], Awaitable[ConfigurationService]] | None = None,
+        finish_kb_delete: Callable[[str, str], Awaitable[dict[str, Any]]] | None = None,
+        lease_held: Callable[[str], Awaitable[bool]] | None = None,
+        heartbeat_seconds: float = HEARTBEAT_SECONDS,
     ) -> None:
         self.logger = logger
+        self.finish_kb_delete = finish_kb_delete
+        self.lease_held = lease_held
+        self.heartbeat_seconds = heartbeat_seconds
         self.graph = graph_provider
         self.config_service = config_service
         self.lock = lock
@@ -167,7 +179,7 @@ class StorageReleaseReconciler:
         self.config_service_for = config_service_for
 
     async def tick(self) -> str:
-        """``not_leader``, ``idle``, ``released``, ``retrying`` or ``dropped``."""
+        """``not_leader``, ``idle``, ``released``, ``retrying``, ``dropped`` or ``deleted``."""
         if not await self.lock.try_acquire():
             return "not_leader"
         now = self.now_ms()
@@ -184,7 +196,14 @@ class StorageReleaseReconciler:
             # Raised, not None: a failed read must never pass for a gone app.
             app = await self.graph.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
             if app is not None:
-                if app.get("status") == APP_STATUS_DELETING or requested > now - STALE_MS:
+                if app.get("status") == APP_STATUS_DELETING:
+                    if app.get("type") != Connectors.KNOWLEDGE_BASE.value or self.finish_kb_delete is None:
+                        continue
+                    outcome = await self._finish_kb_delete(intent, org_id, connector_id)
+                    if outcome is None:
+                        continue
+                    return outcome
+                if requested > now - STALE_MS:
                     continue
                 await clear_pending_storage_release(self.config_service, connector_id)
                 self.logger.info(
@@ -224,6 +243,56 @@ class StorageReleaseReconciler:
         return "idle"
 
 
+    async def _finish_kb_delete(self, intent: dict[str, Any], org_id: str, kb_id: str) -> str | None:
+        """Complete the delete of a KB stuck DELETING, after the grace period. None: a delete is under way."""
+        assert self.finish_kb_delete is not None
+        # A hint only: correctness never depends on it (the cascade is idempotent).
+        if self.lease_held is not None and await self.lease_held(kb_id):
+            return None
+        self.logger.info("KB delete resumed | org=%s kb=%s attempts=%d", org_id, kb_id, int(intent.get("attempts") or 0))
+
+        async def keep_leadership() -> None:
+            while True:
+                await asyncio.sleep(self.heartbeat_seconds)
+                try:
+                    await self.lock.refresh()
+                except Exception:
+                    self.logger.warning("Could not renew the storage-release leader lock", exc_info=True)
+
+        heartbeat = spawn_in_request(keep_leadership(), name="storage-release-heartbeat")
+        try:
+            # This loop runs detached, with no ambient org; the delete's org-checked graph calls need the intent's.
+            with for_org(org_id, job="storage_release"):
+                result = await self.finish_kb_delete(org_id, kb_id)
+        except Exception:
+            self.logger.exception("KB delete could not be resumed | org=%s kb=%s", org_id, kb_id)
+            result = {"success": False}
+        finally:
+            heartbeat.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await heartbeat
+        if result.get("success"):
+            # The storage release is owed still; the next pass finds the KB gone and runs it.
+            return "deleted"
+        await _STORE.reschedule(
+            self.config_service, intent,
+            next_attempt_at=self.now_ms() + retry_delay_ms(int(intent.get("attempts") or 0)),
+        )
+        return "retrying"
+
+
+def _kb_finisher(
+    logger: Logger,
+    graph_provider: IGraphDBProvider,
+    kafka_service: KafkaService,
+    config_service: ConfigurationService,
+) -> Callable[[str, str], Awaitable[dict[str, Any]]]:
+    # Deferred: the KB service imports this module.
+    from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+
+    return KnowledgeBaseService(logger, graph_provider, kafka_service, config_service=config_service).finish_delete
+
+
 async def run_storage_release_loop(
     app_container: Any,  # noqa: ANN401
     graph_provider: IGraphDBProvider,
@@ -251,10 +320,14 @@ async def run_storage_release_loop(
                     logger=logger, graph_provider=graph_provider,
                     config_service=app_container.config_service(), lock=lock,
                     config_service_for=config_service_for,
+                    finish_kb_delete=_kb_finisher(
+                        logger, graph_provider, app_container.kafka_service(), app_container.config_service(),
+                    ),
+                    lease_held=lambda kb_id: lease_is_held(app_container.config_service(), kb_id),
                 )
                 outcome = await reconciler.tick()
                 backoff = 1
-                if outcome in ("released", "dropped"):
+                if outcome in ("released", "dropped", "deleted"):
                     # More may be due; look again without waiting a full tick.
                     continue
             except asyncio.CancelledError:

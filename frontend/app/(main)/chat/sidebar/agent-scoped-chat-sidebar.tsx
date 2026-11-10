@@ -15,7 +15,7 @@ import type { Conversation } from '@/chat/types';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { openFreshAgentChat } from '@/chat/build-chat-url';
 import { ChatSidebarFooter } from '@/config';
-import { getAgentSidebarRowMenuAccess } from './agent-sidebar-row-access';
+import { useAgentDetail } from '@/chat/hooks/use-agent-detail';
 import { ChatSidebarHeader } from './header';
 import { ChatSection } from './chat-section';
 import { groupConversationsByTime, getNonEmptyGroups } from './time-group';
@@ -52,13 +52,10 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
   const setIsAgentConversationsLoading = useChatStore((s) => s.setIsAgentConversationsLoading);
   const setAgentConversationsError = useChatStore((s) => s.setAgentConversationsError);
   const setAgentStreamTools = useChatStore((s) => s.setAgentStreamTools);
-  const setAgentContextAccess = useChatStore((s) => s.setAgentContextAccess);
 
   const agentConversations = useChatStore((s) => s.agentConversations);
   // Kept local, not in the store's `sharedConversations`, which belongs to the global chat list.
   const [sharedAgentConversations, setSharedAgentConversations] = useState<Conversation[]>([]);
-  // False once the agent is known to be off limits: someone a chat was shared with cannot start chats on it.
-  const [canStartChat, setCanStartChat] = useState(true);
   const agentConversationsPagination = useChatStore((s) => s.agentConversationsPagination);
   const isAgentConversationsLoading = useChatStore((s) => s.isAgentConversationsLoading);
   const agentConversationsError = useChatStore((s) => s.agentConversationsError);
@@ -79,23 +76,24 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
     return () => setAgentSidebarAgentId(null);
   }, [agentId, setAgentSidebarAgentId]);
 
+  // The agent lookup is allowed to fail on its own: someone a chat was shared with may have
+  // no access to the agent itself, and must still see the chats shared with them. The chat
+  // page reads the same cached detail and sets the agent's access from it.
+  const { detail: agentResult, unavailable: agentUnavailable } = useAgentDetail(agentId);
+  // False once the agent is known to be off limits: someone a chat was shared with cannot start chats on it.
+  const canStartChat = !agentUnavailable && agentResult?.agent !== null;
+
   const loadAgentConversations = useCallback(async () => {
     setIsAgentConversationsLoading(true);
     setAgentConversationsError(null);
     try {
-      // The agent lookup is allowed to fail on its own: someone a chat was shared with may have
-      // no access to the agent itself, and must still see the chats shared with them.
-      const [agentResult, conv] = await Promise.all([
-        AgentsApi.getAgent(agentId, { quiet: true }).catch(() => null),
-        AgentsApi.fetchAgentConversations(agentId, { page: 1, limit: SIDEBAR_AGENT_CONVERSATIONS_PAGE_SIZE }),
-      ]);
+      const conv = await AgentsApi.fetchAgentConversations(agentId, {
+        page: 1,
+        limit: SIDEBAR_AGENT_CONVERSATIONS_PAGE_SIZE,
+      });
       setAgentStreamTools(null);
-      setAgentContextAccess(
-        agentResult?.agent ? getAgentSidebarRowMenuAccess(agentResult.agent) : null,
-      );
       setAgentConversations(conv.conversations);
       setSharedAgentConversations(conv.sharedConversations);
-      setCanStartChat(Boolean(agentResult?.agent));
       setAgentConversationsPagination(conv.pagination);
     } catch {
       setAgentConversationsError(t('chat.failedToLoad'));
@@ -103,7 +101,6 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
       setSharedAgentConversations([]);
       setAgentConversationsPagination(null);
       setAgentStreamTools(null);
-      setAgentContextAccess(null);
     } finally {
       setIsAgentConversationsLoading(false);
     }
@@ -115,7 +112,6 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
     setIsAgentConversationsLoading,
     setAgentConversationsError,
     setAgentStreamTools,
-    setAgentContextAccess,
   ]);
 
   useEffect(() => {

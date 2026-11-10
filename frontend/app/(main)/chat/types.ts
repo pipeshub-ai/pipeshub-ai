@@ -91,6 +91,9 @@ export interface ModelInfo {
   modelFriendlyName?: string;
   /** Restored from the conversation's saved modelInfo when loading a thread. */
   reasoningEffort?: ReasoningEffort;
+  modelProvider?: string;
+  /** On an answer, a short note the AI service added about the model that answered. */
+  modelNote?: string;
 }
 
 /** Entry in the sharedWith array from conversation API responses */
@@ -421,6 +424,11 @@ export interface ChatSettings {
    * the user hasn't set an explicit override.
    */
   agentDefaultReasoningEffort: Record<string, ReasoningEffort | null>;
+  /**
+   * What a new assistant chat opens on when the edition sets one. A stored
+   * pick still wins, and a project chat keeps the concrete default model.
+   */
+  newChatDefaultModel: ModelOverride | null;
 }
 
 /**
@@ -901,6 +909,9 @@ export interface SSECompleteEvent {
     requestId: string;
     timestamp: string;
     duration: number;
+    searchDegraded?: boolean;
+    /** Name-only hits for records whose content is not indexed yet. */
+    unindexedMatches?: UnindexedMatch[];
   };
 }
 
@@ -987,6 +998,8 @@ export interface StreamChatRequest {
   projectId?: string;
   /** The person's answer to a tool approval card; the call itself is saved server-side. */
   toolApproval?: ToolApprovalAnswer;
+  /** Compare mode only: asks the server for a `turn_started` event once the question is saved. */
+  compareTurn?: true;
 }
 
 export type ToolApprovalDecision = 'allow' | 'deny';
@@ -1192,6 +1205,7 @@ export interface ChatSlot {
    */
   pendingAskUserQuestion: PendingAskUserQuestion | null;
 
+
   /** AbortController for the in-flight SSE stream (if any). */
   abortController: AbortController | null;
 
@@ -1239,6 +1253,11 @@ export interface ChatSlot {
    */
   isOwner: boolean | null;
   /**
+   * Who the conversation is shared with: from the loaded detail, or from the
+   * last share/unshare answer. `null` when not known.
+   */
+  sharedWith: SharedWithEntry[] | null;
+  /**
    * Last known API `modelInfo` for this thread (from list/detail/SSE), used
    * to restore model + mode in the input when the user returns to this tab.
    */
@@ -1276,6 +1295,8 @@ export interface SearchResultMetadata {
   previewRenderable?: boolean;
   hideWeburl?: boolean;
   kbId?: string | null;
+  /** ISO time the record last synced. */
+  updatedAt?: string;
   blockIndex?: number;
   isBlock?: boolean;
   isBlockGroup?: boolean;
@@ -1293,9 +1314,18 @@ export interface SearchResultItem {
   block_group_index?: number;
 }
 
+export interface UnindexedMatch {
+  recordId: string;
+  recordName: string;
+  connector?: string | null;
+  note?: string;
+}
+
 export interface SearchResponse {
   searchId: string;
   searchResponse: {
     searchResults: SearchResultItem[];
+    /** The search store answered with less than its full search (e.g. it was busy). */
+    searchDegraded?: boolean;
   };
 }

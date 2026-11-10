@@ -1,0 +1,88 @@
+# Google Drive planning folder and Marketing shared drive (permission model doc, google-drive section), written as the team connector writes it.
+#   My Drive items: Google omits permissionDetails there, so every item stores its FULL effective list and does
+#          not inherit: google/drive/team/drive_access.py:64-76 (item_inherits_parent), connector.py:2800.
+#          A limited folder's effective list is only its direct members and the owner, so the cut needs no edge.
+#   shared-drive items: inherit the drive unless limited access is on; only direct grants are stored:
+#          drive_access.py:38-61 (grants_to_store); the drive group is OPEN, does not inherit the app, granted to members.
+#   the user's My Drive group is granted to its owner: connector.py:1620-1628 (owner_permission)
+#   link shares: "anyone" is not stored; a domain share is dropped (data_source_entities_processor.py:2317-2331),
+#          so a discoverable domain share gives nobody a grant.
+# Extra principals and nodes (fay, ops folder, notes, legal) exist for the change scenarios.
+principals:
+  - {id: lee}
+  - {id: ed}
+  - {id: ivy}
+  - {id: cfo}
+  - {id: ceo}
+  - {id: mo}
+  - {id: henry}
+  - {id: fay}
+  - {id: g:leads, kind: group}
+  - {id: g:eng, kind: group}
+  - {id: g:marketing, kind: group}
+  - {id: g:finance, kind: group}
+nodes:
+  - {id: app, kind: app, app_type: GOOGLE_DRIVE}
+  - {id: owner:henry, kind: group, connector: app, rule: OPEN, parents: [app], belongs: [app]}
+  - {id: sdrive:Marketing, kind: group, connector: app, rule: OPEN, parents: [app], belongs: [app]}
+  - {id: folder:Q4, kind: record, connector: app, rule: OPEN, parents: [owner:henry], belongs: [owner:henry]}
+  - {id: folder:Q4-Board, kind: record, connector: app, rule: OPEN, parents: [folder:Q4], belongs: [owner:henry]}
+  - {id: minutes, kind: record, connector: app, rule: OPEN, parents: [folder:Q4-Board], belongs: [owner:henry]}
+  - {id: folder:Q4-Eng, kind: record, connector: app, rule: OPEN, parents: [folder:Q4], belongs: [owner:henry]}
+  - {id: plan, kind: record, connector: app, rule: OPEN, parents: [folder:Q4-Eng], belongs: [owner:henry]}
+  - {id: folder:Q4-Ops, kind: record, connector: app, rule: OPEN, parents: [folder:Q4], belongs: [owner:henry]}
+  - {id: ops-plan, kind: record, connector: app, rule: OPEN, parents: [folder:Q4-Ops], belongs: [owner:henry]}
+  - {id: folder:Q4-Legal, kind: record, connector: app, rule: OPEN, parents: [folder:Q4], belongs: [owner:henry]}
+  - {id: contracts, kind: record, connector: app, rule: OPEN, parents: [folder:Q4-Legal], belongs: [owner:henry]}
+  - {id: budget, kind: record, connector: app, rule: OPEN, parents: [folder:Q4], belongs: [owner:henry]}
+  - {id: roadmap, kind: record, connector: app, rule: OPEN, parents: [folder:Q4], belongs: [owner:henry]}
+  - {id: notes, kind: record, connector: app, rule: OPEN, parents: [folder:Q4], belongs: [owner:henry]}
+  - {id: launch-plan, kind: record, connector: app, rule: OPEN, parents: [sdrive:Marketing], inherits: [sdrive:Marketing], belongs: [sdrive:Marketing]}
+grants:
+  - [henry, owner:henry]
+  - [g:marketing, sdrive:Marketing]
+  # Q4 shared with leads: every My Drive descendant lists leads, except inside the limited Board folder
+  - [g:leads, folder:Q4]
+  - [henry, folder:Q4]
+  - [g:leads, folder:Q4-Eng]
+  - [g:eng, folder:Q4-Eng]
+  - [henry, folder:Q4-Eng]
+  - [g:leads, plan]
+  - [g:eng, plan]
+  - [henry, plan]
+  - [g:leads, folder:Q4-Ops]
+  - [henry, folder:Q4-Ops]
+  - [g:leads, ops-plan]
+  - [henry, ops-plan]
+  - [g:leads, folder:Q4-Legal]
+  - [henry, folder:Q4-Legal]
+  - [g:leads, contracts]
+  - [henry, contracts]
+  - [g:leads, budget]
+  - [ivy, budget]
+  - [henry, budget]
+  - [g:leads, roadmap]
+  - [henry, roadmap]
+  - [g:leads, notes]
+  - [henry, notes]
+  # the limited Board folder: only its direct members and the owner
+  - [ceo, folder:Q4-Board]
+  - [cfo, folder:Q4-Board]
+  - [henry, folder:Q4-Board]
+  - [ceo, minutes]
+  - [cfo, minutes]
+  - [henry, minutes]
+memberships:
+  - [lee, g:leads]
+  - [ed, g:eng]
+  - [mo, g:marketing]
+  - [fay, g:finance]
+gates:
+  - [lee, app]
+  - [ed, app]
+  - [ivy, app]
+  - [cfo, app]
+  - [ceo, app]
+  - [mo, app]
+  - [henry, app]
+  - [fay, app]

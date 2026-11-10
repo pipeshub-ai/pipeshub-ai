@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
+import { MongoTx } from '../../../../src/libs/repositories/mongo';
 import {
   EntitiesEventProducer,
   EventType,
@@ -14,7 +15,7 @@ import {
   OrgUpdatedEvent,
   OrgDeletedEvent,
 } from '../../../../src/modules/user_management/services/entity_events.service';
-import { OutboxEvent } from '../../../../src/libs/services/outbox/outbox.schema';
+import { OutboxEvent } from '../../../../src/libs/repositories/outbox/schema/outbox.schema';
 
 describe('EntitiesEventProducer', () => {
   describe('Enums', () => {
@@ -358,7 +359,7 @@ describe('EntitiesEventProducer - additional coverage', () => {
             email: 'deleted@test.com',
           } as UserDeletedEvent,
         },
-        session,
+        new MongoTx(session as any),
       )
 
       expect(create.firstCall.args[1]).to.deep.equal({ session })

@@ -826,3 +826,46 @@ class TestAConnectedAppsLimit:
 
         graph_context.assert_awaited()
         assert graph_context.await_args.kwargs["connection_sources"] == sources
+
+
+class TestAGrepOnlyHitsConnectorName:
+    """A record found only by grep is cited from its graph document, which
+    search never named; the citation showed no source name."""
+
+    @staticmethod
+    async def _cite(filters: dict[str, Any]) -> dict[str, Any]:
+        from app.utils.citations import _append_record_page_citation
+
+        state = _state(config_service=MagicMock(), filters=filters)
+        state["graph_provider"].get_document = AsyncMock(return_value={"_key": "app-1", "name": "Board finance"})
+        records, units = _five_records()
+        hit = {**_grep_only_record(0), "connectorId": "app-1", "virtualRecordId": "g00"}
+
+        async def merge(**kwargs: Any) -> list[dict[str, Any]]:  # noqa: ANN401
+            kwargs["virtual_record_id_to_result"]["g00"] = hit
+            return [{"virtual_record_id": "g00", "source": "pattern_match"}]
+
+        with patch(f"{_SEARCH}.run_pattern_match_with_llm_grep", AsyncMock(return_value=[{"virtual_record_id": "g00"}])), \
+                patch(f"{_SEARCH}.merge_pattern_match_results", side_effect=merge):
+            await _search(state, records, units)
+        citations: list[dict[str, Any]] = []
+        _append_record_page_citation(hit, "https://app.example/record/rec-g00", citations, {}, 1)
+        return citations[0]["metadata"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("filters", [
+        {"apps": ["app-1"], "kb": []},
+        {"apps": ["app-1"], "kb": [], "connectionApps": ["app-1"], "connectionRecordGroups": [],
+            "connectionRecords": []},
+    ])
+    async def test_is_named_without_a_limit_or_under_its_whole_app(self, filters) -> None:
+        assert (await self._cite(filters))["connectorInstanceName"] == "Board finance"
+
+    @pytest.mark.asyncio
+    async def test_is_not_named_under_a_narrower_limit(self) -> None:
+        meta = await self._cite({
+            "apps": ["app-1"], "kb": [], "records": ["rec-g00"], "connectionApps": [],
+            "connectionRecordGroups": [], "connectionRecords": ["rec-g00"],
+        })
+
+        assert meta["connectorInstanceName"] == ""

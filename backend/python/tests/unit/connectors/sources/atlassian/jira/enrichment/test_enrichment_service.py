@@ -54,7 +54,7 @@ _ISSUE = {
 }
 
 
-async def _enrich(readable, base: str = _BASE) -> str:
+async def _enrich(readable, base: str = _BASE, issue: dict = _ISSUE) -> str:
     with patch(
         "app.connectors.sources.atlassian.jira.enrichment.service._get_data_source",
         new=AsyncMock(return_value=MagicMock()),
@@ -63,7 +63,7 @@ async def _enrich(readable, base: str = _BASE) -> str:
         new=AsyncMock(return_value={}),
     ), patch(
         "app.connectors.sources.atlassian.jira.enrichment.service.batch_fetch_issues",
-        new=AsyncMock(return_value={"10324": _ISSUE}),
+        new=AsyncMock(return_value={"10324": issue}),
     ):
         return await enrich_ticket_llm_context(base, _ticket_record(), AsyncMock(), readable)
 
@@ -107,6 +107,17 @@ class TestCrossIssueReferences:
         assert merged.count("PROJ-1") == merged.count("PROJ-12")
 
     @pytest.mark.asyncio
+    async def test_inward_links_are_checked_like_outward_ones(self) -> None:
+        issue = {"id": "10324", "fields": {"issuelinks": [
+            {"type": {"inward": "is blocked by"}, "inwardIssue": {"id": "6", "key": "SEC-6"}},
+            {"type": {"inward": "is blocked by"}, "inwardIssue": {"id": "7", "key": "PUB-7"}},
+        ]}}
+        check = AsyncMock(return_value={"7"})
+        merged = await _enrich(check, issue=issue)
+        check.assert_awaited_once_with("conn-jira-1", {"6", "7"})
+        assert "SEC-6" not in merged and "PUB-7" in merged
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("readable", ["raises", "absent"])
     async def test_failed_or_missing_check_names_no_other_issue(self, readable: str) -> None:
         check = AsyncMock(side_effect=RuntimeError("down")) if readable == "raises" else None
@@ -114,9 +125,15 @@ class TestCrossIssueReferences:
         for hidden in ("SEC-1", "Foo Corp", "SEC-2", "PUB-3", "SEC-4", "PUB-5"):
             assert hidden not in merged
 
-    async def _epic(self, lookup, readable, value: object = "PROJ-1") -> tuple[str, AsyncMock]:
+    async def _epic(
+        self, lookup, readable, value: object = "PROJ-1", parent_link: object = None,
+    ) -> tuple[str, AsyncMock]:
         """Enrich a ticket whose epic link is the key PROJ-1 (own key PROJ-12)."""
         issue = {"id": "10324", "fields": {"customfield_9": value}}
+        custom = {"epic_link": "customfield_9"}
+        if parent_link is not None:
+            issue["fields"]["customfield_8"] = parent_link
+            custom["parent_link"] = "customfield_8"
         base = "Record: PROJ-12\nTicket Information:\n* Status: Open\n"
 
         async def fetch(*_a: object, by_key: bool = False, **_k: object) -> dict:
@@ -131,7 +148,7 @@ class TestCrossIssueReferences:
             new=AsyncMock(return_value=MagicMock()),
         ), patch(
             "app.connectors.sources.atlassian.jira.enrichment.service._discover_custom_fields",
-            new=AsyncMock(return_value={"epic_link": "customfield_9"}),
+            new=AsyncMock(return_value=custom),
         ), patch(
             "app.connectors.sources.atlassian.jira.enrichment.service.batch_fetch_issues",
             new=AsyncMock(side_effect=fetch),
@@ -180,6 +197,15 @@ class TestCrossIssueReferences:
         merged, _ = await self._epic({"501": {"id": "501", "key": "PROJ-1"}}, check, value)
         assert "Epic Link" not in merged and "Secret" not in merged
         assert "PROJ-1" not in merged.replace("PROJ-12", "")
+
+    @pytest.mark.asyncio
+    async def test_each_epic_and_parent_link_is_decided_on_its_own_key(self) -> None:
+        check = AsyncMock(return_value={"502"})
+        lookup = {"501": {"id": "501", "key": "SEC-1"}, "502": {"id": "502", "key": "PUB-2"}}
+        merged, batch = await self._epic(lookup, check, "SEC-1", parent_link={"key": "PUB-2"})
+        assert "SEC-1" not in merged and "* Parent Link: PUB-2" in merged
+        check.assert_awaited_once_with("conn-jira-1", {"501", "502"})
+        assert len([c for c in batch.await_args_list if c.kwargs.get("by_key")]) == 1
 
     @pytest.mark.asyncio
     async def test_no_check_drops_epic_link(self) -> None:

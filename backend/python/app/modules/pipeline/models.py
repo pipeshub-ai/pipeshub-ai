@@ -200,7 +200,8 @@ class StageState(BaseModel):
     model_config = _WIRE
 
     key: str
-    org_id: str
+    # None for a stored state that names no organisation: the sweep skips it rather than guess one.
+    org_id: str | None = None
     virtual_record_id: str
     rev: str
     stage: str
@@ -261,6 +262,8 @@ class StageState(BaseModel):
         )
 
     def to_job(self) -> StageJob:
+        if not self.org_id:
+            raise ValueError(f"stage state {self.key} has no organisation")
         return StageJob(
             stage=self.stage,
             stage_version=self.stage_version,

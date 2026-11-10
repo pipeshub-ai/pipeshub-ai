@@ -5,6 +5,12 @@ const MODELS_API = '/api/v1/configurationManager/ai-models';
 /** Written by the ai-models setup step, read by its teardown: the models that step added. */
 export const ADDED_MODELS_FILE = '.auth/ai-models.json';
 
+/** Written by the embedding-model setup step, read by its teardown: the model that step added. */
+export const ADDED_EMBEDDING_FILE = '.auth/embedding-model.json';
+
+/** Why the embedding-model setup step could not add the model, for the ai-models step to report. */
+export const EMBEDDING_ERROR_FILE = '.auth/embedding-model-error.txt';
+
 type ModelType = 'llm' | 'embedding';
 
 /**
@@ -113,15 +119,19 @@ export async function removeModels(api: APIRequestContext, added: AddedModel[]):
 }
 
 /**
- * Add a chat and a cloud embedding model where the org has none, and return
- * what was added. Models already configured are left alone. Returns undefined
- * when a model is missing and no credentials say how to add one. If adding
- * the second fails, the first is removed again before the error is rethrown.
+ * Add each of `types` (a chat and a cloud embedding model by default) where
+ * the org has none, and return what was added. Models already configured are
+ * left alone. Returns undefined when a model is missing and no credentials say
+ * how to add one. If adding the second fails, the first is removed again
+ * before the error is rethrown.
  */
-export async function provisionAnsweringModels(api: APIRequestContext): Promise<AddedModel[] | undefined> {
+export async function provisionAnsweringModels(
+  api: APIRequestContext,
+  types: readonly ModelType[] = ['llm', 'embedding'],
+): Promise<AddedModel[] | undefined> {
   const added: AddedModel[] = [];
   try {
-    for (const type of ['llm', 'embedding'] as const) {
+    for (const type of types) {
       if ((await listModels(api, type)).length > 0) continue;
       const config = modelConfig(type);
       if (!config) {

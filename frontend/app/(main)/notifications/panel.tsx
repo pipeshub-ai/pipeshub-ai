@@ -530,7 +530,10 @@ export function NotificationsPanel() {
           zIndex: 9100,
           display: 'flex',
           flexDirection: 'column',
-          background: 'var(--olive-1)',
+          // Frosted like the other side panels (shared frost tokens in globals.css)
+          background: 'var(--frost-bg)',
+          backdropFilter: 'var(--frost-filter)',
+          WebkitBackdropFilter: 'var(--frost-filter)',
           borderRight: isMobile ? 'none' : '1px solid var(--olive-4)',
           boxShadow: '4px 0 20px rgba(0, 0, 0, 0.09)',
           animation: isClosing

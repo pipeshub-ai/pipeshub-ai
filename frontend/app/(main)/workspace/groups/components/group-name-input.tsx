@@ -26,8 +26,8 @@ export function GroupNameInput({
       readOnly={!canEditName}
       style={{
         width: '100%',
-        height: 'var(--space-8)',
-        padding: '6px 8px',
+        height: 44, // the touch-target minimum; also ~12px around the 20px line
+        padding: '0 12px',
         backgroundColor: 'var(--color-surface)',
         border: '1px solid var(--slate-a5)',
         borderRadius: 'var(--radius-2)',
@@ -42,12 +42,12 @@ export function GroupNameInput({
       onFocus={(e) => {
         if (canEditName) {
           e.currentTarget.style.border = '2px solid var(--accent-8)';
-          e.currentTarget.style.padding = '5px 7px';
+          e.currentTarget.style.padding = '0 11px';
         }
       }}
       onBlur={(e) => {
         e.currentTarget.style.border = '1px solid var(--slate-a5)';
-        e.currentTarget.style.padding = '6px 8px';
+        e.currentTarget.style.padding = '0 12px';
       }}
     />
   );

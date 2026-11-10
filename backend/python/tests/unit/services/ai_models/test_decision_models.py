@@ -16,6 +16,7 @@ from app.services.ai_models.decision import (
     DecisionModelError,
     DecisionOption,
     OpenAIDecisionModel,
+    OpenRouterDecisionModel,
     PredicateQuestion,
     ScoreLevel,
     ScoreQuestion,
@@ -191,6 +192,71 @@ async def test_typesafe_sends_system_one_format_and_parses_answers() -> None:
     assert result.answers["team"].choice == "technical"
     assert result.answers["severity"].probabilities == {"Low": 0.0, "High": 1.0}
     assert result.usage.input_tokens == 120
+
+
+async def test_openrouter_sends_system_one_to_its_decisions_endpoint() -> None:
+    seen: list[httpx.Request] = []
+    payload = {
+        "id": "gen-dec-1",
+        "model": "typesafe/jev-1.13-20261020",
+        "provider": "TypeSafe",
+        "answers": {
+            "urgent": {"type": "noul", "noul": 0.96},
+            "team": {"type": "choice", "choice": "payments", "confidence": 0.67, "probabilities": {"payments": 0.78, "technical": 0.22}},
+            "severity": {"type": "score", "score": 0.9, "confidence": 0.9, "probabilities": {"0": 0.1, "1": 0.9}, "legend": {"0": "Low", "1": "High"}},
+        },
+        "usage": {"input_tokens": 476, "output_tokens": 70, "cost": 0.00002},
+    }
+    model = get_decision_model(
+        "openRouter",
+        {"configuration": {"model": "typesafe/jev-1.13", "apiKey": "or-key"}, "isDefault": True},
+    )
+    assert isinstance(model, OpenRouterDecisionModel)
+    with _mock([httpx.Response(200, json=payload)], seen):
+        result = await model.decide({"ticket": "charged twice"}, QUESTIONS)
+
+    request = seen[0]
+    assert str(request.url) == "https://openrouter.ai/api/alpha/decisions"
+    assert request.headers["authorization"] == "Bearer or-key"
+    body = json.loads(request.content)
+    assert body["model"] == "typesafe/jev-1.13"
+    assert body["state"] == {"ticket": "charged twice"}
+    assert body["questions"]["urgent"] == {"type": "noul", "instructions": "Is this urgent?"}
+
+    assert result.model == "typesafe/jev-1.13-20261020"
+    assert result.answers["urgent"].probability == 0.96
+    assert result.answers["team"].probabilities == {"payments": 0.78, "technical": 0.22}
+    assert result.answers["severity"].probabilities == {"Low": 0.1, "High": 0.9}
+    assert result.usage.output_tokens == 70
+
+
+async def test_openai_gateways_call_the_decisions_api_at_their_endpoint() -> None:
+    for provider, endpoint, url in (
+        ("litellmProxy", "http://litellm:4000", "http://litellm:4000/decisions"),
+        ("litellmProxy", "http://litellm:4000/v1/", "http://litellm:4000/v1/decisions"),
+        ("openAICompatible", "https://gateway.example.com/v1", "https://gateway.example.com/v1/decisions"),
+    ):
+        seen: list[httpx.Request] = []
+        model = get_decision_model(
+            provider,
+            {"configuration": {"model": "luna", "apiKey": "gw-key", "endpoint": endpoint}, "isDefault": True},
+        )
+        assert isinstance(model, OpenAIDecisionModel)
+        assert model.provider == provider
+        with _mock([httpx.Response(200, json=OPENAI_RESPONSE)], seen):
+            result = await model.decide("x", QUESTIONS)
+        assert str(seen[0].url) == url
+        assert seen[0].headers["authorization"] == "Bearer gw-key"
+        assert json.loads(seen[0].content)["model"] == "luna"
+        assert result.answers["team"].choice == "payments"
+
+
+def test_openai_gateways_need_an_endpoint() -> None:
+    entry = {"configuration": {"model": "luna", "apiKey": "k"}, "isDefault": True}
+    with pytest.raises(ValueError, match="LiteLLM Proxy decision models need an endpoint"):
+        get_decision_model("litellmProxy", entry)
+    with pytest.raises(ValueError, match="OpenAI Compatible decision models need an endpoint"):
+        get_decision_model("openAICompatible", entry)
 
 
 async def test_retries_rate_limit_then_succeeds() -> None:

@@ -134,6 +134,8 @@ class TestOpenAICachePlan:
     @pytest.mark.parametrize(("model", "base_url", "expected"), [
         ("gpt-5.4", None, (RETAINED, False)),
         ("gpt-5.4", "https://api.openai.com/v1", (RETAINED, False)),
+        ("gpt-5.4", "https://us.api.openai.com/v1", (RETAINED, False)),
+        ("gpt-5.6-luna", "https://eu.api.openai.com/v1", (KEYED, True)),
         ("gpt-5.4", AZURE, (RETAINED, False)),
         ("gpt-5", "https://res.cognitiveservices.azure.com", (RETAINED, False)),
         ("gpt-5-codex", None, (RETAINED, False)),

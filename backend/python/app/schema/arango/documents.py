@@ -28,6 +28,11 @@ orgs_schema = {
             "phone": {"type": ["string", "null"]},
             "dunsId": {"type": ["string", "null"]},
             "isExternal": {"type": "boolean", "default": False},
+            # The org an external organisation (a CRM account) belongs to.
+            "parentOrgId": {"type": ["string", "null"]},
+            # organization_key of the name (app.modules.entity_resolution.organizations):
+            # how an extracted name finds an external organisation.
+            "normalizedName": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
             "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
@@ -210,6 +215,22 @@ app_schema = {
             "vectorMembershipBackfillAttempts": {"type": ["integer", "null"]},
             "vectorMembershipBackfillVrids": {"type": ["integer", "null"]},
             "vectorMembershipBackfillExhausted": {"type": ["boolean", "null"]},
+            # app.services.permissions.structure_generation: moves with every structural write of the connector
+            "scopeProjectionGeneration": {"type": ["number", "null"]},  # incremented in AQL, which computes in doubles
+            "scopeProjectionUnsafe": {"type": ["boolean", "number", "null"]},  # a mark: true (older code) or a time
+            "scopeProjectionPendingRoots": {"type": ["string", "null"]},  # {root: generation} awaiting a rewrite (see permissions.pending)
+            "scopeProjectionOpened": {"type": ["number", "null"]},  # writes started that could not be undone, and finished (see unclosed_writes)
+            "scopeProjectionClosed": {"type": ["number", "null"]},
+            # app.services.vector_db.scope_backfill: the checkpoint of the permission scope-field back-fill
+            "scopeBackfillState": {"type": ["string", "null"]},
+            "scopeBackfillAfter": {"type": ["string", "null"]},
+            "scopeBackfillVersion": {"type": ["integer", "null"]},
+            "scopeBackfillGeneration": {"type": ["integer", "null"]},
+            "scopeBackfillStructureGeneration": {"type": ["number", "null"]},  # what the pass read first
+            "scopeBackfillUnsafe": {"type": ["boolean", "number", "null"]},
+            "scopeBackfillRecords": {"type": ["integer", "null"]},
+            "scopeBackfillStale": {"type": ["integer", "null"]},
+            "scopeBackfillError": {"type": ["string", "null"]},
             # app.modules.indexing.entity_index_rebuild
             "entityIndexState": {"type": ["string", "null"]},
             "entityIndexPhase": {"type": ["string", "null"]},
@@ -264,6 +285,10 @@ app_schema = {
             # Excludes this KB from list/browse/unscoped-search surfaces even
             # though it is a normal KB app; explicit filters.kb still resolves it.
             "isHidden": {"type": ["boolean", "null"]},
+            # JWT user who POSTed a hidden create. The project owner is
+            # createdBy; this is who may delete an empty unused copy after a
+            # lost link race (they are WRITER, not OWNER).
+            "initiatedBy": {"type": ["string", "null"]},
         },
         "required": [
             "name",
@@ -323,7 +348,7 @@ record_schema = {
             "uploadSourceTimestampOrigin": {"type": "string", "pattern": "^[a-z_]{1,32}$"},
             "isDeleted": {"type": "boolean", "default": False},
             "isArchived": {"type": "boolean", "default": False},
-            "isVLMOcrProcessed": {"type": "boolean", "default": False},
+            "isVLMOcrProcessed": {"type": ["boolean", "null"], "default": False},
             "deletedByUserId": {"type": ["string", "null"]},
             # Soft delete: when the record entered the trash, who put it there,
             # the batch a restore brings back together, and the purge's retries.
@@ -364,6 +389,8 @@ record_schema = {
             "secretsRedacted": {"type": ["integer", "null"], "minimum": 0},
             # Promoted duplicates of this record still need its taxonomy copied.
             "duplicateReconcilePending": {"type": "boolean"},
+            # Classification waits for the record's first use (ENABLE_CLASSIFY_ON_FIRST_USE).
+            "extractionDeferred": {"type": "boolean"},
             # app.modules.indexing.duplicate_reconcile
             "duplicateReconcileAttempts": {"type": ["integer", "null"]},
             "duplicateReconcileDueAt": {"type": ["number", "null"]},
@@ -386,6 +413,8 @@ record_schema = {
             "hideWeburl": {"type": "boolean", "default": False},
             "isInternal": {"type": "boolean", "default": False},
             "isPlaceholder": {"type": "boolean", "default": False},
+            # Set by an API push (see Record.push_origin); absent on every other record.
+            "pushOrigin": {"type": "boolean"},
             # Permission traversal input, read per visited node. Per node and
             # mixable within a connector; RESTRICTED applies to the node it is
             # on and is never inherited by its children. Absent reads as OPEN,
@@ -404,6 +433,29 @@ record_schema = {
             "rowCount": {"type": ["number", "null"]},
             # sha256(source bytes)[:16] of the revision being processed; stage status writes CAS on it.
             "contentRev": {"type": ["string", "null"]},
+            # Typed property values projected for filtering (record properties); written by indexing.
+            "recordProps": {"type": ["object", "null"]},
+            # 16-hex hash of the property names projected, the schema generation that
+            # defined them, the source stamp they were taken from, and an optimistic counter.
+            "propsSet": {"type": ["string", "null"]},
+            "propsGen": {"type": ["number", "null"]},
+            "propsSrc": {"type": ["number", "null"]},
+            "propsVer": {"type": ["number", "null"]},
+            # The parse-now marker (app.modules.indexing.parse_now_marker). A pattern, not an
+            # enum, for the same reason as entityExtractionStatus.
+            "parseNowStatus": {"type": ["string", "null"], "pattern": "^[A-Z_]{1,32}$"},
+            "parseNowRev": {"type": ["string", "null"]},
+            "parseNowReason": {"type": ["string", "null"]},
+            "parseNowAt": {"type": ["number", "null"]},
+            # The in-flight embedding marker (see app/modules/indexing/embed_resume.py): flat scalars, so
+            # a partial write leaves the others alone on every graph provider. Null once the record is indexed.
+            "embedVrid": {"type": ["string", "null"]},
+            "embedRev": {"type": ["string", "null"]},
+            "embedKey": {"type": ["string", "null"]},
+            "embedDigest": {"type": ["string", "null"]},
+            "embedTotal": {"type": ["number", "null"]},
+            "embedDeliveryId": {"type": ["string", "null"]},
+            "embedStartedMs": {"type": ["number", "null"]},
         },
         "required": [
             "recordName",
@@ -658,6 +710,7 @@ ticket_record_schema = {
             "assigneeSourceTimestamp": {"type": ["number", "null"]},
             "creatorSourceTimestamp": {"type": ["number", "null"]},
             "reporterSourceTimestamp": {"type": ["number", "null"]},
+            "milestone": {"type": ["string", "null"]},
             "labels":{
                 "type": ["array", "null"],
                 "items": {"type": "string", "minLength": 0},
@@ -699,6 +752,7 @@ meeting_record_schema = {
             "startTime": {"type": ["string", "null"]},
             "endTime": {"type": ["string", "null"]},
             "timezone": {"type": ["string", "null"]},
+            "recordingUrl": {"type": ["string", "null"]},
         },
         "additionalProperties": False,
     },
@@ -761,6 +815,7 @@ pull_request_record_schema = {
             },
             "mergeable":{"type": ["string", "null"]},
             "mergedBy": {"type": ["string", "null"]},
+            "milestone": {"type": ["string", "null"]},
             "labels":{
                 "type": ["array","null"],
                 "items": {"type": "string", "minLength": 0},
@@ -780,8 +835,8 @@ code_file_record_schema={
             "orgId": {"type": "string"},
             "summary": {"type": ["string", "null"]},
             "description": {"type": ["string", "null"]},
-            "filePath": {"type": "string", "minLength": 0},
-            "fileHash": {"type": "string", "minLength": 0},
+            "filePath": {"type": ["string", "null"]},
+            "fileHash": {"type": ["string", "null"]},
             "language": {"type": ["string", "null"]},
             # source | test | config | build | migration | script |
             # type_definition | generated -- see parsers/code_parser/file_role.py
@@ -819,8 +874,11 @@ block_schema = {
             "parserVersion": {"type": ["string", "null"]},
             "kind": {"type": ["string", "null"]},
             "subType": {"type": ["string", "null"]},
+            "modifiers": {"type": ["array", "null"], "items": {"type": "string"}},
+            "typeParamCount": {"type": ["number", "null"]},
             "isBlockGroup": {"type": "boolean"},
             "isExternal": {"type": "boolean"},
+            "isAccessor": {"type": ["boolean", "null"]},
             "index": {"type": ["number", "null"]},
             "startLine": {"type": ["number", "null"]},
             "endLine": {"type": ["number", "null"]},
@@ -829,7 +887,11 @@ block_schema = {
             "parentBlockId": {"type": ["string", "null"]},
             "pendingEdges": {"type": ["array", "null"], "items": {"type": "object"}},
             "typeTable": {"type": ["object", "null"]},
+            # C/C++ function-like macro -> [line, names its body calls], on the file-summary block.
+            "macroTable": {"type": ["object", "null"]},
             "referencedNames": {"type": ["array", "null"], "items": {"type": "string"}},
+            # `specifier:name` of the library calls the block makes, rewritten by each edge build.
+            "externalRefs": {"type": ["array", "null"], "items": {"type": "string"}},
             "createdAtTimestamp": {"type": ["number", "null"]},
             "updatedAtTimestamp": {"type": ["number", "null"]},
         },
@@ -846,6 +908,8 @@ sql_table_record_schema = {
             "schemaName": {"type": ["string", "null"]},
             "fqn": {"type": ["string", "null"]},  # fully qualified name: database.schema.table
             "rowCount": {"type": ["number", "null"]},
+            "dbRowCount": {"type": ["number", "null"]},
+            "indexedRowCount": {"type": ["number", "null"]},
             "sizeInBytes": {"type": ["number", "null"]},
             "columnCount": {"type": ["number", "null"]},
             "ddl": {"type": ["string", "null"]},  # CREATE TABLE statement
@@ -866,6 +930,46 @@ sql_table_record_schema = {
     "message": "Document does not match the SQL table record schema.",
 }
 
+sql_column_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "name": {"type": "string", "minLength": 1},
+            "fqn": {"type": "string", "minLength": 1},
+            "tableFqn": {"type": "string", "minLength": 1},
+            "dataType": {"type": ["string", "null"]},
+            "nullable": {"type": "boolean", "default": False},
+            "isPrimaryKey": {"type": "boolean", "default": False},
+            "isUnique": {"type": "boolean", "default": False},
+            "isPartOfCompositePrimaryKey": {"type": "boolean", "default": False},
+            "isPartOfCompositeUnique": {"type": "boolean", "default": False},
+            "default": {"type": ["string", "null"]},
+            "ordinalPosition": {"type": ["number", "null"]},
+            "distinctCount": {"type": ["number", "null"]},
+            "nullCount": {"type": ["number", "null"]},
+            "cardinalityRatio": {"type": ["number", "null"]},
+            "confidenceScore": {"type": ["string", "null"]},
+            "topValues": {
+                "type": ["array", "null"],
+                "items": {"type": "string"},
+            },
+            "topValueFrequencies": {
+                "type": ["array", "null"],
+                "items": {"type": "number"},
+            },
+            "minValue": {"type": ["string", "null"]},
+            "maxValue": {"type": ["string", "null"]},
+            "numericText": {"type": ["boolean", "null"]},
+            "profiledAt": {"type": ["number", "null"]},
+        },
+        "required": ["name", "fqn", "tableFqn"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the SQL column record schema.",
+}
+
 sql_view_record_schema = {
     "rule": {
         "type": "object",
@@ -882,6 +986,7 @@ sql_view_record_schema = {
             },
             "isSecure": {"type": "boolean", "default": False},
             "comment": {"type": ["string", "null"]},
+            "ddl": {"type": ["string", "null"]},  # CREATE VIEW statement, or synthetic column-based DDL
         },
         "required": ["name"],
         "additionalProperties": False,
@@ -983,6 +1088,8 @@ record_group_schema = {
             "deletedAtSourceTimestamp": {"type": ["number", "null"]},
             "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
             "sourceLastModifiedTimestamp": {"type": ["number", "null"]},
+            # Code repository groups: the commit the git connector last synced the repo to.
+            "lastSyncedCommit": {"type": ["string", "null"]},
         },
         "required": [
             "groupName",
@@ -1022,6 +1129,7 @@ named_entity_schema = {
             "timex": {"type": ["string", "null"]},
             "amount": {"type": ["string", "null"]},
             "amountFloat": {"type": ["number", "null"]},
+            "amountHighFloat": {"type": ["number", "null"]},
             "currency": {"type": ["string", "null"]},
             "numericValue": {"type": ["number", "null"]},
             "unit": {"type": ["string", "null"]},
@@ -1059,6 +1167,7 @@ value_mention_schema = {
             "timex": {"type": ["string", "null"]},
             "amount": {"type": ["string", "null"]},
             "amountFloat": {"type": ["number", "null"]},
+            "amountHighFloat": {"type": ["number", "null"]},
             "currency": {"type": ["string", "null"]},
             "numericValue": {"type": ["number", "null"]},
             "unit": {"type": ["string", "null"]},
@@ -1141,7 +1250,6 @@ agent_template_schema = {
                         "name": {"type": "string", "minLength": 1},
                         "description": {"type": "string", "minLength": 1},
                     },
-                    "nullable": True,
                     "required": ["name"],
                     "additionalProperties": True,
                 },
@@ -1157,7 +1265,6 @@ agent_template_schema = {
                         "provider": {"type": "string", "minLength": 1},
                         "config": {"type": "object"},
                     },
-                    "nullable": True,
                     "required": ["name", "role", "provider"],
                     "additionalProperties": True,
                 },
@@ -1168,7 +1275,6 @@ agent_template_schema = {
                 "properties": {
                     "type": {"type": "array", "items": {"type": "string", "enum": ["CONVERSATIONS", "KNOWLEDGE_BASE", "APPS", "ACTIVITIES", "VECTOR_DB"]}},
                 },
-                "nullable": True,
                 "required": ["type"],
                 "additionalProperties": True,
             },
@@ -1544,8 +1650,10 @@ people_schema = {
     "rule": {
         "type": "object",
         "properties": {
-            "_key": {"type": "string"},  # uuid4; (orgId, email) is the business key (composite unique index)
-            "email": {"type": "string"},
+            "_key": {"type": "string"},  # uuid4; (orgId, email), else (orgId, sourceKey), is the business key
+            "email": {"type": ["string", "null"]},
+            # "<connector id>:<source user id>" for a person a source names without an email
+            "sourceKey": {"type": ["string", "null"]},
             # Not in "required": pre-existing documents written before org-scoping
             # was added have no orgId and must stay schema-valid.
             "orgId": {"type": ["string", "null"]},
@@ -1556,7 +1664,7 @@ people_schema = {
             "lastName": {"type": ["string", "null"]},
             "phone": {"type": ["string", "null"]},
         },
-        "required": ["email", "createdAtTimestamp", "updatedAtTimestamp"],
+        "required": ["createdAtTimestamp", "updatedAtTimestamp"],
         "additionalProperties": False,
     },
     "level": "strict",
@@ -1686,7 +1794,7 @@ agent_skills_schema = {
             "concepts": {"type": "array", "items": {"type": "string"}, "default": []},
             "related": {"type": "array", "items": {"type": "string"}, "default": []},
             "requires": {"type": "array", "items": {"type": "string"}, "default": []},
-            "status": {"type": "string", "enum": ["active", "deprecated", "disabled"]},
+            "status": {"type": "string", "enum": ["active", "draft", "candidate", "deprecated", "disabled"]},
             "source": {"type": "string"},
             "version": {"type": "string"},
             "deprecatedReason": {"type": ["string", "null"]},

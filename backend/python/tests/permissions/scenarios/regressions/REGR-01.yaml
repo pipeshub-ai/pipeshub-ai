@@ -1,0 +1,72 @@
+- id: REGR-01
+  title: '50-hop cap: a deep page with a cycle gains a short path only when it inherits its second parent'
+  source: independent review of the conformance harness
+  rule: intersection
+  world:
+    principals:
+      - {id: u}
+    nodes:
+      - {id: A, kind: app, app_type: CONFLUENCE}
+      - {id: s, kind: group, connector: A, rule: OPEN, parents: [A], inherits: [A], belongs: [A]}
+      - {id: p1, kind: record, connector: A, rule: STRICT, parents: [s], inherits: [s]}
+      - {id: p2, kind: record, connector: A, rule: STRICT, parents: [p1], inherits: [p1]}
+      - {id: p3, kind: record, connector: A, rule: STRICT, parents: [p2], inherits: [p2]}
+      - {id: p4, kind: record, connector: A, rule: STRICT, parents: [p3], inherits: [p3]}
+      - {id: p5, kind: record, connector: A, rule: STRICT, parents: [p4, p30], inherits: [p4]}
+      - {id: p6, kind: record, connector: A, rule: STRICT, parents: [p5], inherits: [p5]}
+      - {id: p7, kind: record, connector: A, rule: STRICT, parents: [p6], inherits: [p6]}
+      - {id: p8, kind: record, connector: A, rule: STRICT, parents: [p7], inherits: [p7]}
+      - {id: p9, kind: record, connector: A, rule: STRICT, parents: [p8], inherits: [p8]}
+      - {id: p10, kind: record, connector: A, rule: STRICT, parents: [p9], inherits: [p9]}
+      - {id: p11, kind: record, connector: A, rule: STRICT, parents: [p10], inherits: [p10]}
+      - {id: p12, kind: record, connector: A, rule: STRICT, parents: [p11], inherits: [p11]}
+      - {id: p13, kind: record, connector: A, rule: STRICT, parents: [p12], inherits: [p12]}
+      - {id: p14, kind: record, connector: A, rule: STRICT, parents: [p13], inherits: [p13]}
+      - {id: p15, kind: record, connector: A, rule: STRICT, parents: [p14], inherits: [p14]}
+      - {id: p16, kind: record, connector: A, rule: STRICT, parents: [p15], inherits: [p15]}
+      - {id: p17, kind: record, connector: A, rule: STRICT, parents: [p16], inherits: [p16]}
+      - {id: p18, kind: record, connector: A, rule: STRICT, parents: [p17], inherits: [p17]}
+      - {id: p19, kind: record, connector: A, rule: STRICT, parents: [p18], inherits: [p18]}
+      - {id: p20, kind: record, connector: A, rule: STRICT, parents: [p19], inherits: [p19]}
+      - {id: p21, kind: record, connector: A, rule: STRICT, parents: [p20], inherits: [p20]}
+      - {id: p22, kind: record, connector: A, rule: STRICT, parents: [p21], inherits: [p21]}
+      - {id: p23, kind: record, connector: A, rule: STRICT, parents: [p22], inherits: [p22]}
+      - {id: p24, kind: record, connector: A, rule: STRICT, parents: [p23], inherits: [p23]}
+      - {id: p25, kind: record, connector: A, rule: STRICT, parents: [p24], inherits: [p24]}
+      - {id: p26, kind: record, connector: A, rule: STRICT, parents: [p25], inherits: [p25]}
+      - {id: p27, kind: record, connector: A, rule: STRICT, parents: [p26], inherits: [p26]}
+      - {id: p28, kind: record, connector: A, rule: STRICT, parents: [p27], inherits: [p27]}
+      - {id: p29, kind: record, connector: A, rule: STRICT, parents: [p28], inherits: [p28]}
+      - {id: p30, kind: record, connector: A, rule: STRICT, parents: [p29], inherits: [p29]}
+      - {id: p31, kind: record, connector: A, rule: STRICT, parents: [p30], inherits: [p30]}
+      - {id: p32, kind: record, connector: A, rule: STRICT, parents: [p31], inherits: [p31]}
+      - {id: p33, kind: record, connector: A, rule: STRICT, parents: [p32], inherits: [p32]}
+      - {id: p34, kind: record, connector: A, rule: STRICT, parents: [p33], inherits: [p33]}
+      - {id: p35, kind: record, connector: A, rule: STRICT, parents: [p34], inherits: [p34]}
+      - {id: p36, kind: record, connector: A, rule: STRICT, parents: [p35], inherits: [p35]}
+      - {id: p37, kind: record, connector: A, rule: STRICT, parents: [p36], inherits: [p36]}
+      - {id: p38, kind: record, connector: A, rule: STRICT, parents: [p37], inherits: [p37]}
+      - {id: p39, kind: record, connector: A, rule: STRICT, parents: [p38], inherits: [p38]}
+      - {id: p40, kind: record, connector: A, rule: STRICT, parents: [p39], inherits: [p39]}
+      - {id: p41, kind: record, connector: A, rule: STRICT, parents: [p40], inherits: [p40]}
+      - {id: p42, kind: record, connector: A, rule: STRICT, parents: [p41], inherits: [p41]}
+      - {id: p43, kind: record, connector: A, rule: STRICT, parents: [p42], inherits: [p42]}
+      - {id: p44, kind: record, connector: A, rule: STRICT, parents: [p43], inherits: [p43]}
+      - {id: p45, kind: record, connector: A, rule: STRICT, parents: [p44], inherits: [p44]}
+      - {id: p46, kind: record, connector: A, rule: STRICT, parents: [p45], inherits: [p45]}
+      - {id: p47, kind: record, connector: A, rule: STRICT, parents: [p46], inherits: [p46]}
+      - {id: p48, kind: record, connector: A, rule: STRICT, parents: [p47], inherits: [p47]}
+      - {id: p49, kind: record, connector: A, rule: STRICT, parents: [p48], inherits: [p48]}
+      - {id: p50, kind: record, connector: A, rule: STRICT, parents: [p49, short], inherits: [p49]}
+      - {id: short, kind: record, connector: A, rule: STRICT, parents: [s], inherits: [s]}
+    gates:
+      - [u, A]
+  mutations:
+    - {kind: inherit_set, node: p50, ref: short, value: 'true'}
+  expect:
+    before:
+      u: {p49: admit, p50: deny}
+    verdicts:
+      u: {p49: admit, p50: admit, p5: admit}
+  tags: [regression, qa, depth, multi-parent, cycle]
+  comment: p49 is 50 hops below the app (admitted), p50 is 51 (hidden) until its inherit edge to the short second parent turns a 3-hop path on. The p30 -> p5 back edge makes a cycle.

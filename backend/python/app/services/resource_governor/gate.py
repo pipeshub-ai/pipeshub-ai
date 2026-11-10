@@ -115,6 +115,8 @@ class AdmissionGate:
         # permit, and one could lose that race for the whole of its
         # processing budget while newer arrivals went ahead of it.
         self._waiters: deque[_Waiter] = deque()
+        # Priority waiters sit at the front, in arrival order among themselves.
+        self._priority_waiting = 0
         self._unsubscribe: Callable[[], None] | None = None
 
         self._in_use = 0
@@ -190,8 +192,14 @@ class AdmissionGate:
 
     # -- public API ----------------------------------------------------
 
-    async def acquire(self, cost: int = 1, timeout: float | None = None, *, cap: int | None = None) -> bool:
+    async def acquire(
+        self, cost: int = 1, timeout: float | None = None, *, cap: int | None = None, priority: bool = False
+    ) -> bool:
         """Acquire *cost* permits, against the pool's current limit or, when given, *cap*.
+
+        *priority* puts the acquire ahead of every waiting normal acquire (behind earlier priority
+        ones). It never exceeds the limit and takes nothing already granted: it only decides who is
+        next when a permit frees. Callers bound how many priority acquires they have outstanding.
 
         *cap* is for work a process sharing this one's memory already admitted under its
         memory brake (``memory_domain.parse_admission_cap``): the pool's ceiling still
@@ -203,15 +211,23 @@ class AdmissionGate:
         """
         loop = self._bind()
         # Nobody may overtake a queued waiter, so a fresh arrival only takes
-        # the fast path while the queue is empty.
-        if not self._waiters and self._try_admit(cost, cap):
+        # the fast path while the queue is empty. A priority acquire goes ahead of the
+        # normal ones, so it may take free room even while they are queued, but not
+        # ahead of an earlier priority waiter.
+        if (not self._waiters or (priority and not self._priority_waiting)) and self._try_admit(cost, cap):
             return True
 
         wait_start = self._clock()
         self._blocked_acquires += 1
         deadline = None if timeout is None else wait_start + timeout
         waiter = _Waiter(loop)
-        self._waiters.append(waiter)
+        if priority:
+            self._waiters.insert(self._priority_waiting, waiter)
+            self._priority_waiting += 1
+            # Wake the head, which may be this waiter, so it checks admission without waiting out the poll.
+            self._wake_head()
+        else:
+            self._waiters.append(waiter)
         try:
             while True:
                 remaining = None if deadline is None else deadline - self._clock()
@@ -229,6 +245,8 @@ class AdmissionGate:
             self._total_wait_seconds += self._clock() - wait_start
             with contextlib.suppress(ValueError):
                 self._waiters.remove(waiter)
+                if priority:
+                    self._priority_waiting -= 1
             # Whether admitted or given up, the next in line gets its turn:
             # a limit that grew by several permits admits several waiters,
             # one wake at a time.

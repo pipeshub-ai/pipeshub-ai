@@ -43,13 +43,13 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from app.utils.env_utils import env_bool, env_int
+from app.utils.openai_hosts import is_openai_api_host
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
 ANTHROPIC_TTLS = frozenset({"5m", "1h"})
 ANTHROPIC_TOP_LEVEL_HOSTS = ("api.anthropic.com", ".services.ai.azure.com")
-OPENAI_HOSTS = ("api.openai.com",)
 AZURE_OPENAI_HOSTS = (".openai.azure.com", ".cognitiveservices.azure.com")
 # Azure AI Foundry hosts OpenAI models next to Llama, Mistral, DeepSeek, ...;
 # only OpenAI's own model names get OpenAI's cache parameters there.
@@ -202,7 +202,7 @@ def openai_cache_plan(
     if not _openai_cache_target(model, host):
         return None
     breakpoints = explicit_breakpoints(model)
-    on_openai = host is None or _matches(host, OPENAI_HOSTS)
+    on_openai = host is None or is_openai_api_host(host)
     kwargs = {OPENAI_KEY_PARAM: scope.key(1 if breakpoints and on_openai else settings.routing_shards)}
     retention_models = OPENAI_RETENTION_MODELS if on_openai else AZURE_RETENTION_MODELS
     if settings.openai_retention and _listed(model, retention_models):
@@ -222,7 +222,7 @@ def _openrouter_plan(
 
 
 def _openai_cache_target(model: str | None, host: str | None) -> bool:
-    if host is None or _matches(host, OPENAI_HOSTS + AZURE_OPENAI_HOSTS):
+    if host is None or is_openai_api_host(host) or _matches(host, AZURE_OPENAI_HOSTS):
         return True
     return _matches(host, FOUNDRY_HOSTS) and bool(model and _OPENAI_MODEL.match(model))
 

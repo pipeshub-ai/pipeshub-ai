@@ -104,6 +104,17 @@ class TestDeploymentRule:
             await _client(seen, allow_private=None).get(f"http://{host}:8088/ocs/v1.php/cloud/capabilities")
         assert seen == []
 
+    async def test_an_unresolvable_name_is_a_connection_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(PRIVATE_ADDRESS_SWITCH_ENV, raising=False)
+        seen: list[httpx.Request] = []
+
+        def nxdomain(*_a: object, **_k: object) -> list:
+            raise socket.gaierror("Name or service not known")
+
+        with patch("socket.getaddrinfo", nxdomain), pytest.raises(httpx.ConnectError):
+            await _client(seen, allow_private=None).get("https://nowhere.example/a")
+        assert seen == []
+
     async def test_a_private_server_is_refused_while_the_deployment_blocks_them(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:

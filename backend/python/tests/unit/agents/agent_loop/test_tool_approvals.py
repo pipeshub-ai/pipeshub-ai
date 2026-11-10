@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 import time
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -29,6 +30,7 @@ from app.agent_loop_lib.hooks.middleware.decisions import PreDecision
 from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.builtin.planning.task_complete import TaskCompleteTool
+from app.agent_loop_lib.tools.executor import ToolExecutor
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.agent_loop import parked_turn
@@ -42,6 +44,7 @@ from app.agents.agent_loop.tool_approvals import (
     decide,
 )
 from app.agents.mcp.models import MCPToolInfo
+from app.utils.logger import log_record_fields
 from tests.unit.agents.adapter.conftest import make_context
 from tests.unit.agents.adapter.support.scripted_transport import (
     ScriptedStep,
@@ -127,6 +130,47 @@ class TestDecide:
         assert decide(source="mcp", own=_BLOCK, kind="write", watched=False).rule == _BLOCK
 
 
+class TestEnabledOnProject:
+    """A project chat loads only the tools the project enables, so one that would start at Block
+    asks instead; what someone set, and an unwatched run, are unchanged."""
+
+    def test_a_deleting_tool_nobody_set_a_rule_for_asks(self) -> None:
+        verdict = decide(source="mcp", own=None, kind="destructive", watched=True, enabled_on_project=True)
+        assert verdict.rule == _ASK
+
+    def test_a_block_someone_set_still_blocks(self) -> None:
+        verdict = decide(source="mcp", own=_BLOCK, kind="destructive", watched=True, enabled_on_project=True)
+        assert verdict == approvals.Verdict(_BLOCK, "own")
+
+    def test_nobody_watching_still_blocks(self) -> None:
+        verdict = decide(source="mcp", own=None, kind="destructive", watched=False, enabled_on_project=True)
+        assert verdict == approvals.Verdict(_BLOCK, "unattended")
+
+    def test_the_approved_call_runs(self) -> None:
+        verdict = decide(
+            source="mcp", own=None, kind="destructive", watched=True, approved_call=True, enabled_on_project=True,
+        )
+        assert verdict.rule == _ALLOW
+
+    @pytest.mark.parametrize("kind,expected", [("read", _ALLOW), ("write", _ASK)])
+    def test_other_kinds_keep_their_starting_rule(self, kind: str, expected: str) -> None:
+        assert decide(source="mcp", own=None, kind=kind, watched=True, enabled_on_project=True).rule == expected  # type: ignore[arg-type]
+
+    async def test_the_gate_shows_a_card_in_a_project_chat(self) -> None:
+        store = _Store()
+        ctx = await _gate(
+            _context(store, project_tools_selected=True), _adapter(read_only=False, name="delete_issue"), key="X-1",
+        )
+        assert ctx.decision == PreDecision.ASK
+        assert ctx.pending_approval is not None
+        assert ctx.pending_approval.details["kind"] == "destructive"
+        assert len(store.pending()) == 1
+
+    async def test_the_gate_still_denies_outside_a_project(self) -> None:
+        ctx = await _gate(_context(), _adapter(read_only=False, name="delete_issue"), key="X-1")
+        assert ctx.decision == PreDecision.DENY
+
+
 class TestToolsetStartingRules:
     """A toolset tool is one of PipesHub's own integrations: its writes run, a deleting call asks."""
 
@@ -180,6 +224,9 @@ class TestSqlStatements:
         "SELECT * FROM customers FOR UPDATE",
         "WITH x AS (UPDATE customers SET email = NULL RETURNING *) SELECT * FROM x",
         "EXPLAIN ANALYZE DELETE FROM customers",
+        "EXPLAIN ANALYSE SELECT 1",
+        "EXPLAIN (ANALYSE) SELECT 1",
+        "EXPLAIN (FORMAT JSON, ANALYSE) SELECT 1",
         # Names split from their "(" by a comment, escaped identifiers, functions that run a string.
         "SELECT pg_terminate_backend--x\n(1)",
         "SELECT SLEEP#x\n(1)",
@@ -955,6 +1002,75 @@ class TestAnsweringTheCard:
 _LOOKED_UP = "The issue tracker's project for this is PIPE, id 4242."
 
 
+def _c1_ends(caplog: pytest.LogCaptureFixture) -> list[tuple[int, dict[str, object]]]:
+    return [
+        (r.levelno, log_record_fields(r)) for r in caplog.records
+        if r.getMessage() == "tool_call.end" and log_record_fields(r).get("tool_call_id") == "c1"
+    ]
+
+
+class TestTheParkedCallIsLoggedOnce:
+    """One INFO-or-above `tool_call.end` per parked call, whether it ran or not; parking it is DEBUG."""
+
+    async def test_parking_it_is_only_a_debug_line(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.DEBUG):
+            await _ask(_Store(), _Server())
+
+        assert [(level, f["reason"]) for level, f in _c1_ends(caplog)] == [(logging.DEBUG, "awaiting_approval")]
+
+    async def test_an_approved_call_is_logged_when_it_runs(self, caplog: pytest.LogCaptureFixture) -> None:
+        store, mcp = _Store(), _Server()
+        approval_id = await _ask(store, mcp)
+
+        with caplog.at_level(logging.DEBUG):
+            await _answer(store, mcp, approval_id, "allow")
+
+        assert [(level, f["outcome"]) for level, f in _c1_ends(caplog)] == [(logging.INFO, "success")]
+
+    async def test_a_declined_call_is_skipped(self, caplog: pytest.LogCaptureFixture) -> None:
+        store, mcp = _Store(), _Server()
+        approval_id = await _ask(store, mcp)
+
+        with caplog.at_level(logging.DEBUG):
+            await _answer(store, mcp, approval_id, "deny")
+
+        ((level, fields),) = _c1_ends(caplog)
+        assert level == logging.INFO
+        assert (fields["outcome"], fields["reason"], fields["tool"]) == ("skipped", "declined", "mcp_jira_create_issue")
+
+    async def test_an_expired_card_is_skipped(self, caplog: pytest.LogCaptureFixture) -> None:
+        store, mcp = _Store(), _Server()
+        approval_id = await _ask(store, mcp)
+        later = time.time() + approvals.APPROVAL_TTL_SECONDS + 1
+
+        with caplog.at_level(logging.DEBUG), pytest.MonkeyPatch.context() as m:
+            m.setattr(approvals.time, "time", lambda: later)
+            await _answer(store, mcp, approval_id, "allow")
+
+        assert [(level, f["reason"]) for level, f in _c1_ends(caplog)] == [(logging.INFO, "expired")]
+
+    async def test_an_approved_call_that_raises_has_one_stack(self, caplog: pytest.LogCaptureFixture) -> None:
+        store, mcp = _Store(), _Server()
+        approval_id = await _ask(store, mcp)
+
+        failure = RuntimeError("sentinel-a")  # built here: the stack's source lines are printed, its message isn't
+
+        class _Raising(ToolExecutor):
+            async def _run(self, *_args: Any, **_kwargs: Any) -> Any:  # noqa: ANN401
+                raise failure
+
+        with caplog.at_level(logging.DEBUG), pytest.MonkeyPatch.context() as m:
+            m.setattr(approvals, "ToolExecutor", _Raising)
+            await _answer(store, mcp, approval_id, "allow")
+
+        ((level, _),) = _c1_ends(caplog)
+        assert level == logging.ERROR
+        (run_failed,) = [r for r in caplog.records if r.getMessage() == "tool_approval.run_failed"]
+        assert run_failed.levelno == logging.DEBUG and run_failed.exc_text is None
+        assert len([r for r in caplog.records if r.exc_text and r.levelno > logging.DEBUG]) == 1
+        assert "sentinel-a" not in caplog.text
+
+
 class TestTheStoppedTurnCarriesOver:
     """The answer is a new request, and the history Node sends it has each earlier result only as
     its summary: the turn the model had is kept with the card and put back."""
@@ -1048,3 +1164,13 @@ class TestWhatCountsAsAnAnswer:
 
         assert mcp.calls == []
         assert not [k for k in store.values if "/claims/" in k]
+
+
+@pytest.mark.parametrize("tool_path", ["/tools/mariadb/execute_query", "/tools/redshift/execute_query"])
+@pytest.mark.parametrize("sql", [
+    "EXPLAIN ANALYSE SELECT 1", "EXPLAIN (ANALYSE) SELECT 1", "EXPLAIN ANALYZE SELECT 1",
+])
+def test_call_kind_explain_with_execution_needs_approval(tool_path: str, sql: str) -> None:
+    target = SimpleNamespace(kind="write")
+    assert approvals.call_kind(target, tool_path, {"query": sql}) == "destructive"
+    assert approvals.call_kind(target, tool_path, {"query": "EXPLAIN SELECT 1"}) == "write"

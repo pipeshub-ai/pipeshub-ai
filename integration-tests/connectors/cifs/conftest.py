@@ -77,6 +77,8 @@ async def cifs_connector(
         storage_name="CIFS share",
         connector_type="CIFS",
         connector_config=config,
+        # The test share is on a private address, which personal connectors cannot reach.
+        scope="team",
         resource_name_override=creds["share"],
     )
     state["share_name"] = creds["share"]

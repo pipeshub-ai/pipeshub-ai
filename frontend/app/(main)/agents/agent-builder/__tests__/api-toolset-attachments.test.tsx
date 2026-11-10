@@ -218,6 +218,23 @@ describe('API toolsets in the Tools section', () => {
     expect(onNotify).toHaveBeenCalledWith('Service-account agents can only use API actions with a shared credential or no sign-in.');
   });
 
+  it('shows them above the "Show more" cut, however many app actions are connected', () => {
+    const { apiToolset: _, ...connected } = apiToolsetSidebarRow(orders);
+    const appRow = (type: string): BuilderSidebarToolset => ({
+      ...connected,
+      name: type,
+      normalized_name: type,
+      displayName: type,
+      category: 'app',
+      toolsetType: type,
+      instanceId: `${type}-instance`,
+      instanceName: type,
+    });
+    renderPalette([...['jira', 'slack', 'gmail', 'notion', 'linear', 'github'].map(appRow), apiToolsetSidebarRow(orders)]);
+    expect(screen.getByText('API actions')).toBeTruthy();
+    expect(screen.getByText(/Show more/)).toBeTruthy();
+  });
+
   it('filters them by the search box', () => {
     renderPalette([apiToolsetSidebarRow(orders), apiToolsetSidebarRow(toolset({ id: B, name: 'Billing' }))]);
     fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: 'bill' } });
