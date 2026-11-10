@@ -585,6 +585,24 @@ async def test_a_graph_store_that_refuses_the_checkpoint_stops_the_run_before_an
     assert unleased(loaded.graph.app_docs[app]) == {"_key": app, UNSAFE_KEY: True} and not any(keys_of(vdb))
 
 
+async def test_a_graph_store_that_refuses_the_lease_gets_the_same_guidance_and_nothing_is_written() -> None:
+    """The lease is the first write of a run: an app schema without its key raises a store error, not a conflict."""
+    from app.services.vector_db.scope_backfill import CheckpointRefused
+
+    vdb, loaded, job, app = await setup()
+    real_update = loaded.graph.update_node_fields_if_match
+
+    async def old_schema(key: str, collection: str, updates: dict, *args: object) -> bool:
+        if "scopeRewriteLease" in updates:
+            raise RuntimeError("unknown field scopeRewriteLease")
+        return await real_update(key, collection, updates, *args)
+
+    loaded.graph.update_node_fields_if_match = old_schema  # type: ignore[method-assign]
+    with pytest.raises(CheckpointRefused, match="scopeRewriteLease.*restart a connector or indexing service"):
+        await job.run_connector(ORG, app)
+    assert not any(keys_of(vdb))
+
+
 async def test_true_and_the_token_one_are_different_marks_for_the_pass_as_for_the_currency_check() -> None:
     from app.services.permissions.structure_generation import same_mark
 
