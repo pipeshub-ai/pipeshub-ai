@@ -279,10 +279,13 @@ class TestACandidateThatRaisesIsLoggedOnce:
         from app.utils.logger import log_record_fields
 
         caplog.set_level(logging.DEBUG)
-        agent = _fake_agent(run_child_results=[TimeoutError("candidate hung")])
+        agent = _fake_agent(run_child_results=[TimeoutError("candidate hung sentinel-662")])
 
         result = await _run_one_candidate(agent, MagicMock(), Goal(description="g"), "team-1")
 
-        assert (result.success, result.error) == (False, "candidate hung")
+        assert (result.success, result.error) == (False, "candidate hung sentinel-662")
         (failed,) = [r for r in caplog.records if r.levelno >= logging.WARNING]
-        assert (failed.getMessage(), log_record_fields(failed)["error_class"]) == ("sub_agent.failed", "timeout")
+        fields = log_record_fields(failed)
+        assert (failed.getMessage(), fields["error_class"]) == ("sub_agent.failed", "timeout")
+        # The error can quote a provider's answer: it reaches the result, never the log.
+        assert "error_message" not in fields and "sentinel-662" not in caplog.text

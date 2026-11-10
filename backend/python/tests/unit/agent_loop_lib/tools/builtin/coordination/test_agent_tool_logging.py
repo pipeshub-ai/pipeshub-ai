@@ -65,3 +65,26 @@ async def test_a_domain_agent_whose_child_failed_carries_the_childs_class(caplog
 
     (end,) = [r for r in named(caplog, "tool_call.end") if fields(r)["tool"] == "jira_agent"]
     assert (end.levelno, fields(end)["reason"], fields(end)["error_class"]) == (logging.WARNING, "sub_agent_failed", "upstream_5xx")
+
+
+async def test_the_inline_childs_ids_do_not_leak_into_the_parent(caplog: pytest.LogCaptureFixture) -> None:
+    """`AgentTool.handle` runs its child in the parent's task, so only `run_child`'s reset keeps the
+    child's `agent_run_id` off the parent's later lines."""
+    from app.agents.agent_loop.usage_transport import UsageReportingTransport
+
+    caplog.set_level(logging.DEBUG)
+    h = Harness("jira")
+    scripted = h.transports["parent"].add_tool_call(ToolCall(id="call_j", name="jira_agent", arguments={"goal": "find it"})).add_text("done")
+    h.runtime.transport_registry.register("parent", lambda: UsageReportingTransport(scripted, lambda *_: None))
+    h.transports["jira"].add_text("found")
+    parent = _with_domain_agent(h)
+
+    await run_turn(parent)
+
+    (child_end,) = named(caplog, "sub_agent.end")
+    assert fields(child_end)["agent_run_id"]
+    (tool_end,) = [r for r in named(caplog, "tool_call.end") if fields(r)["tool"] == "jira_agent"]
+    llm_ends = named(caplog, "llm_call.end")
+    assert len(llm_ends) == 2  # the second is the parent's call after the tool returned
+    assert "agent_run_id" not in fields(tool_end)
+    assert "agent_run_id" not in fields(llm_ends[1])
