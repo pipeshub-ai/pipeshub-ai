@@ -124,3 +124,28 @@ class TestPgVectorClock:
                 await env.job._mark_stale(ORG, "w:app", [env.vrids()["page:Handbook"]], await env.job._epoch("w:app"))
         finally:
             await self.drop(vector_service, env)
+
+    async def test_the_back_fills_own_stale_marker_a_row_ahead_refuses_fails_the_pass_instead_of_ending_it_current(
+            self, vector_service: PgVectorService, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+        from app.services.vector_db import scope_backfill
+        from app.services.vector_db.membership import STALE_SCOPE
+
+        async def stale(*a: Any, **k: Any) -> Any:
+            return STALE_SCOPE      # every stamp is "cannot be computed": the pass writes the marker for all
+
+        env = await self.make(vector_service, WorldStore().world("golden/confluence_hr"))
+        monkeypatch.setattr(scope_backfill, "scope_fields_for_state", stale)      # (after the world is stamped: it starts clean)
+        monkeypatch.setattr(scope_backfill, "MARKER_DELAY_SECONDS", 0.0)
+        try:
+            await ahead_of_the_database_clock(vector_service, 300)
+            with caplog.at_level(logging.ERROR):
+                failed = await env.backfill.run_connector(ORG, "w:app", restart=True)
+            assert failed.state == "failed" and "could not be marked stale" in caplog.text, failed.line()
+            assert "w:app" not in await env.current()
+            await ahead_of_the_database_clock(vector_service, -1)
+            assert (await env.backfill.run_connector(ORG, "w:app", restart=True)).state == "done"
+            seen = Log()
+            await env.audit(seen)
+            assert not seen.leaks and not seen.pending_admits
+        finally:
+            await self.drop(vector_service, env)

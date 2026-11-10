@@ -15,14 +15,20 @@ the live writers use, so a back-filled point carries what a newly indexed one wo
   fails the virtual record is logged at error and counted (`pipeshub_scope_fields_failed_total{where="marker"}`), and the run reports
   it as stale (exit code 1). Only then can a point keep what it held, which may be exact fields this run wrote before a later step
   failed: run the back-fill again.
-- **Safe beside live indexing.** The back-fill writes a point's scope keys only, never its membership arrays, under the same
-  per-virtual-record lock the live writers take (so in this process the two do not interleave; the command is another process, so
-  only the read-back below covers it). Across processes there is no lock,
-  so every write is followed by a second read of the graph: if the fields differ from what was written, the graph changed
+- **Safe beside live indexing.** The back-fill writes a point's scope keys under the same per-virtual-record lock the live writers take
+  (so in this process the two do not interleave; the command is another process, so only the read-back below covers it). Across processes
+  there is no lock, so every write is followed by a second read of the graph: if the fields differ from what was written, the graph changed
   between the first read and the write, and the point is written again from the new graph (up to `MAX_ROUNDS`, then it is marked
   stale). A live write that lands after ours has read the graph after the change and is right; one that landed before ours is
-  corrected by the second read. A live writer that read the graph long before it wrote (a held-up process) is not stopped here:
-  that needs a fence, which is a separate change.
+  corrected by the second read.
+- **Membership.** A `container` stamp is read through the point's `recordGroupIds`, and a change that only a full pass covers (a change of the
+  whole connector, more roots than the list holds) can leave them old, so the pass also brings `connectorIds`, `recordGroupIds` and
+  `rootRecordGroupIds` to what the graph says, page by page (`ScopeRewriteJob.refresh_membership`). Those writes are by id, checked against the
+  connector's structure generation right before each request, fenced by a time taken before the graph was read (or pgvector's `computed_at`) so a
+  held-up writer cannot write older membership over a newer one, and read back from the graph, the store and a search. A write the store did
+  not apply ends the pass `failed`. A virtual record whose membership the graph cannot resolve is left on the stale marker (which lands whatever
+  fence the points carry, and is read back) and counted once, as the scope fields of one that cannot be projected are, so one such record does not
+  hold the whole connector for good: the pass still ends current, with those points on the legacy filter, and says so in the log.
 """
 
 from __future__ import annotations
@@ -62,7 +68,6 @@ from app.services.vector_db.membership import (
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import Collection
 
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
     from app.services.vector_db.interface.vector_db import IVectorDBService
@@ -96,6 +101,10 @@ class CheckpointRefused(RuntimeError):
 
 class OpenMarkNotClosed(RuntimeError):
     """The connector carries an open unsafe mark and the operator did not say the write behind it is over."""
+
+
+class StaleMarkerNotWritten(RuntimeError):
+    """The stale marker of a virtual record did not land after every try: the pass fails."""
 
 
 class UnknownConnector(ValueError):
@@ -164,6 +173,11 @@ class ScopeBackfill:
         self._graph, self._vdb, self._locator, self._log = graph_provider, vector_db, locator, logger
         self._page_size = page_size
         self._checkpoints = AppDocCheckpoints(graph_provider)
+        from app.services.vector_db.scope_rewrite import (
+            ScopeRewriteJob,  # (it imports this module)
+        )
+
+        self._membership = ScopeRewriteJob(graph_provider, vector_db, locator, logger=logger)
 
     async def run_connector(self, org_id: str, app_id: str, *, restart: bool = False, max_pages: int = MAX_PAGES,
                             close_open_mark: bool = False) -> Progress:
@@ -228,9 +242,10 @@ class ScopeBackfill:
                         p.state = DONE
                         break
                     nodes = await stamps.nodes(org_id, frozenset(ids))
-                    page_stale = 0
-                    for vrid in sorted({n.vrid for n in nodes.values() if n.vrid and not n.deleted}):
-                        page_stale += await self._stamp(org_id, vrid) == "stale"
+                    vrids = sorted({n.vrid for n in nodes.values() if n.vrid and not n.deleted})
+                    stale_vrids = {vrid for vrid in vrids if await self._stamp(org_id, app_id, vrid) == "stale"}
+                    # a virtual record is counted once, whichever step left it on the stale marker; this raises only for a write the store did not apply
+                    page_stale = len(stale_vrids | await self._membership.refresh_membership(org_id, app_id, vrids))
                     # counted with the page, so a page written again after a failure is not counted twice
                     moved = replace(p, after=ids[-1], records=p.records + len(ids), stale=p.stale + page_stale)
                     await self._checkpoints.save(app_id, moved)  # only after the page is written
@@ -242,10 +257,14 @@ class ScopeBackfill:
             await self._checkpoints.save(app_id, p)
             if p.state == DONE:  # the pass wrote every stamp from the graph as of its generation, so it covers the roots registered up to it
                 await clear_pending_covered(self._graph, app_id, p.structure_generation)
+                if p.stale:
+                    self._log.warning("scope back-fill of %s is done and current with %d virtual record(s) on the stale marker: their points are read "
+                                      "with the legacy filter until the pass is run again", app_id, p.stale)
             return p
 
-    async def _stamp(self, org_id: str, vrid: str) -> str:
-        """`done`, `skipped` (no point to write) or `stale` (the stale marker was written, or could not be: see `_mark`)."""
+    async def _stamp(self, org_id: str, app_id: str, vrid: str) -> str:
+        """`done`, `skipped` (no point to write) or `stale` (the stale marker was written and read back; one that did not land raises, so the
+        pass fails: see `_mark`)."""
         collections: list[str] | tuple[str, ...] = ()
         try:
             async with vrid_write_locks([vrid]):
@@ -256,44 +275,39 @@ class ScopeBackfill:
                         return "skipped"
                     fields = await scope_fields_for_state(self._graph, state, org_id, self._log)
                     if fields == STALE_SCOPE:
-                        await self._mark(collections, org_id, vrid)
+                        await self._mark(org_id, app_id, vrid)
                         return "stale"
                     await self._write(collections, org_id, vrid, fields)
                     # the graph may have changed between the read and the write: write again if it says something else now
                     again = await scope_fields_for_state(self._graph, await resolve_virtual_record_state(self._graph, vrid), org_id, self._log)
                     if again == fields:
                         return "done"
-                await self._mark(collections, org_id, vrid)
+                await self._mark(org_id, app_id, vrid)
                 return "stale"
+        except StaleMarkerNotWritten:
+            raise
         except Exception as exc:
             SCOPE_STAMP_FAILED.inc("backfill")
             self._log.warning("scope fields of %s not written: %s", vrid, type(exc).__name__)
-            try:
-                targets = collections or await self._locator.all_collections(fresh=True)
-            except Exception:
-                targets = ()
-            await self._mark(targets, org_id, vrid)
+            await self._mark(org_id, app_id, vrid)
             return "stale"
 
-    async def _mark(self, collections: Collection[str], org_id: str, vrid: str) -> bool:
-        """Write the stale marker, trying again with a growing wait. False (logged at error with the virtual record, counted) when it
-        still fails: the point then keeps what it holds, which may be exact fields this run wrote before a later step failed."""
+    async def _mark(self, org_id: str, app_id: str, vrid: str) -> None:
+        """The stale marker, through the engine's: written by id whatever fence the points carry, at the database's time on pgvector, and read
+        back. Tried again with a growing wait; raises (logged at error with the virtual record, counted) when it still did not land, which fails
+        the pass: the point then keeps what it holds, which may admit."""
         delay = MARKER_DELAY_SECONDS
         for attempt in range(MARKER_ATTEMPTS):
             try:
-                if collections:
-                    await self._write(collections, org_id, vrid, STALE_SCOPE)
-                    return True
+                return await self._membership.mark_stale(org_id, app_id, [vrid])
             except Exception as exc:
-                last = type(exc).__name__
-            else:
-                last = "no collection"
+                last = exc
             if attempt + 1 < MARKER_ATTEMPTS:
                 await asyncio.sleep(delay)
                 delay *= 2
         SCOPE_STAMP_FAILED.inc("marker")
-        self._log.error("scope fields of virtual record %s may be wrong and could not be marked stale (%s); run the back-fill again", vrid, last)
-        return False
+        self._log.error("scope fields of virtual record %s may be wrong and could not be marked stale (%s); run the back-fill again", vrid, type(last).__name__)
+        raise StaleMarkerNotWritten(vrid) from last
 
     async def _write(self, collections: list[str] | tuple[str, ...], org_id: str, vrid: str, fields: ScopeFields) -> None:
         flt = await self._vdb.filter_collection(must={"orgId": org_id, "virtualRecordId": vrid})
