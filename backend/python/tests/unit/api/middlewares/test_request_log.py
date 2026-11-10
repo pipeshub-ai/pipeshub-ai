@@ -227,6 +227,54 @@ def _build_app(clock: _Clock, *, before_install: Callable[[FastAPI], None] | Non
                 mark_request_failure(request, e, reason="degraded")
             return {"results": []}
 
+    @app.get("/api/v1/marked/wrapped/{how}")
+    async def marked_wrapped(request: Request, how: str) -> None:
+        try:
+            raise ValueError(f"upstream echoed {ECHOED}")
+        except ValueError as e:
+            mark_request_failure(request, e, include_error_text=False, reason="tool_failed")
+            if how == "http":
+                raise HTTPException(status_code=502, detail="upstream failed") from e
+            raise RuntimeError("wrapped") from e
+
+    @app.get("/api/v1/marked/http/{code}/answered-ok")
+    async def marked_http_answered_ok(request: Request, code: int) -> dict:
+        mark_request_failure(request, HTTPException(status_code=code, detail="no"))
+        return {"ok": True}
+
+    @app.get("/api/v1/marked/no-exception/{code}")
+    async def marked_no_exception(request: Request, code: int) -> Response:
+        mark_request_failure(request, error_class="auth_expired", reason="oauth_denied")
+        return Response(status_code=code, headers={"location": "/done"} if code == 302 else None)
+
+    @app.get("/api/v1/marked/class/{where}")
+    async def marked_class(request: Request, where: str) -> dict:
+        if where == "answered-ok":
+            mark_request_failure(request, ConnectionError("db down"), error_class="upstream_5xx")
+            return {"ok": True}
+        exc = RuntimeError("escapes")
+        mark_request_failure(request, exc, error_class="unavailable")
+        raise exc
+
+    @app.get("/api/v1/cause/{kind}")
+    async def cause(kind: str) -> None:
+        class DomainError(Exception):
+            pass
+
+        try:
+            try:
+                if kind == "group":
+                    raise ExceptionGroup("g", [ConnectionError(ECHOED)])
+                raise httpx.ConnectError(ECHOED)
+            except Exception as inner:
+                raise DomainError(ECHOED) from inner
+        except DomainError as e:
+            raise HTTPException(status_code=502, detail="upstream failed") from e
+
+    @app.post("/api/v1/upload")
+    async def upload(request: Request) -> dict:
+        return {"keys": len(await request.json())}
+
     @app.get("/health")
     async def health() -> dict:
         return {"status": "healthy"}
@@ -772,3 +820,113 @@ async def test_control_the_same_2xx_unmarked_is_success(clock: _Clock, capture) 
 
     record, fields = _one_end(capture)
     assert (record.levelno, fields["outcome"]) == (logging.INFO, "success")
+
+
+def _record_text(record: logging.LogRecord) -> str:
+    return RedactingFormatter("%(message)s").format(record) + json.dumps(log_record_fields(record), default=str)
+
+
+@pytest.mark.parametrize(("how", "status", "cls"), [("http", 502, "internal"), ("crash", 500, "internal")])
+async def test_hints_on_a_cause_survive_raise_from(clock: _Clock, capture, how, status, cls) -> None:
+    """``mark_request_failure(request, e, ...)`` then ``raise HTTPException(...) from e`` (review R1)."""
+    app = _build_app(clock)
+
+    response = await _get(app, f"/api/v1/marked/wrapped/{how}")
+
+    assert response.status_code == status
+    record, fields = _one_end(capture)
+    assert (fields["error_class"], fields["reason"], fields["cause_type"]) == (cls, "tool_failed", "ValueError")
+    assert "error_message" not in fields
+    assert ECHOED not in _record_text(record)
+    assert all(ECHOED not in _record_text(r) for r in capture.records)
+
+
+@pytest.mark.parametrize(("code", "level", "cls"), [(403, logging.WARNING, "forbidden"), (503, logging.WARNING, "unavailable")])
+async def test_a_marked_bare_http_exception_answered_ok_keeps_its_own_status_class(clock: _Clock, capture, code, level,
+                                                                                    cls) -> None:
+    app = _build_app(clock)
+
+    response = await _get(app, f"/api/v1/marked/http/{code}/answered-ok")
+
+    assert response.status_code == 200
+    record, fields = _one_end(capture)
+    assert (record.levelno, fields["status"], fields["error_class"], fields["outcome"]) == (level, 200, cls, "failure")
+    assert not record.exc_text
+
+
+@pytest.mark.parametrize("code", [200, 302])
+async def test_a_failure_marked_without_an_exception_is_one_plain_line(clock: _Clock, capture, code) -> None:
+    app = _build_app(clock)
+
+    response = await _get(app, f"/api/v1/marked/no-exception/{code}")
+
+    assert response.status_code == code
+    record, fields = _one_end(capture)
+    assert record.levelno == logging.WARNING
+    assert (fields["route"], fields["status"], fields["error_class"], fields["reason"], fields["outcome"]) == (
+        "/api/v1/marked/no-exception/{code}", code, "auth_expired", "oauth_denied", "failure")
+    assert not {"error_type", "error_message", "cause_type"} & fields.keys()
+    assert not record.exc_text
+
+
+def test_marking_needs_an_exception_or_a_class() -> None:
+    with pytest.raises(TypeError):
+        mark_request_failure(SimpleNamespace(scope={}), None)
+    mark_request_failure(SimpleNamespace(scope={}), None, error_class="auth_expired")  # control: a class is enough
+
+
+@pytest.mark.parametrize(("where", "status", "level", "cls"), [
+    ("answered-ok", 200, logging.WARNING, "upstream_5xx"),
+    ("escapes", 500, logging.WARNING, "unavailable"),
+])
+async def test_the_error_class_hint_wins_on_the_ok_and_escaped_rows(clock: _Clock, capture, where, status, level,
+                                                                     cls) -> None:
+    app = _build_app(clock)
+
+    response = await _get(app, f"/api/v1/marked/class/{where}")
+
+    assert response.status_code == status
+    record, fields = _one_end(capture)
+    assert (record.levelno, fields["error_class"]) == (level, cls)
+
+
+@pytest.mark.parametrize(("kind", "cause_type"), [("chain", "ConnectError"), ("group", "ConnectionError")])
+async def test_cause_type_is_the_innermost_cause(clock: _Clock, capture, kind, cause_type) -> None:
+    app = _build_app(clock)
+
+    await _get(app, f"/api/v1/cause/{kind}")
+
+    _, fields = _one_end(capture)
+    assert (fields["error_type"], fields["cause_type"]) == ("HTTPException", cause_type)
+
+
+async def test_no_cause_no_cause_type(clock: _Clock, capture) -> None:
+    app = _build_app(clock)
+
+    await _get(app, "/api/v1/boom")
+
+    _, fields = _one_end(capture)
+    assert "cause_type" not in fields
+
+
+async def test_a_client_that_leaves_during_the_upload_is_cancelled_not_a_crash(clock: _Clock, capture) -> None:
+    """Starlette raises ClientDisconnect from request.json() once it reads http.disconnect (review R4)."""
+    app = _build_app(clock)
+    parts = [{"type": "http.request", "body": b'{"a": ', "more_body": True}, {"type": "http.disconnect"}]
+
+    async def receive() -> dict:
+        return parts.pop(0) if parts else {"type": "http.disconnect"}
+
+    scope = {
+        "type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"}, "http_version": "1.1", "method": "POST",
+        "scheme": "http", "path": "/api/v1/upload", "raw_path": b"/api/v1/upload", "query_string": b"", "root_path": "",
+        "headers": [(b"host", b"testserver"), (b"content-type", b"application/json")],
+        "client": ("10.1.2.3", 50000), "server": ("testserver", 80),
+    }
+    await asyncio.wait_for(app(scope, receive, _discard), timeout=10)
+
+    record, fields = _one_end(capture)
+    assert record.levelno == logging.INFO
+    assert (fields["error_class"], fields["reason"], fields["error_type"]) == (
+        "cancelled", "client_disconnect", "ClientDisconnect")
+    assert not record.exc_text

@@ -6,7 +6,7 @@ import inspect
 import ipaddress
 import logging
 from collections.abc import Awaitable, Callable, MutableMapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from time import perf_counter
 from typing import Any
 
@@ -37,26 +37,48 @@ ASGIApp = Callable[[Scope, Callable[[], Awaitable[Message]], Callable[[Message],
 
 @dataclass(frozen=True)
 class _Failure:
-    exc: BaseException
+    exc: BaseException | None
     error_class: str | None = None
     reason: str | None = None
     include_error_text: bool = True
 
 
 def mark_request_failure(
-    request: Request, exc: BaseException, /, *,
+    request: Request, exc: BaseException | None = None, /, *,
     error_class: str | None = None, reason: str | None = None, include_error_text: bool = True,
 ) -> None:
     """Hand a failure that was turned into a response here (an auth refusal, an HTTPException, an error answered
     with a 2xx) to the request's line, which then logs it as a failure whatever the status. ``error_class`` and
     ``reason`` win over the ones read from ``exc``; ``include_error_text=False`` keeps its text off the line, as in
-    ``log_failure``."""
+    ``log_failure``. The hints also apply to an exception raised ``from`` ``exc``. ``exc`` may be None for a failure
+    with no exception (an OAuth callback that answers a redirect); ``error_class`` is then required."""
+    if exc is None and error_class is None:
+        raise TypeError("mark_request_failure needs an exception or an error_class")
     request.scope[_FAILURE_KEY] = _Failure(exc, error_class, reason, include_error_text)
 
 
 def _marked(scope: Scope) -> _Failure | None:
     failure = scope.get(_FAILURE_KEY)
     return failure if isinstance(failure, _Failure) else None
+
+
+def _on_cause_chain(exc: BaseException, target: BaseException) -> bool:
+    seen: set[int] = set()
+    link: BaseException | None = exc
+    while link is not None and id(link) not in seen:
+        if link is target:
+            return True
+        seen.add(id(link))
+        link = link.__cause__
+    return False
+
+
+def _failure_for(scope: Scope, exc: BaseException) -> _Failure:
+    """``exc``, with the hints of a mark on it or on its ``__cause__`` chain (``raise HTTPException(...) from e``)."""
+    marked = _marked(scope)
+    if marked is not None and marked.exc is not None and _on_cause_chain(exc, marked.exc):
+        return replace(marked, exc=exc)
+    return _Failure(exc)
 
 
 def _client_ip(scope: Scope) -> str | None:
@@ -77,10 +99,10 @@ def _has_chain(exc: BaseException) -> bool:
     return exc.__cause__ is not None or (exc.__context__ is not None and not exc.__suppress_context__)
 
 
-def _handed_over_class(exc: BaseException, status: int) -> str:
-    """A bare HTTPException is its status; one raised from a failure is that failure's class (P1b)."""
+def _handed_over_class(exc: BaseException) -> str:
+    """A bare HTTPException is its own status's class; one raised from a failure is that failure's class (P1b)."""
     if isinstance(exc, StarletteHTTPException) and not _has_chain(exc):
-        return _status_class(status)
+        return _status_class(exc.status_code)
     return error_class.classify_error(exc)
 
 
@@ -119,17 +141,19 @@ class _Request:
             "duration_ms": round(((self.finished or perf_counter()) - self.started) * 1000),
             "client_ip": _client_ip(self.scope),
         }
-        failure = _marked(self.scope)
-        if escaped is not None and (failure is None or failure.exc is not escaped):
-            failure = _Failure(escaped)
+        failure = _failure_for(self.scope, escaped) if escaped is not None else _marked(self.scope)
         reason = (failure.reason or _reason(failure.exc)) if failure else None
         if escaped is not None and failure is not None:
-            # Nobody handled it and the client got a 500 (or a cut stream): ours, unless the code that marked it said.
-            default = "cancelled" if isinstance(escaped, asyncio.CancelledError) else "internal"
+            # Nobody handled it and the client got a 500 (or a cut stream): ours, unless the code that marked it said,
+            # or the client left first (Starlette raises ClientDisconnect from a body read).
+            if self.client_left or isinstance(escaped, asyncio.CancelledError):
+                default, reason = "cancelled", reason or ("client_disconnect" if self.client_left else None)
+            else:
+                default = "internal"
             _log_exception(failure, failure.error_class or default, reason=reason, **fields)
         elif failure is not None and status is not None and not 400 <= status < 500:
             # A 5xx, or a failure the route answered with a 2xx/3xx: logged as the failure it is.
-            cls = failure.error_class or _handed_over_class(failure.exc, status)
+            cls = failure.error_class or _handed_over_class(failure.exc)
             _log_exception(failure, cls, reason=reason, **fields)
         elif self.finished is None or self.client_left:
             # Starlette stops a stream quietly when the client leaves: no exception, and either no last body message or,
@@ -148,13 +172,18 @@ def _log_exception(failure: _Failure, cls: str, **fields: object) -> None:
     """With its stack once; a request whose exception was already logged (lower down, or behind another request) still
     gets its own line, WARNING at most."""
     exc = failure.exc
+    if exc is None:  # marked without an exception: no type, text or stack to give
+        log_event(logger, EVENT, level=error_class.level_for(cls), outcome="failure", error_class=cls, **fields)
+        return
+    # A type name only, so it stays with include_error_text=False.
+    cause_type = error_class.innermost_type(exc) if _has_chain(exc) else None
     prior = error_class.logged_level(exc)
     if prior is None or prior < error_class.level_for(cls):
         error_class.log_failure(logger, EVENT, exc, error_class=cls, include_error_text=failure.include_error_text,
-                                **fields)
+                                cause_type=cause_type, **fields)
         return
     log_event(logger, EVENT, level=min(error_class.level_for(cls), logging.WARNING), outcome="failure",
-              error_class=cls, error_type=type(exc).__name__, **fields)
+              error_class=cls, error_type=type(exc).__name__, cause_type=cause_type, **fields)
 
 
 class RequestLogMiddleware:
@@ -216,9 +245,7 @@ def install_request_logging(app: FastAPI) -> None:
     previous = app.exception_handlers.get(StarletteHTTPException, http_exception_handler)
 
     async def hand_over(request: Request, exc: StarletteHTTPException) -> Response:
-        marked = _marked(request.scope)
-        if marked is None or marked.exc is not exc:  # keep the hints of a route that marked it before raising
-            mark_request_failure(request, exc)
+        request.scope[_FAILURE_KEY] = _failure_for(request.scope, exc)  # keeps the hints of a route's own mark
         response = previous(request, exc)
         return await response if inspect.isawaitable(response) else response
 
