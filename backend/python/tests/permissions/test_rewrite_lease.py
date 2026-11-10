@@ -68,6 +68,24 @@ async def test_a_lease_lost_to_a_race_on_the_document_is_not_acquired() -> None:
     assert not await RewriteLease(g, "c", clock=clock).acquire()
 
 
+async def test_an_app_write_loses_the_race_when_the_lease_changes_between_the_read_and_the_swap() -> None:
+    clock, g = Clock(), Graph()
+    a, other = RewriteLease(g, "c", clock=clock), RewriteLease(g, "c", clock=clock)
+    assert await a.acquire()
+    g.lost_race = lambda app: app.update({REWRITE_LEASE_KEY: other._value()})      # taken over after `a` read it, before its swap
+    with pytest.raises(LeaseLost):
+        await a.update_app({"x": 1})
+    assert "x" not in g.app and other.holds(g.app)                                  # the holder that lost writes nothing
+    # the same holder's own deadline moving under it is no loss: the swap is read again and lands
+    clock2, g2 = Clock(), Graph()
+    b = RewriteLease(g2, "c", clock=clock2)
+    assert await b.acquire()
+    clock2.now += 5
+    g2.lost_race = lambda app: app.update({REWRITE_LEASE_KEY: b._value()})
+    await b.update_app({"x": 1})
+    assert g2.app["x"] == 1 and b.holds(g2.app)
+
+
 async def test_a_busy_connector_is_neither_read_nor_written() -> None:
     env = await Env.make(W.world("golden/confluence_hr"))
     await env.change((MOVE,))
