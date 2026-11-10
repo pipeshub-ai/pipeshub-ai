@@ -100,8 +100,8 @@ from app.modules.retrieval.selection_scope import (
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
 from app.utils.conversation_tasks import begin_run, discard_tasks
-from app.utils.image_admission import admission_from_state
 from app.utils.error_class import log_failure
+from app.utils.image_admission import admission_from_state
 from app.utils.logging_fields import bind_log_fields, log_event
 from app.utils.stage_timer import RunTimer
 from app.utils.streaming import create_sse_event, handle_simple_mode

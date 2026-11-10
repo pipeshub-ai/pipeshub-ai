@@ -10,7 +10,11 @@ import pytest
 
 from app.agent_loop_lib.core.types import AgentResult, Goal
 from app.agent_loop_lib.hooks.middleware.builtin import logging as audit
-from app.agent_loop_lib.hooks.middleware.context import AgentLifecycleContext, ToolCallContext, ToolResultContext
+from app.agent_loop_lib.hooks.middleware.context import (
+    AgentLifecycleContext,
+    ToolCallContext,
+    ToolResultContext,
+)
 from app.agent_loop_lib.tools.base import ToolOutput
 
 pytestmark = pytest.mark.asyncio

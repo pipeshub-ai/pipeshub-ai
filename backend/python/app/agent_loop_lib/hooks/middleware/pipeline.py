@@ -43,7 +43,6 @@ from app.agent_loop_lib.hooks.middleware.routing import (
     prefixed,
     to_matcher,
 )
-
 from app.utils.error_class import log_failure
 
 __all__ = ["Pipeline", "Next", "Middleware"]

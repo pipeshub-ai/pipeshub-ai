@@ -12,7 +12,14 @@ from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.core.exceptions import TransportError
 from app.agent_loop_lib.core.types import AgentResult, Goal, ToolCall
 from app.agent_loop_lib.tools.builtin.coordination.agent_tool import AgentTool
-from tests.unit.agent_loop_lib.runtime.test_run_child_logging import Harness, fields, named, run_turn, spec, warn_plus
+from tests.unit.agent_loop_lib.runtime.test_run_child_logging import (
+    Harness,
+    fields,
+    named,
+    run_turn,
+    spec,
+    warn_plus,
+)
 
 pytestmark = pytest.mark.asyncio
 

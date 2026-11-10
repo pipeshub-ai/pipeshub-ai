@@ -23,8 +23,8 @@ from app.agent_loop_lib.core.messages import AssistantMessage, UserMessage
 from app.agent_loop_lib.core.scope import StateSlot
 from app.agents.agent_loop.hooks._tool_naming import resolve_tool_name
 from app.agents.agent_loop.parked_turn import with_expiry
-from app.utils.streaming import parse_confidence_from_answer
 from app.utils.logging_fields import log_event
+from app.utils.streaming import parse_confidence_from_answer
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.scope import RunScope

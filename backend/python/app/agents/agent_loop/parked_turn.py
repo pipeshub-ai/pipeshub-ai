@@ -18,9 +18,6 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from pydantic import TypeAdapter
 
-from app.utils.error_class import log_failure
-from app.utils.logging_fields import log_event
-
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
     Message,
@@ -28,6 +25,8 @@ from app.agent_loop_lib.core.messages import (
     ToolMessage,
     UserMessage,
 )
+from app.utils.error_class import log_failure
+from app.utils.logging_fields import log_event
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.agent import Agent

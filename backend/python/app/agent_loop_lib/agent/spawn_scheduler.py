@@ -505,7 +505,7 @@ async def _fail_immediately(message: str) -> AgentResult:
     raise SpawnDependencyError(message)
 
 
-async def _with_call_ids(call: ToolCall, spawn: Any) -> AgentResult:  # noqa: ANN401
+async def _with_call_ids(call: ToolCall, spawn: Any) -> AgentResult:
     # The batch is launched before the executor binds the calls' ids, so each child binds its own.
     with log_fields(tool=call.name, tool_call_id=call.id):
         return await spawn

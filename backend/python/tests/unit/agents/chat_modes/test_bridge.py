@@ -1335,11 +1335,11 @@ class TestRunChatStream:
         sandbox_manager = MagicMock()
         sandbox_manager.destroy_all = AsyncMock(side_effect=RuntimeError("container stuck"))
 
-        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, Any, Any, list[Any]]:
             context.sandbox_manager = sandbox_manager
             return _stream_agent(MagicMock(success=True, error=None, output="ok")), MagicMock(), MagicMock(constraints=[]), []
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False):
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
             await event_sink.write({"event": "complete", "data": {"answer": "ok"}})
             return {"answer": "ok"}
 

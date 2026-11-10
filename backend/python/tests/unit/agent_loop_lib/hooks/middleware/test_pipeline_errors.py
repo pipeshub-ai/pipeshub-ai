@@ -10,7 +10,10 @@ import pytest
 
 from app.agent_loop_lib.core.types import ToolCall
 from app.agent_loop_lib.hooks.events import HookEvent
-from app.agent_loop_lib.hooks.middleware.context import AgentLifecycleContext, TurnContext
+from app.agent_loop_lib.hooks.middleware.context import (
+    AgentLifecycleContext,
+    TurnContext,
+)
 from app.agent_loop_lib.hooks.middleware.decisions import PreDecision
 from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.tools.base import Tool, ToolOutput

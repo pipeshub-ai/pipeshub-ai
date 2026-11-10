@@ -16,9 +16,15 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import pytest
+
 from app.agent_loop_lib.core.messages import ToolCall
 from app.agent_loop_lib.transport.registry import TransportRegistry
-from app.agents.agent_loop.intent import IntentRouteDecision, parse_intent, parse_intent_and_route
+from app.agents.agent_loop.intent import (
+    IntentRouteDecision,
+    parse_intent,
+    parse_intent_and_route,
+)
 from tests.unit.agents.adapter.support.scripted_transport import ScriptedTransport
 
 _LOGGER = logging.getLogger("test.agents.agent_loop.intent")
@@ -349,7 +355,9 @@ class TestTheFallbackIsLoggedOnce:
         self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         import app.agents.agent_loop.intent as intent_module
-        from app.agent_loop_lib.agent.single_shot_runner import StructuredSingleShotError
+        from app.agent_loop_lib.agent.single_shot_runner import (
+            StructuredSingleShotError,
+        )
 
         async def _blocked(**_kwargs: Any) -> str:  # noqa: ANN401
             raise StructuredSingleShotError("blocked", reason="run_failed", end_event="agent_blocked")
