@@ -16,6 +16,7 @@ from aiokafka import (  # type: ignore
     TopicPartition,
 )
 from aiokafka.structs import ConsumerRecord  # type: ignore
+from pydantic import ValidationError
 
 from app.core.envelope import EnvelopeRejected, ctx_of, open_stream_message
 from app.core.org_context import bind_optional, spawn_detached
@@ -2106,7 +2107,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         Handles bytes decoding, JSON parsing, and double-encoded JSON.
 
         Returns:
-            StreamMessage or None if parsing fails.
+            StreamMessage, or None for a message that can never parse (poison): not UTF-8, not JSON, a rejected
+            envelope, or JSON that is not a StreamMessage. Anything else (a key-store or network failure) raises,
+            so the caller re-reads it.
         """
         message_id = f"{message.topic}-{message.partition}-{message.offset}"
         message_value = message.value
@@ -2131,6 +2134,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     return await open_stream_message(message.topic, parsed, StreamMessage)
                 except EnvelopeRejected as e:
                     self.logger.error(f"Envelope rejected for {message_id}: {e.reason}")
+                    return None
+                except (ValidationError, TypeError) as e:
+                    # Valid JSON that is not a StreamMessage never becomes one: poison, as in the Redis twin.
+                    # The type only: a ValidationError's text quotes the payload's values.
+                    self.logger.error(f"Failed to parse message {message_id} as StreamMessage: {type(e).__name__}")
                     return None
                 except json.JSONDecodeError as e:
                     self.logger.error(
