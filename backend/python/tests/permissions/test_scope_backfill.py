@@ -811,7 +811,7 @@ async def test_a_connector_that_moves_under_a_record_costs_no_round(monkeypatch:
     moves = {"n": 0}
     real = job._membership.write_payload
 
-    async def moved_twice_then_right(*a, **k):
+    async def moved_twice_then_right(*a, **k) -> tuple[bool, int]:
         moves["n"] += 1
         if moves["n"] <= scope_backfill.MAX_ROUNDS + 2:      # more moves than rounds
             raise GenerationMoved("moved")
@@ -826,7 +826,7 @@ async def test_a_page_is_scanned_once_not_once_per_virtual_record(monkeypatch: p
     vdb, loaded, job, app = await setup()
     scans, real = [], job._membership._scan
 
-    async def spy(org_id: str, collection: str, vrids: list, keys: tuple = ()):
+    async def spy(org_id: str, collection: str, vrids: list, keys: tuple = ()) -> dict:
         scans.append(len(vrids))
         return await real(org_id, collection, vrids, keys)
 
