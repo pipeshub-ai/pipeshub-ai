@@ -143,6 +143,28 @@ async def test_a_delete_that_fails_at_the_last_step_leaves_the_app_and_a_retry_c
     assert ("apps", "c1") not in nodes and not [n for n in nodes if n[0] == "connectorDeleteHandles" or n[1].startswith("c1-")]
 
 
+async def test_a_retry_that_cannot_close_the_connector_again_stays_partial(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The first attempt has removed the grants and the records; a lock timeout on the app row at the start of the retry must not bring the connector back."""
+    await connector(w, "c1")
+    real_nodes, real_close = delete_module._remove_nodes, delete_module._close_connector
+
+    async def boom(tx: Tx, org: str, coll: str, keys: list[str]) -> int:
+        if coll == "apps":
+            raise RuntimeError("store down")
+        return await real_nodes(tx, org, coll, keys)
+
+    async def locked(tx: Tx, org: str, connector_id: str) -> None:
+        raise RuntimeError("canceling statement due to lock timeout")
+    monkeypatch.setattr(delete_module, "_remove_nodes", boom)
+    assert (await w.p.delete_connector_instance("c1", w.org))["partial"] is True
+    monkeypatch.setattr(delete_module, "_close_connector", locked)
+    got = await w.p.delete_connector_instance("c1", w.org)
+    assert got["success"] is False and got["partial"] is True and "lock timeout" in got["error"]
+    monkeypatch.setattr(delete_module, "_remove_nodes", real_nodes)
+    monkeypatch.setattr(delete_module, "_close_connector", real_close)
+    assert (await w.p.delete_connector_instance("c1", w.org))["success"] is True
+
+
 async def test_a_delete_in_a_caller_transaction_that_fails_part_way_changes_nothing_and_a_retry_completes(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     await connector(w, "c1")
     before = await snapshot(w)

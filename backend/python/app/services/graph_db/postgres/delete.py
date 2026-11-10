@@ -270,13 +270,13 @@ async def _delete_in_batches(q: Callable[..., Awaitable[Any]], org: str, connect
     async def run(fn: Callable[[Tx], Awaitable[Any]]) -> Any:      # noqa: ANN401
         return await q(fn, None, write=True)
 
-    app = await run(lambda tx: _close_connector(tx, org, connector_id))
-    if app is None:
-        return {"success": False, "error": f"Connector instance {connector_id} not found"}
-    needs_vrids = not can_use_membership_cleanup(app)
     removed = {"records": 0, "recordGroups": 0, "roles": 0, "groups": 0}
     typed = blocks = 0
     try:
+        app = await run(lambda tx: _close_connector(tx, org, connector_id))      # an earlier attempt may have removed the grants and some records already
+        if app is None:
+            return {"success": False, "error": f"Connector instance {connector_id} not found"}
+        needs_vrids = not can_use_membership_cleanup(app)
         for _ in range(3):      # a record written while this ran is taken by the next pass
             batches = 0
             last = ""
