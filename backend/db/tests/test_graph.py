@@ -1,7 +1,12 @@
-"""The graph schema (graph_0001): rows are per organisation, only the graph-reading services touch it, parallel edges are kept apart, and the
+"""The graph schema (graph_0001, with the hot lookups of graph_0003): rows are per organisation, only the graph-reading services touch it, parallel edges are kept apart, and the
 organisation and connector reads reach across organisations only through their vetted functions."""
+import json
+import re
+
 import psycopg
 import pytest
+
+from db import vetted_harness
 
 from .test_integration import connect
 
@@ -188,3 +193,303 @@ def test_a_graph_that_holds_rows_upgrades_to_the_record_revision_index(db):
         n, all_valid = c.execute(tree).fetchone()
         assert n == c.execute("SELECT count(*) FROM pg_partition_tree('graph.nodes')").fetchone()[0], "one index for every table of the tree"
         assert all_valid is True
+
+
+# ---- the hot lookups (graph_0003) -------------------------------------------------------------------------------------------------------
+# The provider's statement for the same read before the vetted functions (a null filter also matches an absent key when NULLABS).
+PLAIN = """SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = %s AND {hot}
+    AND NOT EXISTS (SELECT 1 FROM unnest(%s::text[], %s::text[]) f(k, v)
+        WHERE CASE WHEN %s AND f.v = 'null' THEN coalesce(n.doc->f.k, 'null'::jsonb) <> 'null'::jsonb ELSE n.doc->f.k IS DISTINCT FROM f.v::jsonb END)
+    ORDER BY n.id"""
+HOT = {
+    "blocks_by_record": ("blocks", "n.doc->>'recordId' = %s", "(%s, %s::text[], %s::jsonb[], %s, '', 1000)"),
+    "blocks_by_name": ("blocks", "n.doc->>'connectorId' = %s AND n.doc->>'nameFolded' = %s", "(%s, %s, %s::text[], %s::jsonb[], %s, '', 1000)"),
+    "code_files_by_path": ("codeFiles", "n.doc->>'filePath' = %s", "(%s, %s::text[], %s::jsonb[], %s, '', 1000)"),
+}
+
+
+def _block(i, org, rec="r1", conn="c1", **extra):
+    return (org, "blocks", f"b{i}", json.dumps({"orgId": org, "recordId": rec, "connectorId": conn, "nameFolded": f"n{i % 3}", "qualifiedName": f"q{i}", **extra}))
+
+
+def _seed_small(c):
+    as_role(c, "pipeshub_connectors", A)
+    rows = [_block(1, A), _block(2, A), _block(3, A, rec="r2"), _block(4, A, conn="c2"), _block(5, A, deprecated=None), _block(6, A, deprecated=False),
+            (A, "blocks", "b7", json.dumps({"orgId": A, "recordId": "r1", "connectorId": "c1"})),                    # no nameFolded, qualifiedName
+            (A, "codeFiles", "f1", json.dumps({"orgId": A, "filePath": "src/a.py"})), (A, "codeFiles", "f2", json.dumps({"orgId": A, "filePath": "src/b.py"}))]
+    for r in rows:
+        c.execute(NODE, r)
+    as_role(c, "pipeshub_connectors", B)                                           # another org with the same ids and keys
+    for r in [_block(1, B), _block(2, B), (B, "codeFiles", "f1", json.dumps({"orgId": B, "filePath": "src/a.py"}))]:
+        c.execute(NODE, r)
+
+
+# (function, hot values, extra filters as {key: json value}): every shape the code tools use, the null rule, absent keys and missing rows
+CASES = [
+    ("blocks_by_record", ("r1",), {"orgId": A, "recordId": "r1"}),
+    ("blocks_by_record", ("r1",), {"orgId": A, "recordId": "r1", "qualifiedName": "q2", "connectorId": "c1"}),
+    ("blocks_by_record", ("r1",), {"orgId": A, "recordId": "r1", "connectorId": "c1"}),
+    ("blocks_by_record", ("r1",), {"orgId": B, "recordId": "r1"}),                                          # the other org's value on this org's rows
+    ("blocks_by_record", ("r1",), {"recordId": "r1", "deprecated": None}),                                  # null: absent or null matches
+    ("blocks_by_record", ("r1",), {"recordId": "r1", "deprecated": False}),
+    ("blocks_by_record", ("r1",), {"recordId": "r1", "nameFolded": None}),                                  # a key absent on b7
+    ("blocks_by_record", ("nope",), {"recordId": "nope"}),                                                  # a record with no blocks
+    ("blocks_by_name", ("c1", "n1"), {"orgId": A, "connectorId": "c1", "nameFolded": "n1"}),
+    ("blocks_by_name", ("c1", "n1"), {"connectorId": "c1", "nameFolded": "n1", "recordId": "r2"}),
+    ("blocks_by_name", ("c2", "n1"), {"connectorId": "c2", "nameFolded": "n1"}),
+    ("code_files_by_path", ("src/a.py",), {"orgId": A, "filePath": "src/a.py"}),
+    ("code_files_by_path", ("src/a.py",), {"filePath": "src/a.py", "orgId": B}),
+    ("code_files_by_path", ("src/zz.py",), {"filePath": "src/zz.py"}),
+]
+
+
+def test_a_hot_lookup_returns_what_the_plain_statement_returned_for_the_org_alone(rdb):
+    """Both directions, for every shape the code tools use and each org: no row the statement did not return (another org's, one a filter excludes),
+    and none missing (hot value, absent key, null filter, a missing row)."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        _seed_small(c)
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for null_absent in (True, False):
+                for fn, lead, filters in CASES:
+                    coll, hot, call = HOT[fn]
+                    keys, vals = list(filters), [json.dumps(v) for v in filters.values()]
+                    old = [r[0] for r in c.execute(PLAIN.format(hot=hot), (coll, *lead, keys, vals, null_absent))]
+                    new = [r[0] for r in c.execute(f"SELECT node_id FROM graph.{fn}{call} ORDER BY node_id", (*lead, keys, vals, null_absent))]
+                    assert new == old, (org, null_absent, fn, filters, new, old)
+        assert any(c.execute(f"SELECT node_id FROM graph.{fn}{HOT[fn][2]}", (*lead, list(f), [json.dumps(v) for v in f.values()], True)).fetchall() for fn, lead, f in CASES)
+
+
+def test_a_hot_lookup_answers_nothing_without_an_org_and_pages_after_an_id(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        _seed_small(c)
+        for org in ("", "c" * 24):
+            as_role(c, "pipeshub_connectors", org)
+            assert c.execute("SELECT count(*) FROM graph.blocks_by_record('r1', '{}', '{}', true, '', 1000)").fetchone()[0] == 0
+        as_role(c, "pipeshub_connectors", A)
+        page = lambda after, n: [r[0] for r in c.execute("SELECT node_id FROM graph.blocks_by_record('r1', '{}', '{}', true, %s, %s)", (after, n))]  # noqa: E731
+        assert page("", 1000) == ["b1", "b2", "b4", "b5", "b6", "b7"]
+        assert page("", 2) == ["b1", "b2"] and page("b2", 2) == ["b4", "b5"] and page("b7", 2) == []
+
+
+BAD_HOT = [
+    (None, [], [], True, "", 10), ("", [], [], True, "", 10), ("x" * 201, [], [], True, "", 10), ("r", None, [], True, "", 10), ("r", [None], ["1"], True, "", 10),
+    ("r", [""], ["1"], True, "", 10), ("r", ["k"] * 33, ["1"] * 33, True, "", 10), ("r", [], [], None, "", 10), ("r", [], [], True, None, 10),
+    ("r", [], [], True, "x" * 201, 10), ("r", ["a"], ["1", "2"], True, "", 10), ("r", ["a", "b"], ["1"], True, "", 10), ("r", [], [], True, "", 0), ("r", [], [], True, "", 1001), ("r", [], [], True, "", None),
+]
+
+
+def test_a_hot_lookup_refuses_a_bad_argument(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        as_role(c, "pipeshub_connectors", A)
+        for args in BAD_HOT:
+            with pytest.raises(psycopg.errors.InvalidParameterValue):
+                c.execute("SELECT * FROM graph.blocks_by_record(%s, %s::text[], %s::jsonb[], %s, %s, %s)", args)
+            c.execute("ROLLBACK")
+
+
+def test_only_the_graph_services_may_call_a_hot_lookup(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        for role, ok in (("pipeshub_connectors", True), ("pipeshub_indexing", True), ("pipeshub_query", True), ("pipeshub_node", False), ("pipeshub_jobs", False)):
+            as_role(c, role, A)
+            for fn in HOT:
+                has = c.execute("SELECT has_function_privilege(%s, p.oid, 'EXECUTE') FROM pg_proc p WHERE p.pronamespace = 'graph'::regnamespace AND p.proname = %s", (role, fn)).fetchone()[0]
+                assert has is ok, (role, fn)
+
+
+def _uses(plan, index):
+    return re.search(rf"Index (?:Only )?Scan(?: Backward)? using \S*{index}\b|Bitmap Index Scan on \S*{index}\b", plan) is not None
+
+
+@pytest.mark.parametrize(("fn", "params", "index"), [
+    ("graph.blocks_by_record(%s, %s::text[], %s::jsonb[], true)", ("rec7", ["recordId", "qualifiedName"], ['"rec7"', '"q777"']), "nodes_block_record"),
+    ("graph.blocks_by_name(%s, %s, %s::text[], %s::jsonb[], true)", ("c1", "n7", ["connectorId"], ['"c1"']), "nodes_block_name"),
+    ("graph.code_files_by_path(%s, %s::text[], %s::jsonb[], true)", ("src/p7/f7.py", ["orgId"], ['"' + "a" * 24 + '"']), "nodes_codefile_path"),
+], ids=["blocks_by_record", "blocks_by_name", "code_files_by_path"])
+def test_a_hot_lookup_uses_its_index_where_the_plain_statement_cannot(rdb, fn, params, index):
+    """Row-level security keeps the planner from the expression index of a plain statement (the `->>` operator is not leakproof); the vetted function
+    applies the org itself. Seven calls: the plpgsql plan cache goes generic after five."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        as_role(c, "pipeshub_connectors", A)
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'blocks', 'b' || i, jsonb_build_object('orgId', %s::text, 'recordId', 'rec' || (i %% 100), 'connectorId', 'c' || (i %% 2),"
+                  " 'nameFolded', 'n' || (i %% 500), 'qualifiedName', 'q' || i) FROM generate_series(1, 6000) i", (A, A))
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'codeFiles', 'f' || i, jsonb_build_object('orgId', %s::text, 'filePath', 'src/p' || (i %% 100) || '/f' || i || '.py')"
+                  " FROM generate_series(1, 3000) i", (A, A))
+        c.execute("RESET ROLE")
+        c.execute("ANALYZE graph.nodes")
+        plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, f"SELECT node_id FROM {fn}", params)
+        assert all(_uses(p, index) for p in plans[:1] + plans[-1:]), plans[0] + "\n" + plans[-1]
+        assert all("Seq Scan on" not in p for p in plans), "a sequential scan of graph.nodes"
+        # the same read as a plain statement, which is what the provider sent before: no key index
+        coll, hot = ("codeFiles", "n.doc->>'filePath' = %s") if index == "nodes_codefile_path" else ("blocks", "n.doc->>'recordId' = %s")
+        plain = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, "SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = %s AND " + hot,
+                                                  (coll, "src/p7/f7.py" if coll == "codeFiles" else "rec7"))
+        assert not any(_uses(p, index) for p in plain), "the plain statement used the index: the function is not needed on this server"
+
+
+# ---- the lookups of graph_0004 -----------------------------------------------------------------------------------------------------------
+# (function, collection, the old statement's predicate on n.doc, sample arguments, the key its index leads with after org_id)
+LOOKUPS = {
+    "record_by_external": ("records", "n.doc->>'connectorId' = %s AND n.doc->>'externalRecordId' = %s", ("app1", "e1"), "externalRecordId"),
+    "user_by_user_id": ("users", "n.doc->>'userId' = %s", ("x",), "userId"),
+}
+
+
+def _seed_lookups(c):
+    for org in (A, B):
+        as_role(c, "pipeshub_connectors", org)
+        for coll, key in (("records", "externalRecordId"),):
+            for i, (conn, ext) in enumerate((("app1", "e1"), ("app1", "e2"), ("app2", "e1"))):
+                c.execute(NODE, (org, coll, f"{coll[0]}{i}", json.dumps({"connectorId": conn, key: ext, "orgId": org})))
+        c.execute(NODE, (org, "records", "rdel", json.dumps({"connectorId": "app1", "externalRecordId": "e1", "isDeleted": True, "orgId": org})))     # the same pair, deleted
+        c.execute(NODE, (org, "records", "rnone", json.dumps({"orgId": org})))                                                                           # no key at all
+        for i, uid in enumerate(("x", "y")):
+            c.execute(NODE, (org, "users", f"u{i}", json.dumps({"userId": uid})))
+    as_role(c, "pipeshub_connectors", A)
+    c.execute(NODE, (A, "users", "uA", json.dumps({"userId": "only-a"})))
+
+
+def test_a_lookup_of_graph_0004_returns_what_the_plain_statement_returned_for_the_org_alone(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        _seed_lookups(c)
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for fn, (coll, pred, args, _key) in LOOKUPS.items():
+                n = pred.count("%s")
+                probes = [args, ("app2", "e1")[-n:] if n == 2 else ("y",), ("nope",) * n, ("only-a",) if n == 1 else ("app1", "only-a")]
+                for probe in probes:
+                    old = sorted(r[0] for r in c.execute(f"SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = '{coll}' AND {pred}", probe))
+                    new = sorted(r[0] for r in c.execute(f"SELECT node_id FROM graph.{fn}({', '.join(['%s'] * n)})", probe))
+                    assert new == old, (org, fn, probe, new, old)
+        # both directions spelled out: the pair that two records hold is found with both, and A's own user never reaches B
+        as_role(c, "pipeshub_connectors", A)
+        assert sorted(r[0] for r in c.execute("SELECT node_id FROM graph.record_by_external('app1', 'e1')")) == ["r0", "rdel"]
+        assert [r[0] for r in c.execute("SELECT node_id FROM graph.user_by_user_id('only-a')")] == ["uA"]
+        as_role(c, "pipeshub_connectors", B)
+        assert c.execute("SELECT count(*) FROM graph.user_by_user_id('only-a')").fetchone()[0] == 0
+        for org in ("", "c" * 24):
+            as_role(c, "pipeshub_connectors", org)
+            for fn, (_coll, pred, args, _k) in LOOKUPS.items():
+                assert c.execute(f"SELECT count(*) FROM graph.{fn}({', '.join(['%s'] * pred.count('%s'))})", args).fetchone()[0] == 0
+
+
+def test_the_virtual_record_lookup_returns_the_records_of_the_org_that_hold_a_virtual_record_id(rdb):
+    cluster, name = rdb
+    docs = {"a1": {"virtualRecordId": "v1", "orgId": A}, "a2": {"virtualRecordId": "v1", "orgId": A, "isDeleted": True}, "a3": {"virtualRecordId": "v2", "orgId": A},
+            "a4": {"virtualRecordId": "v2", "orgId": "other"}, "a5": {"virtualRecordId": "v3"}, "a6": {"orgId": A}}
+    with connect(cluster, name) as c:
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for k, d in docs.items():
+                c.execute(NODE, (org, "records", f"{org[0]}{k}", json.dumps({**d, **({"orgId": org} if d.get("orgId") == A else {})})))
+            c.execute(NODE, (org, "recordGroups", f"{org[0]}g", json.dumps({"virtualRecordId": "v1", "orgId": org})))        # not a record
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for probe in (["v1"], ["v1", "v2", "v3"], ["nope"], [], ["v1", "v1"]):
+                old = sorted(r[0] for r in c.execute("SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = 'records' "
+                                                     "AND n.doc->>'orgId' = n.org_id AND n.doc->>'virtualRecordId' = ANY(%s::text[])", (probe,)))
+                new = sorted(r[0] for r in c.execute("SELECT node_id FROM graph.records_by_virtual_id(%s::text[])", (probe,)))
+                assert new == old, (org, probe, new, old)
+            assert sorted(r[0] for r in c.execute("SELECT node_id FROM graph.records_by_virtual_id('{v1,v2}')")) == [f"{org[0]}a1", f"{org[0]}a2", f"{org[0]}a3"]
+        as_role(c, "pipeshub_connectors")
+        assert c.execute("SELECT count(*) FROM graph.records_by_virtual_id('{v1}')").fetchone()[0] == 0
+
+
+BAD_LOOKUP = [("record_by_external", "(%s, %s)", a) for a in ((None, "e"), ("", "e"), ("c" * 201, "e"), ("c", None), ("c", ""), ("c", "e" * 2001))] + [
+    ("user_by_user_id", "(%s)", a) for a in ((None,), ("",), ("u" * 201,))] + [
+    ("records_by_virtual_id", "(%s::text[])", a) for a in ((None,), ([None],), ([""],), (["v" * 201],), (["v"] * 1001,))]
+
+
+def test_a_lookup_of_graph_0004_refuses_a_bad_argument_and_only_the_graph_services_may_call_it(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        as_role(c, "pipeshub_connectors", A)
+        for fn, marks, args in BAD_LOOKUP:
+            with pytest.raises(psycopg.errors.InvalidParameterValue):
+                c.execute(f"SELECT * FROM graph.{fn}{marks}", args)
+            c.execute("ROLLBACK")
+        names = [*LOOKUPS, "records_by_virtual_id"]
+        for role, ok in (("pipeshub_connectors", True), ("pipeshub_indexing", True), ("pipeshub_query", True), ("pipeshub_node", False), ("pipeshub_jobs", False)):
+            for fn in names:
+                has = c.execute("SELECT has_function_privilege(%s, p.oid, 'EXECUTE') FROM pg_proc p WHERE p.pronamespace = 'graph'::regnamespace AND p.proname = %s", (role, fn)).fetchone()[0]
+                assert has is ok, (role, fn)
+
+
+def test_the_lookups_of_graph_0004_use_their_index_where_the_plain_statement_cannot(rdb):
+    """Row-level security leaves a plain statement the org_id prefix of the expression index; the function applies the org itself and the index condition
+    names the key. Seven calls: the plpgsql plan cache goes generic after five."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        as_role(c, "pipeshub_connectors", A)
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 'r' || i, jsonb_build_object('orgId', %s::text, 'connectorId', 'app1', 'externalRecordId', 'e' || i, 'virtualRecordId', 'v' || i) "
+                  "FROM generate_series(1, 4000) i", (A, A))
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'users', 'u' || i, jsonb_build_object('userId', 'x' || i) FROM generate_series(1, 20000) i", (A,))
+        c.execute("RESET ROLE")
+        c.execute("ANALYZE graph.nodes")
+        cases = [
+            ("record_by_external", "graph.record_by_external(%s, %s)", ("app1", "e777"), "externalRecordId"),
+            ("user_by_user_id", "graph.user_by_user_id(%s)", ("x777",), "userId"),
+            ("records_by_virtual_id", "graph.records_by_virtual_id(%s::text[])", (["v1", "v777", "v3000"],), "virtualRecordId"),
+        ]
+        for fn, call, params, key in cases:
+            plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, f"SELECT node_id FROM {call}", params)
+            for i in (0, 6):                 # the first (custom) and the seventh call
+                assert re.search(rf"Index Cond: .*\(doc ->> '{key}'::text\)", plans[i]), (fn, i, plans[i])
+                assert "Seq Scan on" not in plans[i], (fn, i)
+        # the plain statements the provider sent before: the index is reached by org_id alone
+        coll_of = {"record_by_external": "records", "user_by_user_id": "users", "records_by_virtual_id": "records"}
+        old = {"record_by_external": ("n.doc->>'externalRecordId' = %s", ("e777",), "externalRecordId"), "user_by_user_id": ("n.doc->>'userId' = %s", ("x777",), "userId")}
+        for fn, (pred, params, key) in old.items():
+            plain = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, f"SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = '{coll_of[fn]}' AND {pred}", params)
+            assert not any(re.search(rf"Index Cond: .*\(doc ->> '{key}'::text\)", p) for p in plain), plain[0]
+
+
+def test_the_hot_lookups_keep_their_key_index_when_the_planner_expects_a_big_collection(rdb):
+    """With ORDER BY id and a LIMIT in the one query, a planner that expects millions of rows (statistics are only estimates, and a partition can hold
+    several orgs) walks the primary key in id order and filters the whole collection for a rare key. The matches are found by the key's index first."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        as_role(c, "pipeshub_connectors", A)
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'blocks', 'b' || lpad(i::text, 6, '0'), jsonb_build_object('orgId', %s::text, 'connectorId', 'c1', 'nameFolded', 'n' || (i %% 50), "
+                  "'recordId', CASE WHEN i < 3000 THEN 'common' ELSE 'rec' || (i %% 300) END) FROM generate_series(0, 11999) i", (A, A))
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'blocks', 'bz' || i, jsonb_build_object('orgId', %s::text, 'connectorId', 'c1', 'nameFolded', 'rare', 'recordId', 'rare') FROM generate_series(0, 2) i", (A, A))
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'codeFiles', 'f' || lpad(i::text, 6, '0'), jsonb_build_object('orgId', %s::text, "
+                  "'filePath', CASE WHEN i < 2000 THEN 'src/common.py' ELSE 'src/p' || i || '.py' END) FROM generate_series(0, 11999) i", (A, A))
+        c.execute("INSERT INTO graph.nodes VALUES (%s, 'codeFiles', 'fzz', %s::jsonb)", (A, json.dumps({"orgId": A, "filePath": "src/rare.py"})))
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'users', 'u' || i, jsonb_build_object('userId', 'x' || i) FROM generate_series(1, 12000) i", (A,))
+        c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 'r' || i, jsonb_build_object('orgId', %s::text, 'connectorId', 'app1', 'externalRecordId', 'e' || i, "
+                  "'virtualRecordId', 'v' || i) FROM generate_series(1, 12000) i", (A, A))
+        c.execute("RESET ROLE")
+        c.execute("ANALYZE graph.nodes")
+        leaf = c.execute("SELECT tableoid::regclass::text FROM graph.nodes WHERE org_id = %s LIMIT 1", (A,)).fetchone()[0]
+        # the planner now expects a partition of 4 billion documents (the table and its indexes: their density is what it scales to the pages it finds)
+        c.execute(f"UPDATE pg_class SET reltuples = 4000000000 WHERE oid = '{leaf}'::regclass OR oid IN (SELECT indexrelid FROM pg_index WHERE indrelid = '{leaf}'::regclass)")
+        cases = [
+            ("graph.blocks_by_record(%s, %s::text[], %s::jsonb[], true)", ("rare", ["orgId", "recordId"], [f'"{A}"', '"rare"']), "recordId"),
+            ("graph.blocks_by_record(%s, %s::text[], %s::jsonb[], true)", ("common", ["orgId", "recordId"], [f'"{A}"', '"common"']), "recordId"),
+            ("graph.blocks_by_record(%s, %s::text[], %s::jsonb[], true)", ("nope", ["orgId", "recordId"], [f'"{A}"', '"nope"']), "recordId"),
+            ("graph.blocks_by_name(%s, %s, %s::text[], %s::jsonb[], true)", ("c1", "rare", ["orgId", "connectorId", "nameFolded"], [f'"{A}"', '"c1"', '"rare"']), "nameFolded"),
+            ("graph.code_files_by_path(%s, %s::text[], %s::jsonb[], true)", ("src/rare.py", ["orgId", "filePath"], [f'"{A}"', '"src/rare.py"']), "filePath"),
+            ("graph.code_files_by_path(%s, %s::text[], %s::jsonb[], true)", ("src/common.py", ["orgId", "filePath"], [f'"{A}"', '"src/common.py"']), "filePath"),
+            ("graph.code_files_by_path(%s, %s::text[], %s::jsonb[], true)", ("src/none.py", ["orgId", "filePath"], [f'"{A}"', '"src/none.py"']), "filePath"),
+            ("graph.user_by_user_id(%s)", ("x777",), "userId"),
+            ("graph.user_by_user_id(%s)", ("nobody",), "userId"),
+            ("graph.record_by_external(%s, %s)", ("app1", "e777"), "externalRecordId"),
+            ("graph.record_by_external(%s, %s)", ("app1", "nope"), "externalRecordId"),
+            ("graph.records_by_virtual_id(%s::text[])", (["v1", "v777", "v11999"],), "virtualRecordId"),
+            ("graph.records_by_virtual_id(%s::text[])", (["nope"],), "virtualRecordId"),
+        ]
+        for call, params, key in cases:
+            plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, f"SELECT node_id FROM {call}", params)
+            for i in (0, 6):
+                assert re.search(rf"Index Cond: .*\(doc ->> '{key}'::text\)", plans[i]), (call, params[0], i, plans[i])
+        # and the answers are unchanged: ascending by id, after the given id
+        as_role(c, "pipeshub_connectors", A)
+        assert [r[0] for r in c.execute("SELECT node_id FROM graph.blocks_by_record('rare', '{}', '{}', true, '', 1000)")] == ["bz0", "bz1", "bz2"]
+        assert [r[0] for r in c.execute("SELECT node_id FROM graph.blocks_by_record('rare', '{}', '{}', true, 'bz0', 1)")] == ["bz1"]

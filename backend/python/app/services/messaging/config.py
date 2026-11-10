@@ -210,13 +210,11 @@ class MessagingEnvConfig:
     def record_lease_wait_seconds(self) -> float:
         """Bounded wait for the per-record lease before giving up.
 
-        This lease is only contended by *duplicate* in-flight deliveries of
-        the same record (a different, unrelated record never competes for
-        it), and the task already holds an outer indexing slot/semaphore
-        while waiting. An unbounded wait here convoys the whole pipeline if
-        several duplicates of one record arrive together; a short bounded
-        wait is enough since whoever already holds the lease is actively
-        processing that same record.
+        Only work on the same record competes for this lease (a duplicate
+        delivery, a pipeline stage, a retention sweep), and the task already
+        holds an outer indexing slot/semaphore while waiting. An unbounded wait
+        here convoys the whole pipeline if several events of one record arrive
+        together, so a delivery that waits this long is handed back instead.
         """
         return _env_seconds("INDEXING_RECORD_LEASE_WAIT_SECONDS", 10.0)
 

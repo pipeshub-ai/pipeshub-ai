@@ -56,6 +56,9 @@ describe('es_controller deleteConversationById on a replica set', () => {
     const conversationId = new mongoose.Types.ObjectId().toString()
     sinon.stub(ChatSession, 'findOne').resolves({ _id: conversationId } as never)
     sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ _id: conversationId, updatedAt: new Date() } as never)
+    sinon.stub(ChatSession, 'find').returns({
+      lean: () => ({ exec: () => Promise.resolve([]) }),
+    } as never)
     sinon.stub(ChatSessionMessage, 'find').returns({ lean: () => Promise.resolve([]) } as never)
 
     const res = { status: sinon.stub().returnsThis(), json: sinon.stub() }

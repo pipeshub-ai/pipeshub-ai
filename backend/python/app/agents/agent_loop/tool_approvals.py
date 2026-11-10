@@ -41,7 +41,7 @@ from app.agent_loop_lib.core.messages import AssistantMessage, ToolMessage, User
 from app.agent_loop_lib.core.types import ToolCall
 from app.agent_loop_lib.events.base import AgentEvent, EventType, ToolCallStatus
 from app.agent_loop_lib.hooks.middleware.decisions import PendingApproval
-from app.agent_loop_lib.tools.executor import ToolExecutor
+from app.agent_loop_lib.tools.executor import ToolExecutor, log_tool_call_end
 from app.agents.actions.util.read_only_sql import read_only_statement
 from app.agents.agent_loop import parked_turn
 from app.agents.constants.mcp_server_constants import (
@@ -52,6 +52,7 @@ from app.agents.constants.mcp_server_constants import (
 from app.agents.constants.toolset_constants import get_toolset_tool_rules_path
 from app.agents.mcp.models import MCPCamelModel
 from app.utils.env_utils import env_bool
+from app.utils.error_class import log_failure
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -613,10 +614,15 @@ def resume_parked_call(context: "AgentContext") -> Any:  # noqa: ANN401
     return _middleware
 
 
+def awaiting_approval(context: "AgentContext") -> bool:
+    """The run stopped on an approval card and waits for the person's answer."""
+    return bool(context.tool_state.get(_PENDING_IN_RUN))
+
+
 async def keep_stopped_turn(context: "AgentContext", agent: "Agent") -> None:
     """After a run that stopped on a card: the turn as the model had it, for the answer (`parked_turn`)."""
     call_id = context.tool_state.get(_STOPPED_CALL)
-    if context.tool_state.get(_PENDING_IN_RUN) and call_id:
+    if awaiting_approval(context) and call_id:
         await parked_turn.keep(context, agent, call_id=call_id, ttl_seconds=TURN_TTL_SECONDS)
 
 
@@ -638,6 +644,9 @@ class _Settled:
     arguments: dict[str, Any]
     result: str
     is_error: bool
+
+
+_NOT_RUN_REASON = {"expired": "expired", "declined": "declined"}
 
 
 async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApprovalAnswer) -> _Settled:
@@ -704,6 +713,10 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
                 "may or may not have run. Don't run it again; tell the user to check its effect.",
             ))
     if outcome.answer != "allowed" or target is None:
+        # Not run: the parked call's one `tool_call.end` (the executor logs it when it runs).
+        log_tool_call_end(
+            outcome="skipped", reason=_NOT_RUN_REASON.get(outcome.answer, "unavailable"), tool=tool_name, tool_call_id=call_id,
+        )
         await _show(run, call_id, tool_name, pending, target, outcome)
     return _Settled(call_id, tool_name, pending.arguments, outcome.result, outcome.status != "completed")
 
@@ -807,7 +820,8 @@ async def _run(context: "AgentContext", run: Any, target: ApprovalTarget, pendin
             call, session_id=run.session_id, on_denied=_on_denied,
         )
     except Exception as e:
-        logger.warning(f"Running the approved call {tool} failed: {e}", exc_info=True)
+        # The executor already logged it with its stack; this line is DEBUG then.
+        log_failure(logger, "tool_approval.run_failed", e, include_error_text=False)
         outcome = Outcome(
             answer="allowed", status="failed", ran=True, preview="Something went wrong while it ran.",
             result=f"The user approved running {tool} on {server}, but something went wrong while it ran, so it may "

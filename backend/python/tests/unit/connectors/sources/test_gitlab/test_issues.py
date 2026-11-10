@@ -664,8 +664,11 @@ class TestConfidentialIssueRouting:
     ``access_level >= 15`` instead of the Guest-readable work-items group.
     """
 
-    async def _ticket_for(self, issue: MagicMock) -> object:
+    async def _ticket_for(self, issue: MagicMock, readers: set[int] | None = None, members: object = None) -> object:
         c = make_mock_connector()
+        # Project 42's members at Guest or above, as this run's member read left them.
+        c._project_reader_ids = {} if readers is None else {42: readers}
+        c.runtime.ds_call = AsyncMock(return_value=members or MagicMock(success=False, data=None))
         tx_store = MagicMock()
         tx_store.get_record_by_external_id = AsyncMock(return_value=None)
         ctx = MagicMock()
@@ -695,15 +698,38 @@ class TestConfidentialIssueRouting:
     async def test_author_and_assignees_keep_access(self) -> None:
         """Additive grants: the union-with-no-deny model can widen but not narrow."""
         result = await self._ticket_for(
-            _make_issue(confidential=True, author_id=7, assignee_ids=[8, 9])
+            _make_issue(confidential=True, author_id=7, assignee_ids=[8, 9]), readers={7, 8, 9}
         )
         emails = sorted(p.email for p in result.new_permissions)
         assert emails == ["user7@example.com", "user8@example.com", "user9@example.com"]
         assert result.permissions_changed is True
 
+    async def test_an_author_or_assignee_who_cannot_read_the_project_gets_nothing(self) -> None:
+        """GitLab's exception is on top of project access: a removed author reads nothing."""
+        result = await self._ticket_for(
+            _make_issue(confidential=True, author_id=7, assignee_ids=[8, 9]), readers={8}
+        )
+        assert [p.email for p in result.new_permissions] == ["user8@example.com"]
+        assert result.record.rewrite_permissions is True, "a former member's stored grant is replaced"
+
+    async def test_unreadable_members_grant_no_exception(self) -> None:
+        result = await self._ticket_for(_make_issue(confidential=True, author_id=7, assignee_ids=[8]))
+        assert result.new_permissions == []
+        assert result.record.external_record_group_id == "42-confidential-work-items"
+
+    async def test_a_reindex_outside_a_sync_reads_the_members(self) -> None:
+        members = MagicMock(success=True, data=[
+            MagicMock(id=7, access_level=30, state="active", membership_state="active"),
+            MagicMock(id=8, access_level=5, state="active", membership_state="active"),  # Minimal Access
+        ])
+        result = await self._ticket_for(
+            _make_issue(confidential=True, author_id=7, assignee_ids=[8]), members=members
+        )
+        assert [p.email for p in result.new_permissions] == ["user7@example.com"]
+
     async def test_author_who_is_also_assignee_is_granted_once(self) -> None:
         result = await self._ticket_for(
-            _make_issue(confidential=True, author_id=7, assignee_ids=[7])
+            _make_issue(confidential=True, author_id=7, assignee_ids=[7]), readers={7}
         )
         assert len(result.new_permissions) == 1
 

@@ -8,6 +8,7 @@ from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.connectors.services.kafka_service import KafkaService
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
+from app.core import org_context
 from app.health.health import Health
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.const.const import (
@@ -205,7 +206,9 @@ async def _backfill_indexed_copy_flags(graph_provider: IGraphDBProvider, logger:
     """Records indexed before ``hasIndexedCopy`` existed would otherwise leave search
     the first time they are edited. Idempotent, so every boot may run it."""
     try:
-        marked = await graph_provider.backfill_indexed_copy_flags()
+        # Boot has no org: a store that keeps one partition per org marks every org's records under the system scope, one org at a time.
+        with org_context.system("indexing.backfill_indexed_copy_flags"):
+            marked = await graph_provider.backfill_indexed_copy_flags()
     except Exception:
         logger.warning(
             "⚠️ Could not mark existing indexed records; an edit may hide one "

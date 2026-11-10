@@ -207,6 +207,7 @@ class BaseDataStore(ABC):
     async def get_user_by_email(
         self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
     ) -> Optional[User]:
+        """With ``org_id``, only a user of that organisation answers."""
         pass
 
     @abstractmethod
@@ -249,6 +250,11 @@ class BaseDataStore(ABC):
         """A failed read raises only with ``raise_on_error``; otherwise it answers ``[]``."""
         pass
 
+    async def get_app_user_links(self, org_id: str, connector_id: str) -> list[dict]:
+        """``{"id", "sourceUserId"}`` of every user of the org linked to the connector, guests
+        included. A failed read raises."""
+        raise NotImplementedError
+
     @abstractmethod
     async def get_app_user_by_email(self, email: str, connector_id: str) -> Optional[AppUser]:
         pass
@@ -269,6 +275,14 @@ class BaseDataStore(ABC):
     async def get_person_by_email(
         self, email: str, org_id: str, *, raise_on_error: bool = False
     ) -> Optional[Person]:
+        pass
+
+    @abstractmethod
+    async def get_person_by_source_key(self, source_key: str, org_id: str) -> Person | None:
+        pass
+
+    @abstractmethod
+    async def upsert_person_by_source_key(self, person: Person, *, raise_on_error: bool = False) -> str | None:
         pass
 
     @abstractmethod
@@ -436,7 +450,9 @@ class BaseDataStore(ABC):
         from_id: str,
         from_collection: str,
         collection: str,
-        relationship_types: list[str]
+        relationship_types: list[str],
+        *,
+        raise_on_error: bool = False,
     ) -> int:
         """
         Delete edges from a record by relationship types.
@@ -469,6 +485,21 @@ class BaseDataStore(ABC):
     async def delete_edges_between_collections(
         self, from_id: str, from_collection: str, edge_collection: str, to_collection: str
     ) -> None:
+        pass
+
+    @abstractmethod
+    async def delete_record_entity_relations(self, record_id: str, to_collection: str, origin: str) -> int:
+        """Delete the record's ``entityRelations`` edges of ``origin`` to
+        ``to_collection``; see ``IGraphDBProvider.delete_record_entity_relations``."""
+        pass
+
+    @abstractmethod
+    async def replace_record_entity_relations(
+        self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
+    ) -> None:
+        """Replace the record's ``entityRelations`` edges of ``origin`` to
+        ``to_collections`` with ``edges``, atomically; see
+        ``IGraphDBProvider.replace_record_entity_relations``."""
         pass
 
     @abstractmethod
@@ -532,6 +563,10 @@ class BaseDataStore(ABC):
 
 class TransactionStore(BaseDataStore):
     """Abstract transaction-aware data store that operates within a transaction context"""
+
+    def is_transient_error(self, error: BaseException) -> bool:
+        """Whether *error* rolled this transaction back cleanly so it can be run again."""
+        return False
 
     @abstractmethod
     async def commit(self) -> None:

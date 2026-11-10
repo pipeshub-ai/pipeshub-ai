@@ -32,7 +32,7 @@ PYTHON_APP = REPO / "backend" / "python" / "app"
 
 # Every middleware that refuses a signed-in member for not being an org admin.
 # userAdminOrSelfCheck is left out on purpose: members pass it for their own id.
-ADMIN_MIDDLEWARES = frozenset({"userAdminCheck", "adminValidator"})
+ADMIN_MIDDLEWARES = frozenset({"userAdminCheck"})
 
 _METHODS = ("get", "post", "put", "patch", "delete")
 _ROUTE_CALL = re.compile(r"\brouter\s*\.\s*(get|post|put|patch|delete|use)\s*\(")

@@ -9,7 +9,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.core.org_context import spawn_in_request
-from app.modules.parsers.pdf.docling_processor import DoclingProcessor
+from app.modules.parsers.pdf.docling_processor import (
+    DoclingProcessor,
+    lanes_active,
+    lease_scope,
+)
 from app.services.resource_governor import (
     ParseTier,
     ResourceGovernor,
@@ -17,7 +21,9 @@ from app.services.resource_governor import (
     gate_pool,
     parse_cost,
 )
+from app.services.resource_governor.lanes import LaneWaitTimeout
 from app.services.resource_governor.memory_domain import parse_admission_cap
+from app.utils.lazy_heavy import ensure_docling
 from app.utils.logger import create_logger
 from app.utils.memory_release import release_freed_memory
 
@@ -60,6 +66,10 @@ class DoclingService:
             # skip initialization and let the caller wire it later.
             if not self.config_service:
                 raise ValueError("Config service not provided")
+
+            # This service exists to run Docling, so load it now rather than on the first
+            # request (the processor itself imports it lazily).
+            await ensure_docling()
 
             # Initialize DoclingProcessor
             self.processor = DoclingProcessor(
@@ -261,8 +271,9 @@ async def parse_pdf_endpoint(
         # it only once the conversion and the serialization (both hold the
         # document) have ended; the caller is answered at its deadline without
         # cancelling the task.
+        abandon = asyncio.Event()
         parse_task = spawn_in_request(
-            _parse_holding_gate(service, record_name, pdf_binary, page_range, cost),
+            _parse_holding_gate(service, record_name, pdf_binary, page_range, cost, abandon),
             name=f"docling-parse:{record_name}",
         )
         handed_off = True
@@ -277,6 +288,7 @@ async def parse_pdf_endpoint(
             # here; only a task still running is left without a caller.
             if not parse_task.done():
                 _abandoned.add(parse_task)
+                abandon.set()
             raise
 
         return ParseResponse(
@@ -291,6 +303,10 @@ async def parse_pdf_endpoint(
         )
     except HTTPException:
         raise
+    except LaneWaitTimeout:
+        # No CPU lane became free in time: the same retryable answer as a full gate. The
+        # task has already returned the permit.
+        return _backpressure_response()
     except Exception:
         logger.exception("PDF parsing failed for %s", record_name)
         return _parse_failure_response("PARSE_FAILED", "Parsing failed")
@@ -320,9 +336,15 @@ async def _parse_holding_gate(
     pdf_binary: bytes,
     page_range: tuple[int, int] | None,
     cost: int,
+    abandon: asyncio.Event | None = None,
 ) -> str:
     try:
-        doc = await service.parse_pdf_only(record_name, pdf_binary, page_range=page_range)
+        if abandon is not None and lanes_active():
+            # A conversion nobody will read does not take a lane; one that started runs on.
+            with lease_scope(DOCLING_GATE_TIMEOUT_SECONDS, abandon.is_set):
+                doc = await service.parse_pdf_only(record_name, pdf_binary, page_range=page_range)
+        else:
+            doc = await service.parse_pdf_only(record_name, pdf_binary, page_range=page_range)
         return await asyncio.to_thread(serialize_docling_doc, doc)
     finally:
         _release_docling_gate(cost)

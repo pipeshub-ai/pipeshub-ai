@@ -211,3 +211,44 @@ async def test_a_result_carrying_call_site_source_is_marked_as_data(monkeypatch)
     out = await tool._with_unlinked_sites({"neighbors": []}, CONN, None, "method:Thing.run", set(),
                                           include_tests=False, target_path="src/b.py")
     assert out["untrusted"] == UNTRUSTED_NOTE
+
+
+async def test_an_unlinked_call_site_names_the_definition_it_sits_in(monkeypatch) -> None:
+    """The caller is what a caller question asks for; a line number alone sends the agent
+    to open the file. The innermost definition holding the line is the caller."""
+    async def search(**_kwargs) -> dict:
+        return {"matches": [{"file_path": "src/c.py", "line": 12, "text": "worker.run()"},
+                            {"file_path": "src/c.py", "line": 40, "text": "run_all(worker.run())"}]}
+
+    async def outline(**kwargs) -> dict:
+        assert kwargs["file_path"] == "src/c.py"
+        return {"symbols": [{"qualified_name": "class:Pool", "lines": "1-30"},
+                            {"qualified_name": "method:Pool.drain", "lines": "10-20"}]}
+
+    monkeypatch.setattr(cg, "search_code_impl", search)
+    monkeypatch.setattr(cg, "outline_impl", outline)
+    tool = cg.CodeGraph({"org_id": ORG, "user_id": USER,
+                         "graph_provider": FakeGraphProvider(), "blob_store": object()})
+    out = await tool._with_unlinked_sites({"neighbors": []}, CONN, None, "method:Thing.run", set(),
+                                          include_tests=False, target_path="src/b.py")
+    sites = out["unlinked_call_sites"]["sites"]
+    assert sites[0]["in"] == "method:Pool.drain"
+    assert "in" not in sites[1], "a module-level line has no definition to name"
+    assert "`in` names" in out["unlinked_call_sites"]["note"]
+
+
+async def test_call_sites_stand_without_names_when_the_outline_fails(monkeypatch) -> None:
+    async def search(**_kwargs) -> dict:
+        return {"matches": [{"file_path": "src/c.py", "line": 12, "text": "worker.run()"}]}
+
+    async def outline(**_kwargs) -> dict:
+        raise RuntimeError("blob store down")
+
+    monkeypatch.setattr(cg, "search_code_impl", search)
+    monkeypatch.setattr(cg, "outline_impl", outline)
+    tool = cg.CodeGraph({"org_id": ORG, "user_id": USER,
+                         "graph_provider": FakeGraphProvider(), "blob_store": object()})
+    out = await tool._with_unlinked_sites({"neighbors": []}, CONN, None, "method:Thing.run", set(),
+                                          include_tests=False, target_path="src/b.py")
+    assert out["unlinked_call_sites"]["sites"] == [{"file_path": "src/c.py", "line": 12, "text": "worker.run()"}]
+    assert "`in` names" not in out["unlinked_call_sites"]["note"]

@@ -4,7 +4,7 @@
  * A grant that already exists comes back as it is stored (`created: false`), settled by `ON CONFLICT` so no transaction aborts.
  */
 import { ValidationError } from '../../errors/validation.error';
-import { stripNul } from '../nul';
+import { stripNul } from '../strip-nul';
 import { assertOrg, inUnit, newObjectId, oidOf } from '../pg-util';
 import type {
   DelegationEventDto,

@@ -3,6 +3,7 @@ import {
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
+import { Logger } from '../../../libs/services/logger.service';
 import { ProjectService } from '../../projects/services/project.service';
 import { CONVERSATION_STATUS } from '../constants/constants';
 import { getConversationRepository } from '../../../libs/repositories/conversation';
@@ -21,6 +22,8 @@ import {
   collectArtifactRefs,
   pointMessageAtCopies,
 } from './fork-artifacts';
+
+const logger = Logger.getInstance({ service: 'ForkConversation' });
 
 export const FORK_TITLE_MAX_LENGTH = 200;
 export const FORK_TITLE_PREFIX = 'Fork of ';
@@ -151,7 +154,7 @@ export async function resolveForkProjectId(
 }
 
 /** The messages of a thread up to and including `lastSeq`, a batch at a time, oldest first. */
-async function* messagesUpTo(
+export async function* messagesUpTo(
   sessionId: string,
   orgId: string,
   lastSeq: number,
@@ -334,4 +337,173 @@ export async function copySessionUpToMessage(
   }
 
   return { conversation, messageCount };
+}
+
+const copyOf = (row: MessageRow): NewMessage =>
+  withExpiredApprovals(
+    stripMessageForCopy(row.dto as unknown as Record<string, unknown>),
+  ) as unknown as NewMessage;
+
+export interface CompareBranchResult {
+  conversation: ChatSessionDto;
+  messageCount: number;
+}
+
+/**
+ * Compare models: a hidden copy of `source` holding only the messages before
+ * the `user_query` `questionId`, owned by the caller and never shared. The
+ * second model then answers that same question in it as an ordinary turn. The
+ * question's seq is kept on the branch so a choice can cut the parent at the
+ * same place even after a half-finished attempt. Artifacts are not copied: the
+ * branch reads the parent's.
+ */
+export async function createCompareBranch(
+  source: ChatSessionDto,
+  question: { _id: string; seq: number },
+  userId: string,
+  orgId: string,
+  tx?: Tx | null,
+  repo: ConversationRepository = getConversationRepository(),
+): Promise<CompareBranchResult> {
+  const unit = tx ?? undefined;
+  const conversation = await repo.createSession(
+    {
+      orgId,
+      userId,
+      initiator: userId,
+      title: source.title,
+      lastActivityAt: Date.now(),
+      status: CONVERSATION_STATUS.COMPLETE,
+      modelInfo: source.modelInfo,
+      sessionType: 'chat',
+      ...(source.projectId && {
+        projectId: source.projectId,
+        projectVisibility: 'private' as const,
+      }),
+      compareOf: source._id,
+      compareFromMessageId: question._id,
+      metadata: { compareFromSeq: question.seq },
+    },
+    unit,
+  );
+  let messageCount = 0;
+  try {
+    for await (const batch of messagesUpTo(
+      source._id,
+      orgId,
+      question.seq - 1,
+      unit,
+      repo,
+    )) {
+      await repo.appendMessages(
+        conversation._id,
+        orgId,
+        batch.map(copyOf),
+        unit,
+      );
+      messageCount += batch.length;
+    }
+  } catch (error) {
+    // Without a transaction nothing rolls back: remove the half-copied branch.
+    if (!sessionOf(unit)) {
+      await repo.discardSession(conversation._id, orgId);
+    }
+    throw error;
+  }
+  return { conversation, messageCount };
+}
+
+/**
+ * Copies the artifacts the branch's own turn (its messages from `keep` on)
+ * shows into `target`, so they outlive the branch. The thread before the
+ * question is the branch's copy of the parent's, whose artifacts the branch
+ * only read, so it is not copied.
+ */
+export async function copyBranchTurnArtifacts(
+  branch: ChatSessionDto,
+  keep: number,
+  targetId: string,
+  copyArtifacts: ArtifactCopier,
+  repo: ConversationRepository = getConversationRepository(),
+): Promise<{ copies: ArtifactCopyMap; failed: number }> {
+  const contents: string[] = [];
+  for (let skip = keep; ; skip += FORK_COPY_BATCH_SIZE) {
+    const rows = await repo.listMessages(branch._id, {
+      orgId: branch.orgId,
+      skip,
+      limit: FORK_COPY_BATCH_SIZE,
+    });
+    for (const r of rows) {
+      if (typeof r.dto.content === 'string') contents.push(r.dto.content);
+    }
+    if (rows.length < FORK_COPY_BATCH_SIZE) break;
+  }
+  const refs = collectArtifactRefs(contents);
+  if (refs.length === 0) return { copies: new ArtifactCopyMap([]), failed: 0 };
+  const outcome = await copyArtifacts(targetId, refs);
+  if (outcome.failed.length > 0) {
+    logger.warn('Could not copy some artifacts of the chosen Compare answer', {
+      failed: outcome.failed.length,
+    });
+  }
+  return {
+    copies: new ArtifactCopyMap(outcome.copies),
+    failed: outcome.failed.length,
+  };
+}
+
+/**
+ * Compare models: makes `target` end with the turn the branch answered. The
+ * target keeps its first `keep` messages (the thread before the question),
+ * loses every later one, and gets the branch's messages after its own copy of
+ * that thread. Truncating before appending makes a repeat after a failure
+ * land in the same state.
+ */
+export async function replaceTurnWithBranch(
+  target: ChatSessionDto,
+  branch: ChatSessionDto,
+  keep: number,
+  tx?: Tx | null,
+  repo: ConversationRepository = getConversationRepository(),
+  copies: ArtifactCopyMap = new ArtifactCopyMap([]),
+): Promise<number> {
+  const unit = tx ?? undefined;
+  const orgId = target.orgId;
+  const stale: string[] = [];
+  for (let skip = keep; ; skip += FORK_COPY_BATCH_SIZE) {
+    const rows = await repo.listMessages(
+      target._id,
+      { orgId, skip, limit: FORK_COPY_BATCH_SIZE },
+      unit,
+    );
+    stale.push(...rows.map((r) => r.dto._id));
+    if (rows.length < FORK_COPY_BATCH_SIZE) break;
+  }
+  await repo.deleteMessages(stale, orgId, unit, target._id);
+
+  let moved = 0;
+  for (let skip = keep; ; skip += FORK_COPY_BATCH_SIZE) {
+    const rows = await repo.listMessages(
+      branch._id,
+      { orgId, skip, limit: FORK_COPY_BATCH_SIZE },
+      unit,
+    );
+    if (rows.length > 0) {
+      await repo.appendMessages(
+        target._id,
+        orgId,
+        rows.map(
+          (r) =>
+            pointMessageAtCopies(
+              copyOf(r) as unknown as IMessage,
+              copies,
+            ) as unknown as NewMessage,
+        ),
+        unit,
+      );
+      moved += rows.length;
+    }
+    if (rows.length < FORK_COPY_BATCH_SIZE) break;
+  }
+  return moved;
 }

@@ -91,6 +91,8 @@ spec:
               value: {{ .Values.config.nodeEnv | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.config.logFormat | default "text" | quote }}
             - name: HIDE_SECRET_CONFIG
               value: {{ .Values.config.hideSecretConfig | quote }}
 {{- if ne (toString .Values.telemetry.collection.enabled) "" }}

@@ -41,7 +41,12 @@ def _comment(comment_id: str, edited: str = OLD) -> dict[str, Any]:
 
 
 def _saved(conn: NotionConnector) -> list[Any]:
-    return [r for call in conn.data_entities_processor.on_new_records.await_args_list for r, _ in call.args[0]]
+    """Records written this run, as a new record or as a content update."""
+    saved = [r for call in conn.data_entities_processor.on_new_records.await_args_list for r, _ in call.args[0]]
+    updates = getattr(conn.data_entities_processor, "on_record_content_update", None)
+    if updates is not None:
+        saved.extend(call.args[0] for call in updates.await_args_list)
+    return saved
 
 
 # ---- 1. comments ------------------------------------------------------------------------------------

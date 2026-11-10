@@ -116,6 +116,12 @@ class ConcreteTransactionStore(TransactionStore):
     async def upsert_person_by_email(self, person, *, raise_on_error=False):
         return None
 
+    async def upsert_person_by_source_key(self, person, *, raise_on_error: bool = False) -> None:
+        return None
+
+    async def get_person_by_source_key(self, source_key, org_id) -> None:
+        return None
+
     async def ensure_app_membership(
         self, principal_id, principal_collection, connector_id, *,
         is_external, source_user_id=None,
@@ -200,7 +206,8 @@ class ConcreteTransactionStore(TransactionStore):
     async def delete_edge(self, from_id, from_collection, to_id, to_collection, collection):
         pass
 
-    async def delete_edges_by_relationship_types(self, from_id, from_collection, collection, relationship_types):
+    async def delete_edges_by_relationship_types(self, from_id, from_collection, collection, relationship_types, *,
+                                                 raise_on_error=False):
         return 0
 
     async def delete_parent_child_edge_to_record(self, record_id):
@@ -246,6 +253,12 @@ class ConcreteTransactionStore(TransactionStore):
         pass
 
     async def delete_edges_between_collections(self, from_id, from_collection, edge_collection, to_collection):
+        pass
+
+    async def delete_record_entity_relations(self, record_id, to_collection, origin) -> int:
+        return 0
+
+    async def replace_record_entity_relations(self, record_id, to_collections, origin, edges) -> None:
         pass
 
     async def get_record_by_weburl(self, weburl, org_id=None):
@@ -298,6 +311,9 @@ class TestTransactionStore:
         store = ConcreteTransactionStore()
         await store.commit()
         assert store._committed is True
+
+    def test_a_store_that_does_not_say_is_never_transient(self) -> None:
+        assert ConcreteTransactionStore().is_transient_error(RuntimeError("x")) is False
 
     @pytest.mark.asyncio
     async def test_rollback(self):

@@ -93,6 +93,7 @@ import {
   buildPaginationMetadata,
   buildSortOptions,
   buildUserQueryMessage,
+  conversationTitleFromQuery,
   extractModelInfo,
   formatPreviousConversations,
   StageTimer,
@@ -132,6 +133,7 @@ import {
   isAGUI,
   resolveProtocol,
 } from '../utils/agui';
+import { emitTurnStarted } from '../utils/compare-turn';
 import { notifyChatShared } from '../utils/share-notification';
 import { IAMServiceCommand } from '../../../libs/commands/iam/iam.service.command';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -746,7 +748,7 @@ export const streamChat =
         orgId: String(orgId),
         userId: String(userId),
         initiator: String(userId),
-        title: req.body.query.slice(0, 100),
+        title: conversationTitleFromQuery(String(req.body.query)),
         lastActivityAt: Date.now(),
         status: CONVERSATION_STATUS.INPROGRESS,
         // Store model and mode information
@@ -804,6 +806,14 @@ export const streamChat =
             })}\n\n`,
       );
       (res as any).flush?.();
+      const createdOrgId = savedConversation.orgId;
+      await emitTurnStarted(res, req.body, newConversationId, async () => {
+        const [firstRow] = (await getMessages(newConversationId, {
+          orgId: createdOrgId,
+          limit: 1,
+        })) as Array<{ _id?: string }>;
+        return firstRow?._id;
+      });
       timer.mark('conversation_created');
 
       const { agentMode } = parseChatMode(
@@ -1470,6 +1480,7 @@ export const addMessageStream =
     // The stream outlives the request, so its listeners write outside any transaction.
     const session: Tx | null = null;
     let existingConversation: ChatSessionDto | null = null;
+    let addedQuestionId: string | undefined;
     let reservation: RunReservation | null = null;
 
     const modelInfo = extractModelInfo(req.body);
@@ -1507,7 +1518,7 @@ export const addMessageStream =
       }
 
       // First, add the user message to the existing conversation
-      await appendMessages(
+      const [addedQuestion] = await appendMessages(
         conversation._id,
         conversation.orgId,
         [
@@ -1520,6 +1531,7 @@ export const addMessageStream =
         ],
         tx,
       );
+      addedQuestionId = addedQuestion?._id;
 
       // Mark the run in progress (clearing a previous error), update the model
       // and mode information if provided, and save
@@ -1592,6 +1604,9 @@ export const addMessageStream =
         throw new NotFoundError('Conversation not found');
       }
       const confirmedConversation = existingConversation as ChatSessionDto;
+      await emitTurnStarted(res, req.body, confirmedConversation._id, () =>
+        Promise.resolve(addedQuestionId),
+      );
 
       // Format previous conversations for context (excluding the user message we just added)
       const allMessagesSoFar = (await getMessages(
@@ -3693,7 +3708,9 @@ async function regenerateAnswersInternal(
     // unless the user already renamed the chat.
     const titleFollowsEdit =
       regenUserIdx === 0 &&
-      existingConversation.title === shownQuestion.content.slice(0, 100);
+      (existingConversation.title === shownQuestion.content.slice(0, 100) ||
+        existingConversation.title ===
+          conversationTitleFromQuery(shownQuestion.content));
     // The rows a card turn asked again leaves behind: its card, the card's answers, earlier replies.
     // They go only after the new answer is saved, so a failed save loses nothing but the old answer.
     const replacedTurnIds =
@@ -3724,7 +3741,7 @@ async function regenerateAnswersInternal(
       editedQuestionSaved = true;
       turnAnswered = true;
       if (titleFollowsEdit) {
-        existingConversation.title = editedQuery.slice(0, 100);
+        existingConversation.title = conversationTitleFromQuery(editedQuery);
         editedTitles.set(existingConversation, existingConversation.title);
       }
     };
@@ -6490,7 +6507,7 @@ export const streamAgentConversation =
         orgId: orgId,
         userId: userId,
         initiator: userId,
-        title: req.body.query.slice(0, 100),
+        title: conversationTitleFromQuery(String(req.body.query)),
         lastActivityAt: Date.now(),
         status: CONVERSATION_STATUS.INPROGRESS,
         agentKey,

@@ -18,6 +18,7 @@ from app.core.envelope import (
 )
 from app.core.org_context import OrgContext
 from app.exceptions.non_retryable import NonRetryableError
+from app.utils import logging_fields
 
 KEY = derive_key("test-scopedJwtSecret-from-config-service")
 OTHER_KEY = derive_key("another-secret")
@@ -244,7 +245,7 @@ async def test_producer_signs_the_event_type(monkeypatch) -> None:
 async def test_stale_signature_follows_the_mode(monkeypatch, caplog) -> None:
     old = _msg(issued_at=int(time.time()) - 901)
     monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
-    envelope._last_logged.clear()
+    monkeypatch.setattr(logging_fields, "_log_once_last", {})
     before = envelope.STALE._metric.labels(TOPIC)._value.get()
     with caplog.at_level("ERROR"):
         assert (await _open(old)).ctx.org_id == "org_b"  # shadow: counted and logged, accepted
@@ -299,7 +300,7 @@ async def test_no_key_while_signing_is_never_silent(monkeypatch, caplog) -> None
     monkeypatch.setenv("ENVELOPE_SIGN", "true")
     monkeypatch.delenv("ORG_CONTEXT_MODE", raising=False)
     before = envelope.UNVERIFIED._metric.labels(TOPIC)._value.get()
-    envelope._last_logged.clear()
+    monkeypatch.setattr(logging_fields, "_log_once_last", {})
     with caplog.at_level("ERROR"):
         assert (await _open(_msg(), keys=())).ctx.source == "legacy-payload"
     assert envelope.UNVERIFIED._metric.labels(TOPIC)._value.get() == before + 1 and "key unavailable" in caplog.text

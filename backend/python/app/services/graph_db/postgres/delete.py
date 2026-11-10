@@ -29,10 +29,16 @@ from app.services.graph_db.common.utils import (
     soft_delete_request_result,
 )
 from app.services.graph_db.postgres.base import PgBase, _doc
+from app.services.graph_db.postgres.hierarchy import _EDGE_COLLS, _remove_records
+from app.services.graph_db.postgres.records import _TYPE_COLLS
 from app.services.graph_db.postgres.trash import _sweep_edges
+from app.services.graph_db.taxonomy import TAXONOMY_EDGE_COLLECTIONS
+from app.services.graph_db.vector_membership_queries import can_use_membership_cleanup
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Mapping
+
+    from app.core.db import Tx
 
 _ORG_FIELD = "orgId"  # the org property of a graph document
 # The roles that may delete a connector's record on a user's request, as on ArangoDB (Drive, Gmail, Outlook, Local FS); a connector not listed needs
@@ -45,6 +51,114 @@ _DELETE_ROLES = {
     Connectors.LOCAL_FS.value: ("OWNER",),
 }
 _DEFAULT_DELETE_ROLES = ("OWNER", "WRITER")
+
+
+_CHUNK = 5000      # records removed per statement, inside the one transaction
+_CONNECTOR_NODE_COLLS = ("syncPoints", "stageStates", "agentKnowledge", "blocks")      # nodes that name their connector and hang off no edge the cascade follows (blocks: the ones no record owns any more)
+
+
+async def _remove_nodes(tx: Tx, org: str, coll: str, keys: list[str]) -> int:
+    """Removes nodes of one collection with every edge around them; the rows are locked in key order first."""
+    if not keys:
+        return 0
+    keys = sorted(set(keys))
+    await tx.execute("/* pipeshub:graph.connector_delete_lock */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[]) ORDER BY id FOR UPDATE", org, coll, keys)
+    await _sweep_edges(tx, org, _EDGE_COLLS, [f"{coll}/{k}" for k in keys])
+    return await tx.fetchval("/* pipeshub:graph.connector_delete_nodes */ WITH d AS (DELETE FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[]) RETURNING 1) SELECT count(*) FROM d",
+                             org, coll, keys)
+
+
+async def _lock_labels(tx: Tx, org: str, coll: str, keys: list[str]) -> None:
+    await tx.execute("/* pipeshub:graph.connector_delete_lock_labels */ SELECT 1 FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[]) ORDER BY id FOR UPDATE", org, coll, keys)
+
+
+async def _remove_unlinked_labels(tx: Tx, org: str, coll: str, keys: list[str]) -> int:
+    """Removes the taxonomy nodes of ``keys`` that no record links and no merge points at or from. The link check is made in the statement that deletes, after the rows
+    are locked, so a record linked to a label in the meantime keeps it (the writer of such a link does not lock the label: the check is as late as it can be)."""
+    await _lock_labels(tx, org, coll, keys)
+    gone = [r["id"] for r in await tx.fetch("""/* pipeshub:graph.connector_delete_unlinked_taxonomy */ DELETE FROM graph.nodes t WHERE t.org_id = $1 AND t.coll = $2
+        AND t.id = ANY($3::text[]) AND t.doc->>'mergedInto' IS NULL
+          AND NOT EXISTS (SELECT 1 FROM graph.nodes o WHERE o.org_id = t.org_id AND o.coll = t.coll AND o.doc->>'mergedInto' = t.id)
+          AND NOT EXISTS (SELECT 1 FROM graph.edges e WHERE e.org_id = t.org_id AND e.coll = $4 AND e.to_coll = t.coll AND e.to_id = t.id AND e.from_coll = 'records')
+        RETURNING t.id""", org, coll, keys, TAXONOMY_EDGE_COLLECTIONS[coll])]
+    await _sweep_edges(tx, org, _EDGE_COLLS, [f"{coll}/{k}" for k in gone])
+    return len(gone)
+
+
+async def _delete_connector(tx: Tx, org: str, connector_id: str) -> dict[str, Any]:
+    row = await tx.fetchrow("/* pipeshub:graph.connector_delete_app */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'apps' AND id = $2 FOR UPDATE", org, connector_id)
+    if not row:
+        return {"success": False, "error": f"Connector instance {connector_id} not found"}
+    app = _doc(row["doc"])
+    needs_vrids = not can_use_membership_cleanup(app)
+    held = {r["coll"]: r for r in await tx.fetch("""/* pipeshub:graph.connector_delete_collect */ SELECT coll, array_agg(id ORDER BY id) AS ids,
+          array_agg(DISTINCT doc->>'virtualRecordId') FILTER (WHERE doc->>'virtualRecordId' IS NOT NULL) AS vrids FROM graph.nodes
+        WHERE org_id = $1 AND coll IN ('records', 'recordGroups', 'roles', 'groups') AND doc->>'connectorId' = $2 GROUP BY coll""", org, connector_id)}
+    ids = {c: list(held[c]["ids"]) if c in held else [] for c in ("records", "recordGroups", "roles", "groups")}
+    vrids = list(held["records"]["vrids"] or []) if needs_vrids and "records" in held else []
+    taxonomy: dict[str, list[str]] = {}      # read before the records go: only these nodes are looked at afterwards
+    for coll, edge in TAXONOMY_EDGE_COLLECTIONS.items():
+        found = [r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.connector_delete_taxonomy */ SELECT DISTINCT e.to_id FROM graph.edges e
+            JOIN graph.nodes r ON r.org_id = e.org_id AND r.coll = 'records' AND r.id = e.from_id AND r.doc->>'connectorId' = $3
+            WHERE e.org_id = $1 AND e.coll = $2 AND e.from_coll = 'records' AND e.to_coll = $4""", org, edge, connector_id, coll)] if ids["records"] else []
+        if found:
+            taxonomy[coll] = found
+    # The connector's records are joined in the database, not bound as a list: a connector can hold millions (one distinct count over all of them).
+    typed = await tx.fetchval("""/* pipeshub:graph.connector_delete_type_count */ SELECT count(DISTINCT t.id) FROM (
+          SELECT e.to_id AS id FROM graph.edges e JOIN graph.nodes r ON r.org_id = e.org_id AND r.coll = 'records' AND r.id = e.from_id AND r.doc->>'connectorId' = $2
+            WHERE e.org_id = $1 AND e.coll = 'isOfType' AND e.to_coll = ANY($3::text[])
+          UNION SELECT n.id FROM graph.nodes n JOIN graph.nodes r ON r.org_id = n.org_id AND r.coll = 'records' AND r.id = n.id AND r.doc->>'connectorId' = $2
+            WHERE n.org_id = $1 AND n.coll = ANY($3::text[])) t""", org, connector_id, _TYPE_COLLS) if ids["records"] else 0
+    blocks = await tx.fetchval("""/* pipeshub:graph.connector_delete_block_count */ SELECT count(*) FROM graph.nodes b
+        JOIN graph.nodes r ON r.org_id = b.org_id AND r.coll = 'records' AND r.id = b.doc->>'recordId' AND r.doc->>'connectorId' = $2
+        WHERE b.org_id = $1 AND b.coll = 'blocks'""", org, connector_id) if ids["records"] else 0
+    removed_records = 0
+    for pass_ in range(3):      # a record written while this ran is taken in the same unit, then the unit is checked
+        if pass_ == 0:
+            keys = ids["records"]
+        else:
+            late = await tx.fetch("/* pipeshub:graph.connector_delete_late */ SELECT id, doc->>'virtualRecordId' AS vrid FROM graph.nodes WHERE org_id = $1 AND coll = 'records' AND doc->>'connectorId' = $2",
+                                  org, connector_id)
+            keys = [r["id"] for r in late]
+            if needs_vrids:      # a late record's vector must be named for the cleanup like the others
+                vrids.extend(sorted({r["vrid"] for r in late if r["vrid"]} - set(vrids)))
+        if not keys:
+            break
+        for i in range(0, len(keys), _CHUNK):
+            removed_records += await _remove_records(tx, org, keys[i:i + _CHUNK])
+        if pass_:
+            ids["records"] = [*ids["records"], *keys]
+    counts = {}
+    for coll in ("recordGroups", "roles", "groups"):
+        counts[coll] = await _remove_nodes(tx, org, coll, ids[coll])
+    for coll in _CONNECTOR_NODE_COLLS:
+        keys = [r["id"] for r in await tx.fetch("/* pipeshub:graph.connector_delete_named */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND doc->>'connectorId' = $3",
+                                                org, coll, connector_id)]
+        removed = await _remove_nodes(tx, org, coll, keys)
+        blocks += removed if coll == "blocks" else 0
+    await tx.execute("/* pipeshub:graph.connector_delete_links */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'authenticatedAs' AND doc->>'connectorId' = $2", org, connector_id)
+    await _remove_nodes(tx, org, "apps", [connector_id])
+    left = await tx.fetchval("""/* pipeshub:graph.connector_delete_left */ SELECT count(*) FROM graph.nodes WHERE org_id = $1 AND doc->>'connectorId' = $2
+        AND coll IN ('records', 'recordGroups', 'roles', 'groups', 'syncPoints', 'stageStates', 'agentKnowledge', 'blocks')""", org, connector_id)
+    if left:
+        raise RuntimeError(f"{left} node(s) of the connector remain")
+    labels = 0
+    for coll, found in taxonomy.items():      # the nodes only this connector's records linked; a merge loser, and the node a loser points at, are left for the redirect
+        labels += await _remove_unlinked_labels(tx, org, coll, found)
+    return {"success": True, "deleted_records_count": removed_records, "deleted_record_groups_count": counts["recordGroups"], "deleted_roles_count": counts["roles"],
+            "deleted_groups_count": counts["groups"], "deleted_blocks_count": blocks, "deleted_isoftype_targets_count": typed, "cascade_retries": 0,
+            "deleted_orphan_type_docs_count": 0, "deleted_orphan_taxonomy_count": labels, "virtual_record_ids": vrids, "record_group_ids": ids["recordGroups"],
+            "vector_membership_backfilled": bool(app.get("vectorMembershipBackfilled", False)),
+            "vector_membership_backfill_exhausted": bool(app.get("vectorMembershipBackfillExhausted", False)), "connector_id": connector_id, "connector_name": app.get("type")}
+
+
+async def _delete_connector_atomically(tx: Tx, org: str, connector_id: str, *, savepoint: bool) -> dict[str, Any]:
+    """``_delete_connector`` as one unit inside a caller's transaction: a failure part way rolls back to the savepoint, so the caller's later commit
+    keeps none of it. Without a caller's transaction the unit itself rolls back on the error."""
+    if not savepoint:
+        return await _delete_connector(tx, org, connector_id)
+    async with tx.savepoint("connector_delete"):
+        return await _delete_connector(tx, org, connector_id)
 
 
 class DeleteMixin(PgBase):
@@ -384,3 +498,25 @@ class DeleteMixin(PgBase):
         except Exception as e:
             self.logger.error(f"❌ Failed to delete relationships: {e}")
             return (0, list(edge_collections))
+
+
+    # ---- deleting a connector instance (or a collection) with everything it holds, in one transaction ---------------------------------
+    async def delete_connector_instance(self, connector_id: str, org_id: str, transaction: str | None = None) -> dict[str, Any]:
+        """Deletes the connector (or collection) and everything of it, all or nothing: its records with their type documents and blocks, record groups, roles,
+        user groups, sync points, stage states, the agent knowledge that names it, its authenticated-as links, the taxonomy nodes only its records linked, and the
+        app with every edge around it. Nothing of another connector or org is touched. A failure rolls the whole delete back and answers ``success: False``.
+        The answer names what the vector cleanup needs (virtual record ids only when the app cannot be cleaned by membership; the record group ids)."""
+        org = current_org_id()
+        if org_id != org:
+            return {"success": False, "error": f"Connector instance {connector_id} not found"}
+        try:
+            result = await self._q(lambda tx: _delete_connector_atomically(tx, org, connector_id, savepoint=transaction is not None), transaction, write=True)
+        except Exception as e:
+            self.logger.error("Failed to delete connector instance %s: %s", connector_id, e, exc_info=True)
+            return {"success": False, "error": f"Failed to delete connector instance: {e}"}
+        if result.get("success"):
+            try:
+                await self.kh_scope_forget(connector_id)
+            except Exception as e:
+                self.logger.warning("kh scope: could not drop the scopes of deleted connector %s: %s", connector_id, e)
+        return result

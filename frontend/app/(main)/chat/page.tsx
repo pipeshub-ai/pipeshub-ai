@@ -10,6 +10,7 @@ import { AgentChatHeader } from '@/config';
 import { getAgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
 import { ConversationHeaderOverlay } from '@/config';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
+import { onLeaveChat, onNewChat } from './compare/compare-controller';
 import {
   applyConversationModelInfoToStore,
   findModelInfoInConversationLists,
@@ -286,10 +287,16 @@ function ChatContent() {
   // ── Command palette state ──
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
 
+  useEffect(() => {
+    const mountedAt = window.location.pathname;
+    return () => onLeaveChat(mountedAt);
+  }, []);
+
   // Register the 'newChat' command so any trigger (CMD+N, buttons) works
   useEffect(() => {
     const { register, unregister } = useCommandStore.getState();
     register('newChat', () => {
+      onNewChat();
       useNotificationStore.getState().closePanel();
       const store = useChatStore.getState();
 

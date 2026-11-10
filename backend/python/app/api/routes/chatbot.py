@@ -24,6 +24,7 @@ from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.protocol import AGUIEventType, frame, resolve_protocol
 from app.agents.agent_loop.protocol.stream_collector import collect_stream_outcome
+from app.agents.agent_loop.turn_log import log_turn_end
 from app.agents.chat_modes import resolve_chat_mode_policy, run_chat_stream
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.api.middlewares.auth import (
@@ -36,7 +37,6 @@ from app.config.constants.ai_models import validate_reasoning_effort
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
 from app.containers.query import QueryAppContainer
-from app.events.processor import convert_record_dict_to_record
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.blocks import (
     Block,
@@ -45,6 +45,7 @@ from app.models.blocks import (
     CitationMetadata,
     DataFormat,
 )
+from app.models.record_convert import convert_record_dict_to_record
 from app.modules.parsers import parse_pool
 from app.modules.parsers.parse_pool import ParseWorkerError
 from app.modules.parsers.parse_pool_lanes import interactive_parsing
@@ -1548,9 +1549,9 @@ async def warm_up_entity_vector_store(container: Any, logger_: Any) -> None:  # 
     if store is None:
         return
     try:
-        logger_.info("🔥 Warming up entity vector store in background")
+        logger_.info("Warming up entity vector store in background")
         await store.embedding_fingerprint()
-        logger_.info("✅ Entity vector store warmup complete")
+        logger_.info("Entity vector store warmup complete")
     except Exception as exc:
         logger_.warning("Entity vector store warmup failed (a later search retries): %s", exc)
 
@@ -1610,18 +1611,24 @@ async def _generate_chat_stream_via_agent_loop(
         container=getattr(request.app, "container", None),
         conversation_id=query_info.conversationId,
     ):
-        async with aclosing(
-            _stream_chat_via_agent_loop(
-                request=request,
-                query_info=query_info,
-                retrieval_service=retrieval_service,
-                graph_provider=graph_provider,
-                config_service=config_service,
-                cancellation_registry=cancellation_registry,
-            )
-        ) as inner:
-            async for event in inner:
-                yield event
+        try:
+            async with aclosing(
+                _stream_chat_via_agent_loop(
+                    request=request,
+                    query_info=query_info,
+                    retrieval_service=retrieval_service,
+                    graph_provider=graph_provider,
+                    config_service=config_service,
+                    cancellation_registry=cancellation_registry,
+                )
+            ) as inner:
+                async for event in inner:
+                    yield event
+        except Exception as exc:
+            # A turn that failed outside the agent loop (attachment check, prompts, the
+            # bridge's own setup) still gets its end line; the error propagates as before.
+            log_turn_end(logger, "error", exc=exc, code=classify_exception(exc)[0], run_id=query_info.runId)
+            raise
 
 
 async def _stream_chat_via_agent_loop(
@@ -1684,7 +1691,7 @@ async def _stream_chat_via_agent_loop(
         for pending in background_tasks:
             pending.cancel()
         await asyncio.gather(*background_tasks, return_exceptions=True)
-        logger_.error(f"Error initializing LLM for chat: {exc}", exc_info=True)
+        log_turn_end(logger_, "error", exc=exc, code="llm_initialization_failed", run_id=query_info.runId)
         error_code, user_message = classify_exception(exc)
         if error_code == "unknown":
             user_message = CHAT_MODEL_START_FAILED

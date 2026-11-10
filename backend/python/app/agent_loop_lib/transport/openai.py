@@ -7,6 +7,8 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
+
 # Private SDK symbol, imported deliberately rather than reimplemented: SSE
 # framing is fiddly (multi-line data, chunk boundaries) and the SDK's decoder is
 # the tested one. test_openai_responses.py pins it, so an SDK upgrade that moves
@@ -79,6 +81,61 @@ from app.utils.llm_api_mode_store import LLMApiMode, get_llm_api_mode_store
 logger = logging.getLogger(__name__)
 
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504, 529}
+
+# A stream that opened with HTTP 200 can still fail with an `error` event: the
+# provider's own transient failure ("server_error"), or a gateway in front of it
+# losing the upstream connection ("upstream connect error or disconnect/reset
+# before headers. reset reason: connection termination"). Both are worth a retry.
+# Compared lowercased without "_", so Azure's "InternalServerError" matches too.
+_TRANSIENT_STREAM_ERROR_TYPES = frozenset({
+    "servererror", "internalservererror", "serviceunavailable", "apierror",
+    "ratelimitexceeded", "ratelimiterror", "overloadederror",
+})
+# Labels that name no cause: an event's own kind, and gateways' placeholders.
+_NON_LABELS = frozenset({"", "error", "none", "null"})
+_TRANSIENT_STREAM_ERROR_MARKERS = (
+    "upstream connect error", "disconnect/reset before headers", "connection termination",
+    "connection reset",
+)
+
+
+def _is_transient_stream_error(error: Any) -> bool:
+    """Whether a stream `error` payload (a dict, an SDK event/error object, or
+    an `openai.APIError` raised for one) reports a transient failure."""
+    labels: list[Any] = []
+    body = getattr(error, "body", None)
+    # The SDK hands a gateway's plain-text stream error over as a str `body`.
+    texts: list[Any] = [error if isinstance(error, str) else None, body if isinstance(body, str) else None]
+    for source in (error, body, body.get("error") if isinstance(body, dict) else None):
+        if isinstance(source, dict):
+            labels += [source.get("type"), source.get("code")]
+            texts.append(source.get("message"))
+        elif source is not None and not isinstance(source, str):
+            labels += [getattr(source, "type", None), getattr(source, "code", None)]
+            texts.append(getattr(source, "message", None))
+    codes: list[str] = []
+    types: list[str] = []
+    for i, v in enumerate(labels):
+        if isinstance(v, int) and not isinstance(v, bool):
+            v = str(v)
+        if not isinstance(v, str):
+            continue
+        v = v.strip().lower()
+        if v in _NON_LABELS or v.startswith("response."):
+            continue
+        # labels alternate type, code (see the loop above).
+        (codes if i % 2 else types).append(v)
+    # The code is the specific cause; a generic type ("api_error") must not override it.
+    for group in (codes, types):
+        if not group:
+            continue
+        if any(v.isdigit() and int(v) in _RETRYABLE_STATUS_CODES for v in group):  # an HTTP status ("500")
+            return True
+        # A labelled error is judged by its label alone: "invalid_image_url" whose
+        # message mentions a connection reset is still the caller's error.
+        return any(v.replace("_", "") in _TRANSIENT_STREAM_ERROR_TYPES for v in group if not v.isdigit())
+    text = " ".join(t for t in texts if isinstance(t, str)).lower()
+    return any(marker in text for marker in _TRANSIENT_STREAM_ERROR_MARKERS)
 
 # Reasoning values a provider may reject outright when it refuses to let
 # reasoning be disabled. Matches LangChainTransport._reasoning_mandatory_fallback,
@@ -597,7 +654,7 @@ class OpenAITransport(LLMTransport):
                     raise TransportError(
                         "OpenAI API error (stream): "
                         f"{message or 'An error occurred during streaming'}",
-                        retryable=False,
+                        retryable=_is_transient_stream_error(error),
                     )
                 yield RawEvent(data)
 
@@ -668,7 +725,7 @@ class OpenAITransport(LLMTransport):
                     raise TransportError(
                         "OpenAI API error (stream): "
                         f"{detail or getattr(event, 'message', event)}",
-                        retryable=False,
+                        retryable=_is_transient_stream_error(detail or event),
                     )
         except TransportError:
             raise
@@ -832,12 +889,20 @@ class OpenAITransport(LLMTransport):
         # OSError included to match LangChainTransport._is_network_error: a
         # dropped socket surfaces as a bare OSError often enough that treating
         # it as fatal here would retry-gap the direct path against that one.
+        # httpx errors reach here raw when the body breaks off while it is being
+        # read: "peer closed connection without sending complete message body".
         is_network = isinstance(
             exc,
-            (self._openai.APIConnectionError, self._openai.APITimeoutError, OSError),
+            (
+                self._openai.APIConnectionError, self._openai.APITimeoutError, OSError,
+                httpx.NetworkError, httpx.TimeoutException, httpx.RemoteProtocolError,
+            ),
         )
         retryable = is_network or (
-            status_code is not None and status_code in _RETRYABLE_STATUS_CODES
+            status_code in _RETRYABLE_STATUS_CODES
+            if status_code is not None
+            # The SDK raises an `error` event inside a 200 stream as a bare `APIError`.
+            else _is_transient_stream_error(exc)
         )
         return TransportError(
             f"OpenAI API error ({context}): {exc}",
@@ -1215,6 +1280,11 @@ class OpenAITransport(LLMTransport):
             except Exception as exc:
                 # Retrying after deltas reached the client would replay them.
                 if emitted:
+                    if isinstance(exc, TransportError):
+                        # Same as constructing it with `partial_output=True`: not
+                        # retryable until the agent retracts what was shown.
+                        exc.partial_output = True
+                        exc.retryable = False
                     raise
                 if self._drop_cache_params(exc):
                     continue

@@ -351,6 +351,7 @@ class TestPermissionScheme:
     @pytest.mark.asyncio
     async def test_fetch_permission_scheme_all_types(self):
         connector, *_ = _make_connector()
+        connector._user_read_unfinished = True  # no user map: the grant's own email is only used after a cut-short user read
         connector.data_source = MagicMock()
 
         mock_ds = MagicMock()

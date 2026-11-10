@@ -19,6 +19,7 @@ from app.core.envelope import EnvelopeRejected, ctx_of, open_stream_message
 from app.core.org_context import bind_optional, spawn_detached
 from app.core.org_context import pop as pop_org
 from app.core.org_context import push as push_org
+from app.modules.indexing.embed_resume import stamp_delivery_id
 from app.services.distributed.interface import IDistributedLeaseManager, IRetryTracker
 from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import (
@@ -3131,6 +3132,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     return False
 
                 parsed_message.payload["_processing_started_at"] = int(time.time() * 1000)
+
+            stamp_delivery_id(parsed_message.payload, stable_message_id)
 
             # Counted only now that the record is ours: a crash while it waited
             # for a permit or for its lease was not its doing.

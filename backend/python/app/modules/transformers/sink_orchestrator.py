@@ -20,6 +20,7 @@ from app.models.record_metadata import RecordMetadata
 from app.modules.artifacts.models import WrittenRevision
 from app.modules.artifacts.store import ArtifactStoreError, NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter
+from app.modules.indexing.embed_resume import cleared_fields, current_attempt
 from app.modules.indexing.parse_now_marker import (
     ParseNowStatus,
     current_run,
@@ -272,8 +273,11 @@ class SinkOrchestrator(Transformer):
             ctx.settings[STORED_REV] = record_doc.get("contentRev") or None
             # One read of the settings picks the layout and mints the run; nothing below reads it again.
             ctx.settings[STORED_WRITE] = mint_stored_write(await artifact_settings(self.config_service))
-            with stage("images.describe"):
-                await self._describe_images(ctx)
+            attempt = current_attempt()
+            # The loaded blocks were described before the interrupted run stored them.
+            if attempt is None or not attempt.resume:
+                with stage("images.describe"):
+                    await self._describe_images(ctx)
             with stage("blob.write"):
                 await self.write_blob(ctx)
 
@@ -463,6 +467,7 @@ class SinkOrchestrator(Transformer):
             ACCOUNT_RECORD_TYPES,
         )
         from app.models.entities import EntityRecord, EntityType
+        from app.modules.entity_resolution.organizations import searchable_organizations
 
         lookups = [(EntityType.PERSON, self.graph_provider.get_record_people)]
         # Only CRM records link to an account; spare every other record the
@@ -477,6 +482,18 @@ class SinkOrchestrator(Transformer):
                 self.logger.warning("%s lookup failed for record %s (non-fatal): %s", entity_type.value, record_id, exc)
                 failed += 1
                 continue
+            if entity_type is EntityType.ORGANIZATION and nodes:
+                # The record may only name an organisation (KG-13 3b), which is
+                # searchable only once enough records do.
+                try:
+                    searchable = await searchable_organizations(
+                        self.graph_provider, org_id, [n["id"] for n in nodes if n.get("id")],
+                    )
+                except Exception as exc:
+                    self.logger.warning("organization reach lookup failed for record %s (non-fatal): %s", record_id, exc)
+                    failed += 1
+                    continue
+                nodes = [n for n in nodes if n.get("id") in searchable]
             entities = []
             for node in nodes or []:
                 # Named as the rebuild names them (a person's full name, else
@@ -747,6 +764,7 @@ class SinkOrchestrator(Transformer):
                 stored_record_fields=ctx.settings.get(STORED_RECORD_FIELDS),
                 properties=properties,
                 stored_run=stored_write.run,
+                still_current=lambda: self._stored_run_is(record.virtual_record_id, stored_write.run),
             )
         except Exception as exc:
             # Only the type and our own messages: an aiohttp error can carry a signed URL.
@@ -759,6 +777,11 @@ class SinkOrchestrator(Transformer):
             return None
         record_artifact_write("written" if written is not None else "unavailable")
         return written
+
+    async def _stored_run_is(self, vrid: str, run: str) -> bool:
+        """Whether the mapping still names *run* as the stored write: a later write of the same record has not taken over."""
+        node = await self.graph_provider.get_document(vrid, CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value)
+        return node is not None and node.get("storedRun") == run
 
     async def _provided_properties(
         self, record: Record, record_doc: dict[str, Any]
@@ -857,6 +880,8 @@ class SinkOrchestrator(Transformer):
             "processingStartedAt": None,
             "isDirty": False,
         }
+        if current_attempt() is not None:
+            status.update(cleared_fields())
         if ctx.settings.get(ENRICHMENT_FOLLOWS):
             if await is_classify_on_first_use_enabled(self.config_service):
                 # Decided here, once, so the status and the dispatch agree.
@@ -955,7 +980,7 @@ class SinkOrchestrator(Transformer):
         )
 
     async def write_enrichment(self, ctx: TransformContext, *, index_summary: bool = True) -> None:
-        """The summary point, graph taxonomy and the entity points it touches, of a
+        """The summary point, graph taxonomy, organisation links and the entity points they touch, of a
         prepared classification (``prepare_enrichment``), for ``ctx.record``.
 
         ``extractionStatus`` is not written: the classify stage's headline owns it,
@@ -969,10 +994,13 @@ class SinkOrchestrator(Transformer):
             return
         if index_summary:
             await self.write_summary_point(ctx)
+        resolution = self.graphdb.resolution_of(ctx)
         with stage("graph.enrich"):
-            touched_entities = await self.graphdb.write_taxonomy(
-                record.id, metadata, resolution=self.graphdb.resolution_of(ctx)
-            )
+            touched_entities = await self.graphdb.write_taxonomy(record.id, metadata, resolution=resolution)
+            if resolution is not None:
+                touched_entities = [
+                    *(touched_entities or []), *await self.graphdb.link_organizations(record, resolution),
+                ]
         await self._upsert_touched_entities(ctx, touched_entities)
 
     async def enrich(self, ctx: TransformContext) -> None:

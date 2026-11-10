@@ -41,7 +41,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.core.org_context import current_org_id
 from app.connectors.sources.localKB.handlers.delete_lease import hold_delete_lease
 from app.connectors.sources.localKB.push.contract import is_pushed_revision
-from app.models.entities import FileRecord, RecordType
+from app.models.entities import FileRecord, RecordType, SourcePerson
 from app.models.source_dates import (
     UPLOAD_SOURCE_CREATED_FIELD,
     SourceTimestampOrigin,
@@ -1622,7 +1622,7 @@ class KnowledgeBaseService:
             folder_record.record_name = name
             folder_record.updated_at = get_epoch_timestamp_in_ms()
             processor = await self.processor_for_kb(kb_id)
-            await processor.on_record_metadata_update(folder_record)
+            await processor.on_record_metadata_update(await self._keep_creator(folder_record))
             self.logger.info(f"✅ Folder updated successfully: {folder_id} by user {user_id}")
             return {
                 "success": True,
@@ -1831,6 +1831,7 @@ class KnowledgeBaseService:
             if extra_keys:
                 self.logger.warning(f"update_record ignoring unmapped update keys: {extra_keys}")
             record.updated_at = timestamp
+            await self._keep_creator(record)
 
             processor = await self.processor_for_kb(kb_context["kb_id"])
             if file_metadata is not None:
@@ -2312,7 +2313,7 @@ class KnowledgeBaseService:
                     raise LookupError(f"record {record_id} not found after restore")
                 renamed.record_name = new_name
                 renamed.updated_at = get_epoch_timestamp_in_ms()
-                await processor.on_record_metadata_update(renamed)
+                await processor.on_record_metadata_update(await self._keep_creator(renamed))
             except Exception as e:
                 self.logger.error("❌ Restored record %s but could not rename it: %s", record_id, e)
                 rename_failed.append(record_id)
@@ -3541,6 +3542,22 @@ class KnowledgeBaseService:
                 )
         return file_records, skipped_files, failed_files
 
+    @staticmethod
+    def _uploader(user: dict | None) -> SourcePerson | None:
+        """The validated uploader as the records' creator. By email: platform users
+        have no source id on the KB app, and the people step resolves members by email."""
+        email = (user or {}).get("email")
+        return SourcePerson(email=email, display_name=user.get("fullName") or None) if email else None
+
+    async def _keep_creator(self, record: FileRecord) -> FileRecord:
+        """Name the record's existing creator again before an update: a reloaded
+        record carries none, and the people step would drop the creator's edge."""
+        for person in await self.graph_provider.get_record_people(record.id, record.org_id):
+            if person.get("email"):
+                record.created_by = SourcePerson(email=person["email"], display_name=person.get("name"))
+                break
+        return record
+
     async def _upload_records(
         self, kb_id: str, user_id: str, org_id: str, files: List[Dict], parent_folder_id: Optional[str]
     ) -> Dict:
@@ -3581,6 +3598,9 @@ class KnowledgeBaseService:
                 )
 
                 entities = [(fr, []) for fr in new_folder_records] + [(fr, []) for fr in file_records]
+                uploader = self._uploader(validation.get("user"))
+                for fr, _ in entities:
+                    fr.created_by = uploader
                 if entities:
                     processor = await self.processor_for_kb(kb_id)
                     await processor.on_new_records(entities)
@@ -3777,7 +3797,7 @@ class KnowledgeBaseService:
             old_external_id = record.external_record_id
             record.parent_external_record_id = new_parent_id  # None => KB root (no edge)
             processor = await self.processor_for_kb(kb_id)
-            await processor.on_records_moved([(old_external_id, record, [])])
+            await processor.on_records_moved([(old_external_id, await self._keep_creator(record), [])])
 
             self.logger.info(f"✅ Record {record_id} moved → {destination}")
             return {

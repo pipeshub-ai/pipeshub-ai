@@ -145,6 +145,8 @@ on:
       - 'backend/python/tests/permissions/scope_corpus.py'
       - 'backend/python/tests/permissions/scope_layer.py'
       - 'backend/python/tests/permissions/stamp_world.py'
+      - 'backend/python/tests/permissions/store_harness.py'
+      - 'backend/python/tests/permissions/rewrite_kit.py'
       - 'backend/python/tests/permissions/scenarios/**'
       - 'backend/python/pyproject.toml'
       - 'deployment/docker-compose/docker-compose.integration.messaging.yml'
@@ -345,9 +347,10 @@ jobs:
         working-directory: backend/python
         run: |
           if [ -n "$DISCOVER" ]; then
-            # Files that also need storage run in the storage job.
+            # Files that also need storage run in the storage job; files that need a server
+            # started at a memory preset (NEO4J_IT_PRESET) are run by hand against one.
             TESTS=$(grep -rlE --include='*.py' "$DISCOVER" tests/integration | sort \
-              | xargs -r grep -LE 'ARTIFACTS_IT_STORAGE_URL' | tr '\n' ' ')
+              | xargs -r grep -LE 'ARTIFACTS_IT_STORAGE_URL|NEO4J_IT_PRESET' | tr '\n' ' ')
             echo "Discovered: $TESTS"
           fi
           # shellcheck disable=SC2086

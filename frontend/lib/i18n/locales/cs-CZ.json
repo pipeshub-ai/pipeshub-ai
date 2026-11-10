@@ -1531,6 +1531,11 @@
     "stopListening": "Zastavit poslech",
     "voiceInput": "Hlasový vstup",
     "regenerateResponse": "Vygenerovat odpověď znovu",
+    "quoteSelection": "Citovat",
+    "quoteSelectionHint": "Zeptat se na toto",
+    "quotedExcerpt": "Citace",
+    "quotedExcerptTruncated": "Citace (zkráceno)",
+    "dismissQuote": "Odebrat citaci",
     "editQuery": "Upravit dotaz",
     "queryOptions": "Možnosti dotazu",
     "models": "Modely",
@@ -1645,7 +1650,31 @@
       "webSearch": "Vyhledávání na webu",
       "internalAndWebSearch": "Interní + webové vyhledávání"
     },
-    "searchDegraded": "Výsledky mohou být neúplné."
+    "searchDegraded": "Výsledky mohou být neúplné.",
+    "compare": {
+      "toggle": "Porovnat modely",
+      "pickTwo": "Vyberte {{max}} modely k porovnání.",
+      "pickedHint": "Na každou otázku odpoví oba modely vedle sebe.",
+      "costNote": "Každá otázka běží na obou modelech, takže spotřebuje zhruba dvojnásobek. V režimu Agent mohou oba modely používat nástroje; akce vyžadující schválení se zobrazí zvlášť v každém sloupci.",
+      "pillLabel": "Porovnání {{picked}}/{{max}}",
+      "stop": "Zastavit",
+      "retry": "Zkusit znovu",
+      "failed": "Tento model nedokázal odpovědět. Zkuste to znovu.",
+      "useAnswer": "Použít tuto odpověď",
+      "useAnswerLabel": "Použít odpověď od {{model}}",
+      "columnLabel": "Odpověď od {{model}}",
+      "chooseConflict": "Tuto odpověď zatím nelze ponechat. Počkejte, až se dokončí, a zkuste to znovu.",
+      "chooseFailed": "Tuto odpověď se nepodařilo ponechat. Zkuste to znovu.",
+      "primaryFallback": "Model",
+      "starting": "Spouští se...",
+      "status": {
+        "starting": "Spouští se",
+        "waiting": "Čeká",
+        "streaming": "Odpovídá",
+        "done": "Hotovo",
+        "error": "Selhalo"
+      }
+    }
   },
   "workspaceMenu": {
     "appearance": "Vzhled",
@@ -4987,6 +5016,8 @@
     "serviceAgentBadgeTooltip": "Tento servisní agent používá vlastní přihlašovací údaje sad nástrojů. Ve znalostech vyhledává s přístupem svého autora, takže všichni, kdo ho používají, vidí výsledky z toho, co může číst autor.",
     "convertToServiceAgentTooltip": "Trvalé: sady nástrojů na úrovni agenta, sdílení s celou organizací a vyhledávání ve znalostech s přístupem autora. Nelze vrátit zpět.",
     "convertToServiceAgentTooltipNewAgent": "Vytvoří tohoto agenta jako servisního agenta: sady nástrojů na úrovni agenta, sdílení s celou organizací a vyhledávání ve znalostech s vaším přístupem.",
+    "convertToServiceAgentTooltipNoOrg": "Trvalé: sady nástrojů na úrovni agenta a vyhledávání ve znalostech s přístupem autora. Pomocí tlačítka Sdílet určete, kdo k němu má přístup. Nelze vrátit zpět.",
+    "convertToServiceAgentTooltipNewAgentNoOrg": "Vytvoří tohoto agenta jako servisního agenta: sady nástrojů na úrovni agenta a vyhledávání ve znalostech s vaším přístupem. Pomocí tlačítka Sdílet určete, kdo k němu má přístup.",
     "agentActionsMenuAria": "Nabídka agenta",
     "agentMenuCreateAsServiceAgent": "Vytvořit jako servisního agenta",
     "agentMenuConvertToServiceAgent": "Převést na servisního agenta",
@@ -5870,5 +5901,107 @@
       "onTitle": "Ukázková data znovu zapnuta pro všechny",
       "errorTitle": "Ukázková data se nepodařilo změnit pro všechny"
     }
+  },
+  "graph": {
+    "status": {
+      "stale": "Graf se aktualizuje, nejnovější změny mohou chybět.",
+      "building": "Graf se vytváří, takže zobrazený obsah může být neúplný.",
+      "retrying": "Při vytváření grafu došlo k potížím, zkouší se to znovu.",
+      "failed": "Poslední vytvoření grafu selhalo, takže toto zobrazení může být zastaralé.",
+      "unknown": "Stav tohoto grafu se nepodařilo načíst."
+    },
+    "empty": {
+      "neverBuilt": "Tento repozitář zatím nemá graf kódu.",
+      "tooLarge": "Tento repozitář je na graf příliš velký."
+    },
+    "incomplete": "Některé vazby mohou chybět. Zúžte výběr podle typu hrany nebo směru.",
+    "simplified": "Zjednodušené zobrazení pro plynulý pohyb.",
+    "verify": {
+      "degraded": "Přístup se momentálně nepodařilo ověřit. Zobrazuje se naposledy potvrzený stav.",
+      "blank": "Přístup se několik minut nepodařilo ověřit, proto byl graf vymazán. Znovu se připojuje…"
+    },
+    "error": {
+      "unavailable": "Nepodařilo se to teď načíst. Zkuste to znovu.",
+      "notAvailable": "Tato položka není dostupná.",
+      "unexpected": "Něco se pokazilo.",
+      "ambiguous": "Více repozitářů má tento název. Vyberte repozitář ve vyhledávacím poli.",
+      "full": "Toto zobrazení je plné. Otevřením uzlu začněte nové.",
+      "revoked": "Položka, kterou jste si prohlíželi, již není dostupná."
+    },
+    "title": "Graf kódu",
+    "ui": {
+      "back": "Zpět",
+      "forward": "Vpřed",
+      "fit": "Přizpůsobit zobrazení",
+      "showTable": "Zobrazit jako tabulku",
+      "showGraph": "Zobrazit jako graf",
+      "direction": {
+        "any": "Obojí",
+        "inbound": "Volající",
+        "outbound": "Volaní"
+      },
+      "includeTests": "Zahrnout testy",
+      "showMore": "Zobrazit více",
+      "expand": "Rozbalit",
+      "open": "Otevřít",
+      "nothingSelected": "Vyberte uzel, abyste viděli jeho podrobnosti.",
+      "details": "Podrobnosti",
+      "links": "Vazby: {{n}}",
+      "table": {
+        "caption": "Uzly v tomto zobrazení",
+        "name": "Název",
+        "kind": "Druh",
+        "file": "Soubor",
+        "actions": "Akce",
+        "moreRows": "Zobrazit další řádky",
+        "callersShown": "Zobrazení volající",
+        "calleesShown": "Zobrazení volaní",
+        "focus": "Střed"
+      },
+      "emptyPrompt": "Vyhledejte nahoře funkci, metodu nebo třídu a uvidíte, co ji volá a co volá ona.",
+      "disclosure": "Zobrazuje jen to, k čemu máte přístup.",
+      "legendInferred": "Čárkované čáry jsou vazby odvozené podle názvu.",
+      "disabled": "Graf kódu není povolen.",
+      "search": {
+        "repo": "Repozitář",
+        "repoPlaceholder": "Vyberte repozitář",
+        "placeholder": "Najděte funkci, metodu nebo třídu podle názvu",
+        "label": "Hledat v kódu",
+        "results": "Výsledky hledání",
+        "noRepos": "Žádné repozitáře kódu, které můžete číst.",
+        "noMatches": "Žádné shody.",
+        "chooseFirst": "Nejprve vyberte repozitář",
+        "minChars": "Zadejte alespoň 2 znaky.",
+        "more": "Zobrazují se první shody. Zadejte více, abyste hledání zúžili."
+      },
+      "action": {
+        "retry": "Zkusit znovu",
+        "restore": "Použít plnou kvalitu"
+      },
+      "loading": "Načítá se…",
+      "legend": {
+        "functions": "Funkce a metody",
+        "classes": "Třídy a rozhraní",
+        "focus": "Střed tohoto zobrazení"
+      },
+      "openHint": "Otevřít: udělá z toho střed nového zobrazení.",
+      "expandHint": "Rozbalit: zobrazí sousedy zde a zachová to, co je na obrazovce.",
+      "announce": {
+        "opened": "Zobrazeno položek: {{n}}.",
+        "added": "Přidáno položek: {{n}}."
+      },
+      "canvasHint": "Obrázek grafu není čtečkám obrazovky k dispozici. Tlačítkem „Zobrazit jako tabulku“ si můžete přečíst a používat každý uzel.",
+      "selectionGone": "Vybraná položka již není dostupná.",
+      "viewGraph": "Zobrazit graf",
+      "viewGraphOf": "Zobrazit graf {{repo}}",
+      "fillerNode": "{{kind}} v {{file}}"
+    },
+    "capped": "Obrázek ukazuje jen část tohoto zobrazení. Tabulka uvádí vše.",
+    "crowded": "Toto zobrazení se zaplňuje. Zúžte ho filtry.",
+    "hint": {
+      "testsOff": "Testovací soubory jsou skryté. Je-li položka v testovacím kódu, zapněte „Zahrnout testy“."
+    },
+    "nothingNew": "U tohoto uzlu není co dalšího zobrazit.",
+    "tableOnly": "Zobrazuje se jen tabulka, aby vše zůstalo plynulé."
   }
 }

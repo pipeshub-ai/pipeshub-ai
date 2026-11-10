@@ -2996,7 +2996,9 @@ class TestUpdateAgent:
         from app.api.routes.agent import update_agent
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
-        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
+        services["graph_provider"].check_agent_permission = AsyncMock(
+            return_value={"can_edit": True, "can_share": True, "user_role": "OWNER"}
+        )
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_edit": True, "shareWithOrg": False})
         services["graph_provider"].update_agent = AsyncMock(return_value=True)
         services["graph_provider"].batch_create_edges = AsyncMock(return_value=True)
@@ -4615,7 +4617,7 @@ class TestServiceAccountAgentRoutes:
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
         services["graph_provider"].check_agent_permission = AsyncMock(
-            return_value={"can_edit": True}
+            return_value={"can_edit": True, "can_share": True, "user_role": "OWNER"}
         )
         services["graph_provider"].get_agent = AsyncMock(
             return_value={"name": "A1", "isServiceAccount": False, "shareWithOrg": False}

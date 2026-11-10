@@ -3094,6 +3094,8 @@ class BlobStorage(Transformer):
         virtual_record_id: str,
         org_id: str,
         lookup_result: dict[str, Any] | None = None,
+        *,
+        relookup: bool = True,
     ) -> dict[str, Any] | None:
         """
         Retrieve a record's content from blob storage using the virtual_record_id.
@@ -3103,6 +3105,9 @@ class BlobStorage(Transformer):
                 fetching many records resolve the whole batch in one graph query
                 (see ``get_document_ids_by_virtual_record_ids``) and pass the entry
                 in, which skips the per-record lookup below.
+            relookup: False reads exactly the document ``lookup_result`` names and
+                raises the first read error instead of following the mapping to
+                whatever document it names now.
 
         Returns:
             str: The content of the record if found, else an empty string.
@@ -3129,7 +3134,7 @@ class BlobStorage(Transformer):
                     org_id, virtual_record_id, document_id, file_size_bytes, headers, nodejs_endpoint
                 )
             except (StorageDocumentNotFoundError, SignedUrlReadError) as first_error:
-                if isinstance(first_error, SignedUrlReadError) and not first_error.may_be_retired:
+                if not relookup or (isinstance(first_error, SignedUrlReadError) and not first_error.may_be_retired):
                     raise
                 # The document may have been replaced since the lookup was taken
                 # (a lookup reused across a re-index, a URL signed for a document

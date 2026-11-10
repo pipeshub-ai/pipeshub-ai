@@ -5,6 +5,7 @@ response types from a fake LangChain `BaseChatModel`, with no network."""
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -29,6 +30,10 @@ from app.agents.agent_loop.langchain_transport import (
     _supports_multipart_tool_result,
 )
 from app.utils.llm_api_mode_store import REASONING_MANDATORY_FALLBACK_EFFORT, LLMApiMode
+from tests.unit.agents.adapter.support.provider_stall import (
+    ProviderStall,
+    pending_since,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -385,6 +390,37 @@ class TestCompleteStructured:
                 [UserMessage(content="classify this")],
                 output_schema={"type": "object", "properties": {"route": {"type": "string"}}},
             )
+
+    async def test_a_failed_parse_logs_and_raises_sizes_never_the_completion(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Parser errors echo the model's output, so only class names and the raw size are kept."""
+        completion = "completion-sentinel, not json"
+
+        class _Parsed:
+            async def ainvoke(self, messages: list, config: object = None) -> dict:
+                return {"parsed": None, "raw": AIMessage(content=completion),
+                        "parsing_error": ValueError(f"could not parse {completion}")}
+
+        class _UnparseableModel(_FakeModel):
+            def with_structured_output(self, schema: object, include_raw: bool = False) -> _Parsed:
+                if isinstance(schema, dict):
+                    raise ValueError(f"bad output: {completion}")
+                return _Parsed()
+
+        transport = LangChainTransport(_UnparseableModel())
+        with caplog.at_level(logging.DEBUG), pytest.raises(TransportError) as exc_info:
+            await transport.complete_structured(
+                [UserMessage(content="classify this")],
+                output_schema={"type": "object", "properties": {"route": {"type": "string"}}},
+            )
+
+        assert "sentinel" not in str(exc_info.value)
+        assert "raw_chars=" in str(exc_info.value)
+        assert "first attempt error: ValueError" in str(exc_info.value)
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert warnings and not [w for w in warnings if "sentinel" in w]
+        assert any("raw_chars=" in w for w in warnings)
 
     async def test_usage_extracted_from_raw_ai_message(self) -> None:
         from langchain_core.messages.ai import UsageMetadata
@@ -1947,15 +1983,16 @@ class _StallingModel:
     def __init__(self, chunks: list[AIMessageChunk]) -> None:
         self._chunks = chunks
         self.aclose_called = False
+        self.stall = ProviderStall()
 
     def bind_tools(self, tools: list[Any]) -> "_StallingModel":
         return self
 
-    async def astream(self, messages: list, config: Any = None) -> "AsyncIterator[AIMessageChunk]":
+    async def astream(self, messages: list, config: Any = None, **kwargs: Any) -> "AsyncIterator[AIMessageChunk]":  # noqa: ANN401
         try:
             for chunk in self._chunks:
                 yield chunk
-            await asyncio.Event().wait()  # never set -- simulates an indefinite stall
+            await self.stall.read()
         finally:
             # A real provider stream's teardown runs here on GeneratorExit
             # (delivered by our `.aclose()`) -- this is how we assert that
@@ -2004,6 +2041,33 @@ class TestStreamCancellationDuringProviderStall:
             pass
 
         assert model.aclose_called is True
+
+    @pytest.mark.parametrize("with_token", [True, False], ids=["token", "no-token"])
+    @pytest.mark.parametrize("cancels", [1, 3])
+    async def test_cancelling_the_consumer_closes_the_provider_read(self, with_token: bool, cancels: int) -> None:
+        """A client disconnect cancels the task iterating the stream, with no token fired, once
+        per layer of the turn. The task reading the provider must get exactly one cancel, inside
+        the provider generator, so its close completes; the `finally`'s `aclose()` alone cannot
+        close a generator another task is still running."""
+        model = _StallingModel([AIMessageChunk(content="partial")])
+        transport = LangChainTransport(model, cancellation_token=CancellationToken() if with_token else None)
+        before = asyncio.all_tasks()
+
+        async def consume() -> None:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+
+        consumer = asyncio.create_task(consume())
+        await model.stall.started.wait()
+        for _ in range(cancels):
+            consumer.cancel()
+            await asyncio.sleep(0)
+        with pytest.raises(asyncio.CancelledError):
+            await consumer
+        await model.stall.settle()
+
+        assert (model.stall.cancels, model.stall.closed, model.aclose_called) == (1, True, True)
+        assert await pending_since(before) == []
 
 
 _KEY_SENTINEL = "AIzaSyLOGSENTINEL0123456789abcdefghijkl"

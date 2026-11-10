@@ -123,5 +123,5 @@ async def test_a_storage_failure_is_an_error_not_an_empty_walk() -> None:
 
 
 async def test_a_storage_failure_is_not_reported_as_no_path() -> None:
-    with pytest.raises(RuntimeError, match="graph unavailable"):
+    with pytest.raises(RuntimeError, match="Failed to walk"):
         await _path(_Swallowing(), CALLER, TARGET)

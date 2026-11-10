@@ -176,10 +176,10 @@ def test_other_image_references_are_refused(spool, uri, reason) -> None:
     assert (e.status, e.reason) == (422, reason) and e.location == "blocks.blocks[0].data.uri"
 
 
-def test_processing_groups_are_refused_until_the_group_scan_exists(spool) -> None:
+def test_a_processing_group_with_a_remote_image_is_refused_at_its_data(spool) -> None:
     body = raw(envelope({"block_groups": [{"index": 0, "type": "text_section", "requires_processing": True, "format": "markdown", "data": "![x](http://169.254.169.254/)"}]}))
     e = refused(body, spool, schema=None, schema_id=None)
-    assert e.status == 422 and "requires_processing" in e.location
+    assert (e.status, e.reason, e.location) == (422, "IMAGE_REF_REFUSED", "blocks.block_groups[0].data")
 
 
 def test_validator_errors_are_422_blocks_invalid_with_issues(spool) -> None:
@@ -343,14 +343,18 @@ async def test_an_unclosed_string_body_does_not_hold_the_worker(spool) -> None:
         await w.close()
 
 
-@pytest.mark.parametrize("group_type", ["table", "list", "text_section", "ordered_list"])
-def test_requires_processing_is_refused_on_every_group_until_the_group_scan_exists(spool, group_type) -> None:
+def test_requires_processing_on_a_table_group_is_refused(spool) -> None:
     """a table group with requires_processing was stored and then always failed at indexing."""
-    group = {"index": 0, "type": group_type, "requires_processing": True,
-             "data": {"table_summary": "s"} if group_type == "table" else "text"}
+    group = {"index": 0, "type": "table", "requires_processing": True, "data": {"table_summary": "s"}}
     e = refused(raw(envelope({"block_groups": [group]})), spool, schema=None, schema_id=None)
-    assert e.status == 422 and e.location == "blocks.block_groups[0].requires_processing"
+    assert (e.status, e.reason, e.location) == (422, "BLOCKS_INVALID", "blocks.block_groups[0].requires_processing")
 
+
+@pytest.mark.parametrize("group_type", ["list", "text_section", "ordered_list"])
+def test_a_processing_group_of_text_is_stored(spool, group_type) -> None:
+    group = {"index": 0, "type": group_type, "requires_processing": True, "format": "markdown", "data": "# title\n\ntext"}
+    v = run(raw(envelope({"block_groups": [group]})), spool, schema=None, schema_id=None)
+    assert b"# title" in open(v.stored_path, "rb").read()
 
 
 # ---- a valid list-heavy body at the cap is accepted inside the bound -----------------------------

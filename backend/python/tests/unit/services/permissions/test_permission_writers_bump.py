@@ -150,6 +150,8 @@ NO_BUMP = {
     "agents/agent_loop/skills/graph_store.py::detach_from_agents": AGENT,
     "api/routes/agent.py::update_agent": "agent sharing edges, not records: no viewer scope reads them",
     "connectors/core/base/data_processor/data_source_entities_processor.py::_drop_shared_groups": SYNC,
+    "connectors/core/base/data_processor/pr_links.py::write_modifies":
+        "replaces a PR's MODIFIES links to the code files it changed: record links, not permission edges",
     "connectors/core/base/data_processor/data_source_entities_processor.py::_drop_stale_group_parents": SYNC,
     "connectors/core/base/data_store/graph_data_store.py::batch_delete_edges": STORE,
     "connectors/core/base/data_store/graph_data_store.py::delete_edge": STORE,

@@ -52,16 +52,21 @@ from app.services.permissions.metrics import (
     SCOPE_PREFILTER_CAPPED,
     SCOPE_PREFILTER_DROPPED,
 )
-from app.services.permissions.scope_fields import PATH_IDS_FIELD
+from app.services.permissions.scope_fields import (
+    PATH_IDS_FIELD,
+    SCOPE_FENCE_FIELD,
+    checked_fence,
+)
 from app.services.vector_db import scope_expr as sx
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     SCOPE_KEYWORD_INDEXES,
 )
-from app.services.vector_db.errors import OrgRequired
+from app.services.vector_db.errors import OrgRequired, PartialResult
 from app.services.vector_db.filters import (
     ScopeFilterTooLarge,
     build_generic_conditions,
+    forbid_fence_in_payload,
     forbid_org_in_payload,
     is_missing,
     keep_org_in_overwrite,
@@ -111,6 +116,8 @@ from app.utils.logger import create_logger
 from app.utils.loop_local import LoopLocal
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     import redis.asyncio as aioredis
     from app.services.redis.connection_provider import RedisClient
     from app.services.vector_db.filters import ScopeFilter
@@ -540,7 +547,9 @@ class RedisVectorService(IVectorDBService):
 
         field_name uses ``metadata.`` prefix convention (e.g. ``metadata.orgId``).
         We convert ``metadata.x`` → ``metadata_x`` for the Redis hash field alias.
-        No JSONPath prefix is needed for ON HASH indexes.
+        No JSONPath prefix is needed for ON HASH indexes. A failure other than
+        "already in the schema" is raised so the caller knows the field is not
+        searchable.
         """
         self._assert_connected()
         idx = self._index_name(collection_name)
@@ -562,7 +571,7 @@ class RedisVectorService(IVectorDBService):
             # "duplicate field in schema".
             if "already exists" in err or "duplicate field" in err:
                 return
-            logger.warning(f"FT.ALTER failed for field '{field_name}': {e}")
+            raise
 
     # ------------------------------------------------------------------
     # Filter construction
@@ -933,6 +942,46 @@ class RedisVectorService(IVectorDBService):
         ]
         await self._hset_keys(collection_name, payload, keys)
 
+    generation_fence = True
+
+    # One script is one atomic step on the server: the org and the fence are read and the hash written with no other command between.
+    # A stored fence that is not a number is an error, not a skip or an overwrite. A missing key and another org's point are left alone (HSET would create a bare hash); a hash without a fence counts as the oldest.
+    _FENCED_HSET = (
+        "if redis.call('HGET', KEYS[1], 'metadata_orgId') ~= ARGV[2] then return 0 end "
+        "local f = redis.call('HGET', KEYS[1], ARGV[3]) "
+        "if f then if not tonumber(f) then return redis.error_reply('stored scopeFence is not a number') end "
+        "if tonumber(f) > tonumber(ARGV[1]) then return 0 end end "
+        "redis.call('HSET', KEYS[1], ARGV[3], ARGV[1], unpack(ARGV, 4)) return 1")
+
+    async def update_payloads_by_ids(self, collection_name: str, updates: Mapping[str, dict], *, org_id: str, **extra: object) -> None:
+        """With ``fence=n``: one pipeline of ``_FENCED_HSET`` scripts, one per point. Without a fence it is ``update_payload_by_ids`` for
+        each distinct payload."""
+        fence = extra.pop("fence", None)
+        if fence is None:
+            await super().update_payloads_by_ids(collection_name, updates, org_id=org_id, **extra)
+            return
+        fence = checked_fence(fence)
+        self._assert_connected()
+        if is_missing(org_id):
+            raise OrgRequired("update_payload_by_ids needs the org of the points")
+        for payload in updates.values():
+            forbid_org_in_payload(payload)
+            forbid_fence_in_payload(payload)
+        if not updates:
+            return
+        pipeline = self.client.pipeline(transaction=False)  # type: ignore
+        for point_id, payload in updates.items():
+            flat: list[Any] = []
+            for field, value in payload.items():
+                flat += [field.replace(".", "_"), coerce_payload_hash_value(value)]
+            pipeline.execute_command("EVAL", self._FENCED_HSET, 1, self._key(collection_name, point_id), int(fence), org_id,
+                                     SCOPE_FENCE_FIELD, *flat)
+        results = await pipeline.execute()
+        failed = [r for r in results or [] if isinstance(r, Exception)]
+        if failed:
+            raise RuntimeError(f"Redis fenced payload write on '{collection_name}' had {len(failed)} failed command(s) of {len(updates)}. "
+                               f"First error: {failed[0]}")
+
     async def _hset_matching(
         self,
         collection_name: str,
@@ -968,6 +1017,15 @@ class RedisVectorService(IVectorDBService):
                 f"failed HSET command(s) of {len(keys)}. "
                 f"First error: {results[failed[0]]}"
             )
+
+    async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
+        self._assert_connected()
+        counted = await self.client.execute_command(  # type: ignore
+            "FT.SEARCH", self._index_name(collection_name), filter_expression_to_redis_query(count_filter), "NOCONTENT", "LIMIT", "0", "0", *_NO_TIMEOUT,
+        )
+        if not isinstance(counted, (list, tuple)) or not counted:
+            raise PartialResult(f"{collection_name}: unexpected count reply {counted!r}")
+        return int(counted[0])
 
     async def scroll(
         self,
@@ -1102,6 +1160,22 @@ class RedisVectorService(IVectorDBService):
             if doc:
                 points.append(VectorPoint(id=point_id, payload=hash_doc_to_payload(doc)))
         return points
+
+    async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
+        self._assert_connected()
+        if not ids:
+            return set()
+        pipeline = self.client.pipeline(transaction=False)  # type: ignore
+        for point_id in ids:
+            pipeline.execute_command("EXISTS", self._key(collection_name, point_id))
+        replies = await pipeline.execute()
+        found: set[str] = set()
+        for point_id, reply in zip(ids, replies):
+            if isinstance(reply, Exception):
+                raise reply
+            if reply:
+                found.add(point_id)
+        return found
 
     async def query_nearest_points(
         self,

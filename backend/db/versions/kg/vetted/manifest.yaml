@@ -557,6 +557,27 @@ functions:
         RETURN NULL;
       END;
 
+  - name: kg.w_queue_release
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "update", "rel": "kg.restamp_queue"}]
+    args:
+      - {"name": "p_id", "type": "bigint", "range": [1, 9223372036854775807]}
+      - {"name": "p_worker", "type": "text", "length": [1, 128]}
+    returns: "boolean"
+    no_org: "false"
+    reads: ["kg.restamp_queue"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        UPDATE kg.restamp_queue t SET claimed_by = NULL WHERE t.org_id = v_org AND t.id = p_id AND t.claimed_by = p_worker;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n = 1;
+      END;
+
   - name: kg.w_queue_done
     class: write
     scope: org

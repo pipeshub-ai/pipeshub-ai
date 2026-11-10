@@ -134,6 +134,7 @@ def _make_tx_store():
     tx_store.delete_edges_to = AsyncMock(return_value=0)
     tx_store.delete_edges_from = AsyncMock(return_value=0)
     tx_store.delete_edges_between_collections = AsyncMock(return_value=0)
+    tx_store.replace_record_entity_relations = AsyncMock()
     tx_store.delete_parent_child_edge_to_record = AsyncMock()
     tx_store.delete_edge = AsyncMock(return_value=True)
     tx_store.get_edge = AsyncMock(return_value=None)
@@ -938,6 +939,26 @@ class TestOnNewRecordGroupsAdvanced:
         assert (CollectionNames.BELONGS_TO.value, rg.id, "parent-rg-internal-id") in written
         assert (CollectionNames.NODE_RELATIONS.value, "parent-rg-internal-id", rg.id) in written
         assert (CollectionNames.INHERIT_PERMISSIONS.value, rg.id, "parent-rg-internal-id") in written
+
+    @pytest.mark.asyncio
+    async def test_replaced_edges_all_point_at_the_replaced_node(self) -> None:
+        """replace_edges_to keeps an old edge whose source is in the new list, so every new edge must target to_id."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_record_group_by_external_id = AsyncMock(
+            return_value=RecordGroup(id="rg-1", external_group_id="ext-g1", name="G", group_type="DRIVE",
+                                     connector_name=ConnectorsEnum.GOOGLE_MAIL, connector_id="conn-1"),
+        )
+        rg = RecordGroup(external_group_id="ext-g1", name="G", group_type="DRIVE",
+                         connector_name=ConnectorsEnum.GOOGLE_MAIL, connector_id="conn-1")
+        org_grant = Permission(type=PermissionType.READ, entity_type=EntityType.ORG)
+
+        await proc.on_new_record_groups([(rg, [org_grant])])
+
+        to_id, to_collection, edges, _ = tx_store.replace_edges_to.await_args.args
+        assert edges
+        assert {(e["to_id"], e["to_collection"]) for e in edges} == {(to_id, to_collection)}
 
     @pytest.mark.asyncio
     async def test_unknown_grants_keep_the_stored_ones(self) -> None:
@@ -3648,7 +3669,7 @@ class TestProcessRecordTicket:
         # Should have called delete_edges_by_relationship_types (from _handle_related_external_records)
         tx_store.delete_edges_by_relationship_types.assert_awaited()
         # The person edges are replaced
-        tx_store.delete_edges_between_collections.assert_awaited()
+        tx_store.replace_record_entity_relations.assert_awaited()
 
 
 # ===========================================================================
@@ -4517,7 +4538,107 @@ class TestLinkRecordToGroupEdgeCases:
 # ===========================================================================
 
 
+async def _source_id_read_that_fails(_source_id: str, _connector_id: str, *, raise_on_error: bool = False) -> None:
+    """A graph read that fails, as the store answers it: None unless the caller asks for the error."""
+    if raise_on_error:
+        raise RuntimeError("graph read timed out")
+
+
 class TestHandleRecordPermissionsEntityTypes:
+    @pytest.mark.asyncio
+    async def test_a_user_grant_without_an_email_resolves_by_the_source_user_id(self) -> None:
+        """A source that hides emails (Jira Cloud) grants by its own user id;
+        that member must still get the edge rather than lose access."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        member = MagicMock()
+        member.id = "u-ann"
+        tx_store.get_user_by_source_id = AsyncMock(return_value=member)
+        record = _make_record()
+        record.id = "rec-1"
+        record.connector_id = "conn-1"
+        perm = Permission(type=PermissionType.READ, entity_type=EntityType.USER.value, external_id="acc-1")
+
+        await proc._handle_record_permissions(record, [perm], tx_store)
+
+        tx_store.get_user_by_source_id.assert_awaited_once_with("acc-1", "conn-1", raise_on_error=True)
+        (edges,) = tx_store.batch_create_edges.await_args.args[:1]
+        assert [e["from_id"] for e in edges] == ["u-ann"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_source_id_read_keeps_the_records_previous_grants(self) -> None:
+        """A replace after a read that failed would have written the record's grants without that user."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        stored = {"rec-1": [{"from_id": "u-ann", "to_id": "rec-1"}]}  # the grant the record already has
+
+        async def replace(to_id: str, _coll: str, edges: list[dict], _edge_coll: str) -> None:
+            stored[to_id] = edges
+
+        tx_store.replace_edges_to = AsyncMock(side_effect=replace)
+        tx_store.get_user_by_source_id = AsyncMock(side_effect=_source_id_read_that_fails)
+        record = _make_record()
+        record.id = "rec-1"
+        record.connector_id = "conn-1"
+        perm = Permission(type=PermissionType.READ, entity_type=EntityType.USER.value, external_id="acc-1")
+
+        with pytest.raises(RuntimeError, match="graph read timed out"):
+            await proc._handle_record_permissions(record, [perm], tx_store, replace=True)
+
+        tx_store.replace_edges_to.assert_not_awaited()
+        tx_store.batch_create_edges.assert_not_awaited()
+        assert stored["rec-1"] == [{"from_id": "u-ann", "to_id": "rec-1"}]
+
+    @pytest.mark.asyncio
+    async def test_a_source_id_nobody_has_skips_only_that_user(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        bea = MagicMock()
+        bea.id = "u-bea"
+        tx_store.get_user_by_source_id = AsyncMock(side_effect=lambda sid, *_a, **_k: bea if sid == "acc-bea" else None)
+        record = _make_record()
+        record.id = "rec-1"
+        record.connector_id = "conn-1"
+        perms = [Permission(type=PermissionType.READ, entity_type=EntityType.USER.value, external_id=sid)
+                 for sid in ("acc-gone", "acc-bea")]
+
+        await proc._handle_record_permissions(record, perms, tx_store, replace=True)
+
+        (_to, _coll, edges, _edge_coll) = tx_store.replace_edges_to.await_args.args
+        assert [e["from_id"] for e in edges] == ["u-bea"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_source_id_read_fails_the_records_write_for_the_sync_to_retry(self) -> None:
+        """The path: on_new_records rolls its transaction back and raises to its caller (the connector's sync),
+        so the record's write is never reported done with a user left out."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_user_by_source_id = AsyncMock(side_effect=_source_id_read_that_fails)
+        record = _make_record()
+        record.id = "rec-1"
+        record.connector_id = "conn-1"
+        perm = Permission(type=PermissionType.READ, entity_type=EntityType.USER.value, external_id="acc-1")
+
+        with pytest.raises(RuntimeError, match="graph read timed out"):
+            await proc.on_new_records([(record, [perm])])
+
+        proc.messaging_producer.send_messages.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_user_grant_naming_nobody_known_is_reported(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_user_by_source_id = AsyncMock(return_value=None)
+        record = _make_record()
+        record.id = "rec-1"
+        perm = Permission(type=PermissionType.READ, entity_type=EntityType.USER.value, external_id="acc-1")
+
+        await proc._handle_record_permissions(record, [perm], tx_store)
+
+        tx_store.batch_create_edges.assert_not_awaited()
+        proc.logger.warning.assert_called()
+
     @pytest.mark.asyncio
     async def test_group_permission_found(self):
         """Creates permission edge for GROUP entity when group found."""
@@ -5901,7 +6022,7 @@ class TestProcessRecordRevisionMatch:
 
         assert result is not None
         # The person edges are replaced
-        tx_store.delete_edges_between_collections.assert_awaited()
+        tx_store.replace_record_entity_relations.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_mail_record_links_its_sender_and_recipients(self):
@@ -5926,7 +6047,9 @@ class TestProcessRecordRevisionMatch:
 
         await proc._process_record(mail, [], tx_store)
 
-        edges = tx_store.batch_create_entity_relations.await_args.args[0]
+        # The mail's account link is replaced last, so read the person call by its collections.
+        calls = tx_store.replace_record_entity_relations.await_args_list
+        edges = next(c.args[3] for c in calls if "users" in c.args[1])
         assert {(e["_to"], e["edgeType"]) for e in edges} == {
             ("users/u-ann", "AUTHORED_BY"), ("users/u-bob", "ADDRESSED_TO"),
         }
@@ -6178,7 +6301,7 @@ def _make_code_record(
     connector_id: str = "conn-1",
     external_record_id: str = "/ns/-/blob/HEAD/src/new.py",
     external_revision_id: str = "sha-new",
-    indexing_status: str | None = None,
+    indexing_status: str = ProgressStatus.QUEUED.value,
     is_internal: bool = False,
     version: int = 0,
 ) -> MagicMock:
@@ -6357,7 +6480,10 @@ class TestOnRecordsMovedReindex:
         tx_store.get_record_by_external_id = AsyncMock(return_value=None)
 
         new_record = _make_code_record(record_id="brand-new")
-        processed_record = _make_code_record(record_id="brand-new", is_internal=False)
+        # What the save returns for a new record it wants indexed.
+        processed_record = _make_code_record(
+            record_id="brand-new", is_internal=False, indexing_status=ProgressStatus.NOT_STARTED.value,
+        )
 
         proc = _make_processor()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -7035,6 +7161,25 @@ def _renamed_share_file(name: str, mime_type: str) -> FileRecord:
     )
 
 
+class TestOnRecordsMovedRefreshesPeople:
+    """A move can carry a new revision, whose people (author, last editor)
+    may differ, so the moved record's person edges are rewritten like any
+    other update's."""
+
+    pytestmark = pytest.mark.anyio
+
+    async def test_the_moved_record_gets_its_people_rewritten(self) -> None:
+        tx_store = _make_tx_store()
+        old_record = _make_old_record(record_id="rec-abc", external_revision_id="sha-before")
+        new_record = _make_code_record(record_id="fresh-uuid", external_revision_id="sha-after")
+        proc = _setup_proc_for_moved(tx_store, old_record=old_record)
+        proc._handle_record_people = AsyncMock()
+
+        await proc.on_records_moved([("/ns/-/blob/HEAD/src/a.py", new_record, [])])
+
+        proc._handle_record_people.assert_awaited_once_with(new_record, tx_store)
+
+
 class TestOnRecordsMovedKeepsStoredState:
     pytestmark = pytest.mark.anyio
 
@@ -7163,6 +7308,7 @@ class TestOnRecordsMovedKbUpload:
         tx_store = _make_tx_store()
         tx_store.get_record_by_external_id = AsyncMock(return_value=None)
         new_record = _make_kb_upload_record()
+        new_record.indexing_status = ProgressStatus.NOT_STARTED.value  # as the save leaves a new record
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
         with patch.object(proc, "_process_record", new_callable=AsyncMock, return_value=(new_record, [])):
@@ -8438,6 +8584,7 @@ class TestRecordBatchTransactions:
         async def process_record(record, permissions, store, moved, **kwargs) -> tuple:
             index = int(record.external_record_id)
             record.id = f"rec-{index}"
+            record.indexing_status = ProgressStatus.NOT_STARTED.value  # a save that asks for indexing
             return await process(record, index, size, moved)
 
         proc._process_record = process_record
@@ -9139,7 +9286,7 @@ class TestAConflictInsideARecordSliceIsNotSwallowed:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("failing_call", [
-        "delete_edges_by_relationship_types", "delete_edges_between_collections", "delete_edges_to", "get_users_by_emails",
+        "delete_edges_by_relationship_types", "replace_record_entity_relations", "delete_edges_to", "get_users_by_emails",
     ])
     async def test_a_deadlock_in_an_optional_edge_write_reaches_the_caller(self, failing_call: str) -> None:
         proc, tx_store = _make_processor(), _make_tx_store()
@@ -9157,7 +9304,7 @@ class TestAConflictInsideARecordSliceIsNotSwallowed:
         ticket = TicketRecord(record_type=RecordType.TICKET, assignee_email="a@x.com", **record_fields)
         handlers = {
             "delete_edges_by_relationship_types": lambda: proc._handle_related_external_records(record, [], tx_store),
-            "delete_edges_between_collections": lambda: proc._handle_record_people(project, tx_store),
+            "replace_record_entity_relations": lambda: proc._handle_record_people(project, tx_store),
             "delete_edges_to": lambda: proc._handle_message_entity_edges(record, tx_store),
             "get_users_by_emails": lambda: proc._handle_record_people(ticket, tx_store),
         }
