@@ -5,6 +5,7 @@ and reconcile itself is idempotent."""
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -18,6 +19,7 @@ from app.agents.agent_loop.skills.builtin_seeder import (
     BuiltinSkillSeeder,
 )
 from app.agents.agent_loop.skills.graph_store import GraphSkillStore
+from app.core import org_context
 from tests.unit.agents.adapter.test_builtin_skill_seeder import (
     _PACK_A_V1,
     _PACK_A_V2,
@@ -200,6 +202,45 @@ async def test_startup_reconciles_every_org(packs_root_v1: str) -> None:
         await mf.reconcile_builtin_skills_for_orgs(graph, [{"_key": "org-1"}, {"id": "org-2"}, {}])
 
     assert await _builtin_names(graph, "org-1") == {"pack-a", "pack-b"}
+    assert await _builtin_names(graph, "org-2") == {"pack-a", "pack-b"}
+
+
+async def test_startup_seeds_each_org_inside_its_own_org_context(packs_root_v1: str) -> None:
+    """Startup has no request to bind an org; the PostgreSQL graph refuses unbound reads, so each org must be bound."""
+    graph = FakeGraphProvider()
+    seeder = BuiltinSkillSeeder(packs_root_v1)
+    real_sync = seeder.sync
+    bound: list[str] = []
+
+    async def _sync(store: GraphSkillStore) -> bool:
+        bound.append(org_context.current_org_id())
+        return await real_sync(store)
+
+    seeder.sync = AsyncMock(side_effect=_sync)  # type: ignore[method-assign]
+    with patch.object(mf, "get_builtin_seeder", return_value=seeder):
+        await mf.reconcile_builtin_skills_for_orgs(graph, [{"_key": "org-1"}, {"id": "org-2"}])
+
+    assert bound == ["org-1", "org-2"]
+    assert org_context.peek() is None
+
+
+async def test_startup_failure_of_one_org_is_logged_and_the_next_org_still_seeds(
+    packs_root_v1: str, caplog: pytest.LogCaptureFixture,
+) -> None:
+    graph = FakeGraphProvider()
+    real_reconcile = mf.reconcile_builtin_skills
+
+    async def _reconcile(gp: object, org_id: str) -> None:
+        if org_id == "org-1":
+            raise RuntimeError("graph down")
+        await real_reconcile(gp, org_id)
+
+    with patch.object(mf, "get_builtin_seeder", return_value=BuiltinSkillSeeder(packs_root_v1)), \
+         patch.object(mf, "reconcile_builtin_skills", side_effect=_reconcile):
+        await mf.reconcile_builtin_skills_for_orgs(graph, [{"_key": "org-1"}, {"_key": "org-2"}])
+
+    warnings = [r for r in caplog.records if r.name == mf.logger.name and r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and "org-1" in warnings[0].getMessage() and "graph down" in warnings[0].getMessage()
     assert await _builtin_names(graph, "org-2") == {"pack-a", "pack-b"}
 
 

@@ -51,6 +51,7 @@ from app.agents.agent_loop.skills.builtin_seeder import SEED_IDENTITY, BuiltinSk
 from app.agents.agent_loop.skills.graph_store import GraphSkillStore
 from app.agents.agent_loop.skills.graph_tracker import GraphUsageTracker
 from app.agents.agent_loop.skills.semantic_index import SemanticSkillIndex
+from app.core.org_context import for_org
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.transport.registry import TransportRegistry
@@ -197,11 +198,17 @@ async def reconcile_builtin_skills_for_orgs(
     graph_provider: "IGraphDBProvider", orgs: list[dict[str, Any]],
 ) -> None:
     """Service-startup reconcile for every existing org (sequential: this is
-    background work and should not compete with request traffic)."""
+    background work and should not compete with request traffic). Each org
+    runs in its own org context, and one org's failure does not stop the rest."""
     for org in orgs:
         org_id = org.get("_key") or org.get("id")
-        if org_id:
-            await reconcile_builtin_skills(graph_provider, org_id)
+        if not org_id:
+            continue
+        try:
+            with for_org(org_id, job="builtin_skills"):
+                await reconcile_builtin_skills(graph_provider, org_id)
+        except Exception as e:
+            logger.warning("skills: builtin skill seeding failed at startup for org %s (requests will retry): %s", org_id, e)
 
 
 def schedule_builtin_skill_reconcile(graph_provider: "IGraphDBProvider", org_id: str) -> None:
