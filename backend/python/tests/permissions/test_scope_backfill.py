@@ -794,3 +794,18 @@ async def test_a_connector_that_moves_under_a_record_costs_no_round(monkeypatch:
     monkeypatch.setattr(job._membership, "write_payload", moved_twice_then_right)
     p = await job.run_connector(ORG, app)
     assert p.state == DONE and p.stale == 0 and moves["n"] > scope_backfill.MAX_ROUNDS + 2
+
+
+async def test_a_page_is_scanned_once_not_once_per_virtual_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    vdb, loaded, job, app = await setup()
+    scans, real = [], job._membership._scan
+
+    async def spy(org_id: str, collection: str, vrids: list, keys: tuple = ()):
+        scans.append(len(vrids))
+        return await real(org_id, collection, vrids, keys)
+
+    monkeypatch.setattr(job._membership, "_scan", spy)
+    p = await job.run_connector(ORG, app)
+    assert p.state == DONE and p.stale == 0 and len(scans) >= 1 and 1 not in scans      # (every scan covers the page's virtual records)
+    want, got = await expected(loaded), await read_stamps(vdb, loaded)
+    assert got == want

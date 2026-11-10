@@ -539,15 +539,20 @@ class ScopeRewriteJob:
         """What `write_payload` needs, taken before the graph is read (the connector's generation and lease, and the time that is the fence)."""
         return await self._epoch(connector_id), await self._now()
 
+    async def scan_page(self, org_id: str, vrids: Sequence[str]) -> dict[str, dict[str, dict[str, Any]]]:
+        """One scan (one refresh, scroll and count per batch) of a page of virtual records in every collection, for `write_payload`'s `scanned`."""
+        return {name: await self._scan(org_id, name, list(vrids)) for name in set(await self._locator.all_collections(fresh=True, strict=True))}
+
     async def write_payload(self, org_id: str, connector_id: str, collections: Sequence[str], vrid: str, payload: dict[str, Any], epoch: Epoch,
-                            at: datetime, floor: int = 0) -> tuple[bool, int]:
+                            at: datetime, floor: int = 0, scanned: Mapping[str, Mapping[str, dict[str, Any]]] | None = None) -> tuple[bool, int]:
         """The back-fill's write of the scope fields: every point of the virtual record, by id, guarded (lease and generation) and fenced like a
         rewrite's (at `at`, or above `floor`), then read back. Returns whether every point holds it, and the floor for the next try (above a
         plausible fence a refused point carries, as a rewrite follows it; negative for one that is no plausible time, which no round will pass):
         False means read the graph again. `LeaseLost` and `GenerationMoved` send nothing more."""
         fence, refused, top = max(_micros(at), floor), False, 0
         for name in collections:
-            found = await self._scan(org_id, name, [vrid])
+            found = ({p: x for p, x in scanned[name].items() if _vrid_of(x) == vrid} if scanned and name in scanned
+                     else await self._scan(org_id, name, [vrid]))
             await self._put(org_id, connector_id, name, dict.fromkeys(found, payload), epoch, fence, at)
             held = await self._stored(name, list(found))
             bad = [p for p in held.values() if not _holds(p, payload)]

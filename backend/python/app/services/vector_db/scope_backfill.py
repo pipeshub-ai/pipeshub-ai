@@ -40,7 +40,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import for_org
@@ -74,7 +74,7 @@ from app.services.vector_db.membership import (
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
     from app.services.vector_db.interface.vector_db import IVectorDBService
@@ -282,7 +282,9 @@ class ScopeBackfill:
                     break
                 nodes = await stamps.nodes(org_id, frozenset(ids))
                 vrids = sorted({n.vrid for n in nodes.values() if n.vrid and not n.deleted})
-                stale_vrids = {vrid for vrid in vrids if await self._stamp(org_id, app_id, vrid) == "stale"}
+                # one scan for the page, taken before the records are locked: a point indexed after it was stamped by its indexer from the graph then
+                scanned = await self._membership.scan_page(org_id, vrids) if vrids else {}
+                stale_vrids = {vrid for vrid in vrids if await self._stamp(org_id, app_id, vrid, scanned) == "stale"}
                 # a virtual record is counted once, whichever step left it on the stale marker; this raises only for a write the store did not apply
                 page_stale = len(stale_vrids | await self._membership.refresh_membership(org_id, app_id, vrids))
                 # counted with the page, so a page written again after a failure is not counted twice
@@ -303,7 +305,7 @@ class ScopeBackfill:
                                   "with the legacy filter until the pass is run again", app_id, p.stale)
         return p
 
-    async def _stamp(self, org_id: str, app_id: str, vrid: str) -> str:
+    async def _stamp(self, org_id: str, app_id: str, vrid: str, scanned: Mapping[str, Mapping[str, dict[str, Any]]]) -> str:
         """`done`, `skipped` (no point to write) or `stale` (the stale marker was written and read back; one that did not land raises, so the
         pass fails: see `_mark`)."""
         collections: list[str] | tuple[str, ...] = ()
@@ -321,7 +323,7 @@ class ScopeBackfill:
                         await self._mark(org_id, app_id, vrid)
                         return "stale"
                     try:
-                        taken, floor = await self._membership.write_payload(org_id, app_id, collections, vrid, fields.to_payload(), epoch, at, floor)
+                        taken, floor = await self._membership.write_payload(org_id, app_id, collections, vrid, fields.to_payload(), epoch, at, floor, scanned)
                     except self._moved:
                         moves += 1      # the connector changed after the graph was read: nothing was sent, read it again (a move costs no round)
                         continue
