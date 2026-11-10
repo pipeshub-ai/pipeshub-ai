@@ -12,7 +12,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from tests.unit.api.routes.test_toolsets import assert_oauth_app_save_failed, oauth_app_save_failure
+from tests.unit.api.routes.test_toolsets import (
+    assert_oauth_app_save_failed,
+    oauth_app_save_failure,
+)
 
 if TYPE_CHECKING:
     from types import ModuleType
