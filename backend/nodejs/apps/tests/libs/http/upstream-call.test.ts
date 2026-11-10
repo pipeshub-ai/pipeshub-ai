@@ -287,6 +287,19 @@ describe('upstream-call: one upstream.call.end per outbound attempt', () => {
       expect(json).to.not.have.property('metadata')
     })
 
+    it('a logger that throws never turns the call into a failure', async () => {
+      for (const level of ['debug', 'warn'] as const) {
+        sinon.stub(Logger.prototype, level).throws(new Error('transport down'))
+      }
+      const response = await upstreamFetch(`${origin}/x/ok`, { method: 'GET' })
+      expect(response.status).to.equal(200)
+      const failed = await upstreamFetch(`${origin}/x/fail`, { method: 'GET' })
+      expect(failed.status).to.equal(500)
+      const client = axios.create()
+      installUpstreamLogging(client)
+      expect((await client.get(`${origin}/x/ok`)).status).to.equal(200)
+    })
+
     describe('health probes are DEBUG whatever the outcome', () => {
       it('for a PipesHub service, /health and /health/... ', async () => {
         await upstreamFetch(`${origin}/health`, { method: 'GET' })

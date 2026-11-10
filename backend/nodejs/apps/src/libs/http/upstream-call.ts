@@ -154,20 +154,24 @@ export function endUpstreamCall(
     errorClass === undefined || call.target.health
       ? 'debug'
       : levelFor(errorClass);
-  Logger.getInstance({ service: 'UpstreamCall' })[level](EVENT, {
-    upstream: call.target.upstream,
-    method: call.method,
-    route: call.target.route,
-    status,
-    duration_ms: Math.round(
-      Number(process.hrtime.bigint() - call.started) / 1e6,
-    ),
-    attempt: call.attempt,
-    outcome: errorClass === undefined ? 'success' : 'failure',
-    error_class: errorClass,
-    network_code: status === undefined ? networkCode(error) : undefined,
-    event_name: EVENT,
-  });
+  try {
+    Logger.getInstance({ service: 'UpstreamCall' })[level](EVENT, {
+      upstream: call.target.upstream,
+      method: call.method,
+      route: call.target.route,
+      status,
+      duration_ms: Math.round(
+        Number(process.hrtime.bigint() - call.started) / 1e6,
+      ),
+      attempt: call.attempt,
+      outcome: errorClass === undefined ? 'success' : 'failure',
+      error_class: errorClass,
+      network_code: status === undefined ? networkCode(error) : undefined,
+      event_name: EVENT,
+    });
+  } catch {
+    // A log line that cannot be written must never fail the call it describes.
+  }
 }
 
 /**

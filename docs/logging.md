@@ -331,10 +331,14 @@ a refresh service (`log_refresh_failure`) leaves the text out of `error_message`
 
 ## Upstream calls (Node)
 
-Every HTTP request the Node gateway sends writes one `upstream.call.end` line **per attempt**, from
-`backend/nodejs/apps/src/libs/http/upstream-call.ts`. That covers the service commands in `libs/commands` (through
-`upstreamFetch`) and every call on an instrumented axios instance (`installUpstreamLogging`: the default instance, in
-`index.ts`, and the knowledge base's own instance). A retry, `fetchWithRetry`'s or axios-retry's, is a new line.
+Every call through a service command or an instrumented axios instance writes one `upstream.call.end` line **per attempt**,
+from `backend/nodejs/apps/src/libs/http/upstream-call.ts`: the service commands in `libs/commands` (through `upstreamFetch`)
+and every call on the default axios instance (instrumented in `index.ts`) or the knowledge base's own instance. A retry,
+`fetchWithRetry`'s or axios-retry's, is a new line. Not covered, so they write no line: the raw `fetch` to a signed upload URL
+(`knowledge_base/utils/utils.ts`, `uploadFileToSignedUrl`), the S3 health check's signed GET
+(`storage/utils/s3-health-check.util.ts`), the Slack events proxy in `app.ts` (an `http.request` to the local Slack bot that
+passes the client's headers, its `x-request-id` included, on as they came), and the cloud SDKs (AWS, Azure, Google), which use
+their own HTTP clients.
 
 | Field | Value |
 | --- | --- |
@@ -349,7 +353,8 @@ Every HTTP request the Node gateway sends writes one `upstream.call.end` line **
 - **Levels.** Success is DEBUG: the access line is the request's INFO line, and the service's own end line has the same
   request id. A failure takes `levelFor(error_class)`: WARNING for an upstream 4xx, 5xx, timeout or outage, INFO when we
   cancelled it, ERROR when the request could not be made (our bug). A path with a `health` segment (`/health`,
-  `/health/graph-db`) is a probe and DEBUG whatever its outcome, for internal and external targets alike. Unlike
+  `/health/graph-db`) is a probe and DEBUG whatever its outcome, for internal and external targets alike. That includes a
+  path word a user chose: a skill named `health` makes its calls' lines DEBUG (its request's own lines still report a failure). Unlike
   `llm_call.end`, a failed attempt is not lowered to DEBUG: the axios adapter cannot know whether axios-retry will try again,
   so both transports report each attempt at its class's level.
 - **What it never has:** the URL, the query string, headers, bodies, or the error's message. The line is a fact about the
@@ -358,7 +363,7 @@ Every HTTP request the Node gateway sends writes one `upstream.call.end` line **
   lines too, and a 4xx it passes on keeps the service's words in its message. A 5xx's own detail stays in the service's log.
   About 30 controller catch blocks still log `error.response?.data` themselves; they are being removed module by module.
 - **Request id.** A call to a PipesHub service always carries the request's sanitised root id, replacing an `x-request-id`
-  copied from the client (`injectRequestHeaders`, and the axios adapter). A third party never gets one.
+  copied from the client (`injectRequestHeaders`, and the axios adapter). The gateway never adds one for a third party.
 - **Streams.** The chat stream's line is written when the body ends (DEBUG), fails midway (`unavailable`, with the 200), or
   is aborted by us (`cancelled`, INFO). A consumer that destroys the stream without aborting the call does not end it early:
   the line is written when the service ends the body.
