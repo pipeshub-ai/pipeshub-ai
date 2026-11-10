@@ -21,6 +21,10 @@ the live writers use, so a back-filled point carries what a newly indexed one wo
   between the first read and the write, and the point is written again from the new graph (up to `MAX_ROUNDS`, then it is marked
   stale). A live write that lands after ours has read the graph after the change and is right; one that landed before ours is
   corrected by the second read.
+- **Held to its lease.** The scope fields are written by id like a rewrite's (`ScopeRewriteJob.write_payload`): checked against the connector's
+  lease and generation right before the request, and fenced by a time taken before the graph was read, so a request that outlives the lease or is
+  held up cannot land over a newer writer's points (a store's by-filter write has no such condition, so none is used). A pass that lost the lease
+  ends with `ConnectorBusy` and writes nothing more: its checkpoint is saved by compare-and-set on the lease (`RewriteLease.update_app`).
 - **Membership.** A `container` stamp is read through the point's `recordGroupIds`, and a change that only a full pass covers (a change of the
   whole connector, more roots than the list holds) can leave them old, so the pass also brings `connectorIds`, `recordGroupIds` and
   `rootRecordGroupIds` to what the graph says, page by page (`ScopeRewriteJob.refresh_membership`). Those writes are by id, checked against the
@@ -42,10 +46,9 @@ from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import for_org
 from app.services.permissions.metrics import SCOPE_STAMP_FAILED
 from app.services.permissions.mode import scope_fields_enabled
-from app.services.permissions.rewrite_lease import RewriteLease
+from app.services.permissions.rewrite_lease import LeaseLost, RewriteLease
 from app.services.permissions.scope_fields import (
     SCOPE_FIELDS_VERSION,
-    ScopeFields,
     current_scope_generation,
 )
 from app.services.permissions.structure_generation import (
@@ -169,9 +172,12 @@ class AppDocCheckpoints:
             structure_generation=-1 if structure is None else structure,        # a value that is not a number starts the pass over
             unsafe=_mark_or_unreadable(doc.get(BACKFILL_KEYS["unsafe"])))
 
-    async def save(self, app_id: str, p: Progress) -> None:
+    async def save(self, app_id: str, p: Progress, lease: RewriteLease | None = None) -> None:
+        """With a lease the write is conditional on it (`LeaseLost`): a pass that lost the connector writes no checkpoint."""
         updates = {BACKFILL_KEYS[k]: getattr(p, k) for k in BACKFILL_KEYS}
-        if not await self._graph.update_node(app_id, CollectionNames.APPS.value, updates):
+        if lease:
+            await lease.update_app(updates)
+        elif not await self._graph.update_node(app_id, CollectionNames.APPS.value, updates):
             raise RuntimeError("the scope back-fill checkpoint was not saved")
 
 
@@ -183,9 +189,11 @@ class ScopeBackfill:
         self._page_size = page_size
         self._checkpoints = AppDocCheckpoints(graph_provider)
         from app.services.vector_db.scope_rewrite import (
-            ScopeRewriteJob,  # (it imports this module)
+            GenerationMoved,  # (it imports this module)
+            ScopeRewriteJob,
         )
 
+        self._moved = GenerationMoved
         self._membership = ScopeRewriteJob(graph_provider, vector_db, locator, logger=logger)
 
     async def run_connector(self, org_id: str, app_id: str, *, restart: bool = False, max_pages: int = MAX_PAGES,
@@ -207,6 +215,9 @@ class ScopeBackfill:
             self._membership.attach(lease)
             try:
                 progress = await self._pass(org_id, app_id, lease, restart=restart, max_pages=max_pages, close_open_mark=close_open_mark)
+            except LeaseLost as exc:  # (release is a no-op unless the lease is still ours)
+                await lease.release()
+                raise ConnectorBusy(f"{app_id} was taken over by another back-fill or rewrite; this pass wrote nothing more. Run again when it has finished") from exc
             except Exception:
                 await lease.release()
                 raise
@@ -248,7 +259,9 @@ class ScopeBackfill:
                 or not same_mark(p.unsafe, mark)):
             p = Progress(generation=generation, structure_generation=structure, unsafe=mark)
             try:
-                await self._checkpoints.save(app_id, p)
+                await self._checkpoints.save(app_id, p, lease)
+            except LeaseLost:
+                raise
             except Exception as exc:  # the first write of a run: nothing else has been written
                 raise CheckpointRefused(
                     f"the back-fill checkpoint of {app_id} could not be written ({type(exc).__name__}). If the graph store's app schema is older "
@@ -273,13 +286,15 @@ class ScopeBackfill:
                 page_stale = len(stale_vrids | await self._membership.refresh_membership(org_id, app_id, vrids))
                 # counted with the page, so a page written again after a failure is not counted twice
                 moved = replace(p, after=ids[-1], records=p.records + len(ids), stale=p.stale + page_stale)
-                await self._checkpoints.save(app_id, moved)  # only after the page is written
+                await self._checkpoints.save(app_id, moved, lease)  # only after the page is written
                 p = moved
+        except LeaseLost:
+            raise      # another holder owns the connector and its checkpoint: this pass ends without writing either
         except Exception as exc:
             p.state, p.error = FAILED, type(exc).__name__
             SCOPE_STAMP_FAILED.inc("backfill")
             self._log.warning("scope back-fill of %s stopped at %s: %s", app_id, p.after, p.error)
-        await self._checkpoints.save(app_id, p)
+        await self._checkpoints.save(app_id, p, lease)
         if p.state == DONE:  # the pass wrote every stamp from the graph as of its generation, so it covers the roots registered up to it
             await clear_pending_covered(self._graph, app_id, p.structure_generation)
             if p.stale:
@@ -291,9 +306,11 @@ class ScopeBackfill:
         """`done`, `skipped` (no point to write) or `stale` (the stale marker was written and read back; one that did not land raises, so the
         pass fails: see `_mark`)."""
         collections: list[str] | tuple[str, ...] = ()
+        floor = 0      # a plausible fence a point carried above this pass's time: the next round writes above it
         try:
             async with vrid_write_locks([vrid]):
                 for _ in range(MAX_ROUNDS):
+                    epoch, at = await self._membership.begin(app_id)      # before the graph is read: the generation to check and the fence
                     state = await resolve_virtual_record_state(self._graph, vrid)
                     collections = self._locator.collections_for_records(state.records)
                     if not collections:
@@ -302,14 +319,17 @@ class ScopeBackfill:
                     if fields == STALE_SCOPE:
                         await self._mark(org_id, app_id, vrid)
                         return "stale"
-                    await self._write(collections, org_id, vrid, fields)
+                    try:
+                        taken, floor = await self._membership.write_payload(org_id, app_id, collections, vrid, fields.to_payload(), epoch, at, floor)
+                    except self._moved:
+                        continue      # the connector changed after the graph was read: nothing was sent, read it again
                     # the graph may have changed between the read and the write: write again if it says something else now
                     again = await scope_fields_for_state(self._graph, await resolve_virtual_record_state(self._graph, vrid), org_id, self._log)
-                    if again == fields:
+                    if taken and again == fields:
                         return "done"
                 await self._mark(org_id, app_id, vrid)
                 return "stale"
-        except StaleMarkerNotWritten:
+        except (StaleMarkerNotWritten, LeaseLost):
             raise
         except Exception as exc:
             SCOPE_STAMP_FAILED.inc("backfill")
@@ -325,6 +345,8 @@ class ScopeBackfill:
         for attempt in range(MARKER_ATTEMPTS):
             try:
                 return await self._membership.mark_stale(org_id, app_id, [vrid])
+            except LeaseLost:
+                raise      # not a store fault: another holder owns the connector, and writes the marker if it still wants one
             except Exception as exc:
                 last = exc
             if attempt + 1 < MARKER_ATTEMPTS:
@@ -333,11 +355,6 @@ class ScopeBackfill:
         SCOPE_STAMP_FAILED.inc("marker")
         self._log.error("scope fields of virtual record %s may be wrong and could not be marked stale (%s); run the back-fill again", vrid, type(last).__name__)
         raise StaleMarkerNotWritten(vrid) from last
-
-    async def _write(self, collections: list[str] | tuple[str, ...], org_id: str, vrid: str, fields: ScopeFields) -> None:
-        flt = await self._vdb.filter_collection(must={"orgId": org_id, "virtualRecordId": vrid})
-        for name in collections:
-            await self._vdb.set_payload(name, fields.to_payload(), flt)
 
 
 async def status(graph_provider: IGraphDBProvider, org_id: str, app_id: str) -> Progress | None:

@@ -22,6 +22,13 @@ from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, Any, TypedDict, Unpack
 
 from app.exceptions.indexing_exceptions import IndexingError
+from app.services.resource_governor.kinds import (
+    SCALES,
+    ParseKind,
+    explicit_lane_working_set_bytes,
+    lane_charge_bytes,
+    window_charge_bytes,
+)
 from app.services.resource_governor.lane_ledger import (
     BLANK,
     BRAKE_SPACING_SECONDS,
@@ -34,14 +41,17 @@ from app.services.resource_governor.lane_ledger import (
     LedgerTxn,
     Presence,
     active_waiter,
+    add_window_bytes,
     decide_spawn,
     effective_cap,
+    live_window_bytes,
     next_lane_cap,
     pid_alive,
+    remove_window_bytes,
     spawn_allowance,
     with_plan,
 )
-from app.services.resource_governor.policy import INCIDENT_COOLDOWN_SECONDS
+from app.services.resource_governor.policy import INCIDENT_COOLDOWN_SECONDS, MEM_SOFT
 from app.services.resource_governor.shared_slots import (
     SharedSlots,
     SlotHold,
@@ -363,12 +373,23 @@ class SpawnTicket:
     """
 
     def __init__(
-        self, budget: LaneBudget, token: SlotHold, window_start: float, *, local_window: bool
+        self,
+        budget: LaneBudget,
+        token: SlotHold,
+        window_start: float,
+        *,
+        local_window: bool,
+        nbytes: int = 0,
+        bytes_until: float = 0.0,
+        counted: bool = True,
     ) -> None:
         self._budget = budget
         self.token = token
         self.window_start = window_start
         self._local_window = local_window
+        self.nbytes = nbytes
+        self.bytes_until = bytes_until
+        self.counted = counted
         self._done = False
         self._lock = threading.Lock()
 
@@ -379,7 +400,13 @@ class SpawnTicket:
             self._done = True
         if not started:
             self.token.release()
-            self._budget._return_window_slot(self.window_start, local_window=self._local_window)
+            self._budget._return_window_slot(
+                self.window_start,
+                local_window=self._local_window,
+                nbytes=self.nbytes,
+                bytes_until=self.bytes_until,
+                counted=self.counted,
+            )
 
     def worker_exited(self) -> None:
         self.token.release()
@@ -563,6 +590,8 @@ class LaneBudget:
         self._clock = clock
         self._alive = alive
         self._pid = os.getpid() if pid is None else pid
+        # An operator's figure (or a test's) is one flat charge for every kind of job.
+        self._flat_ws = working_set_bytes if working_set_bytes is not None else explicit_lane_working_set_bytes()
         self._ws_bytes = (
             working_set_bytes
             if working_set_bytes is not None
@@ -581,8 +610,9 @@ class LaneBudget:
         self._state = threading.Lock()
         self._reading: tuple[float, tuple[int | None, int | None]] | None = None
         self._overlay: tuple[int, float] | None = None
-        self._pending_returns: list[float] = []
-        self._local_window = (0.0, 0)
+        self._pending_returns: list[tuple[float, int, float, bool]] = []
+        self._local_window = (0.0, 0, 0, 0.0)  # start, spawns, bytes, bytes_until
+        self._growth_by_kind: dict[str, dict[str, int]] = {}
         self._waiting = 0
         self._waits: collections.deque[float] = collections.deque(maxlen=256)
         self._degrade_logged = False
@@ -924,9 +954,12 @@ class LaneBudget:
 
     def _drain_returns(self, record: LedgerRecord) -> LedgerRecord:
         pending, self._pending_returns = self._pending_returns, []
-        for window_start in pending:
-            if record.window_start == window_start and record.spawns_in_window > 0:
+        now = self._clock()
+        for window_start, nbytes, bytes_until, counted in pending:
+            if counted and record.window_start == window_start and record.spawns_in_window > 0:
                 record = replace(record, spawns_in_window=record.spawns_in_window - 1)
+            if nbytes and now < bytes_until:
+                record = remove_window_bytes(record, nbytes, now)
         return record
 
     def _update(self, change: Callable[[LedgerRecord], LedgerRecord | None]) -> bool:
@@ -997,13 +1030,35 @@ class LaneBudget:
 
     # -- spawn admission ---------------------------------------------------------
 
-    def admit_spawn(self, ws_bytes: int | None = None) -> SpawnTicket | None:
+    def shared(self) -> bool:
+        """Whether this budget protects the whole domain: shared slots and a healthy ledger."""
+        return not self._closed and self._slots_kind == "shared" and not self._ledger.degraded
+
+    def charge_for(self, kind: ParseKind | None, size: int, permit_covered: bool = False) -> tuple[int, int]:  # noqa: FBT001, FBT002
+        """``(worker charge, window charge)`` in bytes for one job of *kind*.
+
+        The first is what the worker keeps charged while it lives, the second what its spawn adds to
+        the domain's in-flight window. An operator's flat figure is both, for every kind.
+        """
+        scale = SCALES.scale(kind)
+        flat = self._flat_ws
+        return (
+            lane_charge_bytes(kind, size, permit_covered, scale=scale, flat_bytes=flat),
+            window_charge_bytes(kind, size, permit_covered, scale=scale, flat_bytes=flat),
+        )
+
+    def admit_spawn(self, ws_bytes: int | None = None, *, count_spawn: bool = True) -> SpawnTicket | None:
         """A ticket to start one worker, or ``None`` (poll again).
 
         One critical section under the ledger lock: the memory reading, the
-        resident token, the window count and the record write. The token is
+        resident token, the window count and bytes and the record write. The token is
         taken first and tells whether it is the only one in the domain, which is
         what exempts the first worker from the headroom test.
+
+        *ws_bytes* is what the spawn adds to the in-flight window (the job's charge by kind). A
+        worker that retires after its job passes ``count_spawn=False``: it counts toward the
+        resident bound and the window bytes but not toward the spawn allowance, which limits cold
+        model loads.
         """
         self._check_open()
         plan = self.plan
@@ -1016,17 +1071,24 @@ class LaneBudget:
             if txn is not None:
                 with self._guard:
                     self._check_open()
-                    return self._admit_shared(txn, plan, now, ws, mem_limit, raw)
+                    return self._admit_shared(txn, plan, now, ws, mem_limit, raw, count_spawn)
         self._check_open()  # a closed ledger yields no transaction: that is not a busy lock
         if not self._ledger.degraded:
             return None
         self._log_degraded()
         with self._guard:
             self._check_open()
-            return self._admit_local(plan, now, ws, mem_limit, raw)
+            return self._admit_local(plan, now, ws, mem_limit, raw, count_spawn)
 
     def _admit_shared(
-        self, txn: LedgerTxn | _LocalTxn, plan: LanePlan, now: float, ws: int, mem_limit: int | None, raw: int | None
+        self,
+        txn: LedgerTxn | _LocalTxn,
+        plan: LanePlan,
+        now: float,
+        ws: int,
+        mem_limit: int | None,
+        raw: int | None,
+        count_spawn: bool = True,  # noqa: FBT001, FBT002
     ) -> SpawnTicket | None:
         stored = txn.read()
         record = self._drain_returns(self._apply_overlay(stored, now))
@@ -1047,6 +1109,9 @@ class LaneBudget:
                 mem_limit=mem_limit,
                 ws_bytes=ws,
                 warmup_seconds=self._warmup,
+                window_bytes=record.window_bytes,
+                bytes_until=record.bytes_until,
+                count_spawn=count_spawn,
             )
             if not decision.admit:
                 token.release()
@@ -1059,6 +1124,8 @@ class LaneBudget:
                         record,
                         window_start=decision.window_start,
                         spawns_in_window=decision.spawns_in_window,
+                        window_bytes=decision.window_bytes,
+                        bytes_until=decision.bytes_until,
                     ),
                     plan.lanes,
                 )
@@ -1066,7 +1133,79 @@ class LaneBudget:
         except BaseException:
             token.release()
             raise
-        return SpawnTicket(self, token, decision.window_start, local_window=False)
+        return SpawnTicket(
+            self, token, decision.window_start, local_window=False,
+            nbytes=ws, bytes_until=decision.bytes_until, counted=count_spawn,
+        )
+
+    def admit_growth(self, delta_bytes: int) -> bool:
+        """Whether a warm worker may grow by *delta_bytes* (a heavier job than it has held).
+
+        One critical section under the ledger lock like ``admit_spawn``, but no token and no
+        spawn count: nothing new starts. The headroom test is the spawn's, the delta joins the
+        window for a warm-up, and a worker that is the only one resident in the domain is exempt
+        (the first-worker floor, decided under the same lock so it cannot race a first spawn).
+        A denial asks idle workers elsewhere to give their memory back. False means poll again.
+        """
+        self._check_open()
+        delta = max(0, int(delta_bytes))
+        if delta == 0:
+            return True
+        mem_limit, raw = self._memory()
+        now = self._clock()
+        with self._ledger.transaction() as txn:
+            if txn is not None:
+                with self._guard:
+                    self._check_open()
+                    return self._grow_shared(txn, now, delta, mem_limit, raw)
+        self._check_open()
+        if not self._ledger.degraded:
+            return False
+        self._log_degraded()
+        with self._guard:
+            self._check_open()
+            return self._grow_local(now, delta, mem_limit, raw)
+
+    def _grow_shared(self, txn: LedgerTxn | _LocalTxn, now: float, delta: int, mem_limit: int | None, raw: int | None) -> bool:
+        stored = txn.read()
+        record = self._drain_returns(self._apply_overlay(stored, now))
+        if self._lone_resident():
+            txn.write(with_plan(add_window_bytes(record, delta, now, self._warmup), self._plan.lanes))
+            return True
+        if mem_limit is not None and mem_limit > 0:
+            carried = live_window_bytes(record, now)
+            if raw is None or (raw + carried + delta) / mem_limit >= MEM_SOFT:
+                txn.write(with_plan(replace(record, reap_request_at=now), self._plan.lanes))
+                return False
+        txn.write(with_plan(add_window_bytes(record, delta, now, self._warmup), self._plan.lanes))
+        return True
+
+    def _lone_resident(self) -> bool:
+        """True when this is the only resident worker. A busy count (another process holds the
+        mutex) is not known to be lone, so the headroom test decides and the caller polls again."""
+        try:
+            return self._resident.held_count(0.0) <= 1
+        except TimeoutError:
+            return False
+
+    def _grow_local(self, now: float, delta: int, mem_limit: int | None, raw: int | None) -> bool:
+        start, spawns, nbytes, until = self._local_window
+        carried = nbytes if now < until else 0
+        lone = self._lone_resident()
+        if not lone and mem_limit is not None and mem_limit > 0 and (
+            raw is None or (raw + carried + delta) / mem_limit >= MEM_SOFT
+        ):
+            return False
+        self._local_window = (start, spawns, carried + delta, now + self._warmup)
+        return True
+
+    def note_growth(self, kind: ParseKind | None, nbytes: int) -> None:
+        """Count a growth admission for ``stats()['by_kind']``."""
+        key = (kind or ParseKind.UNKNOWN).value
+        with self._state:
+            entry = self._growth_by_kind.setdefault(key, {"growth": 0, "growth_bytes": 0})
+            entry["growth"] += 1
+            entry["growth_bytes"] += int(nbytes)
 
     def _maybe_request_reap(self, txn: LedgerTxn | _LocalTxn, record: LedgerRecord, plan: LanePlan, now: float) -> None:
         try:
@@ -1077,12 +1216,18 @@ class LaneBudget:
             txn.write(with_plan(replace(record, reap_request_at=now), plan.lanes))
 
     def _admit_local(
-        self, plan: LanePlan, now: float, ws: int, mem_limit: int | None, raw: int | None
+        self,
+        plan: LanePlan,
+        now: float,
+        ws: int,
+        mem_limit: int | None,
+        raw: int | None,
+        count_spawn: bool = True,  # noqa: FBT001, FBT002
     ) -> SpawnTicket | None:
         token = self._resident.try_acquire(self.resident_limit())
         if token is None:
             return None
-        start, spawns = self._local_window
+        start, spawns, nbytes, until = self._local_window
         live = self._live_processes()
         decision = decide_spawn(
             held_before=token.held_before,
@@ -1095,21 +1240,41 @@ class LaneBudget:
             ws_bytes=ws,
             warmup_seconds=self._warmup,
             allowance=max(1, spawn_allowance(plan.lanes) // live),
+            window_bytes=nbytes,
+            bytes_until=until,
+            count_spawn=count_spawn,
         )
         if not decision.admit:
             token.release()
             return None
-        self._local_window = (decision.window_start, decision.spawns_in_window)
-        return SpawnTicket(self, token, decision.window_start, local_window=True)
+        self._local_window = (
+            decision.window_start, decision.spawns_in_window, decision.window_bytes, decision.bytes_until
+        )
+        return SpawnTicket(
+            self, token, decision.window_start, local_window=True,
+            nbytes=ws, bytes_until=decision.bytes_until, counted=count_spawn,
+        )
 
-    def _return_window_slot(self, window_start: float, *, local_window: bool) -> None:
+    def _return_window_slot(
+        self,
+        window_start: float,
+        *,
+        local_window: bool,
+        nbytes: int = 0,
+        bytes_until: float = 0.0,
+        counted: bool = True,
+    ) -> None:
+        now = self._clock()
         if local_window:
-            start, spawns = self._local_window
-            if start == window_start and spawns > 0:
-                self._local_window = (start, spawns - 1)
+            start, spawns, held, until = self._local_window
+            if counted and start == window_start and spawns > 0:
+                spawns -= 1
+            if nbytes and now < bytes_until and now < until:
+                held = max(0, held - min(nbytes, held))
+            self._local_window = (start, spawns, held, until)
             return
 
-        self._pending_returns.append(window_start)
+        self._pending_returns.append((window_start, nbytes, bytes_until, counted))
         if self._closed:
             return
         try:
@@ -1154,6 +1319,9 @@ class LaneBudget:
             "run_in_use_domain": run,
             "resident_domain": resident,
             "spawns_in_window": record.spawns_in_window,
+            "window_bytes": live_window_bytes(record, self._clock()),
+            "growth_by_kind": {k: dict(v) for k, v in self._growth_by_kind.items()},
+            "charge_scales": SCALES.stats(),
             "waiting": self._waiting,
             "waiter_active": active_waiter(record, self._clock()) is not None,
             "wait_seconds_p95": p95,

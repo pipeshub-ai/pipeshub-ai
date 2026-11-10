@@ -209,6 +209,8 @@ app_schema = {
             "queuedAtTimestamp": {"type": ["number", "null"]},
             # Set when sync is turned on; see toggle_connector_instance.
             "enabledAtTimestamp": {"type": ["number", "null"]},
+            # Moves with every sync toggle, whose events carry the value (_handle_app_disabled). Incremented in AQL, which computes in doubles.
+            "toggleSeq": {"type": ["number", "null"]},
             "vectorMembershipBackfilled": {"type": "boolean", "default": False},
             "vectorMembershipBackfillAfterKey": {"type": ["string", "null"]},
             "vectorMembershipBackfillFailures": {"type": ["integer", "null"]},

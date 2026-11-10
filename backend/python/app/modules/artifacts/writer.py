@@ -34,7 +34,7 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -354,17 +354,24 @@ class ArtifactWriter:
         properties: RecordMetadata | None = None,
         *,
         stored_run: str,
+        still_current: Callable[[], Awaitable[bool]] | None = None,
     ) -> WrittenRevision | None:
         """Store every file of revision ``rev``, the manifest last.
 
         None when nothing was written because artifact writes are unavailable
-        (a storage service without the routes). Raises when a file could not
-        be stored; the manifest is then not written.
+        (a storage service without the routes), or because ``still_current``
+        said another stored write took over while the files went up: a manifest
+        written then would name this run over the newer write's set. Raises when
+        a file could not be stored; the manifest is then not written.
         """
         if not artifact_writes_available():
             return None
         if not REV_PATTERN.match(rev):
             raise ValueError("revision is not 8 to 64 lowercase hex digits")
+
+        async def current() -> bool:
+            return still_current is None or await still_current()
+
         # Off the event loop: encoding and hashing a large record takes a while.
         built = await asyncio.to_thread(
             build_revision,
@@ -381,6 +388,9 @@ class ArtifactWriter:
         try:
             plan = await self._presign(built, org_id, virtual_record_id, rev)
         except ArtifactRoutesUnavailable:
+            return None
+        # The files and the manifest are one set per revision: a write that lost its place must not overwrite them.
+        if not await current():
             return None
         paths = sorted(built.files)
 
@@ -399,6 +409,10 @@ class ArtifactWriter:
         except ExceptionGroup as failed:
             raise failed.exceptions[0] from None
 
+        # shortcut: a check and the write after it are two requests, so a write stalled between them still
+        # lands; close it with a conditional write if storage ever offers one.
+        if not await current():
+            return None
         manifest = Manifest(
             virtualRecordId=virtual_record_id,
             rev=rev,

@@ -66,7 +66,7 @@ async def nodes(tx: Tx, org: str, keys: Iterable[str]) -> dict[str, StampNode]:
     want = sorted({i for _, i in pairs})
     docs = await tx.fetch("""/* pipeshub:kg.stamp_nodes */ SELECT n.coll, n.id, n.doc->>'connectorId' AS connector, n.doc->>'accessRule' AS rule,
             n.doc->'isDeleted' AS deleted, n.doc->'isPlaceholder' AS placeholder,
-            n.doc->>'permissionModel' AS model, n.doc->>'virtualRecordId' AS vrid
+            n.doc->>'permissionModel' AS model, n.doc->>'virtualRecordId' AS vrid, n.doc->>'origin' AS origin
         FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = ANY($2::text[]) AND n.id = ANY($3::text[])""", org, _NODE_COLLS, want)
     found = {nk(r["coll"], r["id"]): r for r in docs if (r["coll"], r["id"]) in pairs}
     ids_found = sorted({split(k)[1] for k in found})
@@ -105,7 +105,7 @@ async def nodes(tx: Tx, org: str, keys: Iterable[str]) -> dict[str, StampNode]:
             continue
         out[key] = StampNode(key, kind, _app_nk(r["connector"]), tuple(sorted(parents.get(key, ()))), frozenset(inherits.get(key, ())), r["rule"], flag(_json(r["deleted"])),
                              flag(_json(r["placeholder"])), key in granted, kind == "group" and r["model"] == "RECORD_GROUP_LEVEL", tuple(sorted(groups.get(key, ()))), r["vrid"],
-                             key in belongs_app)
+                             key in belongs_app, r["origin"])
     return out
 
 

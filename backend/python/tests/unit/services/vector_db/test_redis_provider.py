@@ -1050,8 +1050,9 @@ class TestKeysMatchingFilter:
         assert second[:4] == ("FT.CURSOR", "READ", first[1], 7)
 
     @pytest.mark.asyncio
-    async def test_a_repeated_key_is_counted_once_and_a_short_scan_raises(self, service, mock_redis_client) -> None:
+    async def test_a_repeated_key_is_counted_once_and_a_short_scan_raises(self, service, mock_redis_client, monkeypatch) -> None:
         """Offset paging repeated some keys and missed others; the cursor can still repeat one."""
+        monkeypatch.setattr("app.services.vector_db.redis.redis_vector._SETTLE_ATTEMPTS", 1)
         mock_redis_client.execute_command = AsyncMock(side_effect=[
             [3], _agg(3, [b"k1", b"k2"], cursor=9), _agg(0, [b"k2"], cursor=0),
         ])
@@ -1065,14 +1066,33 @@ class TestKeysMatchingFilter:
 
     @pytest.mark.asyncio
     async def test_a_misleading_first_integer_of_the_aggregate_does_not_hide_a_short_scan(
-        self, service, mock_redis_client,
+        self, service, mock_redis_client, monkeypatch,
     ) -> None:
         """The first integer of an aggregate reply is not defined as the number of matches: here it says 2,
         as many as came back, while the index counts 3. The count query is what the scan is held to."""
+        monkeypatch.setattr("app.services.vector_db.redis.redis_vector._SETTLE_ATTEMPTS", 1)
         mock_redis_client.execute_command = AsyncMock(side_effect=[[3], _agg(2, [b"k1", b"k2"], cursor=0)])
 
         with pytest.raises(RuntimeError, match="2 of 3 counted"):
             await service._keys_matching_filter("test_collection", self._filter())
+
+    @pytest.mark.asyncio
+    async def test_a_short_scan_is_read_again_while_the_index_settles(self, service, mock_redis_client, monkeypatch) -> None:
+        monkeypatch.setattr("app.services.vector_db.redis.redis_vector._SETTLE_DELAY_SECONDS", 0.0)
+        mock_redis_client.execute_command = AsyncMock(side_effect=[
+            [2], _agg(1, [b"k1"], cursor=0), [2], _agg(2, [b"k1", b"k2"], cursor=0),
+        ])
+
+        assert await service._keys_matching_filter("test_collection", self._filter()) == [b"k1", b"k2"]
+
+    @pytest.mark.asyncio
+    async def test_a_scan_that_stays_short_raises_after_every_attempt(self, service, mock_redis_client, monkeypatch) -> None:
+        monkeypatch.setattr("app.services.vector_db.redis.redis_vector._SETTLE_DELAY_SECONDS", 0.0)
+        mock_redis_client.execute_command = AsyncMock(side_effect=lambda cmd, *a: [2] if cmd == "FT.SEARCH" else _agg(1, [b"k1"], cursor=0))
+
+        with pytest.raises(RuntimeError, match="1 of 2 counted"):
+            await service._keys_matching_filter("test_collection", self._filter())
+        assert mock_redis_client.execute_command.await_count == 10
 
     @pytest.mark.asyncio
     async def test_documents_removed_during_the_scan_are_not_an_error(self, service, mock_redis_client) -> None:
