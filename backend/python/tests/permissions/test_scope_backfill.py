@@ -34,7 +34,7 @@ from tests.support.in_memory_vector_db import (
     InMemoryVectorDBService as InMemoryVectorDB,
 )
 
-from .rewrite_kit import advancing_clock
+from .rewrite_kit import FencedMemoryVectorDB, advancing_clock
 from .stamp_world import ORG
 from .store_harness import Loaded, expected, load, read_stamps
 from .test_scope_projector import CASES
@@ -116,21 +116,19 @@ async def test_a_run_is_bounded_and_the_next_run_goes_on_where_the_last_stopped(
 
 async def test_a_killed_run_resumes_at_the_last_saved_page_and_ends_with_the_same_fields() -> None:
     vdb, loaded, job, app = await setup(page_size=2)
-    real, calls = vdb.set_payload, 0
+    real = vdb.update_payloads_by_ids
 
-    async def dying(*a, **k) -> None:
-        nonlocal calls
-        calls += 1
-        if calls == 4:
+    async def dying(*a, **k) -> None:  # the first write after a page was saved
+        if loaded.graph.app_docs[app].get("scopeBackfillAfter"):
             raise Killed
         await real(*a, **k)
 
-    vdb.set_payload = dying  # type: ignore[method-assign]
+    vdb.update_payloads_by_ids = dying  # type: ignore[method-assign]
     with pytest.raises(Killed):
         await job.run_connector(ORG, app)
     saved = loaded.graph.app_docs[app]["scopeBackfillAfter"]
     assert saved and loaded.graph.app_docs[app]["scopeBackfillState"] == RUNNING
-    vdb.set_payload = real  # type: ignore[method-assign]
+    vdb.update_payloads_by_ids = real  # type: ignore[method-assign]
     assert (await job.run_connector(ORG, app)).state == DONE
     want = await expected(loaded)
     got = await read_stamps(vdb, loaded)
@@ -173,15 +171,15 @@ async def test_a_page_that_cannot_be_listed_fails_the_run_keeps_the_cursor_and_t
 
 async def test_a_failed_write_marks_the_point_stale() -> None:
     vdb, loaded, job, app = await setup()
-    real, state = vdb.set_payload, {"failed": False}
+    real, state = vdb.update_payloads_by_ids, {"failed": False}
 
-    async def once(name: str, payload: dict, flt) -> None:
-        if not state["failed"] and payload.get("scopeStamp") != "legacy":
+    async def once(name: str, updates: dict, **k) -> None:
+        if not state["failed"] and any(u.get("scopeStamp") not in (None, "legacy") for u in updates.values()):
             state["failed"] = True
             raise RuntimeError("write failed")
-        await real(name, payload, flt)
+        await real(name, updates, **k)
 
-    vdb.set_payload = once  # type: ignore[method-assign]
+    vdb.update_payloads_by_ids = once  # type: ignore[method-assign]
     p = await job.run_connector(ORG, app)
     assert p.stale >= 1 and STALE_SCOPE in (await read_stamps(vdb, loaded)).values()
 
@@ -201,20 +199,21 @@ async def test_a_graph_change_between_the_read_and_the_write_is_corrected_by_the
     vdb, loaded, job, app = await setup()
     want = await expected(loaded)
     target = next(i for i, n in loaded.graph.stamps.node_map.items() if n.kind == "record" and n.vrid and want.get(n.vrid) == ScopeFields.container())
-    real, state = vdb.set_payload, {"n": 0}
+    real, state = vdb.update_payloads_by_ids, {"n": 0}
     vrid = loaded.graph.stamps.node_map[target].vrid
+    mine = {pid for pid, pt in vdb.collections[COLL].items() if pt.payload["metadata"]["virtualRecordId"] == vrid}
 
-    async def racing(*a, **k) -> None:
-        await real(*a, **k)
-        if vrid in repr(a[2]):
+    async def racing(name: str, updates: dict, **k) -> None:
+        await real(name, updates, **k)
+        if mine & set(updates):
             state["n"] += 1
-        if state["n"] == 1 and vrid in repr(a[2]):  # a permission change commits right after the first write of this point: the record leaves its container
+        if state["n"] == 1 and mine & set(updates):  # a permission change commits right after the first write of this point: the record leaves its container
             n = loaded.graph.stamps.node_map[target]
             loaded.graph.stamps.node_map = {**loaded.graph.stamps.node_map, target: replace(n, rule="RESTRICTED", granted=True)}
 
-    vdb.set_payload = racing  # type: ignore[method-assign]
+    vdb.update_payloads_by_ids = racing  # type: ignore[method-assign]
     await job.run_connector(ORG, app)
-    vdb.set_payload = real  # type: ignore[method-assign]
+    vdb.update_payloads_by_ids = real  # type: ignore[method-assign]
     now = (await expected(loaded))[vrid]
     got = (await read_stamps(vdb, loaded))[vrid]
     assert got == now and got != ScopeFields.container()
@@ -309,20 +308,17 @@ async def test_a_marker_that_never_lands_is_tried_and_reported_once_per_record(m
 async def test_a_point_that_keeps_its_own_fields_because_the_marker_cannot_be_written_is_reported(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     monkeypatch.setattr(scope_backfill, "MARKER_DELAY_SECONDS", 0.0)
     vdb, loaded, job, app = await setup()
-    real_write, state = vdb.set_payload, {"stamped": False}
-    real_by_id = vdb.update_payloads_by_ids
+    real_by_id, state = vdb.update_payloads_by_ids, {"stamped": False}
 
-    async def broken(name: str, payload: dict, flt) -> None:
-        await real_write(name, payload, flt)
-        state["stamped"] = True
-        loaded.graph.stamps.failure = RuntimeError("graph down after the first write")  # the read-back then fails
-
-    async def no_marker(name: str, updates: dict, **k) -> None:
+    async def broken(name: str, updates: dict, **k) -> None:
         if any(u.get("scopeStamp") == "legacy" and u.get("scopeFieldsVersion") == 0 for u in updates.values()):
             raise RuntimeError("marker store down")
         await real_by_id(name, updates, **k)
+        if not state["stamped"]:
+            state["stamped"] = True
+            loaded.graph.stamps.failure = RuntimeError("graph down after the first write")  # the read-back then fails
 
-    vdb.set_payload, vdb.update_payloads_by_ids = broken, no_marker  # type: ignore[method-assign]
+    vdb.update_payloads_by_ids = broken  # type: ignore[method-assign]
     with caplog.at_level(logging.ERROR):
         p = await job.run_connector(ORG, app)
     assert state["stamped"] and p.state == FAILED and "could not be marked stale" in caplog.text
@@ -390,11 +386,11 @@ async def test_a_page_written_again_after_a_failure_is_not_counted_twice() -> No
     loaded.graph.stamps.nodes = flaky  # type: ignore[method-assign]
     real_save, saves = job._checkpoints.save, {"n": 0}
 
-    async def save_once_failing(a: str, p: scope_backfill.Progress) -> None:
+    async def save_once_failing(a: str, p: scope_backfill.Progress, lease: object = None) -> None:
         saves["n"] += 1
         if saves["n"] == 2:                      # the first save is the unfinished checkpoint of a fresh start; the second is the first page's
             raise RuntimeError("checkpoint store down")
-        await real_save(a, p)
+        await real_save(a, p, lease)
 
     job._checkpoints.save = save_once_failing  # type: ignore[method-assign]
     failed = await job.run_connector(ORG, app)
@@ -519,13 +515,13 @@ async def test_the_pass_never_writes_the_mark() -> None:
     """Nothing the pass does can erase a mark written beside it: it does not write the field at all."""
     vdb, loaded, job, app = await setup()
     loaded.graph.app_docs[app] = {"_key": app, UNSAFE_KEY: 1000}
-    real_update, written = loaded.graph.update_node, []
+    real_update, written = loaded.graph.update_node_fields_if_match, []
 
-    async def spy(key: str, collection: str, updates: dict, *args: object) -> bool:
+    async def spy(key: str, collection: str, updates: dict, *args: object) -> bool:  # (the checkpoint is written under the lease)
         written.append(set(updates))
         return await real_update(key, collection, updates, *args)
 
-    loaded.graph.update_node = spy  # type: ignore[method-assign]
+    loaded.graph.update_node_fields_if_match = spy  # type: ignore[method-assign]
     await job.run_connector(ORG, app)
     assert written and not any(UNSAFE_KEY in keys for keys in written)
 
@@ -572,14 +568,14 @@ async def test_a_graph_store_that_refuses_the_checkpoint_stops_the_run_before_an
 
     vdb, loaded, job, app = await setup()
     loaded.graph.app_docs[app] = {"_key": app, UNSAFE_KEY: True}
-    real_update = loaded.graph.update_node
+    real_update = loaded.graph.update_node_fields_if_match
 
     async def old_schema(key: str, collection: str, updates: dict, *args: object) -> bool:
         if "scopeBackfillStructureGeneration" in updates:
             return False
         return await real_update(key, collection, updates, *args)
 
-    loaded.graph.update_node = old_schema  # type: ignore[method-assign]
+    loaded.graph.update_node_fields_if_match = old_schema  # type: ignore[method-assign]
     with pytest.raises(CheckpointRefused, match="restart a connector or indexing service"):
         await job.run_connector(ORG, app)
     assert unleased(loaded.graph.app_docs[app]) == {"_key": app, UNSAFE_KEY: True} and not any(keys_of(vdb))
@@ -680,3 +676,99 @@ async def test_a_connector_back_filled_before_a_record_without_a_group_was_left_
     assert app_is_current(loaded.graph.app_docs[app]) and payload["scopeStamp"] == "legacy"
     served = ScopeFilter(current=frozenset({app}), version=SCOPE_FIELDS_VERSION, generation=current_scope_generation(), defer=True)
     assert sx.evaluate(sx.admits(served), payload)
+
+
+# ---- a pass that lost the connector's lease writes nothing more ----------------------------------------------------------------------------
+
+WINNER = {"scopeBackfillState": DONE, "scopeBackfillAfter": "zz", "scopeBackfillRecords": 99, "scopeBackfillStale": 0, "scopeBackfillError": None}
+
+
+def take_over(loaded: Loaded, app: str) -> dict:
+    """Another holder takes the lease (its deadline passed) and finishes: the winner's checkpoint is what the app document then says."""
+    from app.services.permissions.rewrite_lease import REWRITE_LEASE_KEY
+
+    loaded.graph.app_docs[app].update({REWRITE_LEASE_KEY: '{"h":"winner","u":9999999999}', **WINNER})
+    return {k: loaded.graph.app_docs[app][k] for k in WINNER}
+
+
+def points_before(vdb: InMemoryVectorDB) -> dict:
+    return {pid: dict(p.payload) for pid, p in vdb.collections[COLL].items()}
+
+
+async def test_a_pass_that_lost_the_lease_before_a_page_is_stamped_writes_no_point_and_no_checkpoint() -> None:
+    vdb, loaded, job, app = await setup()
+    before, real, hit = points_before(vdb), loaded.graph.stamps.nodes, {}
+
+    async def taken(org: str, ids: frozenset[str]) -> dict:      # right after the page's renew
+        hit["winner"] = take_over(loaded, app)
+        return await real(org, ids)
+
+    loaded.graph.stamps.nodes = taken  # type: ignore[method-assign]
+    with pytest.raises(scope_backfill.ConnectorBusy):
+        await job.run_connector(ORG, app)
+    assert points_before(vdb) == before, "a point was written after the lease was lost"
+    assert {k: loaded.graph.app_docs[app][k] for k in WINNER} == hit["winner"], "the lost pass wrote the winner's checkpoint"
+
+
+async def test_a_pass_that_loses_the_lease_while_a_page_is_stamped_saves_no_checkpoint_for_it() -> None:
+    vdb, loaded, job, app = await setup()
+    real, hit = job._membership.refresh_membership, {}
+
+    async def taken(*a: object, **k: object) -> set[str]:      # after the page's writes, before its checkpoint
+        hit["winner"] = take_over(loaded, app)
+        return await real(*a, **k)
+
+    job._membership.refresh_membership = taken  # type: ignore[method-assign]
+    with pytest.raises(scope_backfill.ConnectorBusy):
+        await job.run_connector(ORG, app)
+    assert {k: loaded.graph.app_docs[app][k] for k in WINNER} == hit["winner"]
+
+
+async def test_a_pass_that_loses_the_lease_before_it_ends_does_not_save_done_over_the_winner() -> None:
+    vdb, loaded, job, app = await setup()
+    hit = {}
+
+    async def end_of_list(org: str, a: str, after: str | None, limit: int) -> list[str]:
+        hit["winner"] = take_over(loaded, app)
+        return []
+
+    loaded.graph.stamps.record_page = end_of_list  # type: ignore[method-assign]
+    with pytest.raises(scope_backfill.ConnectorBusy):
+        await job.run_connector(ORG, app)
+    assert {k: loaded.graph.app_docs[app][k] for k in WINNER} == hit["winner"] and loaded.graph.app_docs[app]["scopeBackfillRecords"] == 99
+
+
+async def test_a_marker_is_not_tried_again_nor_counted_as_a_store_fault_when_the_lease_was_lost(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(scope_backfill, "MARKER_DELAY_SECONDS", 0.0)
+    vdb, loaded, job, app = await setup()
+    before, real, hit = points_before(vdb), job._membership.mark_stale, {"tries": 0}
+
+    async def stale(*a: object, **k: object) -> ScopeFields:
+        return STALE_SCOPE
+
+    async def counted(*a: object, **k: object) -> None:
+        hit["tries"] += 1
+        take_over(loaded, app)
+        await real(*a, **k)
+
+    monkeypatch.setattr(scope_backfill, "scope_fields_for_state", stale)
+    monkeypatch.setattr(job._membership, "mark_stale", counted)
+    with pytest.raises(scope_backfill.ConnectorBusy):
+        await job.run_connector(ORG, app)
+    assert hit["tries"] == 1 and points_before(vdb) == before
+
+
+async def test_a_held_up_write_does_not_land_over_a_point_a_newer_writer_fenced() -> None:
+    """The store refuses the request (the check and the write are one operation there), and the caller is told to follow the newer fence."""
+    from app.services.vector_db import scope_rewrite
+
+    vdb = FencedMemoryVectorDB()
+    loaded = await load(vdb, COLL, {"w": CASES[WORLD]})
+    app, job = loaded.apps[0], ScopeBackfill(loaded.graph, vdb, loaded.locator, log, clock=advancing_clock())
+    point = next(iter(vdb.collections[COLL].values()))
+    vrid = point.payload["metadata"]["virtualRecordId"]
+    epoch, at = await job._membership.begin(app)
+    newer = scope_rewrite._micros(at) + 30 * 10**6      # a plausible time: another host's clock a little ahead
+    point.payload.update({"scopeFence": newer, "scopeStamp": "newer-writers-field"})
+    taken, floor = await job._membership.write_payload(ORG, app, [COLL], vrid, ScopeFields.legacy().to_payload(), epoch, at)
+    assert not taken and floor > newer and point.payload["scopeStamp"] == "newer-writers-field" and point.payload["scopeFence"] == newer

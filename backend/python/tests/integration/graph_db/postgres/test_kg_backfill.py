@@ -197,6 +197,77 @@ async def test_the_verify_names_a_row_no_node_explains(pg_db) -> None:
     assert not res.ok and any(m.startswith(f"r|{ghost}") for m in res.extra)
 
 
+async def test_a_restart_removes_a_row_no_node_explains_with_its_access_list(pg_db) -> None:
+    p, org = await shadowed(pg_db)
+    app = await sk_of(pg_db, org, ("apps", "app1"))
+    ghost = await KgWriterNodes.make(pg_db, org, ("records", "ghost"))
+
+    async def plant(tx, w) -> None:
+        await w.records_upsert([row(ghost, "ghost", app_sk=app, name="ghost")])
+        await w.scopes_set([(ghost, 3, app, True, False, False, False)])
+    await corrupt(pg_db, org, plant)
+
+    async def held(tx) -> tuple[int, int]:
+        return (await tx.fetchval("SELECT count(*) FROM kg.records WHERE org_id = $1 AND sk = $2", org, ghost), await tx.fetchval("SELECT count(*) FROM kg.scopes WHERE org_id = $1 AND sk = $2", org, ghost))
+    assert await run_in(pg_db, org, held) == (1, 1)
+    await bf.backfill(pg_db, org, "app1", page=4, restart=True)
+    assert await run_in(pg_db, org, held) == (0, 0)
+
+
+async def test_an_access_list_whose_record_row_is_gone_fails_only_its_own_connector_stays_hidden_and_a_restart_removes_it(pg_db) -> None:
+    from app.services.graph_db.postgres.kg import restamp
+    p, org = await shadowed(pg_db)
+    assert (await bf.backfill(pg_db, org, "app2", page=4)).flipped
+    app = await sk_of(pg_db, org, ("apps", "app1"))
+    orphan = await KgWriterNodes.make(pg_db, org, ("records", "orphan"))
+    await corrupt(pg_db, org, lambda tx, w: w.scopes_set([(orphan, 3, app, False, False, False, False)]))        # what an older process leaves when it deletes the record alone
+
+    async def visible(tx) -> set[int]:
+        return {r["sk"] for r in await tx.fetch("SELECT s.sk FROM kg.scopes s WHERE s.org_id = $1 AND NOT (" + restamp.HIDDEN_SCOPE + ")", org)}
+    assert orphan not in await run_in(pg_db, org, visible) and await run_in(pg_db, org, visible)             # the orphan is not counted; the others are
+    res = await verify(pg_db, org, "app1")
+    assert not res.ok and any(m.startswith(f"sc|{orphan}") for m in res.extra)
+    other = await verify(pg_db, org, "app2")
+    assert other.ok and not any(m.startswith("sc|") for m in other.extra)                                   # another connector is not held up by it
+    assert (await bf.backfill(pg_db, org, "app1", page=4, restart=True)).flipped                            # the restart removes it, and the connector verifies again
+    assert (await verify(pg_db, org, "app1")).ok
+
+    async def held(tx) -> int:
+        return await tx.fetchval("SELECT count(*) FROM kg.scopes WHERE org_id = $1 AND sk = $2", org, orphan)
+    assert await run_in(pg_db, org, held) == 0
+
+
+async def test_the_restart_keeps_an_orphan_scope_another_connector_takes_over_meanwhile(pg_db) -> None:
+    """An orphan has no record row, so the connector that takes its key over locks only itself: the restart waits for it and then sees no orphan."""
+    p, org = await shadowed(pg_db)
+    assert (await bf.backfill(pg_db, org, "app2", page=4)).flipped
+    app1, app2 = await sk_of(pg_db, org, ("apps", "app1")), await sk_of(pg_db, org, ("apps", "app2"))
+    orphan = await KgWriterNodes.make(pg_db, org, ("records", "orphan"))
+    await corrupt(pg_db, org, lambda tx, w: w.scopes_set([(orphan, 3, app1, False, False, False, False)]))
+    written, commit = asyncio.Event(), asyncio.Event()
+
+    async def takes_over(tx) -> None:
+        await lock_apps(tx, org, {"app2"}, org_wide=False)
+        w = KgWriter(tx)
+        await w.records_upsert([row(orphan, "orphan", app_sk=app2)])
+        await w.scopes_set([(orphan, 3, app2, False, False, False, False)])
+        written.set()
+        await commit.wait()
+
+    writer = asyncio.create_task(run_in(pg_db, org, takes_over, write=True))
+    await asyncio.wait_for(written.wait(), 30)
+    restart = asyncio.create_task(bf.backfill_scope(pg_db, org, "app1", restart=True, max_batches=0))
+    await asyncio.sleep(0.5)
+    assert not restart.done()
+    commit.set()
+    await writer
+    await restart
+
+    async def scope_app(tx) -> int | None:
+        return await tx.fetchval("SELECT app_sk FROM kg.scopes WHERE org_id = $1 AND sk = $2", org, orphan)
+    assert await run_in(pg_db, org, scope_app) == app2
+
+
 class KgWriterNodes:
     @staticmethod
     async def make(db, org: str, key: tuple[str, str]) -> int:

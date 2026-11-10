@@ -534,7 +534,10 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         # a slow page never holds up the others. A slot is freed when the page's image is
         # dropped (its call succeeded or it was given up).
         window = max(1, self.PAGE_RENDER_BATCH_SIZE)
-        render_chunk = max(1, window // 4)
+        # A render hands the parent its pages as arrays (up to 30 MB each) until they are
+        # encoded, so a chunk is capped at the default's 5 pages: a raised window then keeps
+        # more encoded images alive, never more arrays, and the parent's 0.5 GiB estimate holds.
+        render_chunk = max(1, min(window // 4, 5))
         slots = asyncio.Semaphore(window)
         ready: asyncio.Queue[Optional[int]] = asyncio.Queue()
         n_workers = max(1, min(self.CONCURRENCY_LIMIT, len(pages)))
