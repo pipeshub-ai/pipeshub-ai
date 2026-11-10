@@ -165,17 +165,21 @@ async def test_a_dead_server_on_test_connection_is_one_warning_without_its_text(
 
 
 @pytest.mark.parametrize(("error", "status", "level", "cls", "reason"), [
-    (MCPRefreshTokenInvalidError(SENTINEL, error_code="invalid_grant", status=400), 409, logging.INFO, "auth_expired",
-     "auth_expired"),
-    (MCPOAuthError(SENTINEL, error_code="invalid_client", status=401), 502, logging.ERROR, "misconfigured",
-     "auth_expired"),
-    (MCPOAuthError(SENTINEL, error_code="temporarily_unavailable", status=503), 502, logging.WARNING, "unavailable",
+    (lambda: MCPRefreshTokenInvalidError(SENTINEL, error_code="invalid_grant", status=400), 409, logging.INFO,
+     "auth_expired", "auth_expired"),
+    # What the token client raises for a rejected client: 409 "reconnect", so INFO (a 4xx), still misconfigured.
+    (lambda: MCPRefreshTokenInvalidError(SENTINEL, error_code="invalid_client", status=401), 409, logging.INFO,
+     "misconfigured", "auth_expired"),
+    # A rejected client with an overloaded endpoint's status is not a refusal for good: 502.
+    (lambda: MCPOAuthError(SENTINEL, error_code="invalid_client", status=429), 502, logging.ERROR, "misconfigured",
      "unreachable"),
-])
+    (lambda: MCPOAuthError(SENTINEL, error_code="temporarily_unavailable", status=503), 502, logging.WARNING,
+     "unavailable", "unreachable"),
+], ids=["invalid-grant", "invalid-client", "invalid-client-transient", "provider-503"])
 async def test_an_oauth_refresh_failure_is_one_line_at_its_class(capture, error, status, level, cls, reason) -> None:
     with (
         patch.object(mcp_servers, "_get_org_instance", new=AsyncMock(return_value=_instance())),
-        patch.object(mcp_servers.mcp_token_refresh, "refresh_credential_record", new=AsyncMock(side_effect=error)),
+        patch.object(mcp_servers.mcp_token_refresh, "refresh_credential_record", new=AsyncMock(side_effect=error())),
     ):
         response = await _call(_app(FakeConfigService()), "POST", f"{BASE}/instances/inst-1/oauth/refresh")
 

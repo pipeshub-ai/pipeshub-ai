@@ -17,6 +17,7 @@ from dependency_injector import providers
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
+from app.agents.tools.factories.base import ToolsetAuthError
 from app.api.middlewares.request_log import install_request_logging
 from app.api.routes import toolsets as routes
 from app.connectors.core.base.token_service import oauth_service
@@ -24,6 +25,7 @@ from app.containers.connector import ConnectorAppContainer
 from app.utils.logger import log_record_fields
 from tests.support.in_memory_config import InMemoryConfigService
 from tests.support.refusing_token_endpoint import RefusingTokenEndpoint
+from tests.unit.api.routes.test_toolsets import OAUTH_APP_SAVE_FAILED
 from tests.unit.api.routes.test_toolsets_full_coverage import _make_oauth_registry
 
 if TYPE_CHECKING:
@@ -36,7 +38,6 @@ OAUTH_APPS_PATH = routes._get_toolset_oauth_config_path("jira")
 INSTANCES_PATH = routes._get_instances_path(ORG)
 USER_AUTH_PATH = routes._get_user_auth_path("i1", USER)
 # Built at run time: a traceback prints source lines, so a literal would show in a stack.
-OAUTH_APP_SAVE_FAILED = "Failed to save the OAuth app. Please try again."
 SENTINEL = "-".join(("SENTINEL", "provider")) + " alice@example.com"
 
 
@@ -84,7 +85,16 @@ def graph() -> MagicMock:
 
 
 @pytest.fixture
-def client(store: _Store, graph: MagicMock, monkeypatch: pytest.MonkeyPatch,
+def notifications() -> MagicMock:
+    return MagicMock(publish_notification=AsyncMock())
+
+
+# Kept before the fixture replaces it, for the tests of the setup check itself.
+_VALIDATE_SETUP = routes._validate_toolset_oauth_setup
+
+
+@pytest.fixture
+def client(store: _Store, graph: MagicMock, notifications: MagicMock, monkeypatch: pytest.MonkeyPatch,
            caplog: pytest.LogCaptureFixture) -> Iterator[TestClient]:
     caplog.set_level(logging.INFO, logger="app")
     monkeypatch.setattr(routes, "_check_user_is_admin", AsyncMock(return_value=True))
@@ -92,6 +102,7 @@ def client(store: _Store, graph: MagicMock, monkeypatch: pytest.MonkeyPatch,
     monkeypatch.setattr(routes, "_validate_toolset_oauth_setup", AsyncMock(return_value=None))
     container = ConnectorAppContainer()
     container.config_service.override(providers.Object(store))
+    container.connector_notification_service.override(providers.Object(notifications))
     container.wire(modules=[routes])
     app = FastAPI()
     app.state.toolset_registry = _make_oauth_registry("jira")
@@ -142,6 +153,24 @@ def test_a_graph_outage_on_delete_is_one_warning_with_the_toolset_id(
     assert not [r for r in caplog.records if r.name == routes.__name__]
 
 
+def test_a_failed_credentials_save_on_authenticate_is_one_error_with_the_toolset_id(
+    client: TestClient, store: _Store, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    store.values[INSTANCES_PATH][0].update(authType="API_TOKEN", oauthConfigId=None)
+    monkeypatch.setattr(routes, "_declared_auth_fields", lambda *_: {"apiToken"})
+    store.failing_writes.add(USER_AUTH_PATH)
+
+    response = client.post(f"{PREFIX}/instances/i1/authenticate", json={"auth": {"apiToken": "tok"}})
+
+    assert (response.status_code, response.json()) == (500, {"detail": "Failed to save credentials."})
+    record, fields = _end(caplog)
+    assert [r for r in _loud(caplog) if not r.name.startswith("app.config")] == [record]
+    assert (record.levelno, fields["error_class"], fields["cause_type"], fields["toolset_id"]) == (
+        logging.ERROR, "internal", "RuntimeError", "i1")
+    assert record.exc_text  # our bug (Q6): the stack, once
+    assert not [r for r in caplog.records if r.name == routes.__name__]
+
+
 _SAVE_APP = {"clientId": "cid", "clientSecret": "csec"}
 
 
@@ -172,9 +201,10 @@ def _state(instance_id: str = "i1", user_id: str = USER, *, is_agent: bool = Fal
     return routes._encode_state_with_instance("orig-state", instance_id, user_id, is_agent=is_agent)
 
 
-def _token_endpoint(status: int, body: str = "", *, raises: BaseException | None = None) -> Callable[..., None]:
+def _token_endpoint(status: int, body: str = "", *,
+                    raises: Callable[[], BaseException] | None = None) -> Callable[..., None]:
     def arrange(monkeypatch: pytest.MonkeyPatch, _store: _Store) -> None:
-        endpoint = RefusingTokenEndpoint(status, body, raises=raises)
+        endpoint = RefusingTokenEndpoint(status, body, raises=raises() if raises else None)
         monkeypatch.setattr(oauth_service, "ClientSession", endpoint.client_session)
     return arrange
 
@@ -202,8 +232,10 @@ def _nothing(_monkeypatch: pytest.MonkeyPatch, _store: _Store) -> None:
     return None
 
 
-_CONNECT_ERROR = aiohttp.ClientConnectorError(
-    SimpleNamespace(host="auth.example.com", port=443, ssl=True), OSError(111, "Connection refused"))
+def _connect_error() -> aiohttp.ClientConnectorError:
+    """A fresh one per case: a logged exception carries the level it was logged at."""
+    return aiohttp.ClientConnectorError(
+        SimpleNamespace(host="auth.example.com", port=443, ssl=True), OSError(111, "Connection refused"))
 _INVALID_GRANT = '{"error":"invalid_grant","error_description":"code expired for ' + SENTINEL + '"}'
 _CODE = {"code": "auth-code"}
 
@@ -215,7 +247,7 @@ CALLBACK_CASES = {
                   logging.WARNING, "unavailable", "server_error", None, "i1", None),
     "token-500": (_token_endpoint(500, SENTINEL), {**_CODE, "state": _state()},
                   logging.WARNING, "upstream_5xx", "server_error", None, "i1", None),
-    "token-endpoint-down": (_token_endpoint(0, raises=_CONNECT_ERROR), {**_CODE, "state": _state()},
+    "token-endpoint-down": (_token_endpoint(0, raises=_connect_error), {**_CODE, "state": _state()},
                             logging.WARNING, "unavailable", "server_error", None, "i1", None),
     "instances-unreadable": (_instances_unreadable, {**_CODE, "state": _state()},
                              logging.WARNING, "unavailable", "auth_failed", None, "i1", None),
@@ -290,3 +322,53 @@ def test_a_swallowed_user_count_is_its_own_line_and_the_request_succeeds(
         "toolset.route.failed", logging.WARNING, "count_authenticated_users", "unavailable", "i1")
     end, end_fields = _end(caplog)
     assert (end.levelno, end_fields["outcome"], end_fields["toolset_id"]) == (logging.INFO, "success", "i1")
+
+
+# --- the setup check after a sign-in ---------------------------------------------------------------------------------
+
+def _factory_raising(error: BaseException) -> MagicMock:
+    return MagicMock(test_connection=AsyncMock(side_effect=error))
+
+
+@pytest.mark.parametrize(("check_error", "notify_error", "body_error", "loud"), [
+    # A factory refusing the setup: the callback answers toolset_setup_error and the line is the failure.
+    (lambda: ToolsetAuthError(SENTINEL, title="t"), None, "toolset_setup_error",
+     [(EVENT, logging.ERROR, "misconfigured", None)]),
+    # ... and its notification can't be sent: a swallowed step of its own, without the provider's text.
+    (lambda: ToolsetAuthError(SENTINEL, title="t"), lambda: ConnectionError(SENTINEL), "toolset_setup_error",
+     [("toolset.route.failed", logging.WARNING, "unavailable", "notify_setup_error"),
+      (EVENT, logging.ERROR, "misconfigured", None)]),
+    # The check itself breaks: logged, and the sign-in still completes.
+    (lambda: RuntimeError(SENTINEL), None, None, [("toolset.route.failed", logging.ERROR, "internal", "validate_setup")]),
+], ids=["setup-refused", "setup-refused-notify-fails", "setup-check-breaks"])
+def test_the_setup_check_after_a_sign_in_logs_once_without_the_providers_text(
+    client: TestClient, notifications: MagicMock, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    check_error: Callable[[], BaseException], notify_error: Callable[[], BaseException] | None,
+    body_error: str | None, loud: list[tuple],
+) -> None:
+    from app.agents.tools.factories.registry import ClientFactoryRegistry
+
+    monkeypatch.setattr(routes, "_validate_toolset_oauth_setup", _VALIDATE_SETUP)
+    monkeypatch.setattr(oauth_service.OAuthProvider, "handle_callback", AsyncMock(
+        return_value=SimpleNamespace(access_token="at")))
+    monkeypatch.setattr(ClientFactoryRegistry, "get_factory", MagicMock(return_value=_factory_raising(check_error())))
+    monkeypatch.setattr("app.connectors.core.base.token_service.startup_service.startup_service",
+                        MagicMock(get_toolset_token_refresh_service=MagicMock(return_value=None)))
+    if notify_error is not None:
+        notifications.publish_notification.side_effect = notify_error()
+
+    response = client.get(f"{PREFIX}/oauth/callback", params={**_CODE, "state": _state()})
+
+    assert response.status_code == 200
+    assert response.json().get("error") == body_error and response.json()["success"] is (body_error is None)
+    lines = [(r.getMessage(), r.levelno, log_record_fields(r)) for r in _loud(caplog)]
+    assert [(event, level, f["error_class"], f.get("op")) for event, level, f in lines] == loud
+    for event, _, fields in lines:
+        assert "error_message" not in fields and fields["toolset_id"] == "i1"
+        if event == EVENT:
+            assert (fields["reason"], fields["outcome"], "error_type" in fields) == (
+                "toolset_setup_error", "failure", False)
+    _, end = _end(caplog)
+    assert end["outcome"] == ("success" if body_error is None else "failure")
+    for logged in (r for r in caplog.records if r.name.startswith("app.")):
+        assert "SENTINEL" not in _text(logged) and "alice@" not in _text(logged)
