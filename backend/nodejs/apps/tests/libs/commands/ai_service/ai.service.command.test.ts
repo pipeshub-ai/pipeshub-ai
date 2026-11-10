@@ -35,6 +35,23 @@ describe('AIServiceCommand', () => {
     } as unknown as Response
   }
 
+  // Settles without an unhandled rejection while a fake clock runs.
+  const settle = <T>(p: Promise<T>) =>
+    p.then(
+      (value) => ({ value, error: undefined as unknown }),
+      (error: unknown) => ({ value: undefined as T | undefined, error }),
+    )
+  const timedOut = () => new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+  // fetch as undici behaves on a signal: rejects with its reason at once if aborted, or when it aborts while pending.
+  const fetchLike = (outcome: 'hang' | 'refuse' | Response) => (_url: string, init: RequestInit) =>
+    new Promise<Response>((resolve, reject) => {
+      const signal = init.signal
+      if (signal?.aborted) return reject(signal.reason as Error)
+      if (outcome === 'refuse') return reject(new TypeError('fetch failed'))
+      if (outcome !== 'hang') return resolve(outcome)
+      signal?.addEventListener('abort', () => reject(signal.reason as Error), { once: true })
+    })
+
   describe('constructor', () => {
     it('should create an instance with all options', () => {
       const cmd = new AIServiceCommand({
@@ -161,9 +178,12 @@ describe('AIServiceCommand', () => {
         body: { prompt: 'retry test' },
       })
 
-      const result = await cmd.execute()
-      expect(result.statusCode).to.equal(200)
+      const clock = sinon.useFakeTimers()
+      const result = cmd.execute()
+      await clock.runAllAsync()
+      expect((await result).statusCode).to.equal(200)
       expect(fetchStub.calledTwice).to.be.true
+      expect(clock.now).to.equal(600)
     })
 
     it('should throw after exhausting retries', async () => {
@@ -176,12 +196,12 @@ describe('AIServiceCommand', () => {
         body: { prompt: 'fail' },
       })
 
-      try {
-        await cmd.execute()
-        expect.fail('Should have thrown')
-      } catch (err: any) {
-        expect(err.message).to.equal('ai unavailable')
-      }
+      const clock = sinon.useFakeTimers()
+      const result = settle(cmd.execute())
+      await clock.runAllAsync()
+      expect(((await result).error as Error).message).to.equal('ai unavailable')
+      expect(fetchStub.callCount).to.equal(3)
+      expect(clock.now).to.equal(600 + 1200)
     })
 
     it('should not retry when maxAttempts is 1', async () => {
@@ -224,6 +244,78 @@ describe('AIServiceCommand', () => {
       const result = await cmd.execute()
       expect(result.statusCode).to.equal(429)
       expect(result.msg).to.equal('Too Many Requests')
+    })
+
+    describe('the timeout budget', () => {
+      let clock: sinon.SinonFakeTimers
+      let budget: AbortController
+      const command = () =>
+        new AIServiceCommand({
+          uri: 'http://ai.local/api/v1/search',
+          method: HttpMethod.POST,
+          headers: {},
+          body: {},
+          timeoutMs: 1000,
+        })
+
+      beforeEach(() => {
+        clock = sinon.useFakeTimers()
+        // Node's timeout signal runs on internal timers the fake clock cannot drive: the test fires the budget itself.
+        budget = new AbortController()
+        sinon.stub(AbortSignal, 'timeout').returns(budget.signal)
+      })
+      const budgetRunsOutAt = (ms: number) => setTimeout(() => budget.abort(timedOut()), ms)
+
+      afterEach(() => {
+        clock.restore()
+      })
+
+      it('a slow upstream gets one attempt and fails when the budget runs out, with one timeout call line', async () => {
+        budgetRunsOutAt(1000)
+        fetchStub.callsFake(fetchLike('hang'))
+        const warn = sinon.stub(Logger.prototype, 'warn')
+
+        const result = settle(command().execute())
+        await clock.runAllAsync()
+
+        expect(((await result).error as Error).name).to.equal('TimeoutError')
+        expect(fetchStub.callCount).to.equal(1)
+        expect(clock.now).to.equal(1000)
+        const callLines = warn.getCalls().filter((c) => c.args[0] === 'upstream.call.end')
+        expect(callLines.map((c) => [c.args[1].attempt, c.args[1].error_class])).to.deep.equal([[1, 'timeout']])
+      })
+
+      it('a budget that runs out during a backoff fails then, without another attempt', async () => {
+        budgetRunsOutAt(1000)
+        fetchStub.callsFake(fetchLike('refuse'))
+
+        const result = settle(command().execute())
+        await clock.runAllAsync()
+
+        expect(((await result).error as Error).name).to.equal('TimeoutError')
+        expect(fetchStub.callCount).to.equal(2)
+        expect(clock.now).to.equal(1000)
+      })
+
+      it('within the budget, a retry still recovers a refused attempt', async () => {
+        fetchStub.onFirstCall().callsFake(fetchLike('refuse'))
+        fetchStub.onSecondCall().callsFake(fetchLike(makeFetchResponse(200, { ok: true })))
+
+        const result = settle(command().execute())
+        await clock.runAllAsync()
+
+        expect((await result).value?.statusCode).to.equal(200)
+        expect(fetchStub.callCount).to.equal(2)
+        expect(clock.now).to.equal(600)
+      })
+
+      it('gives fetch the budget signal itself', async () => {
+        fetchStub.callsFake(fetchLike(makeFetchResponse(200, {})))
+
+        await command().execute()
+
+        expect(fetchStub.firstCall.args[1].signal).to.equal(budget.signal)
+      })
     })
   })
 
@@ -390,13 +482,11 @@ describe('AIServiceCommand', () => {
         fetchStub.rejects(failure)
         const logs = level()
 
-        let thrown: unknown
-        try {
-          await command().executeStream()
-        } catch (err) {
-          thrown = err
-        }
-        expect(thrown).to.equal(failure)
+        const clock = sinon.useFakeTimers()
+        const result = settle(command().executeStream())
+        await clock.runAllAsync()
+        expect((await result).error).to.equal(failure)
+        expect(clock.now).to.equal(600 + 1200)
         expect(callLines(logs.warn).map((m) => [m.attempt, m.error_class, m.network_code])).to.deep.equal([
           [1, 'unavailable', 'ECONNREFUSED'],
           [2, 'unavailable', 'ECONNREFUSED'],
@@ -581,12 +671,79 @@ describe('AIServiceCommand', () => {
         body: { prompt: 'network fail' },
       })
 
-      try {
-        await cmd.executeStream()
-        expect.fail('Should have thrown')
-      } catch (err: any) {
-        expect(err.message).to.equal('stream network error')
-      }
+      const clock = sinon.useFakeTimers()
+      const result = settle(cmd.executeStream())
+      await clock.runAllAsync()
+      expect(((await result).error as Error).message).to.equal('stream network error')
+      expect(fetchStub.callCount).to.equal(3)
+      expect(clock.now).to.equal(600 + 1200)
+    })
+
+    describe('attempts and the caller signal', () => {
+      let clock: sinon.SinonFakeTimers
+      const command = (maxAttempts?: number) =>
+        new AIServiceCommand({
+          uri: 'http://ai.local/api/v1/chat/stream',
+          method: HttpMethod.POST,
+          headers: {},
+          body: {},
+          ...(maxAttempts ? { maxAttempts } : {}),
+        })
+
+      beforeEach(() => {
+        clock = sinon.useFakeTimers()
+      })
+
+      afterEach(() => {
+        clock.restore()
+      })
+
+      it('honours maxAttempts: 1', async () => {
+        fetchStub.callsFake(fetchLike('refuse'))
+
+        const result = settle(command(1).executeStream())
+        await clock.runAllAsync()
+
+        expect(((await result).error as Error).message).to.equal('fetch failed')
+        expect(fetchStub.callCount).to.equal(1)
+        expect(clock.now).to.equal(0)
+      })
+
+      it('makes 3 attempts by default', async () => {
+        fetchStub.callsFake(fetchLike('refuse'))
+
+        const result = settle(command().executeStream())
+        await clock.runAllAsync()
+
+        expect(((await result).error as Error).message).to.equal('fetch failed')
+        expect(fetchStub.callCount).to.equal(3)
+      })
+
+      it('stops at once when the caller aborts during a backoff', async () => {
+        fetchStub.callsFake(fetchLike('refuse'))
+        const caller = new AbortController()
+        setTimeout(() => caller.abort(), 100)
+
+        const result = settle(command().executeStream(caller.signal))
+        await clock.runAllAsync()
+
+        expect(((await result).error as Error).name).to.equal('AbortError')
+        expect(fetchStub.callCount).to.equal(1)
+        expect(clock.now).to.equal(100)
+      })
+
+      it('does not retry when the caller aborts while the open is pending', async () => {
+        fetchStub.callsFake(fetchLike('hang'))
+        const caller = new AbortController()
+        setTimeout(() => caller.abort(), 100)
+
+        const result = settle(command().executeStream(caller.signal))
+        await clock.runAllAsync()
+
+        expect(((await result).error as Error).name).to.equal('AbortError')
+        expect(fetchStub.callCount).to.equal(1)
+        expect(clock.now).to.equal(100)
+      })
     })
 
     it('should fall back to statusText when error payload is empty', async () => {
