@@ -193,8 +193,10 @@ class StorageReleaseReconciler:
             if not org_id:
                 self.logger.warning("Storage release intent has no org; skipped | connector=%s", connector_id)
                 continue
-            # Raised, not None: a failed read must never pass for a gone app.
-            app = await self.graph.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
+            # Raised, not None: a failed read must never pass for a gone app. Read in the intent's org, where an
+            # id that only another org holds is gone.
+            with for_org(org_id, job="storage_release"):
+                app = await self.graph.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
             if app is not None:
                 if app.get("status") == APP_STATUS_DELETING:
                     if app.get("type") != Connectors.KNOWLEDGE_BASE.value or self.finish_kb_delete is None:

@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import logging
+import math
 import os
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -14,7 +15,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 import app.utils.runtime_threads  # must precede all ML library imports
-from app.api.middlewares.request_context import RequestContextMiddleware
+from app.api.middlewares.request_log import install_request_logging
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -1469,24 +1470,28 @@ def _republishes_since_queued(record: dict[str, Any], enabled_at: object = None)
     was turned on again, which puts the record in line again without moving
     its queuedAtTimestamp.
     """
-    try:
-        last_republished_at = float(record.get("lastRepublishedAt"))
-    except (TypeError, ValueError):
+    if not _is_clock(record.get("lastRepublishedAt")):
         return 0
+    last_republished_at = float(record["lastRepublishedAt"])
     for put_in_line_at in (record.get("queuedAtTimestamp"), enabled_at):
-        try:
-            if float(put_in_line_at) > last_republished_at:
-                # Put in line again since: an earlier wait's re-sends say
-                # nothing about this one.
-                return 0
-        except (TypeError, ValueError):
-            continue
+        if _is_clock(put_in_line_at) and float(put_in_line_at) > last_republished_at:
+            # Put in line again since: an earlier wait's re-sends say
+            # nothing about this one.
+            return 0
     try:
         count = int(record.get("republishCount") or 0)
     except (TypeError, ValueError):
         count = 0
     # A row re-sent before the counter existed has still been re-sent once.
     return max(1, count)
+
+
+def _is_clock(value: object) -> bool:
+    """Whether a stored timestamp can be read as epoch milliseconds: not "inf" or "nan", which parse but order nothing."""
+    try:
+        return math.isfinite(float(value))  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def _republish_wait_ms(after_seconds: float, republishes: int) -> float:
@@ -1855,15 +1860,17 @@ async def _republish_stranded_records(
                             rate_limited_resent += 1
                     continue
 
-                # Aged from the newest of three clocks, so any one being fresh
-                # keeps the row out. queuedAtTimestamp is the platform's own
-                # "put in line for indexing" time. updatedAt cannot carry this
-                # alone: connectors may fill it with source-system time (a Jira
-                # issue last edited a year ago), which made every freshly synced
-                # row look stranded and sent it twice. Nor can it join the max: a
-                # metadata save moves it, and a row whose event was lost would
-                # never age while its source keeps changing. It stands in only
-                # for rows written before queuedAtTimestamp existed.
+                # Aged from the newest of the platform's own clocks, so any one
+                # being fresh keeps the row out. queuedAtTimestamp is when the
+                # row was last put in line for indexing (a connector save that
+                # asks for indexing, the compare-and-set to QUEUED after a
+                # publish, a retry). updatedAtTimestamp counts only for a
+                # row without one (written before it existed): it says nothing
+                # about the row's event. Connectors may fill it with
+                # source-system time (a Jira issue last edited a year ago), and
+                # a sync rewrites it on every save, changed or not, so on a
+                # source synced more often than the minimum age a lost event
+                # was never re-sent.
                 # lastRepublishedAt is our own: publishing changes nothing about
                 # the row, so without it a record stays eligible and every tick
                 # sends another copy of the same event -- worst precisely when
@@ -1874,19 +1881,19 @@ async def _republish_stranded_records(
                 # appEnabled re-queue is sending it, and a copy from here
                 # would reach the consumer twice. Its own clocks are of the
                 # park, often hours older.
-                clocks: list[float] = []
-                for value in (
-                    record.get("queuedAtTimestamp")
-                    if record.get("queuedAtTimestamp") is not None
-                    else record.get("updatedAtTimestamp") or record.get("createdAtTimestamp"),
-                    record.get("lastRepublishedAt"),
-                    enabled_at.get(connector_id) if parked_while_off else None,
-                ):
-                    try:
-                        clocks.append(float(value))
-                    except (TypeError, ValueError):
-                        # Unset or malformed: one bad clock must not hide the others.
-                        continue
+                queued_at = record.get("queuedAtTimestamp")
+                # Unset or malformed: one bad clock must not hide the others.
+                clocks = [
+                    float(value)
+                    for value in (
+                        queued_at,
+                        None if _is_clock(queued_at)
+                        else record.get("updatedAtTimestamp") or record.get("createdAtTimestamp"),
+                        record.get("lastRepublishedAt"),
+                        enabled_at.get(connector_id) if parked_while_off else None,
+                    )
+                    if _is_clock(value)
+                ]
                 if not clocks:
                     continue
                 last_touched_at = max(clocks)
@@ -2951,8 +2958,8 @@ app = FastAPI(
 )
 configure_app(app, "indexing")
 
-# Trace context — outermost.
-app.add_middleware(RequestContextMiddleware)
+# Trace context and the request line.
+install_request_logging(app)
 # Telemetry: metrics middleware + pusher (started/stopped in lifespan).
 telemetry = setup_telemetry(app, service_name="indexing_service")
 
@@ -3058,6 +3065,7 @@ def run(host: str = "0.0.0.0", port: int = 8091, workers: int | None = None, *, 
         host=host,
         port=port,
         log_level="info",
+        access_log=False,
         reload=reload,
         workers=workers,
         timeout_worker_healthcheck=uvicorn_worker_healthcheck_timeout(),
