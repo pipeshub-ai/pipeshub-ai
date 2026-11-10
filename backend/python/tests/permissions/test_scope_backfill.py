@@ -28,6 +28,7 @@ from app.services.vector_db.scope_backfill import (
     UnknownConnector,
     status,
 )
+from app.services.vector_db.scope_rewrite import GenerationMoved
 from tests.support.in_memory_vector_db import (
     InMemoryVectorDBService as InMemoryVectorDB,
 )
@@ -261,44 +262,110 @@ async def test_the_stale_marker_write_is_tried_again_and_a_marker_that_never_lan
         return await real_nodes(org, ids)
 
     loaded.graph.stamps.nodes = flaky  # type: ignore[method-assign]
-    real, failures = vdb.set_payload, {"left": 1}
+    real, failures = vdb.update_payloads_by_ids, {"left": 1}
 
-    async def once(*a, **k) -> None:
+    async def once(*a, **k) -> None:  # (the marker is written by id)
         if failures["left"]:
             failures["left"] -= 1
             raise RuntimeError("store down")
         await real(*a, **k)
 
-    vdb.set_payload = once  # type: ignore[method-assign]
+    vdb.update_payloads_by_ids = once  # type: ignore[method-assign]
     p = await job.run_connector(ORG, app)
-    assert p.stale > 0 and sum(f == STALE_SCOPE for f in (await read_stamps(vdb, loaded)).values()) == p.stale  # the first failure was retried
+    assert p.state == DONE and p.stale > 0 and sum(f == STALE_SCOPE for f in (await read_stamps(vdb, loaded)).values()) == p.stale  # the first failure was retried
 
     async def never(*a, **k) -> None:
         raise RuntimeError("store down")
 
-    vdb.set_payload = never  # type: ignore[method-assign]
+    vdb.update_payloads_by_ids = never  # type: ignore[method-assign]
     calls["n"] = 0
     with caplog.at_level(logging.ERROR):
         again = await job.run_connector(ORG, app, restart=True)
-    assert again.stale > 0 and "could not be marked stale" in caplog.text
+    assert again.state == FAILED and "could not be marked stale" in caplog.text  # a marker that never lands fails the pass, it does not end it current
+
+
+async def test_a_marker_that_never_lands_is_tried_and_reported_once_per_record(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    monkeypatch.setattr(scope_backfill, "MARKER_DELAY_SECONDS", 0.0)
+    _, _, job, app = await setup()
+    tries: dict[str, int] = {}
+
+    async def stale(*a, **k) -> ScopeFields:
+        return STALE_SCOPE
+
+    async def never(org: str, connector: str, vrids: list[str]) -> None:
+        tries[vrids[0]] = tries.get(vrids[0], 0) + 1
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(scope_backfill, "scope_fields_for_state", stale)
+    monkeypatch.setattr(job._membership, "mark_stale", never)
+    with caplog.at_level(logging.ERROR):
+        p = await job.run_connector(ORG, app)
+    assert p.state == FAILED and tries and set(tries.values()) == {scope_backfill.MARKER_ATTEMPTS}
+    assert caplog.text.count("could not be marked stale") == len(tries)
 
 
 async def test_a_point_that_keeps_its_own_fields_because_the_marker_cannot_be_written_is_reported(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     monkeypatch.setattr(scope_backfill, "MARKER_DELAY_SECONDS", 0.0)
     vdb, loaded, job, app = await setup()
     real_write, state = vdb.set_payload, {"stamped": False}
+    real_by_id = vdb.update_payloads_by_ids
 
     async def broken(name: str, payload: dict, flt) -> None:
-        if payload.get("scopeStamp") == "legacy" and payload.get("scopeFieldsVersion") == 0:
-            raise RuntimeError("marker store down")
         await real_write(name, payload, flt)
         state["stamped"] = True
         loaded.graph.stamps.failure = RuntimeError("graph down after the first write")  # the read-back then fails
 
-    vdb.set_payload = broken  # type: ignore[method-assign]
+    async def no_marker(name: str, updates: dict, **k) -> None:
+        if any(u.get("scopeStamp") == "legacy" and u.get("scopeFieldsVersion") == 0 for u in updates.values()):
+            raise RuntimeError("marker store down")
+        await real_by_id(name, updates, **k)
+
+    vdb.set_payload, vdb.update_payloads_by_ids = broken, no_marker  # type: ignore[method-assign]
     with caplog.at_level(logging.ERROR):
         p = await job.run_connector(ORG, app)
-    assert state["stamped"] and p.stale >= 1 and "could not be marked stale" in caplog.text
+    assert state["stamped"] and p.state == FAILED and "could not be marked stale" in caplog.text
+
+
+async def test_a_connector_that_moves_while_the_marker_is_written_gets_the_marker_on_the_next_try(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(scope_backfill, "MARKER_DELAY_SECONDS", 0.0)
+    vdb, _, job, app = await setup()
+    calls = {"n": 0}
+
+    async def stale(*a, **k) -> ScopeFields:
+        return STALE_SCOPE
+
+    async def moved_every_other_call(connector: str, epoch: object) -> None:
+        calls["n"] += 1
+        if calls["n"] % 2:
+            raise GenerationMoved(connector)
+
+    async def nothing(*a, **k) -> set[str]:
+        return set()
+
+    monkeypatch.setattr(scope_backfill, "scope_fields_for_state", stale)
+    monkeypatch.setattr(job._membership, "_guard", moved_every_other_call)
+    monkeypatch.setattr(job._membership, "refresh_membership", nothing)
+    p = await job.run_connector(ORG, app)
+    assert p.state == DONE and p.stale > 0 and calls["n"] >= 2 * p.stale
+    assert all(point.payload.get("scopeFieldsVersion") == 0 for point in vdb.collections[COLL].values())
+
+
+async def test_a_connector_that_keeps_moving_fails_the_pass_and_counts_no_marker_it_did_not_write(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    monkeypatch.setattr(scope_backfill, "MARKER_DELAY_SECONDS", 0.0)
+    vdb, _, job, app = await setup()
+
+    async def stale(*a, **k) -> ScopeFields:
+        return STALE_SCOPE
+
+    async def always_moved(connector: str, epoch: object) -> None:
+        raise GenerationMoved(connector)
+
+    monkeypatch.setattr(scope_backfill, "scope_fields_for_state", stale)
+    monkeypatch.setattr(job._membership, "_guard", always_moved)
+    with caplog.at_level(logging.ERROR):
+        p = await job.run_connector(ORG, app)
+    assert p.state == FAILED and p.stale == 0 and "could not be marked stale" in caplog.text
+    assert not any(point.payload.get("scopeFieldsVersion") == 0 for point in vdb.collections[COLL].values())
 
 
 async def test_status_refuses_a_connector_of_another_organisation() -> None:
