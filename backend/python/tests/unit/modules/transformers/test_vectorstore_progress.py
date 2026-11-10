@@ -144,13 +144,14 @@ class TestARecordThatMakesProgress:
         chain = Chain(content=_json_bytes(1200))
         chain.embedder = SlowEmbedder(0.25)
         await chain.start()
-        consumer = Consumer(chain, cap=2.0, floor=1.0)
+        # Long enough that a busy runner still finishes a batch in every attempt: one that finishes none is rightly counted.
+        consumer = Consumer(chain, cap=4.0, floor=2.0)
 
         assert await consumer.run() == "completed"
 
         wanted = await chain.wanted_ids()
         assert consumer.counted == 0
-        assert consumer.uncounted >= 3  # a 15 s embed in 2 s budgets
+        assert consumer.uncounted >= 3  # a 15 s embed in 4 s budgets
         assert chain.parse_calls == 1
         assert chain.ids() == wanted
         # Every point was embedded exactly once: the batch in flight at a cut never finished.
