@@ -46,7 +46,11 @@ from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import for_org
 from app.services.permissions.metrics import SCOPE_STAMP_FAILED
 from app.services.permissions.mode import scope_fields_enabled
-from app.services.permissions.rewrite_lease import LeaseLost, RewriteLease
+from app.services.permissions.rewrite_lease import (
+    REWRITE_LEASE_KEY,
+    LeaseLost,
+    RewriteLease,
+)
 from app.services.permissions.scope_fields import (
     SCOPE_FIELDS_VERSION,
     current_scope_generation,
@@ -105,6 +109,12 @@ class UnreadableStructureState(RuntimeError):
 
 class CheckpointRefused(RuntimeError):
     """The first checkpoint of a run could not be written (typically an app schema without the new key): the run stopped before it wrote anything."""
+
+
+def _old_schema(app_id: str, what: str, exc: Exception) -> str:
+    return (f"the back-fill {what} of {app_id} could not be written ({type(exc).__name__}). If the graph store's app schema is older than this "
+            f"release (it must list {', '.join([REWRITE_LEASE_KEY, *BACKFILL_KEYS.values(), OPENED_KEY, CLOSED_KEY])}), restart a connector or "
+            "indexing service, which applies the schema at start, and run again. Nothing was written.")
 
 
 class OpenMarkNotClosed(RuntimeError):
@@ -211,7 +221,11 @@ class ScopeBackfill:
             if not (await self._graph.permission_stamp_graph().app(org_id, app_id)).connector_type:
                 raise UnknownConnector(f"{app_id} is not a connector of this organisation")
             lease = RewriteLease(self._graph, app_id, clock=self._clock)
-            if not await lease.acquire():
+            try:
+                acquired = await lease.acquire()
+            except Exception as exc:  # the first write of a run now: an app schema without the lease key refuses it
+                raise CheckpointRefused(_old_schema(app_id, "lease", exc)) from exc
+            if not acquired:
                 raise ConnectorBusy(f"{app_id} is held by another back-fill or rewrite; run again when it has finished or its lease has run out")
             self._membership.attach(lease)
             try:
@@ -264,11 +278,7 @@ class ScopeBackfill:
             except LeaseLost:
                 raise
             except Exception as exc:  # the first write of a run: nothing else has been written
-                raise CheckpointRefused(
-                    f"the back-fill checkpoint of {app_id} could not be written ({type(exc).__name__}). If the graph store's app schema is older "
-                    f"than this release (it must list {', '.join([*BACKFILL_KEYS.values(), OPENED_KEY, CLOSED_KEY])}), restart a connector or indexing "
-                    "service, which applies the schema at start, and run again. Nothing was written."
-                ) from exc
+                raise CheckpointRefused(_old_schema(app_id, "checkpoint", exc)) from exc
         if p.state == DONE:
             await clear_pending_covered(self._graph, app_id, p.structure_generation)
             return p
