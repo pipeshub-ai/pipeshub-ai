@@ -2134,9 +2134,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         return None
                     except (ValidationError, TypeError) as e:
                         # Valid JSON that is not a StreamMessage never becomes one: poison, as in the Redis twin.
-                        self.logger.error(
-                            f"Failed to parse message {message_id} as StreamMessage", extra={"error_type": type(e).__name__}
-                        )
+                        # The type only: a ValidationError's text quotes the payload's values.
+                        self.logger.error(f"Failed to parse message {message_id} as StreamMessage: {type(e).__name__}")
                         return None
                     except json.JSONDecodeError:
                         self.logger.error(

@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncGenerator, Callable
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiokafka import TopicPartition
@@ -19,6 +19,7 @@ from app.services.messaging.config import (
     StreamMessage,
 )
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
+from app.services.messaging.kafka.consumer import indexing_consumer as indexing_module
 from app.services.messaging.kafka.consumer.indexing_consumer import (
     IndexingKafkaConsumer,
 )
@@ -187,10 +188,8 @@ class TestKafkaIndexing:
         _no_seed(caplog)
 
     async def test_a_message_the_read_phase_cannot_enqueue_is_logged_without_its_error_text(self, caplog) -> None:
-        value = json.dumps({"payload": {"n": SHORT_SEED}}).encode()  # no eventType
-        with pytest.raises(ValidationError) as control:
-            await _kafka()._IndexingKafkaConsumer__parse_message(_kafka_message(value))
-        assert SHORT_SEED in str(control.value)
+        # A transient failure (the key store, the network) reaches the read phase's own error line; its text can
+        # carry anything, so only the type is logged. A message that is not a StreamMessage is poison (F19) instead.
         config = KafkaConsumerConfig(
             topics=["record-events"], client_id="c", group_id="g", auto_offset_reset="earliest",
             enable_auto_commit=False, bootstrap_servers=["broker:9092"],
@@ -204,9 +203,14 @@ class TestKafkaIndexing:
         )
         c.consumer = MagicMock()
         c.consumer.commit = AsyncMock()
-        c.consumer.getmany = AsyncMock(return_value={TopicPartition("record-events", 0): [_kafka_message(value)]})
+        c.consumer.getmany = AsyncMock(
+            return_value={TopicPartition("record-events", 0): [_kafka_message(_value().encode())]}
+        )
         c.running = True
-        await c._IndexingKafkaConsumer__read_phase()
+        with patch.object(
+            indexing_module, "open_stream_message", AsyncMock(side_effect=ConnectionError(f"key store said {SHORT_SEED}")),
+        ):
+            await c._IndexingKafkaConsumer__read_phase()
         enqueue = _lines(caplog, "Error enqueuing message")["Error enqueuing message"]
-        assert enqueue["error_type"] == "ValidationError"
+        assert enqueue["error_type"] == "ConnectionError"
         _no_seed(caplog)
