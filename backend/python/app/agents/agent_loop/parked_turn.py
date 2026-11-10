@@ -166,7 +166,7 @@ async def restore(context: "AgentContext", history: "ContextManager", *, call_id
             return None
         turn = [_MESSAGE.validate_python(m) for m in raw["messages"]]
     except Exception as e:
-        log_failure(logger, "parked_turn.read_failed", e)
+        log_failure(logger, "parked_turn.read_failed", e, include_error_text=False)  # a stored message that fails validation is quoted in the error
         return None
     if not _has_call(turn, call_id):
         return None
