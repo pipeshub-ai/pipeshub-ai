@@ -53,7 +53,7 @@ def _no_attempt() -> Iterator[None]:
 def _marker() -> dict:
     return {
         "embedVrid": "v", "embedRev": "r", "embedKey": "k", "embedDigest": "d", "embedTotal": 3,
-        "embedDeliveryId": "e1", "embedStartedMs": 5,
+        "embedDeliveryId": "e1", "embedStartedMs": 5, "embedSeconds": 0, "embedUncounted": 0, "embedDone": 0,
     }
 
 

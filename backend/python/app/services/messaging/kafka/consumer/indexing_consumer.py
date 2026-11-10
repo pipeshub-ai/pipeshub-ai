@@ -23,6 +23,11 @@ from app.core.org_context import bind_optional, spawn_detached
 from app.core.org_context import pop as pop_org
 from app.core.org_context import push as push_org
 from app.modules.indexing.embed_resume import stamp_delivery_id
+from app.modules.indexing.record_progress import (
+    begin_progress,
+    end_progress,
+    new_progress,
+)
 from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import (
     IndexingEvent,
@@ -2804,11 +2809,15 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 )
                 org_token = push_org(ctx_of(parsed_message))
 
+                progress = new_progress()
+                begin_progress(progress)
+
                 async def consume_handler_events() -> None:
                     nonlocal download_admission, memory_admission, parsing_held, indexing_held, success, shutting_down, parsing_admission, parse_lease_pool
                     event_gen = self.message_handler(parsed_message)
                     try:
                         async with asyncio.timeout(processing_timeout) as budget:
+                            progress.attach(budget)
                             async for event in event_gen:
                                 if (
                                     event.event == IndexingEvent.START_DOWNLOAD
@@ -2968,6 +2977,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         f"Record processing timed out after {processing_timeout}s "
                         f"for {message_id}"
                     )
+                    await concurrency.requeue_after_productive_cut(
+                        self, progress, lease_handle, message_id
+                    )
                     raise
                 finally:
                     if handler_task is not None and not handler_task.done():
@@ -2980,6 +2992,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         renewal_task.cancel()
                         await asyncio.gather(renewal_task, return_exceptions=True)
                         renewal_task = None
+                    end_progress()
                     pop_org(org_token)
                     reset_context(token)
             else:
