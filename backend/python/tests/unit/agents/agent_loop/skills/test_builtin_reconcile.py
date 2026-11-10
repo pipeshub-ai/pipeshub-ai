@@ -71,9 +71,14 @@ async def _builtin_names(graph: FakeGraphProvider, org: str) -> set[str]:
     return {m.name for m in await store.list_skills(SkillFilter(source=SkillSource.BUILTIN))}
 
 
-def _graph_with_orgs(*orgs: dict[str, str]) -> FakeGraphProvider:
+def _graph_with_orgs(*orgs: dict[str, object]) -> FakeGraphProvider:
+    """``get_all_orgs`` filters like the real providers: ``active=True`` drops orgs whose ``isActive`` is False."""
     graph = FakeGraphProvider()
-    graph.get_all_orgs = AsyncMock(return_value=list(orgs))  # type: ignore[attr-defined]
+
+    async def _orgs(active: bool = True) -> list[dict[str, object]]:
+        return [o for o in orgs if not active or o.get("isActive", True)]
+
+    graph.get_all_orgs = AsyncMock(side_effect=_orgs)  # type: ignore[attr-defined]
     return graph
 
 
@@ -209,6 +214,16 @@ async def test_startup_reconciles_every_org(packs_root_v1: str) -> None:
 
     assert await _builtin_names(graph, "org-1") == {"pack-a", "pack-b"}
     assert await _builtin_names(graph, "org-2") == {"pack-a", "pack-b"}
+
+
+async def test_startup_does_not_seed_a_deleted_org(packs_root_v1: str) -> None:
+    """A deleted org is soft-deleted (``isActive`` False, data stripped); seeding it would write skills back into it."""
+    graph = _graph_with_orgs({"_key": "org-1"}, {"_key": "org-gone", "isActive": False})
+    with patch.object(mf, "get_builtin_seeder", return_value=BuiltinSkillSeeder(packs_root_v1)):
+        await mf.reconcile_builtin_skills_for_orgs(graph)
+
+    assert await _builtin_names(graph, "org-1") == {"pack-a", "pack-b"}
+    assert await _builtin_names(graph, "org-gone") == set()
 
 
 async def test_startup_seeds_each_org_inside_its_own_org_context(packs_root_v1: str) -> None:

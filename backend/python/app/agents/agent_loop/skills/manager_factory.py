@@ -195,12 +195,14 @@ async def reconcile_builtin_skills(graph_provider: "IGraphDBProvider", org_id: s
 
 
 async def reconcile_builtin_skills_for_orgs(graph_provider: "IGraphDBProvider") -> None:
-    """Service-startup reconcile for every org (sequential: this is background
-    work and should not compete with request traffic), each in its own org
-    context. Never raises: a failure is logged, and requests retry per org."""
+    """Service-startup reconcile for every active org (sequential: this is
+    background work and should not compete with request traffic), each in its
+    own org context. A deleted org is inactive and keeps no data, so it is not
+    seeded. Never raises: a failure is logged, and requests retry per org."""
     try:
         await for_each_org(
             graph_provider, "builtin_skills", lambda org_id: reconcile_builtin_skills(graph_provider, org_id), logger,
+            active=True,
         )
     except Exception as e:
         logger.warning("skills: builtin skill seeding did not run at startup (requests will retry): %s", type(e).__name__)
