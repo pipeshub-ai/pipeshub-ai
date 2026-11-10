@@ -94,7 +94,7 @@ async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: in
     with bind(_ctx(org)):
         if restart:                                  # copy again from the start (a verify found a difference the drain could not explain)
             async def reset(tx: Tx) -> None:
-                await lock_apps(tx, org, {app_id} if app_id else set(), org_wide=app_id is None)
+                await lock_apps(tx, org, {app_id} if app_id else set(), org_wide=True)      # an orphan has no record row, so a connector taking it over locks only itself
                 app_sk = await _app_sk(tx, app_id) if app_id else 0
                 w = KgWriter(tx)
                 if app_id:       # rows the copy would never touch again: records of this connector whose node is gone, with their links

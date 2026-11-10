@@ -237,6 +237,37 @@ async def test_an_access_list_whose_record_row_is_gone_fails_only_its_own_connec
     assert await run_in(pg_db, org, held) == 0
 
 
+async def test_the_restart_keeps_an_orphan_scope_another_connector_takes_over_meanwhile(pg_db) -> None:
+    """An orphan has no record row, so the connector that takes its key over locks only itself: the restart waits for it and then sees no orphan."""
+    p, org = await shadowed(pg_db)
+    assert (await bf.backfill(pg_db, org, "app2", page=4)).flipped
+    app1, app2 = await sk_of(pg_db, org, ("apps", "app1")), await sk_of(pg_db, org, ("apps", "app2"))
+    orphan = await KgWriterNodes.make(pg_db, org, ("records", "orphan"))
+    await corrupt(pg_db, org, lambda tx, w: w.scopes_set([(orphan, 3, app1, False, False, False, False)]))
+    written, commit = asyncio.Event(), asyncio.Event()
+
+    async def takes_over(tx) -> None:
+        await lock_apps(tx, org, {"app2"}, org_wide=False)
+        w = KgWriter(tx)
+        await w.records_upsert([row(orphan, "orphan", app_sk=app2)])
+        await w.scopes_set([(orphan, 3, app2, False, False, False, False)])
+        written.set()
+        await commit.wait()
+
+    writer = asyncio.create_task(run_in(pg_db, org, takes_over, write=True))
+    await asyncio.wait_for(written.wait(), 30)
+    restart = asyncio.create_task(bf.backfill_scope(pg_db, org, "app1", restart=True, max_batches=0))
+    await asyncio.sleep(0.5)
+    assert not restart.done()
+    commit.set()
+    await writer
+    await restart
+
+    async def scope_app(tx) -> int | None:
+        return await tx.fetchval("SELECT app_sk FROM kg.scopes WHERE org_id = $1 AND sk = $2", org, orphan)
+    assert await run_in(pg_db, org, scope_app) == app2
+
+
 class KgWriterNodes:
     @staticmethod
     async def make(db, org: str, key: tuple[str, str]) -> int:
