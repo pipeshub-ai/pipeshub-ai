@@ -2068,6 +2068,7 @@ class TestRun:
             host="0.0.0.0",
             port=8091,
             log_level="info",
+            access_log=False,
             reload=True,
             workers=1,
             timeout_worker_healthcheck=60,
@@ -2085,6 +2086,7 @@ class TestRun:
             host="127.0.0.1",
             port=9000,
             log_level="info",
+            access_log=False,
             reload=False,
             workers=1,
             timeout_worker_healthcheck=60,
@@ -2096,6 +2098,14 @@ class TestRun:
 # ---------------------------------------------------------------------------
 class TestModuleLevelCode:
     """Tests for module-level attributes."""
+
+    def test_the_request_line_sits_just_inside_the_request_context(self) -> None:
+        from app.api.middlewares.request_context import RequestContextMiddleware
+        from app.api.middlewares.request_log import RequestLogMiddleware
+        from app.indexing_main import app
+
+        classes = [m.cls for m in app.user_middleware]
+        assert classes.index(RequestContextMiddleware) + 1 == classes.index(RequestLogMiddleware)
 
     def test_app_is_fastapi_instance(self):
         """The module-level app is a FastAPI instance."""
@@ -2232,6 +2242,7 @@ class TestRunWorkersWarning:
                 host="0.0.0.0",
                 port=8091,
                 log_level="info",
+                access_log=False,
                 reload=True,
                 workers=1,
                 timeout_worker_healthcheck=60,
@@ -2252,6 +2263,7 @@ class TestRunWorkersWarning:
             host="0.0.0.0",
             port=8091,
             log_level="info",
+            access_log=False,
             reload=False,
             workers=4,
             timeout_worker_healthcheck=60,
@@ -3294,16 +3306,30 @@ class TestRepublishStrandedRecords:
         producer.send_event.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_metadata_saves_do_not_keep_a_lost_event_from_recovery(self) -> None:
-        """A QUEUED row whose event was lost, saved again and again by syncs, is still recovered."""
+    async def test_a_resave_does_not_hide_a_lost_event(self) -> None:
+        """A sync rewrites updatedAtTimestamp on every save, changed or not, and sends
+        nothing for a record already queued. Aged on it, a record on a source synced
+        more often than the minimum age would never be re-sent."""
         graph = _sweep_graph(
             {
                 ProgressStatus.QUEUED.value: [
-                    self._old_record(
-                        queuedAtTimestamp=1, updatedAtTimestamp=get_epoch_timestamp_in_ms()
-                    )
+                    self._old_record(queuedAtTimestamp=1, updatedAtTimestamp=get_epoch_timestamp_in_ms())
                 ]
             },
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stamp", ["not-a-number", "inf", "-inf", "nan", 10**400])
+    async def test_a_malformed_queue_stamp_falls_back_to_the_row_clock(self, stamp: object) -> None:
+        """An unreadable queue stamp is not a clock: the row is aged on updatedAt as a
+        row without one would be, instead of having no clock and never being looked at."""
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record(queuedAtTimestamp=stamp)]},
             active_ids={"live"},
         )
         producer = AsyncMock()
@@ -3315,6 +3341,24 @@ class TestRepublishStrandedRecords:
     async def test_a_stale_queue_stamp_is_still_recovered(self) -> None:
         graph = _sweep_graph(
             {ProgressStatus.NOT_STARTED.value: [self._old_record(queuedAtTimestamp=1)]},
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+    def test_a_non_finite_queue_stamp_does_not_reset_the_republish_count(self) -> None:
+        from app.indexing_main import _republishes_since_queued
+
+        record = {"lastRepublishedAt": 100.0, "queuedAtTimestamp": "inf", "republishCount": 3}
+        assert _republishes_since_queued(record) == 3
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("clock", ["inf", "nan"])
+    async def test_a_non_finite_republish_clock_does_not_block_recovery(self, clock: str) -> None:
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record(queuedAtTimestamp=1, lastRepublishedAt=clock)]},
             active_ids={"live"},
         )
         producer = AsyncMock()
@@ -3829,6 +3873,17 @@ class TestRateLimitedRecordsAreSentWhenTheirWaitEnds:
 
         producer.send_event.assert_not_awaited()
         assert any("waiting out their source's rate limit" in c.args[0] for c in logger.info.call_args_list)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("offset", "sent"), [(-1000, 1), (HOUR_MS, 0)])
+    async def test_an_oversized_queue_time_does_not_stop_the_sweep_or_the_wait(self, offset: int, sent: int) -> None:
+        now = get_epoch_timestamp_in_ms()
+        row = self._waiting(now, retryNotBefore=now + offset, queuedAtTimestamp=10**400)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [row]}, active_ids={"live"})
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == sent
 
     @pytest.mark.asyncio
     async def test_neither_the_queue_nor_the_duplicate_rule_holds_it_back(self) -> None:
