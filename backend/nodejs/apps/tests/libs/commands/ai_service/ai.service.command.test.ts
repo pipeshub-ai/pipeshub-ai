@@ -404,7 +404,7 @@ describe('AIServiceCommand', () => {
         ])
         expect(callLines(logs.warn)[0]).to.include({ upstream: 'external', method: 'POST', route: 'ai.local' })
         // Only this command's lines: in the Redis-cluster job another suite leaves the outbox dispatcher running, and it logs its own ERRORs.
-        expect(logs.error.getCalls().map((c) => c.args[0]).filter((m) => !BACKGROUND_LINES.has(String(m)))).to.deep.equal([])
+        expect(logs.error.getCalls().map((c) => c.args[0]).filter((m) => !BACKGROUND_LINES.has(m))).to.deep.equal([])
       })
 
       it('ends a stream when its body ends, at DEBUG, and logs nothing at INFO when it opens', async () => {
