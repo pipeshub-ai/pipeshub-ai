@@ -379,6 +379,27 @@ class TestOrgByOrg:
         assert rec.published == [("qb", "b", "b")]         # positive control: b is served
         assert after.org_id == "a"                         # the failure did not leak into the caller's context
 
+    async def test_a_failed_flag_clear_is_one_error_and_the_pass_publishes_the_rest(self, caplog) -> None:
+        """One connector's clear failing must not stop the publish loop: later connectors in every org still go out, all are reported."""
+        graph = _two_orgs(PgLikeGraph)
+        real_update = graph.update_node
+
+        async def update_node(key: str, collection: str, updates: dict, transaction: str | None = None) -> bool:
+            if key == "qa" and updates.get(ConnectorStateKeys.PENDING_RESYNC) is False:
+                raise RuntimeError("write lost")
+            return await real_update(key, collection, updates, transaction)
+
+        graph.update_node = update_node  # type: ignore[method-assign]
+        rec = _Recorder()
+        started, _ = await _drain(graph, rec, coordinator=_one_process(budget=None))
+
+        assert sorted(started) == ["qa", "qb"]                       # qa was published: it is reported as released
+        assert sorted(p[0] for p in rec.published) == ["qa", "qb"]   # b's connector still goes out
+        assert _cleared(graph) == [("b", "qb")]                      # qa keeps its flag, so a later pass re-issues it
+        assert _drain_lines(caplog, logging.ERROR) == [
+            "sync_step.failed org_id=a step=drain target_connector_id=qa error_message=RuntimeError: write lost"
+        ]
+
     async def test_one_orgs_failed_app_listing_is_one_drain_error_and_nothing_of_that_org_is_touched(self, caplog) -> None:
         """Arango and Neo4j also log the failure themselves (pre-existing): only the drain's own line is counted here."""
         graph, rec = _two_orgs(ArangoLikeGraph, failing_orgs=frozenset({"a"})), _Recorder()

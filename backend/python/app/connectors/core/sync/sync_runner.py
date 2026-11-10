@@ -484,18 +484,22 @@ async def _drain_once(
         with for_org(org_id, job="drain_queued_syncs"):
             if await dispatcher.submit(_resync_spec(org_id, app)) is not SubmitResult.ACCEPTED:
                 continue
+            started.append(doc["id"])
             # Restamp as well as clear: the staleness arm re-issues anything
             # older than the grace window, and without a fresh timestamp a row whose
             # event never arrives qualifies again on every later pass, forever.
-            await graph_provider.update_node(
-                doc["id"],
-                CollectionNames.APPS.value,
-                {
-                    ConnectorStateKeys.PENDING_RESYNC: False,
-                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                },
-            )
-        started.append(doc["id"])
+            try:
+                await graph_provider.update_node(
+                    doc["id"],
+                    CollectionNames.APPS.value,
+                    {
+                        ConnectorStateKeys.PENDING_RESYNC: False,
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    },
+                )
+            except Exception as e:
+                # Published already; the flag stays set, so a later pass re-issues it. One connector's write must not stop the pass.
+                error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="drain", target_connector_id=doc["id"])
 
     if started:
         logger.info(
