@@ -2099,7 +2099,7 @@ class TestRun:
 class TestModuleLevelCode:
     """Tests for module-level attributes."""
 
-    def test_the_request_line_sits_just_inside_the_request_context(self):
+    def test_the_request_line_sits_just_inside_the_request_context(self) -> None:
         from app.api.middlewares.request_context import RequestContextMiddleware
         from app.api.middlewares.request_log import RequestLogMiddleware
         from app.indexing_main import app

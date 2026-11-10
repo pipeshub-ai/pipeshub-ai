@@ -13,7 +13,10 @@ from fastapi.responses import JSONResponse
 
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 from app.api.middlewares.admin_gate import require_admin_caller
-from app.api.middlewares.request_log import install_request_logging, mark_request_failure
+from app.api.middlewares.request_log import (
+    install_request_logging,
+    mark_request_failure,
+)
 from app.api.routes.chatbot import warm_up_entity_vector_store
 from app.api.routes.records import router as records_router
 from app.core.envelope import configure_from_config as configure_envelope

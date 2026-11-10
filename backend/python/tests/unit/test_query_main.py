@@ -1,12 +1,15 @@
 """Unit tests for app.query_main — Query service FastAPI entrypoint."""
 
 import asyncio
+import logging
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
 from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.testclient import TestClient
 
 from app.modules.parsers import parse_pool
 from app.services.messaging.config import MessageBrokerType
@@ -644,7 +647,7 @@ class TestAuthenticateRequests:
         hand_over.assert_called_once_with(mock_request, refusal)
         call_next.assert_not_awaited()
 
-    async def test_unexpected_exception_propagates_to_the_request_line(self):
+    async def test_unexpected_exception_propagates_to_the_request_line(self) -> None:
         """Not caught here: the request's http.request.end logs it once and answers the 500."""
         from app.query_main import authenticate_requests
 
@@ -660,7 +663,7 @@ class TestAuthenticateRequests:
             with pytest.raises(RuntimeError, match="boom"):
                 await authenticate_requests(mock_request, call_next)
 
-    async def test_route_exception_propagates_to_the_request_line(self):
+    async def test_route_exception_propagates_to_the_request_line(self) -> None:
         from app.query_main import authenticate_requests
 
         mock_request = MagicMock()
@@ -787,7 +790,7 @@ class TestValidationExceptionHandler:
         assert body["detail"][0]["loc"] == ["body", "query"]
         assert body["detail"][1]["type"] == "int_parsing"
 
-    async def test_logs_the_route_template_not_the_url(self, caplog):
+    async def test_logs_the_route_template_not_the_url(self, caplog: pytest.LogCaptureFixture) -> None:
         """The URL can carry an email or a token in its query; the route template names the endpoint."""
         import logging
         from types import SimpleNamespace
@@ -1216,7 +1219,7 @@ class TestCorsPolicy:
 class TestRequestLogging:
     """query_main writes http.request.end through request_log, inside the request context."""
 
-    def test_the_line_sits_just_inside_the_request_context(self):
+    def test_the_line_sits_just_inside_the_request_context(self) -> None:
         from app.api.middlewares.request_context import RequestContextMiddleware
         from app.api.middlewares.request_log import RequestLogMiddleware
         from app.query_main import app
@@ -1226,7 +1229,7 @@ class TestRequestLogging:
         assert Exception not in app.exception_handlers
 
     @pytest.fixture
-    def client(self, caplog):
+    def client(self, caplog: pytest.LogCaptureFixture) -> Iterator[TestClient]:
         import logging
 
         from fastapi import FastAPI
@@ -1252,11 +1255,11 @@ class TestRequestLogging:
             yield test_client
 
     @staticmethod
-    def _end(caplog):
+    def _end(caplog: pytest.LogCaptureFixture) -> logging.LogRecord:
         (record,) = [r for r in caplog.records if r.getMessage() == "http.request.end"]
         return record
 
-    def test_a_refusal_reaches_the_line_with_its_reason(self, client, caplog):
+    def test_a_refusal_reaches_the_line_with_its_reason(self, client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
         import logging
 
         from app.api.middlewares.auth import AuthRejected
@@ -1273,7 +1276,7 @@ class TestRequestLogging:
         assert (record.route, record.error_class, record.reason) == ("/api/v1/kb/{kb_id}", "auth_expired", "expired")
         assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
-    def test_an_exempt_path_crash_is_one_line_and_the_json_500(self, client, caplog):
+    def test_an_exempt_path_crash_is_one_line_and_the_json_500(self, client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
         import logging
 
         response = client.get("/health/boom")
