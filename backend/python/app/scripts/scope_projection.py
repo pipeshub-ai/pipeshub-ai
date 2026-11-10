@@ -2,12 +2,18 @@
 
     python -m app.scripts.scope_projection run    --org ORG --connector APP [--connector APP ...] [--restart] [--max-pages N] [--close-open-mark]
     python -m app.scripts.scope_projection status --org ORG --connector APP [--connector APP ...]
+    python -m app.scripts.scope_projection rewrite --org ORG --connector APP [--connector APP ...]
     python -m app.scripts.scope_projection sweep  --org ORG [--connector APP ...] [--interval SECONDS]
     python -m app.scripts.scope_projection view   --org ORG [--connector APP ...]
 
 `run` refuses to start unless the scope fields are on (`ACL_SCOPE_FIELDS=on` in every service, so points written meanwhile carry
 them too). One run handles `--max-pages` pages and prints `running` when there are more: run it again. It resumes at its saved
 position, so it can be stopped and repeated. Exit code 1 when a run failed or any point was left stale.
+
+`rewrite` rewrites the pending roots of each named connector once (the sweep's rewrite step, by hand) and prints what it did. Exit code 1 when a
+rewrite failed or the connector needs the full back-fill instead; a connector another rewriter holds, or one that changed meanwhile, is retried by running it again.
+
+`status` also shows the pending roots and the sweep's last error.
 
 `sweep` closes the writes whose lease ran out and rewrites the pending roots of every connector of the organisation (or the ones named), one
 pass, or again every ``--interval`` seconds until stopped (a listing that fails is logged and tried again at the next round). A connector that
@@ -40,7 +46,7 @@ def _pages(raw: str) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="scope_projection", description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("run", "status"):
+    for name in ("run", "status", "rewrite"):
         p = sub.add_parser(name)
         p.add_argument("--org", required=True)
         p.add_argument("--connector", action="append", required=True, help="connector instance (app) id")
@@ -81,6 +87,25 @@ async def _sweep(args: argparse.Namespace, graph_provider: Any, pipeline: Any, l
     return EXIT_FAILED if failed else 0
 
 
+async def _rewrite(args: argparse.Namespace, graph_provider: Any, pipeline: Any, logger: Any) -> int:  # noqa: ANN401
+    from app.services.vector_db.scope_rewrite import ScopeRewriteJob
+
+    job = ScopeRewriteJob(graph_provider, pipeline.vector_db_service, pipeline.collection_locator, logger=logger)
+    code = 0
+    for connector in args.connector:      # one connector's failure does not hold the others
+        try:
+            r = await job.run_connector(args.org, connector)
+        except Exception as exc:
+            sys.stdout.write(f"{args.org}/{connector}  error {type(exc).__name__}: {exc}\n")
+            code = EXIT_FAILED
+            continue
+        sys.stdout.write(f"{args.org}/{connector}  {r.state}  roots={len(r.roots)} released={r.released} written={r.points_written} "
+                         f"touched={r.points_touched}\n")
+        if r.state == "full_pass":
+            code = EXIT_FAILED
+    return code
+
+
 async def _view(args: argparse.Namespace, graph_provider: Any, pipeline: Any) -> int:  # noqa: ANN401
     from app.services.vector_db.scope_view import org_view
 
@@ -94,12 +119,15 @@ async def _view(args: argparse.Namespace, graph_provider: Any, pipeline: Any) ->
 
 async def _main(argv: list[str]) -> int:
     args = build_parser().parse_args(argv)
+    from app.config.constants.arangodb import CollectionNames
     from app.containers.indexing import IndexingAppContainer
+    from app.core.org_context import for_org
     from app.modules.indexing.vector_membership_backfill import (
         _resolve_indexing_pipeline,
     )
     from app.services.permissions.wiring import register_scope_generation
     from app.services.vector_db.scope_backfill import ScopeBackfill, status
+    from app.services.vector_db.scope_view import status_line
 
     container = IndexingAppContainer.init("scope_projection")
     logger = container.logger()
@@ -114,7 +142,9 @@ async def _main(argv: list[str]) -> int:
             for connector in args.connector:
                 try:
                     row = await status(graph_provider, args.org, connector)
-                    sys.stdout.write(f"{args.org}/{connector}  " + (row.line() if row else "not started") + "\n")
+                    with for_org(args.org, job="scope-status"):
+                        app = await graph_provider.get_document(connector, CollectionNames.APPS.value, raise_on_error=True) or {}
+                    sys.stdout.write(f"{args.org}/{connector}  " + (row.line() if row else "not started") + f"; {status_line(app)}\n")
                 except Exception as exc:  # one connector's failure does not hide the others
                     sys.stdout.write(f"{args.org}/{connector}  error {type(exc).__name__}: {exc}\n")
                     code = EXIT_FAILED
@@ -129,6 +159,8 @@ async def _main(argv: list[str]) -> int:
         await register_scope_generation(container.config_service(), logger)
         if args.command == "sweep":
             return await _sweep(args, graph_provider, pipeline, logger)
+        if args.command == "rewrite":
+            return await _rewrite(args, graph_provider, pipeline, logger)
         job = ScopeBackfill(graph_provider, pipeline.vector_db_service, pipeline.collection_locator, logger)
         code = 0
         for connector in args.connector:

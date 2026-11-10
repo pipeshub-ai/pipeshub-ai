@@ -80,6 +80,16 @@ class OrgView:
         return out
 
 
+def status_line(app: Mapping[str, Any]) -> str:
+    """One line for `status`: the pending roots and the sweep's last error."""
+    try:
+        roots = f"{len(parse(app.get(PENDING_KEY)))} pending root(s)"
+    except PendingUnreadable:
+        roots = "pending roots unreadable"
+    state = read_state(app.get(SWEEP_KEY))
+    return roots + (f", last error ({state.failures} in a row): {state.error}" if state.failures else ", no error")
+
+
 def connector_view(connector_id: str, app: Mapping[str, Any], *, clock: Callable[[], float] = time.time) -> ConnectorView:
     now = clock()
     v = ConnectorView(connector_id, app_is_current(app))

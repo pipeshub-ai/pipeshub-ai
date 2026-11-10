@@ -154,3 +154,59 @@ async def test_sweep_with_an_interval_goes_on_after_a_listing_that_fails(monkeyp
     with contextlib.suppress(Stop):
         await scope_projection._main(["sweep", "--org", "o", "--interval", "5"])
     assert len(runs) == 2 and waits == [5, 5]      # the first round's error did not end the loop
+
+
+def _rewrite_env(monkeypatch, outcomes: dict) -> list:
+    """``outcomes``: connector -> a RewriteResult state, or an exception to raise."""
+    from app.services.vector_db.scope_rewrite import RewriteResult
+
+    container = MagicMock()
+    container.graph_provider = AsyncMock(return_value=MagicMock(disconnect=AsyncMock()))
+    monkeypatch.setattr("app.containers.indexing.IndexingAppContainer.init", lambda name: container)
+    monkeypatch.setattr("app.modules.indexing.vector_membership_backfill._resolve_indexing_pipeline", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr("app.services.permissions.wiring.register_scope_generation", AsyncMock())
+    ran: list = []
+
+    class Job:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def run_connector(self, org: str, connector: str) -> RewriteResult:
+            ran.append(connector)
+            out = outcomes[connector]
+            if isinstance(out, Exception):
+                raise out
+            return RewriteResult(org, connector, state=out, roots=["r"])
+
+    monkeypatch.setattr("app.services.vector_db.scope_rewrite.ScopeRewriteJob", Job)
+    return ran
+
+
+async def test_rewrite_runs_every_connector_and_fails_only_for_an_error_or_a_connector_that_needs_the_full_pass(monkeypatch, capsys) -> None:
+    ran = _rewrite_env(monkeypatch, {"a": "done", "b": RuntimeError("boom"), "c": "busy", "d": "full_pass"})
+    assert await scope_projection._main(["rewrite", "--org", "o", "--connector", "a", "--connector", "c"]) == 0 and ran == ["a", "c"]
+    assert "a  done  roots=1" in capsys.readouterr().out
+    ran.clear()
+    assert await scope_projection._main(["rewrite", "--org", "o", "--connector", "b", "--connector", "a"]) == 1
+    assert ran == ["b", "a"] and "error RuntimeError: boom" in capsys.readouterr().out      # the failure did not hold the next connector
+    assert await scope_projection._main(["rewrite", "--org", "o", "--connector", "d"]) == 1
+
+
+async def test_status_shows_the_pending_roots_and_the_last_sweep_error(monkeypatch, capsys) -> None:
+    from app.services.permissions.pending import with_roots
+    from app.services.permissions.structure_generation import PENDING_KEY
+    from app.services.vector_db.scope_sweep import SWEEP_KEY
+
+    graph = MagicMock(disconnect=AsyncMock())
+    container = MagicMock()
+    container.graph_provider = AsyncMock(return_value=graph)
+    monkeypatch.setattr("app.containers.indexing.IndexingAppContainer.init", lambda name: container)
+    app = {PENDING_KEY: with_roots(None, ["r1", "r2"], 3), SWEEP_KEY: '{"n":2,"e":"boom","t":5}'}
+    graph.get_document = AsyncMock(return_value=app)
+    monkeypatch.setattr("app.services.vector_db.scope_backfill.status", AsyncMock(return_value=None))
+    assert await scope_projection._main(["status", "--org", "o", "--connector", "c"]) == 0
+    out = capsys.readouterr().out
+    assert "not started; 2 pending root(s), last error (2 in a row): boom" in out
+    graph.get_document = AsyncMock(return_value={})
+    await scope_projection._main(["status", "--org", "o", "--connector", "c"])
+    assert "0 pending root(s), no error" in capsys.readouterr().out
