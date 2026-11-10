@@ -19985,6 +19985,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "recordGroupType": f"{node_var}.groupType",
             "indexingStatus": f"{node_var}.indexingStatus",
             "reason": f"{node_var}.reason",
+            # Embedding progress the indexer keeps on a record while it embeds; null otherwise.
+            "embedDone": f"{node_var}.embedDone",
+            "embedTotal": f"{node_var}.embedTotal",
             "createdAt": _cypher_kh_date(node_var, "sourceCreatedAtTimestamp", "createdAtTimestamp"),
             "updatedAt": _cypher_kh_date(node_var, "sourceLastModifiedTimestamp", "updatedAtTimestamp"),
             "sizeInBytes": f"{node_var}.sizeInBytes",
