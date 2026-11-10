@@ -40,9 +40,10 @@ describe('McpServerIcon', () => {
     expect(logo(<McpServerIcon typeId="microsoft_learn" name="Microsoft Learn" />)).toBe('microsoft-learn icon');
   });
 
-  it('shows the DocuSign and Okta catalog logos', () => {
+  it('shows the DocuSign, Okta, and HubSpot catalog logos', () => {
     expect(logo(<McpServerIcon typeId="docusign" name="DocuSign" />)).toBe('docusign icon');
     expect(logo(<McpServerIcon typeId="okta" name="Okta" />)).toBe('okta icon');
+    expect(logo(<McpServerIcon typeId="hubspot" name="HubSpot" />)).toBe('hubspot icon');
   });
 
   it('goes by the catalog type when the server was renamed', () => {
