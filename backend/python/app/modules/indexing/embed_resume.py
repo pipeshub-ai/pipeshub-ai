@@ -16,7 +16,11 @@ graph provider (a nested object is merged on one provider and replaced on the ot
 * ``embedDigest`` a digest of the sorted ids of the points the record needs;
 * ``embedTotal`` how many points that is;
 * ``embedDeliveryId`` the identity of the event being retried;
-* ``embedStartedMs`` when the chain of attempts began.
+* ``embedStartedMs`` when the chain of attempts began;
+* ``embedSeconds`` wall seconds of embedding spent by the attempts of this chain that were cut after
+  making progress, and ``embedUncounted`` how many there were. They are the clock that ends a chain
+  which keeps making progress, so they live on the node, not in a message or a process;
+* ``embedDone`` how many points exist, for display only. Nothing reads it to decide.
 
 A retry resumes only when it is a redelivery of the event that wrote the marker (the delivery id
 matches), the bytes are the same revision, the node still names the vrid, and the digest was
@@ -41,6 +45,9 @@ EMBED_DIGEST = "embedDigest"
 EMBED_TOTAL = "embedTotal"
 EMBED_DELIVERY_ID = "embedDeliveryId"
 EMBED_STARTED_MS = "embedStartedMs"
+EMBED_SECONDS = "embedSeconds"
+EMBED_UNCOUNTED = "embedUncounted"
+EMBED_DONE = "embedDone"
 
 EMBED_FIELDS: tuple[str, ...] = (
     EMBED_VRID,
@@ -50,6 +57,9 @@ EMBED_FIELDS: tuple[str, ...] = (
     EMBED_TOTAL,
     EMBED_DELIVERY_ID,
     EMBED_STARTED_MS,
+    EMBED_SECONDS,
+    EMBED_UNCOUNTED,
+    EMBED_DONE,
 )
 
 #: Payload keys of a point written by an attempt that carries a marker (under ``metadata``).
