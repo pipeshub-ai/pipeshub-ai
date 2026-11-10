@@ -147,6 +147,7 @@ def test_the_scan_finds_planted_violations_and_skips_files_that_cannot_match(tmp
 
 def test_a_planted_violation_fails_the_ratchet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = _plant(tmp_path)
+    monkeypatch.delenv("ORG_CONTEXT_UPDATE_BASELINE", raising=False)
     monkeypatch.setattr(sys.modules[__name__], "_scan", lambda: _scan_files(sources(root), root))
     with pytest.raises(AssertionError, match="new sites"):
         _check("direct_org_reads", "hint")
