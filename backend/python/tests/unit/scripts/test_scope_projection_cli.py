@@ -111,6 +111,7 @@ async def test_view_prints_the_lines_and_exits_non_zero_only_when_something_need
         return OrgView(org, [ConnectorView("a", current=False, attention=["pending_roots: 1 root(s)"])] if seen.get("bad") else [ConnectorView("a", True)])
 
     monkeypatch.setattr("app.services.vector_db.scope_view.org_view", org_view)
+    monkeypatch.setattr("app.services.permissions.generation.current_generation", AsyncMock(return_value=0))
     assert await scope_projection._main(["view", "--org", "o", "--connector", "a"]) == 1      # no vector store: said, and needs attention
     assert "vector_store_not_configured" in capsys.readouterr().out and seen["vdb"] is None and seen["connectors"] == ["a"]
     seen["bad"] = True
@@ -118,6 +119,37 @@ async def test_view_prints_the_lines_and_exits_non_zero_only_when_something_need
     monkeypatch.setattr("app.modules.indexing.vector_membership_backfill._resolve_indexing_pipeline", AsyncMock(return_value=MagicMock()))
     seen["bad"] = False
     assert await scope_projection._main(["view", "--org", "o"]) == 0
+
+
+async def test_view_judges_by_the_deployments_generation_and_writes_none(monkeypatch) -> None:
+    from app.services.permissions.scope_fields import (
+        current_scope_generation,
+        set_resolved_generation,
+    )
+    from app.services.vector_db.scope_view import OrgView
+
+    config = MagicMock(list_keys_in_directory=AsyncMock(return_value=["/services/scopeFields/generation/1"]))
+    container = MagicMock(config_service=lambda: config)
+    container.graph_provider = AsyncMock(return_value=MagicMock(disconnect=AsyncMock()))
+    monkeypatch.setattr("app.containers.indexing.IndexingAppContainer.init", lambda name: container)
+    monkeypatch.setattr("app.modules.indexing.vector_membership_backfill._resolve_indexing_pipeline", AsyncMock(return_value=MagicMock()))
+    monkeypatch.delenv("ACL_SCOPE_FIELDS", raising=False)      # this process's flag is off; the deployment's is on
+    seen: list[int] = []
+
+    async def org_view(*args: object, **kw: object) -> OrgView:
+        seen.append(current_scope_generation())
+        return OrgView("o", [])
+
+    monkeypatch.setattr("app.services.vector_db.scope_view.org_view", org_view)
+    try:
+        assert await scope_projection._main(["view", "--org", "o"]) == 0
+        assert seen == [1]
+        config.list_keys_in_directory.side_effect = ConnectionError("down")      # unreadable: said, not judged against 0
+        assert await scope_projection._main(["view", "--org", "o"]) == 1 and seen == [1]
+    finally:
+        set_resolved_generation(None)
+    config.set_config.assert_not_called()
+    config.create_config_if_absent.assert_not_called()
 
 
 async def test_sweep_with_an_interval_goes_on_after_a_listing_that_fails(monkeypatch) -> None:
