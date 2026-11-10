@@ -6,6 +6,7 @@ import inspect
 import ipaddress
 import logging
 from collections.abc import Awaitable, Callable, MutableMapping
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
 
@@ -34,9 +35,28 @@ Message = MutableMapping[str, Any]
 ASGIApp = Callable[[Scope, Callable[[], Awaitable[Message]], Callable[[Message], Awaitable[None]]], Awaitable[None]]
 
 
-def mark_request_failure(request: Request, exc: BaseException) -> None:
-    """Hand a failure that was turned into a response here (an auth refusal, an HTTPException) to the request's line."""
-    request.scope[_FAILURE_KEY] = exc
+@dataclass(frozen=True)
+class _Failure:
+    exc: BaseException
+    error_class: str | None = None
+    reason: str | None = None
+    include_error_text: bool = True
+
+
+def mark_request_failure(
+    request: Request, exc: BaseException, /, *,
+    error_class: str | None = None, reason: str | None = None, include_error_text: bool = True,
+) -> None:
+    """Hand a failure that was turned into a response here (an auth refusal, an HTTPException, an error answered
+    with a 2xx) to the request's line, which then logs it as a failure whatever the status. ``error_class`` and
+    ``reason`` win over the ones read from ``exc``; ``include_error_text=False`` keeps its text off the line, as in
+    ``log_failure``."""
+    request.scope[_FAILURE_KEY] = _Failure(exc, error_class, reason, include_error_text)
+
+
+def _marked(scope: Scope) -> _Failure | None:
+    failure = scope.get(_FAILURE_KEY)
+    return failure if isinstance(failure, _Failure) else None
 
 
 def _client_ip(scope: Scope) -> str | None:
@@ -87,11 +107,11 @@ class _Request:
         elif message["type"] == "http.disconnect" and self.finished is None:
             self.client_left = True
 
-    def log(self, exc: BaseException | None = None, *, escaped_class: str | None = None, status: int | None = None) -> None:
+    def log(self, escaped: BaseException | None = None, *, status: int | None = None) -> None:
         with contextlib.suppress(Exception):  # logging never breaks a request
-            self._log(exc, escaped_class, status or self.status)
+            self._log(escaped, status or self.status)
 
-    def _log(self, exc: BaseException | None, escaped_class: str | None, status: int | None) -> None:
+    def _log(self, escaped: BaseException | None, status: int | None) -> None:
         fields: dict[str, object] = {
             "method": self.scope.get("method"),
             "route": route_template(self.scope),
@@ -99,30 +119,39 @@ class _Request:
             "duration_ms": round(((self.finished or perf_counter()) - self.started) * 1000),
             "client_ip": _client_ip(self.scope),
         }
-        reason = _reason(exc)
-        if exc is not None and escaped_class is not None:
-            _log_exception(exc, escaped_class, reason=reason, **fields)
-        elif exc is not None and status is not None and status >= 500:
-            _log_exception(exc, _handed_over_class(exc, status), reason=reason, **fields)
+        failure = _marked(self.scope)
+        if escaped is not None and (failure is None or failure.exc is not escaped):
+            failure = _Failure(escaped)
+        reason = (failure.reason or _reason(failure.exc)) if failure else None
+        if escaped is not None and failure is not None:
+            # Nobody handled it and the client got a 500 (or a cut stream): ours, unless the code that marked it said.
+            default = "cancelled" if isinstance(escaped, asyncio.CancelledError) else "internal"
+            _log_exception(failure, failure.error_class or default, reason=reason, **fields)
+        elif failure is not None and status is not None and not 400 <= status < 500:
+            # A 5xx, or a failure the route answered with a 2xx/3xx: logged as the failure it is.
+            cls = failure.error_class or _handed_over_class(failure.exc, status)
+            _log_exception(failure, cls, reason=reason, **fields)
         elif self.finished is None or self.client_left:
             # Starlette stops a stream quietly when the client leaves: no exception, and either no last body message or,
             # when a BaseHTTPMiddleware below ends its own stream, a last message after the disconnect.
             log_event(logger, EVENT, outcome="failure", error_class="cancelled", reason="client_disconnect", **fields)
         elif status is not None and status >= 400:
             level = logging.WARNING if status >= 500 else _REASON_LEVEL.get(reason, logging.INFO)
-            log_event(logger, EVENT, level=level, outcome="failure", error_class=_status_class(status), reason=reason,
-                      **fields)
+            cls = (failure.error_class if failure else None) or _status_class(status)
+            log_event(logger, EVENT, level=level, outcome="failure", error_class=cls, reason=reason, **fields)
         else:
             health = str(self.scope.get("path", "")).startswith("/health")
             log_event(logger, EVENT, level=logging.DEBUG if health else logging.INFO, outcome="success", **fields)
 
 
-def _log_exception(exc: BaseException, cls: str, **fields: object) -> None:
+def _log_exception(failure: _Failure, cls: str, **fields: object) -> None:
     """With its stack once; a request whose exception was already logged (lower down, or behind another request) still
     gets its own line, WARNING at most."""
+    exc = failure.exc
     prior = error_class.logged_level(exc)
     if prior is None or prior < error_class.level_for(cls):
-        error_class.log_failure(logger, EVENT, exc, error_class=cls, **fields)
+        error_class.log_failure(logger, EVENT, exc, error_class=cls, include_error_text=failure.include_error_text,
+                                **fields)
         return
     log_event(logger, EVENT, level=min(error_class.level_for(cls), logging.WARNING), outcome="failure",
               error_class=cls, error_type=type(exc).__name__, **fields)
@@ -154,18 +183,18 @@ class RequestLogMiddleware:
         try:
             await self.app(scope, observed_receive, observed_send)
         except asyncio.CancelledError as exc:
-            request.log(exc, escaped_class="cancelled")
+            request.log(exc)
             raise
         except Exception as exc:
             if request.status is not None:
-                request.log(exc, escaped_class="internal")
+                request.log(exc)
                 raise  # the response has started: only uvicorn closing the connection tells the client
-            request.log(exc, escaped_class="internal", status=500)
+            request.log(exc, status=500)
             # Answered here, not re-raised: ServerErrorMiddleware would re-raise, and uvicorn would then close a
             # keep-alive connection the client may reuse.
             await JSONResponse(status_code=500, content=_CRASH_BODY)(scope, receive, observed_send)
             return
-        request.log(scope.get(_FAILURE_KEY))
+        request.log()
 
 
 class _AlreadyLogged(logging.Filter):
@@ -187,7 +216,9 @@ def install_request_logging(app: FastAPI) -> None:
     previous = app.exception_handlers.get(StarletteHTTPException, http_exception_handler)
 
     async def hand_over(request: Request, exc: StarletteHTTPException) -> Response:
-        mark_request_failure(request, exc)
+        marked = _marked(request.scope)
+        if marked is None or marked.exc is not exc:  # keep the hints of a route that marked it before raising
+            mark_request_failure(request, exc)
         response = previous(request, exc)
         return await response if inspect.isawaitable(response) else response
 

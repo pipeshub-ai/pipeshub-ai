@@ -223,9 +223,13 @@ the auth middleware bound.
   (503: Node could not confirm the session), `unauthenticated`, `service_token_not_allowed`, `service_token_required`,
   `insufficient_scope`, `org_mismatch`, `not_admin`, `auth_error`, `auth_config` (500). A refusal is INFO because an expired
   session is routine; `org_mismatch` (a service token naming another org) is WARNING. Alert on `reason`, not on the level.
-- Code that turns a failure into a response itself (the auth middleware's 401) hands it over with
-  `mark_request_failure(request, exc)`; an `HTTPException` raised anywhere below is handed over by the exception handler, which
-  then calls the handler registered before it.
+- Code that turns a failure into a response itself (the auth middleware's 401, a route that answers a 200 after a dependency
+  failed) hands it over with `mark_request_failure(request, exc, /, *, error_class=None, reason=None, include_error_text=True)`.
+  The line then logs it as a failure whatever the status: a 2xx or 3xx and a 5xx at the class's level (with the stack once
+  for `internal`), a 4xx at INFO. `error_class` and `reason` win over the ones read from `exc`; `include_error_text=False` keeps
+  its text off the line, as in `log_failure`. An `HTTPException` raised anywhere below is handed over by the exception handler,
+  which keeps the hints of a route that marked that same exception before raising it, then calls the handler registered before
+  it.
 - `client_ip` is the peer as uvicorn resolves it (`FORWARDED_ALLOW_IPS`, default loopback), usually the Node API, and only when it
   parses as an IP address. The end user's address is on Node's `http.request.end` with the same `request_id`.
 - A client disconnect is seen two ways: the response never sent its last body message, or an `http.disconnect` was read before

@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -46,6 +47,8 @@ REFUSALS: dict[str, Callable[[], HTTPException]] = {
     "Bearer other-org": lambda: AuthRejected(403, "org_id does not match the service token", reason="org_mismatch"),
 }
 SHARED = RuntimeError("one failure behind several requests")
+# Built at run time: a traceback prints source lines, so a literal there would show in the stack.
+ECHOED = "-".join(("SENTINEL", "ARGS"))
 
 
 class _Clock:
@@ -193,6 +196,36 @@ def _build_app(clock: _Clock, *, before_install: Callable[[FastAPI], None] | Non
             await asyncio.Event().wait()
 
         return StreamingResponse(body(), media_type="text/event-stream")
+
+    @app.get("/api/v1/marked/conflict")
+    async def marked_conflict(request: Request) -> None:
+        exc = HTTPException(status_code=409, detail="exists")
+        mark_request_failure(request, exc, error_class="bad_request", reason="duplicate_name")
+        raise exc
+
+    @app.get("/api/v1/marked/quiet-502")
+    async def marked_quiet_502(request: Request) -> None:
+        try:
+            raise ValueError(f"upstream echoed {ECHOED}")
+        except ValueError as e:
+            exc = HTTPException(status_code=502, detail="upstream failed")
+            mark_request_failure(request, exc, include_error_text=False)
+            raise exc from e
+
+    @app.get("/api/v1/marked/quiet-crash")
+    async def marked_quiet_crash(request: Request) -> None:
+        exc = RuntimeError(f"tool said {ECHOED}")
+        mark_request_failure(request, exc, include_error_text=False)
+        raise exc
+
+    @app.get("/api/v1/answered-ok/{marked}")
+    async def answered_ok(request: Request, marked: bool) -> dict:
+        try:
+            raise ConnectionError("vector db down")
+        except ConnectionError as e:
+            if marked:
+                mark_request_failure(request, e, reason="degraded")
+            return {"results": []}
 
     @app.get("/health")
     async def health() -> dict:
@@ -395,7 +428,7 @@ async def test_reason_is_read_from_http_exceptions_only(clock: _Clock, capture) 
     async def send(_: dict) -> None:
         pass
 
-    scope["pipeshub.request_failure"] = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+    mark_request_failure(SimpleNamespace(scope=scope), UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"))
     await middleware(scope, receive, send)
 
     _, fields = _one_end(capture)
@@ -688,3 +721,54 @@ async def test_install_delegates_http_exceptions_to_the_handler_registered_befor
     response = await _get(app, "/api/v1/http/409")
 
     assert response.json() == {"edition": True}
+
+
+# --- hints from the code that handed the failure over ---------------------------------------------------------------
+
+
+async def test_hints_win_and_the_http_exception_handler_keeps_them(clock: _Clock, capture) -> None:
+    app = _build_app(clock)
+
+    response = await _get(app, "/api/v1/marked/conflict")
+
+    assert response.status_code == 409
+    record, fields = _one_end(capture)
+    assert record.levelno == logging.INFO
+    assert (fields["error_class"], fields["reason"]) == ("bad_request", "duplicate_name")
+
+
+@pytest.mark.parametrize(("path", "status", "cls"), [
+    ("/api/v1/marked/quiet-502", 502, "internal"),  # raised from our ValueError: ours (P1b)
+    ("/api/v1/marked/quiet-crash", 500, "internal"),
+])
+async def test_include_error_text_false_keeps_the_text_off_the_line(clock: _Clock, capture, path, status, cls) -> None:
+    app = _build_app(clock)
+
+    response = await _get(app, path)
+
+    assert response.status_code == status
+    record, fields = _one_end(capture)
+    assert fields["error_class"] == cls
+    assert "error_message" not in fields
+    assert "SENTINEL" not in RedactingFormatter("%(message)s").format(record)
+
+
+async def test_a_marked_failure_answered_with_a_2xx_is_logged_as_a_failure(clock: _Clock, capture) -> None:
+    app = _build_app(clock)
+
+    response = await _get(app, "/api/v1/answered-ok/true")
+
+    assert response.status_code == 200
+    record, fields = _one_end(capture)
+    assert record.levelno == logging.WARNING
+    assert (fields["status"], fields["outcome"], fields["error_class"], fields["error_type"], fields["reason"]) == (
+        200, "failure", "unavailable", "ConnectionError", "degraded")
+
+
+async def test_control_the_same_2xx_unmarked_is_success(clock: _Clock, capture) -> None:
+    app = _build_app(clock)
+
+    await _get(app, "/api/v1/answered-ok/false")
+
+    record, fields = _one_end(capture)
+    assert (record.levelno, fields["outcome"]) == (logging.INFO, "success")
