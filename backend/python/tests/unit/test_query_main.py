@@ -1,12 +1,15 @@
 """Unit tests for app.query_main — Query service FastAPI entrypoint."""
 
 import asyncio
+import logging
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
 from fastapi import HTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.testclient import TestClient
 
 from app.modules.parsers import parse_pool
 from app.services.messaging.config import MessageBrokerType
@@ -710,18 +713,20 @@ class TestAuthenticateRequests:
         mock_request.url.path = "/api/v1/search"
         call_next = AsyncMock()
 
-        with patch(
-            "app.query_main.authMiddleware",
-            new_callable=AsyncMock,
-            side_effect=HTTPException(status_code=401, detail="Unauthorized"),
+        refusal = HTTPException(status_code=401, detail="Unauthorized")
+        with (
+            patch("app.query_main.authMiddleware", new_callable=AsyncMock, side_effect=refusal),
+            patch("app.query_main.mark_request_failure") as hand_over,
         ):
             result = await authenticate_requests(mock_request, call_next)
 
         assert isinstance(result, JSONResponse)
         assert result.status_code == 401
+        hand_over.assert_called_once_with(mock_request, refusal)
+        call_next.assert_not_awaited()
 
-    async def test_unexpected_exception_returns_500(self):
-        """Unexpected exception returns 500 Internal Server Error."""
+    async def test_unexpected_exception_propagates_to_the_request_line(self) -> None:
+        """Not caught here: the request's http.request.end logs it once and answers the 500."""
         from app.query_main import authenticate_requests
 
         mock_request = MagicMock()
@@ -733,10 +738,19 @@ class TestAuthenticateRequests:
             new_callable=AsyncMock,
             side_effect=RuntimeError("boom"),
         ):
-            result = await authenticate_requests(mock_request, call_next)
+            with pytest.raises(RuntimeError, match="boom"):
+                await authenticate_requests(mock_request, call_next)
 
-        assert isinstance(result, JSONResponse)
-        assert result.status_code == 500
+    async def test_route_exception_propagates_to_the_request_line(self) -> None:
+        from app.query_main import authenticate_requests
+
+        mock_request = MagicMock()
+        mock_request.url.path = "/api/v1/search"
+        call_next = AsyncMock(side_effect=RuntimeError("route exploded"))
+
+        with patch("app.query_main.authMiddleware", new_callable=AsyncMock, return_value=mock_request):
+            with pytest.raises(RuntimeError, match="route exploded"):
+                await authenticate_requests(mock_request, call_next)
 
     @pytest.mark.parametrize("host", POISONED_HOSTS)
     async def test_poisoned_host_header_does_not_skip_auth(self, host):
@@ -854,24 +868,28 @@ class TestValidationExceptionHandler:
         assert body["detail"][0]["loc"] == ["body", "query"]
         assert body["detail"][1]["type"] == "int_parsing"
 
-    async def test_logged_url_has_no_credentials(self, caplog):
-        """The warning logs the request URL; a token in its query must not reach the log."""
+    async def test_logs_the_route_template_not_the_url(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The URL can carry an email or a token in its query; the route template names the endpoint."""
         import logging
+        from types import SimpleNamespace
 
         from app.query_main import validation_exception_handler
 
         mock_request = MagicMock()
         mock_request.method = "GET"
-        mock_request.url = "http://test/api/v1/search?token=fake-token-value&page=2"
+        mock_request.url = "http://test/api/v1/search?token=fake-token-value&email=alice@example.com"
+        mock_request.scope = {"route": SimpleNamespace(path_format="/api/v1/search", path="/api/v1/search")}
         mock_exc = MagicMock(spec=RequestValidationError)
         mock_exc.errors.return_value = [{"loc": ["query", "q"], "msg": "field required"}]
 
         with caplog.at_level(logging.WARNING):
             await validation_exception_handler(mock_request, mock_exc)
 
-        assert "Request validation failed" in caplog.text
+        (record,) = [r for r in caplog.records if "Request validation failed" in r.getMessage()]
+        assert record.route == "/api/v1/search"
         assert "fake-token-value" not in caplog.text
-        assert "page=2" in caplog.text
+        assert "alice" not in caplog.text and "http://" not in caplog.text
+        assert "q" in record.getMessage()
 
     async def test_logged_errors_do_not_echo_the_rejected_input(self, caplog) -> None:
         """Each error carries the rejected value as ``input``, which for a
@@ -960,6 +978,7 @@ class TestRun:
             host="127.0.0.1",
             port=9000,
             log_level="info",
+            access_log=False,
             reload=False,
             workers=1,
             timeout_worker_healthcheck=60,
@@ -986,6 +1005,7 @@ class TestRun:
             host="0.0.0.0",
             port=8000,
             log_level="info",
+            access_log=False,
             reload=True,
             workers=1,
             timeout_worker_healthcheck=60,
@@ -1023,6 +1043,7 @@ class TestRunWorkersWarning:
                 host="0.0.0.0",
                 port=8000,
                 log_level="info",
+                access_log=False,
                 reload=True,
                 workers=1,
                 timeout_worker_healthcheck=60,
@@ -1113,6 +1134,7 @@ class TestRunWorkersWarning:
         mock_execvp.assert_called_once()
         argv = mock_execvp.call_args[0][1]
         assert argv[1:4] == ["-m", "uvicorn", "app.query_main:app"]
+        assert "--no-access-log" in argv
         assert argv[-4:] == ["--workers", "4", "--timeout-worker-healthcheck", "60"]
 
     def test_single_worker_does_not_exec(self) -> None:
@@ -1270,3 +1292,74 @@ class TestCorsPolicy:
         )
         assert response.headers.get("access-control-allow-origin") is None
         assert response.headers.get("access-control-allow-credentials") is None
+
+
+class TestRequestLogging:
+    """query_main writes http.request.end through request_log, inside the request context."""
+
+    def test_the_line_sits_just_inside_the_request_context(self) -> None:
+        from app.api.middlewares.request_context import RequestContextMiddleware
+        from app.api.middlewares.request_log import RequestLogMiddleware
+        from app.query_main import app
+
+        classes = [m.cls for m in app.user_middleware]
+        assert classes.index(RequestContextMiddleware) + 1 == classes.index(RequestLogMiddleware)
+        assert Exception not in app.exception_handlers
+
+    @pytest.fixture
+    def client(self, caplog: pytest.LogCaptureFixture) -> Iterator[TestClient]:
+        import logging
+
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        import app.query_main as qm
+        from app.api.middlewares.request_log import install_request_logging
+
+        mini = FastAPI()
+        mini.middleware("http")(qm.authenticate_requests)
+        install_request_logging(mini)  # same order as query_main
+
+        @mini.get("/api/v1/kb/{kb_id}")
+        async def kb(kb_id: str) -> dict:
+            return {"kb_id": kb_id}
+
+        @mini.get("/health/boom")
+        async def health_boom() -> None:
+            raise RuntimeError("probe exploded")
+
+        caplog.set_level(logging.DEBUG, logger="app.api.middlewares.request_log")
+        with TestClient(mini, raise_server_exceptions=True) as test_client:
+            yield test_client
+
+    @staticmethod
+    def _end(caplog: pytest.LogCaptureFixture) -> logging.LogRecord:
+        (record,) = [r for r in caplog.records if r.getMessage() == "http.request.end"]
+        return record
+
+    def test_a_refusal_reaches_the_line_with_its_reason(self, client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        from app.api.middlewares.auth import AuthRejected
+
+        refusal = AuthRejected(401, "Could not validate credentials", reason="expired",
+                               headers={"WWW-Authenticate": "Bearer"})
+        with patch("app.query_main.authMiddleware", new_callable=AsyncMock, side_effect=refusal):
+            response = client.get("/api/v1/kb/65f0?email=alice@example.com")
+
+        assert response.status_code == 401
+        assert response.json() == {"detail": "Could not validate credentials"}
+        record = self._end(caplog)
+        assert record.levelno == logging.INFO
+        assert (record.route, record.error_class, record.reason) == ("/api/v1/kb/{kb_id}", "auth_expired", "expired")
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    def test_an_exempt_path_crash_is_one_line_and_the_json_500(self, client: TestClient, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        response = client.get("/health/boom")
+
+        assert response.status_code == 500
+        assert response.json() == {"detail": "Internal server error"}
+        record = self._end(caplog)
+        assert record.levelno == logging.ERROR and "probe exploded" in record.exc_text
