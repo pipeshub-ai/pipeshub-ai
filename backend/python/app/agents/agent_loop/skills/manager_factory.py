@@ -51,6 +51,7 @@ from app.agents.agent_loop.skills.builtin_seeder import SEED_IDENTITY, BuiltinSk
 from app.agents.agent_loop.skills.graph_store import GraphSkillStore
 from app.agents.agent_loop.skills.graph_tracker import GraphUsageTracker
 from app.agents.agent_loop.skills.semantic_index import SemanticSkillIndex
+from app.core.org_jobs import for_each_org
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.transport.registry import TransportRegistry
@@ -193,15 +194,18 @@ async def reconcile_builtin_skills(graph_provider: "IGraphDBProvider", org_id: s
     await asyncio.shield(_reconcile_task(graph_provider, org_id))
 
 
-async def reconcile_builtin_skills_for_orgs(
-    graph_provider: "IGraphDBProvider", orgs: list[dict[str, Any]],
-) -> None:
-    """Service-startup reconcile for every existing org (sequential: this is
-    background work and should not compete with request traffic)."""
-    for org in orgs:
-        org_id = org.get("_key") or org.get("id")
-        if org_id:
-            await reconcile_builtin_skills(graph_provider, org_id)
+async def reconcile_builtin_skills_for_orgs(graph_provider: "IGraphDBProvider") -> None:
+    """Service-startup reconcile for every active org (sequential: this is
+    background work and should not compete with request traffic), each in its
+    own org context. A deleted org is inactive and keeps no data, so it is not
+    seeded. Never raises: a failure is logged, and requests retry per org."""
+    try:
+        await for_each_org(
+            graph_provider, "builtin_skills", lambda org_id: reconcile_builtin_skills(graph_provider, org_id), logger,
+            active=True,
+        )
+    except Exception as e:
+        logger.warning("skills: builtin skill seeding did not run at startup (requests will retry): %s", type(e).__name__)
 
 
 def schedule_builtin_skill_reconcile(graph_provider: "IGraphDBProvider", org_id: str) -> None:
