@@ -3863,6 +3863,17 @@ class TestRateLimitedRecordsAreSentWhenTheirWaitEnds:
         assert any("waiting out their source's rate limit" in c.args[0] for c in logger.info.call_args_list)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("offset", "sent"), [(-1000, 1), (HOUR_MS, 0)])
+    async def test_an_oversized_queue_time_does_not_stop_the_sweep_or_the_wait(self, offset: int, sent: int) -> None:
+        now = get_epoch_timestamp_in_ms()
+        row = self._waiting(now, retryNotBefore=now + offset, queuedAtTimestamp=10**400)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [row]}, active_ids={"live"})
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == sent
+
+    @pytest.mark.asyncio
     async def test_neither_the_queue_nor_the_duplicate_rule_holds_it_back(self) -> None:
         """Its own event is gone, and an earlier index left it an md5 and a vrid."""
         now = get_epoch_timestamp_in_ms()
