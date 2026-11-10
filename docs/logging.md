@@ -413,7 +413,7 @@ their own HTTP clients.
 | `upstream` | `query`, `connector`, `indexing`, `nodejs` (Node's own services over HTTP), or `external`. Named from the URLs `loadAppConfig` reads; a registered base matches by exact origin and whole path segments. Not `service`: that key names the logger. |
 | `method`, `status` | `status` only when an answer came |
 | `route` | a PipesHub service: the path with every id-like segment (ids, numbers, encoded text, emails, file names, anything upper-case) as `:id`. Anything else: the host only. |
-| `duration_ms` | the attempt's start to the answer's headers. A chat stream (`AIServiceCommand.executeStream`): to the stream's end. Any other stream, axios `responseType: 'stream'` included, ends at its headers; a failure midway there is reported by the request's own lines. |
+| `duration_ms` | `fetch` (commands, `upstreamFetch`): the attempt's start to the answer's headers. axios: to the adapter's answer, which for a non-stream response is after the body is read, so it includes the transfer. A chat stream (`AIServiceCommand.executeStream`): to the stream's end. Any other stream, axios `responseType: 'stream'` included, ends at its headers; a failure midway there is reported by the request's own lines. |
 | `attempt` | 1-based |
 | `outcome`, `error_class` | `success`, or `failure` with the class (`classifyError`): an answer by its status, no answer by the error |
 | `network_code` | no answer only: the first string `code` in the error's cause chain, or axios's own (`ECONNREFUSED`, `ENOTFOUND`, `UND_ERR_SOCKET`, `ECONNABORTED`) |
@@ -439,7 +439,9 @@ their own HTTP clients.
   lines though only the first reached the wire. A caller that expects a 404 (an existence check) still gets a WARNING
   `not_found` line: the transport cannot know what the caller expects.
 - **New calls** use a command or axios, so they get the line; do not log the call again at the call site. A new raw `fetch`
-  goes through `upstreamFetch` with `injectRequestHeaders`.
+  goes through `upstreamFetch`, and adds `injectRequestHeaders` only when the target is a PipesHub service: it does not
+  check the destination, and the request id and MCP relay header must not reach a third party (the axios adapter adds them
+  only for registered internal targets).
 
 ## Redaction
 
