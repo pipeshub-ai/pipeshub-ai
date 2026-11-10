@@ -84,6 +84,32 @@ def _chain(exc: BaseException) -> Iterator[BaseException]:
         link = link.__cause__ if link.__cause__ is not None else (None if link.__suppress_context__ else link.__context__)
 
 
+def on_chain(exc: BaseException, target: BaseException) -> bool:
+    """Whether ``target`` is ``exc`` or in the chain its class and text are read from (see ``_chain``)."""
+    return any(link is target for link in _chain(exc))
+
+
+def first_leaf(exc: BaseException) -> BaseException:
+    """The first exception in ``exc`` that isn't a group: what a task group's failure was."""
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
+    return exc
+
+
+def innermost_type(exc: BaseException) -> str:
+    """The type name of the deepest cause (ConnectError, gaierror, SSLError): what kind of failure, without its text.
+    ``__cause__``, else ``__context__`` unless suppressed; a group counts as its first leaf."""
+    seen: set[int] = set()
+    current = first_leaf(exc)
+    while id(current) not in seen:
+        seen.add(id(current))
+        deeper = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+        if deeper is None:
+            break
+        current = first_leaf(deeper)
+    return type(current).__name__
+
+
 def _classify_link(link: BaseException) -> str | None:
     if isinstance(link, (asyncio.CancelledError, concurrent.futures.CancelledError, RunCancelled)):
         return "cancelled"

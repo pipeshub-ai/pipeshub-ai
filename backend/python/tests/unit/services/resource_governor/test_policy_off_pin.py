@@ -33,6 +33,9 @@ EDITED = {
         "reserve_record_memory", "acquire_parsing_slot",  # optional kind; no kind or no excess = the old path
         "record_parse_kind",
         "RequeueWithoutAttempt.pauses_consumer",  # read only by the PostgreSQL consumer's stage admission, not by a memory gate
+        "class ProgressRequeue", "ProgressRequeue.__init__", "ProgressRequeue.counts_toward_backstop",  # new exception, raised after the handler has unwound and its memory is released
+        "ProgressRequeue:Expr", "requeue_after_productive_cut",  # new; runs in the consumers' timeout handler and reserves nothing
+        "if:TYPE_CHECKING",  # one more type-only import
     },
     "controller.py": {
         "ResourceGovernor.__init__", "ResourceGovernor._sample_once", "ResourceGovernor.stats",
