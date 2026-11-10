@@ -1601,6 +1601,32 @@ async def _republish_stranded_records(
         # Unreadable is not active either: the record waits for the next pass.
         return connector_active[connector_id] is True
 
+    async def _still_parked_behind_a_twin(record: dict[str, Any], record_key: str) -> bool:
+        """Whether something can still release this parked copy: another live record of its org
+        holding the same content that is past QUEUED (its completion releases the copy), or
+        QUEUED on a connector that is not active (off, or being deleted: a delete can be put
+        back). A copy whose twin was deleted, say with its connector, has none and is sent like
+        any stranded record, to be indexed on its own; so are the copies left behind with it,
+        and the handler parks all but one behind that one. A failed read keeps it parked."""
+        try:
+            holders = await graph_provider.get_records_by_virtual_record_id(
+                str(record["virtualRecordId"]), raise_on_error=True
+            )
+            for key in holders or []:
+                if key == record_key:
+                    continue
+                twin = await graph_provider.get_document(key, CollectionNames.RECORDS.value, raise_on_error=True)
+                if not twin or twin.get("orgId") != record.get("orgId") or not is_live_record(twin):
+                    continue
+                if twin.get("indexingStatus") != ProgressStatus.QUEUED.value or not await _is_active(
+                    str(twin.get("connectorId") or "")
+                ):
+                    return True
+        except Exception as e:
+            logger.warning("Could not look up the twins of parked record %s, so leaving it parked: %s", record_key, e)
+            return True
+        return False
+
     async def _resend(
         record: dict[str, Any],
         record_key: str,
@@ -1857,8 +1883,13 @@ async def _republish_stranded_records(
                     continue
 
                 # A parked copy is released by its twin's completion only while
-                # QUEUED; one parked while its connector was off never is.
-                if not parked_while_off and is_parked_duplicate(record, restored_upload=restored_upload):
+                # QUEUED; one parked while its connector was off never is. One
+                # whose twin is gone has nothing left to release it.
+                if (
+                    not parked_while_off
+                    and is_parked_duplicate(record, restored_upload=restored_upload)
+                    and await _still_parked_behind_a_twin(record, record_key)
+                ):
                     continue
 
                 considered += 1

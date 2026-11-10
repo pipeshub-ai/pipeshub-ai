@@ -3029,18 +3029,66 @@ class TestRepublishStrandedRecords:
         assert [c.kwargs["payload"]["recordId"] for c in producer.send_event.await_args_list] == ["r2"]
 
     @pytest.mark.asyncio
-    async def test_a_dedup_parked_duplicate_is_left_to_its_twin(self):
+    @staticmethod
+    def _with_twins(graph: AsyncMock, *twins: dict, apps: dict | None = None) -> AsyncMock:
+        """The holders of vr-1: the parked record r1 and ``twins``. ``apps`` overrides an app's document."""
+        records = {t["_key"]: t for t in twins}
+        apps = apps or {}
+
+        async def get_document(key: str, collection: str, **_kwargs: object) -> dict | None:
+            if collection == CollectionNames.RECORDS.value:
+                return records.get(key)
+            if key in apps:
+                return apps[key]
+            return {"isActive": key == "live" or key == "twin-connector"}
+
+        graph.get_document = AsyncMock(side_effect=get_document)
+        graph.get_records_by_virtual_record_id = AsyncMock(return_value=["r1", *records])
+        return graph
+
+    def _parked_graph(self, *twins: dict, apps: dict | None = None) -> AsyncMock:
+        graph = _sweep_graph(
+            {ProgressStatus.QUEUED.value: [self._old_record(md5Checksum="abc", virtualRecordId="vr-1")]},
+            active_ids={"live"},
+        )
+        return self._with_twins(graph, *twins, apps=apps)
+
+    @staticmethod
+    def _twin(status: str, connector_id: str = "twin-connector", **fields: object) -> dict:
+        return {"_key": "t1", "orgId": "org-1", "connectorId": connector_id, "indexingStatus": status, **fields}
+
+    @pytest.mark.asyncio
+    async def test_a_dedup_parked_duplicate_is_left_to_its_twin(self) -> None:
         """A record parked behind an in-flight md5 twin is legitimately QUEUED.
 
         It is released when the twin completes, not by re-publishing it.
         """
-        graph = _sweep_graph(
-            {
-                ProgressStatus.QUEUED.value: [
-                    self._old_record(md5Checksum="abc", virtualRecordId="vr-1")
-                ]
-            },
-            active_ids={"live"},
+        graph = self._parked_graph(self._twin(ProgressStatus.IN_PROGRESS.value))
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_parked_copy_whose_twin_was_deleted_is_sent(self) -> None:
+        """Its twin went with its connector before its enrichment ended, so nothing will
+        release it: it is sent like any stranded record, to be indexed on its own."""
+        graph = self._parked_graph()
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+        producer.send_event.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_parked_copy_whose_twin_is_held_for_a_delete_stays_parked(self) -> None:
+        """A delete can be put back, and the twin's completion then releases the copy."""
+        graph = self._parked_graph(
+            self._twin(ProgressStatus.QUEUED.value),
+            apps={"twin-connector": {"isActive": False, "status": "DELETING"}},
         )
         producer = AsyncMock()
 
@@ -3048,6 +3096,35 @@ class TestRepublishStrandedRecords:
             assert await _run_stranded(graph, producer) == 0
 
         producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_copies_left_with_no_twin_but_each_other_are_sent(self) -> None:
+        """Only QUEUED copies on live connectors are left: none can release another."""
+        graph = self._parked_graph(self._twin(ProgressStatus.QUEUED.value))
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_twin_in_another_org_or_the_trash_does_not_keep_a_copy_parked(self) -> None:
+        graph = self._parked_graph(
+            self._twin(ProgressStatus.COMPLETED.value, orgId="org-2"),
+            {**self._twin(ProgressStatus.IN_PROGRESS.value), "_key": "t2", "isDeleted": True},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_parked_copy_whose_twins_cannot_be_read_stays_parked(self) -> None:
+        graph = self._parked_graph()
+        graph.get_records_by_virtual_record_id = AsyncMock(side_effect=ConnectionError("graph unavailable"))
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
 
     @pytest.mark.asyncio
     async def test_uploads_are_not_swept(self):
