@@ -106,8 +106,9 @@ export interface LoggerConfig {
 
 const DEFAULT_SERVICE = 'default-service';
 
-/** audit() logs on behalf of its caller, so its own frame is skipped like the logger's. */
-const AUDIT_FRAME = /[\\/]libs[\\/]services[\\/]audit\.[jt]s:/;
+/** audit() and the auth refusal wrapper log on behalf of their caller, so their frames are skipped like the logger's. */
+const AUDIT_FRAME =
+  /[\\/](?:libs[\\/]services[\\/]audit|modules[\\/]auth[\\/]utils[\\/]sign-in-audit)\.[jt]s:/;
 
 /** Event fields a call site may pass in `meta`; they render like the context ids. */
 const EVENT_FIELD_KEYS = [

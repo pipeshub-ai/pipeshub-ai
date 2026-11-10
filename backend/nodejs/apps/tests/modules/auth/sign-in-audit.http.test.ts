@@ -416,6 +416,8 @@ describe('auth audit lines (HTTP)', function () {
         const r = (await run()) as { status: number };
         expect(r.status).to.be.at.least(400);
         expect(audits()).to.deep.equal([expected]);
+        // The line points at the handler or middleware that refused, not at the audit helpers.
+        expect(auditRecords()[0]!.filename).to.be.oneOf(['userAccount.controller.ts', 'userAuthentication.middleware.ts']);
         expect(failureLines()).to.have.length(1);
         expectNoPrivateData();
       });
