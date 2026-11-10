@@ -75,8 +75,8 @@ def test_manifest_excludes_the_fork_and_keeps_the_real_package() -> None:
 def test_image_built_over_an_older_base_drops_the_fork() -> None:
     text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     uninstall = text.index(f"uv pip uninstall --system {FORK}")
-    assert uninstall < text.index("--require-hashes $reinstall")
-    assert 'reinstall="--reinstall-package litellm"' in text
+    assert uninstall < text.index('--require-hashes "$@"')
+    assert "set -- --reinstall-package litellm" in text
 
 
 def _bash_repair() -> str:
