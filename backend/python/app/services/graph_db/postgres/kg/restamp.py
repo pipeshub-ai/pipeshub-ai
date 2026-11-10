@@ -45,6 +45,10 @@ MAX_ATTEMPTS = 3                # alert level, not a limit: a stuck fence only h
 # The reader's rule, on a kg.records row aliased ``r``: not answered from the stamp while hidden.
 HIDDEN = ("(r.fence_job IS NOT NULL OR EXISTS (SELECT 1 FROM kg.restamp_queue q WHERE q.org_id = r.org_id AND q.app_sk = r.app_sk AND q.kind = 'app' AND q.fenced))")
 
+# The same rule for a row of kg.scopes aliased ``s`` (written with the stamps, so as stale as its record's class). A scope counts only while its record row exists and is not
+# hidden: a row whose record is gone (an older process deleted the record) is hidden too, never counted.
+HIDDEN_SCOPE = "NOT EXISTS (SELECT 1 FROM kg.records r WHERE r.org_id = s.org_id AND r.sk = s.sk AND NOT " + HIDDEN + ")"
+
 JOBS = METRICS_BACKEND.counter("pipeshub_kg_restamp_jobs_total", "Restamp jobs queued", ["kind"])
 BATCHES = METRICS_BACKEND.counter("pipeshub_kg_restamp_batches_total", "Restamp batches committed", ["kind"])
 FAILED = METRICS_BACKEND.counter("pipeshub_kg_restamp_failed_total", "Restamp batches that failed and will be retried", ["kind"])
