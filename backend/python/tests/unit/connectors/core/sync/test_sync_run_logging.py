@@ -579,3 +579,35 @@ class TestEntryPoints:
         assert record.levelno == logging.WARNING and fields["error_class"] == "unavailable"
         assert fields["connector_type"] == "rss"
         assert "connector_id" not in current_log_fields()
+
+
+class TestSchemaRejectionText:
+    """A sync that a graph write's schema refuses logs the rule and the field, never the rejected value (F36)."""
+
+    PHONE = "+1 555 0100 Seeded"
+
+    async def test_sync_run_end_and_task_failed_leave_the_rejected_value_out(self, records) -> None:
+        from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
+        from app.utils.logger import TextFormatter
+
+        async def run_sync() -> None:
+            NodeSchemaValidator().validate_node("users", {"email": "u1@example.invalid", "businessPhones": self.PHONE})
+
+        coordinator = LocalSyncCoordinator(_log())
+        _, lease = await coordinator.begin("c1")
+        task = await coordinator.spawn(
+            lease, run_sync_task(_connector(run_sync), "c1", _gp(), _log(), lease=lease, coordinator=coordinator)
+        )
+        with pytest.raises(SchemaValidationError):
+            await task
+        await join_cleanup_tasks()
+        await asyncio.sleep(0)  # the done callback
+
+        end_record, end = _one(records, "sync_run.end")
+        task_record, task_fields = _one(records, "task.failed")
+        formatter = TextFormatter()
+        for record in (end_record, task_record):
+            assert self.PHONE not in formatter.format(record)  # fields and the stack written at ERROR
+        assert end_record.levelno == logging.ERROR and end_record.exc_text
+        assert "'businessPhones'" in end["error_message"] and "is not of type 'array'" in end["error_message"]
+        assert end["error_type"] == task_fields["error_type"] == "SchemaValidationError"
