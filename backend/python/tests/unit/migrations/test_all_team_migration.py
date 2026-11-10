@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import logging
-
-import pytest
+from typing import TYPE_CHECKING
 
 from app.core.org_context import current, current_or_system, peek
-from app.migrations.all_team_migration import AllTeamMigrationService, run_all_team_migration
+from app.migrations.all_team_migration import (
+    AllTeamMigrationService,
+    run_all_team_migration,
+)
+
+if TYPE_CHECKING:
+    import pytest
 
 FLAG = AllTeamMigrationService.MIGRATION_FLAG_KEY
 LOG = logging.getLogger("all-team-test")

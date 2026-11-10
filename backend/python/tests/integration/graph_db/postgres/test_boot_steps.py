@@ -19,18 +19,23 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.connectors.services import storage_release
-from app.connectors.services.storage_release import GRACE_MS, StorageReleaseReconciler, record_pending_storage_release
+from app.connectors.services.storage_release import (
+    GRACE_MS,
+    StorageReleaseReconciler,
+    record_pending_storage_release,
+)
 from app.core.org_context import peek
 from app.migrations.all_team_migration import run_all_team_migration
 from app.modules.indexing import named_entity_completion
 from app.modules.transformers.blob_storage import StorageDocumentNotFoundError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-from .test_access import World
 from .test_legacy_migrations import orgs as orgs
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
+
+    from .test_access import World
 
 pytestmark = pytest.mark.integration
 LOG = logging.getLogger("boot-steps")
