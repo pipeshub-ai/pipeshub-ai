@@ -77,6 +77,7 @@ from app.services.model_identity.principal import Principal, service_principal
 from app.services.model_identity.runtime import assert_identity_allowed, call_scope
 from app.services.model_identity.workload import Workload
 from app.services.parsing.interface import ParseError
+from app.services.resource_governor.kinds import ParseKind
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.aimodels import get_generator_model_async
@@ -822,6 +823,7 @@ async def _upload_chat_attachments(
                         CHAT_PDF_PAGE_CAP,
                         label=item.fileName,
                         size=len(file_binary),
+                        kind=ParseKind.INSPECT,
                     )
                     if page_count > CHAT_PDF_PAGE_CAP:
                         raise HTTPException(status_code=400, detail=_attachment_too_long(item.fileName, page_count))
@@ -841,6 +843,7 @@ async def _upload_chat_attachments(
                             144,
                             label=item.fileName,
                             size=len(file_binary),
+                            kind=ParseKind.RENDER,
                         )
                         block_containers = _build_pdf_image_blocks(png_pages)
                         ocr_image_pages_used += page_count

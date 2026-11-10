@@ -19,7 +19,11 @@ from app.modules.parsers.code_parser.models import DECLARATION, EXPLICIT
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-__all__ = ["BlockRow", "SymbolIndex", "build_symbol_index"]
+__all__ = ["OVERRIDING_KINDS", "BlockRow", "SymbolIndex", "build_symbol_index"]
+
+# The kinds the method index holds, so the only ones OVERRIDES edges are drawn between (edge_builder) and the
+# only ones whose override lookup the code-graph tools make.
+OVERRIDING_KINDS = frozenset({"method", "constructor"})
 
 _REPEAT = re.compile(r"#\d+(?=\.|$)")
 
@@ -82,6 +86,8 @@ class BlockRow:
     start_line: int | None = None
     # The stored Block.externalRefs: the edge build rewrites only the lists that change.
     external_refs: tuple[str, ...] = ()
+    # A property / getter (block `isAccessor`): a member value landing on it is a read.
+    is_accessor: bool = False
 
     @staticmethod
     def from_doc(doc: dict[str, Any], paths: dict[str, str]) -> "BlockRow":
@@ -110,6 +116,7 @@ class BlockRow:
             type_param_count=doc.get("typeParamCount") or 0,
             start_line=doc.get("startLine") if isinstance(doc.get("startLine"), int) else None,
             external_refs=_ensure_str_list(doc.get("externalRefs")),
+            is_accessor=bool(doc.get("isAccessor")),
         )
 
 
@@ -189,7 +196,7 @@ class SymbolIndex:
         if row.name:
             self.by_name[row.name].append(row.key)
             self.names_by_record[row.record_id].add(row.name)
-            if row.parent_block_id and row.kind in ("method", "constructor"):
+            if row.parent_block_id and row.kind in OVERRIDING_KINDS:
                 explicit = next((m[len(EXPLICIT):] for m in row.modifiers if m.startswith(EXPLICIT)), None)
                 if explicit:
                     # `Task IHandler.Handle(..)` is IHandler.Handle's implementation, never `Handle` of its type.

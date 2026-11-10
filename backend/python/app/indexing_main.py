@@ -34,10 +34,12 @@ from app.edition_containers import IndexingAppContainer
 from app.edition_services import configure_app
 from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
 from app.modules.artifacts.store import NodeArtifactStore
+from app.modules.indexing.class_units_backfill import run_class_units_backfill
 from app.modules.indexing.duplicate_reconcile import (
     DuplicateReconciler,
     retry_pending_duplicate_reconciles,
 )
+from app.modules.indexing.embed_resume import EMBED_DELIVERY_ID, RESUME_DELIVERY_ID_KEY
 from app.modules.indexing.entity_index_rebuild import run_entity_index_rebuild_loop
 from app.modules.indexing.lane_upkeep import last_lane_report, run_lane_upkeep
 from app.modules.indexing.named_entity_completion import (
@@ -435,6 +437,10 @@ async def recover_in_progress_records(
                         # Failures of every recovery of this version share one budget.
                         "_retry_tracking_id": tracking_id,
                     }
+                    if record.get(EMBED_DELIVERY_ID):
+                        # A recovered record continues the run that was interrupted, so an
+                        # embedding it left half done is resumed rather than started over.
+                        payload[RESUME_DELIVERY_ID_KEY] = record[EMBED_DELIVERY_ID]
 
                     # Determine event type - default to NEW_RECORD for recovery
                     # Only treat as REINDEX if version > 0 AND virtualRecordId exists
@@ -2640,16 +2646,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
 
     # On every store, not only Neo4j: on the loop records are indexed on, beside the
-    # consumers whose slot use (process-wide, see LLMGateway) it yields to.
+    # consumers whose slot use (process-wide, see LLMGateway) it yields to. The class-units
+    # backfill too: it embeds through their VectorStore, whose clients belong to that loop.
     completion_loop = record_consumer_loop(consumers)
     if completion_loop is not None:
         app.state.named_entity_completion_future = asyncio.run_coroutine_threadsafe(
             run_named_entity_completion_loop(app_container, graph_provider),
             completion_loop,
         )
+        app.state.class_units_future = asyncio.run_coroutine_threadsafe(
+            run_class_units_backfill(app_container, graph_provider, _all_org_ids),
+            completion_loop,
+        )
     else:
         app.state.named_entity_completion_task = spawn_detached(
             run_named_entity_completion_loop(app_container, graph_provider)
+        )
+        app.state.class_units_task = spawn_detached(
+            run_class_units_backfill(app_container, graph_provider, _all_org_ids)
         )
 
     yield
@@ -2711,6 +2725,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
         except Exception as e:
             logger.error(f"❌ Error during vector membership backfill future shutdown: {str(e)}")
+
+    class_units_task = getattr(app.state, "class_units_task", None)
+    if class_units_task:
+        if not class_units_task.done():
+            class_units_task.cancel()
+        try:
+            await class_units_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Error during class units backfill shutdown: {str(e)}")
+
+    class_units_future = getattr(app.state, "class_units_future", None)
+    if class_units_future:
+        if not class_units_future.done():
+            class_units_future.cancel()
+        try:
+            await asyncio.wrap_future(class_units_future)
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        except Exception as e:
+            logger.error(f"Error during class units backfill future shutdown: {str(e)}")
 
     entity_index_task = getattr(app.state, "entity_index_task", None)
     if entity_index_task:

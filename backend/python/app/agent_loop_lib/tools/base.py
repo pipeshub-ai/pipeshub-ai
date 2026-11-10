@@ -36,6 +36,7 @@ call produces a `ToolOutput`; `ToolExecutor.call_tool()` converts it into a
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
@@ -189,6 +190,11 @@ class ToolOutput:
     data: Any = None
     error: str | None = None
     sources: list[Source] = field(default_factory=list)
+    cause: BaseException | None = None
+    """The exception behind a failed output; the executor logs it once. Never shown to the model."""
+    end_fields: Mapping[str, object] = field(default_factory=dict)
+    """For the executor's ``tool_call.end`` line: ``reason``, ``error_class``, ``status``,
+    ``mcp_reason`` (other keys are dropped). Enums and ids only, never arguments or content."""
 
 
 class Tool(ABC):
@@ -225,6 +231,16 @@ class Tool(ABC):
     def tags(self) -> list[Tag]:
         """Key/value metadata for categorization and filtering. Optional."""
         return []
+
+    @property
+    def log_kind(self) -> str:
+        """The ``kind`` on this tool's ``tool_call.end`` line: builtin, mcp, openapi or sub_agent."""
+        return "builtin"
+
+    @property
+    def log_ids(self) -> Mapping[str, str]:
+        """``mcp_server_id`` and/or ``toolset_id``, bound on every line logged during a call to this tool."""
+        return {}
 
     @property
     def app_name(self) -> str | None:

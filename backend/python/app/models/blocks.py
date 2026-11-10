@@ -198,6 +198,8 @@ class CodeMetadata(BaseModel):
     signature: Optional[str] = None
     docstring: Optional[str] = None
     decorators: Optional[list[str]] = None
+    # A property / getter: naming it on `self`/`this` reads it rather than handing it over.
+    is_accessor: Optional[bool] = None
     # Words resolution reads (C/C++: "declaration" for no body, "static", "returns:<Class>"; C#: "declaration",
     # "partial", "extension", "this:<Type>", "explicit:<Interface>").
     modifiers: Optional[list[str]] = None
@@ -241,6 +243,18 @@ class FileMetadata(BaseModel):
     mime_type: Optional[str] = None
     file_extension: Optional[str] = None
     file_path: Optional[str] = None
+
+class FileChangeMetadata(BaseModel):
+    """One file a pull or merge request changed, as data beside the group's markdown (PR_FILE_CHANGE groups).
+
+    The connectors fill it where they read the PR's file list; readers use it instead of parsing the markdown.
+    GitLab gives no line counts, so they stay None (unknown), never 0.
+    """
+    path: str
+    previous_path: Optional[str] = None
+    status: Optional[str] = None  # GitHub's words: added, removed, modified, renamed, copied, changed
+    additions: Optional[int] = None
+    deletions: Optional[int] = None
 
 class LinkMetadata(BaseModel):
     """Metadata specific to link blocks"""
@@ -550,6 +564,7 @@ class BlockGroup(BaseModel):
     code_metadata: Optional[CodeMetadata] = None
     media_metadata: Optional[MediaMetadata] = None
     file_metadata: Optional[FileMetadata] = None
+    file_change_metadata: Optional[FileChangeMetadata] = None
     link_metadata: Optional[LinkMetadata] = None
     semantic_metadata: Optional[SemanticMetadata] = None
     children_records: Optional[list[ChildRecord]] = Field(default=None, description="List of child records associated with this block group")

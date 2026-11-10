@@ -265,6 +265,8 @@ _DOMAIN_SHARED_CODE_TOOL_NAMES: frozenset[str] = frozenset({
     "codegraph__search_code",
     "codegraph__outline",
     "codegraph__impact",
+    "codegraph__impact_of_diff",
+    "codegraph__history",
     "codegraph__entry_points",
 })
 # The named-entity and typed-value tools, SHARED with the exploration child
@@ -304,6 +306,7 @@ _CODE_TRAVERSAL_TOOLS = frozenset({
     "codegraph__find_symbol_path",
     # A walk too, grouped by file; and an outline is a few hundred bytes.
     "codegraph__impact",
+    "codegraph__impact_of_diff",
     "codegraph__outline",
 })
 

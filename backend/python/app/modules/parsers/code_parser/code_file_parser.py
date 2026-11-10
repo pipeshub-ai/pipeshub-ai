@@ -23,7 +23,7 @@ from app.models.blocks import (
     GroupSubType,
     GroupType,
 )
-from app.modules.code_graph.version import PARSER_VERSION
+from app.modules.code_graph.version import EMBED_UNITS_VERSION, PARSER_VERSION
 from app.modules.parsers import parse_pool
 from app.modules.parsers.code_parser.engine import parse_code
 from app.modules.parsers.code_parser.lang_config import (
@@ -34,6 +34,7 @@ from app.modules.parsers.code_parser.lang_config import (
 )
 from app.modules.parsers.code_parser.models import DECLARATION, Relation
 from app.services.parsing.interface import ParseResult, ParserProvider
+from app.services.resource_governor.kinds import ParseKind
 from app.utils.env_config import env_int
 
 if TYPE_CHECKING:
@@ -216,7 +217,7 @@ class CodeFileParser:
         if parse_pool.should_offload(len(content)):
             return await parse_pool.submit(
                 parse_code_to_blocks, content, record_name, file_path, language,
-                label=file_path or record_name, size=len(content),
+                label=file_path or record_name, size=len(content), kind=ParseKind.CODE,
             )
         return await asyncio.to_thread(
             self.parse_to_blocks, content, record_name, file_path, language
@@ -365,8 +366,8 @@ class CodeFileParser:
     def _build_group(self, sym: ParsedSymbol, qualified_name: str, index: int,
                      language: str, parent_group: int | None = None) -> BlockGroup:
         # A container keeps its whole body. Its children are subsets of it, which
-        # costs nothing in vectors: vectorstore only embeds table/view groups, so
-        # a code group's text never reaches Qdrant.
+        # costs nothing in vectors: a code group embeds only its header unit
+        # (code_units.class_header_unit), never this text.
         return BlockGroup(
             index=index,
             name=sym.name,
@@ -380,7 +381,9 @@ class CodeFileParser:
                 "start_line": sym.start_line,
                 "end_line": sym.end_line,
             },
-            content_hash=_content_hash(sym.text),
+            # Folding in what a group embeds re-indexes classes on the next reconcile after a bump,
+            # while their members' hashes, and so their vectors, stay as they are.
+            content_hash=_content_hash(EMBED_UNITS_VERSION + sym.text),
             children=BlockGroupChildren(),
             code_metadata=self._code_metadata(sym, qualified_name, language),
         )
@@ -416,6 +419,7 @@ class CodeFileParser:
             signature=_extract_signature(sym.text) if sym.name else None,
             docstring=_extract_docstring(sym.text, language),
             decorators=list(sym.decorators) or None,
+            is_accessor=sym.is_accessor or None,
             modifiers=list(sym.modifiers) or None,
             type_param_count=sym.type_param_count or None,
             qualified_name=qualified_name,
@@ -428,10 +432,13 @@ class CodeFileParser:
         """Bucket pending facts by owning block; return the file-level ones."""
         buckets: dict[tuple[bool, int] | None, list[dict]] = {}
         seen: dict[tuple[bool, int] | None, set[tuple]] = {}
+        # Functions passed as values get a budget of their own, so they never crowd out a block's calls.
+        kept: dict[tuple[tuple[bool, int] | None, bool], int] = {}
         for fact in parsed.pending:
             key = placement.get(fact.from_symbol) if fact.from_symbol is not None else None
             facts = buckets.setdefault(key, [])
-            if len(facts) >= MAX_FACTS_PER_BLOCK:
+            budget = (key, fact.relation == Relation.INDIRECT_CALL)
+            if kept.get(budget, 0) >= MAX_FACTS_PER_BLOCK:
                 continue
             fact_dict = fact.to_dict()
             # The same call on another line resolves to the same edge.
@@ -439,6 +446,7 @@ class CodeFileParser:
             if identity in seen.setdefault(key, set()):
                 continue
             seen[key].add(identity)
+            kept[budget] = kept.get(budget, 0) + 1
             facts.append(fact_dict)
 
         for key, facts in buckets.items():

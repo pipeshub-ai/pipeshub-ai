@@ -8,6 +8,7 @@ import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { MentionIcon } from '@/chat/components/mention-icon';
 import { locateMentionNames, mentionLabel, type MentionNode } from '@/chat/utils/node-mentions';
 import { CHAT_LINK_STYLE, cutOutsideUrl, findUrls, shortLinkLabel } from '@/chat/utils/link-label';
+import { parseQuotedSelection, readableQuotedSelection } from '@/chat/utils/quoted-selection';
 
 export const QUESTION_CHAR_LIMIT = 250;
 export const EXPANDED_MAX_HEIGHT_PX = 360;
@@ -184,7 +185,7 @@ function QueryActions({
   }, [copied]);
 
   const handleCopy = useCallback(() => {
-    void navigator.clipboard.writeText(question).then(() => {
+    void navigator.clipboard.writeText(readableQuotedSelection(question)).then(() => {
       setCopied(true);
     }).catch(() => {});
   }, [question]);
@@ -228,21 +229,45 @@ export function ExpandableUserQuery({
 
   useEffect(() => setExpanded(false), [question]);
 
-  const isLong = Boolean(question.trim()) && question.length > QUESTION_CHAR_LIMIT;
+  const quoted = parseQuotedSelection(question);
+  const displayQuestion = quoted.question;
+  const isLong = Boolean(displayQuestion.trim()) && displayQuestion.length > QUESTION_CHAR_LIMIT;
   const showEdit = Boolean(!isStreaming && messageId && onEdit);
   const toggle = () => setExpanded((prev) => !prev);
+
+  const quoteCard = quoted.excerpt ? (
+    <Box
+      data-testid="user-query-quote"
+      style={{
+        marginTop: 'var(--space-3)',
+        marginBottom: displayQuestion.trim() ? 'var(--space-2)' : 0,
+        padding: 'var(--space-2) var(--space-3)',
+        borderRadius: 'var(--radius-2)',
+        backgroundColor: 'var(--olive-3)',
+        borderLeft: '3px solid var(--olive-8)',
+        color: 'var(--slate-11)',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        fontSize: 'var(--font-size-2)',
+        lineHeight: 1.45,
+      }}
+    >
+      {quoted.excerpt}
+    </Box>
+  ) : null;
 
   if (!isLong || !expanded) {
     const displayed =
       isLong && !expanded
-        ? question.slice(0, cutOutsideUrl(question, QUESTION_CHAR_LIMIT)).trimEnd() + '…'
-        : question;
+        ? displayQuestion.slice(0, cutOutsideUrl(displayQuestion, QUESTION_CHAR_LIMIT)).trimEnd() + '…'
+        : displayQuestion;
 
     return (
       <Box
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
       >
+        {quoteCard}
         <Heading
           size="5"
           weight="medium"
@@ -250,12 +275,12 @@ export function ExpandableUserQuery({
           style={{
             color: 'var(--slate-12)',
             lineHeight: 1.3,
-            paddingTop: 'var(--space-3)',
+            paddingTop: quoted.excerpt ? 0 : 'var(--space-3)',
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',
           }}
         >
-          {withMentions(displayed, mentions)}
+          {displayed ? withMentions(displayed, mentions) : null}
           <span
             data-testid="user-query-inline-actions"
             style={{ marginLeft: 'var(--space-2)', verticalAlign: 'middle', display: 'inline-flex' }}
@@ -278,7 +303,8 @@ export function ExpandableUserQuery({
   }
 
   return (
-    <Box style={{ paddingTop: 'var(--space-3)' }}>
+    <Box style={{ paddingTop: quoted.excerpt ? 0 : 'var(--space-3)' }}>
+      {quoteCard}
       <Box
         data-testid="user-query-bubble"
         style={{
@@ -302,7 +328,7 @@ export function ExpandableUserQuery({
             overflowY: 'auto',
           }}
         >
-          {withMentions(question, mentions)}
+          {withMentions(displayQuestion, mentions)}
         </Text>
         <Flex
           data-testid="user-query-actions"

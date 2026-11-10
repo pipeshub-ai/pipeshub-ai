@@ -98,7 +98,7 @@ async def test_a_failed_bump_rolls_the_sync_back_instead_of_committing_a_change_
     processor, conn, space, page, *_ = await _world(backend)
     g0 = await _gen(backend.provider, conn)
 
-    async def refuse(tx_store, connector_id) -> None:
+    async def refuse(tx_store, connector_id, roots=None) -> None:
         raise RuntimeError("no bump")
 
     monkeypatch.setattr(module, "bump_generation_in", refuse)

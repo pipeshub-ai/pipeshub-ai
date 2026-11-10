@@ -23,7 +23,7 @@ from app.core.org_context import (
 )
 from app.models.entities import AppRole, AppUser, AppUserGroup, Person, User
 from app.schema.node_validator import SchemaValidationError
-from app.services.graph_db.common.utils import dedupe_agents_by_id
+from app.services.graph_db.common.utils import dedupe_agents_by_id, is_full_address
 from app.services.graph_db.postgres.base import (
     _VALIDATOR,
     NotImplementedInPostgres,
@@ -285,6 +285,29 @@ class IdentityMixin(PgBase):
             ORDER BY lower(coalesce(o.doc->>'fullName', o.doc->>'email', '')) COLLATE "C", o.id COLLATE "C" """, [current_org_id(), wanted, max(1, limit)], None)
         return [dict(r) for r in rows]
 
+    async def find_people(self, org_id: str, query: str, *, limit: int = 10) -> list[dict[str, Any]]:
+        # Not _soft: a failed read raises. An email matches only as one whole address, never a fragment.
+        wanted_raw = " ".join((query or "").split())
+        if not org_id or not wanted_raw or not self._mine(org_id):
+            return []
+        wanted = await self._q(lambda tx: tx.fetchval("/* pipeshub:graph.lower */ SELECT lower($1::text)", wanted_raw), None)
+        if "@" in wanted:
+            if not is_full_address(wanted):
+                return []
+            rows = await self._id_rows("""/* pipeshub:graph.find_people_by_email */ SELECT p.id, p.doc->>'fullName' AS "fullName", p.doc->>'email' AS email FROM graph.nodes p
+                WHERE p.org_id = $1 AND p.coll = 'person' AND lower(p.doc->>'email') = $2 ORDER BY p.id COLLATE "C" LIMIT $3""", [current_org_id(), wanted, max(1, limit)], None)
+            return [dict(r) for r in rows]
+        rows = await self._id_rows("""/* pipeshub:graph.find_people */ WITH u AS (
+              SELECT x.id, x.doc, array_to_string(array_remove(string_to_array(lower(coalesce(x.doc->>'fullName', '')), ' '), ''), ' ') AS name,
+                     array_to_string(array_remove(string_to_array(lower(coalesce(x.doc->>'firstName', '') || ' ' || coalesce(x.doc->>'lastName', '')), ' '), ''), ' ') AS parts
+              FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = 'person'),
+            hits AS (
+              SELECT id, doc, name, (name = $2 OR parts = $2) AS exact FROM u
+              WHERE name = $2 OR parts = $2 OR (length($2) >= 3 AND (starts_with(name, $2) OR EXISTS (SELECT 1 FROM unnest(string_to_array(name, ' ')) w WHERE starts_with(w, $2)))))
+            SELECT id, doc->>'fullName' AS "fullName", doc->>'email' AS email FROM hits WHERE exact OR NOT EXISTS (SELECT 1 FROM hits WHERE exact)
+            ORDER BY name COLLATE "C", id COLLATE "C" LIMIT $3""", [current_org_id(), wanted, max(1, limit)], None)
+        return [dict(r) for r in rows]
+
     async def get_graph_user_keys_by_mongo_user_ids(self, user_ids: list[str], org_id: str | None = None, *, chunk_size: int) -> dict[str, str]:
         if not user_ids:
             return {}
@@ -331,6 +354,16 @@ class IdentityMixin(PgBase):
             if raise_on_error:
                 raise
             return []
+
+    async def get_app_user_links(self, org_id: str, connector_id: str, transaction: str | None = None) -> list[dict]:
+        """Every user of the org linked to the app with a source user id, guests included; a failed read raises."""
+        if not self._mine(org_id):
+            return []
+        rows = await self._id_rows("""/* pipeshub:graph.get_app_user_links */ SELECT r.from_id AS id, r.doc->>'sourceUserId' AS sid
+            FROM graph.edges r JOIN graph.nodes u ON u.org_id = r.org_id AND u.coll = 'users' AND u.id = r.from_id
+            WHERE r.org_id = $1 AND r.coll = 'userAppRelation' AND r.from_coll = 'users' AND r.to_id = $2
+              AND r.doc->>'sourceUserId' IS NOT NULL""", [current_org_id(), connector_id], transaction)
+        return [{"id": r["id"], "sourceUserId": r["sid"]} for r in rows]
 
     async def batch_upsert_app_users(self, users: list, transaction: str | None = None) -> None:
         if not users:

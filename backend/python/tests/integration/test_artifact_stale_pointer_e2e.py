@@ -276,6 +276,34 @@ async def test_shared_content_same_bytes_interleaved(world: World) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_write_stalled_before_its_set_does_not_overwrite_a_newer_writes_set(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """X stored first and is held up before its set goes up; Y stores after X, writes its whole set and
+    moves the pointer. X's late manifest must not replace Y's: the pointer names Y's run."""
+    vrid = world.vrid()
+    x, y = world.record(vrid, A, name="x"), world.record(vrid, A, name="y")
+    await world.put_record_node(y, _rev(A))
+    writer_class = type(world.sink.artifact_writer)
+    real_write = writer_class.write_revision
+    stalled = False
+
+    async def write_revision(self: Any, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        nonlocal stalled
+        if not stalled:
+            stalled = True
+            await world.index(y, _rev(A))  # runs the whole of Y's write, this call nested in it passes
+        return await real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(writer_class, "write_revision", write_revision)
+    await world.index(x, _rev(A))
+
+    world.reads.clear()
+    assert await world.read(vrid) == A
+    assert world.reads == ["served"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("order", ["x_then_y", "y_then_x"])
 @pytest.mark.parametrize("y_set", ["written", "refused"])
 async def test_shared_vrid_two_revisions_interleaved(world: World, order: str, y_set: str) -> None:

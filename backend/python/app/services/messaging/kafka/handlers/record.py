@@ -55,6 +55,7 @@ from app.modules.indexing.connector_off_events import (
     resuming_enrichment as record_resuming_enrichment,
 )
 from app.modules.indexing.duplicate_reconcile import DuplicateReconciler
+from app.modules.indexing.embed_resume import chain_end_fields, end_attempt
 from app.modules.indexing.parse_now_marker import (
     PARSE_NOW_REV,
     PARSE_NOW_STATUS,
@@ -1542,6 +1543,7 @@ class RecordEventHandler(BaseEventService):
         parse_now_refused = False
         # Nothing of an earlier delivery's run survives into this one.
         end_run()
+        end_attempt()
         try:
             if not event_type:
                 # A message with no event type is a producer bug: acking it
@@ -2611,6 +2613,7 @@ class RecordEventHandler(BaseEventService):
 
             # Last, so every status write above is shaped by the run.
             end_run()
+            end_attempt()
 
     async def __update_document_status(
         self,
@@ -2634,6 +2637,7 @@ class RecordEventHandler(BaseEventService):
                 "indexingStatus": indexing_status,
                 "extractionStatus": extraction_status,
                 "processingStartedAt": None,
+                **chain_end_fields(indexing_status),
             }
             # Mirror the terminal status onto parsingStatus, but never
             # downgrade a parse that already completed in this attempt.
