@@ -146,6 +146,9 @@ _MAX_SEARCH_RESULTS = 10000
 # servers cap a foreground (``search-workers 0``) query at 60 s, so operators who
 # want a hard guarantee can also set ``search-on-timeout FAIL``.
 _NO_TIMEOUT = ("TIMEOUT", "0")
+# How long a key lookup waits for documents written just before it to show up in the index (0.75 s in all).
+_SETTLE_ATTEMPTS = 5
+_SETTLE_DELAY_SECONDS = 0.05
 
 # Page size for paged deletes and aggregate-cursor reads.
 _DELETE_PAGE_SIZE = 500
@@ -1401,7 +1404,24 @@ class RedisVectorService(IVectorDBService):
     async def _keys_matching_filter(
         self, collection_name: str, filter_expr: FilterExpression
     ) -> list[bytes]:
-        """Return all Redis keys in a collection matching a filter expression.
+        """Return all Redis keys in a collection matching a filter expression, waiting briefly for an index
+        still settling after a write: a scan that finds fewer than it counted is read again, and raises only
+        when it stays short. Callers such as the scope back-fill do not retry, so a short scan would cost them
+        the record."""
+        delay = _SETTLE_DELAY_SECONDS
+        for attempt in range(_SETTLE_ATTEMPTS):
+            keys, total = await self._scan_matching_keys(collection_name, filter_expr)
+            if len(keys) >= total:
+                return keys
+            if attempt + 1 < _SETTLE_ATTEMPTS:
+                await asyncio.sleep(delay)
+                delay *= 2
+        raise RuntimeError(f"Key lookup on '{collection_name}' returned {len(keys)} of {total} counted key(s)")
+
+    async def _scan_matching_keys(
+        self, collection_name: str, filter_expr: FilterExpression
+    ) -> tuple[list[bytes], int]:
+        """The keys a scan finds and the number a count query reported for the same filter.
 
         Read through an aggregate cursor, not ``FT.SEARCH ... LIMIT offset``: an unsorted offset page is not
         stable across calls (documents still settling in the index move between pages), so a page-by-page
@@ -1410,7 +1430,7 @@ class RedisVectorService(IVectorDBService):
         keys than a count query reported for the same filter raises instead of answering with a part. The
         count is a separate ``FT.SEARCH ... LIMIT 0 0``: the first integer of an aggregate reply is not
         defined as the number of matches. Documents may change between the two calls, so only a scan that
-        finds fewer than counted raises (a retry by the caller then sees a settled index).
+        finds fewer than counted is short.
         """
         idx = self._index_name(collection_name)
         query = filter_expression_to_redis_query(filter_expr)
@@ -1460,11 +1480,7 @@ class RedisVectorService(IVectorDBService):
                 f"Key lookup on '{collection_name}' failed after {len(found)} key(s): {e}"
             ) from e
 
-        if len(found) < total:
-            raise RuntimeError(
-                f"Key lookup on '{collection_name}' returned {len(found)} of {total} counted key(s)"
-            )
-        return list(found)
+        return list(found), total
 
     # ------------------------------------------------------------------
     # Internal guards
