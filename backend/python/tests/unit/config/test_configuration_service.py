@@ -617,6 +617,51 @@ class TestDeleteConfig:
         assert result is False
 
     @pytest.mark.asyncio
+    async def test_delete_absent_key_logs_debug_not_error(self, caplog) -> None:
+        store = AsyncMock()
+        store.delete_key = AsyncMock(return_value=False)
+        svc = _build_service(store)
+        caplog.set_level(logging.DEBUG, logger="test-config")
+
+        assert await svc.delete_config("/missing") is False
+
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+        assert any(r.levelno == logging.DEBUG and "/missing" in r.getMessage() for r in caplog.records)
+        store.publish_change.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delete_store_failure_logs_one_classified_error(self, caplog) -> None:
+        store = AsyncMock()
+        store.delete_key = AsyncMock(side_effect=ConnectionError("Failed to delete key: Error 111 connecting"))
+        svc = _build_service(store)
+        svc.cache["/k"] = "val"
+        caplog.set_level(logging.DEBUG, logger="test-config")
+
+        assert await svc.delete_config("/k") is False
+
+        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert len(errors) == 1
+        assert errors[0].getMessage() == "config.delete.failed"
+        assert errors[0].error_class == "unavailable"
+        assert errors[0].config_path == "/k"
+        assert errors[0].exc_text
+        assert svc.cache["/k"] == "val"
+
+    @pytest.mark.asyncio
+    async def test_delete_twice_on_real_store_errors_never(self, caplog) -> None:
+        from app.config.providers.in_memory_store import InMemoryKeyValueStore
+
+        store = InMemoryKeyValueStore(logging.getLogger("test-config-store"))
+        await store.create_key("/k", {"a": 1})
+        svc = _build_service(store)
+        caplog.set_level(logging.DEBUG, logger="test-config")
+
+        assert await svc.delete_config("/k") is True
+        assert await svc.delete_config("/k") is False
+
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    @pytest.mark.asyncio
     async def test_delete_publishes_invalidation_for_redis(self):
         store = AsyncMock()
         store.delete_key = AsyncMock(return_value=True)
