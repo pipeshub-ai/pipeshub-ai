@@ -3,7 +3,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.json_schema import SkipJsonSchema
 
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
@@ -77,12 +78,18 @@ class Source(BaseModel):
 
 
 class ToolResult(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     tool_call_id: str
     name: str
     content: Any
     is_error: bool = False
     sources: list[Source] = Field(default_factory=list)
     artifact_meta: ToolMessageMeta | None = None
+    # For the executor's `tool_call.end` only (as `ToolOutput.cause`/`end_fields`): a special route's
+    # handled failure. Never dumped, never in a schema.
+    cause: SkipJsonSchema[BaseException | None] = Field(default=None, exclude=True, repr=False)
+    end_fields: SkipJsonSchema[dict[str, Any]] = Field(default_factory=dict, exclude=True, repr=False)
 
 
 class Confidence(str, Enum):

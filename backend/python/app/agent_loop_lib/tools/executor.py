@@ -118,6 +118,7 @@ class _Ended:
     reason: str | None = "exception"
     output: ToolOutput | None = None
     duration_ms: int | None = None
+    deny_reason: str | None = None
 
 
 def _collapse_repeated_name(name: str) -> str | None:
@@ -272,7 +273,7 @@ class ToolExecutor:
         fields = {key: output.end_fields.get(key) for key in _END_FIELD_KEYS} if output is not None else {}
         cause = raised or (output.cause if output is not None and ended.outcome == "failure" else None)
         log_tool_call_end(
-            outcome=ended.outcome, reason=ended.reason, cause=cause,
+            outcome=ended.outcome, reason=ended.reason, cause=cause, deny_reason=ended.deny_reason,
             kind=tool.log_kind if tool is not None else None, duration_ms=ended.duration_ms, **fields,
         )
 
@@ -327,6 +328,7 @@ class ToolExecutor:
             if on_denied is not None:
                 await on_denied(reason)
             ended.outcome, ended.reason = "skipped", "denied"
+            ended.deny_reason = pre_ctx.decision_code
             return CoreToolResult(tool_call_id=call.id, name=call.name, content=reason, is_error=True)
 
         from app.agent_loop_lib.transport.opik_tracing import (
@@ -426,6 +428,8 @@ class ToolExecutor:
                     data=core_result.content,
                     error=str(core_result.content) if core_result.is_error else None,
                     sources=list(core_result.sources),
+                    cause=core_result.cause,
+                    end_fields=core_result.end_fields,
                 )
             tool = self._registry.resolve_by_name(resolved_name)
         except ToolNotFoundError:
