@@ -159,7 +159,9 @@ export function endUpstreamCall(
     method: call.method,
     route: call.target.route,
     status,
-    duration_ms: Math.round(Number(process.hrtime.bigint() - call.started) / 1e6),
+    duration_ms: Math.round(
+      Number(process.hrtime.bigint() - call.started) / 1e6,
+    ),
     attempt: call.attempt,
     outcome: errorClass === undefined ? 'success' : 'failure',
     error_class: errorClass,

@@ -358,7 +358,9 @@ const errorForStatus = (
       // so the reader gets the plain sentence instead. The status as the cause
       // lets the log class an upstream 5xx as theirs (a 405 stays ours).
       return withCause(
-        markClientSafe(new InternalServerError(serverFailureMessage(operation))),
+        markClientSafe(
+          new InternalServerError(serverFailureMessage(operation)),
+        ),
         { status: statusCode },
       );
   }

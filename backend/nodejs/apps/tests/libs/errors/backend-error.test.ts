@@ -319,7 +319,7 @@ describe('handleBackendError', () => {
         { statusCode: 404, data: { detail: 'gone' } },
         { statusCode: 405, data: { detail: 'Method Not Allowed' } },
         { statusCode: 429, data: { detail: 'slow down' } },
-        { statusCode: 500, data: { detail: `broke for ${'alice@example.com'}` } },
+        { statusCode: 500, data: { detail: 'broke for alice@example.com' } },
         { statusCode: 502, data: { detail: 'broke' } },
         { statusCode: 500, data: { detail: 'ECONNREFUSED' } },
         new Error('no status'),
