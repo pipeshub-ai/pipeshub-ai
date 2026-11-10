@@ -10,11 +10,13 @@ and read back from the graph, the store and a search. A membership the graph can
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import replace
 from typing import Any
 
 import pytest
 
+from app.services.permissions.structure_generation import register_pending_roots
 from app.services.vector_db import scope_rewrite
 from app.services.vector_db.scope_backfill import DONE, FAILED
 
@@ -123,7 +125,8 @@ async def test_a_virtual_record_whose_membership_cannot_be_resolved_is_left_stal
     assert not seen.leaks and not await env.problems()
 
 
-async def test_a_connector_that_moves_while_the_pass_marks_an_unplaced_record_does_not_fail_the_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_connector_that_moves_while_the_pass_marks_an_unplaced_record_fails_the_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The record is on no marker, and a release could make the connector current without another pass."""
     env = await Env.make(WorldStore().world("golden/confluence_hr"))
     await env.change((HR_MOVE,), whole=True)
     bad = env.vrids()["page:Onboarding"]
@@ -139,7 +142,8 @@ async def test_a_connector_that_moves_while_the_pass_marks_an_unplaced_record_do
     monkeypatch.setattr(scope_rewrite, "resolve_virtual_record_state", unresolved)
     monkeypatch.setattr(env.backfill._membership, "_mark_stale", moved)
     done = await env.backfill.run_connector(ORG, "w:app", restart=True)
-    assert done.state == DONE and done.stale == 1, done.line()
+    assert done.state == FAILED and done.error == "GenerationMoved", done.line()
+    assert "w:app" not in await env.current()
 
 
 async def test_a_membership_write_the_store_does_not_apply_leaves_the_pass_failed_not_done(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -240,11 +244,34 @@ async def test_the_back_fill_does_not_wedge_on_a_connector_that_never_stops_chan
 
     Tap(env, never_still)
     done = await env.backfill.run_connector(ORG, "w:app", restart=True)
-    assert done.state == DONE            # the pass finished its pages; it ends not current, so the next pass does the work again
+    assert done.state == FAILED          # a page left unwritten must not count as covered; the next pass does the work again
     assert "w:app" not in await env.current()
     live["on"] = False
     again = await env.backfill.run_connector(ORG, "w:app", restart=True)
     assert again.state == DONE and not await env.problems() and "w:app" in await env.current()
+
+
+async def test_a_page_the_connector_kept_moving_under_cannot_be_released_by_a_later_rewrite() -> None:
+    """Every move lists a root of its own, which is what lets a rewrite release a finished pass without running a new one. The records of the
+    page were never written, so the pass must not count as finished."""
+    env = await Env.make(WorldStore().world("golden/confluence_hr"), settle_seconds=0.2)
+    await env.change((HR_MOVE,), whole=True)
+    live, roots = {"on": True}, itertools.count()
+
+    async def moves_with_a_root(name: str) -> None:
+        if live["on"] and name == "retrieve_points":
+            await register_pending_roots(env.graph, "w:app", [f"w:elsewhere-{next(roots)}"])
+
+    Tap(env, moves_with_a_root)
+    done = await env.backfill.run_connector(ORG, "w:app", restart=True)
+    assert done.state == FAILED, done.line()
+    live["on"] = False
+    result = await env.run_job("app")
+    assert not result.released, result
+    assert "w:app" not in await env.current()
+    seen = Log()
+    await env.audit(seen)
+    assert not seen.leaks, seen.leaks[:2]
 
 
 async def test_the_stale_marker_of_a_record_whose_membership_cannot_be_resolved_lands_over_a_fence_ahead(monkeypatch: pytest.MonkeyPatch) -> None:
