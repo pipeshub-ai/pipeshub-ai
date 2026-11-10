@@ -17,6 +17,8 @@ So the tests here are about *what the drain leaves behind* and *how much it
 releases*, not about whether it publishes.
 """
 
+import asyncio
+import contextvars
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -27,6 +29,10 @@ from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.sync.sync_coordinator import _now_ms
 from app.connectors.core.sync.sync_dispatcher import SubmitResult
 from app.connectors.core.sync.sync_runner import _QUEUE_GRACE_MS, drain_queued_syncs
+from app.core import org_context
+from app.core.org_context import OrgContext
+from app.utils.logger import log_record_fields
+from tests.support.org_partitioned_graph import ArangoLikeGraph, FakeGraph, PgLikeGraph
 
 _LOG = logging.getLogger("test")
 
@@ -38,7 +44,7 @@ def _graph(queued_docs, orgs=None, apps=None) -> AsyncMock:
     gp.get_org_apps = AsyncMock(
         return_value=apps
         if apps is not None
-        else [{"_key": d["id"], "type": "Gmail"} for d in queued_docs if d.get("id")]
+        else [{"_key": d["id"], "type": "Gmail", "isActive": True} for d in queued_docs if d.get("id")]
     )
     gp.update_node = AsyncMock()
     return gp
@@ -147,6 +153,7 @@ class TestWhichConnectorsAreOwedASync:
         a, b, c = _run(gp, dispatcher=disp)
         with a, b, c:
             assert await drain_queued_syncs(gp, _LOG) == []
+        gp.get_nodes_by_field_in.assert_awaited()       # it did read the queue
         disp.submit.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -242,3 +249,234 @@ class TestPublishingIsNotAdmission:
         a, b, c = _run(gp, dispatcher=disp, coordinator=_coordinator(running=0), limit="8")
         with a, b, c:
             assert await drain_queued_syncs(gp, _LOG) == ["c2"]
+
+
+# --- org by org: one pass reads each org's queue under that org, then publishes oldest first across orgs, each under its own org ---
+
+_DRAIN_LOG = logging.getLogger("drain-under-test")
+_ORGS = [{"_key": "a", "isActive": True}, {"_key": "b", "isActive": True}]
+
+
+def _queued(key: str, *, queued_at: int = 0, flagged: bool = True, **fields) -> dict:
+    """A QUEUED App document; a field given as None is left out."""
+    doc = {"_key": key, "type": "Gmail", "status": AppStatus.QUEUED.value, "isActive": True,
+           ConnectorStateKeys.PENDING_RESYNC: flagged, "updatedAtTimestamp": _now_ms(), "queuedAtTimestamp": queued_at, **fields}
+    return {k: v for k, v in doc.items() if v is not None}
+
+
+def _two_orgs(graph_cls: type[FakeGraph], **kwargs) -> FakeGraph:
+    """Orgs a and b, each with a connector owed a resync and one disabled while it waited."""
+    return graph_cls(_ORGS, {org: [_queued(f"q{org}"), _queued(f"off{org}", isActive=False)] for org in "ab"}, **kwargs)
+
+
+class _Recorder:
+    """A dispatcher that records (connector, the spec's org, the org bound when it published)."""
+
+    def __init__(self, gate: asyncio.Event | None = None) -> None:
+        self.published: list[tuple[str, str, str | None]] = []
+        self.gate, self.entered, self.task = gate, asyncio.Event(), None
+
+    async def submit(self, spec) -> SubmitResult:
+        self.task = asyncio.current_task()
+        self.entered.set()
+        if self.gate:
+            await self.gate.wait()
+        bound = org_context.peek()
+        self.published.append((spec.connector_id, spec.org_id, bound.org_id if bound else None))
+        return SubmitResult.ACCEPTED
+
+
+def _one_process(*, budget: int | None = 8, claim: bool = True) -> MagicMock:
+    """A one-process coordinator: it grants the claim and counts its free slots (or, with no budget, cannot count them)."""
+    c = MagicMock(spec=["try_claim_once"] + (["drain_budget"] if budget is not None else []))
+    c.try_claim_once = AsyncMock(return_value=claim)
+    if budget is not None:
+        c.drain_budget = MagicMock(return_value=budget)
+    return c
+
+
+async def _drain(graph, recorder: _Recorder, *, bound: str | None = None,
+                 coordinator: MagicMock | None = None) -> tuple[list[str], OrgContext | None]:
+    """Run the drain detached as the startup does, or with ``bound`` bound as a finalizer does; its result and what is bound after."""
+    context = contextvars.Context()
+    if bound:
+        context.run(org_context._ctx.set, OrgContext(bound, None, "service", "envelope", "t"))
+
+    async def caller() -> tuple[list[str], OrgContext | None]:
+        return await drain_queued_syncs(graph, _DRAIN_LOG), org_context.peek()
+
+    with patch("app.connectors.core.sync.sync_dispatcher.get_dispatcher", return_value=recorder), \
+            patch("app.connectors.core.sync.sync_coordinator.get_coordinator", return_value=coordinator or _one_process()):
+        return await asyncio.get_running_loop().create_task(caller(), context=context)
+
+
+def _cleared(graph) -> list[tuple[str | None, str]]:
+    return [(org, key) for org, key, _, u in graph.updates if u.get(ConnectorStateKeys.PENDING_RESYNC) is False and "status" not in u]
+
+
+def _dropped(graph) -> list[tuple[str | None, str]]:
+    return [(org, key) for org, key, _, u in graph.updates if u.get("status") == AppStatus.IDLE.value]
+
+
+_LINE_FIELDS = ("org_id", "step", "error_message", "unowned", "target_connector_id", "target_connector_ids")
+
+
+def _drain_lines(caplog, level: int) -> list[str]:
+    """Each drain line as its message and the fields that tell it apart, read as the formatters print them."""
+    return [
+        " ".join([r.getMessage(), *(f"{k}={v}" for k, v in log_record_fields(r).items() if k in _LINE_FIELDS)])
+        for r in caplog.records if r.name == _DRAIN_LOG.name and r.levelno == level
+    ]
+
+
+class TestOrgByOrg:
+    @pytest.mark.parametrize("graph_cls", [PgLikeGraph, ArangoLikeGraph])
+    @pytest.mark.parametrize("bound", [None, "a"])
+    async def test_one_pass_releases_every_orgs_queue_each_under_its_org(self, graph_cls, bound, caplog) -> None:
+        """Detached (the startup drain) or inside org a (a finalizer): every org's queue, each read, drop, publish and clear under its org."""
+        caplog.set_level(logging.INFO)
+        graph, rec = _two_orgs(graph_cls), _Recorder()
+        started, after = await _drain(graph, rec, bound=bound)
+
+        assert sorted(started) == ["qa", "qb"]
+        assert sorted(rec.published) == [("qa", "a", "a"), ("qb", "b", "b")]
+        assert sorted(_cleared(graph)) == [("a", "qa"), ("b", "qb")]
+        assert sorted(_dropped(graph)) == [("a", "offa"), ("b", "offb")]
+        assert graph.listings == [("a", "a"), ("b", "b")]
+        assert not _drain_lines(caplog, logging.ERROR) and not _drain_lines(caplog, logging.WARNING)
+        assert (after.org_id if after else None) == bound          # the caller's own org is untouched
+        if graph_cls is ArangoLikeGraph:      # positive control: this store's read under a does return b's queue
+            with org_context.for_org("a", job="t"):
+                assert "qb" in {d["id"] for d in await graph.get_nodes_by_field_in("apps", "status", ["QUEUED"])}
+
+    @pytest.mark.parametrize(("budget", "expected"), [(2, ["q2", "q3"]), (None, ["q2", "q3", "q1"])])
+    async def test_oldest_first_across_orgs_within_one_budget(self, budget, expected) -> None:
+        """Fails on PostgreSQL today (only the bound org is seen); a regression guard on Arango. No budget is the positive control."""
+        graph = PgLikeGraph(_ORGS, {"a": [_queued("q1", queued_at=30)], "b": [_queued("q2", queued_at=10), _queued("q3", queued_at=20)]})
+        rec = _Recorder()
+        started, _ = await _drain(graph, rec, coordinator=_one_process(budget=budget))
+        assert started == expected
+        assert [p[0] for p in rec.published] == expected
+        assert sorted(key for _, key in _cleared(graph)) == sorted(expected)      # q1 keeps its flag when it does not fit
+
+    async def test_one_claim_per_pass_and_a_refused_claim_reads_nothing(self) -> None:
+        """Regression guard: the fleet claim is taken once for every org, not once per org."""
+        coordinator = _one_process()
+        await _drain(_two_orgs(PgLikeGraph), _Recorder(), coordinator=coordinator)
+        coordinator.try_claim_once.assert_awaited_once()
+
+        graph, rec = _two_orgs(PgLikeGraph), _Recorder()
+        assert await _drain(graph, rec, coordinator=_one_process(claim=False)) == ([], None)
+        assert graph.org_list_calls == [] and rec.published == []
+
+    @pytest.mark.parametrize("graph_cls", [PgLikeGraph, ArangoLikeGraph])
+    async def test_one_orgs_failed_read_is_its_error_and_the_next_org_is_still_drained(self, graph_cls, caplog) -> None:
+        """On Arango, b's pass also sees a's queue: a's connectors are not called orgless when a could not answer."""
+        graph, rec = _two_orgs(graph_cls, raising_orgs=frozenset({"a"})), _Recorder()
+        _, after = await _drain(graph, rec, bound="a")
+        assert _drain_lines(caplog, logging.ERROR) == ["sync_step.failed org_id=a step=drain error_message=RuntimeError: unexpected"]
+        assert not _drain_lines(caplog, logging.WARNING)
+        assert rec.published == [("qb", "b", "b")]         # positive control: b is served
+        assert after.org_id == "a"                         # the failure did not leak into the caller's context
+
+    async def test_a_failed_flag_clear_is_one_error_and_the_pass_publishes_the_rest(self, caplog) -> None:
+        """One connector's clear failing must not stop the publish loop: later connectors in every org still go out, all are reported."""
+        graph = _two_orgs(PgLikeGraph)
+        real_update = graph.update_node
+
+        async def update_node(key: str, collection: str, updates: dict, transaction: str | None = None) -> bool:
+            if key == "qa" and updates.get(ConnectorStateKeys.PENDING_RESYNC) is False:
+                raise RuntimeError("write lost")
+            return await real_update(key, collection, updates, transaction)
+
+        graph.update_node = update_node  # type: ignore[method-assign]
+        rec = _Recorder()
+        started, _ = await _drain(graph, rec, coordinator=_one_process(budget=None))
+
+        assert sorted(started) == ["qa", "qb"]                       # qa was published: it is reported as released
+        assert sorted(p[0] for p in rec.published) == ["qa", "qb"]   # b's connector still goes out
+        assert _cleared(graph) == [("b", "qb")]                      # qa keeps its flag, so a later pass re-issues it
+        assert _drain_lines(caplog, logging.ERROR) == [
+            "sync_step.failed org_id=a step=drain target_connector_id=qa error_message=RuntimeError: write lost"
+        ]
+
+    async def test_one_orgs_failed_app_listing_is_one_drain_error_and_nothing_of_that_org_is_touched(self, caplog) -> None:
+        """Arango and Neo4j also log the failure themselves (pre-existing): only the drain's own line is counted here."""
+        graph, rec = _two_orgs(ArangoLikeGraph, failing_orgs=frozenset({"a"})), _Recorder()
+        await _drain(graph, rec)
+        assert _drain_lines(caplog, logging.ERROR) == ["sync_step.failed org_id=a step=drain error_message=RuntimeError: org apps down"]
+        assert [r for r in caplog.records if r.name == "fake-graph" and r.levelno == logging.ERROR]      # the provider's line
+        assert rec.published == [("qb", "b", "b")]
+        assert _dropped(graph) == [("b", "offb")]
+        assert not _drain_lines(caplog, logging.WARNING)      # a's queue, seen from b, is not called orgless
+
+    async def test_an_org_list_failure_is_one_error_and_no_work(self, caplog) -> None:
+        graph, rec = _two_orgs(PgLikeGraph, orgs_error=RuntimeError("orgs down")), _Recorder()
+        assert await _drain(graph, rec) == ([], None)
+        assert _drain_lines(caplog, logging.ERROR) == ["sync_step.failed step=drain error_message=RuntimeError: orgs down"]
+        assert graph.org_list_calls == [{"kind": "system", "active": True, "is_external": False, "raise_on_error": False}]
+        assert rec.published == [] and graph.updates == []
+
+    async def test_a_connector_no_visited_org_lists_is_warned_once_and_left_alone(self, caplog) -> None:
+        """Both org passes see the edge-less Apps (Arango reads across orgs); neither the owed nor the disabled one is touched."""
+        graph = ArangoLikeGraph(_ORGS, {"a": [_queued("qa"), _queued("lone"), _queued("lone-off", isActive=False)]},
+                                unlinked=frozenset({"lone", "lone-off"}))
+        rec = _Recorder()
+        await _drain(graph, rec)
+        assert _drain_lines(caplog, logging.WARNING) == [
+            "Pending resync flagged on connectors that belong to no active org; leaving them alone"
+            " unowned=2 target_connector_ids=lone,lone-off"]
+        assert rec.published == [("qa", "a", "a")]          # positive control: the linked one is published
+        assert [(org, key) for org, key, *_ in graph.updates] == [("a", "qa")]      # only the published one's flag clear
+
+    async def test_isactive_unset_is_not_published_and_isactive_false_is_dropped(self, caplog) -> None:
+        """Parity with the old get_org_apps(active_only=True): an App with isActive unset was never resolved, so never published."""
+        caplog.set_level(logging.INFO)
+        graph = PgLikeGraph(_ORGS, {"a": [_queued("qa"), _queued("unset", isActive=None), _queued("off", isActive=False)]})
+        rec = _Recorder()
+        await _drain(graph, rec)
+        assert rec.published == [("qa", "a", "a")]
+        assert _drain_lines(caplog, logging.WARNING) == [
+            "Pending resync flagged on connectors that belong to no active org; leaving them alone"
+            " unowned=1 target_connector_ids=unset"]
+        assert _dropped(graph) == [("a", "off")]
+        assert "Dropped the queued sync of an inactive connector org_id=a target_connector_id=off" in _drain_lines(caplog, logging.INFO)
+
+    async def test_a_deactivated_orgs_queue_is_not_read(self) -> None:
+        graph = PgLikeGraph([*_ORGS, {"_key": "c", "isActive": False}], {"a": [_queued("qa")], "c": [_queued("qc")]})
+        rec = _Recorder()
+        await _drain(graph, rec)
+        assert [c["active"] for c in graph.org_list_calls] == [True]
+        assert graph.reads == ["a", "b"]
+        assert rec.published == [("qa", "a", "a")]
+
+    async def test_a_connector_linked_to_two_orgs_is_released_once_by_the_first(self) -> None:
+        """Arango/Neo4j: duplicate orgAppRelation edges. Once a has claimed it, b's pass has nothing to act on and lists no apps."""
+        both = _queued("both")
+        graph, rec = ArangoLikeGraph(_ORGS, {"a": [both], "b": [both]}), _Recorder()
+        assert (await _drain(graph, rec))[0] == ["both"]
+        assert rec.published == [("both", "a", "a")]
+        assert _cleared(graph) == [("a", "both")]
+        assert graph.listings == [("a", "a")]
+
+    async def test_a_queue_with_nothing_owed_lists_no_apps(self) -> None:
+        """Everything queued is in flight (unflagged, inside the grace window): each org's read, and no app listing."""
+        graph = ArangoLikeGraph(_ORGS, {org: [_queued(f"q{org}", flagged=False)] for org in "ab"})
+        rec = _Recorder()
+        assert (await _drain(graph, rec))[0] == []
+        assert graph.reads == ["a", "b"]                    # positive control: both orgs were read
+        assert graph.listings == [] and rec.published == []
+
+    async def test_cancelling_the_caller_cancels_the_pass_and_frees_the_lock(self) -> None:
+        """Regression guard: the pass runs in its own task now, and a cancel must still reach it and release the lock."""
+        graph, blocked = _two_orgs(ArangoLikeGraph), _Recorder(gate=asyncio.Event())
+        caller = asyncio.create_task(_drain(graph, blocked))
+        await blocked.entered.wait()
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert blocked.task.cancelled()
+        assert blocked.published == [] and _cleared(graph) == []
+
+        rec = _Recorder()                                   # positive control: the next pass runs
+        assert sorted((await _drain(graph, rec))[0]) == ["qa", "qb"]

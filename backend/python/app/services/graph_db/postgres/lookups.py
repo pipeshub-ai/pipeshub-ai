@@ -933,9 +933,14 @@ class LookupsMixin(PgBase):
         """The connector's records after ``after_key`` in key order (byte order, as the cursor compares), as ``PAGE_RECORD_FIELDS``. A failure raises: an empty page
         reads as "finished" to the backfill, which would then mark the connector done having processed nothing. The ambient org's records only: the job binds the connector's own org."""
         n = max(1, int(limit))
-        sql = """/* pipeshub:graph.page_records_for_vector_membership_backfill */ SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
-            AND n.doc->>'connectorId' = $2 AND ($3::text IS NULL OR n.id COLLATE "C" > $3::text COLLATE "C") ORDER BY n.id COLLATE "C" LIMIT $4"""
-        rows = await self._lrows(sql, current_org_id(), connector_id, after_key or None, n, transaction=transaction)      # one org: a system scope raises, no org is guessed
+        org = current_org_id()      # one org: a system scope raises, no org is guessed
+        if isinstance(connector_id, str) and 0 < len(connector_id) <= 200 and len(after_key or "") <= 200 and n <= 1000:      # the vetted read of graph_0006
+            rows = await self._lrows("/* pipeshub:graph.records_page_by_connector */ SELECT node_id AS id, doc FROM graph.records_page_by_connector($1, $2, $3)",
+                                     connector_id, after_key or "", n, transaction=transaction)
+        else:
+            rows = await self._lrows("""/* pipeshub:graph.page_records_for_vector_membership_backfill */ SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = 'records'
+                AND n.doc->>'connectorId' = $2 AND ($3::text IS NULL OR n.id COLLATE "C" > $3::text COLLATE "C") ORDER BY n.id COLLATE "C" LIMIT $4""",
+                                     org, connector_id, after_key or None, n, transaction=transaction)
         return [{"_key": r["id"], **{f: _doc(r["doc"]).get(f) for f in PAGE_RECORD_FIELDS if f != "_key"}} for r in rows]
 
     async def _fetch_existing_file_names_in_parent(self, kb_id: str, parent_folder_id: str | None, transaction: str | None = None, *,

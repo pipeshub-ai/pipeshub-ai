@@ -23,7 +23,7 @@ from contextlib import (
     contextmanager,
     nullcontext,
 )
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
 
@@ -47,6 +47,7 @@ EVENT_STRIKE = "credential_refresh.strike"
 EVENT_DEAUTHENTICATED = "credential_refresh.deauthenticated"
 EVENT_DEAUTHENTICATE_FAILED = "credential_refresh.deauthenticate_failed"
 EVENT_APP_DISABLED_EVENT_FAILED = "credential_refresh.app_disabled_event_failed"
+EVENT_SKIPPED = "credential_refresh.skipped"
 
 JOB = "credential_refresh"
 _LOGGED_ATTR = "_credential_refresh_logged"
@@ -70,9 +71,32 @@ class Trigger(StrEnum):
 ERROR_CLASS_BY_REASON = {"invalid_grant": "auth_expired", "config_missing": "misconfigured"}
 
 
+# The keywords the end lines pass themselves: an Attempt.fields key with one of these names would collide with them.
+_END_LINE_KEYS = frozenset({
+    "outcome", "reason", "duration_ms", "error_class", "error_type", "error_message", "http_status", "oauth_error",
+    "level", "include_error_text",
+})
+
+
+class _EndFields(dict[str, object]):
+    """Rejects a key the end line writes itself where it is set: in ``refresh_attempt``'s ``except`` the
+    collision would raise instead, replacing the attempt's real error and writing no ``end``."""
+
+    def __setitem__(self, key: str, value: object) -> None:
+        if key in _END_LINE_KEYS:
+            raise ValueError(f"Attempt.fields cannot set {key!r}: the credential_refresh.end line writes it")
+        super().__setitem__(key, value)
+
+    def update(self, *args: object, **kwargs: object) -> None:  # type: ignore[override]
+        # shortcut: setdefault and |= skip the check; route them here if a caller starts using them.
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
+
+
 @dataclass
 class Attempt:
     reason: str | None = None  # why a success did not call the token endpoint ("adopted")
+    fields: dict[str, object] = field(default_factory=_EndFields)  # facts about this attempt, on its end line either way
 
 
 def org_of(doc: Mapping[str, object] | None) -> str | None:
@@ -127,9 +151,9 @@ async def refresh_attempt(logger: logging.Logger, *, once_key: str) -> AsyncIter
     try:
         yield attempt
     except (Exception, asyncio.CancelledError) as e:
-        _log_failed(logger, EVENT_END, e, once_key, duration_ms=_ms_since(start))
+        _log_failed(logger, EVENT_END, e, once_key, duration_ms=_ms_since(start), **attempt.fields)
         raise
-    log_event(logger, EVENT_END, outcome="success", reason=attempt.reason, duration_ms=_ms_since(start))
+    log_event(logger, EVENT_END, outcome="success", reason=attempt.reason, duration_ms=_ms_since(start), **attempt.fields)
 
 
 def log_check_failed(logger: logging.Logger, exc: BaseException, *, once_key: str) -> None:
@@ -145,6 +169,11 @@ def log_scheduled(logger: logging.Logger, *, next_refresh_at: datetime, delay_s:
         next_refresh_at=next_refresh_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         delay_s=round(delay_s),
     )
+
+
+def log_skipped(logger: logging.Logger, *, reason: str) -> None:
+    """An attempt that did not start, e.g. another refresh of the same credential holds its lock."""
+    log_event(logger, EVENT_SKIPPED, level=logging.WARNING, outcome="skipped", reason=reason)
 
 
 def log_strike(

@@ -27,6 +27,12 @@ import {
 const INFRASTRUCTURE_FAILURE_MESSAGE =
   "Something went wrong on PipesHub's side. Please try again; if it keeps happening, ask your admin for help.";
 
+// Nothing more can be answered: close the connection, as Express's own final
+// handler does, so the client sees a cut transfer instead of waiting forever.
+function closeStartedResponse(res: Response): void {
+  if (!res.writableEnded) res.destroy();
+}
+
 /**
  * Maps a body-parser rejection to the 4xx it stands for. body-parser marks
  * these with `type` and `expose`; without this they reach the unknown-error
@@ -115,6 +121,7 @@ export class ErrorMiddleware {
         // midway): controllers no longer log what they pass on.
         this.logRequestError(mapped ?? error, req, res);
         if (res.headersSent) {
+          closeStartedResponse(res);
           return;
         }
         if (mapped) {
@@ -125,7 +132,10 @@ export class ErrorMiddleware {
       } catch (middlewareError) {
         // If even the error middleware fails, send a basic error response
         console.error('Error in error middleware:', middlewareError);
-        if (res.headersSent) return;
+        if (res.headersSent) {
+          closeStartedResponse(res);
+          return;
+        }
         jsonResponse(res, 500, {
           error: {
             code: 'MIDDLEWARE_ERROR',

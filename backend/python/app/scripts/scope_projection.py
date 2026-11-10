@@ -81,9 +81,20 @@ async def _sweep(args: argparse.Namespace, graph_provider: Any, pipeline: Any, l
     return EXIT_FAILED if failed else 0
 
 
-async def _view(args: argparse.Namespace, graph_provider: Any, pipeline: Any) -> int:  # noqa: ANN401
+async def _view(args: argparse.Namespace, graph_provider: Any, pipeline: Any, config: Any) -> int:  # noqa: ANN401
+    from app.services.permissions.generation import current_generation
+    from app.services.permissions.scope_fields import (
+        env_scope_generation,
+        set_resolved_generation,
+    )
     from app.services.vector_db.scope_view import org_view
 
+    # Judged by the deployment's generation. Read only: `register_scope_generation` would write enabled=False when this process's flag is off.
+    try:
+        set_resolved_generation(max(await current_generation(config), env_scope_generation()))
+    except Exception as exc:
+        sys.stderr.write(json.dumps({"error": f"scope generation unavailable: {type(exc).__name__}: {exc}"}) + "\n")
+        return EXIT_FAILED
     view = await org_view(graph_provider, args.org, pipeline.vector_db_service if pipeline else None, connectors=args.connector)
     if pipeline is None:
         view.notes.append("vector_store_not_configured: the group rows of the vector store were not checked")
@@ -121,7 +132,7 @@ async def _main(argv: list[str]) -> int:
             return code
         pipeline = await _resolve_indexing_pipeline(container)
         if args.command == "view":
-            return await _view(args, graph_provider, pipeline)
+            return await _view(args, graph_provider, pipeline, container.config_service())
         if pipeline is None:
             sys.stderr.write(json.dumps({"error": "no indexing pipeline (vector store not configured)"}) + "\n")
             return EXIT_FAILED

@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.core.org_context import current, current_or_system, peek
 from app.modules.indexing import named_entity_completion as completion
 from app.modules.named_entities.domain.models import (
     ExtractionStats,
@@ -450,3 +451,92 @@ async def test_the_loop_keeps_draining_after_a_pass_raises() -> None:
     await _run_replicas(queue)
     assert queue.left == 0
     assert not queue.overlapped
+
+
+# ---- the org each step runs in: the loop starts detached, with no org bound ---------------------------------------------------------------
+
+class _Retries:
+    """The re-extraction jobs and the record reads, recording the org context bound at each call. ``strict``: as the PostgreSQL provider,
+    the list needs a bound context (every org under a system one) and each row's calls need one org bound; otherwise (Arango/Neo4j) the
+    context is ignored."""
+
+    def __init__(self, rows: list[dict[str, Any]], *, strict: bool = True) -> None:
+        self.rows, self.strict = rows, strict
+        self.calls: list[tuple[str, str, str | None]] = []
+
+    def _seen(self, call: str, key: str) -> None:
+        ctx = (current_or_system if call == "list" else current)() if self.strict else peek()
+        self.calls.append((call, key, ctx and f"{ctx.source}#{ctx.org_id}"))
+
+    async def get_due_named_entity_persist_retries(self, limit: int, *, reextract: bool = False) -> list[dict[str, Any]]:
+        self._seen("list", "")
+        return self.rows
+
+    async def get_document(self, key: str, collection: str, **_kw: object) -> None:
+        self._seen("read", key)          # gone: the job is done
+
+    async def clear_named_entity_persist_retry(self, record_id: str, due: int | None) -> bool:
+        self._seen("clear", record_id)
+        return True
+
+    async def schedule_named_entity_persist_retry(self, org_id: str, record_id: str, error: str, attempts: int) -> int:
+        self._seen("count", record_id)
+        return 1
+
+
+def _org_row(record: str, org: str | None, attempts: int = 0) -> dict[str, Any]:
+    return {"recordId": record, "orgId": org, "attempts": attempts, "dueAt": 100}
+
+
+def _bound(org: str) -> str:
+    return f"job:named_entity_completion#{org}"
+
+
+async def _drain_bound(graph: _Retries) -> int:
+    with patch.object(completion, "llm_mostly_free", return_value=True):
+        return await _drain(graph, MagicMock())
+
+
+async def test_the_jobs_are_listed_under_system_and_each_record_is_worked_in_its_own_org() -> None:
+    graph = _Retries([_org_row("ra", "org-a"), _org_row("rb", "org-b")])
+
+    await _drain_bound(graph)
+
+    assert graph.calls == [
+        ("list", "", "system:named_entity_completion#None"),
+        ("read", "ra", _bound("org-a")), ("clear", "ra", _bound("org-a")),
+        ("read", "rb", _bound("org-b")), ("clear", "rb", _bound("org-b")),
+    ]
+    assert peek() is None
+
+
+async def test_a_job_given_up_is_dropped_in_its_own_org() -> None:
+    graph = _Retries([_org_row("ra", "org-a", attempts=completion.MAX_REEXTRACT_ATTEMPTS + 1)])
+
+    await _drain_bound(graph)
+
+    assert graph.calls[1:] == [("clear", "ra", _bound("org-a"))]
+
+
+async def test_a_failed_record_is_counted_in_its_own_org_and_the_next_org_still_runs() -> None:
+    graph = _Retries([_org_row("ra", "org-a"), _org_row("rb", "org-b")])
+    real = completion._complete_one
+
+    async def one(g: Any, sink: Any, cm: Any, record_id: str, *a: Any) -> Any:  # noqa: ANN401
+        if record_id == "ra":
+            raise ConnectionError("blob store down")
+        return await real(g, sink, cm, record_id, *a)
+
+    with patch.object(completion, "_complete_one", one):
+        await _drain_bound(graph)
+
+    assert graph.calls[1:] == [("count", "ra", _bound("org-a")), ("read", "rb", _bound("org-b")), ("clear", "rb", _bound("org-b"))]
+
+
+async def test_regression_guard_a_legacy_job_without_an_org_still_runs_unbound() -> None:
+    """Passes on main too: on Arango/Neo4j a marker may lack ``orgId``; it is worked as before, with nothing bound."""
+    graph = _Retries([_org_row("legacy", None)], strict=False)
+
+    await _drain_bound(graph)
+
+    assert graph.calls[1:] == [("read", "legacy", None), ("clear", "legacy", None)]

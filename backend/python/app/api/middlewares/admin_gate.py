@@ -1,7 +1,8 @@
 """Route dependency that lets only organisation admins through."""
 
-from fastapi import HTTPException, Request
+from fastapi import Request
 
+from app.api.middlewares.auth import AuthRejected
 from app.config.constants.http_status_code import HttpStatusCode
 
 
@@ -12,6 +13,4 @@ async def require_admin_caller(request: Request) -> None:
     user = getattr(request.state, "user", None) or {}
     config_service = request.app.container.config_service()
     if not await check_user_is_admin(user.get("userId", ""), user.get("orgId"), request, config_service):
-        raise HTTPException(
-            status_code=HttpStatusCode.FORBIDDEN.value, detail="Only administrators can do this."
-        )
+        raise AuthRejected(HttpStatusCode.FORBIDDEN.value, "Only administrators can do this.", reason="not_admin")

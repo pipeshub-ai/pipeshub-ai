@@ -3,6 +3,8 @@
 ``PgLikeGraph`` reads the bound org as ``services/graph_db/postgres`` does: an unbound read raises, every read and write is the bound org's
 partition, and the org list is every org only under ``system``. ``ArangoLikeGraph`` ignores the context and reads across orgs, as the Arango
 and Neo4j providers do. Documents are stored with ``_key``; ``get_nodes_by_field_in`` hands them back with ``id``, as every provider does.
+``get_org_apps(org)`` lists an org's partition, as its ``orgAppRelation`` edges would, except the ``unlinked`` keys (an App with no edge).
+On ``ArangoLikeGraph`` one document stored under two orgs is one App linked to both.
 """
 from __future__ import annotations
 
@@ -33,12 +35,16 @@ def _shape(doc: dict, return_fields: list[str] | None) -> dict:
 
 class FakeGraph:
     def __init__(self, orgs: list[dict], apps: dict[str, list[dict]], *, orgs_error: Exception | None = None,
-                 failing_orgs: frozenset[str] = frozenset(), raising_orgs: frozenset[str] = frozenset()) -> None:
+                 failing_orgs: frozenset[str] = frozenset(), raising_orgs: frozenset[str] = frozenset(),
+                 unlinked: frozenset[str] = frozenset()) -> None:
         self.orgs, self.orgs_error = orgs, orgs_error
-        self.failing_orgs = failing_orgs        # a read error the provider logs and answers with []
+        self.failing_orgs = failing_orgs        # a read error the provider logs and answers with [] (or raises, when asked to)
         self.raising_orgs = raising_orgs        # an unexpected exception out of the org's pass
+        self.unlinked = unlinked                # App keys no orgAppRelation edge reaches
         self.apps = [(org, doc) for org, docs in apps.items() for doc in docs]       # (partition org, document)
         self.org_list_calls: list[dict] = []
+        self.reads: list[str | None] = []                   # the org each queue read ran under
+        self.listings: list[tuple[str | None, str]] = []    # (the org bound, the org listed) per get_org_apps
         self.updates: list[tuple[str | None, str, str, dict]] = []
         self.upserts: list[tuple[str | None, dict]] = []        # (the org bound at the write, payload)
 
@@ -48,11 +54,22 @@ class FakeGraph:
                                     "raise_on_error": raise_on_error})
 
     def _read(self, org: str | None) -> None:
+        self.reads.append(org)
         if org in self.raising_orgs:
             raise RuntimeError("unexpected")
 
     def _orgs(self, active: bool, is_external: bool) -> list[dict]:
         return [o for o in self.orgs if (not active or o.get("isActive")) and bool(o.get("isExternal")) == is_external]
+
+    def _linked(self, org_id: str, active_only: bool, raise_on_error: bool) -> list[dict]:
+        self.listings.append((ambient_org(), org_id))
+        if org_id in self.failing_orgs:
+            _graph_log.error("Get org apps failed")          # the Arango and Neo4j providers log, then raise when asked to
+            if raise_on_error:
+                raise RuntimeError("org apps down")
+            return []
+        return [dict(d) for o, d in self.apps
+                if o == org_id and d["_key"] not in self.unlinked and (not active_only or d.get("isActive") is True)]
 
     def _merge(self, partition: str | None, payloads: list[dict]) -> None:
         for p in payloads:
@@ -108,6 +125,12 @@ class PgLikeGraph(FakeGraph):
         self.updates.append((current_org_id(), key, collection, updates))
         return True
 
+    async def get_org_apps(self, org_id: str, *, active_only: bool = True, app_type: str | None = None,
+                           raise_on_error: bool = False) -> list[dict]:
+        if org_id != current_org_id():     # identity.py's _mine: never another org's apps
+            return []
+        return self._linked(org_id, active_only, raise_on_error)
+
 
 class ArangoLikeGraph(FakeGraph):
     """As the Arango and Neo4j providers: no context is read, a read spans every org, a failure is logged and answered empty."""
@@ -134,9 +157,18 @@ class ArangoLikeGraph(FakeGraph):
                                     return_fields: list[str] | None = None, transaction: str | None = None, *,
                                     raise_on_error: bool = False) -> list[dict]:
         self._read(ambient_org())          # the store reads no context; raising_orgs names the pass that fails
-        return [_shape(d, return_fields) for _, d in self.apps if d.get(field_name) in field_values]
+        docs = {d["_key"]: d for _, d in self.apps}         # one document, however many orgs it is stored under
+        return [_shape(d, return_fields) for d in docs.values() if d.get(field_name) in field_values]
 
     async def batch_upsert_nodes(self, nodes: list[dict], collection: str, transaction: str | None = None) -> bool:
         self.upserts.extend((ambient_org(), dict(n)) for n in nodes)
         self._merge(None, nodes)
         return True
+
+    async def update_node(self, key: str, collection: str, updates: dict, transaction: str | None = None) -> bool:
+        self.updates.append((ambient_org(), key, collection, updates))
+        return True
+
+    async def get_org_apps(self, org_id: str, *, active_only: bool = True, app_type: str | None = None,
+                           raise_on_error: bool = False) -> list[dict]:
+        return self._linked(org_id, active_only, raise_on_error)
