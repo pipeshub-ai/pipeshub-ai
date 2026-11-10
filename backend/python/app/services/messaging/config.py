@@ -341,6 +341,27 @@ class MessagingEnvConfig:
         return self.record_processing_timeout
 
     @property
+    def embed_stall_floor_seconds(self) -> float:
+        """The least time without a finished embedding batch before a record counts as stalled.
+        Sized above the slowest batch measured on a contended four-core host (about 120 s)."""
+        return _env_seconds("EMBED_STALL_FLOOR_SECONDS", 360.0)
+
+    @property
+    def embed_stall_ceiling_seconds(self) -> float:
+        """The most the stall timer is ever stretched to, however slow the recent batches were."""
+        return max(self.embed_stall_floor_seconds, _env_seconds("EMBED_STALL_CEILING_SECONDS", 1200.0))
+
+    @property
+    def embed_record_ceiling_seconds(self) -> float:
+        """Embedding time one chain of attempts may spend before a cut is counted again (6 h)."""
+        return _env_seconds("EMBED_RECORD_CEILING_SECONDS", 21600.0)
+
+    @property
+    def embed_cut_requeue_delay_seconds(self) -> float:
+        """How long the broker holds a record whose attempt was cut after making progress."""
+        return _env_seconds("EMBED_CUT_REQUEUE_DELAY_SECONDS", 5.0)
+
+    @property
     def max_record_processing_timeout(self) -> float:
         return max(self.record_processing_timeout, self.pdf_record_processing_timeout)
 

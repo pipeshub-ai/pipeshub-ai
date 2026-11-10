@@ -553,7 +553,12 @@ class DataSourceEntitiesProcessor:
         if getattr(error, "schema_reported", False):
             return
         error.schema_reported = True
-        self.logger.error("Graph write rejected by schema validation (collection=%s): %s", error.collection, error)
+        # Where and which rule, never the message: jsonschema's text quotes the rejected value.
+        rule = error.original_error
+        self.logger.error(
+            "Graph write rejected by schema validation (collection=%s)", error.collection,
+            extra={"schema_path": getattr(rule, "json_path", None), "validator": getattr(rule, "validator", None)},
+        )
         record_schema_rejection(error.collection)
 
     def _must_propagate(self, error: Exception, tx_store: TransactionStore | None) -> bool:
@@ -3311,8 +3316,8 @@ class DataSourceEntitiesProcessor:
         self._report_schema_rejection(error)
         _stats_sink().records[RecordOutcome.FAILED] += 1
         self.logger.error(
-            "Record %s quarantined, skipped: write rejected by schema validation (collection=%s): %s",
-            record.id, error.collection, error,
+            "Record %s quarantined, skipped: write rejected by schema validation (collection=%s)",
+            record.id, error.collection,
         )
 
     @retry_on_deadlock()

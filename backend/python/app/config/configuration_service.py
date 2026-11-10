@@ -1,6 +1,7 @@
 # src/config/configuration_service.py
 import asyncio
 import hashlib
+import logging
 import os
 import threading
 import time
@@ -483,12 +484,16 @@ class ConfigurationService:
                 # Publish cache invalidation for other processes (Redis only)
                 await self._publish_cache_invalidation(key)
             else:
-                self.logger.error("❌ Failed to delete config for key: %s", key)
+                # delete_key answers False for a key that is not set; a store failure raises.
+                self.logger.debug("Config key already absent: %s", key)
 
             return success
 
         except Exception as e:
-            self.logger.error("❌ Failed to delete config %s: %s", key, str(e))
+            # Imported here: at top level it cycles (error_class -> base_client -> jwt -> this module).
+            from app.utils.error_class import log_failure
+
+            log_failure(self.logger, "config.delete.failed", e, level=logging.ERROR, config_path=key)
             return False
 
     async def _publish_cache_invalidation(self, key: str) -> None:
