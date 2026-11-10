@@ -46,7 +46,11 @@ from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import for_org
 from app.services.permissions.metrics import SCOPE_STAMP_FAILED
 from app.services.permissions.mode import scope_fields_enabled
-from app.services.permissions.rewrite_lease import REWRITE_LEASE_KEY, LeaseLost, RewriteLease
+from app.services.permissions.rewrite_lease import (
+    REWRITE_LEASE_KEY,
+    LeaseLost,
+    RewriteLease,
+)
 from app.services.permissions.scope_fields import (
     SCOPE_FIELDS_VERSION,
     current_scope_generation,
