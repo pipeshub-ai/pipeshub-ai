@@ -451,15 +451,17 @@ export function redactSensitiveQueryParams(url: string): string {
 const QUOTED_JSON_FIELD =
   /("([A-Za-z0-9_.-]{1,64})"\s*:\s*")(?:[^"\\]|\\[\s\S])*(?:"|\\?$)/g;
 
+// A JWT anywhere in the text: a JSON header (`{"` in base64url is `eyJ`), a payload and a signature.
+// Libraries quote the token they refused (google-auth-library: `Invalid token signature: <jwt>`).
+// Starts only where no token character precedes: `\b` also matches after `-`, which made `eyJ-eyJ-…` quadratic.
+const JWT = /(?<![\w-])eyJ[\w-]*\.[\w-]+\.[\w-]*/g;
+
 /**
  * Free text such as an error message or stack: each word that could hold a
  * `name=value` pair or a `user:password@` URL is redacted on its own, so the
  * rest of the text (stack frames, Mongo key errors) stays readable. A quoted
  * JSON field (`"access_token":"..."`) is redacted by its key.
  */
-// A JWT anywhere in the text: a JSON header (`{"` in base64url is `eyJ`), a payload and a signature.
-// Libraries quote the token they refused (google-auth-library: `Invalid token signature: <jwt>`).
-const JWT = /\beyJ[\w-]*\.[\w-]+\.[\w-]*/g;
 
 export const redactSecretsInText = (text: string): string =>
   // Split, not a \S*[=@]\S* scan: that pattern backtracks quadratically on a long word.
