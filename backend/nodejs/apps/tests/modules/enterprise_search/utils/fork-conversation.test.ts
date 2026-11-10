@@ -621,7 +621,7 @@ describe('fork origin', () => {
 
   it('still answers, without the title, when the original no longer exists', async () => {
     const { store, owner, source, fork } = await seedFork()
-    store.sessions.splice(store.sessions.findIndex((x) => String(x._id) === String(source._id)), 1)
+    store.sessions.splice(store.sessions.findIndex((x) => String(x._id) === source._id), 1)
     expect((await resolveForkOrigin(fork, String(owner)))?.title).to.equal(null)
   })
 
