@@ -214,3 +214,61 @@ class TestKafkaIndexing:
         enqueue = _lines(caplog, "Error enqueuing message")["Error enqueuing message"]
         assert enqueue["error_type"] == "ConnectionError"
         _no_seed(caplog)
+
+
+class TestKafkaIndexingWithFairSchedulingOff:
+    """FAIR_SCHEDULING_ENABLED=false: the FIFO consume loop's own error line never carries a parse error's text."""
+
+    @pytest.fixture(autouse=True)
+    def _fair_scheduling_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FAIR_SCHEDULING_ENABLED", "false")
+
+    async def _consume_once(self, c: IndexingKafkaConsumer, value: bytes) -> None:
+        batches = [{TopicPartition("record-events", 0): [_kafka_message(value)]}]
+
+        async def getmany(**_: object) -> dict:
+            if batches:
+                return batches.pop(0)
+            c.running = False
+            return {}
+
+        c.consumer.getmany = getmany
+        c.running = True
+        with patch.object(c, "_IndexingKafkaConsumer__start_processing_task", AsyncMock()):
+            await c._IndexingKafkaConsumer__consume_loop()
+
+    async def test_a_transient_parse_error_is_logged_by_type_only(self, caplog) -> None:
+        c = _kafka()
+        assert c._scheduler is None
+        with patch.object(
+            indexing_module, "open_stream_message", AsyncMock(side_effect=ConnectionError(f"key store said {SHORT_SEED}")),
+        ):
+            await self._consume_once(c, _value().encode())
+        line = _lines(caplog, "Error processing message")["Error processing message"]
+        assert line["error_type"] == "ConnectionError"
+        _no_seed(caplog)
+
+    async def test_a_message_that_is_not_a_stream_message_is_dropped_without_its_text(self, caplog) -> None:
+        value = json.dumps({"payload": {"n": SHORT_SEED}}).encode()  # no eventType
+        with pytest.raises(ValidationError) as control:
+            StreamMessage(**json.loads(value))
+        assert SHORT_SEED in str(control.value)
+        await self._consume_once(_kafka(), value)
+        assert _lines(caplog, "Failed to parse message")
+        _no_seed(caplog)
+
+    async def test_a_fetched_back_message_that_fails_to_parse_is_logged_by_type_only(self, caplog) -> None:
+        c = _kafka()
+        position = (TopicPartition("record-events", 0), 3)
+        c._remembered = MagicMock()
+        c._remembered.peek.return_value = [position]
+        c._scheduler = MagicMock()
+        with patch.object(
+            c, "_IndexingKafkaConsumer__parse_message", AsyncMock(side_effect=ConnectionError(f"key store said {SHORT_SEED}")),
+        ):
+            await c._IndexingKafkaConsumer__buffer_fetched_back(
+                {("org_a",): [position]}, {position: _kafka_message(b"{}")}, set(),
+            )
+        line = _lines(caplog, "Could not parse fetched-back message")["Could not parse fetched-back message"]
+        assert line["error_type"] == "ConnectionError"
+        _no_seed(caplog)

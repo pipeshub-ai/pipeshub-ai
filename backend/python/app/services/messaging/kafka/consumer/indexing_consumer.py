@@ -1148,7 +1148,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                     message,
                                     retry_current=True,
                                 )
-                                self.logger.error(f"Error processing individual message: {e}")
+                                # The type only: a parse error's text can quote the payload's values.
+                                self.logger.error(
+                                    f"Error processing message {message.topic}-{message.partition}-{message.offset}",
+                                    extra={"error_type": type(e).__name__},
+                                )
                                 continue
 
                 except asyncio.CancelledError:
@@ -1763,8 +1767,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 except Exception as e:
                     # It parsed when it was first read; try again next pass.
                     self.logger.warning(
-                        "Could not parse fetched-back message %s-%s; it stays "
-                        "remembered: %r", position[0], position[1], e,
+                        "Could not parse fetched-back message %s-%s; it stays remembered",
+                        position[0], position[1], extra={"error_type": type(e).__name__},
                     )
                     parsed = None
                 if parsed is not None:
