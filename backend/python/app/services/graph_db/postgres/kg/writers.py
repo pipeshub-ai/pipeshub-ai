@@ -104,6 +104,22 @@ class KgWriter:
                 "$10::boolean[], $11::smallint[], $12::boolean[])", *[[r[c] for r in part] for c in STAMP_COLS])
         return n
 
+    async def r13_set(self, rows: list[tuple[int, int, str, int, bool]]) -> int:
+        """Whether a record of no connector is opened by a grant on it alone: rows are (sk, coll code, id, kind code, r13), of records the caller has just stamped (the writer is an upsert)."""
+        n = 0
+        for part in _chunks(sorted(rows)):
+            n += await self.tx.fetchval("/* pipeshub:kg.w_r13_set */ SELECT kg.w_r13_set($1::bigint[], $2::smallint[], $3::text[], $4::smallint[], $5::boolean[])",
+                                        *[[r[i] for r in part] for i in range(5)])
+        return n
+
+    async def scopes_set(self, rows: list[tuple[int, int, int, bool, bool, bool, bool]]) -> int:
+        """The access lists: (sk, kind code, app_sk, restricted, rule_restricted, needs_grant, deleted)."""
+        return sum([await self.tx.fetchval("/* pipeshub:kg.w_scopes_set */ SELECT kg.w_scopes_set($1::bigint[], $2::smallint[], $3::bigint[], $4::boolean[], $5::boolean[], $6::boolean[], $7::boolean[])",
+                                           *[[r[i] for r in p] for i in range(7)]) for p in _chunks(sorted(rows))])
+
+    async def scopes_delete(self, sks: list[int]) -> int:
+        return sum([await self.tx.fetchval("/* pipeshub:kg.w_scopes_delete */ SELECT kg.w_scopes_delete($1::bigint[])", p) for p in _chunks(sorted(sks))])
+
     async def fence_rows(self, rows: list[tuple[int, int, str, int]], job: int | None) -> int:
         """Mark records that kg holds as hidden until restamp job ``job`` stamps them (None: lift the mark): rows are (sk, coll code, id, kind code). The writer is an upsert, so the
         caller passes rows it has read from kg.records: a key kg holds no row for would get a row of nothing but a key."""
