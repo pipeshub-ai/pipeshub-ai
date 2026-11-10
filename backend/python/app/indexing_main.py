@@ -15,7 +15,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 import app.utils.runtime_threads  # must precede all ML library imports
-from app.api.middlewares.request_context import RequestContextMiddleware
+from app.api.middlewares.request_log import install_request_logging
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -2958,8 +2958,8 @@ app = FastAPI(
 )
 configure_app(app, "indexing")
 
-# Trace context — outermost.
-app.add_middleware(RequestContextMiddleware)
+# Trace context and the request line.
+install_request_logging(app)
 # Telemetry: metrics middleware + pusher (started/stopped in lifespan).
 telemetry = setup_telemetry(app, service_name="indexing_service")
 
@@ -3065,6 +3065,7 @@ def run(host: str = "0.0.0.0", port: int = 8091, workers: int | None = None, *, 
         host=host,
         port=port,
         log_level="info",
+        access_log=False,
         reload=reload,
         workers=workers,
         timeout_worker_healthcheck=uvicorn_worker_healthcheck_timeout(),
