@@ -8142,6 +8142,8 @@ components:
         - recordGroupType
         - indexingStatus
         - reason
+        - embedDone
+        - embedTotal
         - createdAt
         - updatedAt
         - sizeInBytes
