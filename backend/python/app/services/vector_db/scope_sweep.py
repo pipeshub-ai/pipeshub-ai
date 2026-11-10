@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
 from app.core.org_context import for_org
+from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.permissions.currency import app_is_current
 from app.services.permissions.pending import PendingUnreadable, parse
 from app.services.permissions.structure_generation import (
@@ -77,7 +78,7 @@ def read_state(raw: object) -> SweepState:
 class SweepRow:
     connector_id: str
     #: "idle", "done" (rewritten), "recovered", "busy", "changed", "full_pass" (a pass ran and finished), "full_pass_running" (it resumes next time),
-    #: "open_write" (a write that opened the connector is still inside its lease), "open_write_unleased", "writes_unreadable" and "needs_full_pass"
+    #: "deleting" (left to the delete), "open_write" (a write that opened the connector is still inside its lease), "open_write_unleased", "writes_unreadable" and "needs_full_pass"
     #: (never back-filled: the operator has to act), "waiting" (backing off after a failure), "failed"
     action: str
     detail: str = ""
@@ -106,6 +107,8 @@ class ScopeSweep:
     async def _one(self, org_id: str, connector_id: str) -> SweepRow:
         try:
             app = await self._app(connector_id)
+            if app.get("status") == APP_STATUS_DELETING:      # the delete owns its records and the app document: nothing here writes to either
+                return SweepRow(connector_id, "deleting")
             state = read_state(app.get(SWEEP_KEY))
             if not self._has_work(app):
                 if state.failures or state.error:      # whatever failed is no longer there: stop showing it
@@ -136,7 +139,8 @@ class ScopeSweep:
             roots = parse(app.get(PENDING_KEY))
         except PendingUnreadable as exc:
             raise RuntimeError("the pending roots do not parse; a full pass clears them") from exc
-        if roots:
+        # Nothing is rewritten for a connector nobody back-filled: no release is possible without a finished pass, so the walk would only repeat.
+        if roots and app.get(BACKFILL_KEYS["state"]) is not None:
             result = await self._job.run_connector(org_id, connector_id)
             if result.state in ("busy", "changed"):
                 return SweepRow(connector_id, result.state)
