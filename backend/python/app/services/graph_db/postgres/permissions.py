@@ -38,6 +38,10 @@ _KB_TYPE = Connectors.KNOWLEDGE_BASE.value
 _CTX_RANK = {"OWNER": 6, "ADMIN": 5, "EDITOR": 4, "WRITER": 3, "READER": 1}
 _DETAIL_RANK = {"OWNER": 3, "WRITER": 2, "READER": 1}      # the roles a record's access details name
 _CTX_UP = ("OWNER", "ADMIN", "EDITOR", "WRITER")
+_CANDIDATE_COLUMNS = """r.doc->>'virtualRecordId' AS vrid, r.doc->>'connectorId' AS app,
+    NOT coalesce((r.doc->>'isDeleted')::boolean, false) AND NOT coalesce((r.doc->>'isPlaceholder')::boolean, false)
+    AND (r.doc->'isInternal' IS NULL OR r.doc->'isInternal' IN ('null', 'false', '0', '""', '[]', '{}'))
+    AND (r.doc->'isPlaceholder' IS NULL OR r.doc->'isPlaceholder' IN ('null', 'false', '0', '""', '[]', '{}')) AS plain"""
 _CHECK_CHUNK = 2000     # candidate records handed to the access check at once
 # the metadata filters of a search: key, the edge from the record, the collection of the item, the field its name is in
 _META_FILTERS = (("departments", "belongsToDepartment", "departments", "departmentName"), ("categories", "belongsToCategory", "categories", "name"),
@@ -612,12 +616,13 @@ class PermissionsMixin(PgBase):
             undated = upload_times_undated() and not dated_only
             bounds = [tr.get(k) for k in ("source_created_after_ms", "source_created_before_ms", "source_updated_after_ms", "source_updated_before_ms")]
 
+            granted = {g for ids in access["by_connector"].values() for g in ids}
             scope = (_j([{"edge": e, "coll": c, "field": f, "vals": v} for e, c, f, v in meta]), *bounds, undated, dated_only)
 
             async def candidates(tx: Tx) -> list[Any]:
                 """The scope filters are applied where the records are read: every record of a collection or app-level connector in one statement, and the
                 records the walk reached, by key, in another."""
-                rows = list(await tx.fetch("""/* pipeshub:graph.accessible_candidates_app_wide */ SELECT r.id, r.doc->>'virtualRecordId' AS vrid FROM graph.nodes r
+                rows = list(await tx.fetch("""/* pipeshub:graph.accessible_candidates_app_wide */ SELECT r.id, {cols} FROM graph.nodes r
                     WHERE r.org_id = $1 AND r.coll = 'records' AND r.doc->>'orgId' = $1 AND r.doc->>'virtualRecordId' IS NOT NULL
                       AND ((r.doc->>'connectorId' = ANY($2::text[])) OR (r.doc->>'connectorId' = ANY($3::text[]) AND r.doc->>'origin' = 'UPLOAD'))
                       AND (r.doc->>'indexingStatus' = 'COMPLETED' OR r.doc->>'hasIndexedCopy' = 'true') AND r.doc->>'isDeleted' IS DISTINCT FROM 'true'
@@ -631,11 +636,25 @@ class PermissionsMixin(PgBase):
                       AND ($8::bigint IS NULL OR (CASE WHEN jsonb_typeof(r.doc->'sourceLastModifiedTimestamp') = 'number' THEN (r.doc->>'sourceLastModifiedTimestamp')::numeric END) <= $8
                            OR ($9 AND coalesce(r.doc->>'sourceTimestampOrigin', '') = 'upload'))
                       AND (NOT $10 OR coalesce(r.doc->>'sourceTimestampOrigin', '') <> 'upload')
-                    ORDER BY r.id""", org, wide, kbs, *scope)) if wide or kbs else []
+                    ORDER BY r.id""".replace("{cols}", _CANDIDATE_COLUMNS), org, wide, kbs, *scope)) if wide or kbs else []
                 have = {r["id"] for r in rows}
-                walked = [i for i in sorted(await access_sql.reachable_records(tx, org, access, sorted(level))) if i not in have] if level else []
+                reached, below = await access_sql.reachable_records(tx, org, access, sorted(level)) if level else (set(), {})
+                # shortcut: the set path reads a whole app (every child, every membership), so it runs only for an app that more than a chunk of the
+                # candidates come from and that is at most twice the size of them; a narrow search of a big app keeps the per-record check. Upgrade: a count
+                # per app that does not scan its index.
+                found: dict[str, int] = {}
+                for r in rows:
+                    found[r["app"]] = found.get(r["app"], 0) + 1
+                sizes = {r["app"]: r["n"] for r in await tx.fetch(
+                    "/* pipeshub:graph.accessible_app_sizes */ SELECT doc->>'connectorId' AS app, count(*) AS n FROM graph.nodes WHERE org_id = $1 AND coll = 'records'"
+                    " AND doc->>'connectorId' = ANY($2::text[]) GROUP BY 1", org, [a for a, n in found.items() if n > _CHECK_CHUNK])} if any(n > _CHECK_CHUNK for n in found.values()) else {}
+                whole = [a for a in (*kbs, *wide) if a in sizes and 2 * found[a] >= sizes[a]]
+                for a in whole:
+                    if a in wide:
+                        below[a] = await access_sql.records_below_app(tx, org, a, granted, opens=True)
+                walked = [i for i in sorted(reached) if i not in have]
                 for i in range(0, len(walked), _CHECK_CHUNK * 5):
-                    rows += await tx.fetch("""/* pipeshub:graph.accessible_candidates */ SELECT r.id, r.doc->>'virtualRecordId' AS vrid FROM graph.nodes r
+                    rows += await tx.fetch("""/* pipeshub:graph.accessible_candidates */ SELECT r.id, {cols} FROM graph.nodes r
                     WHERE r.org_id = $1 AND r.coll = 'records' AND r.id = ANY($2::text[]) AND r.doc->>'orgId' = $1 AND r.doc->>'virtualRecordId' IS NOT NULL
                       AND r.doc->>'connectorId' = ANY($3::text[])
                       AND (r.doc->>'indexingStatus' = 'COMPLETED' OR r.doc->>'hasIndexedCopy' = 'true') AND r.doc->>'isDeleted' IS DISTINCT FROM 'true'
@@ -649,17 +668,23 @@ class PermissionsMixin(PgBase):
                       AND ($8::bigint IS NULL OR (CASE WHEN jsonb_typeof(r.doc->'sourceLastModifiedTimestamp') = 'number' THEN (r.doc->>'sourceLastModifiedTimestamp')::numeric END) <= $8
                            OR ($9 AND coalesce(r.doc->>'sourceTimestampOrigin', '') = 'upload'))
                       AND (NOT $10 OR coalesce(r.doc->>'sourceTimestampOrigin', '') <> 'upload')
-                    ORDER BY r.id""", org, walked[i:i + _CHECK_CHUNK * 5], sorted(level), *scope)
-                return sorted(rows, key=lambda r: r["id"])
-            kept = await self._q(candidates, None)
+                    ORDER BY r.id""".replace("{cols}", _CANDIDATE_COLUMNS), org, walked[i:i + _CHECK_CHUNK * 5], sorted(level), *scope)
+                members = {(m["from_id"], m["to_id"]) for m in await tx.fetch(      # one scan of the memberships of these apps, not a lookup per record
+                    "/* pipeshub:graph.accessible_members */ SELECT from_id, to_id FROM graph.edges WHERE org_id = $1 AND coll = 'belongsTo' AND from_coll = 'records'"
+                    " AND to_coll = 'apps' AND to_id = ANY($2::text[])", org, whole)} if whole else set()
+                return sorted(rows, key=lambda r: r["id"]), below, members
+            kept, below, members = await self._q(candidates, None)
+            # What the arms of the access check admit in a set (a member of a collection or of an app that opens everything; a record the walk down from
+            # its own app takes) is admitted here; the rest, which only a grant, a declared group or a seed can open, is checked one chunk at a time.
+            ok = {c["id"] for c in kept if c["plain"] and ((c["id"], c["app"]) in members or c["id"] in below.get(c["app"], ()))}
+            left = [c for c in kept if c["id"] not in ok]
+            for i in range(0, len(left), _CHECK_CHUNK):
+                rows = await self._kh_v3_accessible_rows(user_key, org_id, [c["id"] for c in left[i:i + _CHECK_CHUNK]], [], access=access, transaction=None)
+                ok |= {r["id"] for r in rows if not r.get("isInternal") and not r.get("isPlaceholder")}
             out: dict[str, str] = {}
-            for i in range(0, len(kept), _CHECK_CHUNK):
-                chunk = kept[i:i + _CHECK_CHUNK]
-                rows = await self._kh_v3_accessible_rows(user_key, org_id, [c["id"] for c in chunk], [], access=access, transaction=None)
-                ok = {r["id"] for r in rows if not r.get("isInternal") and not r.get("isPlaceholder")}
-                for c in chunk:
-                    if c["id"] in ok:
-                        out.setdefault(c["vrid"], c["id"])
+            for c in kept:
+                if c["id"] in ok:
+                    out.setdefault(c["vrid"], c["id"])
             return out
         except Exception as e:
             self.logger.error("Get accessible virtual record IDs failed: %s", e)

@@ -50,8 +50,11 @@ class RewriteLease:
         return ((await self._graph.get_document(self._id, CollectionNames.APPS.value, raise_on_error=True)) or {}).get(REWRITE_LEASE_KEY) or None
 
     async def _swap(self, raw: object, value: str | None) -> bool:
+        return await self._cas(raw, {REWRITE_LEASE_KEY: value})
+
+    async def _cas(self, raw: object, updates: Mapping[str, Any]) -> bool:
         try:
-            return bool(await self._graph.update_node_fields_if_match(self._id, CollectionNames.APPS.value, {REWRITE_LEASE_KEY: value}, {REWRITE_LEASE_KEY: raw}))
+            return bool(await self._graph.update_node_fields_if_match(self._id, CollectionNames.APPS.value, dict(updates), {REWRITE_LEASE_KEY: raw}))
         except Exception as exc:
             if getattr(self._graph, "is_write_conflict", lambda _e: False)(exc):
                 return False
@@ -75,6 +78,18 @@ class RewriteLease:
             if await self._swap(raw, self._value()):
                 return
         raise LeaseLost(f"the rewrite lease of {self._id} could not be renewed")
+
+    async def update_app(self, updates: Mapping[str, Any]) -> None:
+        """Write fields of the app document in one compare-and-set on this holder's lease value, so a holder that lost the lease writes nothing
+        (a check before an unconditional write would leave a gap for the takeover). `LeaseLost` when another holds it."""
+        for _ in range(3):
+            raw = await self._raw()
+            held = read_lease(raw)
+            if not held or held[0] != self.token:
+                raise LeaseLost(f"the rewrite lease of {self._id} is held by another rewriter")
+            if await self._cas(raw, updates):
+                return
+        raise RuntimeError(f"the app document of {self._id} was not written")      # (the lease is still ours: the store refused it)
 
     def holds(self, app: Mapping[str, Any]) -> bool:
         """Read-only (safe under the locks): the app document still names this holder."""

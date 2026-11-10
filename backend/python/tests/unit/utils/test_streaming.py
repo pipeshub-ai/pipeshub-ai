@@ -2,6 +2,9 @@
 
 import json
 import logging
+import random
+import re
+import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,6 +13,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import BaseModel
 
 from app.utils.streaming import (
+    INCOMPLETE_CITE_RE,
     AnswerParserState,
     _append_task_markers,
     _apply_structured_output,
@@ -2535,3 +2539,23 @@ class TestStreamContentUrlParseException:
                 pass
 
 
+class TestIncompleteCitationScanIsBounded:
+    """The check runs on the whole answer for every chunk, so it must stay linear."""
+
+    @pytest.mark.parametrize("text", [
+        pytest.param("[" * 50_000 + "]x", id="open-brackets-closed-once"),
+        pytest.param("[a](" * 12_500 + ")x]", id="unclosed-targets"),
+    ])
+    def test_stays_fast(self, text: str) -> None:
+        started = time.perf_counter()
+        INCOMPLETE_CITE_RE.search(text)
+        assert time.perf_counter() - started < 1.0
+
+    @pytest.mark.parametrize("seed", range(4))
+    def test_finds_what_it_always_did(self, seed: int) -> None:
+        legacy = re.compile(r'\[[^\]]*(?:\]\([^\)]*)?$')
+        tokens = ["[", "[", "]", "](", ")", "(", " ", "\n", "source", "ref1", "https://a.io/b", "x"]
+        rng = random.Random(seed)
+        for _ in range(30_000):
+            text = "".join(rng.choice(tokens) for _ in range(rng.randint(0, 9)))
+            assert bool(INCOMPLETE_CITE_RE.search(text)) == bool(legacy.search(text)), repr(text)

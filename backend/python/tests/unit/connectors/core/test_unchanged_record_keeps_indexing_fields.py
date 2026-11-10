@@ -26,7 +26,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
     _requests_index_event,
 )
-from app.models.entities import FileRecord, Record, RecordType
+from app.models.entities import CodeFileRecord, FileRecord, Record, RecordType
 
 pytestmark = pytest.mark.asyncio
 
@@ -187,19 +187,63 @@ async def test_changed_password_protected_record_starts_clean() -> None:
 
 
 @pytest.mark.parametrize(
-    ("asked", "expected"),
-    [
-        (None, ProgressStatus.NOT_STARTED.value),
-        (ProgressStatus.AUTO_INDEX_OFF.value, ProgressStatus.AUTO_INDEX_OFF.value),
-    ],
+    "status", [ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, ProgressStatus.COMPLETED.value]
 )
-async def test_unchanged_unsupported_record_that_gains_a_supported_type_is_reopened(
-    asked: str | None, expected: str
-) -> None:
-    stored = _stored(ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, mime_type="application/octet-stream")
-    incoming = _incoming(status=asked)
+async def test_same_revision_read_as_another_mime_type_is_indexed_again(status: str) -> None:
+    """A GCS object whose Content-Type changed keeps its MD5 revision: the same bytes,
+    read as another type, may now be supported or parse differently."""
+    stored = _stored(status, mime_type="application/octet-stream")
+    incoming = _incoming()
     incoming.mime_type = "application/pdf"
     processed, _ = await _processor()._process_record(incoming, [], _store(stored))
 
-    assert processed.indexing_status == expected
-    assert _requests_index_event(processed) is (expected == ProgressStatus.NOT_STARTED.value)
+    assert processed.indexing_status == ProgressStatus.NOT_STARTED.value
+    assert _requests_index_event(processed)
+
+
+async def test_same_revision_renamed_to_another_extension_is_indexed_again() -> None:
+    stored = _stored(ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, record_name="a.bin")
+    processed, _ = await _processor()._process_record(_incoming(), [], _store(stored))
+
+    assert processed.indexing_status == ProgressStatus.NOT_STARTED.value
+
+
+async def test_a_type_change_with_auto_indexing_off_is_left_for_manual_indexing() -> None:
+    stored = _stored(ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, record_name="a.bin")
+    incoming = _incoming(status=ProgressStatus.AUTO_INDEX_OFF.value)
+    processed, _ = await _processor()._process_record(incoming, [], _store(stored))
+
+    assert processed.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+
+async def test_same_revision_and_type_keeps_the_verdict() -> None:
+    stored = _stored(ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value, mime_type="application/pdf")
+    incoming = _incoming()
+    incoming.mime_type = "application/pdf"
+    processed, _ = await _processor()._process_record(incoming, [], _store(stored))
+
+    assert processed.indexing_status == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
+
+
+def _code_file(**overrides) -> CodeFileRecord:
+    fields = {
+        "id": "stored-code-1", "org_id": "org-1", "record_name": "app.py", "record_type": RecordType.CODE_FILE,
+        "external_record_id": "/7/blob/src/app.py", "external_revision_id": "sha-1", "version": 1,
+        "origin": OriginTypes.CONNECTOR, "connector_name": Connectors.GOOGLE_DRIVE, "connector_id": "c1",
+        "mime_type": "text/x-python", "file_path": "src/app.py",
+    }
+    fields.update(overrides)
+    return CodeFileRecord(**fields)
+
+
+async def test_unchanged_code_file_keeps_its_outcome_and_publishes_nothing() -> None:
+    """The stored row a save reads is a base Record, without the code file's path: compared
+    with it, every code file looked renamed and was indexed again on every sync."""
+    stored = Record.from_arango_base_record(
+        _code_file(indexing_status=ProgressStatus.COMPLETED.value).to_arango_base_record()
+    )
+    incoming = _code_file(id="incoming-1", version=0)
+    processed, _ = await _processor()._process_record(incoming, [], _store(stored))
+
+    assert processed.indexing_status == ProgressStatus.COMPLETED.value
+    assert not _requests_index_event(processed)

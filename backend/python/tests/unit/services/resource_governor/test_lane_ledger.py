@@ -929,9 +929,9 @@ class TestWaiterFields:
         assert budget is not None
         budget.close()
         assert [p.name.split("-")[3] for p in tmp_path.iterdir() if "cpu-lanes" in p.name] == ["v7"]
-        assert lane_ledger.LEDGER_VERSION == 2
+        assert lane_ledger.LEDGER_VERSION == 3
 
-    def test_v2_never_opens_a_v1_directory(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_v3_never_opens_a_v1_directory(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         from app.services.resource_governor import lanes
 
         old = tmp_path / "pipeshub-cpu-lanes-v1-64"
@@ -944,4 +944,4 @@ class TestWaiterFields:
         assert budget is not None
         budget.close()
         assert sorted(p.name for p in old.iterdir()) == ["marker"]  # untouched
-        assert any(p.name.startswith("pipeshub-cpu-lanes-v2-64") for p in tmp_path.iterdir())
+        assert any(p.name.startswith("pipeshub-cpu-lanes-v3-64") for p in tmp_path.iterdir())

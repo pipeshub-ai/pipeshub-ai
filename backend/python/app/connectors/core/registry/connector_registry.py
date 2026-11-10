@@ -1561,6 +1561,7 @@ class ConnectorRegistry:
         org_id: str,
         *,
         is_admin: bool,
+        transaction: str | None = None,
     ) -> dict[str, Any] | None:
         """
         Update a connector instance in the database with access control.
@@ -1571,6 +1572,7 @@ class ConnectorRegistry:
             user_id: User ID performing the update
             org_id: Organization ID
             is_admin: Whether the user is an admin
+            transaction: Read and write the instance inside this graph transaction
         Returns:
             Updated connector instance document or None if failed
         Raises:
@@ -1581,7 +1583,8 @@ class ConnectorRegistry:
 
             existing_document = await graph_provider.get_document(
                 connector_id,
-                self._collection_name
+                self._collection_name,
+                transaction=transaction,
             )
 
             if not existing_document:
@@ -1646,7 +1649,8 @@ class ConnectorRegistry:
             await graph_provider.update_node(
                 connector_id,
                 self._collection_name,
-                node_updates
+                node_updates,
+                transaction=transaction,
             )
 
             result = [updated_document]
