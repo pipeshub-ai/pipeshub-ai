@@ -345,7 +345,8 @@ describe('auth audit lines (HTTP)', function () {
     sinon.stub(resetLinkRepo, 'getResetLinkRepository').returns({ claim: async () => resetLinkClaimed, release: async () => undefined } as any);
     // `email|second` tokens: Google verifies the token twice per sign-in (provider flow, then the method step).
     sinon.stub(OAuth2Client.prototype, 'verifyIdToken').callsFake((async (opts: { idToken: string }) => {
-      if (opts.idToken === 'rejected') throw new Error('Wrong number of segments in token: rejected');
+      // google-auth-library quotes the token it refuses.
+      if (opts.idToken.startsWith('eyJ')) throw new Error(`Invalid token signature: ${opts.idToken}`);
       const [, email] = opts.idToken.split('|');
       return { getPayload: () => (email ? { email, name: 'Nina Newcomer' } : { name: 'Nina Newcomer' }) } as unknown as LoginTicket;
     }) as any);
@@ -481,10 +482,12 @@ describe('auth audit lines (HTTP)', function () {
       expectNoPrivateData();
     });
 
-    it('T8 [guard] a token Google rejects stays a 500 with no audit line (F31)', async () => {
-      const r = await attempt({ method: 'google', credentials: 'rejected' });
+    it('T8 a token Google rejects stays a 500 with no audit line (F31), and the token is in no record', async () => {
+      const forged = jwt.sign({ email: bob.email }, 'forged-key');
+      const r = await attempt({ method: 'google', credentials: forged });
       expect(r.status).to.equal(500);
       expect(audits()).to.deep.equal([]);
+      for (const part of forged.split('.')) expect(JSON.stringify(records)).to.not.include(part);
     });
 
     it('T9 JIT: the new account, then its sign-in', async () => {
