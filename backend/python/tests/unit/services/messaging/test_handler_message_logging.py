@@ -8,9 +8,12 @@ import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from jsonschema import Draft7Validator
 
 from app.core import org_context
 from app.exceptions.indexing_exceptions import ProcessingError
+from app.schema import node_validator
+from app.schema.node_validator import SchemaValidationError
 from app.services.messaging.config import StreamMessage
 from app.services.messaging.kafka.handlers import entity as entity_module
 from app.services.messaging.kafka.handlers.ai_config import AiConfigEventService
@@ -109,6 +112,29 @@ class TestEntityEvents:
         await _service(graph).process_event("orgUpdated", dict(ORG_UPDATED))
         await _service(graph).process_event("orgUpdated", dict(ORG_UPDATED))
         assert all(m.isascii() for m in (r.getMessage() for r in _ours(caplog)))
+
+
+class TestSchemaRejection:
+    @pytest.mark.parametrize(("field", "value", "rule", "validator"), [
+        ("name", SEEDED_NAME, {"type": "integer"}, "type"),
+        ("email", "ada.seeded@example.com", {"type": "string", "pattern": "^nobody$"}, "pattern"),
+    ])
+    async def test_a_rejected_write_logs_where_and_which_rule_never_the_value(
+        self, caplog, field, value, rule, validator,
+    ) -> None:
+        error = next(Draft7Validator({"type": "object", "properties": {field: rule}}).iter_errors({field: value}))
+        with pytest.raises(SchemaValidationError) as raised:
+            node_validator._raise("organizations", error)
+        assert value in str(raised.value)  # control: the validator quotes the value
+        graph = AsyncMock()
+        graph.batch_upsert_nodes = AsyncMock(side_effect=raised.value)
+        assert await _service(graph).process_event("orgUpdated", {"orgId": "org_a", "registeredName": SEEDED_NAME}) is True
+        [record] = [r for r in _ours(caplog) if r.levelno >= logging.WARNING]
+        fields = log_record_fields(record)
+        assert (fields["schema_path"], fields["validator"]) == (f"$.{field}", validator)
+        assert "organizations" in record.getMessage()
+        for r in _ours(caplog):
+            assert value not in r.getMessage() + str(log_record_fields(r)), r.getMessage()
 
 
 class TestConnectorLinkPasses:

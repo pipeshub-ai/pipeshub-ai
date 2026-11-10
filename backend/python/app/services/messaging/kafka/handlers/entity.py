@@ -137,7 +137,12 @@ class EntityEventService(BaseEventService):
             # Permanent: redelivering the event cannot make the payload valid. Handled, not retried.
             # The data processor marks an error it already logged and counted: report it once.
             if not getattr(e, "schema_reported", False):
-                self.logger.error(f"Entity event {event_type} rejected by schema validation (collection={e.collection}): {e}")
+                # Where and which rule, never the message: jsonschema's text quotes the rejected value.
+                rule = e.original_error
+                self.logger.error(
+                    f"Entity event {event_type} rejected by schema validation (collection={e.collection})",
+                    extra={"schema_path": getattr(rule, "json_path", None), "validator": getattr(rule, "validator", None)},
+                )
                 record_schema_rejection(e.collection)
             return True
         except Exception as e:
