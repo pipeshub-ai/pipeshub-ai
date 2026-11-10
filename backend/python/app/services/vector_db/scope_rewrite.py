@@ -336,10 +336,9 @@ class ScopeRewriteJob:
                 try:
                     written = await self._write(org_id, connector_id, plans, epoch, fence, at, result)
                     todo, top = await self._differs(org_id, plans, written, keys)
-                    if top > fence and todo:
-                        if (floor := await self._follow(connector_id, epoch, top, fence)) < 0:
-                            failed.update(dict.fromkeys(todo, f"a fence ({top}) that is no plausible time, not followed"))
-                            break
+                    if top > fence and todo and (floor := await self._follow(connector_id, epoch, top, fence)) < 0:
+                        failed.update(dict.fromkeys(todo, f"a fence ({top}) that is no plausible time, not followed"))
+                        break
                 except GenerationMoved:
                     moves += 1      # the graph changed after it was read; nothing from it was sent: read it again (a move costs no round)
                     if moves > MAX_MOVES:
