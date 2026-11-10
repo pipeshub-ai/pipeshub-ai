@@ -4284,7 +4284,7 @@ class TestGetOauthCredentialsDebugLogging:
     """Cover line 250 (logger.debug on successful fetch) and line 263 (logger.error on failure)."""
 
     @pytest.mark.asyncio
-    async def test_debug_logging_on_success(self) -> None:
+    async def test_success_logs_nothing_carrying_the_secret(self) -> None:
         from app.api.routes.toolset_resolvers import get_oauth_credentials_for_toolset
         mock_logger = MagicMock()
         cs = AsyncMock()
@@ -4298,7 +4298,7 @@ class TestGetOauthCredentialsDebugLogging:
         config = {"toolsetType": "jira", "oauthConfigId": "cfg-1"}
         result = await get_oauth_credentials_for_toolset(config, cs, logger=mock_logger)
         assert result["clientId"] == "cid"
-        mock_logger.debug.assert_called()
+        assert "csec" not in str(mock_logger.mock_calls)
 
     @pytest.mark.asyncio
     async def test_an_unexpected_exception_is_raised_not_logged(self) -> None:
