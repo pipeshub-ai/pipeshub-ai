@@ -1367,6 +1367,9 @@ class TestCheckAndFetchUpdatedIssue:
         mock_ds.get_issue = AsyncMock(return_value=_make_mock_response_fullcov(200, issue_response))
         mock_ds.get_project_issue_security_scheme = AsyncMock(return_value=_make_mock_response_fullcov(
             404, {"errorMessages": ["Security level for project proj-1 does not exist."]}))
+        mock_ds.get_assigned_permission_scheme = AsyncMock(return_value=_make_mock_response_fullcov(200, {"id": 1}))
+        mock_ds.get_permission_scheme_grants = AsyncMock(
+            return_value=_make_mock_response_fullcov(200, {"permissions": []}))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         record = _make_ticket_record(source_updated_at=1700000000000)

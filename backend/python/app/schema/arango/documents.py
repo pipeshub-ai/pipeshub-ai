@@ -461,6 +461,11 @@ record_schema = {
             "embedTotal": {"type": ["number", "null"]},
             "embedDeliveryId": {"type": ["string", "null"]},
             "embedStartedMs": {"type": ["number", "null"]},
+            # Seconds of embedding spent by cut attempts of this chain, how many of those cuts were not
+            # counted as failures, and how many points are done (display only; never read to decide).
+            "embedSeconds": {"type": ["number", "null"]},
+            "embedUncounted": {"type": ["number", "null"]},
+            "embedDone": {"type": ["number", "null"]},
         },
         "required": [
             "recordName",

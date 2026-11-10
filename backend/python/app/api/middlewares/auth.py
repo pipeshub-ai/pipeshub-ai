@@ -27,6 +27,7 @@ from app.api.middlewares.token_policy import (
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.core.org_context import OrgContext, set_request_context
+from app.utils.logging_fields import log_once
 from app.utils.request_context import get_context as get_request_context
 from app.utils.request_context import set_context_org
 
@@ -63,6 +64,22 @@ def session_check_ttl_seconds() -> float:
 _session_checks = CallerRoleCache(ttl_seconds=session_check_ttl_seconds(), max_entries=10_000)
 
 
+class AuthRejected(HTTPException):
+    """An auth refusal: the client gets the same status, detail and headers as from an ``HTTPException``;
+    ``reason`` is never sent, it goes on the request's ``http.request.end`` line."""
+
+    def __init__(self, status_code: int, detail: str, *, reason: str, headers: dict[str, str] | None = None) -> None:
+        super().__init__(status_code=status_code, detail=detail, headers=headers)
+        self.reason = reason
+
+
+_BEARER = {"WWW-Authenticate": "Bearer"}
+
+
+def _invalid_credentials(reason: str) -> AuthRejected:
+    return AuthRejected(status.HTTP_401_UNAUTHORIZED, "Could not validate credentials", reason=reason, headers=_BEARER)
+
+
 async def get_config_service(request: Request) -> ConfigurationService:
     """Get configuration service from request container."""
     container = request.app.container
@@ -84,27 +101,23 @@ def extract_bearer_token(authorization_header: Optional[str]) -> str:
         HTTPException: If Authorization header is missing or malformed
     """
     if not authorization_header:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authorization header is missing",
-            headers={"WWW-Authenticate": "Bearer"},
+        raise AuthRejected(
+            status.HTTP_401_UNAUTHORIZED, "Authorization header is missing", reason="missing_header", headers=_BEARER,
         )
 
     if not authorization_header.startswith("Bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authorization header must start with 'Bearer '",
-            headers={"WWW-Authenticate": "Bearer"},
+        raise AuthRejected(
+            status.HTTP_401_UNAUTHORIZED, "Authorization header must start with 'Bearer '", reason="bad_scheme",
+            headers=_BEARER,
         )
 
     # Extract token after "Bearer "
     token = authorization_header[7:].strip()
 
     if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token is missing in Authorization header",
-            headers={"WWW-Authenticate": "Bearer"},
+        raise AuthRejected(
+            status.HTTP_401_UNAUTHORIZED, "Token is missing in Authorization header", reason="missing_token",
+            headers=_BEARER,
         )
 
     return token
@@ -119,11 +132,7 @@ def _normalize_regular_payload(payload: dict[str, Any], token: str) -> dict[str,
         # "".split(" ") is [""]. A token with no scope names is not a grant.
         scopes = str(payload.get("scope") or "").split()
         if not scopes:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Could not validate credentials",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+            raise _invalid_credentials("no_scopes")
         payload["isOAuth"] = True
         payload["oauthScopes"] = scopes
         payload["oauthClientId"] = payload.get("client_id")
@@ -190,16 +199,8 @@ async def isJwtTokenValid(request: Request) -> dict:
         HTTPException: 401 if the token is invalid or its class is not accepted,
             500 if the secrets are not configured
     """
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-
     logger = request.app.container.logger()
     try:
-        logger.debug("🚀 Starting JWT token validation")
-
         config_service = await get_config_service(request)
         secret_keys = await config_service.get_config(
             config_node_constants.SECRET_KEYS.value, use_cache=True,
@@ -214,7 +215,7 @@ async def isJwtTokenValid(request: Request) -> dict:
         if not regular_jwt_secret:
             raise ValueError("Missing jwtSecret in configuration")
 
-        if not scoped_jwt_secret:
+        if not scoped_jwt_secret and log_once("auth.scoped_jwt_secret_missing", 3600):
             logger.warning("scopedJwtSecret not found in configuration - service tokens are disabled")
 
         authorization_header = request.headers.get("Authorization")
@@ -226,24 +227,22 @@ async def isJwtTokenValid(request: Request) -> dict:
             payload = jwt.decode(
                 token, regular_jwt_secret, algorithms=[algorithm], options={"verify_aud": False}
             )
-            logger.debug("✅ Validated token using regular JWT secret")
+            logger.debug("Validated token using regular JWT secret")
             return _normalize_regular_payload(payload, token)
-        except PyJWTError as regular_jwt_error:
-            regular_error_name = type(regular_jwt_error).__name__
+        except jwt.ExpiredSignatureError:
+            regular_reason = "expired"
+        except PyJWTError:
+            regular_reason = "invalid_token"
 
         if not scoped_jwt_secret:
-            logger.warning(f"Token validation failed with regular JWT: {regular_error_name}")
-            raise credentials_exception
+            raise _invalid_credentials(regular_reason)
 
         try:
             payload = jwt.decode(token, scoped_jwt_secret, algorithms=[algorithm])
-        except PyJWTError as scoped_jwt_error:
-            logger.warning(
-                f"Token validation failed with both secrets. "
-                f"Regular JWT error: {regular_error_name}, "
-                f"Scoped JWT error: {type(scoped_jwt_error).__name__}"
-            )
-            raise credentials_exception
+        except jwt.ExpiredSignatureError:
+            raise _invalid_credentials("expired") from None
+        except PyJWTError:
+            raise _invalid_credentials(regular_reason) from None
 
         scopes = token_scopes(payload)
         if not scopes & ACCEPTED_SERVICE_SCOPES:
@@ -251,23 +250,21 @@ async def isJwtTokenValid(request: Request) -> dict:
                 "Rejected service token: scopes %s are not accepted by this service",
                 sorted(scopes),
             )
-            raise credentials_exception
+            raise _invalid_credentials("scope_not_accepted")
 
-        logger.debug("✅ Validated service token with scopes %s", sorted(scopes))
+        logger.debug("Validated service token with scopes %s", sorted(scopes))
         return _normalize_scoped_payload(payload, token)
 
     except HTTPException:
         raise
     except ValueError as e:
-        # Configuration errors should be 500, not 401
-        logger.error(f"Configuration error during authentication: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Authentication configuration error",
-        )
+        # Configuration errors are 500, not 401; the request's line logs this with the ValueError's stack.
+        raise AuthRejected(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, "Authentication configuration error", reason="auth_config",
+        ) from e
     except Exception as e:
         logger.error(f"Unexpected error during authentication: {e}", exc_info=True)
-        raise credentials_exception
+        raise _invalid_credentials("auth_error") from e
 
 
 # Dependency for injecting authentication
@@ -286,16 +283,8 @@ async def authMiddleware(request: Request) -> Request:
     Raises:
         HTTPException: If authentication fails
     """
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Not authenticated",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-
     logger = request.app.container.logger()
     try:
-        logger.debug("🚀 Starting authentication middleware")
-
         payload = await isJwtTokenValid(request)
         payload["role"] = await resolve_request_role(request, payload)
 
@@ -303,14 +292,14 @@ async def authMiddleware(request: Request) -> Request:
         request.state.user = payload
         _bind_org_context(request, payload)
 
-        logger.debug(f"✅ Authentication successful. Token type: {payload.get('token_type', 'unknown')}")
+        logger.debug(f"Authentication successful. Token type: {payload.get('token_type', 'unknown')}")
 
     except HTTPException as e:
         # Re-raise HTTP exceptions as-is to preserve status codes and details
         raise e
     except Exception as e:
         logger.error(f"Unexpected error in authentication middleware: {e}", exc_info=True)
-        raise credentials_exception
+        raise AuthRejected(status.HTTP_401_UNAUTHORIZED, "Not authenticated", reason="auth_error", headers=_BEARER) from e
 
     return request
 
@@ -326,7 +315,7 @@ def _bind_org_context(request: Request, payload: dict[str, Any]) -> None:
     org_id = payload.get("orgId")
     if not org_id:
         if scoped and getattr(getattr(request, "url", None), "path", None) not in PRE_ORG_SERVICE_ROUTES:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token missing orgId")
+            raise AuthRejected(status.HTTP_401_UNAUTHORIZED, "Token missing orgId", reason="missing_org")
         return  # stays unbound: current() fails closed
     rc = get_request_context()
     set_request_context(OrgContext(
@@ -365,28 +354,25 @@ async def resolve_request_role(request: Request, payload: dict[str, Any]) -> str
     config_service = await get_config_service(request)
     if payload.get("isOAuth"):
         caller = await fetch_caller_role(request, config_service)
-        _refuse_unconfirmed(caller, "Token is no longer valid")
+        _refuse_unconfirmed(caller, "Token is no longer valid", "token_revoked")
         return caller.role
 
     caller = await _session_checks.get(
         payload["user"], lambda: fetch_caller_role(request, config_service)
     )
-    _refuse_unconfirmed(caller, "Your session has ended. Please sign in again.")
+    _refuse_unconfirmed(caller, "Your session has ended. Please sign in again.", "session_ended")
     return normalize_auth_role(payload.get("role"))
 
 
-def _refuse_unconfirmed(caller: CallerRole, rejected_detail: str) -> None:
+def _refuse_unconfirmed(caller: CallerRole, rejected_detail: str, rejected_reason: str) -> None:
     if caller.status is CallerRoleStatus.REJECTED:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=rejected_detail,
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise AuthRejected(status.HTTP_401_UNAUTHORIZED, rejected_detail, reason=rejected_reason, headers=_BEARER)
     if caller.status is CallerRoleStatus.UNKNOWN:
         # Without Node's answer a revoked token looks exactly like a valid one.
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="We couldn't confirm your sign-in just now. Please try again in a few seconds.",
+        raise AuthRejected(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "We couldn't confirm your sign-in just now. Please try again in a few seconds.",
+            reason="unconfirmed",
             headers={"Retry-After": "5"},
         )
 
@@ -418,11 +404,8 @@ def _tag_auth_policy(
 def _authenticated_user(request: Request) -> Mapping[str, Any]:
     user = getattr(request.state, "user", None)
     if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise AuthRejected(status.HTTP_401_UNAUTHORIZED, "Authentication required", reason="unauthenticated",
+                           headers=_BEARER)
     return user
 
 
@@ -447,20 +430,16 @@ def require_scopes(
         if is_service_token(user):
             if has_service_scope(user, *admitted_service_scopes):
                 return
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="This route does not accept service tokens",
-            )
+            raise AuthRejected(status.HTTP_403_FORBIDDEN, "This route does not accept service tokens",
+                               reason="service_token_not_allowed")
 
         if not user.get("isOAuth", False):
             return
 
         token_scopes = user.get("oauthScopes", [])
         if not any(scope in token_scopes for scope in required_scopes):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Insufficient scope. Required: {' or '.join(required_scopes)}",
-            )
+            raise AuthRejected(status.HTTP_403_FORBIDDEN, f"Insufficient scope. Required: {' or '.join(required_scopes)}",
+                               reason="insufficient_scope")
 
     return _tag_auth_policy(_check_scopes, "scopes", admitted_service_scopes, required_scopes)
 
@@ -478,10 +457,8 @@ def require_service_token(*scopes: ScopeLike) -> Callable[..., Coroutine[Any, An
     async def _check_service_token(request: Request) -> Mapping[str, Any]:
         user = _authenticated_user(request)
         if not has_service_scope(user, *scopes):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="This route requires a service token",
-            )
+            raise AuthRejected(status.HTTP_403_FORBIDDEN, "This route requires a service token",
+                               reason="service_token_required")
         return user
 
     return _tag_auth_policy(_check_service_token, "service", scopes)
@@ -491,25 +468,17 @@ def service_token_org(claims: Mapping[str, Any], requested_org_id: str | None = 
     """Org a service token acts for; a caller-supplied org may only repeat it."""
     org_id = claims.get("orgId")
     if not org_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token missing orgId",
-        )
+        raise AuthRejected(status.HTTP_401_UNAUTHORIZED, "Token missing orgId", reason="missing_org")
     if requested_org_id and requested_org_id != org_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="org_id does not match the service token",
-        )
+        raise AuthRejected(status.HTTP_403_FORBIDDEN, "org_id does not match the service token", reason="org_mismatch")
     return org_id
 
 
 async def deny_service_tokens(request: Request) -> None:
     """FastAPI dependency for routes open to any authenticated user but never to service tokens."""
     if is_service_token(_authenticated_user(request)):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="This route does not accept service tokens",
-        )
+        raise AuthRejected(status.HTTP_403_FORBIDDEN, "This route does not accept service tokens",
+                           reason="service_token_not_allowed")
 
 
 _tag_auth_policy(deny_service_tokens, "deny_service")
