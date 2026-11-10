@@ -33,7 +33,10 @@ describe('upstream-call: what a request logs about its upstream call', () => {
   let mode: 'ok' | 'fail' | 'drop'
   let receivedIds: Array<string | undefined>
 
-  const atLeast = (levels: string[]): Logged[] => logged.filter((l) => levels.includes(l.level))
+  // In the Redis-cluster job another suite leaves the outbox dispatcher running; its ERRORs are not this request's.
+  const BACKGROUND_LINES = new Set(['Outbox dispatcher pass failed'])
+  const atLeast = (levels: string[]): Logged[] =>
+    logged.filter((l) => levels.includes(l.level) && !BACKGROUND_LINES.has(l.message))
   const callLines = (): Logged[] => logged.filter((l) => l.message === 'upstream.call.end')
   const accessLine = async (): Promise<Logged> => {
     for (let i = 0; i < 200; i += 1) {

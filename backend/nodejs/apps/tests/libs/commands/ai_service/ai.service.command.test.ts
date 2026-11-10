@@ -359,6 +359,7 @@ describe('AIServiceCommand', () => {
           body: { prompt: 'p' },
         })
       // On the shared prototype, and another file's timer may log meanwhile: count only the call lines.
+      const BACKGROUND_LINES = new Set(['Outbox dispatcher pass failed'])
       const callLines = (stub: sinon.SinonStub) =>
         stub.getCalls().filter((c) => c.args[0] === 'upstream.call.end').map((c) => c.args[1])
       const level = () => ({
@@ -402,7 +403,8 @@ describe('AIServiceCommand', () => {
           [3, 'unavailable', 'ECONNREFUSED'],
         ])
         expect(callLines(logs.warn)[0]).to.include({ upstream: 'external', method: 'POST', route: 'ai.local' })
-        expect(logs.error.called).to.equal(false)
+        // Only this command's lines: in the Redis-cluster job another suite leaves the outbox dispatcher running, and it logs its own ERRORs.
+        expect(logs.error.getCalls().map((c) => c.args[0]).filter((m) => !BACKGROUND_LINES.has(String(m)))).to.deep.equal([])
       })
 
       it('ends a stream when its body ends, at DEBUG, and logs nothing at INFO when it opens', async () => {
