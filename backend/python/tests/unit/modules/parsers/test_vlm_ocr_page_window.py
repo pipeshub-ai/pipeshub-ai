@@ -109,6 +109,40 @@ class TestPageWindow:
         assert 0 < probe.peak_seen_by_llm <= BATCH
         # Before the change every page was alive during the LLM calls (PAGES).
 
+    async def test_a_raised_window_still_renders_at_most_five_pages_per_submission(self) -> None:
+        probe = _Probe()
+        strategy = _strategy(probe)
+        strategy.PAGE_RENDER_BATCH_SIZE = 200
+        sizes: list[int] = []
+        render = strategy._render_page_batch_to_base64
+
+        def spy(page_numbers: list[int]) -> dict[int, str]:
+            sizes.append(len(page_numbers))
+            return render(page_numbers)
+
+        strategy._render_page_batch_to_base64 = spy  # type: ignore[method-assign]
+
+        await strategy._preprocess_document()
+
+        assert max(sizes) == 5  # window // 4 would be 50 arrays at once
+
+    async def test_the_default_window_renders_five_pages_per_submission(self) -> None:
+        probe = _Probe()
+        strategy = _strategy(probe)
+        strategy.PAGE_RENDER_BATCH_SIZE = 20
+        sizes: list[int] = []
+        render = strategy._render_page_batch_to_base64
+
+        def spy(page_numbers: list[int]) -> dict[int, str]:
+            sizes.append(len(page_numbers))
+            return render(page_numbers)
+
+        strategy._render_page_batch_to_base64 = spy  # type: ignore[method-assign]
+
+        await strategy._preprocess_document()
+
+        assert max(sizes) == 5
+
     async def test_nothing_is_held_after_the_job(self) -> None:
         probe = _Probe()
         strategy = _strategy(probe)
