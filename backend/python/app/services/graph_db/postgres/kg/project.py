@@ -212,6 +212,8 @@ async def _project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | No
 
     snap = await snapshot(tx, org, every, allocate, known_children=expand_neighbours)
     d = derive(every, snap)
+    if d.gone and not org_wide:      # gone since `_held`: its key can already be another connector's, and only the whole org holds that connector off
+        raise NeedLocks(set(), wide=True)
     st.focus = len(every)
     st.keys = set(focus)
     cur_links, cur_grants, cur_closure = await current(tx, org, d)

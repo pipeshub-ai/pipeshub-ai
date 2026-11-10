@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from app.services.graph_db.postgres.kg import flush as flush_mod
+from app.services.graph_db.postgres.kg import project as project_mod
 from app.services.graph_db.postgres.kg import restamp
 from app.services.graph_db.postgres.kg import stamp as stamp_mod
 from app.services.graph_db.postgres.kg.drainer import drain_org
@@ -144,6 +145,32 @@ async def test_units_that_take_the_same_connectors_in_every_order_never_deadlock
     await asyncio.sleep(1.5)                                                                           # the server publishes its statistics about once a second
     with ctx(org):
         assert await pg_db.run(deadlocks) == before
+
+
+async def test_a_record_found_gone_after_the_locks_were_checked_is_taken_again_under_the_whole_organisation(pg_db, monkeypatch) -> None:
+    """Between the check of the locks and the read of the graph the record can go, and another connector can write its key before its scope is deleted."""
+    p, org = prov(pg_db), new_org()
+    await world2(p, org)
+    real_lock, real_derive, wide, first = project_mod.lock_apps, project_mod.derive, [], [True]
+
+    async def spying(tx: Tx, o: str, apps: set[str], *, org_wide: bool) -> None:
+        wide.append(org_wide)
+        await real_lock(tx, o, apps, org_wide=org_wide)
+
+    def goes_once(every: set, snap: object) -> object:
+        d = real_derive(every, snap)
+        if first.pop() if first else False:
+            d.gone.add(snap.sk[("records", "x1")])
+        return d
+
+    monkeypatch.setattr(project_mod, "lock_apps", spying)
+    monkeypatch.setattr(project_mod, "derive", goes_once)
+
+    async def unit(tx: Tx) -> None:
+        await project_mod.project(tx, org, {("records", "x1")}, lock_for={"app2"}, expand_neighbours=False, stamps=False)
+    with ctx(org):
+        await pg_db.run(unit, write=True)
+    assert wide == [False, True]
 
 
 async def test_a_unit_that_is_asked_for_more_locks_gives_up_the_ones_it_held(pg_db) -> None:
