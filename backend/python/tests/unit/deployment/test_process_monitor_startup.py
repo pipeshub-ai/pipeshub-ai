@@ -1,5 +1,6 @@
 """process_monitor.sh waits for a slow service that is making progress and still gives up on a dead or hung one."""
 
+import contextlib
 import os
 import pathlib
 import re
@@ -22,6 +23,23 @@ def _functions() -> str:
     limits = re.findall(r"^STARTUP_\w+=.*$", text, re.M)
     assert len(limits) == 3, "startup limits not found in process_monitor.sh"
     return "\n".join(limits + parts)  # the limits first: check_startup_limits is only defined, not called
+
+
+def _bash(script: str, env: dict[str, str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    """Run *script* in its own session and kill the whole group afterwards.
+
+    The workloads are busy loops, some with children of their own; killing only the PID the script
+    knows about leaves those running, and a test run would leave CPU burners behind on the runner.
+    """
+    timeout = kwargs.pop("timeout", 60)
+    proc = subprocess.Popen(["bash", "-c", script], env=env, text=True, start_new_session=True, **kwargs)  # type: ignore[call-overload]
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+    return subprocess.CompletedProcess(proc.args, proc.returncode, stdout, stderr)
 
 
 def _run(tmp_path: pathlib.Path, workload: str, healthy_after: float, **limits: int) -> tuple[int, float, str]:
@@ -47,9 +65,7 @@ kill $pid $helper 2>/dev/null
 exit $rc
 """
     began = time.monotonic()
-    out = subprocess.run(
-        ["bash", "-c", script], env={"PATH": f"{bin_dir}:/usr/bin:/bin"}, capture_output=True, text=True, timeout=60
-    )
+    out = _bash(script, {"PATH": f"{bin_dir}:/usr/bin:/bin"}, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return out.returncode, time.monotonic() - began, out.stdout
 
 
@@ -125,8 +141,7 @@ kill $slow $helper 2>/dev/null
 exit $rc
 """
     began = time.monotonic()
-    out = subprocess.run(["bash", "-c", script], env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
-                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=60)
+    out = _bash(script, {"PATH": f"{bin_dir}:/usr/bin:/bin"}, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     assert out.returncode == 1
     assert time.monotonic() - began < 8, "waited for the slow service after another one had failed"
 
@@ -226,10 +241,8 @@ esac
         started = log.exists() and "All services started" in log.read_text()
         assert started, f"monitor did not finish starting (exit {proc.poll()}):\n{log.read_text() if log.exists() else ''}"
     finally:
-        try:
+        with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
         proc.wait()
 
 
@@ -244,3 +257,27 @@ def test_the_limits_are_repaired_before_the_first_wait() -> None:
     assert checks, "check_startup_limits is never called"
     assert waits, "no startup wait found"
     assert checks[0] < waits[0]
+
+
+def _alive_with(tag: str) -> list[int]:
+    found = []
+    for entry in pathlib.Path("/proc").iterdir():
+        if entry.name.isdigit():
+            try:
+                if tag.encode() in (entry / "cmdline").read_bytes():
+                    found.append(int(entry.name))
+            except OSError:
+                continue
+    return found
+
+
+def test_a_workload_and_its_children_do_not_outlive_the_test(tmp_path: pathlib.Path) -> None:
+    # Kills: killing only the workload's PID, which left its busy child spinning after the test.
+    tag = f"leakcheck{os.getpid()}x{time.monotonic_ns()}"
+    rc, _, _ = _run(tmp_path, f"bash -c 'bash -c \"while :; do :; done # {tag}\" & wait'", 0,
+                    STARTUP_STALL_SECONDS=3, STARTUP_MAX_SECONDS=30, STARTUP_POLL_SECONDS=1)
+    assert rc == 0
+    deadline = time.monotonic() + 5
+    while _alive_with(tag) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert _alive_with(tag) == []
