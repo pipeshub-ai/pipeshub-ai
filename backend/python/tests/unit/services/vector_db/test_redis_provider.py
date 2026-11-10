@@ -1557,3 +1557,51 @@ class TestRedisFilterOpsSeeEveryMatch:
         svc = self._svc()
         page = await svc.scroll("records", self.FILT, limit=40)
         assert len(page.points) == 40
+
+
+class TestRedisExistingPointIds:
+    @pytest.mark.asyncio
+    async def test_is_one_exists_per_key_in_one_round_trip_and_reads_no_hash(self, service, mock_redis_client) -> None:
+        pipeline = MagicMock()
+        pipeline.execute = AsyncMock(return_value=[1, 0, 1])
+        mock_redis_client.pipeline = MagicMock(return_value=pipeline)
+
+        found = await service.existing_point_ids("coll", ["a", "b", "c"])
+
+        assert found == {"a", "c"}
+        assert [c.args for c in pipeline.execute_command.call_args_list] == [
+            ("EXISTS", "coll:a"), ("EXISTS", "coll:b"), ("EXISTS", "coll:c"),
+        ]
+        pipeline.execute.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_reply_fails_the_call_rather_than_reading_as_absent(self, service, mock_redis_client) -> None:
+        pipeline = MagicMock()
+        pipeline.execute = AsyncMock(return_value=[1, RuntimeError("boom")])
+        mock_redis_client.pipeline = MagicMock(return_value=pipeline)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await service.existing_point_ids("coll", ["a", "b"])
+
+    @pytest.mark.asyncio
+    async def test_no_ids_makes_no_call(self, service, mock_redis_client) -> None:
+        mock_redis_client.pipeline = MagicMock()
+        assert await service.existing_point_ids("coll", []) == set()
+        mock_redis_client.pipeline.assert_not_called()
+
+
+class TestRedisCreateIndex:
+    SCHEMA = {"type": "keyword"}
+
+    @pytest.mark.asyncio
+    async def test_a_failure_that_is_not_a_duplicate_is_raised(self, service, mock_redis_client) -> None:
+        # Kills: swallowing the error, which let the registry treat an unindexed field as indexed.
+        mock_redis_client.execute_command = AsyncMock(side_effect=RuntimeError("ERR unknown command 'FT.ALTER'"))
+        with pytest.raises(RuntimeError):
+            await service.create_index("c", "metadata.contentRev", self.SCHEMA)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("message", ["Field already exists", "Duplicate field in schema"])
+    async def test_a_field_already_in_the_schema_returns_quietly(self, service, mock_redis_client, message) -> None:
+        mock_redis_client.execute_command = AsyncMock(side_effect=RuntimeError(message))
+        await service.create_index("c", "metadata.contentRev", self.SCHEMA)

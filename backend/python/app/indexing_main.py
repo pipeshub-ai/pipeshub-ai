@@ -33,6 +33,7 @@ from app.core.org_context import (
 )
 from app.edition_containers import IndexingAppContainer
 from app.edition_services import configure_app
+from app.events.dedup import will_promote_queued_copies
 from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
 from app.modules.artifacts.store import NodeArtifactStore
 from app.modules.indexing.class_units_backfill import run_class_units_backfill
@@ -40,6 +41,7 @@ from app.modules.indexing.duplicate_reconcile import (
     DuplicateReconciler,
     retry_pending_duplicate_reconciles,
 )
+from app.modules.indexing.embed_resume import EMBED_DELIVERY_ID, RESUME_DELIVERY_ID_KEY
 from app.modules.indexing.entity_index_rebuild import run_entity_index_rebuild_loop
 from app.modules.indexing.lane_upkeep import last_lane_report, run_lane_upkeep
 from app.modules.indexing.named_entity_completion import (
@@ -437,6 +439,10 @@ async def recover_in_progress_records(
                         # Failures of every recovery of this version share one budget.
                         "_retry_tracking_id": tracking_id,
                     }
+                    if record.get(EMBED_DELIVERY_ID):
+                        # A recovered record continues the run that was interrupted, so an
+                        # embedding it left half done is resumed rather than started over.
+                        payload[RESUME_DELIVERY_ID_KEY] = record[EMBED_DELIVERY_ID]
 
                     # Determine event type - default to NEW_RECORD for recovery
                     # Only treat as REINDEX if version > 0 AND virtualRecordId exists
@@ -1606,6 +1612,41 @@ async def _republish_stranded_records(
         # Unreadable is not active either: the record waits for the next pass.
         return connector_active[connector_id] is True
 
+    async def _still_parked_behind_a_twin(record: dict[str, Any], record_key: str) -> bool:
+        """Whether something can still release this parked copy: another live record of its org
+        holding the same content whose processing is still ahead (``will_promote_queued_copies``:
+        in flight, or indexed with its enrichment still running), unless it is itself only QUEUED
+        on an active connector, a copy like this one. A QUEUED one on a connector that is not
+        active counts (off, or being deleted: a delete can be put back). Promotion runs once, so
+        a finished or failed twin never releases the copy again; the copy is then sent like any
+        stranded record, and dedup reuses a finished twin rather than indexing it twice. A copy
+        whose twin was deleted, say with its connector, is sent the same way, as are the copies
+        left behind with it: the handler parks all but one behind that one. A failed read keeps
+        it parked."""
+        enrichment_live_after_ms = get_epoch_timestamp_in_ms() - int(
+            messaging_env.stale_recovery_after_seconds * 1000
+        )
+        try:
+            holders = await graph_provider.get_records_by_virtual_record_id(
+                str(record["virtualRecordId"]), raise_on_error=True
+            )
+            for key in holders or []:
+                if key == record_key:
+                    continue
+                twin = await graph_provider.get_document(key, CollectionNames.RECORDS.value, raise_on_error=True)
+                # The lookup spans orgs; this pass is the copy's org.
+                if not twin or twin.get("orgId") != org_id or not is_live_record(twin):
+                    continue
+                if twin.get("indexingStatus") == ProgressStatus.QUEUED.value:
+                    if not await _is_active(str(twin.get("connectorId") or "")):
+                        return True
+                elif will_promote_queued_copies(twin, enrichment_live_after_ms):
+                    return True
+        except Exception as e:
+            logger.warning("Could not look up the twins of parked record %s, so leaving it parked: %s", record_key, e)
+            return True
+        return False
+
     async def _resend(
         record: dict[str, Any],
         record_key: str,
@@ -1864,8 +1905,13 @@ async def _republish_stranded_records(
                     continue
 
                 # A parked copy is released by its twin's completion only while
-                # QUEUED; one parked while its connector was off never is.
-                if not parked_while_off and is_parked_duplicate(record, restored_upload=restored_upload):
+                # QUEUED; one parked while its connector was off never is. One
+                # whose twin is gone has nothing left to release it.
+                if (
+                    not parked_while_off
+                    and is_parked_duplicate(record, restored_upload=restored_upload)
+                    and await _still_parked_behind_a_twin(record, record_key)
+                ):
                     continue
 
                 considered += 1

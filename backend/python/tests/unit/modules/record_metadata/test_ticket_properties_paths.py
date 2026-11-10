@@ -222,6 +222,7 @@ async def _index_through_process_blocks(ticket: TicketRecord, storage: FakeStora
     sink.vector_store.apply = AsyncMock(return_value=True)
     sink._save_reconciliation_metadata = AsyncMock()  # type: ignore[method-assign]
     sink._sync_record_identity_entities = AsyncMock()  # type: ignore[method-assign]
+    sink._stored_run_is = AsyncMock(return_value=True)  # type: ignore[method-assign]
     sink.artifact_writer = ArtifactWriter(NodeArtifactStore(storage.blob_storage(), logger), logger)
 
     class _Pipeline:
