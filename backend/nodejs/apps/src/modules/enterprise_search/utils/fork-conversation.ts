@@ -363,7 +363,9 @@ export interface ForkOrigin {
   atMessageId?: string;
 }
 
-const metaOf = (session: Pick<ChatSessionDto, 'metadata'>): Record<string, unknown> =>
+const metaOf = (
+  session: Pick<ChatSessionDto, 'metadata'>,
+): Record<string, unknown> =>
   session.metadata instanceof Map
     ? Object.fromEntries(session.metadata)
     : (session.metadata ?? {});
