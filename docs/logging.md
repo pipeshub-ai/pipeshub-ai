@@ -228,8 +228,11 @@ the auth middleware bound.
   include_error_text=True)`. The line then logs it as a failure whatever the status: a 2xx or 3xx and a 5xx at the class's
   level (with the stack once for `internal`), a 4xx at INFO. `error_class` and `reason` win over the ones read from `exc`; a
   marked bare `HTTPException` is classed by its own status, not by the one answered. `include_error_text=False` keeps its text
-  off the line, as in `log_failure`. The hints also apply to an exception raised `from` the marked one
-  (`raise HTTPException(502) from e` after marking `e`), whether the exception handler hands it over or nobody handles it.
+  off the line, as in `log_failure`. An `HTTPException` raised `from` the marked one (`raise HTTPException(502) from e` after
+  marking `e`) takes all its hints. An exception that escapes unhandled takes `error_class` and `reason` only when it is the
+  marked object itself: `BaseHTTPMiddleware` re-raises with the implicit context as the cause, so a bug raised while handling a
+  marked failure stays `internal` with its stack. `include_error_text=False` covers any exception whose chain (cause, or
+  unsuppressed context, as in the text) holds the marked one.
   `exc` may be None for a failure with no exception (an OAuth callback that answers a redirect); `error_class` is then required
   (TypeError otherwise), and the line has no `error_type`, `error_message`, `cause_type` or stack. An `HTTPException` raised
   anywhere below is handed over by the exception handler, which then calls the handler registered before it.
@@ -241,7 +244,8 @@ the auth middleware bound.
 - `client_ip` is the peer as uvicorn resolves it (`FORWARDED_ALLOW_IPS`, default loopback), usually the Node API, and only when it
   parses as an IP address. The end user's address is on Node's `http.request.end` with the same `request_id`.
 - A client disconnect is seen two ways: the response never sent its last body message, or an `http.disconnect` was read before
-  it did (a `BaseHTTPMiddleware` below may end its own stream cleanly after the inner one was cut).
+  it did (a `BaseHTTPMiddleware` below may end its own stream cleanly after the inner one was cut). An escaped `ClientDisconnect`
+  (a body read after the client left) is `cancelled reason=client_disconnect`; any other exception is still `internal`.
 - Limits: an org bound by a route dependency (not by the auth middleware) runs in a child task, so the line has no `org_id`
   from it (only the request context's org, without `user_id`). An exception raised by `MetricsMiddleware` or
   `RequestContextMiddleware` themselves gets uvicorn's line only. A middleware added before `install_request_logging` sits

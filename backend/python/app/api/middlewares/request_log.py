@@ -14,6 +14,7 @@ from fastapi import FastAPI, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.requests import ClientDisconnect
 
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.utils import error_class
@@ -73,11 +74,18 @@ def _on_cause_chain(exc: BaseException, target: BaseException) -> bool:
     return False
 
 
-def _failure_for(scope: Scope, exc: BaseException) -> _Failure:
-    """``exc``, with the hints of a mark on it or on its ``__cause__`` chain (``raise HTTPException(...) from e``)."""
+def _failure_for(scope: Scope, exc: BaseException, *, escaped: bool = False) -> _Failure:
+    """``exc`` with a mark's hints: all of them when the mark is ``exc``, or (handed over, not escaped) on its ``__cause__``
+    chain (``raise HTTPException(...) from e``). Else only ``include_error_text``, when the marked text would be on the line.
+    An escaped exception's chain can't be trusted: BaseHTTPMiddleware re-raises with its ``__context__`` as ``__cause__``,
+    so a bug raised while handling a marked failure would otherwise take that failure's class and lose its stack."""
     marked = _marked(scope)
-    if marked is not None and marked.exc is not None and _on_cause_chain(exc, marked.exc):
+    if marked is None or marked.exc is None:
+        return _Failure(exc)
+    if marked.exc is exc or (not escaped and _on_cause_chain(exc, marked.exc)):
         return replace(marked, exc=exc)
+    if error_class.on_chain(exc, marked.exc):
+        return _Failure(exc, include_error_text=marked.include_error_text)
     return _Failure(exc)
 
 
@@ -141,15 +149,15 @@ class _Request:
             "duration_ms": round(((self.finished or perf_counter()) - self.started) * 1000),
             "client_ip": _client_ip(self.scope),
         }
-        failure = _failure_for(self.scope, escaped) if escaped is not None else _marked(self.scope)
+        failure = _failure_for(self.scope, escaped, escaped=True) if escaped is not None else _marked(self.scope)
         reason = (failure.reason or _reason(failure.exc)) if failure else None
         if escaped is not None and failure is not None:
             # Nobody handled it and the client got a 500 (or a cut stream): ours, unless the code that marked it said,
-            # or the client left first (Starlette raises ClientDisconnect from a body read).
-            if self.client_left or isinstance(escaped, asyncio.CancelledError):
-                default, reason = "cancelled", reason or ("client_disconnect" if self.client_left else None)
+            # or it is the client leaving (Starlette raises ClientDisconnect from a body read).
+            if isinstance(escaped, ClientDisconnect):
+                default, reason = "cancelled", reason or "client_disconnect"
             else:
-                default = "internal"
+                default = "cancelled" if isinstance(escaped, asyncio.CancelledError) else "internal"
             _log_exception(failure, failure.error_class or default, reason=reason, **fields)
         elif failure is not None and status is not None and not 400 <= status < 500:
             # A 5xx, or a failure the route answered with a 2xx/3xx: logged as the failure it is.

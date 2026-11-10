@@ -84,6 +84,11 @@ def _chain(exc: BaseException) -> Iterator[BaseException]:
         link = link.__cause__ if link.__cause__ is not None else (None if link.__suppress_context__ else link.__context__)
 
 
+def on_chain(exc: BaseException, target: BaseException) -> bool:
+    """Whether ``target`` is ``exc`` or in the chain its class and text are read from (see ``_chain``)."""
+    return any(link is target for link in _chain(exc))
+
+
 def first_leaf(exc: BaseException) -> BaseException:
     """The first exception in ``exc`` that isn't a group: what a task group's failure was."""
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
