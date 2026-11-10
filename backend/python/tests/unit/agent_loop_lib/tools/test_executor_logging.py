@@ -23,6 +23,7 @@ from app.agent_loop_lib.tools.builtin.coordination.handoff import HandoffTool
 from app.agent_loop_lib.tools.builtin.coordination.spawn_agent import SpawnAgentTool
 from app.agent_loop_lib.tools.executor import ToolExecutor, log_tool_call_end
 from app.agent_loop_lib.tools.registry import ToolRegistry
+from app.schema.node_validator import NodeSchemaValidator
 from app.utils import error_class
 from app.utils.logger import log_record_fields
 from app.utils.logging_fields import current_log_fields
@@ -123,8 +124,6 @@ class TestOutcomes:
         self, caplog: pytest.LogCaptureFixture,
     ) -> None:
         # The error text is the tool result the LLM provider (and Opik) receive.
-        from app.schema.node_validator import NodeSchemaValidator
-
         seeded = "+1 555 0100 Seeded"
 
         async def write(**_kwargs: Any) -> ToolOutput:  # noqa: ANN401

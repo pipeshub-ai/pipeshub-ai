@@ -26,8 +26,9 @@ from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.sync.sync_coordinator import Admission, LocalSyncCoordinator
 from app.connectors.core.sync.sync_runner import join_cleanup_tasks, run_sync_task
 from app.connectors.core.sync.task_manager import SyncTaskManager
+from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
 from app.utils import error_class
-from app.utils.logger import log_record_fields
+from app.utils.logger import TextFormatter, log_record_fields
 from app.utils.logging_fields import current_log_fields
 
 if TYPE_CHECKING:
@@ -587,9 +588,6 @@ class TestSchemaRejectionText:
     PHONE = "+1 555 0100 Seeded"
 
     async def test_sync_run_end_and_task_failed_leave_the_rejected_value_out(self, records) -> None:
-        from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
-        from app.utils.logger import TextFormatter
-
         async def run_sync() -> None:
             NodeSchemaValidator().validate_node("users", {"email": "u1@example.invalid", "businessPhones": self.PHONE})
 

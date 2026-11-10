@@ -1,5 +1,7 @@
 """A template body the graph schema rejects is answered 400 (the caller's mistake), not 500."""
 
+import json
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -7,7 +9,7 @@ from fastapi import HTTPException
 from jsonschema import ValidationError as JsonSchemaValidationError
 
 from app.api.routes.agent import create_agent_template
-from app.schema.node_validator import SchemaValidationError
+from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
 
 
 async def test_a_schema_rejected_template_is_a_400_and_counted() -> None:
@@ -39,14 +41,9 @@ async def test_a_schema_rejected_template_is_a_400_and_counted() -> None:
 
 async def test_the_rejection_log_line_names_the_field_not_the_value(caplog) -> None:
     """The route's own log line quotes the exception: the tag a user typed must not reach it (F36)."""
-    import json
-    import logging
-
-    from app.schema.node_validator import NodeSchemaValidator
-
     seeded = "Q3 layoffs: Grace Seeded"
 
-    async def upsert(nodes, collection):
+    async def upsert(nodes: list[dict], collection: str) -> bool:
         NodeSchemaValidator().validate_node(collection, nodes[0])  # the real schema decides
         return True
 
