@@ -686,9 +686,15 @@ class EventProcessor:
 
         return write
 
-    def _display_writer(self, record_id: str) -> Callable[[int], Awaitable[None]]:
+    def _display_writer(self, record_id: str, delivery_id: str) -> Callable[[int], Awaitable[None]]:
         async def write(done: int) -> None:
-            await self.graph_provider.update_node(record_id, CollectionNames.RECORDS.value, {EMBED_DONE: done})
+            # A late write from an attempt that lost the record must not touch one that finished or moved on.
+            await self.graph_provider.update_node_fields_if_match(
+                record_id,
+                CollectionNames.RECORDS.value,
+                {EMBED_DONE: done},
+                {EMBED_DELIVERY_ID: delivery_id, "indexingStatus": ProgressStatus.IN_PROGRESS.value},
+            )
 
         return write
 
@@ -1841,7 +1847,7 @@ class EventProcessor:
                         prior_seconds=prior_seconds,
                         prior_uncounted=prior_uncounted or 0,
                         commit=self._cut_writer(record_id, str(delivery_id)),
-                        display=self._display_writer(record_id),
+                        display=self._display_writer(record_id, str(delivery_id)),
                     )
             else:
                 end_attempt()

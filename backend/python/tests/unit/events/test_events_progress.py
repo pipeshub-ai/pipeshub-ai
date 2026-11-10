@@ -72,6 +72,15 @@ class TestTheHandBackWrite:
         gp.update_node_fields_if_match = AsyncMock(return_value=applies)
         return ep._cut_writer("rec-1", "d1"), gp
 
+    async def test_the_progress_count_is_written_only_while_this_delivery_holds_the_record(self) -> None:
+        # Kills: an unconditional count, which a late attempt would put on a record that finished.
+        ep, _p, gp, _event = _setup({})
+        gp.update_node_fields_if_match = AsyncMock(return_value=True)
+        await ep._display_writer("rec-1", "d1")(340)
+        _key, _coll, updates, expected = gp.update_node_fields_if_match.await_args.args
+        assert updates == {"embedDone": 340}
+        assert expected == {"embedDeliveryId": "d1", "indexingStatus": "IN_PROGRESS"}
+
     async def test_it_is_conditional_on_this_delivery_and_the_record_still_being_in_progress(self) -> None:
         # Kills: an unconditional status write, which would overwrite a record another owner took over.
         write, gp = await self._writer({"parsingStatus": "IN_PROGRESS"})
