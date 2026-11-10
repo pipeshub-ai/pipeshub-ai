@@ -41,6 +41,7 @@ from requests.adapters import HTTPAdapter
 
 from app.connectors.sources.web import address_guard, crawl4ai_fetcher, fetch_strategy
 from app.services.resource_governor.models import ResourceSnapshot
+from app.utils import browser_install
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -369,6 +370,10 @@ async def serve_fake_web(fake: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> Asyn
 @asynccontextmanager
 async def serve_fake_browser(site: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeWeb]:
     """crawl4ai's browser renders from ``site``; the shared fetcher starts fresh and is closed after."""
+    async def browser_present(**_: object) -> None:
+        """The first-use install would download a real Chromium for a browser this fake replaces."""
+
+    monkeypatch.setattr(browser_install, "ensure_chromium", browser_present)
     monkeypatch.setattr(crawl4ai_fetcher, "AsyncWebCrawler", browser_crawler_class(site))
     monkeypatch.setattr(crawl4ai_fetcher, "AsyncPlaywrightCrawlerStrategy", lambda **kw: SimpleNamespace(**kw, set_hook=lambda *_: None))
     monkeypatch.setattr(crawl4ai_fetcher, "UndetectedAdapter", lambda: SimpleNamespace())
