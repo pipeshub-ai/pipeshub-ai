@@ -45,6 +45,7 @@ function createMockResponse(): any {
     send: sinon.stub(),
     setHeader: sinon.stub(),
     getHeader: sinon.stub(),
+    destroy: sinon.stub(),
     headersSent: false,
   }
   res.status.returns(res)
@@ -96,7 +97,7 @@ describe('ErrorMiddleware', () => {
   // headersSent guard
   // -----------------------------------------------------------------------
   describe('headersSent guard', () => {
-    it('does not answer once headers have been sent, but still logs the failure once', () => {
+    it('closes the started response instead of answering, and still logs the failure once', () => {
       const error = new Error('stream broke')
       const req = createMockRequest()
       const res = createMockResponse()
@@ -106,11 +107,36 @@ describe('ErrorMiddleware', () => {
 
       handler(error, req, res, next)
 
+      expect(res.destroy.calledOnceWithExactly()).to.be.true
       expect(res.status.called).to.be.false
       expect(res.json.called).to.be.false
       expect(loggerErrorStub.calledOnce).to.be.true
       expect(loggerErrorStub.firstCall.args[0]).to.equal('http.request.error')
       expect(loggerErrorStub.firstCall.args[1]).to.include({ status: 200, error_class: 'internal', error })
+    })
+
+    it('leaves a response that has already ended alone', () => {
+      const res = createMockResponse()
+      res.headersSent = true
+      res.writableEnded = true
+
+      handler(new Error('after the answer'), createMockRequest(), res, createMockNext())
+
+      expect(res.destroy.called).to.be.false
+      expect(res.json.called).to.be.false
+    })
+
+    // logRequestError catches its own failures, so this never happens today; the stub only reaches the defensive catch.
+    it('defensive catch: still closes a started response if handling the error throws', () => {
+      const res = createMockResponse()
+      res.headersSent = true
+      sinon.stub(ErrorMiddleware as any, 'logRequestError').throws(new Error('boom'))
+      sinon.stub(console, 'error')
+
+      handler(new Error('stream broke'), createMockRequest(), res, createMockNext())
+
+      expect(res.destroy.calledOnceWithExactly()).to.be.true
+      expect(res.json.called).to.be.false
     })
   })
 
@@ -588,12 +614,13 @@ describe('ErrorMiddleware', () => {
       expect(JSON.stringify(body)).to.not.include('ECONNREFUSED')
     })
 
-    it('does nothing once the response has started', () => {
+    it('closes the started response and answers nothing', () => {
       const res = createMockResponse()
       res.headersSent = true
 
       handler(refused(), createMockRequest(), res, createMockNext())
 
+      expect(res.destroy.calledOnce).to.be.true
       expect(res.status.called).to.be.false
     })
   })

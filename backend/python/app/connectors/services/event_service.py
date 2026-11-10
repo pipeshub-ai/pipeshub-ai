@@ -1751,6 +1751,14 @@ class EventService:
                         f"its storage release stays pending"
                     )
                     return True
+                if result.get("partial"):
+                    # Part of it is gone and the app's grants with it: reverting the status would show an active connector nobody can open.
+                    # It stays DELETING; a redelivery of this event finishes it, and so does the storage-release reconciler once the
+                    # delivery attempts are used up.
+                    self.logger.error(
+                        f"Deletion of connector {connector_id} stopped part way and stays DELETING: {result.get('error')}"
+                    )
+                    return False
                 raise Exception(result.get("error", "Unknown deletion failure from graph DB"))
             graph_deleted = True
 
