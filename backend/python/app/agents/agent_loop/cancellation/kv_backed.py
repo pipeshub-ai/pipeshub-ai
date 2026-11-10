@@ -28,6 +28,7 @@ from app.agents.agent_loop.cancellation.in_process import (
     InProcessRunCancellationRegistry,
 )
 from app.agents.agent_loop.cancellation.registry import CancelOutcome, RunOwner
+from app.utils.logging_fields import log_once
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.context import CancellationToken
@@ -41,6 +42,8 @@ _KEY_SUFFIX = ":cancel"
 # mid-run) — not the normal cleanup path, `unregister()` deletes it.
 _TTL_SECONDS = 600
 _POLL_INTERVAL_SECONDS = 1.0
+_POLL_WARNING_KEY = "cancellation:kv_poll_failed"
+_POLL_WARNING_INTERVAL_SECONDS = 60.0
 
 
 def _key(run_id: str) -> str:
@@ -105,8 +108,11 @@ class KVBackedRunCancellationRegistry:
                 try:
                     raw = await self._store.get_key(_key(run_id))
                 except Exception:
-                    self._log.debug(
-                        "KVBackedRunCancellationRegistry: poll failed for run_id=%s",
+                    # The store raises without logging; a WARNING now and then shows a
+                    # partition between this worker and the store, without one line per tick.
+                    level = logging.WARNING if log_once(_POLL_WARNING_KEY, _POLL_WARNING_INTERVAL_SECONDS) else logging.DEBUG
+                    self._log.log(
+                        level, "KVBackedRunCancellationRegistry: poll failed for run_id=%s",
                         run_id, exc_info=True,
                     )
                     continue
