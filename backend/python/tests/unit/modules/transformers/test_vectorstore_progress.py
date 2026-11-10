@@ -177,8 +177,10 @@ class TestARecordThatMakesProgress:
 
     async def test_a_chain_that_keeps_making_progress_ends_at_the_ceiling_and_dead_letters_as_before(self) -> None:
         # Kills: no ceiling, which would let a chain whose points keep vanishing requeue for ever.
-        chain = await _chain(1200, 0.05)
-        consumer = Consumer(chain, cap=0.4, floor=0.3, ceiling=1.5)
+        # Budgets long enough that the first attempt of a cold test process still finishes a batch (one that
+        # finishes none is rightly counted), and a chain long enough not to finish before the ceiling.
+        chain = await _chain(2400, 0.05)
+        consumer = Consumer(chain, cap=0.8, floor=0.6, ceiling=2.8)
         assert await consumer.run() == "dead-lettered"
         assert consumer.counted == 3
         assert consumer.uncounted >= 2
