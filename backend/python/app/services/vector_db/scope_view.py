@@ -80,8 +80,10 @@ class OrgView:
         return out
 
 
-def connector_view(connector_id: str, app: Mapping[str, Any], *, clock: Callable[[], float] = time.time) -> ConnectorView:
-    now = clock()
+def connector_view(connector_id: str, app: Mapping[str, Any], *, clock: Callable[[], float] = time.time, store_time: float | None = None) -> ConnectorView:
+    """``clock`` (this host's) reads the sweep's retry time and the rewriter's lease, which are written by it; ``store_time`` reads the open-write leases."""
+    host_now = clock()
+    now = host_now if store_time is None else store_time
     v = ConnectorView(connector_id, app_is_current(app))
     generation = structure_generation_of(app)
     # ---- pending roots
@@ -127,9 +129,9 @@ def connector_view(connector_id: str, app: Mapping[str, Any], *, clock: Callable
     # ---- the sweep and the rewriter
     state = read_state(app.get(SWEEP_KEY))
     if state.failures:
-        v.attention.append(f"sweep_failing: {state.failures} failure(s) in a row, next try in {max(0, int(state.retry_at - now))} s: {state.error}")
+        v.attention.append(f"sweep_failing: {state.failures} failure(s) in a row, next try in {max(0, int(state.retry_at - host_now))} s: {state.error}")
     if lease := read_lease(app.get(REWRITE_LEASE_KEY)):
-        v.info.append(f"a rewriter holds the connector until {int(lease[1] - now)} s from now" if lease[1] > now else "a rewriter's lease has run out")
+        v.info.append(f"a rewriter holds the connector until {int(lease[1] - host_now)} s from now" if lease[1] > host_now else "a rewriter's lease has run out")
     return v
 
 
@@ -143,7 +145,7 @@ async def org_view(graph_provider: IGraphDBProvider, org_id: str, vector_db: IVe
         for app in sorted(apps, key=lambda a: str(a.get("_key") or a.get("id"))):
             key = str(app.get("_key") or app.get("id"))
             if (connectors is None or key in connectors) and any(k in app for k in _TRACKED):
-                rows.append(connector_view(key, app, clock=lambda: now if now is not None else time.time()))
+                rows.append(connector_view(key, app, clock=clock or time.time, store_time=now))
         view = OrgView(org_id, rows)
         if now is None:
             view.notes.append("store_clock_unknown: the graph store could not say its time; lease deadlines were read by this host's clock and the sweep recovers nothing until it can")

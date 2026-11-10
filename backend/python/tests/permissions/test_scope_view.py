@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from app.services.permissions.rewrite_lease import REWRITE_LEASE_KEY
 from app.services.permissions.structure_generation import (
     CLOSED_KEY,
     GENERATION_KEY,
@@ -103,6 +104,12 @@ def test_stale_points_and_a_failing_sweep_are_shown() -> None:
     app = {**current_app(), BACKFILL_KEYS["stale"]: 2, SWEEP_KEY: '{"n":3,"e":"Boom: x","t":1000100}'}
     v = connector_view("c", app, clock=Clock())
     assert [a.split(":")[0] for a in v.attention] == ["stale_points", "sweep_failing"] and "Boom: x" in v.attention[1] and "next try in 100 s" in v.attention[1]
+
+
+def test_a_retry_time_and_a_rewriter_lease_are_read_by_the_host_clock_not_the_store_clock() -> None:
+    app = {**current_app(), SWEEP_KEY: '{"n":3,"e":"Boom: x","t":1000100}', REWRITE_LEASE_KEY: '{"h":"w","u":1000300}'}
+    v = connector_view("c", app, clock=Clock(), store_time=1_000_000.0 + 5000)      # the store's clock is far ahead of this host's
+    assert "next try in 100 s" in v.attention[0] and v.info == ["a rewriter holds the connector until 300 s from now"]
 
 
 class Apps:

@@ -353,11 +353,12 @@ async def recover_expired_writes(graph_provider: Any, connector_id: str, *, cloc
         return 0
     cutoff = now - OPEN_WRITE_GRACE_SECONDS
     dead = {t: e for t, e in held.items() if not e.get("k") and e["u"] <= cutoff}
-    kept = {t: ({**{f: v for f, v in e.items() if f != "k"}, "u": int(now) + OPEN_WRITE_SECONDS} if e.get("k") else e) for t, e in held.items() if t not in dead}
+    released = {t: ({**{f: v for f, v in e.items() if f != "k"}, "u": int(now) + OPEN_WRITE_SECONDS} if e.get("k") else e) for t, e in held.items()}
     if not dead or (closed is not None and whole_number(closed) is None):
-        if any(e.get("k") for e in held.values()):
-            await _swap(graph_provider, connector_id, {OPEN_WRITES_KEY: _dump_open_writes(kept)}, {OPEN_WRITES_KEY: raw})      # (a lost race: the next sweep)
+        if any(e.get("k") for e in held.values()):      # (the dead leases stay: with the counter unreadable they are the only record of the roots)
+            await _swap(graph_provider, connector_id, {OPEN_WRITES_KEY: _dump_open_writes(released)}, {OPEN_WRITES_KEY: raw})      # (a lost race: the next sweep)
         return 0
+    kept = {t: e for t, e in released.items() if t not in dead}
     updates: dict[str, Any] = {OPEN_WRITES_KEY: _dump_open_writes(kept), CLOSED_KEY: (whole_number(closed) or 0) + len(dead)}
     if all("r" in e for e in dead.values()):
         if roots := sorted({r for e in dead.values() for r in e["r"]}):
