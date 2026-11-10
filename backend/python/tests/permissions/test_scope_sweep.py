@@ -221,10 +221,41 @@ async def test_a_connector_nobody_back_filled_is_left_alone() -> None:
     assert row(await sweep.run_once(ORG)).action == "idle"      # (not once current, so nothing to keep current)
 
 
+async def test_a_connector_nobody_back_filled_does_not_walk_its_pending_roots_every_pass() -> None:
+    env, sweep, _ = await swept()
+    await env.change((MOVE,))
+    for key in BACKFILL_KEYS.values():
+        env.graph.app_docs[APP].pop(key, None)
+    ran: list[str] = []
+    real = sweep._job.run_connector
+
+    async def spy(org: str, connector: str) -> Any:
+        ran.append(connector)
+        return await real(org, connector)
+
+    sweep._job.run_connector = spy      # type: ignore[method-assign]
+    assert row(await sweep.run_once(ORG)).action == "needs_full_pass" and not ran
+
+
+async def test_a_connector_being_deleted_is_not_recovered_rewritten_or_marked() -> None:
+    env, sweep, _ = await swept()
+    await env.change((MOVE,))
+    env.graph.app_docs[APP]["status"] = "DELETING"
+    before = json.dumps(env.graph.app_docs[APP], sort_keys=True)
+    touched: list[str] = []
+
+    async def note(name: str) -> None:
+        touched.append(name)
+
+    Tap(env, _no, lambda n: note(n) if n in ("update_payloads_by_ids", "update_node_fields_if_match", "update_node") else _no(n))
+    assert row(await sweep.run_once(ORG)).action == "deleting"
+    assert not touched and json.dumps(env.graph.app_docs[APP], sort_keys=True) == before
+
+
 async def test_a_failing_connector_backs_off_and_does_not_hold_the_others() -> None:
     env, sweep, clock = await swept(extra=("ghost",))
     await env.change((MOVE,))
-    env.graph.app_docs["ghost"][PENDING_KEY] = '{"x":1}'      # not a connector of the organisation: its rewrite fails every time
+    env.graph.app_docs["ghost"].update({PENDING_KEY: '{"x":1}', BACKFILL_KEYS["state"]: "done"})      # not a connector of the organisation: its rewrite fails every time
     first = await sweep.run_once(ORG)
     assert row(first, "ghost").action == "failed" and row(first).action == "done"      # the healthy one finished
     state = read_state(env.graph.app_docs["ghost"][SWEEP_KEY])
@@ -241,9 +272,9 @@ async def test_a_failing_connector_backs_off_and_does_not_hold_the_others() -> N
 
 async def test_a_connector_that_works_again_loses_its_failure_record() -> None:
     env, sweep, clock = await swept(extra=("ghost",))
-    env.graph.app_docs["ghost"][PENDING_KEY] = '{"x":1}'
+    env.graph.app_docs["ghost"].update({PENDING_KEY: '{"x":1}', BACKFILL_KEYS["state"]: "done"})
     assert row(await sweep.run_once(ORG), "ghost").action == "failed" and env.graph.app_docs["ghost"].get(SWEEP_KEY)
-    env.graph.app_docs["ghost"][PENDING_KEY] = None                              # whatever was wrong is gone
+    env.graph.app_docs["ghost"].update({PENDING_KEY: None, BACKFILL_KEYS["state"]: None})      # whatever was wrong is gone
     clock.now += BACKOFF_FIRST_SECONDS + 1
     assert row(await sweep.run_once(ORG), "ghost").action == "idle" and not env.graph.app_docs["ghost"].get(SWEEP_KEY)
 
