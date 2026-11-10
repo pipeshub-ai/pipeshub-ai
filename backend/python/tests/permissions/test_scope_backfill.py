@@ -515,13 +515,18 @@ async def test_the_pass_never_writes_the_mark() -> None:
     """Nothing the pass does can erase a mark written beside it: it does not write the field at all."""
     vdb, loaded, job, app = await setup()
     loaded.graph.app_docs[app] = {"_key": app, UNSAFE_KEY: 1000}
-    real_update, written = loaded.graph.update_node_fields_if_match, []
+    real_update, real_node, written = loaded.graph.update_node_fields_if_match, loaded.graph.update_node, []
 
     async def spy(key: str, collection: str, updates: dict, *args: object) -> bool:  # (the checkpoint is written under the lease)
         written.append(set(updates))
         return await real_update(key, collection, updates, *args)
 
+    async def spy_node(key: str, collection: str, updates: dict, *args: object) -> bool:      # (the other way to write a field of the app document)
+        written.append(set(updates))
+        return await real_node(key, collection, updates, *args)
+
     loaded.graph.update_node_fields_if_match = spy  # type: ignore[method-assign]
+    loaded.graph.update_node = spy_node  # type: ignore[method-assign]
     await job.run_connector(ORG, app)
     assert written and not any(UNSAFE_KEY in keys for keys in written)
 
@@ -772,3 +777,61 @@ async def test_a_held_up_write_does_not_land_over_a_point_a_newer_writer_fenced(
     point.payload.update({"scopeFence": newer, "scopeStamp": "newer-writers-field"})
     taken, floor = await job._membership.write_payload(ORG, app, [COLL], vrid, ScopeFields.legacy().to_payload(), epoch, at)
     assert not taken and floor > newer and point.payload["scopeStamp"] == "newer-writers-field" and point.payload["scopeFence"] == newer
+
+
+async def test_a_point_with_an_implausible_fence_is_refused_once_named_and_ends_on_the_stale_marker(caplog: pytest.LogCaptureFixture) -> None:
+    from app.services.vector_db import scope_rewrite
+
+    vdb = FencedMemoryVectorDB()
+    loaded = await load(vdb, COLL, {"w": CASES[WORLD]})
+    app, job = loaded.apps[0], ScopeBackfill(loaded.graph, vdb, loaded.locator, log, clock=advancing_clock())
+    far = scope_rewrite._micros(scope_rewrite._clock()) + 3600 * 10**6      # an hour ahead: beyond the skew that is followed
+    for point in vdb.collections[COLL].values():
+        point.payload.update({"scopeFence": far, "scopeStamp": "held"})
+    fenced, real = [], vdb.update_payloads_by_ids
+
+    async def spy(name: str, updates: dict, **kw: object) -> None:
+        if kw.get("fence") is not None:
+            fenced.append(set(updates))
+        await real(name, updates, **kw)
+
+    vdb.update_payloads_by_ids = spy  # type: ignore[method-assign]
+    with caplog.at_level(logging.ERROR):
+        p = await job.run_connector(ORG, app)
+    vrids = {pt.payload["metadata"]["virtualRecordId"] for pt in vdb.collections[COLL].values()}
+    assert p.state == DONE and p.stale == len(vrids)
+    assert caplog.text.count("is not a plausible time") == len(vrids)                      # not three per record
+    assert all(f"virtual record {v} carries a fence" in caplog.text for v in vrids)       # the operator can tell which to index again
+    assert len(fenced) == len(vrids)      # one refused write per record (the stale marker is unfenced), not one per round
+    assert all(pt.payload.get("scopeFieldsVersion") == 0 and pt.payload["scopeStamp"] != "held" for pt in vdb.collections[COLL].values())
+
+
+async def test_a_connector_that_moves_under_a_record_costs_no_round(monkeypatch: pytest.MonkeyPatch) -> None:
+    vdb, _, job, app = await setup()
+    moves = {"n": 0}
+    real = job._membership.write_payload
+
+    async def moved_twice_then_right(*a, **k):
+        moves["n"] += 1
+        if moves["n"] <= scope_backfill.MAX_ROUNDS + 2:      # more moves than rounds
+            raise GenerationMoved("moved")
+        return await real(*a, **k)
+
+    monkeypatch.setattr(job._membership, "write_payload", moved_twice_then_right)
+    p = await job.run_connector(ORG, app)
+    assert p.state == DONE and p.stale == 0 and moves["n"] > scope_backfill.MAX_ROUNDS + 2
+
+
+async def test_a_page_is_scanned_once_not_once_per_virtual_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    vdb, loaded, job, app = await setup()
+    scans, real = [], job._membership._scan
+
+    async def spy(org_id: str, collection: str, vrids: list, keys: tuple = ()):
+        scans.append(len(vrids))
+        return await real(org_id, collection, vrids, keys)
+
+    monkeypatch.setattr(job._membership, "_scan", spy)
+    p = await job.run_connector(ORG, app)
+    assert p.state == DONE and p.stale == 0 and len(scans) >= 1 and 1 not in scans      # (every scan covers the page's virtual records)
+    want, got = await expected(loaded), await read_stamps(vdb, loaded)
+    assert got == want

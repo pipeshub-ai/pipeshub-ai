@@ -74,6 +74,7 @@ from app.services.vector_db.membership import (
 from app.services.vector_db.models import ScrollWindowExceededError
 from app.services.vector_db.scope_backfill import (
     BACKFILL_KEYS,
+    MAX_MOVES,
     ScopeFieldsOff,
     UnknownConnector,
 )
@@ -93,7 +94,6 @@ SCAN_ATTEMPTS = 3  # scroll-and-count rounds before a scan is called incomplete
 SCAN_RETRY_SECONDS = 0.5
 SETTLE_SECONDS = 30.0  # how long a write may take to show in a search
 MAX_ROUNDS = 3  # write + verify rounds for one page before its virtual records are marked stale
-MAX_MOVES = 20  # times the connector's generation may move under one page before it is given up (a move costs no round: the page is read again)
 #: How far above the store's clock (this host's, where the store has none) a stored fence is still followed: the skew between two hosts that is
 #: believed. A fence further away is not followed: the log says so and the root stays pending.
 #: A follow adds a random amount below this to the fence it found, so that two followers that saw the same fence do not write the same value.
@@ -539,22 +539,27 @@ class ScopeRewriteJob:
         """What `write_payload` needs, taken before the graph is read (the connector's generation and lease, and the time that is the fence)."""
         return await self._epoch(connector_id), await self._now()
 
+    async def scan_page(self, org_id: str, vrids: Sequence[str]) -> dict[str, dict[str, dict[str, Any]]]:
+        """One scan (one refresh, scroll and count per batch) of a page of virtual records in every collection, for `write_payload`'s `scanned`."""
+        return {name: await self._scan(org_id, name, list(vrids)) for name in set(await self._locator.all_collections(fresh=True, strict=True))}
+
     async def write_payload(self, org_id: str, connector_id: str, collections: Sequence[str], vrid: str, payload: dict[str, Any], epoch: Epoch,
-                            at: datetime, floor: int = 0) -> tuple[bool, int]:
+                            at: datetime, floor: int = 0, scanned: Mapping[str, Mapping[str, dict[str, Any]]] | None = None) -> tuple[bool, int]:
         """The back-fill's write of the scope fields: every point of the virtual record, by id, guarded (lease and generation) and fenced like a
         rewrite's (at `at`, or above `floor`), then read back. Returns whether every point holds it, and the floor for the next try (above a
-        plausible fence a refused point carries, as a rewrite follows it): False means read the graph again. `LeaseLost` and `GenerationMoved`
-        send nothing more."""
+        plausible fence a refused point carries, as a rewrite follows it; negative for one that is no plausible time, which no round will pass):
+        False means read the graph again. `LeaseLost` and `GenerationMoved` send nothing more."""
         fence, refused, top = max(_micros(at), floor), False, 0
         for name in collections:
-            found = await self._scan(org_id, name, [vrid])
+            found = ({p: x for p, x in scanned[name].items() if _vrid_of(x) == vrid} if scanned and name in scanned
+                     else await self._scan(org_id, name, [vrid]))
             await self._put(org_id, connector_id, name, dict.fromkeys(found, payload), epoch, fence, at)
             held = await self._stored(name, list(found))
             bad = [p for p in held.values() if not _holds(p, payload)]
             refused |= bool(bad)
             top = max([top, *(int(p.get(SCOPE_FENCE_FIELD) or 0) for p in bad)])
         if refused and top > fence:
-            floor = max(floor, await self._follow(connector_id, epoch, top, fence))
+            floor = await self._follow(connector_id, epoch, top, fence)      # (above `fence`, so above the old floor; or -1)
         return not refused, floor
 
     async def _stored(self, collection: str, point_ids: list[str]) -> dict[str, dict[str, Any]]:
