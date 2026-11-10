@@ -186,8 +186,10 @@ class TestARecordThatMakesProgress:
     @pytest.mark.timeout(90)
     async def test_the_ceiling_stays_on_the_node_through_a_restart_of_the_process(self) -> None:
         # Kills: a ceiling held in memory. A new consumer object, as after a restart or a stale
-        # recovery, has only the node, and its first cut is already counted. The times leave a
-        # loaded runner room to finish a batch inside the first attempt.
+        # recovery, has only the node. Its ceiling is the time the node already records, so its
+        # first productive cut is counted only if it reads that time from the node. How the first
+        # consumer's chain ended (at the ceiling, or a cut that finished no batch on a slow
+        # runner) does not matter.
         chain = await _chain(2400, 0.125)
         first = Consumer(chain, cap=3.75, floor=2.5, ceiling=6.25, max_counted=1)
         assert await first.run() == "dead-lettered"
@@ -195,7 +197,7 @@ class TestARecordThatMakesProgress:
         spent = chain.graph.node[EMBED_SECONDS]
         assert spent >= 2.5
 
-        second = Consumer(chain, cap=3.75, floor=2.5, ceiling=6.25, max_counted=1)
+        second = Consumer(chain, cap=3.75, floor=2.5, ceiling=spent, max_counted=1)
         assert second.progress().prior_seconds == spent
         assert await second.run() == "dead-lettered"
         assert second.uncounted == 0
