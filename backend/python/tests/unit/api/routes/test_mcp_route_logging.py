@@ -20,10 +20,16 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from mcp.shared.exceptions import MCPError
 
-from app.agents.constants.mcp_server_constants import get_mcp_oauth_state_claim_path, get_mcp_oauth_state_path
+from app.agents.constants.mcp_server_constants import (
+    get_mcp_oauth_state_claim_path,
+    get_mcp_oauth_state_path,
+)
 from app.agents.mcp import dcr as dcr_module
 from app.agents.mcp.dcr import DiscoveredOAuthMetadata
-from app.agents.mcp.errors import MCPConnectionError, MCPHttpStatusError, MCPRequestNotSentError
+from app.agents.mcp.errors import (
+    MCPHttpStatusError,
+    MCPRequestNotSentError,
+)
 from app.agents.mcp.models import MCPAuthMode, OAuthTokens
 from app.agents.mcp.oauth_client import MCPOAuthError, MCPRefreshTokenInvalidError
 from app.api.middlewares.request_log import install_request_logging
@@ -31,7 +37,10 @@ from app.api.routes import mcp_servers
 from app.utils.logger import log_record_fields
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
-from tests.unit.agents.mcp.test_dcr import _allow_all_discovery_targets, _mock_async_client
+from tests.unit.agents.mcp.test_dcr import (
+    _allow_all_discovery_targets,
+    _mock_async_client,
+)
 from tests.unit.api.routes.mcp_route_fakes import FakeConfigService
 
 ORG = "65f0a1b2c3d4e5f6a7b8c9d0"
@@ -487,17 +496,15 @@ _LOG_METHODS = {"debug", "info", "warning", "error", "exception", "critical", "l
 
 def _logged_exceptions(source: str) -> list[int]:
     """Lines of ``logger.<level>(…)`` calls inside ``except … as e`` that pass ``e`` (in an f-string or as an arg)."""
-    found = []
-    for handler in ast.walk(ast.parse(source)):
-        if not isinstance(handler, ast.ExceptHandler) or handler.name is None:
-            continue
-        for call in ast.walk(handler):
-            if (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr in _LOG_METHODS
-                    and "logger" in ast.unparse(call.func.value)
-                    and any(isinstance(n, ast.Name) and n.id == handler.name
-                            for arg in [*call.args, *(k.value for k in call.keywords)] for n in ast.walk(arg))):
-                found.append(call.lineno)
-    return found
+    return [
+        call.lineno
+        for handler in ast.walk(ast.parse(source)) if isinstance(handler, ast.ExceptHandler) and handler.name
+        for call in ast.walk(handler)
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr in _LOG_METHODS
+        and "logger" in ast.unparse(call.func.value)
+        and any(isinstance(n, ast.Name) and n.id == handler.name
+                for arg in [*call.args, *(k.value for k in call.keywords)] for n in ast.walk(arg))
+    ]
 
 
 def test_no_route_log_call_carries_a_caught_exception() -> None:
