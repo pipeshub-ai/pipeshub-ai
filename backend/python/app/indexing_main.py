@@ -1624,7 +1624,8 @@ async def _republish_stranded_records(
                 if key == record_key:
                     continue
                 twin = await graph_provider.get_document(key, CollectionNames.RECORDS.value, raise_on_error=True)
-                if not twin or twin.get("orgId") != record.get("orgId") or not is_live_record(twin):
+                # The lookup spans orgs; this pass is the copy's org.
+                if not twin or twin.get("orgId") != org_id or not is_live_record(twin):
                     continue
                 if twin.get("indexingStatus") == ProgressStatus.QUEUED.value:
                     if not await _is_active(str(twin.get("connectorId") or "")):
