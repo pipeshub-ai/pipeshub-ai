@@ -52,6 +52,7 @@ from app.modules.indexing.parse_now_marker import (
     store_only_active,
 )
 from app.modules.parsers import parse_pool
+from app.services.resource_governor.kinds import ParseKind
 from app.modules.parsers.code_parser import engine as code_parser_engine
 from app.modules.parsers.code_parser.lang_config import detect_language
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
@@ -1822,7 +1823,8 @@ class Processor:
             # the GIL, so a thread would not keep the event loop turning.
             if parse_pool.should_offload(len(markdown)):
                 modified_markdown, images = await parse_pool.submit(
-                    extract_and_replace_images, markdown, label=recordName, size=len(markdown)
+                    extract_and_replace_images, markdown, label=recordName, size=len(markdown),
+                    kind=ParseKind.TEXT,
                 )
             else:
                 modified_markdown, images = await offload_if_large(

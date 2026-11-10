@@ -3166,6 +3166,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         }
                     )
                 )
+                record_kind = concurrency.record_parse_kind(parsed_message.payload)
                 processing_timeout = messaging_env.record_processing_timeout_for(
                     parsed_message.payload.get("extension"),
                     parsed_message.payload.get("mimeType"),
@@ -3201,6 +3202,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                             index_tier,
                                             event.data.size_bytes if event.data else None,
                                             timeout=wait.remaining(),
+                                            kind=record_kind,
                                         )
                                 elif (
                                     event.event == IndexingEvent.START_PARSING
@@ -3226,13 +3228,15 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                         memory_admission = await concurrency.reserve_record_memory(
                                             self, parse_tier, size_bytes,
                                             timeout=wait.remaining(), downloaded=True,
-                                            current=memory_admission,
+                                            current=memory_admission, kind=record_kind,
                                         )
                                         parsing_admission = await concurrency.acquire_parsing_slot(
                                             self,
                                             parse_tier,
                                             size_bytes,
                                             timeout=wait.remaining(),
+                                            kind=record_kind,
+                                            reserved_bytes=memory_admission.cost if memory_admission else 0,
                                         )
                                         # Set before the lease attempt so the
                                         # wrapper's finally hands this permit

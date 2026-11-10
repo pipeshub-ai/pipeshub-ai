@@ -17,7 +17,9 @@ from app.modules.indexing.connector_off_events import (
     ConnectorState,
     GraphConnectorOffFilter,
     ReadTimeOutcome,
+    RecordHeldForDelete,
     connector_off_updates,
+    connector_state,
     read_time_outcome,
 )
 from app.services.messaging.config import IndexingEvent, StreamMessage
@@ -253,6 +255,24 @@ def _filter(graph: FakeConnectorGraph, clock: list[float] | None = None) -> Grap
 
 
 class TestGraphConnectorOffFilter:
+    @pytest.mark.parametrize("active", [False, True])
+    async def test_a_connector_being_deleted_is_left_to_the_handler_without_a_write(self, active: bool) -> None:
+        """The delete publishes appDisabled after marking the app DELETING, so the app can be off
+        too; writing AUTO_INDEX_OFF then would be a write to records the delete is removing. It is
+        not settled either: the delete may be put back, and the handler holds the event until then."""
+        graph = FakeConnectorGraph()
+        graph.add_connector("conn-off", active=active)
+        graph.apps["conn-off"]["status"] = "DELETING"
+        graph.add_record("r1", "conn-off")
+        connector_filter = _filter(graph)
+
+        result = await connector_filter.settle([_message()])
+
+        assert result.settled == frozenset()
+        assert graph.batch_updates == []
+        assert graph.records["r1"]["indexingStatus"] == ProgressStatus.QUEUED.value
+        assert not connector_filter._known_active("conn-off")
+
     async def test_a_batch_costs_one_connector_read_one_record_read_and_one_write(self) -> None:
         graph = FakeConnectorGraph()
         graph.add_connector("conn-off", active=False)
@@ -500,3 +520,179 @@ class TestAConnectorTurnedBackOnDuringTheWrite:
 
         assert result.settled == frozenset({0})
         assert graph.calls["get_nodes_by_field_in:apps"] == 2
+
+
+@pytest.mark.parametrize("is_active", [True, False])
+def test_a_connector_being_deleted_is_its_own_state_and_is_never_settled_at_read_time(is_active: bool) -> None:
+    """Not removed: a delete can be put back, so its events must not be dropped."""
+    app = {"_key": "conn-off", "isActive": is_active, "status": "DELETING"}
+
+    assert connector_state(app) is ConnectorState.DELETING
+    deleting = _states(**{"conn-off": ConnectorState.DELETING})
+    assert read_time_outcome(NEW, _payload(), _record(), deleting) is ReadTimeOutcome.PASS
+    assert read_time_outcome(NEW, _payload(), None, deleting) is ReadTimeOutcome.PASS
+
+
+# A type that is not reconciled block by block: its update deletes the embeddings before the connector check.
+_CLEARS_EMBEDDINGS_FIRST = {"mimeType": "text/csv", "extension": "csv"}
+
+
+def _deleting_graph(**record_fields: object) -> FakeConnectorGraph:
+    graph = FakeConnectorGraph()
+    graph.add_connector("conn-off", active=False)
+    graph.apps["conn-off"]["status"] = "DELETING"
+    graph.add_record("r1", "conn-off", **record_fields)
+    return graph
+
+
+def _writes(graph: FakeConnectorGraph) -> dict:
+    return {k: v for k, v in graph.calls.items() if not k.startswith(("get_document", "get_nodes_by_field_in"))}
+
+
+@pytest.mark.parametrize(
+    ("event_type", "payload_extra", "record_fields"),
+    [
+        pytest.param(NEW, {}, {}, id="new"),
+        pytest.param(UPDATE, _CLEARS_EMBEDDINGS_FIRST, {"indexingStatus": ProgressStatus.COMPLETED.value},
+                     id="update-clears-embeddings-first"),
+        pytest.param(REINDEX, {"forceReindex": True}, {"indexingStatus": ProgressStatus.COMPLETED.value},
+                     id="forced-reindex-of-a-completed-record"),
+        pytest.param(NEW, {}, {"indexingStatus": ProgressStatus.COMPLETED.value,
+                               "extractionStatus": ProgressStatus.IN_PROGRESS.value}, id="resuming-enrichment"),
+    ],
+)
+async def test_the_handler_holds_an_event_of_a_connector_being_deleted_and_writes_nothing(
+    event_type: str, payload_extra: dict, record_fields: dict,
+) -> None:
+    """Handed back before any write and before embeddings are deleted: once the delete sticks the
+    record is gone, and after a revert the event is indexed as it would have been."""
+    graph = _deleting_graph(**record_fields)
+    handler, event_processor = _handler(graph)
+
+    with pytest.raises(RecordHeldForDelete) as held:
+        _ = [e async for e in handler.process_event(event_type, dict(_payload(**payload_extra)))]
+
+    assert held.value.counts_toward_backstop is False and held.value.pauses_consumer is False
+    assert _writes(graph) == {}
+    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_not_awaited()
+
+
+def test_a_live_connector_with_another_status_is_still_active() -> None:
+    assert connector_state({"_key": "conn-on", "isActive": True, "status": "SYNCING"}) is ConnectorState.ACTIVE
+
+
+async def test_a_delete_that_begins_while_embeddings_are_deleted_still_holds_the_event() -> None:
+    """The read before the embedding delete only decides whether to hold there; the connector
+    check reads the app again, so a delete marked meanwhile is seen before the record is written."""
+    graph = FakeConnectorGraph()
+    graph.add_connector("conn-off", active=True)
+    graph.add_record("r1", "conn-off")
+    handler, event_processor = _handler(graph)
+
+    async def delete_marked_meanwhile(*_a: object, **_kw: object) -> None:
+        graph.apps["conn-off"]["status"] = "DELETING"
+
+    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.side_effect = delete_marked_meanwhile
+
+    with pytest.raises(RecordHeldForDelete):
+        _ = [e async for e in handler.process_event(UPDATE, dict(_payload(**_CLEARS_EMBEDDINGS_FIRST)))]
+
+    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.assert_awaited_once()
+    assert _writes(graph) == {}
+
+
+async def test_a_connector_turned_off_while_embeddings_are_deleted_is_skipped_as_off() -> None:
+    graph = FakeConnectorGraph()
+    graph.add_connector("conn-off", active=True)
+    graph.add_record("r1", "conn-off")
+    handler, event_processor = _handler(graph)
+
+    async def turned_off_meanwhile(*_a: object, **_kw: object) -> None:
+        graph.set_active("conn-off", False)
+
+    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.side_effect = turned_off_meanwhile
+
+    events = [e.event async for e in handler.process_event(UPDATE, dict(_payload(**_CLEARS_EMBEDDINGS_FIRST)))]
+
+    assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+    assert graph.records["r1"]["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
+    assert graph.records["r1"]["reason"] == CONNECTOR_OFF
+
+
+async def test_a_stage_rerun_of_a_connector_being_deleted_is_held_before_its_states_are_touched() -> None:
+    graph = _deleting_graph(contentRev="rev-1")
+    handler, event_processor = _handler(graph)
+    event_processor.stage_ingress = AsyncMock()
+
+    with pytest.raises(RecordHeldForDelete):
+        _ = [e async for e in handler.process_event(REINDEX, dict(_payload(stages=["classify"], stageRev="rev-1")))]
+
+    event_processor.stage_ingress.redrive.assert_not_awaited()
+    assert _writes(graph) == {}
+
+
+async def test_a_vector_rebuild_of_a_connector_being_deleted_is_held(monkeypatch: pytest.MonkeyPatch) -> None:
+    graph = _deleting_graph(indexingStatus=ProgressStatus.COMPLETED.value)
+    handler, _ = _handler(graph)
+    rebuilt: list[str] = []
+
+    async def index_from_blob(**kw: object):  # noqa: ANN202
+        rebuilt.append(str(kw["record_id"]))
+        yield None
+
+    monkeypatch.setattr(handler, "_index_from_blob", index_from_blob)
+
+    with pytest.raises(RecordHeldForDelete):
+        _ = [e async for e in handler.process_event(REINDEX, dict(_payload(vectorDbOnly=True, forceReindex=True)))]
+
+    assert rebuilt == [] and _writes(graph) == {}
+
+
+async def test_a_vector_rebuild_of_a_turned_off_connector_still_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The rebuild deliberately re-embeds turned-off connectors from blob; only a delete holds it."""
+    graph = FakeConnectorGraph()
+    graph.add_connector("conn-off", active=False)
+    graph.add_record("r1", "conn-off", indexingStatus=ProgressStatus.COMPLETED.value)
+    handler, _ = _handler(graph)
+    rebuilt: list[str] = []
+
+    async def index_from_blob(**kw: object):  # noqa: ANN202
+        rebuilt.append(str(kw["record_id"]))
+        return
+        yield
+
+    monkeypatch.setattr(handler, "_index_from_blob", index_from_blob)
+
+    _ = [e async for e in handler.process_event(REINDEX, dict(_payload(vectorDbOnly=True, forceReindex=True)))]
+
+    assert rebuilt == ["r1"]
+
+
+@pytest.mark.parametrize(("flip", "held"), [("DELETING", True), ("off", False)])
+async def test_an_already_indexed_reindex_sees_a_delete_marked_while_embeddings_are_deleted(flip: str, held: bool) -> None:
+    """A non-forced reindex of an indexed record returns early, and the finally block then releases
+    its queued copies; a delete marked during the embedding delete holds it first. A connector turned
+    off meanwhile keeps the early return, as before."""
+    graph = FakeConnectorGraph()
+    graph.add_connector("conn-off", active=True)
+    graph.add_record("r1", "conn-off", indexingStatus=ProgressStatus.COMPLETED.value,
+                     extractionStatus=ProgressStatus.COMPLETED.value)
+    handler, event_processor = _handler(graph)
+
+    async def flipped_meanwhile(*_a: object, **_kw: object) -> None:
+        if flip == "DELETING":
+            graph.apps["conn-off"]["status"] = "DELETING"
+        else:
+            graph.set_active("conn-off", False)
+
+    event_processor.processor.indexing_pipeline.bulk_delete_embeddings.side_effect = flipped_meanwhile
+    payload = dict(_payload(**_CLEARS_EMBEDDINGS_FIRST))
+
+    if held:
+        with pytest.raises(RecordHeldForDelete):
+            _ = [e async for e in handler.process_event(REINDEX, payload)]
+        assert _writes(graph) == {}
+    else:
+        events = [e.event async for e in handler.process_event(REINDEX, payload)]
+        assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+        assert graph.calls["update_queued_duplicates_status"] == 1

@@ -62,6 +62,8 @@ MIXES: dict[str, dict[str, int]] = {
     # 2d arms: page renders for OCR (service-process rasterizer) and local Docling conversions.
     "ocr": {"scanned": 2},
     "docling": {"docx": 3, "digital": 1},
+    # 2e: the mixed-kinds corpus of kinds_mix.py (40 records).
+    "kinds": {"figures": 1, "scanned": 1, "docx": 1, "md1": 1, "md5": 1, "md20": 1, "csv5": 1, "code5": 1, "xlsx20": 1},
     "all": {"tables": 1, "figures": 1, "digital": 1, "docx": 1, "damaged": 1, "large": 1,
             "scanned": 1, "md": 1, "json": 1, "txt": 1},
 }
@@ -116,6 +118,7 @@ class TreeSampler(threading.Thread):
         self.cpu_sampled = 0.0
         self.procs: dict[int, dict[str, Any]] = {}
         self._tick = 0
+        self.tree_series: list[tuple[float, int]] = []
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -196,6 +199,7 @@ class TreeSampler(threading.Thread):
             if role in ("parse_worker", "raster", "docling_or_pool", "parent"):
                 rec["series"].append((now - rec["first_seen"], rss))
         self.latest_tree_rss = total_rss
+        self.tree_series.append((time.monotonic(), total_rss))
         self.peak_tree_rss = max(self.peak_tree_rss, total_rss)
         self.peak_tree_pss = max(self.peak_tree_pss, total_pss)
         self.peak_parent_rss = max(self.peak_parent_rss, self.procs[self._me.pid]["peak_rss"])
@@ -431,6 +435,21 @@ def build_registry(pdf_parser: str, ocr_latency: float, scan_route: str = "ocr")
     registry.register("md", ParserProvider.DEFAULT, md)
     registry.register("txt", ParserProvider.DEFAULT, md)
     registry.register("json", ParserProvider.DEFAULT, JSONParser())
+    from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
+    from app.modules.parsers.csv import csv_parser as csv_module
+    from app.modules.parsers.csv.csv_parser import CSVParser
+    from app.modules.parsers.excel import excel_parser as excel_module
+    from app.modules.parsers.excel.excel_parser import ExcelParser
+
+    # Table and sheet summaries call a model; the bench has none (as skip_table_enrichment does for PDFs).
+    async def no_llm(*_args: object, **_kwargs: object) -> tuple[None, None]:
+        return None, None
+
+    csv_module.get_llm_for_role = no_llm  # type: ignore[assignment]
+    excel_module.get_llm_for_role = no_llm  # type: ignore[assignment]
+    registry.register("code", ParserProvider.DEFAULT, CodeFileParser())
+    registry.register("csv", ParserProvider.DEFAULT, CSVParser(config_service=None))
+    registry.register("xlsx", ParserProvider.DEFAULT, ExcelParser(log, None))
     return registry
 
 
@@ -604,7 +623,8 @@ async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sample
                 gate.release(cost)
             done = time.monotonic()
         outcomes.append({"path": entry.path, "kind": entry.kind, "bytes": len(data), "error": error,
-                         "latency_s": done - started, "gate_wait_s": admitted - started})
+                         "latency_s": done - started, "gate_wait_s": admitted - started,
+                         "start": admitted, "end": done})
         payloads.setdefault(entry.path, payload if error is None else None)
         errors.setdefault(entry.path, error)
 
@@ -627,12 +647,26 @@ async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sample
             t.cancel()
 
     guard = asyncio.create_task(watchdog())
+    limit_series: list[dict[str, Any]] = []
+
+    async def sample_limits() -> None:
+        import psutil
+
+        while True:
+            st = governor.stats()
+            limit_series.append({"t": time.monotonic(), "limits": st.get("limits"),
+                                 "avail_mib": round(psutil.virtual_memory().available / report.MIB),
+                                 "hws": st.get("heavy_working_set")})
+            await asyncio.sleep(0.5)
+
+    limits_task = asyncio.create_task(sample_limits())
     await asyncio.gather(*tasks, return_exceptions=True)
     window_end = time.monotonic()
     wall = window_end - t0
     cpu.sample()
     cpu_window = cpu.total_seconds() - cpu0
     guard.cancel()
+    limits_task.cancel()
     cg_after = report.read_cgroup(cg_path) if cg_path else None
     if peak is not None and cg_after is not None:
         scoped = peak.read()
@@ -693,6 +727,7 @@ async def run(args: argparse.Namespace, files: list[Entry], corpus: Path, sample
             if cg_before and cg_after else None
         ),
         "n_files": len(files),
+        "limit_series": limit_series,
     }
 
 
@@ -800,6 +835,11 @@ def assemble(args: argparse.Namespace, raw: dict[str, Any], sampler: TreeSampler
         },
         "cgroup": raw["cgroup"],
         "golden": raw["golden"],
+        "oracle": {
+            "tree_series": [[t, r] for t, r in sampler.tree_series],
+            "jobs": [{"kind": o["kind"], "bytes": o["bytes"], "start": o["start"], "end": o["end"]} for o in raw["outcomes"]],
+            "limit_series": raw["limit_series"],
+        },
     }
 
 
