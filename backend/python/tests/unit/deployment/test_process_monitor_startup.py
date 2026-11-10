@@ -122,6 +122,29 @@ def test_no_service_uses_the_fixed_retry_window_any_more() -> None:
     assert "MAX_RETRIES=60" not in text and "MAX_RETRIES=120" not in text
 
 
+def test_a_service_that_never_answers_cannot_hold_the_wait_past_the_limit(tmp_path: pathlib.Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    curl = bin_dir / "curl"
+    curl.write_text(
+        '#!/bin/bash\nm=""\nwhile [ $# -gt 0 ]; do [ "$1" = --max-time ] && m=$2; shift; done\n'
+        '[ -n "$m" ] || m=300\nsleep "$m"\nexit 28\n'
+    )
+    curl.chmod(0o755)
+    script = f"""
+LOG_FILE={tmp_path}/log
+STARTUP_STALL_SECONDS=60 STARTUP_MAX_SECONDS=3 STARTUP_POLL_SECONDS=1
+{_functions()}
+bash -c 'while :; do :; done' >/dev/null 2>&1 & busy=$!
+wait_ready connector $busy http://x/slow
+rc=$?
+kill $busy 2>/dev/null
+exit $rc
+"""
+    out = _bash(script, {"PATH": f"{bin_dir}:/usr/bin:/bin"}, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15)
+    assert out.returncode == 1
+
+
 def test_a_failed_service_is_seen_under_the_scripts_errexit(tmp_path: pathlib.Path) -> None:
     """Called where errexit applies (no ``||`` around it), a waiter that failed must still report it, or startup waits for ever."""
     bin_dir = tmp_path / "bin"

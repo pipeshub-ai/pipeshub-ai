@@ -82,11 +82,15 @@ cpu_ticks() {
 # wait_ready <name> <pid> <health url>: 0 once the URL answers, 1 if the process died, hung or took too long.
 wait_ready() {
     local name=$1 pid=$2 url=$3
-    local began=$SECONDS last_move=$SECONDS last_ticks="" ticks
+    local began=$SECONDS last_move=$SECONDS last_ticks="" ticks request_limit
 
     log "Waiting for $name health check..."
     while true; do
-        if curl -s -f "$url" > /dev/null 2>&1; then
+        # A service that takes the connection and never answers must not hold this past the limits below.
+        request_limit=$((STARTUP_MAX_SECONDS - (SECONDS - began)))
+        [ "$request_limit" -le "$STARTUP_STALL_SECONDS" ] || request_limit=$STARTUP_STALL_SECONDS
+        [ "$request_limit" -ge 1 ] || request_limit=1
+        if curl -s -f --max-time "$request_limit" "$url" > /dev/null 2>&1; then
             log "$name health check passed after $((SECONDS - began))s!"
             return 0
         fi
