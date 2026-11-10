@@ -430,7 +430,7 @@ def test_on_chain_follows_cause_and_unsuppressed_context_like_the_text() -> None
         raise target
     except ValueError:
         try:
-            raise RuntimeError("implicit")  # noqa: B904 - the implicit chain is the case
+            raise RuntimeError("implicit")
         except RuntimeError as implicit:
             caught = implicit
     explicit = RuntimeError("explicit")
