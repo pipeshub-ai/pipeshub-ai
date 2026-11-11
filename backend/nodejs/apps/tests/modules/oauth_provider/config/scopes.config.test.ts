@@ -48,7 +48,8 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
   it('the agent preset can create and upload, not delete, and stays inside MCP_SCOPES', () => {
     expect(AgentMcpScopes).to.include.members(['kb:write', 'kb:upload'])
     expect(AgentMcpScopes).to.not.include('kb:delete')
-    expect(DefaultMcpScopes).to.include.members([...AgentMcpScopes])
+    // code:write is the one opt-in scope in the preset; Dynamic Client Registration cuts the preset to MCP_SCOPES instead of failing on it.
+    expect(DefaultMcpScopes).to.include.members(AgentMcpScopes.filter((s) => s !== 'code:write'))
     expect(getAllowedScopeNamesForRole(false)).to.include.members(['kb:write', 'kb:upload'])
   })
 
@@ -69,7 +70,8 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
     )
     const line = script.split('\n').find((l) => l.startsWith('AGENT_SCOPES=')) ?? ''
     const minted = JSON.parse(line.slice(line.indexOf("'") + 1, line.lastIndexOf("'")))
-    expect([...minted].sort()).to.deep.equal([...AgentMcpScopes].sort())
+    // code:write (pushing a local repository) is opt-in: a token minted here must work under the stock MCP_SCOPES, which lack it.
+    expect([...minted].sort()).to.deep.equal(AgentMcpScopes.filter((s) => s !== 'code:write').sort())
   })
 
   // Operators copy this list when they mint the token by hand.
@@ -79,7 +81,18 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
       'utf8',
     )
     const listed = doc.split('PAT scopes the script mints')[1]?.split('```')[1] ?? ''
-    expect(listed.trim().split('\n').sort()).to.deep.equal([...AgentMcpScopes].sort())
+    expect(listed.trim().split('\n').sort()).to.deep.equal(AgentMcpScopes.filter((s) => s !== 'code:write').sort())
+  })
+
+  // Pushing a repository to be indexed is opt-in: it is neither in a new token's default scopes nor in the stock MCP_SCOPES. Only the CLI's
+  // first-party device app (the agent preset, cut to MCP_SCOPES) asks for it.
+  it('code:write is in no default: not DefaultMcpScopes, not the stock MCP_SCOPES, not the compose defaults', () => {
+    expect(DefaultMcpScopes).to.not.include('code:write')
+    expect(AgentMcpScopes).to.include('code:write')
+    const stock = (readFileSync(resolve(process.cwd(), '../../env.template'), 'utf8').split('\n').find((l) => l.startsWith('MCP_SCOPES=')) ?? '')
+    expect(stock).to.not.contain('code:write')
+    const compose = readFileSync(resolve(process.cwd(), '../../../deployment/docker-compose/docker-compose.yml'), 'utf8')
+    expect(compose.split('\n').filter((l) => l.includes('MCP_SCOPES=')).join('')).to.not.contain('code:write')
   })
 
   // MCP clients request every scope discovery lists, so it lists only what
@@ -105,7 +118,6 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
       'profile',
       'email',
       'conversation:write',
-      'code:write',
       'project:read',
       'project:write',
       'project:delete',

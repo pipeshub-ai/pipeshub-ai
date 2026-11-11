@@ -40,7 +40,6 @@ connector:read
 connector:write
 connector:sync
 code:read
-code:write
 ```
 
 `semantic:write` is what *runs* a search. `config:read` is omitted on purpose (`llmModels` on sources comes back empty without it).

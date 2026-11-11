@@ -379,7 +379,6 @@ export const DefaultMcpScopes = [
   'connector:write',
   'connector:sync',
   'code:read',
-  'code:write',
   'project:read',
   'project:write',
   'project:delete',
