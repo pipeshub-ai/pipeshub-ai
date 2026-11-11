@@ -566,6 +566,22 @@ class TestUpdateConfig:
         assert result is False
 
     @pytest.mark.asyncio
+    async def test_update_store_failure_logs_one_classified_error(self, caplog) -> None:
+        store = AsyncMock()
+        store.get_key = AsyncMock(return_value="old")
+        store.update_value = AsyncMock(side_effect=ConnectionError("Failed to create key: etcd down"))
+        svc = _build_service(store)
+        caplog.set_level(logging.DEBUG, logger="test-config")
+
+        assert await svc.update_config("/k", "new") is False
+
+        errors = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert [r.getMessage() for r in errors] == ["config.update.failed"]
+        assert errors[0].error_class == "unavailable"
+        assert errors[0].config_path == "/k"
+        assert errors[0].exc_text
+
+    @pytest.mark.asyncio
     async def test_update_publishes_invalidation_for_redis(self):
         store = AsyncMock()
         store.get_key = AsyncMock(return_value="old")
