@@ -208,6 +208,10 @@ async def test_synced_users_are_looked_up_by_the_vetted_email_read_and_the_state
     many = [f"u{i}@x.com" for i in range(1000)] + ["old@x.com"]          # past the function's bound: one statement, one snapshot, not two chunks
     rows = await w.p._users_by_email_rows(w.org, many, None)
     assert sent == ["users_by_email"] and {r["email"]: r["id"] for r in rows} == {"old@x.com": "existing"}
+    await member(w, "b-dup", userId="ub", email="Dup@X.com", isActive=True)
+    await member(w, "a-dup", userId="ua", email="dup@x.com", isActive=True)
+    for emails in (["dup@x.com"], [*(f"u{i}@x.com" for i in range(1000)), "dup@x.com"]):          # the vetted read, then the statement
+        assert [r["id"] for r in await w.p._users_by_email_rows(w.org, emails, None) if r["email"] == "dup@x.com"] == ["a-dup", "b-dup"]
 
 
 async def test_groups_and_roles_round_trip_in_the_ambient_org_whatever_the_model_says(w: World) -> None:

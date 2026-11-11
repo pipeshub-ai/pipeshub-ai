@@ -141,11 +141,11 @@ class IdentityMixin(PgBase):
         see their own snapshot, and a login moving between two of them would be missed by both (the batch would then create a duplicate user)."""
         if emails and len(emails) <= 1000 and all(0 < len(e) <= 1000 for e in emails):
             rows = await self._id_rows("""/* pipeshub:graph.users_by_email_vetted */ SELECT lower(p.doc->>'email') AS email, p.node_id AS id,
-                   coalesce((p.doc->>'isActive')::boolean, false) AS active FROM graph.principals_by_email(ARRAY['users'], $1::text[]) p""", [emails], transaction)
+                   coalesce((p.doc->>'isActive')::boolean, false) AS active FROM graph.principals_by_email(ARRAY['users'], $1::text[]) p ORDER BY p.node_id""", [emails], transaction)
             if len(rows) < _PRINCIPALS_PAGE:
                 return rows
         return await self._id_rows("""/* pipeshub:graph.users_by_email */ SELECT lower(doc->>'email') AS email, id, coalesce((doc->>'isActive')::boolean, false) AS active
-                   FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = ANY($2::text[])""", [org, emails], transaction)
+                   FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = ANY($2::text[]) ORDER BY id""", [org, emails], transaction)
 
     async def _verified_email_peers(self, org: str, email: str, transaction: str | None) -> list:
         """The users whose lower-cased email is ``email``'s, by id: the vetted read of graph_0006, or the statement for an address out of its bounds."""
@@ -445,7 +445,9 @@ class IdentityMixin(PgBase):
             # the database lowers an address, as it lowers the stored ones: Python's lower() may disagree on non-ASCII letters
             low = {r["raw"]: r["low"] for r in await self._id_rows("/* pipeshub:graph.lower_emails */ SELECT e AS raw, lower(e) AS low FROM unnest($1::text[]) e",
                                                                    [list({u.email for u in users})], tx)}
-            have = {r["email"]: (r["id"], bool(r["active"])) for r in await self._users_by_email_rows(org, sorted(set(low.values())), tx)}
+            have: dict[str, tuple[str, bool]] = {}
+            for r in await self._users_by_email_rows(org, sorted(set(low.values())), tx):      # by id, either read: users sharing an address resolve to the first
+                have.setdefault(r["email"], (r["id"], bool(r["active"])))
             new: dict[str, Any] = {}
             for u in users:
                 if low[u.email] not in have and low[u.email] not in new:
