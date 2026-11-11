@@ -5,6 +5,7 @@ one standing either.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -104,6 +105,24 @@ async def test_a_store_clock_that_cannot_be_read_recovers_nothing_but_never_refu
     g.app[OPEN_WRITES_KEY] = '{"t":{"u":1}}'                    # long dead by any clock
     assert await store_now(g) is None
     assert await recover_expired_writes(g, "c") == 0 and unclosed_writes(g.app) == 1       # the operator view says why (store_clock_unknown)
+
+
+async def test_a_store_clock_that_answers_too_late_is_not_trusted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A late answer is a time already that old: a lease judged by it could be recovered while its write still runs."""
+    from app.services.permissions import structure_generation
+
+    monkeypatch.setattr(structure_generation, "STORE_CLOCK_TIMEOUT_SECONDS", 0.05)
+    g = Down(Clock())
+    g.down = False
+    real = g.store_time
+
+    async def late() -> float:
+        await asyncio.sleep(0.5)
+        return await real()
+    g.store_time = late  # type: ignore[method-assign]
+    assert await store_now(g) is None
+    g.app[OPEN_WRITES_KEY] = '{"t":{"u":1}}'
+    assert await recover_expired_writes(g, "c") == 0
 
 
 @pytest.mark.parametrize("behind", [3600, 700])

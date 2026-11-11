@@ -5097,7 +5097,9 @@ class IGraphDBProvider(ABC):
 
     async def store_time(self) -> float:
         """The store's own clock, in epoch seconds. Leases that a writer and a sweeper judge are written and read by this clock, so a host whose
-        clock is off cannot make a live lease look dead. A provider that cannot say raises, and the callers fall back to the local clock."""
+        clock is off cannot make a live lease look dead. A provider that cannot say raises, and so does a read slower than
+        ``STORE_CLOCK_TIMEOUT_SECONDS`` as far as the callers are concerned: a writer then writes its lease by the local clock and marks it unknown,
+        a sweep recovers nothing that round, and the operator view reports the unknown clock. Nothing is recovered by the local clock."""
         raise NotImplementedError(f"{type(self).__name__} has no store clock")
 
     async def increment_node_field(
