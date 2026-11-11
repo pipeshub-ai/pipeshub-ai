@@ -55,6 +55,10 @@ from app.utils.indexing_timing import note
 HeadlineSettled = Callable[[StageJob, Sequence[str], ProgressStatus], Awaitable[None]]
 
 
+# Deliveries that did no work, as the reason on the delivery's index.end (StageOutcome.SKIPPED: the stage did not apply).
+_DID_NOTHING = {"stale": "stale", "unchanged": "unchanged", "duplicate": "duplicate", "skipped": "not_applicable"}
+
+
 class StagePaused(RequeueWithoutAttempt):
     """A dependency is paused (its breaker is open): requeue without counting an attempt.
 
@@ -176,8 +180,8 @@ class StageJobHandler:
                         job.record_ids, headline, ProgressStatus.FAILED, rev=job.rev, reason=why
                     )
                     await self._headline_settled(job, updated, ProgressStatus.FAILED)
-        except Exception:
-            self._logger.exception("Could not mark abandoned stage job %s FAILED", job.job_id)
+        except Exception as e:
+            log_failure(self._logger, "stage.abandon_failed", e, level=logging.WARNING, include_error_text=not quotes_content(e))
 
     def outcomes(self, stage: str) -> dict[str, int]:
         """How this process's deliveries of ``stage`` ended since it started."""
@@ -187,6 +191,11 @@ class StageJobHandler:
         counters = self._outcomes.get(stage)
         if counters is not None:
             counters[outcome] += 1
+        # The delivery's index.end says it too. An error or an abandoned job has its own path (the exception, the sink).
+        if outcome in _DID_NOTHING:
+            note(outcome="skipped", reason=_DID_NOTHING[outcome])
+        elif outcome not in ("error", "abandoned"):
+            note(stage_outcome=outcome)
 
     def _parse(self, message: StreamMessage) -> tuple[StageJob, Stage[Any]]:
         try:
@@ -203,7 +212,7 @@ class StageJobHandler:
         except ConnectorBeingDeleted:
             # Nothing more is written: the delete removes the records and their stage states,
             # and a write here would make its batch lose a write conflict.
-            self._logger.info(
+            self._logger.debug(
                 "Stage job %s belongs to connector %s, which is being deleted; holding it for %.0fs",
                 job.job_id,
                 job.connector_id,
@@ -222,7 +231,7 @@ class StageJobHandler:
             raise ConnectorBeingDeleted(job.connector_id)
         state = await self._state_for(job, io)
         if state is None:
-            self._logger.info(
+            self._logger.debug(
                 "Stage job %s has no state and none of its records is left on its revision; dropping it",
                 job.job_id,
             )
@@ -237,7 +246,7 @@ class StageJobHandler:
             self._count(job.stage, "unchanged")
             return
         if state.status in _SETTLED and not job.force:
-            self._logger.info("Stage job %s is already %s; ignoring this delivery", job.job_id, state.status.value)
+            self._logger.debug("Stage job %s is already %s; ignoring this delivery", job.job_id, state.status.value)
             self._count(job.stage, "duplicate")
             return
         run_attempt = state.attempt + 1
@@ -257,11 +266,13 @@ class StageJobHandler:
         )
         if not claimed:
             raise StageRetry(f"stage job {job.job_id} changed state while it was being claimed")
+        note(stage_attempt=run_attempt)
 
         try:
             async with asyncio.timeout(stage.budget_s):
                 result = await stage.run(job, io)
         except TimeoutError:
+            note(timeout_s=stage.budget_s)
             result = StageResult(outcome=StageOutcome.RETRY, reason=f"ran past its {stage.budget_s:.0f}s budget")
         except ConnectorBeingDeleted:
             raise
@@ -379,8 +390,11 @@ class StageJobHandler:
                 )
                 try:
                     await self._headline_settled(job, updated, ProgressStatus.FAILED)
-                except Exception:
-                    self._logger.exception("Stage job %s failed and its follow-up could not run", job.job_id)
+                except Exception as e:
+                    log_failure(
+                        self._logger, "stage.follow_up_failed", e, level=logging.WARNING,
+                        include_error_text=not quotes_content(e),
+                    )
             raise StageFailed(reason, record_id=job.job_id)
 
     async def _finish(self, job: StageJob, stage: Stage[Any], result: StageResult) -> None:
@@ -395,7 +409,7 @@ class StageJobHandler:
                 clear_reason=status is ProgressStatus.COMPLETED,
             )
             if not updated:
-                self._logger.info(
+                self._logger.debug(
                     "Stage job %s finished, but no bound record is still on revision %s; not dispatching successors",
                     job.job_id,
                     job.rev,
@@ -445,7 +459,7 @@ class StageJobHandler:
             )
         ):
             return True
-        self._logger.warning(
+        self._logger.debug(
             "Stage job %s (attempt %d) could not record %s; its state is now %s (attempt %s)",
             job.job_id,
             attempt,
@@ -454,4 +468,6 @@ class StageJobHandler:
             current.attempt if current else "-",
         )
         self._count(job.stage, "duplicate")
+        # Superseded, not a duplicate delivery: another run owns the state (a later note wins over _count's).
+        note(outcome="skipped", reason="superseded", owner_attempt=current.attempt if current else None)
         return False
