@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.edition_config import (
@@ -24,6 +25,7 @@ from app.core.envelope import configure_from_config as configure_envelope
 from app.core.org_context import spawn_detached, for_org, system
 from app.core.org_jobs import for_each_org
 from app.api.middlewares.request_log import install_request_logging, mark_request_failure
+from app.api.validation_errors import input_free_422
 from app.modules.demo_data.router import demo_data_router
 from app.utils.logger import install_log_redaction
 from app.utils.request_context import set_service_suffix
@@ -1305,6 +1307,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
     dependencies=_app_dependencies,
+    exception_handlers={RequestValidationError: input_free_422},
 )
 configure_app(app, "connectors")
 

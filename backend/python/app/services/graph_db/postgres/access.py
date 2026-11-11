@@ -25,6 +25,21 @@ PRINCIPALS = ["users", "groups", "roles", "teams", "organizations"]
 
 
 
+_DECLARED_BOUND = 100000        # the rows of graph.declared_record_groups: a read that reaches it may be partial
+
+
+async def _declared_groups(tx: Tx, org: str, app_id: str) -> list[str]:
+    """The ids of the connector's live record groups that declare their own permission model: the vetted read of graph_0009, or the statement for a connector id out of
+    its bounds or a read that reached its bound."""
+    if 0 < len(app_id) <= 200:
+        row = await tx.fetchrow("""/* pipeshub:graph.declared_record_groups */ WITH f AS MATERIALIZED (SELECT node_id, is_deleted FROM graph.declared_record_groups($1))
+            SELECT (SELECT count(*) FROM f) AS read, array(SELECT node_id FROM f WHERE NOT coalesce(is_deleted::boolean, false) ORDER BY node_id) AS ids""", app_id)
+        if row["read"] < _DECLARED_BOUND:
+            return list(row["ids"])
+    return [r["id"] for r in await tx.fetch("""/* pipeshub:graph.access_declared_groups */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'recordGroups'
+        AND doc->>'connectorId' = $2 AND doc->>'permissionModel' = 'RECORD_GROUP_LEVEL' AND NOT coalesce((doc->>'isDeleted')::boolean, false)""", org, app_id)]
+
+
 _VRID_SQL = "/* pipeshub:graph.records_by_virtual_id */ SELECT node_id, doc, doc->>'connectorId' AS app_id FROM graph.records_by_virtual_id($1::text[])"       # the vetted read of graph_0004
 _VRID_PAGE = 5000
 _TARGETS_SQL = """/* pipeshub:graph.access_targets */ SELECT t.coll, t.id, t.doc, CASE WHEN t.coll = 'apps' THEN t.id ELSE t.doc->>'connectorId' END AS app_id
@@ -273,8 +288,7 @@ async def reachable_records(tx: Tx, org: str, access: dict[str, Any], app_ids: l
             AND coll IN ('records', 'recordGroups') AND id = ANY($2::text[])""", org, gids)] if gids else []
         info = await _info(tx, org, seeds)
         open_seeds = [n for n in seeds if (v := info.get(n)) and v["cid"] == app_id and not v["deleted"] and v["rule"] == "OPEN"]
-        declared = [r["id"] for r in await tx.fetch("""/* pipeshub:graph.access_declared_groups */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = 'recordGroups'
-            AND doc->>'connectorId' = $2 AND doc->>'permissionModel' = 'RECORD_GROUP_LEVEL' AND NOT coalesce((doc->>'isDeleted')::boolean, false)""", org, app_id)]
+        declared = await _declared_groups(tx, org, app_id)
         sure[app_id] = await records_below_app(tx, org, app_id, granted, opens=False)
         reached = {*open_seeds, *(("records", i) for i in sure[app_id]), *await _down(tx, org, open_seeds, "seed", sorted(granted))}
         if declared:     # a declared group that is granted, or that the app reaches, opens the groups below it and what belongs to them

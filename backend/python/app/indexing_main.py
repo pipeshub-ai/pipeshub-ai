@@ -12,10 +12,12 @@ from uuid import uuid4
 
 import uvicorn
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 import app.utils.runtime_threads  # must precede all ML library imports
 from app.api.middlewares.request_log import install_request_logging
+from app.api.validation_errors import input_free_422
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -2985,6 +2987,7 @@ app = FastAPI(
     title="Vector Search API",
     description="API for semantic search and document retrieval with message consumer",
     version="1.0.0",
+    exception_handlers={RequestValidationError: input_free_422},
 )
 configure_app(app, "indexing")
 

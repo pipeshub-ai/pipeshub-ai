@@ -1,6 +1,7 @@
 """Unit tests for app.query_main — Query service FastAPI entrypoint."""
 
 import asyncio
+import json
 import logging
 from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
@@ -908,13 +909,16 @@ class TestValidationExceptionHandler:
             "loc": ["body", "password"],
             "msg": "String should have at most 4 characters",
             "input": "SENTINEL-422-pw",
-            "ctx": {"max_length": 4, "value": "SENTINEL-422-ctx"},
+            "ctx": {"max_length": 4},
         }]
 
         with caplog.at_level(logging.WARNING, logger="app.query_main"):
             result = await validation_exception_handler(mock_request, mock_exc)
 
         assert result.status_code == 422
+        # Nor does the body: Node logs it and relays it verbatim on the skills routes.
+        assert b"SENTINEL-422" not in result.body
+        assert "input" not in json.loads(result.body)["detail"][0]
         records = [r for r in caplog.records if "Request validation failed" in r.getMessage()]
         assert records
         formatter = RedactingFormatter("%(name)s - %(levelname)s - %(message)s")
@@ -922,6 +926,30 @@ class TestValidationExceptionHandler:
             assert "SENTINEL-422" not in text
             assert "password" in text
             assert "string_too_long" in text
+
+    def test_a_real_422_keeps_its_wording_and_constraint_but_not_the_input(self) -> None:
+        from fastapi import FastAPI
+        from pydantic import BaseModel, Field
+
+        from app.query_main import validation_exception_handler
+
+        class _Body(BaseModel):
+            name: str = Field(max_length=4)
+
+        app = FastAPI()
+        app.add_exception_handler(RequestValidationError, validation_exception_handler)
+
+        @app.post("/x")
+        async def _route(body: _Body) -> None:  # pragma: no cover - never reached
+            return None
+
+        response = TestClient(app).post("/x", json={"name": "F47SEED-ada@example.com"})
+        assert response.status_code == 422
+        assert response.json() == {
+            "message": "Name must be at most 4 characters.",
+            "detail": [{"type": "string_too_long", "loc": ["body", "name"], "msg": "Name must be at most 4 characters.",
+                        "ctx": {"max_length": 4}}],
+        }
 
     async def test_body_parse_failure_still_returns_422(self):
         """When request.json() raises, handler still returns 422."""

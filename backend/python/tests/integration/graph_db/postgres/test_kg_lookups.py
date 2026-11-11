@@ -79,6 +79,47 @@ async def test_each_lookup_reads_its_vetted_function_and_a_value_out_of_bounds_t
     assert sent == ["page_records_for_vector_membership_backfill", "page_records_for_vector_membership_backfill", "get_person_by_source_key", "get_user_by_email", "find_people"]
 
 
+async def test_the_entity_index_pages_a_connectors_records_by_the_vetted_page_in_byte_order_for_the_org_alone(world, monkeypatch: pytest.MonkeyPatch) -> None:
+    a, b = world
+    await a.batch_upsert_nodes([{"_key": "only-a", "orgId": a.org, "connectorId": "c-a", "recordName": "x"}], "records")
+    sent = spy(monkeypatch)
+    assert [r["_key"] for r in await a.page_entity_index_source("records", "c1", None, 10)] == ["R3", "r1", "r2"]
+    assert [r["_key"] for r in await a.page_entity_index_source("records", "c1", "R3", 1)] == ["r1"]
+    assert [r["_key"] for r in await b.page_entity_index_source("records", "c-a", None, 10)] == [] and [r["_key"] for r in await a.page_entity_index_source("records", "c-a", None, 10)] == ["only-a"]
+    assert sent == ["records_page_by_connector_for_index"] * 4
+    sent.clear()
+    assert [r["_key"] for r in await a.page_entity_index_source("records", "c1", "R3", 5000)] == ["r1", "r2"]          # a page over the function's bound: the statement, in the same order
+    assert [r["_key"] for r in await a.page_entity_index_source("organizations", a.org, None, 10)] == ["o1"]
+    assert sent == ["page_entity_index_source_c", "page_entity_index_source"]
+
+
+async def test_the_stage_sweeps_read_stale_states_and_unheld_revisions_by_the_vetted_functions_for_the_org_alone(world, monkeypatch: pytest.MonkeyPatch) -> None:
+    a, b = world
+    for p in (a, b):
+        await p.batch_upsert_nodes([{"_key": "s1", "orgId": p.org, "virtualRecordId": "v1", "rev": "1", "stage": "x", "status": "PENDING", "updatedAtMs": 100},
+                                    {"_key": "s2", "orgId": p.org, "virtualRecordId": "v1", "rev": "2", "stage": "x", "status": "RUNNING", "updatedAtMs": 50},
+                                    {"_key": "s3", "orgId": p.org, "virtualRecordId": "v2", "rev": "1", "stage": "x", "status": "DONE", "updatedAtMs": 10}], "stageStates")
+        await p.batch_upsert_nodes([{"_key": "r1", "orgId": p.org, "connectorId": "c1", "virtualRecordId": "v1", "contentRev": "2"}], "records")
+    await a.batch_upsert_nodes([{"_key": "only-a", "orgId": a.org, "virtualRecordId": "v3", "rev": "1", "stage": "x", "status": "PENDING", "updatedAtMs": 5}], "stageStates")
+    sent = spy(monkeypatch)
+    assert [d["id"] for d in await a.stage_states_stale(["PENDING", "RUNNING"], 1000, 10)] == ["only-a", "s2", "s1"]
+    assert [d["id"] for d in await b.stage_states_stale(["PENDING", "RUNNING"], 1000, 10)] == ["s2", "s1"]
+    assert await a.stage_states_unheld_revisions(["v1", "v2", "v3"], updated_before_ms=1000) == [("v1", "1"), ("v2", "1"), ("v3", "1")]
+    assert await b.stage_states_unheld_revisions(["v1", "v3"], updated_before_ms=1000) == [("v1", "1")]
+    assert sent == ["stage_states_stale_vetted"] * 2 + ["stage_states_unheld_vetted"] * 2
+    sent.clear()
+    assert [d["id"] for d in await a.stage_states_stale(["PENDING"] * 21, 1000, 10)] == ["only-a", "s1"]          # a status repeated past the function's item bound
+    assert sent == ["stage_states_stale_vetted"]
+    sent.clear()
+    assert len(await a.stage_states_unheld_revisions(["v1", *(f"x{i}" for i in range(1500))], updated_before_ms=1000)) == 1          # a list over the function's bound is read in chunks
+    assert sent == ["stage_states_unheld_vetted"] * 2
+    sent.clear()
+    await a.stage_states_stale(["s" * 200], 1000, 10)
+    await a.stage_states_stale(["PENDING"], 1000, 5000)
+    assert await a.stage_states_unheld_revisions(["v" * 300, "v3"], updated_before_ms=1000) == [("v3", "1")]
+    assert sent == ["stage_states_stale", "stage_states_stale", "stage_states_unheld_revisions"]
+
+
 async def test_a_full_page_of_matches_is_read_by_the_plain_statement(world, monkeypatch: pytest.MonkeyPatch) -> None:
     a, _ = world
     monkeypatch.setattr("app.services.graph_db.postgres.identity._PRINCIPALS_PAGE", 0)      # a page can never be short

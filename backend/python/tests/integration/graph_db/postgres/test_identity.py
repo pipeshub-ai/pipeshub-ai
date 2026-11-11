@@ -194,6 +194,47 @@ async def test_synced_users_are_created_inactive_members_unless_guests_and_reuse
     await w.p.batch_upsert_app_users([])                                                 # nothing to do
 
 
+async def test_synced_users_are_looked_up_by_the_vetted_email_read_and_the_statement_for_an_address_out_of_its_bounds(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    from .test_kg_lookups import spy
+    await member(w, "existing", userId="ue", email="Old@X.com", isActive=True)
+    sent = spy(monkeypatch)
+    await w.p.batch_upsert_app_users([app_user("old@x.com", "n1"), app_user("new@x.com", "n2")])
+    assert "users_by_email_vetted" in sent and "users_by_email" not in sent
+    assert {u["email"].lower(): u["_key"] for u in await w.p.get_all_documents("users")}["old@x.com"] == "existing"          # found, not duplicated
+    sent.clear()
+    await w.p.batch_upsert_app_users([app_user("e" * 1001 + "@x.com", "n3")])
+    assert "users_by_email" in sent and "users_by_email_vetted" not in sent
+    sent.clear()
+    many = [f"u{i}@x.com" for i in range(1000)] + ["old@x.com"]          # past the function's bound: one statement, one snapshot, not two chunks
+    rows = await w.p._users_by_email_rows(w.org, many, None)
+    assert sent == ["users_by_email"] and {r["email"]: r["id"] for r in rows} == {"old@x.com": "existing"}
+    await member(w, "b-dup", userId="ub", email="Dup@X.com", isActive=True)
+    await member(w, "a-dup", userId="ua", email="dup@x.com", isActive=True)
+    for emails in (["dup@x.com"], [*(f"u{i}@x.com" for i in range(1000)), "dup@x.com"]):          # the vetted read, then the statement
+        assert [r["id"] for r in await w.p._users_by_email_rows(w.org, emails, None) if r["email"] == "dup@x.com"] == ["a-dup", "b-dup"]
+
+
+async def test_a_source_account_already_linked_to_one_of_two_users_sharing_an_address_keeps_that_link(w: World) -> None:
+    await member(w, "a-dup", userId="ua", email="dup@x.com", isActive=True)
+    await member(w, "b-dup", userId="ub", email="Dup@X.com", isActive=True)
+    await w.edge("userAppRelation", ("users", "b-dup"), ("apps", APP), sourceUserId="src-linked")
+    await w.p.batch_upsert_app_users([app_user("dup@x.com", "linked")])          # source account src-linked, already linked to b-dup
+    links = {(r["id"], r["sourceUserId"]) for r in await w.p.get_app_user_links(w.org, APP)}
+    assert ("b-dup", "src-linked") in links and not any(i == "a-dup" for i, _ in links)          # kept, and never linked to a second user
+    await w.p.batch_upsert_app_users([app_user("dup@x.com", "fresh")])           # an account with no link takes the first by id
+    assert ("a-dup", "src-fresh") in {(r["id"], r["sourceUserId"]) for r in await w.p.get_app_user_links(w.org, APP)}
+
+
+async def test_a_guest_linked_to_one_of_two_users_sharing_an_address_loses_only_that_users_membership(w: World) -> None:
+    for key in ("a-g", "b-g"):
+        await w.nodes("users", {"_key": key, "email": "g@x.com", "isActive": False})
+        await w.edge("belongsTo", ("users", key), ("organizations", w.org), entityType="ORGANIZATION")
+    await w.edge("userAppRelation", ("users", "b-g"), ("apps", APP), sourceUserId="src-gst")
+    await w.p.batch_upsert_app_users([app_user("g@x.com", "gst", guest=True)])          # the guest's source account is linked to b-g
+    members = {e["from_id"] for e in await w.p.get_edges_to_node(f"organizations/{w.org}", "belongsTo")}
+    assert "a-g" in members and "b-g" not in members                                     # the linked user lost it, not the first by id
+
+
 async def test_groups_and_roles_round_trip_in_the_ambient_org_whatever_the_model_says(w: World) -> None:
     g = AppUserGroup(app_name=Connectors.JIRA, connector_id=APP, source_user_group_id="ext-g", name="G", org_id="some-other-org")
     r = AppRole(app_name=Connectors.JIRA, connector_id=APP, source_role_id="ext-r", name="R", org_id="some-other-org")

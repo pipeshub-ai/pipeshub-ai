@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 _C = CollectionNames
+_ROLE_BATCH = 50      # candidates whose roles are read by one statement
 # entity type -> (edge collection from the record, the collections of the entity, how its org is matched)
 _TARGETS: dict[str, tuple[str, tuple[str, ...], str]] = {
     EntityType.DEPARTMENT.value: (_C.BELONGS_TO_DEPARTMENT.value, (_C.DEPARTMENTS.value,), "none"),
@@ -165,8 +166,13 @@ class EntityAccessMixin(PgBase):
                         return None
                     found, capped = await self._scan(tx, org, org_id, typ, ref, record_types, scopes, max(0, offset), max(1, window))
                     hits = []
+                    roles: dict[str, Any] = {}
                     for pos, (rid, doc) in enumerate(found):
-                        if doc.get("connectorId") in apps or await self._role_on(tx, org, user_key, "records", rid):
+                        if doc.get("connectorId") not in apps and rid not in roles:      # the roles of the next candidates, as many as hits are still wanted (at most a batch): none is read past the limit
+                            # every candidate may be a hit, an app-level one too: only the next ``limit - len(hits)`` of them can be read before the limit
+                            ahead = [i for i, d in found[pos:pos + min(_ROLE_BATCH, limit - len(hits))] if d.get("connectorId") not in apps and i not in roles]
+                            roles.update(await self._roles_on(tx, org, user_key, "records", ahead))
+                        if doc.get("connectorId") in apps or roles[rid]:
                             hits.append({"pos": pos, "row": _row(rid, doc)})
                             if len(hits) >= limit:
                                 break
@@ -271,12 +277,26 @@ class EntityAccessMixin(PgBase):
         org = current_org_id()
         if spec.scope_field != "connectorId" and scope_id != org:      # an org-scoped source is the ambient org's: another org's rows are not this org's to page
             raise OrgMismatch("the scope names an org other than the ambient org")
-        rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.page_entity_index_source */ SELECT n.id, n.doc FROM graph.nodes n
-            WHERE n.org_id = $1 AND n.coll = $2 AND (n.doc->>$3 = $4 OR ($5::boolean AND n.doc->>$3 IS NULL))
-              AND (NOT $6::boolean OR (n.doc->>'normalizedName' IS NOT NULL AND n.doc->>'mergedInto' IS NULL))
-              AND NOT EXISTS (SELECT 1 FROM unnest($7::text[]) f WHERE n.doc->f IS DISTINCT FROM 'true'::jsonb)
-              AND ($8::text IS NULL OR n.id > $8) ORDER BY n.id LIMIT $9""",
-                                             org, spec.collection, spec.scope_field, scope_id, spec.include_global, spec.canonical_only, list(spec.required_true), after_key or None, max(1, int(limit))), transaction)
+        n = max(1, int(limit))
+        # A connector's records are read by the vetted page of graph_0006, in byte order (the keyset the connector's index keeps), whose statement is the same filter. The other
+        # sources are small collections that the primary key pages. shortcut: record groups scan their collection past other connectors' rows, add a vetted page when one org holds
+        # hundreds of thousands of them.
+        records = spec.collection == CollectionNames.RECORDS.value
+        if records and 0 < len(scope_id) <= 200 and len(after_key or "") <= 200 and n <= 1000:
+            rows = await self._q(lambda tx: tx.fetch("/* pipeshub:graph.records_page_by_connector_for_index */ SELECT node_id AS id, doc FROM graph.records_page_by_connector($1, $2, $3)",
+                                                     scope_id, after_key or "", n), transaction)
+        elif records:      # the vetted page's byte order, so a page after one of its keys is the next of the same sequence
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.page_entity_index_source_c */ SELECT n.id, n.doc FROM graph.nodes n
+                WHERE n.org_id = $1 AND n.coll = $2 AND n.doc->>$3 = $4
+                  AND ($5::text IS NULL OR n.id COLLATE "C" > $5 COLLATE "C") ORDER BY n.id COLLATE "C" LIMIT $6""",
+                                                 org, spec.collection, spec.scope_field, scope_id, after_key or None, n), transaction)
+        else:
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.page_entity_index_source */ SELECT n.id, n.doc FROM graph.nodes n
+                WHERE n.org_id = $1 AND n.coll = $2 AND (n.doc->>$3 = $4 OR ($5::boolean AND n.doc->>$3 IS NULL))
+                  AND (NOT $6::boolean OR (n.doc->>'normalizedName' IS NOT NULL AND n.doc->>'mergedInto' IS NULL))
+                  AND NOT EXISTS (SELECT 1 FROM unnest($7::text[]) f WHERE n.doc->f IS DISTINCT FROM 'true'::jsonb)
+                  AND ($8::text IS NULL OR n.id > $8) ORDER BY n.id LIMIT $9""",
+                                                 org, spec.collection, spec.scope_field, scope_id, spec.include_global, spec.canonical_only, list(spec.required_true), after_key or None, n), transaction)
         return [self._index_row(spec, r["id"], _doc(r["doc"])) for r in rows]
 
     @staticmethod
