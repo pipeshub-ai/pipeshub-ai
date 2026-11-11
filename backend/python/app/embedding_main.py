@@ -29,10 +29,12 @@ from typing import TYPE_CHECKING, Annotated, Any
 import anyio
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.api.middlewares.body_limit import BodyLimitMiddleware
+from app.api.validation_errors import input_free_422
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
@@ -836,12 +838,15 @@ class ModelManager:
         try:
             yield await self.get_model(model_name, trust_remote_code=trust_remote_code)
         finally:
-            remaining = self._in_use[key] - 1
-            if remaining:
-                self._in_use[key] = remaining
-            else:
-                del self._in_use[key]
-            self._last_used[key] = time.monotonic()
+            self._drop_lease(key)
+
+    def _drop_lease(self, key: str) -> None:
+        remaining = self._in_use[key] - 1
+        if remaining:
+            self._in_use[key] = remaining
+        else:
+            del self._in_use[key]
+        self._last_used[key] = time.monotonic()
 
     def reap_idle(self, now: float | None = None) -> list[str]:
         """Drop models nobody has used for ``idle_seconds``; return their names.
@@ -1104,8 +1109,13 @@ class ModelManager:
             except BaseException:
                 self._encode_gate.release(priority, token)
                 raise
+            # The thread outlives a cancelled request, so it keeps the model leased
+            # too: the idle reaper must not drop a model that is still encoding.
+            lease_key = self._cache_key(model_name)
+            self._in_use[lease_key] += 1
 
             def _release(done: asyncio.Future[list[list[float]]]) -> None:
+                self._drop_lease(lease_key)
                 self._encode_gate.release(priority, token)
                 if not done.cancelled():
                     done.exception()  # mark retrieved when nobody is waiting any more
@@ -1254,6 +1264,7 @@ app = FastAPI(
     description="OpenAI-compatible API for local dense embedding models",
     version="1.0.0",
     lifespan=lifespan,
+    exception_handlers={RequestValidationError: input_free_422},
 )
 
 # Size caps: refuse before the body is buffered. The indexing client sends at
