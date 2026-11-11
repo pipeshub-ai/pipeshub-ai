@@ -373,15 +373,17 @@ async def recover_expired_writes(graph_provider: Any, connector_id: str, *, cloc
     app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) or {}
     raw, closed = app.get(OPEN_WRITES_KEY) or None, app.get(CLOSED_KEY)
     held = parse_open_writes(raw)
+    started = monotonic()
     now = await store_now(graph_provider, clock)
     if now is None:
         return 0
     cutoff = now - OPEN_WRITE_GRACE_SECONDS
+    relet = {t for t, e in held.items() if e.get("k")}
     dead = {t: e for t, e in held.items() if not e.get("k") and e["u"] <= cutoff}
     released = {t: ({**{f: v for f, v in e.items() if f != "k"}, "u": int(now) + OPEN_WRITE_SECONDS} if e.get("k") else e) for t, e in held.items()}
     if not dead or (closed is not None and whole_number(closed) is None):
-        if any(e.get("k") for e in held.values()):      # (the dead leases stay: with the counter unreadable they are the only record of the roots)
-            await _swap(graph_provider, connector_id, {OPEN_WRITES_KEY: _dump_open_writes(released)}, {OPEN_WRITES_KEY: raw})      # (a lost race: the next sweep)
+        if relet and await _swap(graph_provider, connector_id, {OPEN_WRITES_KEY: _dump_open_writes(released)}, {OPEN_WRITES_KEY: raw}):  # (lost: next sweep)
+            await _unless_on_time(graph_provider, connector_id, relet, started)      # (the dead leases stay: with the counter unreadable they are the only record)
         return 0
     kept = {t: e for t, e in released.items() if t not in dead}
     updates: dict[str, Any] = {OPEN_WRITES_KEY: _dump_open_writes(kept), CLOSED_KEY: (whole_number(closed) or 0) + len(dead)}
@@ -390,7 +392,26 @@ async def recover_expired_writes(graph_provider: Any, connector_id: str, *, cloc
             await register_pending_roots(graph_provider, connector_id, roots)
     else:
         updates[UNSAFE_KEY] = new_unsafe_mark()
-    return len(dead) if await _swap(graph_provider, connector_id, updates, {OPEN_WRITES_KEY: raw, CLOSED_KEY: closed}) else 0
+    if not await _swap(graph_provider, connector_id, updates, {OPEN_WRITES_KEY: raw, CLOSED_KEY: closed}):
+        return 0
+    await _unless_on_time(graph_provider, connector_id, relet, started)
+    return len(dead)
+
+
+async def _unless_on_time(graph_provider: Any, connector_id: str, relet: Collection[str], started: float) -> None:  # noqa: ANN401
+    """A sweep that re-leased `k` leases by the store's clock and wrote them late wrote deadlines that much shorter: mark them `k` again (a mark no
+    delay can make wrong) for the next sweep. Once: a lost race means their writer or another sweep has written them since."""
+    if not relet or monotonic() - started <= STORE_CLOCK_TIMEOUT_SECONDS:
+        return
+    try:
+        app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) or {}
+        raw = app.get(OPEN_WRITES_KEY) or None
+        held = parse_open_writes(raw)
+        if any(t in held and not held[t].get("k") for t in relet):
+            await _swap(graph_provider, connector_id, {OPEN_WRITES_KEY: _dump_open_writes({t: {**e, "k": 1} if t in relet else e for t, e in held.items()})},
+                        {OPEN_WRITES_KEY: raw})
+    except Exception:
+        logging.getLogger(__name__).warning("could not mark the late re-leases of connector %s unknown; they run on the sweep's deadline", connector_id, exc_info=True)
 
 
 class OpenWrites:
