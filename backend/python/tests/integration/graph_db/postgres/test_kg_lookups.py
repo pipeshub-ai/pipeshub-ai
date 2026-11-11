@@ -90,7 +90,7 @@ async def test_the_entity_index_pages_a_connectors_records_by_the_vetted_page_in
     sent.clear()
     assert [r["_key"] for r in await a.page_entity_index_source("records", "c1", "R3", 5000)] == ["r1", "r2"]          # a page over the function's bound: the statement, in the same order
     assert [r["_key"] for r in await a.page_entity_index_source("organizations", a.org, None, 10)] == ["o1"]
-    assert sent == ["page_entity_index_source"] * 2
+    assert sent == ["page_entity_index_source_c", "page_entity_index_source"]
 
 
 async def test_the_stage_sweeps_read_stale_states_and_unheld_revisions_by_the_vetted_functions_for_the_org_alone(world, monkeypatch: pytest.MonkeyPatch) -> None:

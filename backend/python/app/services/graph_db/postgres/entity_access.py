@@ -279,13 +279,17 @@ class EntityAccessMixin(PgBase):
         if records and 0 < len(scope_id) <= 200 and len(after_key or "") <= 200 and n <= 1000:
             rows = await self._q(lambda tx: tx.fetch("/* pipeshub:graph.records_page_by_connector_for_index */ SELECT node_id AS id, doc FROM graph.records_page_by_connector($1, $2, $3)",
                                                      scope_id, after_key or "", n), transaction)
+        elif records:      # the vetted page's byte order, so a page after one of its keys is the next of the same sequence
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.page_entity_index_source_c */ SELECT n.id, n.doc FROM graph.nodes n
+                WHERE n.org_id = $1 AND n.coll = $2 AND n.doc->>$3 = $4
+                  AND ($5::text IS NULL OR n.id COLLATE "C" > $5 COLLATE "C") ORDER BY n.id COLLATE "C" LIMIT $6""",
+                                                 org, spec.collection, spec.scope_field, scope_id, after_key or None, n), transaction)
         else:
-            order = ' COLLATE "C"' if records else ""      # the vetted page's order, so a page after one of its keys is the next of the same sequence
-            rows = await self._q(lambda tx: tx.fetch(f"""/* pipeshub:graph.page_entity_index_source */ SELECT n.id, n.doc FROM graph.nodes n
+            rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.page_entity_index_source */ SELECT n.id, n.doc FROM graph.nodes n
                 WHERE n.org_id = $1 AND n.coll = $2 AND (n.doc->>$3 = $4 OR ($5::boolean AND n.doc->>$3 IS NULL))
                   AND (NOT $6::boolean OR (n.doc->>'normalizedName' IS NOT NULL AND n.doc->>'mergedInto' IS NULL))
                   AND NOT EXISTS (SELECT 1 FROM unnest($7::text[]) f WHERE n.doc->f IS DISTINCT FROM 'true'::jsonb)
-                  AND ($8::text IS NULL OR n.id{order} > $8{order}) ORDER BY n.id{order} LIMIT $9""",
+                  AND ($8::text IS NULL OR n.id > $8) ORDER BY n.id LIMIT $9""",
                                                  org, spec.collection, spec.scope_field, scope_id, spec.include_global, spec.canonical_only, list(spec.required_true), after_key or None, n), transaction)
         return [self._index_row(spec, r["id"], _doc(r["doc"])) for r in rows]
 
