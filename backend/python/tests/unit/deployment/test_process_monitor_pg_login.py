@@ -53,3 +53,12 @@ def test_each_python_service_start_line_uses_it() -> None:
     text = SCRIPT.read_text()
     for service, module in (("indexing", "indexing_main"), ("connectors", "connectors_main"), ("query", "query_main")):
         assert f"(use_own_pg_login {service}; exec python -m app.{module}) &" in text
+
+
+def test_the_pgvector_store_uses_the_same_login_as_the_process() -> None:
+    env = {**SHARED, "PG_CORE_QUERY_URL": "postgresql://query", "PGVECTOR_DSN": "postgresql://other"}
+    assert _env_after("query", env, show='printf "%s" "${PGVECTOR_DSN-}"') == "postgresql://query"
+
+
+def test_a_process_without_its_own_login_gets_no_pgvector_login() -> None:
+    assert _env_after("query", SHARED, show='printf "%s" "${PGVECTOR_DSN-}"') == ""
