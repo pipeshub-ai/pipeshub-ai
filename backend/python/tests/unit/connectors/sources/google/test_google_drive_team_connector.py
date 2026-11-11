@@ -506,7 +506,7 @@ class TestSyncUsers:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("empty_page_with_token", [True, False])
-    async def test_sync_users_empty_page_before_the_end_changes_no_account_status(self, empty_page_with_token):
+    async def test_sync_users_empty_page_before_the_end_changes_no_account_status(self, empty_page_with_token: bool) -> None:
         conn = _make_connector()
         sync_point = MagicMock()
         sync_point.read_sync_point = AsyncMock(return_value={
