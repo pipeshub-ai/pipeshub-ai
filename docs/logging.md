@@ -638,6 +638,48 @@ their own HTTP clients.
   check the destination, and the request id and MCP relay header must not reach a third party (the axios adapter adds them
   only for registered internal targets).
 
+## Chat streams (Node)
+
+Each enterprise-search chat stream (`streamChat`, `addMessageStream`, `streamAgentConversation`,
+`addMessageStreamToAgentConversation`, the two regenerate routes, and the `*Internal` routes that call them) writes exactly one
+`chat_stream.end` line, from `backend/nodejs/apps/src/modules/enterprise_search/utils/chat-stream-run.ts`. Once the conversation
+exists, `conversation_id` (and `agent_id`, the agent key) is bound to the request, so the stream's later lines, the AI call's
+`upstream.call.end` and the access line carry it too.
+
+| Field | Value |
+| --- | --- |
+| `reason` | how the **client** stream ended: `completed`, `cancelled` (Stop), `upstream_error`, `rejected` (our own deliberate 4xx inside the stream, such as regenerating a message that is not the last), `internal_error`, `client_disconnect` (the browser left before the response ended; `outcome`, `error_class` and `code` still say how the detached run ended) |
+| `outcome` | `success`, `failure` or `partial` (a Stop, or the detached-run cap) |
+| `error_class` | `upstream_5xx` for an error the AI service reported in the stream; the error's class otherwise |
+| `code` | the AI service's error code (`RUN_ERROR.code`, a failure answer's `errorCode`), `unknown_error` when it is not a snake_case token, `no_response` when the stream ended with neither an answer nor an error, `detached_cap` for the cap |
+| `events`, `bytes`, `ttfb_ms` | SSE frames (`\n\n`) and bytes received from the AI service; the handler's start to its first byte (absent when none came) |
+| `duration_ms`, `route` | the handler's start to the end line; the route template |
+| `error`, `error_type` | `internal_error`: the error (with its stack) and its type. `rejected`: `error_type` only |
+
+The level, by the first matching row:
+
+| The stream ended | `reason` | Level |
+| --- | --- | --- |
+| a Stop | `cancelled` | INFO |
+| an error answer | `upstream_error` | WARNING: only the stream shows it |
+| an answer (also after a `RUN_ERROR`) | `completed` | INFO |
+| a `RUN_ERROR`, or no answer at all | `upstream_error` | WARNING: only the stream shows it |
+| the AI call failed (its open, or the stream midway) with a class other than `internal` or `misconfigured` | `upstream_error` | INFO: the call's `upstream.call.end` already reported it at its level |
+| our own 4xx inside the stream | `rejected` | `levelFor(class)` (WARNING) |
+| anything else (a failed save, a blocked URL, a body-less answer) | `internal_error` | `levelFor(class)`: ERROR with the stack |
+| the detached-run cap fired and the partial answer was saved | `client_disconnect` | WARNING |
+
+- **The call line owns an AI-call failure.** The end line does not repeat it at WARNING; it says how the client stream ended.
+  A failure that never got a WARNING call line (our own: a blocked URL, an answer with no body) is ERROR on the end line.
+- **No content.** No answer text, prompt or frame data is logged, and no error text from the AI service; only an `internal_error`
+  (our own failure) logs its error and stack. A frame that does not parse is
+  `chat_stream.bad_frame` with `frame` (`RUN_FINISHED`, `RUN_ERROR` at WARNING; `CUSTOM` at DEBUG) and its `bytes`.
+- **The browser leaving** is DEBUG (`Client disconnected; …`), in the request's context; the end line reports it when the
+  detached run ends. The cap writes no line of its own.
+- **No end line** when no stream exists yet: a draining server, `Query is required`, an ownership or validation refusal before the
+  stream's headers, and regenerate's checks before its stream. The request's own `http.request.error` line covers them.
+- **Known duplicate.** A failed save still logs ERROR twice: the persistence helper's own line and the end line.
+
 ## Redaction
 
 Both formats redact: the whole text line (message, fields, traceback), and in JSON every string value. Credentials (bearer and
@@ -720,7 +762,8 @@ with `TS_MODULE=backend/nodejs/apps/node_modules/typescript python3 -m unittest 
   `mcp_server_id`, `toolset_id`, `job`, `workload`, `target_user_id`, `source_user_id`, `duration_ms`, `status`, `error_class`,
   `error_type`, `outcome`, `method`, `route`, `client_ip`, `reason`, `topic`, `message_id`, `event_type`, `disposition`. Python
   also has `ctx_kind`, `ctx_source`, `error_message` and `cause_type`; Node's `error` is an object (`error.message`). Node also
-  has `upstream` and `network_code` (on `upstream.call.end`).
+  has `upstream` and `network_code` (on `upstream.call.end`), and `code`, `events`, `bytes`, `ttfb_ms` and `frame` (on
+  `chat_stream.*`).
 - **Fields are scalars**: ids, sizes, counts, enums. Never pass a config, a request, a response or a document as a field.
 - **Log an error once**, at the layer that handles it, with `error_class.log_failure` (see "Failures"). Lower layers raise
   (`raise … from e`), they do not log and re-raise.

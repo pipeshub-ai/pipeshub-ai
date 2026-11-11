@@ -126,6 +126,7 @@ interface StreamCall {
   messageId?: mongoose.Types.ObjectId | string | null
   onComplete?: (data: IAIResponse) => void
   accumulator?: StreamedContentAccumulator
+  onUpstreamError?: (code: unknown) => void
   onAskUserQuestion?: (payload: unknown) => void
 }
 
@@ -142,7 +143,7 @@ const feed = (res: FakeResponse, call: StreamCall): string => {
     call.onComplete ?? ((): void => undefined),
     AGUI_PROTOCOL,
     call.accumulator,
-    undefined,
+    call.onUpstreamError,
     call.onAskUserQuestion,
   )
 }
@@ -234,6 +235,29 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       expect(conversation.failReason).to.equal('The AI model is not configured.')
       expect(at(conversation.conversationErrors).messageId?.toString()).to.equal(messageId.toString())
       expect(conversation.save.calledOnce).to.equal(true)
+    })
+
+    it("reports RUN_ERROR to the caller with Python's raw code", async () => {
+      const res = makeRes()
+      const onUpstreamError = sinon.spy()
+
+      feed(res, { chunk: frameAGUI('RUN_ERROR', { message: 'nope', code: 'llm_config' }), onUpstreamError })
+
+      expect(onUpstreamError.calledOnceWithExactly('llm_config')).to.equal(true)
+    })
+
+    it('still reports a RUN_ERROR whose data is null, so no second error frame or save follows', async () => {
+      const res = makeRes()
+      const conversation = makeConversation()
+      const messageId = new mongoose.Types.ObjectId()
+      const onUpstreamError = sinon.spy()
+      const chunk = 'event: RUN_ERROR\ndata: null\n\n'
+
+      expect(() => feed(res, { chunk, conversation, messageId, onUpstreamError })).to.not.throw()
+      await settle()
+
+      expect(onUpstreamError.calledOnceWithExactly(undefined)).to.equal(true)
+      expect(written(res), 'forwarded once').to.equal(chunk)
     })
 
     it('saves the standard failure text when RUN_ERROR carries no message', async () => {

@@ -2,6 +2,12 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { EventEmitter } from 'events'
 import { Readable } from 'stream'
+import { Logger } from '../../../../src/libs/services/logger.service'
+import {
+  getRequestContext,
+  runWithRequestContext,
+  RequestContextStore,
+} from '../../../../src/libs/context/request-context'
 import {
   attachUpstreamAbort,
   runGuarded,
@@ -49,7 +55,7 @@ describe('stream-lifecycle', () => {
     it('reports the client gone on close but leaves the run alone', () => {
       const res = createMockRes()
       const onAbandon = sinon.stub()
-      const handle = attachUpstreamAbort(res, 'req-1', onAbandon, CAP_MS)
+      const handle = attachUpstreamAbort(res, onAbandon, CAP_MS)
       const stream = new Readable({ read() {} })
       const destroySpy = sinon.spy(stream, 'destroy')
       handle.bindStream(stream)
@@ -69,7 +75,7 @@ describe('stream-lifecycle', () => {
       const clock = sinon.useFakeTimers()
       const res = createMockRes()
       const onAbandon = sinon.stub()
-      const handle = attachUpstreamAbort(res, 'req-2', onAbandon, CAP_MS)
+      const handle = attachUpstreamAbort(res, onAbandon, CAP_MS)
       const stream = new Readable({ read() {} })
       const destroySpy = sinon.spy(stream, 'destroy')
       handle.bindStream(stream)
@@ -90,7 +96,7 @@ describe('stream-lifecycle', () => {
       const clock = sinon.useFakeTimers()
       const res = createMockRes()
       const onAbandon = sinon.stub()
-      const handle = attachUpstreamAbort(res, 'req-3', onAbandon, CAP_MS)
+      const handle = attachUpstreamAbort(res, onAbandon, CAP_MS)
       const stream = new Readable({ read() {} })
       handle.bindStream(stream)
 
@@ -106,7 +112,7 @@ describe('stream-lifecycle', () => {
       const clock = sinon.useFakeTimers()
       const res = createMockRes()
       const onAbandon = sinon.stub()
-      const handle = attachUpstreamAbort(res, 'req-4', onAbandon, CAP_MS)
+      const handle = attachUpstreamAbort(res, onAbandon, CAP_MS)
 
       res.emit('close')
       clock.tick(CAP_MS * 2)
@@ -119,7 +125,7 @@ describe('stream-lifecycle', () => {
       const clock = sinon.useFakeTimers()
       const res = createMockRes()
       const onAbandon = sinon.stub()
-      const handle = attachUpstreamAbort(res, 'req-5', onAbandon, CAP_MS)
+      const handle = attachUpstreamAbort(res, onAbandon, CAP_MS)
       handle.bindStream(new Readable({ read() {} }))
 
       res.emit('close')
@@ -138,7 +144,7 @@ describe('stream-lifecycle', () => {
       const clock = sinon.useFakeTimers()
       const res = createMockRes()
       const onAbandon = sinon.stub()
-      const handle = attachUpstreamAbort(res, 'req-6', onAbandon, CAP_MS)
+      const handle = attachUpstreamAbort(res, onAbandon, CAP_MS)
       handle.bindStream(new Readable({ read() {} }))
 
       res.finish() // mirrors res.end() having already run
@@ -154,11 +160,60 @@ describe('stream-lifecycle', () => {
       const res = createMockRes()
       res.writableEnded = false
       res.writableFinished = true
-      const handle = attachUpstreamAbort(res, 'req-7', undefined, CAP_MS)
+      const handle = attachUpstreamAbort(res, undefined, CAP_MS)
 
       res.emit('close')
 
       expect(handle.isClientDisconnected()).to.be.false
+    })
+
+    it('logs the client leaving at DEBUG, in the request it was attached in, though close is emitted outside it', () => {
+      const seen: Array<RequestContextStore | undefined> = []
+      const debug = sinon.stub(Logger.prototype, 'debug').callsFake(() => {
+        seen.push(getRequestContext())
+      })
+      const info = sinon.stub(Logger.prototype, 'info')
+      const res = createMockRes()
+      const store: RequestContextStore = { rootId: 'rq-attach', logFields: {} }
+      runWithRequestContext(store, () => attachUpstreamAbort(res, undefined, CAP_MS))
+
+      res.emit('close')
+
+      expect(debug.calledOnce).to.be.true
+      expect(debug.firstCall.args[0]).to.match(/^Client disconnected/)
+      expect(seen).to.deep.equal([store])
+      expect(info.called).to.be.false
+    })
+
+    it('runs the close listener directly when it was attached outside any request', () => {
+      const seen: Array<RequestContextStore | undefined> = []
+      sinon.stub(Logger.prototype, 'debug').callsFake(() => {
+        seen.push(getRequestContext())
+      })
+      const res = createMockRes()
+      const handle = attachUpstreamAbort(res, undefined, CAP_MS)
+
+      runWithRequestContext({ rootId: 'rq-other' }, () => res.emit('close'))
+
+      expect(handle.isClientDisconnected()).to.be.true
+      expect(seen).to.have.length(1)
+      expect(seen[0]?.rootId, 'the emitter context, as before').to.equal('rq-other')
+    })
+
+    it('writes no line of its own when the cap fires: the run reports it', () => {
+      const clock = sinon.useFakeTimers()
+      const warn = sinon.stub(Logger.prototype, 'warn')
+      const error = sinon.stub(Logger.prototype, 'error')
+      const res = createMockRes()
+      const onAbandon = sinon.stub()
+      attachUpstreamAbort(res, onAbandon, CAP_MS)
+
+      res.emit('close')
+      clock.tick(CAP_MS)
+
+      expect(onAbandon.calledOnce).to.be.true
+      expect(warn.called).to.be.false
+      expect(error.called).to.be.false
     })
   })
 
@@ -229,6 +284,10 @@ describe('stream-lifecycle', () => {
 })
 
 describe('runGuarded', () => {
+  afterEach(() => {
+    sinon.restore()
+  })
+
   it('runs the task', async () => {
     const task = sinon.stub().resolves()
 
@@ -242,12 +301,22 @@ describe('runGuarded', () => {
     const unhandled = sinon.stub()
     process.once('unhandledRejection', unhandled)
     try {
-      runGuarded(() => Promise.reject(new Error('disk full')), { requestId: 'req-1' })
+      runGuarded(() => Promise.reject(new Error('disk full')))
       await new Promise((resolve) => setTimeout(resolve, 20))
     } finally {
       process.removeListener('unhandledRejection', unhandled)
     }
 
     expect(unhandled.called).to.be.false
+  })
+
+  it('logs the failure once at ERROR with the error itself, so its stack is kept', async () => {
+    const error = sinon.stub(Logger.prototype, 'error')
+    const failure = new Error('disk full')
+
+    runGuarded(() => Promise.reject(failure))
+    await new Promise((resolve) => setImmediate(resolve))
+
+    expect(error.calledOnceWithExactly('Failed to finalize the run', { error: failure })).to.be.true
   })
 })
