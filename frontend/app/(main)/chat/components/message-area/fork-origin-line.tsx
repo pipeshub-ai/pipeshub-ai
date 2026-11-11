@@ -40,7 +40,7 @@ export function ForkOriginHeader({
               agentId,
               projectId,
               conversationId: origin.conversationId,
-              messageId: origin.atMessageId,
+              messageId: origin.messageId,
             })}
             style={{ overflowWrap: 'anywhere' }}
           >

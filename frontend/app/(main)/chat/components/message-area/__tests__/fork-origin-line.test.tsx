@@ -20,7 +20,7 @@ describe('ForkOriginHeader', () => {
 
     expect(screen.getByText('Forked from')).toBeTruthy();
     const link = screen.getByRole('link', { name: 'Quarterly numbers' });
-    expect(hrefOf(link)).toEqual({ path: '/chat', params: { conversationId: 'orig-9', messageId: 'c-2' } });
+    expect(hrefOf(link)).toEqual({ path: '/chat', params: { conversationId: 'orig-9', messageId: 'p-5' } });
   });
 
   it('opens the original inside the same project', () => {
@@ -28,7 +28,7 @@ describe('ForkOriginHeader', () => {
 
     expect(hrefOf(screen.getByRole('link'))).toEqual({
       path: '/chat',
-      params: { projectId: 'proj-3', conversationId: 'orig-9', messageId: 'c-2' },
+      params: { projectId: 'proj-3', conversationId: 'orig-9', messageId: 'p-5' },
     });
   });
 
@@ -37,7 +37,7 @@ describe('ForkOriginHeader', () => {
 
     expect(hrefOf(screen.getByRole('link'))).toEqual({
       path: '/chat',
-      params: { agentId: 'agent-7', conversationId: 'orig-9', messageId: 'c-2' },
+      params: { agentId: 'agent-7', conversationId: 'orig-9', messageId: 'p-5' },
     });
   });
 
@@ -53,7 +53,7 @@ describe('ForkOriginHeader', () => {
 
     expect(hrefOf(screen.getByRole('link', { name: 'Untitled chat' }))).toEqual({
       path: '/chat',
-      params: { conversationId: 'orig-9', messageId: 'c-2' },
+      params: { conversationId: 'orig-9', messageId: 'p-5' },
     });
   });
 });
