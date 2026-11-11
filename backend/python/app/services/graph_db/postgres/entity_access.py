@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 _C = CollectionNames
+_ROLE_BATCH = 50      # candidates whose roles are read by one statement
 # entity type -> (edge collection from the record, the collections of the entity, how its org is matched)
 _TARGETS: dict[str, tuple[str, tuple[str, ...], str]] = {
     EntityType.DEPARTMENT.value: (_C.BELONGS_TO_DEPARTMENT.value, (_C.DEPARTMENTS.value,), "none"),
@@ -165,8 +166,13 @@ class EntityAccessMixin(PgBase):
                         return None
                     found, capped = await self._scan(tx, org, org_id, typ, ref, record_types, scopes, max(0, offset), max(1, window))
                     hits = []
+                    roles: dict[str, Any] = {}
                     for pos, (rid, doc) in enumerate(found):
-                        if doc.get("connectorId") in apps or await self._role_on(tx, org, user_key, "records", rid):
+                        if doc.get("connectorId") not in apps and rid not in roles:      # the roles of the next candidates, as many as hits are still wanted (at most a batch): none is read past the limit
+                            # every candidate may be a hit, an app-level one too: only the next ``limit - len(hits)`` of them can be read before the limit
+                            ahead = [i for i, d in found[pos:pos + min(_ROLE_BATCH, limit - len(hits))] if d.get("connectorId") not in apps and i not in roles]
+                            roles.update(await self._roles_on(tx, org, user_key, "records", ahead))
+                        if doc.get("connectorId") in apps or roles[rid]:
                             hits.append({"pos": pos, "row": _row(rid, doc)})
                             if len(hits) >= limit:
                                 break
