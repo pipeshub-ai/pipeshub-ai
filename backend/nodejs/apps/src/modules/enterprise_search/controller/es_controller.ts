@@ -67,6 +67,8 @@ import {
   AIServiceCommand,
 } from '../../../libs/commands/ai_service/ai.service.command';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
+import { upstreamFetch } from '../../../libs/http/upstream-call';
+import { injectRequestHeaders } from '../../../libs/context/request-context';
 import {
   AIServiceResponse,
   AiSearchResponse,
@@ -369,7 +371,7 @@ export const startAIStream = async (
       logger.info('AI service stream open abandoned', logContext);
       return undefined;
     }
-    // handleBackendError logs the cause; the request id is on every log line.
+    // The call line and the error middleware log it; handleBackendError only maps it.
     throw handleBackendError(error, operation);
   }
 };
@@ -610,9 +612,9 @@ export const deleteChatAttachment =
         ),
       );
 
-      const aiRes = await fetch(aiUrl, {
+      const aiRes = await upstreamFetch(aiUrl, {
         method: 'DELETE',
-        headers: forwardHeaders,
+        headers: injectRequestHeaders(forwardHeaders),
       });
       res.status(aiRes.status || 204).end();
     } catch (error: any) {

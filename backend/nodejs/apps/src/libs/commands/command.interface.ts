@@ -109,12 +109,12 @@ export abstract class BaseCommand<T> implements ICommand<T> {
 
   /**
    * Retry helper method using exponential backoff.
-   * @param fn - A function returning a promise to retry.
+   * @param fn - A function returning a promise to retry; it gets the 1-based attempt number.
    * @param retries - Number of retries (default is 3).
    * @param backoff - Initial backoff delay in milliseconds (default is 300ms).
    */
   protected async fetchWithRetry<T>(
-    fn: () => Promise<T>,
+    fn: (attempt: number) => Promise<T>,
     retries: number = 3,
     backoff: number = 300,
     shouldRetry: (error: unknown) => boolean = () => true,
@@ -122,7 +122,7 @@ export abstract class BaseCommand<T> implements ICommand<T> {
     let attempt = 0;
     while (attempt < retries) {
       try {
-        const response = await fn();
+        const response = await fn(attempt + 1);
         return response;
       } catch (error) {
         // A caller that aborted a request is not waiting for another try.
