@@ -36,7 +36,7 @@ from app.services.graph_db.taxonomy import TAXONOMY_EDGE_COLLECTIONS
 from app.services.graph_db.vector_membership_queries import can_use_membership_cleanup
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Collection, Mapping
+    from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 
     from app.core.db import Tx
 
@@ -56,6 +56,8 @@ _DEFAULT_DELETE_ROLES = ("OWNER", "WRITER")
 _CHUNK = 5000      # nodes removed per statement (and per transaction, when a connector is deleted in batches)
 _HANDLES = "connectorDeleteHandles"      # the ids a delete in batches must still name after the nodes are gone: written in the transaction that removes them
 _CONNECTOR_NODE_COLLS = ("syncPoints", "stageStates", "agentKnowledge", "blocks")      # nodes that name their connector and hang off no edge the cascade follows (blocks: the ones no record owns any more)
+_LATE_WRITE_COLLS = ("blocks", "stageStates")      # what indexing already in flight can still write for a connector after its delete
+_LATE_LINK_COLLS = ("nodeRelations", "recordLinks")      # where its code links land; they carry the record group, not the connector
 
 
 async def _remove_nodes(tx: Tx, org: str, coll: str, keys: list[str]) -> int:
@@ -67,6 +69,22 @@ async def _remove_nodes(tx: Tx, org: str, coll: str, keys: list[str]) -> int:
     await _sweep_edges(tx, org, _EDGE_COLLS, [f"{coll}/{k}" for k in keys])
     return await tx.fetchval("/* pipeshub:graph.connector_delete_nodes */ WITH d AS (DELETE FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[]) RETURNING 1) SELECT count(*) FROM d",
                              org, coll, keys)
+
+
+async def _remove_named_batch(tx: Tx, org: str, coll: str, connector_id: str) -> tuple[int, int]:
+    """Up to ``_CHUNK`` nodes of one collection that name the connector, with their edges: (found, removed)."""
+    keys = [r["id"] for r in await tx.fetch("""/* pipeshub:graph.late_write_named */ SELECT id FROM graph.nodes
+        WHERE org_id = $1 AND coll = $2 AND doc->>'connectorId' = $3 ORDER BY id LIMIT $4""", org, coll, connector_id, _CHUNK)]
+    return len(keys), int(await _remove_nodes(tx, org, coll, keys) or 0)
+
+
+async def _remove_group_links_batch(tx: Tx, org: str, groups: list[str]) -> int:
+    """Up to ``_CHUNK`` code links that carry one of the groups. The (org_id, coll) prefix of the key bounds the scan to the org's links."""
+    return int(await tx.fetchval("""/* pipeshub:graph.late_write_links */ WITH d AS (DELETE FROM graph.edges
+        WHERE (org_id, coll, from_id, from_coll, to_id, to_coll, ekey) IN (
+            SELECT org_id, coll, from_id, from_coll, to_id, to_coll, ekey FROM graph.edges
+            WHERE org_id = $1 AND coll = ANY($2::text[]) AND doc->>'recordGroupId' = ANY($3::text[]) LIMIT $4)
+        RETURNING 1) SELECT count(*) FROM d""", org, list(_LATE_LINK_COLLS), groups, _CHUNK) or 0)
 
 
 async def _lock_labels(tx: Tx, org: str, coll: str, keys: list[str]) -> None:
@@ -675,3 +693,30 @@ class DeleteMixin(PgBase):
             except Exception as e:
                 self.logger.warning("kh scope: could not drop the scopes of deleted connector %s: %s", connector_id, e)
         return result
+
+    async def sweep_deleted_connector_writes(self, connector_id: str, record_group_ids: Sequence[str] = ()) -> tuple[int, int]:
+        """See the interface. The code-link writer checks that both ends exist but does not lock them, and no foreign key ties an edge to its
+        nodes, so a link whose statement still saw the block can commit after this pass removed the block and its edges: the links of
+        ``record_group_ids`` are removed and counted too. Each batch commits on its own: the pass runs after the delete, outside any transaction."""
+        org = current_org_id()
+        groups = list(dict.fromkeys(g for g in record_group_ids if g))
+        removed = 0
+        for coll in _LATE_WRITE_COLLS:
+            while True:
+                found, n = await self._q(lambda tx, coll=coll: _remove_named_batch(tx, org, coll, connector_id), None, write=True)
+                removed += n
+                if found < _CHUNK:
+                    break
+        while groups:
+            n = await self._q(lambda tx: _remove_group_links_batch(tx, org, groups), None, write=True)
+            removed += n
+            if n < _CHUNK:
+                break
+
+        async def count(tx: Tx) -> int:
+            nodes = await tx.fetchval("""/* pipeshub:graph.late_write_left */ SELECT count(*) FROM graph.nodes
+                WHERE org_id = $1 AND coll = ANY($2::text[]) AND doc->>'connectorId' = $3""", org, list(_LATE_WRITE_COLLS), connector_id)
+            links = await tx.fetchval("""/* pipeshub:graph.late_write_links_left */ SELECT count(*) FROM graph.edges
+                WHERE org_id = $1 AND coll = ANY($2::text[]) AND doc->>'recordGroupId' = ANY($3::text[])""", org, list(_LATE_LINK_COLLS), groups) if groups else 0
+            return int(nodes or 0) + int(links or 0)
+        return removed, await self._q(count, None)

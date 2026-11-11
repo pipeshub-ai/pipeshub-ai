@@ -47,6 +47,8 @@ OPEN_WRITES_KEY = "scopeProjectionOpenWrites"
 OPEN_WRITE_SECONDS = 600
 #: Past its deadline a write is still given this long, for the skew between the clock of the writer and the clock of the sweep.
 OPEN_WRITE_GRACE_SECONDS = 120
+# A slower answer from the store's clock is not trusted: the time it gives is already that old when the lease is written or judged.
+STORE_CLOCK_TIMEOUT_SECONDS = 5.0
 
 
 def whole_number(value: object) -> int | None:
@@ -223,13 +225,15 @@ async def _backoff(attempt: int) -> None:
 async def store_now(graph_provider: Any, clock: Callable[[], float] | None = None) -> float | None:  # noqa: ANN401
     """Now by the clock the writers and the sweep of a lease share: the graph store's (one node's clock: the Neo4j leader, the ArangoDB coordinator,
     the PostgreSQL primary, so as close to the other hosts' as NTP keeps them). ``clock`` (tests) replaces it. None, logged, when the store cannot
-    say, and for a provider that has no store clock: the sweep then recovers nothing and the writers mark their lease `k` (see `open_write`)."""
+    say, does not answer within ``STORE_CLOCK_TIMEOUT_SECONDS``, or has no store clock: the sweep then recovers nothing that round and the writers
+    mark their lease `k` (see `open_write`). It is not a single cluster clock: two ArangoDB coordinators or a Neo4j leader change can answer from
+    clocks as far apart as NTP lets them drift, which ``OPEN_WRITE_GRACE_SECONDS`` must cover."""
     if clock is not None:
         return clock()
     try:
-        return await graph_provider.store_time()
-    except Exception:
-        logging.getLogger(__name__).warning("the graph store's clock could not be read", exc_info=True)
+        return await asyncio.wait_for(graph_provider.store_time(), STORE_CLOCK_TIMEOUT_SECONDS)
+    except Exception:  # TimeoutError included: a late answer is treated as no answer
+        logging.getLogger(__name__).warning("the graph store's clock could not be read in %ss", STORE_CLOCK_TIMEOUT_SECONDS, exc_info=True)
         return None
 
 

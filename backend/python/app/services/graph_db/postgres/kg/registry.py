@@ -56,6 +56,7 @@ WRITERS: dict[str, tuple[str, str]] = {
     "stage_state_create": (NO_PROJECTION, "stage states of the indexing pipeline"),
     "stage_states_delete_for_virtual_records": (NO_PROJECTION, "stage states of the indexing pipeline"),
     "stage_states_delete_unheld_revisions": (NO_PROJECTION, "stage states of the indexing pipeline"),
+    "sweep_deleted_connector_writes": (NO_PROJECTION, "blocks, stage states and code links, written after a connector's delete"),
     "update_indexing_status_for_record_ids": (NO_PROJECTION, _STATUS),
     "update_knowledge_base": (PROJECTED, ""),
     "update_node": (PROJECTED, ""),

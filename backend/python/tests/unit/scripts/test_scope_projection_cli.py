@@ -6,6 +6,7 @@ import contextlib
 from unittest.mock import AsyncMock, MagicMock
 
 from app.scripts import scope_projection
+from app.services.permissions import scope_fields
 
 
 async def test_run_resolves_the_scope_generation_before_the_first_write(monkeypatch) -> None:
@@ -112,6 +113,7 @@ async def test_view_prints_the_lines_and_exits_non_zero_only_when_something_need
 
     monkeypatch.setattr("app.services.vector_db.scope_view.org_view", org_view)
     monkeypatch.setattr("app.services.permissions.generation.current_generation", AsyncMock(return_value=0))
+    monkeypatch.setitem(scope_fields._resolved, "generation", None)      # the view resolves the generation: put it back for the tests after this one
     assert await scope_projection._main(["view", "--org", "o", "--connector", "a"]) == 1      # no vector store: said, and needs attention
     assert "vector_store_not_configured" in capsys.readouterr().out and seen["vdb"] is None and seen["connectors"] == ["a"]
     seen["bad"] = True
