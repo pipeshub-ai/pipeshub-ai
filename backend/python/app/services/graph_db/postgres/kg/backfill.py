@@ -57,6 +57,7 @@ class Outcome:
     pending: int = 0
     reason: str = ""             # why ``flipped`` is false: "unfinished" (a budget or a stop ended the copy; it keeps its cursor), "pending" (changes waiting in the log), "cleared" (a demotion or restart
                                  # emptied the copy while it was verified), "differs" (the verify found a difference nothing waiting explains)
+    stamp_after: str | None = None   # where an unfinished stamping of the connector goes on (``backfill(stamp_after=...)``)
 
 
 def _ctx(org: str) -> OrgContext:
@@ -140,14 +141,14 @@ async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: in
     return done
 
 
-async def restamp_app(db: KernelDB, org: str, app_id: str, *, page: int = 2000) -> int:
-    """Stamp every record and record group of a connector, a page at a time under its lock; returns the pages. The structural rows come first: a page's classes are compiled from the
-    graph, whose closure the pages share. A stamp that reaches another connector takes its lock too and redoes the page."""
+async def _restamp_pages(db: KernelDB, org: str, app_id: str, page: int, after: str | None, max_pages: int | None, stop: asyncio.Event | None) -> tuple[int, str | None, bool]:
+    """``restamp_app`` for at most ``max_pages`` pages from ``after`` and not past ``stop``: (pages, where to go on, finished)."""
     pages = 0
-    after: str | None = None
     extra: set[str] = set()
     with bind(_ctx(org)):
         while True:
+            if (max_pages is not None and pages >= max_pages) or (stop is not None and stop.is_set()):
+                return pages, after, False
             async def go(tx: Tx, cursor: str | None = after, held: frozenset[str] = frozenset(extra)) -> str | None:
                 await lock_apps(tx, org, {app_id} | held, org_wide=False)
                 return await stamp_app(tx, org, app_id, cursor, page, locked={app_id} | held)
@@ -157,8 +158,14 @@ async def restamp_app(db: KernelDB, org: str, app_id: str, *, page: int = 2000) 
                 extra |= e.apps
                 continue
             if after is None:
-                return pages
+                return pages, None, True
             pages += 1
+
+
+async def restamp_app(db: KernelDB, org: str, app_id: str, *, page: int = 2000) -> int:
+    """Stamp every record and record group of a connector, a page at a time under its lock; returns the pages. The structural rows come first: a page's classes are compiled from the
+    graph, whose closure the pages share. A stamp that reaches another connector takes its lock too and redoes the page."""
+    return (await _restamp_pages(db, org, app_id, page, None, None, None))[0]
 
 
 async def _pending(tx: Tx, org: str, app_id: str) -> int:
@@ -179,11 +186,19 @@ async def _copied(db: KernelDB, org: str, app_id: str) -> bool:
         return await db.run(go)
 
 
+async def principals_copied(db: KernelDB, org: str) -> bool:
+    async def go(tx: Tx) -> bool:
+        return (await modes.state(tx, org, 0))[0] == "done"
+    with bind(_ctx(org)):
+        return await db.run(go)
+
+
 async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max_batches: int | None = None, drain_rounds: int | None = None, restart: bool = False,
-                   stop: asyncio.Event | None = None) -> Outcome:
+                   stop: asyncio.Event | None = None, stamp_pages: int | None = None, stamp_after: str | None = None, stamp_page: int = 2000) -> Outcome:
     """The whole sequence for one connector; resumes where an interrupted call stopped. ``flipped`` is true only when the verify found no difference and nothing waits in the log.
-    ``max_batches`` (per copy) and ``stop`` end a copy early: the outcome is then not flipped, ``reason`` "unfinished", and the cursor is kept for the next call. The verify itself is one
-    unit and is not interrupted."""
+    ``max_batches`` (per copy), ``drain_rounds`` (each round takes at most ``page`` log rows), ``stamp_pages`` and ``stop`` bound the call: when one is reached the outcome is not flipped and
+    nothing is stamped or verified past it: "unfinished" (a copy or the stamping stopped at its budget or at ``stop``; the copy keeps its cursor and the stamping goes on from
+    ``Outcome.stamp_after``) or "pending" (the log still has rows). The verify itself is one unit and is not interrupted."""
     _need_log()
     n = await backfill_scope(db, org, None, page=page, max_batches=max_batches, restart=restart, stop=stop)
     n += await backfill_scope(db, org, app_id, page=page, max_batches=max_batches, restart=restart, stop=stop)
@@ -192,11 +207,19 @@ async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max
     with bind(_ctx(org)):
         rounds = 0
         while (drain_rounds is None or rounds < drain_rounds) and not (stop is not None and stop.is_set()):     # until nothing is left (a round takes pages until the log is empty); None = no cap
-            if not (await drain_org(db, org, stop=stop)).rows:
+            if not (await drain_org(db, org, max_rows=page if drain_rounds is not None else None, stop=stop)).rows:
                 break
             rounds += 1
+        if stop is not None and stop.is_set():
+            return Outcome(False, n, None, 0, "unfinished", stamp_after)
 
-        await restamp_app(db, org, app_id)
+        async def waiting(tx: Tx) -> int:
+            return await _pending(tx, org, app_id)
+        if left := await db.run(waiting):          # a log that keeps gaining rows is never caught up with: the caller waits and looks again, nothing is stamped meanwhile
+            return Outcome(False, n, None, left, "pending", stamp_after)
+        pages, after, finished = await _restamp_pages(db, org, app_id, stamp_page, stamp_after, stamp_pages, stop)
+        if not finished:
+            return Outcome(False, n, None, 0, "unfinished", after)
 
         async def flip(tx: Tx) -> Outcome:
             await lock_apps(tx, org, {app_id}, org_wide=False)
@@ -206,7 +229,7 @@ async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max
             cursor, mode = await modes.state(tx, org, app_sk)
             if pending:      # the log explains a difference: nothing is decided, the caller drains and asks again
                 return Outcome(False, n, res, pending, "pending")
-            if cursor != "done":      # a demotion (or a restart) cleared the copy while we verified: it is not a copy any more
+            if cursor != "done" or (await modes.state(tx, org, 0))[0] != "done":      # a demotion (or a restart) cleared the connector's copy or the principals' while we verified: it is not a copy any more
                 return Outcome(False, n, res, 0, "cleared")
             if not res.ok:
                 if mode != "legacy":      # nothing waits and kg still differs: back to the walk for readers, and the next backfill starts over

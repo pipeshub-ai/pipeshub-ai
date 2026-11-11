@@ -26,6 +26,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 RETRY_S = 30.0
 PAGE = 1000                  # nodes per copy batch
+DRAIN_ROUNDS = 5             # log rounds (of at most PAGE rows) a connector spends before its stamping and verify, per pass: a log that keeps growing is waited for, not chased
+STAMP_PAGE = 2000            # records per stamping page
+STAMP_PAGES = 20             # stamping pages (2,000 records each) per connector and pass; the next pass goes on from where this one stopped
 BATCHES = 20                 # copy batches per connector and pass: a larger connector is copied over several passes, and the other orgs get their turn in between
 PROMOTED = METRICS_BACKEND.counter("pipeshub_kg_bootstrap_total", "Connectors the worker took to enforce, or left on the walk, by outcome", ["outcome"])
 
@@ -38,6 +41,7 @@ CANDIDATES = """/* pipeshub:kg.bootstrap_candidates */ SELECT a.id FROM graph.no
     ORDER BY a.id"""
 
 _NEVER = float("inf")
+_STAMP_AFTER: dict[tuple[str, str], str | None] = {}      # where a connector's unfinished stamping goes on (in this process; a restart stamps again from the start)
 
 
 async def candidates(db: KernelDB, org: str) -> list[str]:
@@ -52,14 +56,20 @@ async def bring_to_enforce(db: KernelDB, org: str, due: dict[tuple[str, str], fl
     on (promoted, or copied a further batch of), so a caller that loops on work looks again at once. A copy is bounded to ``BATCHES`` batches per call and ends at ``stop``: it keeps its cursor
     and the next call goes on. Never raises for one connector: it is logged and left on the walk."""
     progress = 0
-    for app in await candidates(db, org):
+    apps = await candidates(db, org)
+    if apps and not await bf.principals_copied(db, org):      # the org's principals are shared by its connectors: copied once per pass here, not once per connector
+        await bf.backfill_scope(db, org, None, page=PAGE, max_batches=BATCHES, stop=stop)
+        if not await bf.principals_copied(db, org):
+            return 1                                               # unfinished: the next pass goes on, and the other orgs get their turn
+    for app in apps:
         if stop is not None and stop.is_set():
             break
         if due.get((org, app), 0.0) > time.monotonic():
             continue
         due[(org, app)] = _NEVER                                  # until the outcome says otherwise
         try:
-            out = await bf.backfill(db, org, app, page=PAGE, max_batches=BATCHES, stop=stop)
+            out = await bf.backfill(db, org, app, page=PAGE, max_batches=BATCHES, drain_rounds=DRAIN_ROUNDS, stop=stop, stamp_pages=STAMP_PAGES, stamp_page=STAMP_PAGE, stamp_after=_STAMP_AFTER.get((org, app)))
+            _STAMP_AFTER[(org, app)] = out.stamp_after
             if not out.flipped:
                 if out.reason == "unfinished":
                     due[(org, app)] = 0.0                             # it resumes from its cursor: nothing to wait for
@@ -74,6 +84,8 @@ async def bring_to_enforce(db: KernelDB, org: str, due: dict[tuple[str, str], fl
                 continue
             await bf.promote(db, org, app)
             PROMOTED.inc("enforce")
+            due.pop((org, app), None)                              # a later demotion makes it a candidate again
+            _STAMP_AFTER.pop((org, app), None)
             progress += 1
         except bf.Refused as e:
             due[(org, app)] = time.monotonic() + RETRY_S

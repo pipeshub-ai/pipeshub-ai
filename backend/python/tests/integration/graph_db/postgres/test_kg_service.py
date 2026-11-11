@@ -27,13 +27,18 @@ def _defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-async def _world(p, org: str, extra: int = 0) -> None:
+async def _world(p, org: str, extra: int = 0, users: int = 0, apps: int = 0) -> None:
     """A connector, two users, three records; u1 may use the connector and holds a grant on r1 only. The writes are the provider's own."""
     with ctx(org):
         await p.batch_upsert_nodes([{"_key": org, "name": "Org"}], "organizations")
         await p.batch_upsert_nodes([{"_key": "drv", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
         await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u1@example.com"}, {"_key": "u2", "orgId": org, "email": "u2@example.com"}], "users")
         await p.batch_upsert_nodes([{"_key": f"r{i}", "recordName": f"R{i}", "connectorId": "drv", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for i in (1, 2, 3)], "records")
+        if users:
+            await p.batch_upsert_nodes([{"_key": f"extra-u{i}", "orgId": org, "email": f"e{i}@example.com"} for i in range(users)], "users")
+        for a in range(apps):
+            await p.batch_upsert_nodes([{"_key": f"drv{a}", "name": f"Drive {a}", "type": "DRIVE", "orgId": org}], "apps")
+            await p.batch_upsert_nodes([{"_key": f"app{a}-r", "recordName": "R", "connectorId": f"drv{a}", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"}], "records")
         if extra:
             await p.batch_upsert_nodes([{"_key": f"x{i}", "recordName": f"X{i}", "connectorId": "drv", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for i in range(extra)], "records")
         await p.batch_create_edges([edge("u1", "users", "drv", "apps"), edge("u2", "users", "drv", "apps")], "userAppRelation")
@@ -351,3 +356,123 @@ async def test_a_second_org_gets_its_turn_while_a_large_connector_is_still_being
         if await _mode(p, big) == "enforce":
             break
     assert await _mode(p, big) == "enforce"                                  # and the large one still promotes
+
+
+async def _enforced(p, org: str) -> int:
+    async def go(tx) -> int:
+        return await tx.fetchval("SELECT count(*) FROM kg.projection_state WHERE org_id = $1 AND app_sk <> 0 AND mode = 'enforce'", org)
+    with ctx(org):
+        return await p._q(go, None)
+
+
+async def test_a_log_that_keeps_gaining_rows_is_waited_for_not_chased_and_the_next_org_still_runs(pg_db, monkeypatch) -> None:
+    p, busy, quiet = prov(pg_db), new_org(), new_org()
+    await _world(p, busy)
+    await _world(p, quiet)
+    rounds = {"n": 0}
+    real_drain = bf.drain_org
+
+    async def endless(db, o, **k) -> object:
+        if o != busy:
+            return await real_drain(db, o, **k)
+        rounds["n"] += 1
+        with ctx(busy):
+            await p.batch_upsert_nodes([{"_key": "r1", "recordName": f"changed {rounds['n']}"}], "records")        # a writer is always ahead of the drain
+        return drainer.DrainStats(rows=1)
+    stamped = []
+    real_stamp = bf._restamp_pages
+
+    async def spy(db, o, *a, **k) -> object:
+        stamped.append(o)
+        return await real_stamp(db, o, *a, **k)
+    monkeypatch.setattr(bf, "drain_org", endless)
+    monkeypatch.setattr(bf, "_restamp_pages", spy)
+    out = await bf.backfill(pg_db, busy, "drv", drain_rounds=3)
+    assert not out.flipped and out.reason == "pending" and out.pending > 0
+    assert rounds["n"] == 3 and busy not in stamped                              # three rounds, then back: nothing was stamped meanwhile
+
+    async def orgs() -> list[str]:
+        return [busy, quiet]
+    w = KgWorker(pg_db, orgs, poll_s=0.2)
+    await w.run_once()
+    assert await _enforced(p, quiet) == 1                                         # the next org was served
+    assert await _enforced(p, busy) == 0 and 0 < w._due[(busy, "drv")] - time.monotonic() <= bootstrap.RETRY_S
+
+
+async def test_the_principals_are_copied_once_per_pass_however_many_connectors_an_org_has(pg_db, monkeypatch) -> None:
+    p, big, small = prov(pg_db), new_org(), new_org()
+    await _world(p, big, users=9, apps=2)                                         # three connectors and more principals than BATCHES pages hold
+    await _world(p, small)
+    monkeypatch.setattr(bootstrap, "PAGE", 4)
+    monkeypatch.setattr(bootstrap, "BATCHES", 2)
+    spent = {"n": 0}
+    real = bf.backfill_scope
+
+    async def count(db, o, app_id, **k) -> int:
+        n = await real(db, o, app_id, **k)
+        if app_id is None and o == big:
+            spent["n"] += n
+        return n
+    monkeypatch.setattr(bf, "backfill_scope", count)
+
+    async def orgs() -> list[str]:
+        return [big, small]
+    w = KgWorker(pg_db, orgs, poll_s=0.2)
+    await w.run_once()
+    assert spent["n"] <= bootstrap.BATCHES, spent                                  # not BATCHES per connector
+    assert await _enforced(p, small) == 1                                         # the second org reaches enforce in the first pass
+    assert await _enforced(p, big) == 0
+    for _ in range(60):
+        await w.run_once()
+        if await _enforced(p, big) == 3:
+            break
+    assert await _enforced(p, big) == 3
+
+
+async def test_a_connector_that_is_demoted_after_its_promotion_is_promoted_again(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await _world(p, org)
+    due: dict = {}
+    assert await bootstrap.bring_to_enforce(pg_db, org, due) == 1 and await _mode(p, org) == "enforce"
+    await bf.demote(pg_db, org, "drv")                                            # the take-back, a verify that differed, an operator
+    assert await _mode(p, org) == "legacy"
+    assert await bootstrap.bring_to_enforce(pg_db, org, due) >= 1
+    for _ in range(5):
+        if await _mode(p, org) == "enforce":
+            break
+        await bootstrap.bring_to_enforce(pg_db, org, due)
+    assert await _mode(p, org) == "enforce"
+
+
+async def test_a_restart_of_the_principal_copy_between_the_check_and_the_flip_refuses_the_flip(pg_db, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _world(p, org)
+    real = bf.verify_principals
+
+    async def restarts(tx, o) -> object:
+        res = await real(tx, o)
+        await modes.demote(tx, o, 0)                                              # a concurrent restart empties the principal copy
+        return res
+    with monkeypatch.context() as m:
+        m.setattr(bf, "verify_principals", restarts)
+        out = await bf.backfill(pg_db, org, "drv")
+    assert not out.flipped and out.reason == "cleared"
+    assert await _mode(p, org) != "enforce"
+
+
+async def test_the_stamping_of_a_large_connector_goes_on_across_passes_and_the_connector_still_promotes(pg_db, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _world(p, org, extra=12)
+    monkeypatch.setattr(bootstrap, "STAMP_PAGE", 2)
+    monkeypatch.setattr(bootstrap, "STAMP_PAGES", 1)
+    seen: list[str | None] = []
+    due: dict = {}
+    for _ in range(40):
+        await bootstrap.bring_to_enforce(pg_db, org, due)
+        seen.append(bootstrap._STAMP_AFTER.get((org, "drv")))
+        if await _mode(p, org) == "enforce":
+            break
+    assert await _mode(p, org) == "enforce"
+    moved = [c for c in seen if c]
+    assert len(moved) >= 3 and len(set(moved)) == len(moved)                       # one page a pass, each from where the last stopped
+    assert (org, "drv") not in bootstrap._STAMP_AFTER
