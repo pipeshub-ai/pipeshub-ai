@@ -108,7 +108,7 @@ def test_shared_children_are_queued_once_per_layer() -> None:
     done = subprocess.run(
         [sys.executable, "-c", script], capture_output=True, text=True, timeout=60,
         env={"PYTHONPATH": ":".join(sys.path)},
-        preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_AS, (cap, cap)),  # noqa: PLW1509
+        preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_AS, (cap, cap)),
     )
     assert done.returncode == 0, done.stderr[-300:]
     assert done.stdout.strip() == "60"  # g0_1, the 58 nodes of the layers below it, and the record
