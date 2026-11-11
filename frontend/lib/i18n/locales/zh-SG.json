@@ -3440,6 +3440,49 @@
         "cancel": "取消",
         "continueTeam": "继续使用团队连接器",
         "goToPersonal": "设置个人连接器"
+      },
+      "access": {
+        "title": "访问",
+        "loading": "正在加载访问详情…",
+        "loadError": "无法加载访问详情。",
+        "retry": "重试",
+        "reach": "{{connector}} 中的更改会在{{interval}}内同步到 PipesHub。",
+        "reachUnknown": "{{connector}} 中的更改会在下次同步时到达 PipesHub。",
+        "syncNow": "立即同步权限",
+        "span": {
+          "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
+          "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
+          "days": "{{count, number(style: unit; unit: day; unitDisplay: long)}}"
+        },
+        "refresh": {
+          "label": "权限",
+          "succeeded": "上次刷新：{{when}}。",
+          "failed": "上次权限刷新失败，因此来源中的最新更改可能尚未生效。请选择“立即同步权限”重试。",
+          "never": "权限尚未刷新。在首次同步完成之前，此连接器的内容将保持隐藏。",
+          "running": "正在刷新权限。",
+          "incomplete": "上一次权限刷新没有运行到结束。"
+        },
+        "pending": {
+          "label": "等待生效",
+          "none": "没有等待中的项目。",
+          "some_other": "{{count}} 个文件夹正在更新。更新完成前，所有人都看不到它们，通常需要几分钟。",
+          "overflow": "某项更改涉及整个连接器，因此需要完整重建其权限索引。在此之前，搜索会逐条检查结果，因此不会因此隐藏任何内容。",
+          "unknown": "未知：无法读取等待更新的文件夹列表。请参阅“需要关注”。"
+        },
+        "attention": {
+          "label": "需要处理（{{count}}）",
+          "none": "没有需要处理的事项。",
+          "warning": "{{container}} 中有 {{items}} 个项目被隐藏。同步账户无法读取此容器的权限。",
+          "fix": "解决办法：在 {{vendor}} 中为同步账户授予 {{permission}} 权限，然后选择“立即同步权限”。",
+          "showAll": "再显示 {{count}} 项",
+          "warningNoContainer": "同步账户无法读取部分项目的权限，因此这些项目被隐藏。",
+          "rebuild": "此连接器的权限索引需要完整重建。在此之前，搜索会逐条检查结果，因此不会因此隐藏任何内容。",
+          "unfinished": "某项权限更改没有顺利完成。请让运行 PipesHub 的人员检查此连接器的权限索引。",
+          "stale": "部分项目无法通过更快的搜索进行检查，会改由经典搜索查找。",
+          "sweep": "此连接器的权限更新持续失败。请让运行 PipesHub 的人员检查其日志。",
+          "other": "此连接器的权限需要有人查看。",
+          "unreadable": "无法读取等待更新的文件夹列表。请让运行 PipesHub 的人员重建此连接器的权限索引。在此期间，搜索会逐条检查结果。"
+        }
       }
     },
     "mcpServers": {

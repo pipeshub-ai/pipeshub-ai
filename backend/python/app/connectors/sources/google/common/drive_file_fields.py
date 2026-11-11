@@ -42,7 +42,7 @@ DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS = (
     "headRevisionId, version, shared, owners, lastModifyingUser, md5Checksum, sha1Checksum, "
     "sha256Checksum, parents, "
     f"driveId, sharedWithMeTime, {_DRIVE_FILE_ACCESS_FIELDS}, inheritedPermissionsDisabled, "
-    "capabilities/canListChildren"
+    "capabilities/canListChildren, capabilities/canShare"
 )
 
 DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS = (

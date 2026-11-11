@@ -1,8 +1,8 @@
 """The projection worker: projects the change log and publishes the gauges. Woken by NOTIFY, with a safety poll.
 
 ``pipeshub_kg_changes`` is sent at commit by a write unit that changed the graph (flush.wake, coalesced); it only wakes
-the worker, which reads the log itself, so a lost notification costs at most ``poll_s``. The projection default is off (``PG_KG_PROJECT``): nothing starts a worker
-unless it is set to 1, see :func:`enabled`.
+the worker, which reads the log itself, so a lost notification costs at most ``poll_s``. The projection default is on (``PG_KG_PROJECT=0`` is the off switch): the connectors service starts the worker
+(:func:`enabled`), which also takes each connector to ``enforce`` (:mod:`bootstrap`).
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 from app.core.org_context import bind, spawn_detached
-from app.services.graph_db.postgres.kg import legacy, restamp
+from app.services.graph_db.postgres.kg import bootstrap, flush, legacy, restamp
 from app.services.graph_db.postgres.kg.drainer import PAGE, _ctx, drain_or_retry, lag
 from app.services.pg_runtime import PgListener
 from app.telemetry.backend import METRICS_BACKEND
@@ -27,12 +27,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 CHANNELS = ("pipeshub_kg_changes", "pipeshub_kg_restamp")
 RECHECK_S = 0.3
+STOP_TIMEOUT_S = 10.0                              # how long stop() lets the pass in flight end before it cancels it
 MAX_DOUBLINGS = 8                                  # RECHECK_S * 2**8 is past any sensible poll interval
 LOOP_FAILED = METRICS_BACKEND.counter("pipeshub_kg_worker_loop_failed_total", "Iterations of the projection worker's loop that raised and were continued", ["where"])
 
 
 def enabled() -> bool:
-    return os.environ.get("PG_KG_PROJECT") == "1"
+    return flush.mode() != "off"
 
 
 class KgWorker:
@@ -46,6 +47,7 @@ class KgWorker:
         self._listeners: list[PgListener] = []
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
+        self._due: dict[tuple[str, str], float] = {}        # when a connector may next be taken to enforce (bootstrap)
         self.passes = 0                                    # loop iterations done (tests wait on it)
 
     def _on_notify(self, _payload: str) -> None:
@@ -67,6 +69,12 @@ class KgWorker:
                 logger.exception("kg restamp jobs failed for an org; retrying")
             if self._stop.is_set():
                 break                                      # shutting down: no new unit for the gauges
+            try:
+                rows += await bootstrap.bring_to_enforce(self._db, org, self._due, self._stop)
+            except Exception:
+                logger.exception("kg bootstrap failed for an org; retrying")
+            if self._stop.is_set():
+                break
             try:
                 with bind(_ctx(org)):
                     async with self._db.uow() as tx:
@@ -136,4 +144,29 @@ class KgWorker:
         for ln in self._listeners:
             await ln.stop()
         if self._task is not None:
-            await self._task
+            done, _ = await asyncio.wait({self._task}, timeout=STOP_TIMEOUT_S)      # a batch or a verify in flight ends by itself; past the limit it is cut
+            if not done:
+                logger.warning("kg worker did not stop within %.0f s: cancelling its pass in flight (what it had not committed is redone at the next start)", STOP_TIMEOUT_S)
+                self._task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await self._task
+
+
+def start_for(graph_provider: object, logger: logging.Logger) -> KgWorker | None:
+    """The worker of the connectors service: started when the graph is PostgreSQL and the projection is on, else None (Neo4j and ArangoDB never reach this). It serves every org of the
+    graph. Two processes (replicas) may each start one: a page of an org's log is taken under an advisory lock (``drainer.drain``), restamp jobs are claimed, and a promotion verifies under the
+    connector's lock, so they never apply a change twice; the second only waits its turn."""
+    from app.core.org_context import system
+    from app.services.graph_db.postgres.provider import PostgresGraphProvider
+    from app.services.pg_runtime import listen_dsn
+    if not isinstance(graph_provider, PostgresGraphProvider) or not enabled():
+        return None
+
+    async def orgs() -> list[str]:
+        with system("kg_worker"):
+            docs = await graph_provider.get_all_orgs(active=False)
+        return [str(o.get("_key") or o["id"]) for o in docs if o.get("_key") or o.get("id")]
+    worker = KgWorker(graph_provider._db, orgs, dsn=listen_dsn())
+    worker.start()
+    logger.info("kg worker started (projection of the typed graph)")
+    return worker

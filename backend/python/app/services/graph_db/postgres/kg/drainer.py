@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from app.core.org_context import OrgContext, bind
+from app.services.graph_db.postgres.kg.locks import LOCK_CLASS
 from app.services.graph_db.postgres.kg.model import CODE_EPOCH, COLL_CODE
 from app.services.graph_db.postgres.kg.project import decode, project
 from app.services.graph_db.postgres.kg.writers import KgWriter
@@ -56,6 +57,10 @@ async def drain(db: KernelDB, org: str, *, limit: int = 25000) -> int:
     flush), up to ``limit`` node keys (the first row is always taken). Runs as the connectors service in an org unit; returns the number of keys taken.
     A ``RuntimeError`` from the projection leaves the rows where they are and propagates: the caller retries later."""
     async def go(tx: Tx) -> int:
+        # One page of an org at a time across every process that drains (a second worker, a backfill): the lock is held to the end of the unit, so the page is projected and acknowledged
+        # by one of them, and a caller that does not get it takes nothing (its rows are still in the log and it looks again).
+        if not await tx.fetchval("/* pipeshub:kg.drain_lock */ SELECT pg_try_advisory_xact_lock($1::int, hashtext($2))", LOCK_CLASS, f"{org}|drain"):
+            return 0
         rows = await tx.fetch(r"""/* pipeshub:kg.drain_read */ SELECT id, ends FROM (
             SELECT id, ends, sum(cardinality(ends)) OVER (ORDER BY txid, id) AS run FROM (
               SELECT id, txid, ends FROM kg.graph_changes WHERE org_id = $1 AND txid <> pg_current_xact_id() AND NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258) ORDER BY txid, id LIMIT 1000) q) r

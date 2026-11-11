@@ -27,6 +27,7 @@ import type {
 import { IndexingStatsPanel } from '@/app/components/indexing-stats/indexing-stats-panel';
 import { CodeGraphStatus } from './code-graph-status';
 import { LastRunSummary } from './last-run-summary';
+import { PermissionFreshness } from './permission-freshness';
 import { ActionItemsCallout } from './action-items-callout';
 
 // ========================================
@@ -348,6 +349,12 @@ export function OverviewTab({
         <CodeGraphStatus connectorId={instance._key} />
       )}
       <LastRunSummary instance={instance} />
+
+      <PermissionFreshness
+        instance={instance}
+        onSyncNow={instance.isActive && !isSyncRunning(instance.status) ? handleOverviewResync : undefined}
+        syncBusy={isHeaderSyncBusy}
+      />
 
       {/* Shared stats panel */}
       <IndexingStatsPanel
