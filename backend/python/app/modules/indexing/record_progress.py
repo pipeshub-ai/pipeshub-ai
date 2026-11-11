@@ -279,6 +279,17 @@ class RecordProgress:
         self.finished = True
         self._arm()
 
+    def unfinish(self) -> None:
+        """Another embed section follows a ``finish()``: the stall timer counts again, from now.
+
+        The cap is what ``finish()`` left it (every gate pause included), so nothing is re-read from the budget.
+        """
+        if not self.planned or not self.finished:
+            return
+        self.finished = False
+        self._last_beat = self._clock()
+        self._arm()
+
     def pause(self) -> None:
         """The embedding service is failing and the caller is waiting to retry: do not call that a stall."""
         if not self.planned:

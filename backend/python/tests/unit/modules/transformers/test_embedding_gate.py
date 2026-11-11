@@ -1025,3 +1025,50 @@ class TestReconciliationEmbedIsPlanned:
         finally:
             end_progress()
         assert not budget.expired()
+
+
+class TestReconciliationStallTimerRunsOnlyWhileEmbedding:
+    @staticmethod
+    async def run(*, floor: float, between: float, stalled: float) -> asyncio.Timeout:
+        """Summary embed, a non-embed stretch of ``between`` s, then a changed-blocks embed that hangs ``stalled`` s."""
+        store, _ = _reconciling_store()
+        store._build_record_summary_document = lambda *_a: Document(page_content="record summary", metadata={})
+        real_delete = store.delete_blocks_by_ids
+
+        async def embed(docs: Any, *_args: Any) -> None:
+            if docs[0].page_content != "record summary":
+                await asyncio.sleep(stalled)
+
+        async def slow_delete(*args: Any, **kwargs: Any) -> Any:
+            await asyncio.sleep(between)
+            return await real_delete(*args, **kwargs)
+
+        store._process_document_chunks = embed
+        store.delete_blocks_by_ids = slow_delete
+        progress = RecordProgress(
+            floor_seconds=floor, ceiling_seconds=floor, record_ceiling_seconds=1e9, history=StallHistory(),
+        )
+        container = BlocksContainer(
+            blocks=[_text_block("b-new", "a long enough sentence to embed as text", 0)], block_groups=[]
+        )
+        record = MagicMock(semantic_metadata={"summary": "s"}, record_name="n", external_record_id="p")
+        begin_progress(progress)
+        try:
+            async with asyncio.timeout(5.0) as budget:
+                progress.attach(budget)
+                await store.index_documents(
+                    container, "org-1", "rec-1", "vr-1", record=record, block_ids_to_delete={"b-gone"},
+                    is_reconciliation=True,
+                )
+        except TimeoutError:
+            pass
+        finally:
+            end_progress()
+        return budget
+
+    async def test_a_long_stretch_that_is_not_embedding_is_not_a_stall(self) -> None:
+        # The reindex delete between the summary and the blocks runs 0.4 s against a 0.15 s stall floor.
+        assert not (await self.run(floor=0.15, between=0.4, stalled=0.0)).expired()
+
+    async def test_an_embed_that_stops_beating_is_still_a_stall(self) -> None:
+        assert (await self.run(floor=0.15, between=0.0, stalled=3.0)).expired()

@@ -2601,11 +2601,18 @@ class VectorStore(Transformer):
         tokens = await self._bind_membership(virtual_record_id, record)
         progress = current_progress()
 
-        def plan_once() -> None:
+        async def embed_section(docs: List[Document]) -> None:
             # Every embed of a reconciliation is planned, so a wait at the embedding server pauses the
-            # budget. Once: a second plan would re-read a budget the first pause has already moved.
-            if progress is not None and not progress.planned:
-                progress.plan(0, 0)
+            # budget. Planned once (a second plan would restart the attempt's clock) and timed only while
+            # embedding: the splitting and deletes between sections have no batches to beat.
+            if progress is not None:
+                if progress.planned:
+                    progress.unfinish()
+                else:
+                    progress.plan(0, 0)
+            await self._process_document_chunks(docs, record_id, collection_name)
+            if progress is not None:
+                progress.finish()
 
         try:
             # On reconciliation: always refresh the record summary first
@@ -2622,8 +2629,7 @@ class VectorStore(Transformer):
                             record_id, virtual_record_id, org_id, semantic_metadata
                         )
                         if summary_doc:
-                            plan_once()
-                            await self._process_document_chunks([summary_doc], record_id, collection_name)
+                            await embed_section([summary_doc])
 
                 # The residue spans the whole file, so any change replaces it. The code documents below
                 # rebuild it; with no code block or class re-indexed (only deletions) it is rebuilt here.
@@ -2636,8 +2642,7 @@ class VectorStore(Transformer):
                         residue = await asyncio.to_thread(code_residue_documents, code_members, virtual_record_id,
                                                           org_id, _record_context_line(record))
                         if residue:
-                            plan_once()
-                            await self._process_document_chunks(residue, record_id, collection_name)
+                            await embed_section(residue)
 
             if not blocks and not block_groups:
                 if block_ids_to_delete:
@@ -2988,8 +2993,7 @@ class VectorStore(Transformer):
                 langchain_docs = [d for d in documents_to_embed if isinstance(d, Document)]
                 image_chunks = [d for d in documents_to_embed if not isinstance(d, Document)]
                 if langchain_docs:
-                    plan_once()
-                    await self._process_document_chunks(langchain_docs, record_id, collection_name)
+                    await embed_section(langchain_docs)
                 if image_chunks:
                     image_base64s = [c.get("image_uri") for c in image_chunks]
                     points = await self._process_image_embeddings(
