@@ -54725,6 +54725,7 @@ paths:
           description: Connector instance ID (`_key` of the instance).
           schema:
             type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
       responses:
         '200':
           description: The connector's permission freshness
@@ -54827,6 +54828,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: The connector instance ID does not match the pattern (`VALIDATION_ERROR`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: The OAuth client's token lacks the `connector:read` scope.
           content:
@@ -54843,6 +54850,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The connector service could not be reached. Safe to retry.
           content:
             application/json:
               schema:
