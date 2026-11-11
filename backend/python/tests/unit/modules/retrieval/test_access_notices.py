@@ -229,3 +229,31 @@ async def test_an_unreadable_gate_gives_no_notices_and_does_not_fail_the_search(
         result = await service.search_with_filters(queries=["q"], user_id="u1", org_id="o1", time_range={"start": 1, "end": 2})
     assert result["status"] == Status.ACCESSIBLE_RECORDS_NOT_FOUND.value
     assert "accessNotices" not in result
+
+
+async def test_a_strict_scope_with_nothing_selected_reaches_no_connector_and_says_nothing_about_any(service, mock_graph_provider) -> None:
+    # a project chat with nothing selected searches no records, so no connector may be reported as syncing
+    result, read = await _record_id_search(service, mock_graph_provider, {"c1"}, [SYNCING], filters={"strictScope": True, "apps": []},
+                                           time_range={"start": 1, "end": 2})
+    mock_graph_provider.get_knowledge_hub_access_v3.assert_not_awaited()
+    read.assert_not_awaited()
+    assert "accessNotices" not in result
+
+
+async def test_a_strict_scope_that_names_a_connector_still_reports_it(service, mock_graph_provider) -> None:
+    result, read = await _record_id_search(service, mock_graph_provider, {"c1", "c2"}, [SYNCING], filters={"strictScope": True, "apps": ["c1"]},
+                                           time_range={"start": 1, "end": 2})
+    assert read.await_args.args[1] == ["c1"]
+    assert result["accessNotices"][0]["connectorId"] == "c1"
+
+
+async def test_an_entity_filter_that_matches_nothing_still_carries_the_notices_with_its_own_message_and_status(service) -> None:
+    containers = MagicMock(is_empty=False, app_ids=frozenset({"c1"}))
+    with patch.object(service, "_resolve_search_scope", AsyncMock(return_value=(containers, {}, {"_key": "k"}))), \
+            patch.object(service, "_entity_filter_virtual_ids", AsyncMock(return_value=([], None))), \
+            patch.object(service, "_notice_apps", AsyncMock(return_value=[SYNCING])):
+        result = await service.search_with_filters(
+            queries=["q"], user_id="u1", org_id="o1", filter_groups={"entityFilters": {"x": 1}}, virtual_record_ids_from_tool=["v1"])
+    assert result["status"] == Status.EMPTY_RESPONSE.value
+    assert result["message"] == mod.ENTITY_FILTER_NO_MATCH_MESSAGE
+    assert result["accessNotices"] == [{"code": "connector_syncing", "connectorId": "c1", "connectorName": "Jira", "firstSync": True}]

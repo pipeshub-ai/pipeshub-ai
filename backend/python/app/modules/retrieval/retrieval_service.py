@@ -80,6 +80,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
     SELECTION_APPS_FILTER_KEY,
     SELECTION_FILTER_KEYS,
+    STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
     IGraphDBProvider,
     _unsupported_container_filters,
@@ -870,8 +871,8 @@ class RetrievalService:
                 await self._notice_app_ids(containers, user, org_id, filters), user_id, org_id
             )
 
-            def nothing_found(message: str) -> dict[str, Any]:
-                response = self._create_empty_response(message, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+            def nothing_found(message: str, status: Status = Status.ACCESSIBLE_RECORDS_NOT_FOUND) -> dict[str, Any]:
+                response = self._create_empty_response(message, status)
                 if notices := access_status.notices(notice_apps, empty=True):
                     degraded_notice.note_access(notices)
                     response["accessNotices"] = notices
@@ -906,7 +907,7 @@ class RetrievalService:
                     entity_filtered = True
                     virtual_record_ids_from_tool = _narrow_virtual_ids(virtual_record_ids_from_tool, entity_vids)
                     if not virtual_record_ids_from_tool:
-                        return self._create_empty_response(ENTITY_FILTER_NO_MATCH_MESSAGE, Status.EMPTY_RESPONSE)
+                        return nothing_found(ENTITY_FILTER_NO_MATCH_MESSAGE, Status.EMPTY_RESPONSE)
 
             plan = _QueryPlan()
             plan.access_apps = notice_apps
@@ -2583,6 +2584,9 @@ class RetrievalService:
     ) -> frozenset[str]:
         """The connectors a notice may be about: those the containers reach, or, on the record-id path, those this person is gated into
         (the one connector gate), narrowed to the connectors the request is scoped to. Never a connector outside their reach."""
+        if filters and filters.get(STRICT_SCOPE_FILTER_KEY) and requested_scope_ids(filters) is None:
+            # A project chat with nothing selected searches nothing, so no connector was reached: say nothing about any.
+            return frozenset()
         if containers is not None:
             return frozenset(containers.app_ids)
         user_key = (user.get("_key") or user.get("id")) if user else None
