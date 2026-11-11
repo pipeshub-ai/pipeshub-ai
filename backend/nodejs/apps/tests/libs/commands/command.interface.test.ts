@@ -1,7 +1,12 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import http from 'node:http'
+import { AddressInfo } from 'node:net'
 import { BaseCommand, ICommand } from '../../../src/libs/commands/command.interface'
+import { ConnectorServiceCommand } from '../../../src/libs/commands/connector_service/connector.service.command'
+import { runWithRequestContext } from '../../../src/libs/context/request-context'
+import { HttpMethod } from '../../../src/libs/enums/http-methods.enum'
 
 // Concrete implementation for testing the abstract BaseCommand
 class TestCommand extends BaseCommand<string> {
@@ -36,7 +41,7 @@ class TestCommand extends BaseCommand<string> {
   }
 
   public testFetchWithRetry<T>(
-    fn: () => Promise<T>,
+    fn: (attempt: number) => Promise<T>,
     retries?: number,
     backoff?: number,
   ): Promise<T> {
@@ -344,6 +349,55 @@ describe('command.interface', () => {
 
       const result = await cmd.testFetchWithRetry(fn, 3, 1)
       expect(result).to.equal('last-chance')
+    })
+  })
+
+  describe('fetchWithRetry attempt numbers', () => {
+    it('passes each try its 1-based attempt number', async () => {
+      const cmd = new TestCommand('http://example.com')
+      const seen: number[] = []
+      const fn = async (attempt: number) => {
+        seen.push(attempt)
+        if (attempt < 3) throw new Error('again')
+        return 'ok'
+      }
+      expect(await cmd.testFetchWithRetry(fn, 3, 1)).to.equal('ok')
+      expect(seen).to.deep.equal([1, 2, 3])
+    })
+  })
+
+  // Callers pass the inbound req.headers to a command: the service must get the sanitised root, not the client's id.
+  describe('the request id a command sends', () => {
+    let server: http.Server
+    let origin: string
+    let received: Array<string | undefined>
+
+    before(async () => {
+      server = http.createServer((req, res) => {
+        received.push(req.headers['x-request-id'] as string | undefined)
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end('{}')
+      })
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+      origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    })
+
+    after(async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    })
+
+    it("is the context's root even when the caller's headers carry the client's raw id", async () => {
+      received = []
+      await runWithRequestContext({ rootId: 'rqbad' }, async () => {
+        for (const name of ['x-request-id', 'X-Request-ID']) {
+          await new ConnectorServiceCommand({
+            uri: `${origin}/api/v1/stats`,
+            method: HttpMethod.GET,
+            headers: { [name]: 'rq bad!', authorization: 'Bearer t' },
+          }).execute()
+        }
+      })
+      expect(received).to.deep.equal(['rqbad', 'rqbad'])
     })
   })
 

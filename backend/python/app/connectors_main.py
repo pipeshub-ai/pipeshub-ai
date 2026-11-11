@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.edition_config import (
@@ -23,7 +23,7 @@ from app.edition_config import (
 from app.core.envelope import configure_from_config as configure_envelope
 from app.core.org_context import spawn_detached, for_org, system
 from app.core.org_jobs import for_each_org
-from app.api.middlewares.request_context import RequestContextMiddleware
+from app.api.middlewares.request_log import install_request_logging, mark_request_failure
 from app.modules.demo_data.router import demo_data_router
 from app.utils.logger import install_log_redaction
 from app.utils.request_context import set_service_suffix
@@ -100,7 +100,6 @@ from app.telemetry.modules.connector_metrics import set_connector_active
 from app.telemetry.setup import setup_telemetry
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_messages import SOMETHING_WENT_WRONG
 
 container = ConnectorAppContainer.init("connector_service")
 
@@ -1215,6 +1214,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         name="storage_release",
     )
 
+    # Sweeps what indexing still writes for a connector after its delete.
+    from app.connectors.services.late_write_sweep import run_late_write_sweep_loop
+    app.state.late_write_sweep_task = spawn_detached(
+        run_late_write_sweep_loop(app_container, graph_provider), name="late_write_sweep",
+    )
+
     # Here, not in indexing: it publishes re-index events on this service's producer.
     from app.connectors.services.stored_content_heal import run_stored_content_heal_loop
     app.state.stored_content_heal_task = spawn_detached(
@@ -1246,7 +1251,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # sweep cannot start a build into the unwind.
     for task_name in (
         "connector_metrics_task", "trash_purge_task", "storage_release_task",
-        "stored_content_heal_task", "code_edge_build_reconcile_task",
+        "late_write_sweep_task", "stored_content_heal_task", "code_edge_build_reconcile_task",
         "flat_storage_migration_task",
     ):
         task = getattr(app.state, task_name, None)
@@ -1301,62 +1306,22 @@ EXCLUDE_PATHS = [
 async def authenticate_requests(request: Request, call_next) -> JSONResponse:
     """
     Authentication middleware that authenticates all requests by default,
-    except for paths explicitly excluded (webhooks, health checks, OAuth callbacks).
+    except for paths explicitly excluded (webhooks, health checks).
     """
-    logger = app.container.logger()  # type: ignore
-    request_path = request.url.path
-    logger.debug(f"Middleware processing request: {request_path}")
-
-    # Check if path should be excluded from authentication
-    should_exclude = False
-
-    # Check exact path matches for webhooks and health
-    if request_path in EXCLUDE_PATHS:
-        should_exclude = True
-        logger.debug(f"Excluding exact path match: {request_path}")
-
-    # Check for OAuth callback paths (pattern-based exclusion)
-    # if "/oauth/callback" in request_path:
-    #     should_exclude = True
-    #     logger.debug(f"Excluding OAuth callback path: {request_path}")
-
-
-
-    # If path should be excluded, skip authentication
-    if should_exclude:
-        logger.debug(f"Skipping authentication for excluded path: {request_path}")
+    if request.url.path in EXCLUDE_PATHS:
         return await call_next(request)
 
-    # All other paths require authentication
     try:
-        logger.debug(f"Applying authentication for path: {request_path}")
         authenticated_request = await authMiddleware(request)
-
     except HTTPException as exc:
-        # Handle authentication errors
-        logger.warning(f"Authentication failed for {request_path}: {exc.detail}")
+        mark_request_failure(request, exc)
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-    except Exception as e:
-        # Handle unexpected errors
-        logger.error(f"Unexpected error during authentication for {request_path}: {str(e)}", exc_info=True)
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": "Internal server error"},
-        )
-
-    try:
-        return await call_next(authenticated_request)
-    except Exception:
-        # call_next re-raises the route's exception; log it once here, inside the request context.
-        logger.exception("Unhandled exception while processing %s %s", request.method, request_path)
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": "Internal server error"},
-        )
+    # A route's exception is logged and answered by http.request.end (request_log).
+    return await call_next(authenticated_request)
 
 
-# Trace context — outermost, before auth.
-app.add_middleware(RequestContextMiddleware)
+# Trace context and the request line — outside auth, so both see every request.
+install_request_logging(app)
 # Telemetry: outermost metrics middleware; pusher started/stopped in lifespan.
 telemetry = setup_telemetry(app, service_name="connector_service")
 
@@ -1710,22 +1675,6 @@ if knowledge_hub_service_factory is not None:
     app.dependency_overrides[get_knowledge_hub_service] = knowledge_hub_service_factory
 
 
-
-# Global error handler
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger = app.container.logger()  # type: ignore
-    logger.error("Global error: %s", str(exc), exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={
-            "status": "error",
-            "message": SOMETHING_WENT_WRONG,
-            "path": request.url.path,
-        },
-    )
-
-
 def run(host: str = "0.0.0.0", port: int = 8088, workers: int | None = None, reload: bool = True) -> None:
     """Run the application.
 
@@ -1753,6 +1702,7 @@ def run(host: str = "0.0.0.0", port: int = 8088, workers: int | None = None, rel
         host=host,
         port=port,
         log_level="info",
+        access_log=False,
         reload=reload,
         workers=workers,
         timeout_worker_healthcheck=uvicorn_worker_healthcheck_timeout(),

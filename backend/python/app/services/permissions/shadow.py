@@ -9,7 +9,7 @@ every record the filtered search returned that the real search did not return. T
 * ``over_admit``: the filtered search returned it and the post-check refuses it. The filter must only narrow, so each one is an alert
   (a bug in a stamp, or a stamp the structure has outrun: a container-stamped record under a scope that is being re-stamped is still admitted
   through its group until the stamp is rewritten, and the post-check is what catches it);
-* ``recall_loss``: the post-check admits it and the filtered search did not return it (the real path found it; the filter hides it). Expected for a group without a usable stamp, and for a known narrowing of the filter: a union is narrower than "any path scope readable", because the excluded scopes include the unreadable-restricted and the pending ones.
+* ``recall_loss``: the post-check admits it and the filtered search did not return it (the real path found it; the filter hides it). Expected for a connector that is not served (`currency.app_is_served`) or a group without a usable stamp, and for a known narrowing of the filter: a union is narrower than "any path scope readable", because the excluded scopes include the unreadable-restricted and the pending ones.
 
 Nothing the comparator computes is ever returned to a user. Cost is bounded: ``ACL_SHADOW_SAMPLE`` (default 0.1, validated at start-up by `wiring.shadow_settings_from_env`) of searches, at most
 ``max_inflight`` comparisons at a time (the rest are counted as skipped), a timeout on each step, and no comparison at all unless
@@ -28,9 +28,10 @@ from typing import TYPE_CHECKING, Any
 from app.core.org_context import for_org, spawn_detached
 from app.services.vector_db.filters import ScopeFilter, ScopeFilterTooLarge
 
+from .currency import StampCurrency
 from .metrics import SHADOW_COMPARED, SHADOW_SECONDS, SHADOW_SKIPPED
 from .mode import AclFilterMode, scopes_or_legacy
-from .scope_fields import SCOPE_FIELDS_VERSION, current_scope_generation
+from .serving import stamp_filter
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Collection
@@ -40,9 +41,6 @@ if TYPE_CHECKING:
     from .service import ViewerScopeService
 
 _logger = logging.getLogger(__name__)
-#: The scope back-fill checkpoint and the unsafe mark of an app document (see `vector_db.scope_backfill` and `structure_generation`).
-_BACKFILL_STATE, _BACKFILL_VERSION, _BACKFILL_GENERATION, _UNSAFE = "scopeBackfillState", "scopeBackfillVersion", "scopeBackfillGeneration", "scopeProjectionUnsafe"
-_DONE = "done"
 
 
 class ShadowIncomplete(Exception):
@@ -62,7 +60,7 @@ class ShadowComparator:
         log_per_minute: int = 30,
         rng: random.Random | None = None,
     ) -> None:
-        self._scopes, self._graph = scopes, graph_provider
+        self._scopes, self._graph, self._currency = scopes, graph_provider, StampCurrency(graph_provider)
         self._rate = sample_rate
         self._max_inflight, self._timeout, self._max_apps = max_inflight, step_timeout_seconds, max_apps
         self._log_per_minute = log_per_minute
@@ -100,20 +98,6 @@ class ShadowComparator:
         if self._inflight:
             await asyncio.gather(*self._inflight, return_exceptions=True)
 
-    async def _current_connectors(self, apps: Collection[str]) -> set[str]:
-        """The apps whose stamps may be used: the back-fill finished them at the current field version and scope generation, and
-        nothing marked them unsafe. (A structural change after the pass is not tracked yet: the shadow exists to show what that costs.)"""
-        generation = current_scope_generation()
-        if generation < 0 or len(apps) > self._max_apps:
-            return set()
-        try:  # one query for all of them: up to max_apps reads per comparison, several comparisons at a time, would take the graph's connection pool from searches
-            found = await self._graph.get_nodes_by_field_in("apps", "_key", sorted(apps), raise_on_error=True)
-        except Exception:
-            return set()
-        docs = {str(d.get("_key") or d.get("id")): d for d in found if isinstance(d, dict)}
-        return {a for a, d in docs.items() if a in apps and d.get(_BACKFILL_STATE) == _DONE
-                and d.get(_BACKFILL_VERSION) == SCOPE_FIELDS_VERSION and d.get(_BACKFILL_GENERATION) == generation and not d.get(_UNSAFE)}
-
     async def compare(
         self, org_id: str, user_key: str, returned: set[str], admitted: set[str],
         run_scoped: Callable[[ScopeFilter], Awaitable[list[Any]]], check: Callable[[set[str]], Awaitable[Collection[str]]],
@@ -127,11 +111,14 @@ class ShadowComparator:
                 if scopes is None:
                     SHADOW_SKIPPED.inc("scopes_unavailable")
                     return {}
-                current = await asyncio.wait_for(self._current_connectors(scopes.gated_apps), self._timeout)
-                if not current:
+                if len(scopes.gated_apps) > self._max_apps:      # one batched read, but a filter over this many connectors is not what serving sends
                     SHADOW_SKIPPED.inc("no_current_connector")
                     return {}
-                flt = ScopeFilter.of(scopes, current, version=SCOPE_FIELDS_VERSION, generation=current_scope_generation())
+                served = await asyncio.wait_for(self._currency.served(scopes.gated_apps), self._timeout)
+                if not served:
+                    SHADOW_SKIPPED.inc("no_current_connector")
+                    return {}
+                flt = stamp_filter(scopes, served, defer=False)      # only what the stamps of the served connectors admit; the rest is left out, as recall loss
                 found = await asyncio.wait_for(run_scoped(flt), self._timeout)
                 scoped = {str(vrid) for r in found if isinstance(r, dict) and (vrid := (r.get("metadata") or {}).get("virtualRecordId")) is not None}
                 unjudged = scoped - returned            # never post-checked by the real search: ask it now

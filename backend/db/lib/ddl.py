@@ -57,25 +57,27 @@ def ensure_index(conn: Connection, qname: str, ddl: str) -> None:
         raise RuntimeError(f"index {qname} is not valid after the build")
 
 
-def ensure_partitioned_index(conn: Connection, table: str, name: str, cols: str, *, unique: bool = False, where: str = "", blocking: bool = False) -> None:
+def ensure_partitioned_index(conn: Connection, table: str, name: str, cols: str, *, unique: bool = False, where: str = "", blocking: bool = False, using: str = "") -> None:
     """Index a partitioned table without blocking writers: ``ON ONLY`` the parent, a concurrent build
     per leaf, then ATTACH. Handles nested trees (an intermediate partitioned table gets its own
     ``ON ONLY`` index). ``where`` makes the index partial (a literal predicate written in the revision). ``blocking`` builds each leaf with a
-    plain CREATE INDEX instead (writers wait for the build): for a revision of an upgrade that runs as one transaction, where a concurrent build is refused. Idempotent."""
+    plain CREATE INDEX instead (writers wait for the build): for a revision of an upgrade that runs as one transaction, where a concurrent build is refused.
+    ``using`` names the access method (``gin``); default btree. Idempotent."""
     _ident(table), _ident(name)
     schema = table.split(".")[0] if "." in table else "public"
-    _build(conn, table, schema, name, cols, "UNIQUE " if unique else "", f" WHERE {where}" if where else "", blocking=blocking)
+    _ident(using or "btree")
+    _build(conn, table, schema, name, cols, "UNIQUE " if unique else "", f" WHERE {where}" if where else "", blocking=blocking, using=f"USING {using} " if using else "")
 
 
-def _build(conn: Connection, table: str, schema: str, idx: str, cols: str, u: str, w: str = "", *, blocking: bool = False) -> None:
+def _build(conn: Connection, table: str, schema: str, idx: str, cols: str, u: str, w: str = "", *, blocking: bool = False, using: str = "") -> None:
     children = [r[0] for r in conn.exec_driver_sql(
         "SELECT c.oid::regclass::text FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid "
         "WHERE i.inhparent = %s::regclass ORDER BY 1", (table,))]
     if _scalar(conn, "SELECT relkind = 'p' FROM pg_class WHERE oid = %s::regclass", table):
-        conn.exec_driver_sql(f"CREATE {u}INDEX IF NOT EXISTS {idx} ON ONLY {table} ({cols}){w}")
+        conn.exec_driver_sql(f"CREATE {u}INDEX IF NOT EXISTS {idx} ON ONLY {table} {using}({cols}){w}")
         for child in children:
             child_idx = f"{child.split('.')[-1]}_{idx}"
-            _build(conn, child, schema, child_idx, cols, u, w, blocking=blocking)
+            _build(conn, child, schema, child_idx, cols, u, w, blocking=blocking, using=using)
             attached = _scalar(conn, "SELECT EXISTS (SELECT 1 FROM pg_inherits WHERE inhrelid = %s::regclass "
                                "AND inhparent = %s::regclass)", f"{schema}.{child_idx}", f"{schema}.{idx}")
             if not attached:
@@ -84,9 +86,9 @@ def _build(conn: Connection, table: str, schema: str, idx: str, cols: str, u: st
         if blocking or conn.exec_driver_sql("SELECT pg_relation_size(%s::regclass) = 0", (table,)).scalar():
             # A leaf that never held a row (a new install): a plain build takes its lock for no time and, unlike CONCURRENTLY, does not wait
             # for every other session's snapshot (a second migration run waiting for the advisory lock holds one).
-            conn.exec_driver_sql(f"CREATE {u}INDEX IF NOT EXISTS {idx} ON {table} ({cols}){w}")
+            conn.exec_driver_sql(f"CREATE {u}INDEX IF NOT EXISTS {idx} ON {table} {using}({cols}){w}")
         else:
-            ensure_index(conn, f"{schema}.{idx}", f"CREATE {u}INDEX CONCURRENTLY {idx} ON {table} ({cols}){w}")
+            ensure_index(conn, f"{schema}.{idx}", f"CREATE {u}INDEX CONCURRENTLY {idx} ON {table} {using}({cols}){w}")
 
 
 def _retry(conn: Connection, step: Callable[[], Any], attempts: int = 3, backoff: float = 0.5) -> None:

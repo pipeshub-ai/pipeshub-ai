@@ -69,6 +69,14 @@ function isKnowledgeHubNode(item: TableItem): item is KnowledgeHubNode {
   return 'nodeType' in item && 'origin' in item;
 }
 
+/** Embedding progress of a record, or null when the API sent none (older backend) or nothing usable. */
+function embedProgressOf(item: KnowledgeHubNode): { done: number; total: number } | null {
+  const { embedDone, embedTotal } = item;
+  if (typeof embedDone !== 'number' || typeof embedTotal !== 'number') return null;
+  if (!Number.isFinite(embedDone) || !Number.isFinite(embedTotal) || embedTotal < 1 || embedDone < 0) return null;
+  return { done: Math.min(Math.floor(embedDone), Math.floor(embedTotal)), total: Math.floor(embedTotal) };
+}
+
 /** Indexing status in words, with the reason when it explains something (failures, pauses). Empty when there is none to show. */
 export function getKbItemStatusLabel(item: TableItem, t: TFunction, withReason = true): string {
   if (shouldHideIndexingStatusForHubRecord(item)) {
@@ -86,7 +94,14 @@ export function getKbItemStatusLabel(item: TableItem, t: TFunction, withReason =
     let showReason = true;
     switch (item.indexingStatus) {
       case 'COMPLETED': baseLabel = t('kb.indexingStatus.completed'); showReason = false; break;
-      case 'IN_PROGRESS': baseLabel = t('kb.indexingStatus.inProgress'); showReason = false; break;
+      case 'IN_PROGRESS': {
+        const progress = withReason ? embedProgressOf(item) : null;
+        baseLabel = progress
+          ? t('kb.indexingStatus.embeddingProgress', { count: progress.total, done: progress.done, total: progress.total })
+          : t('kb.indexingStatus.inProgress');
+        showReason = false;
+        break;
+      }
       case 'FAILED': baseLabel = t('kb.indexingStatus.failed'); break;
       case 'FILE_TYPE_NOT_SUPPORTED': baseLabel = t('kb.indexingStatus.fileTypeNotSupported'); break;
       case 'NOT_STARTED': baseLabel = t('kb.indexingStatus.notStarted'); break;

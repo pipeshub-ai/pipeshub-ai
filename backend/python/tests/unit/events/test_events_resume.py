@@ -49,7 +49,7 @@ def _no_attempt() -> Iterator[None]:
 def _marker(**overrides: Any) -> dict[str, Any]:  # noqa: ANN401
     marker = {
         "embedVrid": VRID, "embedRev": REV, "embedKey": "k", "embedDigest": "dig", "embedTotal": 9,
-        "embedDeliveryId": "d1", "embedStartedMs": 1,
+        "embedDeliveryId": "d1", "embedStartedMs": 1, "embedSeconds": 0, "embedUncounted": 0, "embedDone": 0,
     }
     marker.update(overrides)
     return marker

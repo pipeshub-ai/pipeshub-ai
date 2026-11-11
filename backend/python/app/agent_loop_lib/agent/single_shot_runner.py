@@ -42,7 +42,13 @@ _TASK_COMPLETE_TEXT_SUFFIX = (
 
 
 class StructuredSingleShotError(Exception):
-    """Raised when a single-shot agent run fails or returns unparseable output."""
+    """Raised when a single-shot agent run fails or returns unparseable output. `reason` (run_failed,
+    empty, not_json, not_object) and `end_event` (the failed run's) say which, for the caller's log."""
+
+    def __init__(self, message: str, *, reason: str = "error", end_event: str | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.end_event = end_event
 
 
 def build_task_complete_runtime(
@@ -89,13 +95,16 @@ async def run_single_shot(
 def parse_json_task_output(result: Any) -> dict[str, Any]:
     """Extract a JSON object from a successful single-shot `AgentResult`."""
     if not getattr(result, "success", False):
-        raise StructuredSingleShotError(getattr(result, "error", None) or "agent run failed")
+        raise StructuredSingleShotError(
+            getattr(result, "error", None) or "agent run failed",
+            reason="run_failed", end_event=getattr(result, "end_event", None) or None,
+        )
 
     output = getattr(result, "output", None)
     if isinstance(output, dict):
         return output
     if not isinstance(output, str) or not output.strip():
-        raise StructuredSingleShotError("single-shot agent returned empty output")
+        raise StructuredSingleShotError("single-shot agent returned empty output", reason="empty")
 
     text = output.strip()
     fence_match = re.match(r"^```(?:json)?\s*(.*?)```\s*$", text, flags=re.DOTALL | re.IGNORECASE)
@@ -105,10 +114,10 @@ def parse_json_task_output(result: Any) -> dict[str, Any]:
     try:
         parsed = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise StructuredSingleShotError(f"single-shot output was not valid JSON: {exc}") from exc
+        raise StructuredSingleShotError(f"single-shot output was not valid JSON: {exc}", reason="not_json") from exc
 
     if not isinstance(parsed, dict):
-        raise StructuredSingleShotError("single-shot output JSON must be an object")
+        raise StructuredSingleShotError("single-shot output JSON must be an object", reason="not_object")
     return parsed
 
 
@@ -119,11 +128,14 @@ def parse_text_task_output(result: Any) -> str:
     output raise; anything else the model wrote is returned as-is, since
     callers using this path parse leniently (or not at all) downstream."""
     if not getattr(result, "success", False):
-        raise StructuredSingleShotError(getattr(result, "error", None) or "agent run failed")
+        raise StructuredSingleShotError(
+            getattr(result, "error", None) or "agent run failed",
+            reason="run_failed", end_event=getattr(result, "end_event", None) or None,
+        )
 
     output = getattr(result, "output", None)
     if not isinstance(output, str) or not output.strip():
-        raise StructuredSingleShotError("single-shot agent returned empty output")
+        raise StructuredSingleShotError("single-shot agent returned empty output", reason="empty")
     return output.strip()
 
 
