@@ -108,6 +108,23 @@ def ensure_db() -> Iterator[AsyncMock]:
         yield ensured
 
 
+class TestEnsureDatabase:
+    @pytest.mark.asyncio
+    async def test_a_missing_database_is_waited_for(self) -> None:
+        show = MagicMock(data=AsyncMock(return_value=[]))
+        create = MagicMock(consume=AsyncMock())
+        session = MagicMock(run=AsyncMock(side_effect=[show, create]))
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        client = _client()
+        client.driver = MagicMock(session=MagicMock(return_value=session))
+
+        await client._ensure_database_exists()
+
+        assert session.run.await_args_list[1].args[0] == "CREATE DATABASE `neo4j` IF NOT EXISTS WAIT"
+        create.consume.assert_awaited_once()
+
+
 class TestReconnect:
     @pytest.mark.asyncio
     async def test_one_dead_connection_is_retried_on_the_same_driver(self, ensure_db) -> None:
