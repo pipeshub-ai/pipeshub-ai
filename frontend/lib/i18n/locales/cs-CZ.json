@@ -772,6 +772,10 @@
     "indexingStatus": {
       "completed": "Dokončeno",
       "inProgress": "Probíhá",
+      "embeddingProgress_one": "Vkládání {{done, number}} / {{total, number}} úseku",
+      "embeddingProgress_few": "Vkládání {{done, number}} / {{total, number}} úseků",
+      "embeddingProgress_many": "Vkládání {{done, number}} / {{total, number}} úseků",
+      "embeddingProgress_other": "Vkládání {{done, number}} / {{total, number}} úseků",
       "failed": "Selhalo",
       "fileTypeNotSupported": "Nepodporovaný typ souboru",
       "notStarted": "Nezahájeno",

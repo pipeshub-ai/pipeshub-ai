@@ -303,3 +303,172 @@ functions:
             OR (length(p_name) >= 3 AND (starts_with(u.name, p_name) OR EXISTS (SELECT 1 FROM unnest(string_to_array(u.name, ' ')) w WHERE starts_with(w, p_name)))))
         SELECT h.id, h.doc FROM hits h WHERE h.exact OR NOT EXISTS (SELECT 1 FROM hits x WHERE x.exact)
         ORDER BY h.name COLLATE ucs_basic, h.id COLLATE ucs_basic LIMIT p_limit;
+
+# ---- named entities, value mentions and stage states (graph_0007) -----------------------------------------------------------------------
+# The reads of the entity pipeline and the stage sweeps, again by keys that have expression indexes. The named entities are those whose document names p_owner as its owner (the orgId field); the
+# caller keeps its other filters (the flags) on the rows.
+
+  # The named entities of one kind whose key, or one of whose aliases, is one of the keys (indexes nodes_ne_kind_key, nodes_ne_aliases), in id order.
+  - name: graph.named_entities_by_keys
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_owner, type: text, length: [1, 200]}
+      - {name: p_kind, type: text, length: [1, 200]}
+      - {name: p_keys, type: "text[]", max_items: 1000, item_not_null: true, item_length: [1, 1000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      -- two arms, each by its own index: with the OR, the planner scans every entity of the kind (its estimates under row-level security are the defaults), and in the alias arm
+      -- the kind is compared as (kind || '') so that the btree index on the kind does not compete with the alias index
+      RETURN QUERY WITH m AS MATERIALIZED (
+          SELECT n.id FROM graph.nodes n WHERE n.org_id = v_org AND n.coll = 'namedEntities' AND n.doc->>'orgId' = p_owner AND n.doc->>'kind' = p_kind AND n.doc->>'normKey' = ANY(p_keys)
+          UNION SELECT n.id FROM graph.nodes n WHERE n.org_id = v_org AND n.coll = 'namedEntities' AND n.doc->>'orgId' = p_owner AND (n.doc->>'kind') || '' = p_kind
+            AND n.doc->'normalizedAliases' ?| p_keys)
+        SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = v_org AND n.coll = 'namedEntities' AND n.id IN (SELECT m.id FROM m) ORDER BY n.id LIMIT 100000;
+
+  # Up to p_limit named entities for each (kind, key) pair that hold the key as an alias, in id order after the pair's key (index nodes_ne_aliases).
+  - name: graph.named_entities_by_alias
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_owner, type: text, length: [1, 200]}
+      - {name: p_kinds, type: "text[]", max_items: 1000, item_not_null: true, item_length: [1, 200]}
+      - {name: p_keys, type: "text[]", max_items: 1000, item_not_null: true, item_length: [1, 1000]}
+      - {name: p_limit, type: int, default: "3", range: [1, 1000]}
+    returns: "TABLE (kind text, key text, node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      IF cardinality(p_kinds) <> cardinality(p_keys) THEN RAISE EXCEPTION 'p_kinds and p_keys differ in length' USING ERRCODE = '22023'; END IF;
+      RETURN QUERY WITH m AS MATERIALIZED (SELECT p.kind, p.key, x.id FROM unnest(p_kinds, p_keys) AS p(kind, key)
+            JOIN graph.nodes x ON x.org_id = v_org AND x.coll = 'namedEntities' AND x.doc->>'orgId' = p_owner AND (x.doc->>'kind') || '' = p.kind AND x.doc->'normalizedAliases' ? p.key
+              AND x.doc->>'normKey' <> p.key AND x.doc->>'mergedInto' IS NULL),
+          r AS (SELECT m.kind, m.key, m.id, row_number() OVER (PARTITION BY m.kind, m.key ORDER BY m.id) AS rn FROM m)
+        SELECT r.kind, r.key, n.id, n.doc FROM r JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'namedEntities' AND n.id = r.id
+          WHERE r.rn <= p_limit ORDER BY r.key, n.id LIMIT 100000;
+
+  # Up to p_limit named entities for each (kind, key) pair whose key is the pair's key and a blank and more, by key then id (index nodes_ne_kind_key: the range is the prefix).
+  - name: graph.named_entities_by_prefix
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_owner, type: text, length: [1, 200]}
+      - {name: p_kinds, type: "text[]", max_items: 1000, item_not_null: true, item_length: [1, 200]}
+      - {name: p_keys, type: "text[]", max_items: 1000, item_not_null: true, item_length: [1, 1000]}
+      - {name: p_limit, type: int, default: "21", range: [1, 1000]}
+    returns: "TABLE (kind text, key text, node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      IF cardinality(p_kinds) <> cardinality(p_keys) THEN RAISE EXCEPTION 'p_kinds and p_keys differ in length' USING ERRCODE = '22023'; END IF;
+      -- a name begins with the key and a blank exactly when it is in [key + blank, key + "!"): the blank is the byte before "!"
+      RETURN QUERY SELECT p.kind, p.key, n.id, n.doc FROM unnest(p_kinds, p_keys) AS p(kind, key)
+        CROSS JOIN LATERAL (SELECT x.id, x.doc FROM graph.nodes x WHERE x.org_id = v_org AND x.coll = 'namedEntities' AND x.doc->>'orgId' = p_owner AND x.doc->>'kind' = p.kind
+            AND x.doc->>'normKey' ~>=~ (p.key || ' ') AND x.doc->>'normKey' ~<~ (p.key || '!')
+            ORDER BY x.doc->>'normKey', x.id LIMIT p_limit) n
+        ORDER BY p.key, n.doc->>'normKey', n.id LIMIT 100000;
+
+  # The value mentions of the given records (index nodes_value_record), in no order, at most 100001: a caller that gets that many treats them as possibly partial and reads with its own statement.
+  - name: graph.value_mentions_by_records
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_record_ids, type: "text[]", max_items: 5000, item_not_null: true, item_length: [1, 200]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      -- one index probe for each record (LATERAL), not a join with the list: from about 10 ids the planner joins them with a scan of the org's mentions (800,000 mentions: 64 to 171 ms,
+      -- growing with the org), and a comparison with ANY(list) tests each row against every record (4,000 records: minutes). The rows come with their documents in one query and in
+      -- no order (a second fetch of the ids planned as a nested loop over every row when the statistics were stale: hours); a caller orders them
+      RETURN QUERY SELECT n.id, n.doc FROM (SELECT DISTINCT r.rid FROM unnest(p_record_ids) AS r(rid)) q
+        CROSS JOIN LATERAL (SELECT x.id, x.doc FROM graph.nodes x WHERE x.org_id = v_org AND x.coll = 'valueMentions' AND x.doc->>'recordId' = q.rid LIMIT 100001) n LIMIT 100001;
+
+  # The stage states of one virtual record and revision (index nodes_stage_revision).
+  - name: graph.stage_states_by_revision
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_virtual_record_id, type: text, length: [1, 200]}
+      - {name: p_rev, type: text, length: [1, 200]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'stageStates' AND n.doc->>'virtualRecordId' = p_virtual_record_id AND n.doc->>'rev' = p_rev LIMIT 100000;
+
+# ---- groups and roles by external id, and the stage sweep's page (graph_0008) ------------------------------------------------------------
+# The user groups, record groups and roles a connector synced are read by (connector, external id) on every item of a sync, and the stage sweeps read a connector's
+# stage states by (stage, status) and the records they hold by (virtual record, revision). Same reason as above: the indexes exist, a plain statement cannot reach them.
+
+  # One group, record group or role of a connector by its external id (indexes nodes_group_by_external, nodes_group_external, nodes_role_by_external).
+  - name: graph.node_by_external
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_coll, type: text, enum: [groups, recordGroups, roles]}
+      - {name: p_connector_id, type: text, length: [1, 200]}
+      - {name: p_external_id, type: text, length: [1, 2000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      -- one branch for each collection, so that the partial index of the collection matches
+      RETURN QUERY (SELECT n.id, n.doc FROM graph.nodes n WHERE p_coll = 'groups' AND n.org_id = v_org AND n.coll = 'groups'
+          AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'externalGroupId' = p_external_id LIMIT 1)
+        UNION ALL (SELECT n.id, n.doc FROM graph.nodes n WHERE p_coll = 'recordGroups' AND n.org_id = v_org AND n.coll = 'recordGroups'
+          AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'externalGroupId' = p_external_id LIMIT 1)
+        UNION ALL (SELECT n.id, n.doc FROM graph.nodes n WHERE p_coll = 'roles' AND n.org_id = v_org AND n.coll = 'roles'
+          AND n.doc->>'connectorId' = p_connector_id AND n.doc->>'externalRoleId' = p_external_id LIMIT 1);
+
+  # One page of a connector's stage states of one stage and status, by id after the given one (index nodes_stage_page).
+  - name: graph.stage_states_page
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_connector_id, type: text, length: [1, 200]}
+      - {name: p_stage, type: text, length: [1, 200]}
+      - {name: p_status, type: text, length: [1, 200]}
+      - {name: p_after, type: text, default: "''", length: [0, 200]}
+      - {name: p_limit, type: int, default: "1000", range: [1, 1000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = v_org AND n.coll = 'stageStates' AND n.doc->>'connectorId' = p_connector_id
+          AND n.doc->>'stage' = p_stage AND n.doc->>'status' = p_status AND (p_after = '' OR n.id > p_after)
+        ORDER BY n.doc->>'connectorId', n.doc->>'stage', n.doc->>'status', n.id LIMIT p_limit;      -- the key in the order: the planner would sort the whole page's states otherwise
+
+  # The records that hold a (virtual record, content revision) pair of the given lists (index nodes_record_virtual_rev).
+  - name: graph.records_by_revision
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_virtual_record_ids, type: "text[]", max_items: 1000, item_not_null: true, item_length: [1, 200]}
+      - {name: p_revs, type: "text[]", max_items: 1000, item_not_null: true, item_length: [1, 200]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      IF cardinality(p_virtual_record_ids) <> cardinality(p_revs) THEN RAISE EXCEPTION 'p_virtual_record_ids and p_revs differ in length' USING ERRCODE = '22023'; END IF;
+      RETURN QUERY SELECT n.id, n.doc FROM (SELECT DISTINCT q.v, q.r FROM unnest(p_virtual_record_ids, p_revs) AS q(v, r)) p
+        JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'records' AND n.doc->>'virtualRecordId' = p.v AND n.doc->>'contentRev' = p.r LIMIT 100000;

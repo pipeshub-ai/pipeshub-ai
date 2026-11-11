@@ -3552,6 +3552,8 @@ describe('ConfigurationManager Controller', () => {
     const appConfig = { cmBackend: 'http://cm', aiBackend: 'http://ai' } as unknown as AppConfig
     const IN_USE =
       'This model is embedding your indexed content. Delete the embeddings in Labs first, then change or delete the model and re-embed.'
+    const LAST_MODEL =
+      'This is the only embedding model, so deleting it would switch embedding to the built-in model, which cannot use the vectors already stored. To keep your embeddings, first add the same model from another provider, at the same size, then delete this one. To use a different model, delete the embeddings in Labs first, then change or delete this model and re-embed.'
 
     // Records what reaches the AI service and answers the embedding takeover
     // check with `takeoverStatus` (400 is its answer while vectors are stored).
@@ -3724,7 +3726,23 @@ describe('ConfigurationManager Controller', () => {
       )
 
       expect(models(takeoverCalls(calls)[0])).to.deep.equal([])
-      expect(next.firstCall.args[0].message).to.equal(IN_USE)
+      expect(next.firstCall.args[0].message).to.equal(LAST_MODEL)
+      expect(storeWrites(kvs)).to.equal(0)
+    })
+
+    it('shows the store\'s own text when the last embedding model is deleted and the store cannot change model in place', async () => {
+      const text = 'The embedding model cannot be changed yet: this installation keeps vectors in PostgreSQL (pgvector).'
+      stubAiService(400, healthy, { status: 'not healthy', code: 'embedding_change_unsupported', error: text, message: text })
+      const kvs = storedModels([openai])
+      const next = createMockNext()
+
+      await deleteAIModelProvider(kvs, createMockEventService(), appConfig)(
+        createMockRequest({ params: { modelType: 'embedding', modelKey: 'k1' } }),
+        createMockResponse(),
+        next,
+      )
+
+      expect(next.firstCall.args[0].message).to.equal(text)
       expect(storeWrites(kvs)).to.equal(0)
     })
 

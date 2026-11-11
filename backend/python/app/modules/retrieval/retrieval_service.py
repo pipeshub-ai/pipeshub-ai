@@ -86,6 +86,7 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 from app.services.model_identity.call_context import narrow_workload
 from app.services.model_identity.workload import Workload
+from app.services.permissions.metrics import SERVING_DEGRADED
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
@@ -290,6 +291,9 @@ class _QueryPlan:
     narrow_shortfall: bool = False
     # A provider answered some search of this request with less than its full search (``SearchResult.degraded``).
     degraded: bool = False
+    # The viewer's deferring scope filter (``ServingPlanner``): set only for the main container search, and cleared by the record-id path,
+    # whose own filter is the enumerated ids.
+    scope_filter: Any = None
 
     def incomplete_notice(self) -> str | None:
         if not self.failed_collections:
@@ -463,6 +467,7 @@ class RetrievalService:
     # A class default, so an instance built without __init__ (as some tests do) has it too.
     _cached_embedding_is_local = True
     _shadow = None
+    _planner = None
 
     def __init__(
         self,
@@ -492,6 +497,8 @@ class RetrievalService:
         self.collection_registry = collection_registry
         # Compares the scope filter with the post-check on the side (ACL_FILTER_MODE=shadow); None in every other mode.
         self._shadow = self._build_shadow(graph_provider)
+        # Reads a container search with the viewer's scope filter (ACL_FILTER_MODE=scopes); None in every other mode.
+        self._planner = self._build_planner(graph_provider)
 
         # Capability negotiation — determines which embedding legs are needed.
         self._capabilities = vector_db_service.get_capabilities()
@@ -519,6 +526,11 @@ class RetrievalService:
         from app.services.permissions.wiring import build_shadow_comparator
 
         return build_shadow_comparator(graph_provider)
+
+    def _build_planner(self, graph_provider: IGraphDBProvider) -> object | None:
+        from app.services.permissions.wiring import build_serving_planner
+
+        return build_serving_planner(graph_provider)
 
     def _submit_shadow(
         self, queries, filter, asked: int, org_id: str, user_id: str | None, user_key: str | None,  # noqa: A002, ANN001
@@ -915,6 +927,8 @@ class RetrievalService:
             if permission_filter is None:
                 return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
             filter, scope_virtual_ids = permission_filter
+            if use_containers and self._planner is not None and self.vector_db_service.supports_scope_filter:
+                plan.scope_filter = await self._planner.plan(org_id, user_key)
 
             record_cut = _record_cut_for(scope_virtual_ids)
             # The search API's first page, varied across sources: the plain
@@ -1996,6 +2010,7 @@ class RetrievalService:
         query by the ids, keep the hits the access check admits. Raises when any
         step fails; the caller decides what stands instead.
         """
+        plan.scope_filter = None      # the enumerated ids are this path's filter
         enumerated = await self._get_accessible_virtual_ids_task(
             user_id, org_id, filters, self.graph_provider, time_range=time_range,
         )
@@ -2743,7 +2758,7 @@ class RetrievalService:
                 filter=filter,
                 limit=fused_limit,
                 fusion_method=FusionMethod.RRF,
-                scope_filter=_SHADOW_SCOPE_FILTER.get(),
+                scope_filter=_SHADOW_SCOPE_FILTER.get() or (plan.scope_filter if plan is not None else None),
             )
             for query, dense_embedding, sparse_embedding in zip(
                 queries, dense_query_embeddings, sparse_query_embeddings
@@ -2766,6 +2781,7 @@ class RetrievalService:
             plan.collections_searched = len(collections)
         if degraded and plan is not None:
             plan.degraded = True
+            SERVING_DEGRADED.inc("scopes" if requests and requests[0].scope_filter is not None and _SHADOW_SCOPE_FILTER.get() is None else "legacy")
         if record_cut is not None:
             search_results = self._cut_batches(record_cut, search_results, limit)
         # Measured after the cut, so "exhausted" still means a query came back

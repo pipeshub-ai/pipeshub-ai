@@ -7,6 +7,8 @@ not current), a live one is not (no connector current while a write is running),
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from typing import Any
 
 import pytest
@@ -56,6 +58,9 @@ class Graph:
         self.lost_race: Any = None
         self.sharers: list[dict] = []
         self.swap_fails_after: int | None = None       # swaps allowed before every later one raises
+
+    async def store_time(self) -> float:
+        return time.time()      # the store's clock; a test that needs its own passes a `clock`
 
     async def get_document(self, key: str, collection: str, **kw: Any) -> dict | None:
         return dict(self.app)
@@ -154,6 +159,23 @@ async def test_only_the_dead_writes_are_closed_and_a_live_one_keeps_the_connecto
     assert await recover_expired_writes(g, "c", clock=clock) == 1
     assert unclosed_writes(g.app) == 1 and list(parse_open_writes(g.app[OPEN_WRITES_KEY])) == [live]
     assert set(parse(g.app[PENDING_KEY])) == {"old"}
+
+
+async def test_a_counter_that_is_not_a_whole_number_keeps_the_dead_leases_while_a_k_lease_is_re_leased() -> None:
+    clock, g = Clock(), Graph()
+    await open_write(g, "c", ["old"], clock=clock)
+    clock.now += DEAD
+    held = parse_open_writes(g.app[OPEN_WRITES_KEY])
+    held["k-token"] = {"u": 1, "k": 1}
+    g.app[OPEN_WRITES_KEY] = json.dumps(held)
+    for bad in (True, 1.5, -1, "3"):       # a counter that is not a whole number: nothing is closed, and no record of the roots is dropped
+        g.app[CLOSED_KEY] = bad
+        assert await recover_expired_writes(g, "c", clock=clock) == 0
+        assert set(parse_open_writes(g.app[OPEN_WRITES_KEY])) == set(held) and "k" not in parse_open_writes(g.app[OPEN_WRITES_KEY])["k-token"]
+        g.app[OPEN_WRITES_KEY] = json.dumps(held)
+    g.app[CLOSED_KEY] = 0       # the counter is fixed: the roots are still there to register
+    clock.now += OPEN_WRITE_SECONDS + OPEN_WRITE_GRACE_SECONDS + 1
+    assert await recover_expired_writes(g, "c", clock=clock) >= 1 and "old" in parse(g.app[PENDING_KEY])
 
 
 async def test_a_crash_between_the_registration_and_the_close_repeats_the_registration_and_loses_nothing() -> None:
