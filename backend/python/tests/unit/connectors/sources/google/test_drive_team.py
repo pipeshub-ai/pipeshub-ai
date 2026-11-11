@@ -459,7 +459,7 @@ class TestFetchPermissions:
         connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
         real_process = connector._process_drive_item
 
-        async def process_with_a_ledger_swapped_meanwhile(*args, **kwargs):
+        async def process_with_a_ledger_swapped_meanwhile(*args: object, **kwargs: object) -> object:
             # a sync starting meanwhile replaces the ledger: no count taken before the call can be compared after it
             connector._sync_ledger = FullSyncLedger()
             return await real_process(*args, **kwargs)
