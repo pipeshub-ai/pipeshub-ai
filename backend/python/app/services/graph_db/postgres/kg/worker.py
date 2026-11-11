@@ -14,7 +14,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 from app.core.org_context import bind, spawn_detached
-from app.services.graph_db.postgres.kg import bootstrap, flush, legacy, restamp
+from app.services.graph_db.postgres.kg import bootstrap, flush, legacy, net, restamp
 from app.services.graph_db.postgres.kg.drainer import PAGE, _ctx, drain_or_retry, lag
 from app.services.pg_runtime import PgListener
 from app.telemetry.backend import METRICS_BACKEND
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 CHANNELS = ("pipeshub_kg_changes", "pipeshub_kg_restamp")
+
 RECHECK_S = 0.3
 STOP_TIMEOUT_S = 10.0                              # how long stop() lets the pass in flight end before it cancels it
 MAX_DOUBLINGS = 8                                  # RECHECK_S * 2**8 is past any sensible poll interval
@@ -45,10 +46,18 @@ class KgWorker:
         self.id = f"kg-{os.getpid()}-{uuid.uuid4().hex[:8]}"
         self._wake = asyncio.Event()
         self._listeners: list[PgListener] = []
+        self._demotes: set[asyncio.Task] = set()
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
+        self._verify_due: dict[tuple[str, str], float] = {}  # when an enforced connector is next verified against the graph (net)
         self._due: dict[tuple[str, str], float] = {}        # when a connector may next be taken to enforce (bootstrap)
         self.passes = 0                                    # loop iterations done (tests wait on it)
+
+    def _on_demote(self, payload: str) -> None:
+        """Another process (the query service, which cannot write kg) saw kg differ from the walk and asks for the connector to go back to the walk."""
+        task = spawn_detached(net.demote_requested(self._db, self._orgs, payload), name="kg-demote")
+        self._demotes.add(task)
+        task.add_done_callback(self._demotes.discard)
 
     def _on_notify(self, _payload: str) -> None:
         self._wake.set()
@@ -73,6 +82,9 @@ class KgWorker:
                 rows += await bootstrap.bring_to_enforce(self._db, org, self._due, self._stop)
             except Exception:
                 logger.exception("kg bootstrap failed for an org; retrying")
+            if self._stop.is_set():
+                break
+            await net.verify_due(self._db, org, self._verify_due, self._stop)
             if self._stop.is_set():
                 break
             try:
@@ -133,6 +145,7 @@ class KgWorker:
     def start(self) -> None:
         if self._dsn:
             self._listeners = [PgListener(self._dsn, ch, self._on_notify, on_reconnect=self._wake.set) for ch in CHANNELS]
+            self._listeners.append(PgListener(self._dsn, net.CHANNEL, self._on_demote, on_reconnect=self._wake.set))
             for ln in self._listeners:
                 ln.start()
         self._task = spawn_detached(self._loop(), name="kg-worker")
