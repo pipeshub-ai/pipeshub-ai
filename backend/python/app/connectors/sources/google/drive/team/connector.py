@@ -2842,9 +2842,13 @@ class GoogleDriveTeamConnector(BaseConnector):
         *,
         bypass_folder_filter: bool = False,
         force_shared_with_me: bool = False,
+        raise_on_failure: bool = False,
     ) -> Optional[RecordUpdate]:
         """
         Process a single Google Drive file and detect changes.
+
+        A failure is counted on the sync ledger and answered with None; with ``raise_on_failure`` it is raised
+        as well, so a caller outside a sync can tell it from "nothing to do" without reading shared counts.
 
         Args:
             metadata: Google Drive file metadata dictionary
@@ -3135,6 +3139,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         except Exception as ex:
             self.logger.error(f"Error processing Google Drive file {metadata.get('id', 'unknown')}: {ex}", exc_info=True)
             self._sync_ledger.fail_item()
+            if raise_on_failure:
+                raise _ItemReadFailed(str(metadata.get('id', 'unknown'))) from ex
             return None
 
     async def _process_drive_items_generator(
@@ -5211,6 +5217,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             org_id = self.data_entities_processor.org_id
             updated_records = []
             non_updated_records = []
+            unreadable: List[Record] = []
             for record in records:
                 try:
                     updated_record_data = await self._check_and_fetch_updated_record(org_id, record)
@@ -5219,9 +5226,19 @@ class GoogleDriveTeamConnector(BaseConnector):
                         updated_records.append((updated_record, permissions))
                     else:
                         non_updated_records.append(record)
+                except _ItemReadFailed:
+                    unreadable.append(record)
                 except Exception as e:
                     self.logger.error(f"Error checking record {record.id} at source: {e}")
                     continue
+
+            if unreadable:
+                # Skipped, not processed: the caller marked them NOT_STARTED for this run. FAILED is what a
+                # retry of failed records selects, so they are reindexed once their permissions can be read.
+                self.logger.warning(f"{len(unreadable)} records were not reindexed: their permissions could not be read")
+                await self.data_store_provider.compare_and_set_indexing_status(
+                    [r.id for r in unreadable], ProgressStatus.NOT_STARTED.value, ProgressStatus.FAILED.value
+                )
 
             # Update DB only for records that changed at source
             if updated_records:
@@ -5320,7 +5337,6 @@ class GoogleDriveTeamConnector(BaseConnector):
             is_shared_with_me = in_shared_drive and record_group_id is None
 
             # Use existing logic to detect changes and transform to FileRecord
-            failures_before = self._sync_ledger.item_failures
             record_update = await self._process_drive_item(
                 file_metadata,
                 user_id,
@@ -5328,12 +5344,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                 record_group_id,
                 is_shared_drive=in_shared_drive and not is_shared_with_me,
                 drive_data_source=user_drive_data_source,
-                force_shared_with_me=is_shared_with_me
+                force_shared_with_me=is_shared_with_me,
+                # An unreadable item is not an unchanged one: it is not re-queued with the grants stored.
+                raise_on_failure=True,
             )
 
-            if not record_update and self._sync_ledger.item_failures > failures_before:
-                # An unreadable item is not an unchanged one: it is not re-queued with the grants stored.
-                raise _ItemReadFailed(file_id)
             if not record_update or record_update.is_deleted:
                 return None
 
