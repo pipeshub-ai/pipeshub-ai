@@ -54735,14 +54735,18 @@ paths:
         - name: connectorId
           in: path
           required: true
+          description: Connector instance ID (`_key` of the instance).
           schema:
             type: string
+            minLength: 1
+            maxLength: 128
         - name: userId
           in: query
           required: true
           description: The person the question is about.
           schema:
             type: string
+            minLength: 1
             maxLength: 128
         - name: recordId
           in: query
@@ -54750,6 +54754,7 @@ paths:
           description: The record, by id.
           schema:
             type: string
+            minLength: 1
             maxLength: 256
       responses:
         '200':
