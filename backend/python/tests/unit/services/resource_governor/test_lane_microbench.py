@@ -27,6 +27,24 @@ def _p99_ms(fn, rounds: int = 1500) -> float:
     return _quantile_ms(fn, 0.99, rounds)
 
 
+def _paired_ms(a, b, q: float, rounds: int = 1500) -> tuple[float, float]:
+    """The *q* quantile of each of two calls, timed alternately so that a stall of the host lands on both."""
+    a()
+    b()
+    times_a, times_b = [], []
+    for _ in range(rounds):
+        start = time.perf_counter()
+        a()
+        middle = time.perf_counter()
+        b()
+        times_a.append(middle - start)
+        times_b.append(time.perf_counter() - middle)
+    times_a.sort()
+    times_b.sort()
+    k = int(q * (rounds - 1))
+    return times_a[k] * 1000, times_b[k] * 1000
+
+
 def test_lane_lease_cost_against_heavy_slot_cost(tmp_path: Path) -> None:
     """The tail against the heavy slot measured in the same run; the absolute budget on the median, which a stalled runner barely moves (an
     absolute 3 ms p99 failed at 3.6 ms on a busy runner, against 0.08 ms on a quiet host). A lease that is slow every time fails the median, one
@@ -50,7 +68,10 @@ def test_lane_lease_cost_against_heavy_slot_cost(tmp_path: Path) -> None:
 
     try:
         for _ in range(3):  # a loaded host: take the best of three runs, same run for both
-            lane_median, lane_p99, slot_p99 = _quantile_ms(lane, 0.5), _p99_ms(lane), _p99_ms(slot)
+            # The tails are timed alternately: measured one after the other, a burst of load during only the
+            # lane's 1,500 calls failed the ratio at 1.57 ms against 0.41 ms with nothing slow in the lease.
+            lane_median = _quantile_ms(lane, 0.5)
+            lane_p99, slot_p99 = _paired_ms(lane, slot, 0.99)
             if lane_median < 1.0 and lane_p99 <= 3 * slot_p99:
                 break
         print(f"16-slot heavy set p99 {_p99_ms(lambda: small.try_acquire(8).release()):.3f} ms")
