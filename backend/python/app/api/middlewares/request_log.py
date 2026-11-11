@@ -17,6 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import ClientDisconnect
 
 from app.api.middlewares.request_context import RequestContextMiddleware
+from app.core.org_context import spawn_in_request
 from app.utils import error_class
 from app.utils.logger import create_logger
 from app.utils.logging_fields import bind_log_fields, log_event
@@ -29,12 +30,17 @@ _FIELDS_KEY = "pipeshub.request_log_fields"
 # Never routine: a service token naming another org is our bug or a stolen token.
 _REASON_LEVEL = {"org_mismatch": logging.WARNING}
 _CRASH_BODY = {"detail": "Internal server error"}
+# When the line saw the client leave: before the answer started, or after it started and before its last body message.
+# A disconnect seen after the last body was handed over is the server's "response complete" and not recorded.
+_BEFORE_ANSWER = "before_answer"
+_ANSWERING = "answering"
 
 logger = create_logger(__name__)
 
 Scope = MutableMapping[str, Any]
 Message = MutableMapping[str, Any]
-ASGIApp = Callable[[Scope, Callable[[], Awaitable[Message]], Callable[[Message], Awaitable[None]]], Awaitable[None]]
+Receive = Callable[[], Awaitable[Message]]
+ASGIApp = Callable[[Scope, Receive, Callable[[Message], Awaitable[None]]], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -151,15 +157,15 @@ class _Request:
         self.started = perf_counter()
         self.status: int | None = None
         self.finished: float | None = None
-        self.client_left = False
+        self.left: str | None = None
 
     def observe(self, message: Message) -> None:
         if message["type"] == "http.response.start":
             self.status = message["status"]
         elif message["type"] == "http.response.body" and not message.get("more_body", False):
             self.finished = perf_counter()
-        elif message["type"] == "http.disconnect" and self.finished is None:
-            self.client_left = True
+        elif message["type"] == "http.disconnect" and self.finished is None:  # seen once: the read-ahead stops at the first
+            self.left = _ANSWERING if self.status is not None else _BEFORE_ANSWER
 
     def log(self, escaped: BaseException | None = None, *, status: int | None = None) -> None:
         with contextlib.suppress(Exception):  # logging never breaks a request
@@ -176,7 +182,9 @@ class _Request:
         }
         failure = _failure_for(self.scope, escaped, escaped=True) if escaped is not None else _marked(self.scope)
         reason = (failure.reason or _reason(failure.exc)) if failure else None
-        if escaped is not None and failure is not None:
+        outcome = _end_outcome(escaped=escaped is not None, marked=failure is not None, status=status,
+                               finished=self.finished is not None, left=self.left)
+        if outcome == "exception":
             # Nobody handled it and the client got a 500 (or a cut stream): ours, unless the code that marked it said,
             # or it is the client leaving (Starlette raises ClientDisconnect from a body read).
             if isinstance(escaped, ClientDisconnect):
@@ -184,21 +192,35 @@ class _Request:
             else:
                 default = "cancelled" if isinstance(escaped, asyncio.CancelledError) else "internal"
             _log_exception(failure, failure.error_class or default, reason=reason, **fields)
-        elif failure is not None and status is not None and not 400 <= status < 500:
+        elif outcome == "failure":
             # A 5xx, or a failure the route answered with a 2xx/3xx: logged as the failure it is.
             cls = failure.error_class or _handed_over_class(failure.exc)
             _log_exception(failure, cls, reason=reason, **fields)
-        elif self.finished is None or self.client_left:
-            # Starlette stops a stream quietly when the client leaves: no exception, and either no last body message or,
-            # when a BaseHTTPMiddleware below ends its own stream, a last message after the disconnect.
+        elif outcome == "cancelled":
             log_event(logger, EVENT, outcome="failure", error_class="cancelled", reason="client_disconnect", **fields)
-        elif status is not None and status >= 400:
+        elif outcome == "status":
             level = logging.WARNING if status >= 500 else _REASON_LEVEL.get(reason, logging.INFO)
             cls = (failure.error_class if failure else None) or _status_class(status)
             log_event(logger, EVENT, level=level, outcome="failure", error_class=cls, reason=reason, **fields)
         else:
             health = str(self.scope.get("path", "")).startswith("/health")
             log_event(logger, EVENT, level=logging.DEBUG if health else logging.INFO, outcome="success", **fields)
+
+
+def _end_outcome(*, escaped: bool, marked: bool, status: int | None, finished: bool, left: str | None) -> str:
+    """Which line a request ends with: the table in docs/logging.md ("When the client leaves"). An escaped exception
+    always wins. An answer the client left in the middle of is cancelled, and so is one whose last body message never
+    came when the client was not seen leaving. An answer the route started only after the client left keeps a refusal's,
+    a 5xx's or a marked failure's own line, and is cancelled otherwise."""
+    if escaped:
+        return "exception"
+    if left == _ANSWERING or (left is None and not finished):
+        return "cancelled"
+    if marked and (status is None or not 400 <= status < 500):
+        return "failure"
+    if status is not None and status >= 400:
+        return "status"
+    return "cancelled" if left == _BEFORE_ANSWER else "success"
 
 
 def _log_exception(failure: _Failure, cls: str, **fields: object) -> None:
@@ -219,6 +241,37 @@ def _log_exception(failure: _Failure, cls: str, **fields: object) -> None:
               error_class=cls, error_type=type(exc).__name__, cause_type=cause_type, **fields)
 
 
+class _Inbox:
+    """Reads ``receive`` ahead of the app, one message at a time, so a client that leaves is seen even when nothing
+    below reads again (a route still working on a plain response: uvicorn's send drops the answer silently)."""
+
+    def __init__(self, receive: Receive, observe: Callable[[Message], None]) -> None:
+        self._slot: asyncio.Queue[Message | Exception] = asyncio.Queue(maxsize=1)  # a body is not read ahead of the app
+        self._pump_task = spawn_in_request(self._pump(receive, observe))
+
+    async def _pump(self, receive: Receive, observe: Callable[[Message], None]) -> None:
+        try:
+            while True:
+                message = await receive()
+                observe(message)  # before the slot: the unread request message of a GET must not hide the disconnect
+                await self._slot.put(message)
+                if message["type"] == "http.disconnect":
+                    return
+        except Exception as exc:  # the app's next receive raises it, as if it had called receive itself
+            await self._slot.put(exc)
+
+    async def receive(self) -> Message:
+        item = await self._slot.get()
+        if isinstance(item, Exception) or item["type"] == "http.disconnect":
+            self._slot.put_nowait(item)  # the last word: every later receive gets it too, as servers repeat it
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    def close(self) -> None:
+        self._pump_task.cancel()
+
+
 class RequestLogMiddleware:
     """Raw ASGI, just inside RequestContextMiddleware: it sees the request id, the OrgContext the auth middleware
     bound, ``scope["route"]``, every exception a route lets out, and the end of a stream."""
@@ -226,24 +279,19 @@ class RequestLogMiddleware:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
-    async def __call__(self, scope: Scope, receive: Callable[[], Awaitable[Message]],
-                       send: Callable[[Message], Awaitable[None]]) -> None:
+    async def __call__(self, scope: Scope, receive: Receive, send: Callable[[Message], Awaitable[None]]) -> None:
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return
         request = _Request(scope)
-
-        async def observed_receive() -> Message:
-            message = await receive()
-            request.observe(message)
-            return message
+        inbox = _Inbox(receive, request.observe)
 
         async def observed_send(message: Message) -> None:
             request.observe(message)
             await send(message)
 
         try:
-            await self.app(scope, observed_receive, observed_send)
+            await self.app(scope, inbox.receive, observed_send)
         except asyncio.CancelledError as exc:
             request.log(exc)
             raise
@@ -254,8 +302,10 @@ class RequestLogMiddleware:
             request.log(exc, status=500)
             # Answered here, not re-raised: ServerErrorMiddleware would re-raise, and uvicorn would then close a
             # keep-alive connection the client may reuse.
-            await JSONResponse(status_code=500, content=_CRASH_BODY)(scope, receive, observed_send)
+            await JSONResponse(status_code=500, content=_CRASH_BODY)(scope, inbox.receive, observed_send)
             return
+        finally:
+            inbox.close()
         request.log()
 
 
