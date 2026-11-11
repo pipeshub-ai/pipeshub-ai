@@ -26026,6 +26026,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return ArangoHierarchyView(lambda: self.http_client)
 
     @override
+    async def store_time(self) -> float:
+        rows = await self.http_client.execute_aql("RETURN DATE_NOW()", {})
+        return float(rows[0]) / 1000
+
+    @override
     async def increment_node_field(
         self, key: str, collection: str, field: str, transaction: str | None = None
     ) -> int | None:

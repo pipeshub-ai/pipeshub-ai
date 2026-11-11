@@ -68241,7 +68241,14 @@ paths:
             than the path parameter; or the model is the embedding model in use while
             the vector store holds its vectors (standard error envelope, message
             "This model is embedding your indexed content. Delete the embeddings in
-            Labs first, then change or delete the model and re-embed."); or `VALIDATION_ERROR`
+            Labs first, then change or delete the model and re-embed."; when it is the
+            only embedding model, "This is the only embedding model, so deleting it would
+            switch embedding to the built-in model, which cannot use the vectors already
+            stored. To keep your embeddings, first add the same model from another provider,
+            at the same size, then delete this one. To use a different model, delete the
+            embeddings in Labs first, then change or delete this model and re-embed.";
+            a vector store that cannot change model in place, such as pgvector, answers
+            with its own message instead); or `VALIDATION_ERROR`
             naming `params.modelType`; or the request-wide HTML filter (`HTTP_BAD_REQUEST`)
             when the query string looks like markup or script, before the token is checked.
 
@@ -68264,6 +68271,12 @@ paths:
                     error:
                       code: HTTP_BAD_REQUEST
                       message: "This model is embedding your indexed content. Delete the embeddings in Labs first, then change or delete the model and re-embed."
+                lastEmbeddingModel:
+                  summary: The only embedding model, with vectors stored
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "This is the only embedding model, so deleting it would switch embedding to the built-in model, which cannot use the vectors already stored. Add the model that should take over first, then delete this one. The same model from another provider, at the same size, keeps your embeddings."
         '401':
           description: Unauthorized
           content:

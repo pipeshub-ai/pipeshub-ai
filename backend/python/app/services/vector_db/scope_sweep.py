@@ -86,12 +86,12 @@ class SweepRow:
 
 class ScopeSweep:
     def __init__(self, graph_provider: IGraphDBProvider, vector_db: IVectorDBService, locator: CollectionLocator, *,
-                 logger: logging.Logger | None = None, clock: Callable[[], float] = time.time,
+                 logger: logging.Logger | None = None, clock: Callable[[], float] | None = None,
                  full_pass_pages: int = FULL_PASS_PAGES) -> None:
-        self._graph, self._clock, self._pages = graph_provider, clock, full_pass_pages
+        self._graph, self._injected, self._clock, self._pages = graph_provider, clock, clock or time.time, full_pass_pages
         self._log = logger or logging.getLogger(__name__)
-        self._job = ScopeRewriteJob(graph_provider, vector_db, locator, logger=self._log, clock=clock)
-        self._backfill = ScopeBackfill(graph_provider, vector_db, locator, self._log, clock=clock)
+        self._job = ScopeRewriteJob(graph_provider, vector_db, locator, logger=self._log, clock=self._clock)
+        self._backfill = ScopeBackfill(graph_provider, vector_db, locator, self._log, clock=self._clock)
 
     async def run_once(self, org_id: str, connectors: Collection[str] | None = None) -> list[SweepRow]:
         """Sweep the organisation's connectors (or only ``connectors``). Raises only when the connectors cannot be listed."""
@@ -130,7 +130,7 @@ class ScopeSweep:
 
     async def _work(self, org_id: str, connector_id: str) -> SweepRow:
         try:
-            recovered = await recover_expired_writes(self._graph, connector_id, clock=self._clock)
+            recovered = await recover_expired_writes(self._graph, connector_id, clock=self._injected)
         except Exception:      # a recovery that fails must not keep pending roots from being rewritten; the next pass tries it again
             self._log.exception("could not recover the expired writes of %s", connector_id)
             recovered = 0

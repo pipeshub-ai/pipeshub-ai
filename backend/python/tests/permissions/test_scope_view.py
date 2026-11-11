@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from app.services.permissions.rewrite_lease import REWRITE_LEASE_KEY
 from app.services.permissions.structure_generation import (
     CLOSED_KEY,
     GENERATION_KEY,
@@ -105,6 +106,12 @@ def test_stale_points_and_a_failing_sweep_are_shown() -> None:
     assert [a.split(":")[0] for a in v.attention] == ["stale_points", "sweep_failing"] and "Boom: x" in v.attention[1] and "next try in 100 s" in v.attention[1]
 
 
+def test_a_retry_time_and_a_rewriter_lease_are_read_by_the_host_clock_not_the_store_clock() -> None:
+    app = {**current_app(), SWEEP_KEY: '{"n":3,"e":"Boom: x","t":1000100}', REWRITE_LEASE_KEY: '{"h":"w","u":1000300}'}
+    v = connector_view("c", app, clock=Clock(), store_time=1_000_000.0 + 5000)      # the store's clock is far ahead of this host's
+    assert "next try in 100 s" in v.attention[0] and v.info == ["a rewriter holds the connector until 300 s from now"]
+
+
 class Apps:
     def __init__(self, *docs: dict) -> None:
         self.docs = docs
@@ -181,8 +188,37 @@ async def test_an_unclosed_write_with_no_lease_alone_is_listed_and_needs_attenti
     assert [a.split(":")[0] for a in view.connectors[0].attention] == ["open_write_unleased"]
 
 
+def test_a_lease_written_without_the_store_clock_is_not_called_dead_on_its_own_deadline() -> None:
+    clock = Clock()
+    app = {**current_app(), OPENED_KEY: 1, OPEN_WRITES_KEY: f'{{"t":{{"u":{int(clock.now) - 86400},"k":1}}}}'}
+    v = connector_view("c", app, clock=clock)
+    assert not v.attention and any("in flight" in i for i in v.info)
+
+
 def test_a_lease_inside_its_grace_never_prints_a_negative_time() -> None:
     clock = Clock()
     app = {**current_app(), OPENED_KEY: 1, OPEN_WRITES_KEY: f'{{"t":{{"u":{int(clock.now) - 10}}}}}'}
     v = connector_view("c", app, clock=clock)
     assert not v.attention and v.info == ["1 write(s) in flight, the next lease has run out and is inside its grace"]
+
+
+class UnreadableVdb(Vdb):
+    def __init__(self, n: int | Exception) -> None:
+        super().__init__((0, 0.0))
+        self.n = n
+
+    async def unreadable_group_rows(self, org: str) -> int:
+        if isinstance(self.n, Exception):
+            raise self.n
+        return self.n
+
+
+async def test_group_rows_with_a_trusted_stamp_and_a_null_list_are_shown_and_counted() -> None:
+    from app.services.permissions.metrics import SERVING_UNREADABLE_ROWS
+
+    apps = Apps({"_key": "c", **current_app()})
+    view = await org_view(apps, "o", UnreadableVdb(4), clock=Clock())
+    assert view.needs_attention and "unreadable_group_rows: 4" in view.lines()[-1]
+    assert SERVING_UNREADABLE_ROWS._metric.labels("pgvector", "o")._value.get() == 4
+    assert not (await org_view(apps, "o", UnreadableVdb(0), clock=Clock())).needs_attention
+    assert "unreadable_group_rows_unknown" in (await org_view(apps, "o", UnreadableVdb(RuntimeError("x")), clock=Clock())).notes[0]

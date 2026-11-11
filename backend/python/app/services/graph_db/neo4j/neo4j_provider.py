@@ -9020,6 +9020,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return Neo4jHierarchyView(lambda: self.client)
 
     @override
+    async def store_time(self) -> float:
+        rows = await self.client.execute_query("RETURN timestamp() AS t")
+        return float(rows[0]["t"]) / 1000
+
+    @override
     async def increment_node_field(
         self, key: str, collection: str, field: str, transaction: str | None = None
     ) -> int | None:
