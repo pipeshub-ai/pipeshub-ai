@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -9,6 +10,9 @@ from app.core.db import DbConfig, KernelDB
 from app.core.org_context import OrgContext, bind
 
 from .pg_support import new_org
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(120)]
 
@@ -21,7 +25,7 @@ WRITES = {
 
 
 @pytest.fixture
-async def query_db(monkeypatch: pytest.MonkeyPatch):
+async def query_db(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[KernelDB]:
     if not os.environ.get("PG_QUERY_URL"):
         pytest.skip("PG_QUERY_URL is not set")
     monkeypatch.setenv("PG_CORE_URL", os.environ["PG_QUERY_URL"])
@@ -34,7 +38,7 @@ async def query_db(monkeypatch: pytest.MonkeyPatch):
 async def _refused(db: KernelDB, org: str, sql: str) -> str:
     async def go(tx) -> None:
         await tx.execute(sql)
-    with bind(OrgContext(org, None, "job", "job:test", "t")), pytest.raises(Exception) as e:  # noqa: PT011
+    with bind(OrgContext(org, None, "job", "job:test", "t")), pytest.raises(Exception) as e:
         await db.run(go, write=True)
     return str(e.value).lower()
 
