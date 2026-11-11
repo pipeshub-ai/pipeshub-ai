@@ -17,6 +17,7 @@ from app.config.constants.arangodb import (
 from app.connectors.core.base.connector.connector_service import connector_sync_lock
 from app.connectors.core.sync.sync_runner import _run_sync_alone
 from app.services.messaging.kafka.handlers.entity import EntityEventService
+from app.utils.logger import log_record_fields
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1553,9 +1554,10 @@ class TestGetOrCreateKnowledgeBaseCreationActive:
         svc.graph_provider.rollback_transaction.assert_awaited_once_with("txn1")
 
     @pytest.mark.asyncio
-    async def test_connector_registration_failure_still_returns_kb(self):
+    async def test_connector_registration_failure_still_returns_kb(self, caplog):
         """KB app is created even when runtime connector registration fails."""
         svc = _make_service()
+        svc.logger = logging.getLogger("test_entity_handler.kb")
         svc.graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
         svc.graph_provider.begin_transaction = AsyncMock(return_value="txn1")
         svc.graph_provider.batch_upsert_nodes = AsyncMock()
@@ -1570,15 +1572,17 @@ class TestGetOrCreateKnowledgeBaseCreationActive:
             new_callable=AsyncMock,
             side_effect=RuntimeError("connector start failed"),
         ):
-            result = await svc._get_or_create_knowledge_base(
-                "user-key", "user-1", "org-1"
-            )
+            with caplog.at_level(logging.DEBUG, logger=svc.logger.name):
+                result = await svc._get_or_create_knowledge_base(
+                    "user-key", "user-1", "org-1"
+                )
 
         assert result.get("success") is True
         assert "kb_id" in result
         kb_data = svc.graph_provider.batch_upsert_nodes.call_args[0][0][0]
         assert kb_data["vectorMembershipBackfilled"] is True
-        svc.logger.warning.assert_called()
+        failed = [r for r in caplog.records if r.getMessage() == "entity_event.step_failed"]
+        assert [log_record_fields(r)["step"] for r in failed] == ["register_kb_connector"]
 
 
 # ===================================================================
@@ -1775,14 +1779,18 @@ class TestUserAddedConnectorLink:
         plain.link_new_users.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_failing_connector_does_not_stop_the_rest_or_raise(self, no_debounce: None) -> None:
+    async def test_failing_connector_does_not_stop_the_rest_or_raise(self, no_debounce: None, caplog) -> None:
         bad = _connector(link=AsyncMock(side_effect=RuntimeError("boom")))
         good = _connector()
         svc = _link_service({"c1": bad, "c2": good})
-        svc._schedule_connector_link("org-1")
-        await _drain(svc)
+        svc.logger = logging.getLogger("test_entity_handler.link")
+        with caplog.at_level(logging.DEBUG, logger=svc.logger.name):
+            svc._schedule_connector_link("org-1")
+            await _drain(svc)
         good.link_new_users.assert_awaited_once()
-        svc.logger.warning.assert_called_once()
+        [record] = [r for r in caplog.records if r.name == svc.logger.name]
+        fields = log_record_fields(record)
+        assert (record.getMessage(), fields["step"], fields["connector_id"]) == ("entity_event.step_failed", "link_users", "c1")
 
     @pytest.mark.asyncio
     async def test_a_burst_is_one_pass_per_connector(self) -> None:
