@@ -126,3 +126,35 @@ async def test_the_sweep_records_a_failure_with_its_backoff_and_forgets_it_when_
     await backend.provider.update_node(conn, CollectionNames.APPS.value, {PENDING_KEY: None})
     assert next(r for r in await sweep.run_once(org, [conn]) if r.connector_id == conn).action == "idle"
     assert not (await app_of(backend, conn)).get(SWEEP_KEY)
+
+
+async def test_the_view_shows_a_killed_write_until_the_sweep_closes_it(backend, monkeypatch) -> None:
+    from unittest.mock import MagicMock
+
+    from app.services.vector_db.scope_sweep import ScopeSweep
+    from app.services.vector_db.scope_view import org_view
+
+    _, conn, *_ = await _world(backend)
+    await finish_pass(backend.provider, conn)
+    org = (await app_of(backend, conn))["orgId"]
+    clock = Clock()
+
+    async def get_org_apps(*a, **kw) -> list:
+        return [await app_of(backend, conn)]
+
+    monkeypatch.setattr(backend.provider, "get_org_apps", get_org_apps)
+    await open_write(backend.provider, conn, ["root-x"], clock=clock)                  # the process dies
+    assert not (await org_view(backend.provider, org, clock=clock)).needs_attention      # inside its lease
+    clock.now += OPEN_WRITE_SECONDS + OPEN_WRITE_GRACE_SECONDS + 1
+    seen = await org_view(backend.provider, org, clock=clock)
+    assert [a.split(":")[0] for a in seen.connectors[0].attention] == ["open_write_expired"]
+    sweep = ScopeSweep(backend.provider, MagicMock(), MagicMock(), clock=clock)
+    monkeypatch.setattr(sweep._job, "run_connector", lambda *a, **k: _busy())            # (the rewrite itself is the engine's; the view is what is under test)
+    await sweep.run_once(org, [conn])
+    assert [a.split(":")[0] for a in (await org_view(backend.provider, org, clock=clock)).connectors[0].attention] == ["pending_roots"]
+
+
+async def _busy() -> object:
+    from app.services.vector_db.scope_rewrite import RewriteResult
+
+    return RewriteResult("o", "c", state="busy")
