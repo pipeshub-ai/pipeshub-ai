@@ -34,6 +34,9 @@ const AUDITED_SCOPES: Readonly<Record<string, AuthRefusalEvent>> = {
   [TokenScopes.TOKEN_REFRESH]: 'auth.session.refresh',
   [TokenScopes.PASSWORD_RESET]: 'auth.password_reset.complete',
   [TokenScopes.VALIDATE_EMAIL]: 'auth.email.change',
+  // EE mounts these (org email verification at signup); OSS has no route for them.
+  [TokenScopes.ORG_EMAIL_VERIFY]: 'auth.email.verify',
+  [TokenScopes.EMAIL_VERIFIED]: 'auth.email.verify',
 };
 
 const CLIENT_NAME_HEADER = 'client-name';
