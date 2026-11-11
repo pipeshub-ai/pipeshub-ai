@@ -5329,7 +5329,10 @@ export const search =
         message?: string;
         status?: string;
       };
-      if (aiResponse.statusCode === 404 && Array.isArray(notFound.accessNotices)) {
+      if (
+        aiResponse.statusCode === 404 &&
+        Array.isArray(notFound.accessNotices)
+      ) {
         res.status(HTTP_STATUS.NOT_FOUND).json({
           error: { code: 'NOT_FOUND', message: notFound.message },
           status: notFound.status,

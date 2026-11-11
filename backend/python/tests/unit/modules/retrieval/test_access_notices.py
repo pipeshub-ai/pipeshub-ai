@@ -58,8 +58,8 @@ async def _run(notices: list[dict[str, str]]):  # noqa: ANN202
 
 async def test_the_final_answer_carries_the_notices_once_and_the_next_run_starts_clean() -> None:
     n = [{"code": "connector_syncing", "connectorId": "c1"}]
-    first = [e async for e in _run(n)][0]
-    second = [e async for e in _run([])][0]
+    first = next(iter([e async for e in _run(n)]))
+    second = next(iter([e async for e in _run([])]))
     assert first["accessNotices"] == n
     assert "accessNotices" not in second
     assert degraded_notice.access_notices() == []
