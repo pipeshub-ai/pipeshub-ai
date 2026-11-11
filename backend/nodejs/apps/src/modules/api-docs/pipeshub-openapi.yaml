@@ -21681,7 +21681,7 @@ components:
           example: "Skill 'deploy-runbook' not found"
     SkillsValidationErrorItem:
       type: object
-      description: One failed field, in Pydantic's error format with `msg` reworded in plain language.
+      description: One failed field, in Pydantic's error format with `msg` reworded in plain language. The rejected value is never sent back.
       required: [type, loc, msg]
       properties:
         type:
@@ -21699,11 +21699,6 @@ components:
         msg:
           type: string
           example: Description is required.
-        input:
-          description: |
-            The rejected value exactly as the caller sent it. It can be any JSON type, so its
-            shape is not constrained; it is `null` when a required query parameter is missing.
-          additionalProperties: true
         ctx:
           type: object
           description: |
