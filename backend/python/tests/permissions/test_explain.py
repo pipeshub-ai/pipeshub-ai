@@ -258,3 +258,60 @@ async def test_a_person_of_another_organisation_is_not_found_while_one_of_this_o
         with pytest.raises(ExplainNotFound):
             await service.explain(ns.org, theirs.id("eve"), ns.id("openrec"), asker_key=ns.id("boss"))
         assert (await service.explain(ns.org, ns.id("dana"), ns.id("openrec"), asker_key=ns.id("boss"))).admitted
+
+
+def _vault_world() -> World:
+    """`salary-sheet` is under the `vault` folder, which only `hrer` may open. `admin` is gated on the connector and holds no
+    grant on the vault: it cannot read the folder or the record. `payroll-secret` is what a leak would show."""
+    b = WorldBuilder()
+    for u in ("admin", "hrer"):
+        b.principal(u)
+        b.gate(u, "A")
+    b.node(Node("A", "app", app_type="DRIVE"))
+    b.node(Node("vault", "group", connector="A", rule="RESTRICTED"))
+    b.node(Node("salary-sheet", "record", connector="A", belongs=("vault",), vrid="payroll-secret"))
+    b.parent("A", "vault")
+    b.parent("vault", "salary-sheet")
+    b.inherit("vault", "A")
+    b.inherit("salary-sheet", "vault")
+    b.grant("hrer", "vault")
+    return b.build()
+
+
+@pytest.mark.integration
+@pytest.mark.timeout(3000)
+async def test_an_admin_who_cannot_read_a_record_learns_the_verdict_and_nothing_of_it_and_gains_no_access(graph_layers: list[GraphCheckLayer]) -> None:
+    import json
+
+    world = _vault_world()
+    for layer in graph_layers:
+        await layer.preload([world])
+        ns = await layer._ns(world)
+        provider = layer._provider
+        titles = []
+        for key, collection in ((ns.id("vault"), "recordGroups"), (ns.id("salary-sheet"), "records")):
+            doc = await provider.get_document(key, collection)  # type: ignore[attr-defined]
+            titles += [str(v) for k, v in doc.items() if k in ("groupName", "recordName", "name", "virtualRecordId", "externalRecordId")]
+        assert {"vault", "salary-sheet"} <= set(titles)
+        before = await layer.admitted(world, "admin", ["vault", "salary-sheet"])
+        assert before == set(), layer.name  # the admin cannot read either
+
+        service = ExplainService(provider)  # type: ignore[arg-type]
+        got = await service.explain(ns.org, ns.id("hrer"), ns.id("salary-sheet"), asker_key=ns.id("admin"))
+        wire = json.dumps(got.as_dict())
+
+        assert got.admitted is True  # the person can read it: the verdict is given
+        assert json.loads(wire)["admitted"] is True
+        assert set(json.loads(wire)) == {"admitted", "code", "container", "path", "reference"}
+        for title in (*titles, ns.id("vault"), ns.id("salary-sheet"), ns.prefix):
+            assert title not in wire, (layer.name, title)  # no title, key, virtual record id, or any id of the record or its folder
+        assert not any(w in wire.lower() for w in ("http", "url", "link", "content"))
+        assert [c["restricted"] for c in json.loads(wire)["path"]] == [False, True]  # the connector is named, the vault is "a restricted area"
+        assert json.loads(wire)["path"][1]["name"] is None
+        # asking about it granted nothing
+        assert await layer.admitted(world, "admin", ["vault", "salary-sheet"]) == before, layer.name
+
+        denied = await service.explain(ns.org, ns.id("admin"), ns.id("salary-sheet"), asker_key=ns.id("admin"))
+        wire = json.dumps(denied.as_dict())
+        assert denied.admitted is False and "vault" not in wire and "salary-sheet" not in wire
+        assert json.loads(wire)["container"] == {"name": None, "restricted": True}

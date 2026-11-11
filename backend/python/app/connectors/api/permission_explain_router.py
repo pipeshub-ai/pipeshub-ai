@@ -37,10 +37,6 @@ def _service(request: Request, provider: IGraphDBProvider) -> ExplainService:
     return state.explain_service
 
 
-def _ref(c: ContainerRef | None) -> dict | None:
-    return None if c is None else {"name": c.name, "restricted": c.restricted}
-
-
 @permission_explain_router.get(
     "/api/v1/connectors/{connector_id}/permissions/explain",
     dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))],
@@ -72,12 +68,4 @@ async def explain_permission(
     except (ViewerScopesUnavailable, PermissionVerificationUnavailableError) as exc:
         raise HTTPException(
             status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail="The access check is unavailable. Try again.") from exc
-    return {
-        "admitted": result.admitted,
-        "code": result.code,
-        "container": _ref(result.container),
-        "path": [_ref(c) for c in result.path],
-        "reference": result.reference,
-    }
-
-
+    return result.as_dict()

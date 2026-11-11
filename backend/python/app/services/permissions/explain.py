@@ -81,6 +81,13 @@ class Explanation:
     #: Given to support when the reason looks wrong; it is also in the mismatch log line.
     reference: str
 
+    def as_dict(self) -> dict[str, object]:
+        """The one wire shape: verdict, code, containers (a name or "restricted") and the reference. Nothing of the record itself, and no
+        id or link: what the asking admin may not read is never in it."""
+        ref = lambda c: None if c is None else {"name": c.name, "restricted": c.restricted}  # noqa: E731
+        return {"admitted": self.admitted, "code": self.code, "container": ref(self.container),
+                "path": [ref(c) for c in self.path], "reference": self.reference}
+
 
 @dataclass(frozen=True)
 class Mismatch:

@@ -251,4 +251,24 @@ describe('AccessCheckDialog', () => {
     expect(screen.queryByRole('heading', { name: /Dana Reyes/ })).toBeNull();
     expect(screen.queryByRole('status')).toBeNull();
   });
+
+  it('offers no link or button that opens the record, whatever the answer', async () => {
+    for (const result of [
+      answer(),
+      answer({ admitted: true, code: 'granted', container: null, path: [] }),
+      answer({ container: { name: null, restricted: true } }),
+    ]) {
+      cleanup();
+      explainAccess.mockResolvedValue(result);
+      await open();
+      await check('rec-1');
+      await screen.findByRole('heading', { name: /Dana Reyes (can|cannot) see this record\./ });
+
+      const dialog = screen.getByRole('dialog');
+      expect(dialog.querySelectorAll('a, [href], [role="link"]').length).toBe(0);
+      const buttons = screen.getAllByRole('button').map((b) => b.textContent);
+      // Only the form's own controls (the person picker shows the chosen name): nothing that opens a record.
+      expect(buttons.every((n) => ['Check', 'Close', 'Dana Reyes', ''].includes(n ?? ''))).toBe(true);
+    }
+  });
 });
