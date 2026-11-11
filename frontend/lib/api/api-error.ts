@@ -37,6 +37,8 @@ interface ApiErrorResponse {
   detail?: string | Array<string | { msg?: string }>;
   /** Retrieval/search and other services: machine-readable outcome (e.g. `accessible_records_not_found`). */
   status?: string;
+  /** Why a search found nothing: codes the client words (see AccessNotice). */
+  accessNotices?: unknown;
   /** Python backend error responses (e.g., KB service permission errors). */
   reason?: string;
   /** Node error middleware: the reference to quote when asking for help. */
@@ -205,7 +207,9 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
           type: ErrorType.NOT_FOUND,
           message: message || 'The requested resource was not found.',
           statusCode: status,
-          details: bodyStatus ? { ...baseDetails, apiStatus: bodyStatus } : data?.details,
+          details: bodyStatus
+            ? { ...baseDetails, apiStatus: bodyStatus, ...(data?.accessNotices ? { accessNotices: data.accessNotices } : {}) }
+            : data?.details,
           originalError: error,
         };
       }

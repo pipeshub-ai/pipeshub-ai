@@ -112,3 +112,25 @@ describe('RecordViewShell on phones', () => {
     await waitFor(() => expect(env.push).toHaveBeenCalledWith('/knowledge-base/?nodeType=app&nodeId=kb-1'));
   });
 });
+
+describe('RecordViewShell when the record cannot be read', () => {
+  it.each([403, 404])('shows the one no-access page for a %i, naming nothing', async (status) => {
+    const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+    vi.mocked(KnowledgeBaseApi.getRecordDetails).mockRejectedValueOnce({ type: 'NOT_FOUND', message: 'Record Plan.pdf was deleted', statusCode: status });
+    renderShell();
+
+    expect(await screen.findByTestId('no-access-page')).toBeTruthy();
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+    expect(document.body.textContent).not.toContain('Plan.pdf');
+    expect(screen.queryByRole('link')).toBeNull();
+  });
+
+  it('keeps the ordinary error for a failure that says nothing about access', async () => {
+    const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+    vi.mocked(KnowledgeBaseApi.getRecordDetails).mockRejectedValueOnce({ type: 'SERVER_ERROR', message: 'boom', statusCode: 500 });
+    renderShell();
+
+    await waitFor(() => expect(screen.queryByText('loading')).toBeNull());
+    expect(screen.queryByTestId('no-access-page')).toBeNull();
+  });
+});

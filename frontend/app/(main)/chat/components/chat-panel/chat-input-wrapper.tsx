@@ -106,7 +106,11 @@ export function ChatInputWrapper() {
       if (isRequestCancelledError(error) || isStale()) return;
       if (isSearchNoAccessibleDocumentsNotFound(error)) {
         // Keep the server's reason ("No documents are available…") for the empty state.
-        store.setSearchResults([], null, query, { message: (error as Error).message });
+        store.setSearchResults([], null, query, {
+          message: (error as Error).message,
+          // Codes say whether "nothing" is because a source is still syncing.
+          searchResponse: { searchResults: [], accessNotices: (error as { details?: { accessNotices?: unknown } }).details?.accessNotices },
+        });
         return;
       }
       store.setSearchError((error as Error)?.message || 'Search failed');

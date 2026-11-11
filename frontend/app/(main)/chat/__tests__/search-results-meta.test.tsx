@@ -121,4 +121,42 @@ describe('search response meta', () => {
     expect(queryByText('chat.noResultsFor')).toBeNull();
     expect(container.querySelector('a')?.getAttribute('href')).toBe('/record/r%201/');
   });
+
+  it('shows the localised notices from the search response', () => {
+    useChatStore.setState({
+      searchQuery: 'q',
+      searchError: null,
+      searchResponseMeta: { searchId: 's', searchResponse: { searchResults: [], accessNotices: [{ code: 'permissions_updating' }] } },
+      isSearching: false,
+    });
+    const { getByRole } = render(<Theme><SearchResultsView /></Theme>);
+    expect(getByRole('status').textContent).toContain('accessNotice.permissions_updating');
+  });
+
+  it('replaces "No results" with a syncing message when a source is still syncing', () => {
+    useChatStore.setState({
+      searchQuery: 'q',
+      searchError: null,
+      searchResults: [],
+      searchResponseMeta: { searchResponse: { searchResults: [], accessNotices: [{ code: 'connector_syncing', connectorName: 'Jira' }] } },
+      isSearching: false,
+    });
+    const { container } = render(<Theme><SearchResultsView /></Theme>);
+    expect(container.textContent).toContain('accessNotice.emptySyncing');
+    expect(container.textContent).toContain('accessNotice.noAccess.justGotAccess');
+    expect(container.textContent).not.toContain('chat.noResultsFor');
+  });
+
+  it('keeps the plain empty message when there is no notice', () => {
+    useChatStore.setState({
+      searchQuery: 'q',
+      searchError: null,
+      searchResults: [],
+      searchResponseMeta: { searchResponse: { searchResults: [] } },
+      isSearching: false,
+    });
+    const { container } = render(<Theme><SearchResultsView /></Theme>);
+    expect(container.textContent).toContain('chat.noResultsFor');
+    expect(container.textContent).not.toContain('accessNotice');
+  });
 });

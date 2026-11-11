@@ -27,6 +27,7 @@ import {
   requiresForceReindexConfirmation,
 } from '@/app/(main)/knowledge-base/utils/reindex-label';
 import { toast } from '@/lib/store/toast-store';
+import { NoAccessPage } from '@/app/components/feedback';
 import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
 import { DeleteConfirmationDialog } from '@/app/(main)/knowledge-base/components/dialogs/delete-confirmation-dialog';
 import { ReindexBlockedDialog } from '@/app/(main)/knowledge-base/components/dialogs/reindex-blocked-dialog';
@@ -92,6 +93,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
   const [fileType, setFileType] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [noAccess, setNoAccess] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
   const [currentPage, setCurrentPage] = useState(1);
@@ -118,6 +120,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
     let cancelled = false;
     setIsLoading(true);
     setError(null);
+    setNoAccess(false);
     setPreviewError(null);
     setRecordDetails(null);
     revokeBlobUrl();
@@ -219,7 +222,10 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
         }
       } catch (e) {
         if (cancelled) return;
-        setError(getErrorMessage(e, t('recordView.loadFailed')));
+        // 403 and 404 look the same on purpose: a revoked, a never-held and a deleted record must not be told apart.
+        const status = (e as { statusCode?: number })?.statusCode;
+        if (status === 403 || status === 404) setNoAccess(true);
+        else setError(getErrorMessage(e, t('recordView.loadFailed')));
         setIsLoading(false);
       }
     })();
@@ -420,6 +426,8 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
       <LoadingScreen />
     );
   }
+
+  if (noAccess) return <NoAccessPage recordId={recordId} />;
 
   return (
     <Flex

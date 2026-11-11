@@ -2,6 +2,7 @@ import type { AppliedFilters, AskUserQuestionAnswer, AskUserQuestionPayload, Att
 import type { ConfidenceLevel, ModelInfo } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import type { ChatStreamErrorInfo } from '../../stream-error';
+import type { AccessNotice } from '@/app/components/feedback/access-notice';
 
 export interface MessagePair {
   key: string;
@@ -12,6 +13,7 @@ export interface MessagePair {
   citationMaps: CitationMaps;
   confidence?: ConfidenceLevel;
   searchDegraded?: boolean;
+  accessNotices?: AccessNotice[];
   isStreaming: boolean;
   modelInfo?: ModelInfo;
   feedbackInfo?: { value?: 'like' | 'dislike' };
@@ -57,6 +59,7 @@ type AssistantCustom = {
   streamError?: ChatStreamErrorInfo;
   /** A search behind this answer was answered from a partial search. */
   searchDegraded?: boolean;
+  accessNotices?: AccessNotice[];
 };
 
 type UserCustom = {
@@ -178,6 +181,7 @@ export function buildMessagePairs(
           : (metadata?.citationMaps || emptyCitationMaps),
         confidence: metadata?.confidence,
         searchDegraded: metadata?.searchDegraded === true,
+        ...(metadata?.accessNotices?.length ? { accessNotices: metadata.accessNotices } : {}),
         isStreaming: isCurrentlyStreaming || isBeingRegenerated,
         modelInfo: metadata?.modelInfo,
         feedbackInfo: metadata?.feedbackInfo,

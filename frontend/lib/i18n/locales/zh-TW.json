@@ -5868,5 +5868,22 @@
     },
     "nothingNew": "此節點沒有更多內容可顯示。",
     "tableOnly": "為保持流暢，僅顯示表格。"
+  },
+  "accessNotice": {
+    "permissions_updating": "部分來源正在更新權限，因此幾分鐘內可能缺少一些結果。",
+    "connector_syncing": "{{name}} 仍在同步，因此來自它的結果可能不完整。",
+    "connector_syncing_unnamed": "有來源仍在同步，因此來自它的結果可能不完整。",
+    "check_unavailable": "我們暫時無法檢查您有權存取哪些文件，因此不顯示結果。請一分鐘後再試。",
+    "emptySyncing": "暫時沒有可搜尋的內容。{{name}} 仍在同步。",
+    "emptySyncing_unnamed": "暫時沒有可搜尋的內容。有來源仍在同步。",
+    "noAccess": {
+      "title": "您無權存取此項目",
+      "body": "它可能已被移動、刪除或受到限制。請詢問擁有者，或在您有連結時從原處開啟。",
+      "justGotAccess": "剛在來源端取得存取權限？新的存取權限會在下次同步後顯示。",
+      "openIn": "在 {{vendor}} 中開啟",
+      "openInSource": "開啟原件",
+      "copyDetails": "複製詳細資料給管理員",
+      "copied": "詳細資料已複製"
+    }
   }
 }
