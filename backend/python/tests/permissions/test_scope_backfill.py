@@ -13,6 +13,7 @@ from app.core import org_context as oc
 from app.services.permissions.mode import ENV_SCOPE_FIELDS
 from app.services.permissions.scope_fields import (
     ENV_SCOPE_GENERATION,
+    SCOPE_FIELDS_VERSION,
     SCOPE_KEYS,
     ScopeFields,
 )
@@ -673,6 +674,31 @@ async def test_counters_that_do_not_read_stop_the_run_before_it_writes_anything_
 
 async def test_the_progress_line_shows_the_mark_it_started_from() -> None:
     assert "unsafe=1234" in scope_backfill.Progress(unsafe=1234).line() and "unsafe=None" in scope_backfill.Progress().line()
+
+
+async def test_a_connector_back_filled_before_a_record_without_a_group_was_left_to_the_request_is_redone() -> None:
+    """Version 5 stamped such a record `container`, which hides it from a viewer past the gate who reads no group: finished, it is still not current."""
+    from app.services.permissions.scope_fields import current_scope_generation
+    from app.services.vector_db import scope_expr as sx
+    from app.services.vector_db.filters import ScopeFilter
+
+    from .serving_corpus import SCENARIOS
+
+    vdb = InMemoryVectorDB()
+    loaded = await load(vdb, COLL, {"w": next(s for s in SCENARIOS if s.id == "REGR-01").final_world()})
+    job, app = ScopeBackfill(loaded.graph, vdb, loaded.locator, log, clock=advancing_clock()), loaded.apps[0]
+    assert (await job.run_connector(ORG, app)).state == DONE
+    pid, point = next((i, q) for i, q in vdb.collections[COLL].items() if q.payload["scopeStamp"] == "legacy" and not q.payload["recordGroupIds"])
+    point.payload.update({"scopeStamp": "container", "scopeFieldsVersion": 5})              # what version 5 stamped it
+    loaded.graph.app_docs[app]["scopeBackfillVersion"] = 5                  # the install finished its pass under version 5
+    assert not app_is_current(loaded.graph.app_docs[app]) and await StampCurrency(loaded.graph).current([app]) == set()
+    flt = ScopeFilter(current=frozenset({app}), version=5, generation=current_scope_generation(), defer=True)
+    assert not sx.evaluate(sx.admits(flt), point.payload)          # served from that stamp, the record would vanish
+    assert (await job.run_connector(ORG, app)).state == DONE
+    payload = point.payload
+    assert app_is_current(loaded.graph.app_docs[app]) and payload["scopeStamp"] == "legacy"
+    served = ScopeFilter(current=frozenset({app}), version=SCOPE_FIELDS_VERSION, generation=current_scope_generation(), defer=True)
+    assert sx.evaluate(sx.admits(served), payload)
 
 
 # ---- a pass that lost the connector's lease writes nothing more ----------------------------------------------------------------------------

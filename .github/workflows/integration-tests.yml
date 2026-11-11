@@ -600,7 +600,7 @@ jobs:
         if: env.RUN_PLAYWRIGHT == 'true'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '20'
+          node-version: '24'
 
       - name: Install frontend deps and Playwright browsers
         if: env.RUN_PLAYWRIGHT == 'true'
@@ -702,12 +702,12 @@ jobs:
           path: connectors-simulator-localfs
           persist-credentials: false
 
-      # Node 22 replaces the Playwright step's Node 20 for the rest of a dispatch job; the browser tests run on it.
+      # The Playwright step sets up Node only when it runs; the agent needs Node either way.
       - name: Set up Node.js for the Local FS desktop agent
         if: env.NEEDS_LOCAL_FS_SIM == 'true'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          node-version: '24'
 
       # The agent takes ts-node from the Node backend and chokidar and socket.io-client from the frontend.
       # A dispatch job has the frontend's already, from the Playwright step. It never starts Electron.
