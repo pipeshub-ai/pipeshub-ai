@@ -723,9 +723,10 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
     ]
     stubConversation(rows)
     // Two rows a page: the second page holds only the card rows, the answer is on the first.
-    sinon.stub(MongoConversationRepository.prototype, 'listMessages').callsFake(async (_id: string, q: any) =>
-      rows.slice(q.skip ?? 0, (q.skip ?? 0) + (q.limit ?? rows.length)).map((dto) => ({ dto: { ...dto } })) as any,
-    )
+    sinon.stub(MongoConversationRepository.prototype, 'listMessages').callsFake(async (_id: string, q: { skip?: number; limit?: number }) => {
+      const skip = q.skip ?? 0
+      return rows.slice(skip, skip + (q.limit ?? rows.length)).map((dto) => ({ dto: { ...dto } })) as any
+    })
     const r = res()
     await getConversationById(appConfig)(req(OWNER, { params: { conversationId: SESSION }, query: { page: '1', limit: '2' } }), r, sinon.stub())
     const page = r.json.firstCall.args[0].conversation.messages as any[]
