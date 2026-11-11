@@ -1427,12 +1427,28 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _drive_restrictions_of(self, drive_id: str) -> dict[str, bool]:
         """The restrictions of one of this domain's shared drives. A drive whose listing carried none is asked
-        for directly; a failed read raises rather than reading as unrestricted."""
+        for directly; a failed read raises rather than reading as unrestricted.
+
+        An answer with no restrictions object is neither "restricted" nor "open": the drive keeps the flags its
+        items were last synced under, the run is reported incomplete, and nothing is listed again for it. A drive
+        never seen before is read as restricted until an answer with the object arrives."""
         if drive_id not in self._drive_restrictions:
             got = await self.drive_data_source.drives_get(
                 driveId=drive_id, useDomainAdminAccess=True, fields="id,restrictions"
             )
-            self._drive_restrictions[drive_id] = self._restriction_flags(got.get("restrictions"))
+            restrictions = got.get("restrictions")
+            if isinstance(restrictions, dict):
+                self._drive_restrictions[drive_id] = self._restriction_flags(restrictions)
+            else:
+                stored = await self.drive_delta_sync_point.read_sync_point(
+                    f"{DRIVE_RESTRICTIONS_SYNC_POINT_PREFIX}{drive_id}"
+                )
+                self.logger.warning(f"Shared drive {drive_id}: no restrictions in the answer; keeping the last known ones")
+                self._sync_ledger.note_incomplete()
+                self._drive_restrictions[drive_id] = (
+                    self._restriction_flags(stored) if any(flag in (stored or {}) for flag in DRIVE_RESTRICTION_FLAGS)
+                    else dict.fromkeys(DRIVE_RESTRICTION_FLAGS, True)
+                )
         return self._drive_restrictions[drive_id]
 
     @staticmethod
