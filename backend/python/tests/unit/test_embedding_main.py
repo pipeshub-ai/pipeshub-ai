@@ -1317,12 +1317,14 @@ class TestAbandonedRequests:
     """A client that left while its request queued must not cost an encode."""
 
     @staticmethod
-    def _manager(release: threading.Event, calls: list[str]) -> ModelManager:
+    def _manager(release: threading.Event, calls: list[str], started: threading.Event | None = None) -> ModelManager:
         manager = ModelManager(max_concurrency=1, query_reserved_slots=0)
         model = MagicMock()
 
         def encode(texts: list[str], **_kwargs: object) -> np.ndarray:
             calls.append(texts[0])
+            if started is not None:
+                started.set()
             release.wait(timeout=5)
             return np.zeros((len(texts), 2))
 
@@ -1361,10 +1363,10 @@ class TestAbandonedRequests:
     @pytest.mark.asyncio
     async def test_the_slot_is_held_until_the_thread_ends(self) -> None:
         release, calls = threading.Event(), []
-        manager = self._manager(release, calls)
+        started = threading.Event()
+        manager = self._manager(release, calls, started)
         task = asyncio.ensure_future(manager.encode("m", ["a"]))
-        while not calls:  # the thread is inside the model
-            await asyncio.sleep(0)
+        await asyncio.to_thread(started.wait, 5)  # the thread is inside the model
         task.cancel()  # the request is cancelled while its thread is inside the model
         with pytest.raises(asyncio.CancelledError):
             await task
