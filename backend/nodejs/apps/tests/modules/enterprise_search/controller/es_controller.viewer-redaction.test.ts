@@ -2,8 +2,8 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { Types } from 'mongoose'
-import { readableRecordIds } from '../../../../src/modules/enterprise_search/utils/viewer-redaction'
-import { addComputedFields } from '../../../../src/modules/enterprise_search/utils/utils'
+import { readableRecordIds, historyForModel, viewerOf } from '../../../../src/modules/enterprise_search/utils/viewer-redaction'
+import { addComputedFields, formatPreviousConversations } from '../../../../src/modules/enterprise_search/utils/utils'
 import {
   searchArchivedConversations,
   getAgentConversationById,
@@ -169,6 +169,13 @@ const stubConversation = (messages: unknown[]) => {
   sinon.stub(ChatSessionMessage, 'find').returns(chain(messages))
 }
 
+/**
+ * Per-record redaction applies to every message of another user. Answers that used a lost record
+ * are hidden whole (tests below), so these use a question turn, where per-record redaction shows.
+ */
+const stubPeerConversation = (messages: unknown[]) =>
+  stubConversation(messages.map((m) => ({ ...(m as object), messageType: 'user_query' })))
+
 const fetchConversation = async (userId: string) => {
   const r = res()
   const next = sinon.stub()
@@ -182,7 +189,7 @@ describe('shared chats: per-viewer citations', () => {
 
   it('a viewer gets a placeholder for each citation, excerpt and attachment they cannot read', async () => {
     const asked = stubAccess(['rec-ok', 'att-ok'])
-    stubConversation([answer()])
+    stubPeerConversation([answer()])
     const message = await fetchConversation(VIEWER)
 
     expect(message.citations).to.have.length(2)
@@ -196,14 +203,14 @@ describe('shared chats: per-viewer citations', () => {
 
   it('keeps every field and hides only the references to records the viewer cannot read', async () => {
     stubAccess(['rec-ok', R_OK])
-    stubConversation([richAnswer()])
+    stubPeerConversation([richAnswer()])
     expectRecordsOnlyRedacted(await fetchConversation(VIEWER))
   })
 
   it('reference data with a vendor id is shown when the record at its address is readable', async () => {
     stubAccess(['https://jira/PA-1'])
     const rd = (id: string, webUrl?: string) => ({ name: `Ticket ${id}`, id, ...(webUrl && { webUrl }) })
-    stubConversation([{ ...answer(), referenceData: [rd('PA-1', 'https://jira/PA-1'), rd('PA-2', 'https://jira/PA-2'), rd('PA-3'), rd('PA-4', 'https://jira/unresolved')] }])
+    stubPeerConversation([{ ...answer(), referenceData: [rd('PA-1', 'https://jira/PA-1'), rd('PA-2', 'https://jira/PA-2'), rd('PA-3'), rd('PA-4', 'https://jira/unresolved')] }])
     const message = await fetchConversation(VIEWER)
 
     expect(message.referenceData[0].name).to.equal('Ticket PA-1')
@@ -213,14 +220,14 @@ describe('shared chats: per-viewer citations', () => {
 
   it('a readable vendor id or recordId never admits an entry whose url is unreadable (Q3a)', async () => {
     stubAccess(['https://x/ok', R_OK])
-    stubConversation([{ ...answer(), referenceData: [{ name: SECRET, id: R_OK, webUrl: 'https://x/hidden' }] }])
+    stubPeerConversation([{ ...answer(), referenceData: [{ name: SECRET, id: R_OK, webUrl: 'https://x/hidden' }] }])
     const message = await fetchConversation(VIEWER)
     expect(JSON.stringify(message.referenceData)).to.not.contain(SECRET)
   })
 
   it('a readable url is not a readable id, and a vendor id that equals one is ignored (Q3b)', async () => {
     stubAccess(['https://x/ok'])
-    stubConversation([{ ...answer(), referenceData: [
+    stubPeerConversation([{ ...answer(), referenceData: [
       { name: 'ok', id: 'PA-1', webUrl: 'https://x/ok' },
       { name: SECRET, id: 'https://x/ok', webUrl: 'https://x/hidden' },
       { name: `${SECRET}-by-record`, recordId: 'https://x/ok' },
@@ -232,14 +239,14 @@ describe('shared chats: per-viewer citations', () => {
 
   it('vendor-id reference data stays hidden when the access check fails', async () => {
     stubAccess(null)
-    stubConversation([{ ...answer(), referenceData: [{ name: 'Ticket', id: 'PA-1', webUrl: 'https://jira/PA-1' }] }])
+    stubPeerConversation([{ ...answer(), referenceData: [{ name: 'Ticket', id: 'PA-1', webUrl: 'https://jira/PA-1' }] }])
     const message = await fetchConversation(VIEWER)
     expect(message.referenceData[0].name).to.equal('Restricted source')
   })
 
   it('a failed access check hides every record reference but leaves the rest of the chat', async () => {
     stubAccess(null)
-    stubConversation([richAnswer()])
+    stubPeerConversation([richAnswer()])
     const message = await fetchConversation(VIEWER)
     expectRecordsOnlyRedacted(message, false)
     expect(message.referenceData[0].redacted).to.equal(true)
@@ -248,7 +255,7 @@ describe('shared chats: per-viewer citations', () => {
 
   it('the owner still gets every field and reference', async () => {
     stubAccess([])
-    stubConversation([richAnswer()])
+    stubPeerConversation([richAnswer()])
     const message = await fetchConversation(OWNER)
     expect(message.parts[2].resultPreview).to.contain(TOOL_TEXT)
     expect(message.referenceData[1].name).to.equal(SECRET)
@@ -260,7 +267,7 @@ describe('shared chats: per-viewer citations', () => {
         ? ({ statusCode: 503, data: { accessible: ['rec-no', 'att-no'], accessibleUrls: ['https://x/rec-no'] } } as any)
         : ({ statusCode: 200, data: {} } as any)
     })
-    stubConversation([{ ...answer(), referenceData: [{ name: SECRET, id: 'v-1', webUrl: 'https://x/rec-no' }] }])
+    stubPeerConversation([{ ...answer(), referenceData: [{ name: SECRET, id: 'v-1', webUrl: 'https://x/rec-no' }] }])
     const message = await fetchConversation(VIEWER)
     expect(message.citations).to.deep.equal([{ redacted: true, reason: 'no_access' }, { redacted: true, reason: 'no_access' }])
     expect(message.attachments).to.deep.equal([])
@@ -297,7 +304,7 @@ describe('shared chats: per-viewer citations', () => {
 
   it('the owner is recognised when the chat stores its initiator as an ObjectId', async () => {
     const asked = stubAccess([])
-    stubConversation([answer()])
+    stubPeerConversation([answer()])
     ;(ChatSession.findOne as sinon.SinonStub).returns(
       chain({ _id: SESSION, title: 't', initiator: new Types.ObjectId(OWNER), isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }),
     )
@@ -313,7 +320,7 @@ describe('shared chats: per-viewer citations', () => {
     sinon.stub(Users, 'find').returns(chain([]))
     sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, title: 't', initiator: OWNER, isShared: true, sharedWith: [], status: 'complete' }))
     sinon.stub(ChatSessionMessage, 'countDocuments').resolves(1)
-    sinon.stub(ChatSessionMessage, 'find').returns(chain([richAnswer()]))
+    sinon.stub(ChatSessionMessage, 'find').returns(chain([{ ...richAnswer(), messageType: 'user_query' }]))
     const r = res()
     const next = sinon.stub()
     await getAgentConversationById(appConfig)(req(VIEWER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, next)
@@ -327,7 +334,7 @@ describe('shared chats: per-viewer citations', () => {
 
   it('the owner sees everything and no access check is made', async () => {
     const asked = stubAccess([])
-    stubConversation([answer()])
+    stubPeerConversation([answer()])
     const message = await fetchConversation(OWNER)
 
     expect(message.citations[1].citationData.content).to.equal(SECRET)
@@ -337,7 +344,7 @@ describe('shared chats: per-viewer citations', () => {
 
   it('redacts everything when the access check fails', async () => {
     stubAccess(null)
-    stubConversation([answer()])
+    stubPeerConversation([answer()])
     const message = await fetchConversation(VIEWER)
 
     expect(message.citations).to.deep.equal([{ redacted: true, reason: 'no_access' }, { redacted: true, reason: 'no_access' }])
@@ -350,7 +357,7 @@ describe('shared chats: per-viewer citations', () => {
     const archived = { _id: SESSION, title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }], updatedAt: new Date(), archivedBy: OWNER }
     sinon.stub(ChatSession, 'find').returns(chain([archived]))
     sinon.stub(ChatSession, 'countDocuments').resolves(1)
-    sinon.stub(ChatSessionMessage, 'find').returns(chain([{ sessionId: SESSION, ...richAnswer(), citations: [], attachments: [] }]))
+    sinon.stub(ChatSessionMessage, 'find').returns(chain([{ sessionId: SESSION, ...richAnswer(), messageType: 'user_query', citations: [], attachments: [] }]))
     const r = res()
     await listAllArchivesConversation(appConfig)(req(VIEWER), r, sinon.stub())
 
@@ -368,7 +375,7 @@ describe('shared chats: per-viewer citations', () => {
       chain([
         {
           sessionId: SESSION,
-          messageType: 'bot_response',
+          messageType: 'user_query',
           citations: [{ citationId: CIT_OK, excerpt: 'readable excerpt' }, { citationId: CIT_NO, excerpt: SECRET, context: SECRET }],
           attachments: [],
         },
@@ -508,5 +515,137 @@ describe('shared chats: per-viewer citations', () => {
 
     expect(r.json.firstCall.args[0][0]).to.deep.equal(search) // a copy: the repository hands out plain rows
     expect(asked).to.have.length(0)
+  })
+})
+
+const QUESTION = 'What were the quarterly numbers?'
+const asked = () => ({ messageType: 'user_query', content: QUESTION })
+const fetchAll = async (userId: string) => {
+  const r = res()
+  const next = sinon.stub()
+  await getConversationById(appConfig)(req(userId, { params: { conversationId: SESSION } }), r, next)
+  sinon.assert.notCalled(next)
+  const messages: any[] = r.json.firstCall.args[0].conversation.messages
+  return { question: messages.find((m) => m.messageType === 'user_query'), answer: messages.find((m) => m.messageType === 'bot_response') }
+}
+
+describe('lost access hides the whole answer, for the owner too', () => {
+  afterEach(() => sinon.restore())
+  const lost = { redacted: true, reason: 'no_longer_accessible' }
+
+  it('the owner\'s answer citing a record they lost is hidden whole; the question stays', async () => {
+    stubAccess(['rec-ok', 'att-ok'])
+    stubConversation([asked(), richAnswer()])
+    const { question, answer: a } = await fetchAll(OWNER)
+
+    expect(question.content).to.equal(QUESTION)
+    expect(a.answerHidden).to.deep.equal(lost)
+    expect(a.content).to.equal('This answer used content you can no longer access.')
+    for (const k of ['citations', 'attachments', 'referenceData', 'followUpQuestions', 'reasoning', 'tools', 'parts']) expect(a[k], k).to.deep.equal([])
+    const wire = JSON.stringify(a)
+    for (const leaked of [SECRET, 'The answer', 'readable text', 'I looked at', 'And the budget', 'visible answer text', TOOL_TEXT, R_NO]) expect(wire).to.not.contain(leaked)
+  })
+
+  it('a mixed answer, one record readable and one not, is hidden whole', async () => {
+    stubAccess(['rec-ok'])
+    stubConversation([asked(), answer()])
+    const { answer: a } = await fetchAll(OWNER)
+    expect(a.answerHidden).to.deep.equal(lost)
+    expect(JSON.stringify(a)).to.not.contain('readable text')
+  })
+
+  it('the owner\'s answer whose records are all readable is unchanged', async () => {
+    stubAccess(['rec-ok', 'rec-no', 'att-ok', 'att-no'])
+    stubConversation([asked(), answer()])
+    const { answer: a } = await fetchAll(OWNER)
+
+    expect(a.answerHidden).to.equal(undefined)
+    expect(a.content).to.equal('The answer [1][2]')
+    expect(a.citations[1].citationData.content).to.equal(SECRET)
+    expect(a.attachments).to.have.length(2)
+  })
+
+  it('an answer naming no record is unchanged and costs no access check', async () => {
+    const calls = stubAccess([])
+    stubConversation([asked(), { messageType: 'bot_response', content: 'Plain answer', citations: [] }])
+    const { answer: a } = await fetchAll(OWNER)
+    expect(a.content).to.equal('Plain answer')
+    expect(a.answerHidden).to.equal(undefined)
+    expect(calls).to.have.length(0)
+  })
+
+  it('a shared viewer gets the whole answer hidden, not only its citations', async () => {
+    stubAccess(['rec-ok', 'att-ok'])
+    stubConversation([asked(), richAnswer()])
+    const { answer: a } = await fetchAll(VIEWER)
+
+    expect(a.answerHidden).to.deep.equal(lost)
+    expect(JSON.stringify(a)).to.not.contain('The answer')
+    expect(JSON.stringify(a)).to.not.contain('And the budget')
+    expect(JSON.stringify(a)).to.not.contain('I looked at')
+  })
+
+  it('an access check that throws hides the answer as unconfirmed, never shows it', async () => {
+    stubAccess(null)
+    stubConversation([asked(), answer()])
+    const { question, answer: a } = await fetchAll(OWNER)
+
+    expect(question.content).to.equal(QUESTION)
+    expect(a.answerHidden).to.deep.equal({ redacted: true, reason: 'access_check_unavailable' })
+    expect(a.content).to.equal("We couldn't confirm your access. Try again.")
+    expect(JSON.stringify(a)).to.not.contain(SECRET)
+    expect(JSON.stringify(a)).to.not.contain('The answer')
+  })
+
+  it('an archive list hides the owner\'s lost-access answer too', async () => {
+    stubAccess(['rec-ok'])
+    const archived = { _id: SESSION, title: 't', initiator: OWNER, userId: OWNER, updatedAt: new Date(), archivedBy: OWNER }
+    sinon.stub(ChatSession, 'find').returns(chain([archived]))
+    sinon.stub(ChatSession, 'countDocuments').resolves(1)
+    sinon.stub(ChatSessionMessage, 'find').returns(chain([{ sessionId: SESSION, ...answer(), citations: [{ citationId: citation(CIT_NO, 'rec-no', SECRET) }], attachments: [] }]))
+    const r = res()
+    await listAllArchivesConversation(appConfig)(req(OWNER), r, sinon.stub())
+    const m = r.json.firstCall.args[0].conversations[0].messages[0]
+    expect(m.answerHidden).to.deep.equal(lost)
+    expect(JSON.stringify(m)).to.not.contain(SECRET)
+  })
+
+  it('an agent conversation hides the owner\'s lost-access answer too', async () => {
+    stubAccess(['rec-ok'])
+    sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
+    sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
+    sinon.stub(Users, 'find').returns(chain([]))
+    sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, title: 't', userId: OWNER, initiator: OWNER, status: 'complete' }))
+    sinon.stub(ChatSessionMessage, 'countDocuments').resolves(1)
+    sinon.stub(ChatSessionMessage, 'find').returns(chain([answer()]))
+    const r = res()
+    const next = sinon.stub()
+    await getAgentConversationById(appConfig)(req(OWNER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, next)
+    sinon.assert.notCalled(next)
+    expect(r.json.firstCall.args[0].conversation.messages[0].answerHidden).to.deep.equal(lost)
+  })
+
+  it('the history sent to the model for a follow-up leaves out a hidden answer', async () => {
+    stubAccess(['rec-ok'])
+    const history = await historyForModel(appConfig, viewerOf(OWNER, ORG), [asked(), richAnswer(), { messageType: 'user_query', content: 'Repeat that answer' }] as any)
+    const sent = formatPreviousConversations(history as any)
+
+    expect(sent.map((m) => m.role)).to.deep.equal(['user_query', 'bot_response', 'user_query'])
+    expect(sent[0].content).to.equal(QUESTION)
+    expect(sent[1].content).to.equal('')
+    const wire = JSON.stringify(sent)
+    for (const leaked of [SECRET, 'The answer', TOOL_TEXT, R_NO, 'rec-no', 'att-no']) expect(wire).to.not.contain(leaked)
+  })
+
+  it('the history keeps an answer whose records are all readable, as stored', async () => {
+    stubAccess(['rec-ok', 'rec-no', 'att-ok', 'att-no'])
+    const history = await historyForModel(appConfig, viewerOf(OWNER, ORG), [asked(), answer()] as any)
+    expect(formatPreviousConversations(history as any)[1].content).to.equal('The answer [1][2]')
+  })
+
+  it('the history of a follow-up hides the answer when the access check fails', async () => {
+    stubAccess(null)
+    const history = await historyForModel(appConfig, viewerOf(OWNER, ORG), [asked(), answer()] as any)
+    expect(formatPreviousConversations(history as any)[1].content).to.equal('')
   })
 })

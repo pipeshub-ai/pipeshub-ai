@@ -6,6 +6,8 @@ import {
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
+import type { AppConfig } from '../../tokens_manager/config/config';
+import { historyForModel } from './viewer-redaction';
 import { Logger } from '../../../libs/services/logger.service';
 import { CONVERSATION_STATUS } from '../constants/constants';
 import {
@@ -87,6 +89,7 @@ export const continueConversation = async (
   conversationId: string,
   userMessage: NewMessage,
   viewer: TurnViewer,
+  appConfig: AppConfig,
 ): Promise<ContinuedConversation> => {
   const { conversation, rows } = await inShortTransaction(async (tx) => {
     const repo = getConversationRepository();
@@ -120,7 +123,7 @@ export const continueConversation = async (
   return {
     conversation,
     previousConversations: formatPreviousConversations(
-      rows as unknown as IMessage[],
+      await historyForModel(appConfig, viewer, rows as unknown as IMessage[]),
     ),
   };
 };

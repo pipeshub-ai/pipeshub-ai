@@ -8,6 +8,7 @@ import { ChatSession } from '../../../../src/modules/enterprise_search/schema/ch
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, settle } from './chat-test-harness'
 import { AGENT_KEY, Flow, ORG, OWNER, RUN, appConfig, delta, finalAnswer, flows, seedConversation, sendAgain, startStream } from './streaming-flows'
+import { MongoConversationRepository } from '../../../../src/libs/repositories/conversation/mongo'
 import { DETACHED_RUN_MAX_MS } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
 
 describe('es_controller streaming answers', () => {
@@ -467,6 +468,51 @@ describe('es_controller streaming answers', () => {
     expect(body.query).to.equal('And the one before?')
     expect(body.conversationId).to.equal(run.prepared.params.conversationId)
     expect(body.previousConversations.map((p) => p.content)).to.deep.equal(['What changed in the release?', 'An older answer.'])
+  })
+
+  it('addMessageStream: an earlier answer built from a record the user lost is sent to the model without its text', async () => {
+    const flow = flows[1] as Flow
+    const lostHistory: Flow = {
+      ...flow,
+      prepare: (store) => {
+        const prepared = flow.prepare(store)
+        const bot = store.messages.find((m) => m.get('messageType') === 'bot_response')
+        bot?.set('attachments', [{ recordId: 'rec-lost', recordName: 'lost.pdf' }])
+        return prepared
+      },
+    }
+    const run = await startStream(lostHistory, undefined, (ai) => ai.reply(/\/chat\/records\/access$/, 200, { accessible: [], accessibleUrls: [] }))
+    run.ai.finish()
+    await run.res.ended
+
+    const body = run.ai.streamCalls[0]?.body as { previousConversations: Array<{ role: string; content: string; attachments?: unknown }> }
+    expect(body.previousConversations.map((p) => [p.role, p.content])).to.deep.equal([['user_query', 'What changed in the release?'], ['bot_response', '']])
+    expect(JSON.stringify(body.previousConversations)).to.not.contain('An older answer.')
+    expect(JSON.stringify(body.previousConversations)).to.not.contain('rec-lost')
+  })
+
+  it('addMessageStream: the final conversation sent to the browser hides an earlier answer built from a record the user lost', async () => {
+    const flow = flows[1] as Flow
+    const lostHistory: Flow = {
+      ...flow,
+      prepare: (store) => {
+        const prepared = flow.prepare(store)
+        store.messages.find((m) => m.get('messageType') === 'bot_response')?.set('attachments', [{ recordId: 'rec-lost', recordName: 'lost.pdf' }])
+        return prepared
+      },
+    }
+    // Connected, as in production: the final conversation then carries the whole stored history.
+    sinon.stub(MongoConversationRepository.prototype, 'isConnected').returns(true)
+    const run = await startStream(lostHistory, undefined, (ai) => ai.reply(/\/chat\/records\/access$/, 200, { accessible: [], accessibleUrls: [] }))
+    run.ai.send('RUN_FINISHED', finalAnswer('A fresh answer.'))
+    run.ai.finish()
+    await run.res.ended
+
+    const sent = run.res.eventsOf('RUN_FINISHED')[0]?.data.result.conversation.messages as Array<Record<string, unknown>>
+    const old = sent.find((m) => m.messageType === 'bot_response' && (m.answerHidden !== undefined || m.content === 'An older answer.'))
+    expect(old?.answerHidden).to.deep.equal({ redacted: true, reason: 'no_longer_accessible' })
+    expect(JSON.stringify(sent)).to.not.contain('An older answer.')
+    expect(sent.some((m) => m.content === 'A fresh answer.')).to.equal(true)
   })
 
   it('addMessageStream: a stack trace saved from an earlier failed turn never reaches the browser', async () => {

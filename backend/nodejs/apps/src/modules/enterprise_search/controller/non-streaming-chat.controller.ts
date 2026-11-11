@@ -156,6 +156,7 @@ const nonStreamingTurn =
           req.params.conversationId as string,
           userMessage,
           { userId, orgId },
+          appConfig,
         );
         conversation = continued.conversation;
         previousConversations = continued.previousConversations;

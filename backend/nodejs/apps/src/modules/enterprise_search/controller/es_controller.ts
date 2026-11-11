@@ -118,9 +118,11 @@ import {
   type RunReservation,
 } from '../utils/utils';
 import {
+  historyForModel,
   redactMessagesFor,
   redactSearchesFor,
   viewerOf,
+  type ViewerMessage,
 } from '../utils/viewer-redaction';
 import {
   attachUpstreamAbort,
@@ -354,6 +356,29 @@ export {
 } from '../utils/scoped-request';
 
 export { handleBackendError };
+
+/**
+ * The final conversation of a turn carries every stored message, and the chat
+ * rebuilds its thread from it: answers built from a record the user can no
+ * longer read go out hidden, as in a fetch.
+ */
+const withoutLostAnswers = async <C extends { messages?: unknown }>(
+  appConfig: AppConfig,
+  userId: unknown,
+  orgId: unknown,
+  conversation: C,
+): Promise<C> => {
+  if (!Array.isArray(conversation.messages)) return conversation;
+  return {
+    ...conversation,
+    messages: await redactMessagesFor(
+      appConfig,
+      viewerOf(userId, orgId),
+      conversation.messages as ViewerMessage[],
+      () => String(userId),
+    ),
+  };
+};
 
 // Common helper to start AI streams with consistent error mapping and logging
 export const startAIStream = async (
@@ -1611,11 +1636,15 @@ export const addMessageStream =
       );
 
       // Format previous conversations for context (excluding the user message we just added)
-      const allMessagesSoFar = (await getMessages(
-        confirmedConversation._id,
-        { orgId: confirmedConversation.orgId },
-        session,
-      )) as IMessage[];
+      const allMessagesSoFar = await historyForModel(
+        appConfig,
+        viewerOf(userId, orgId),
+        (await getMessages(
+          confirmedConversation._id,
+          { orgId: confirmedConversation.orgId },
+          session,
+        )) as IMessage[],
+      );
       const previousConversations = formatPreviousConversations(
         allMessagesSoFar.slice(0, -1),
       );
@@ -2019,11 +2048,16 @@ export const addMessageStream =
               const savedCitations = saved.citations;
 
               // Return the updated conversation in the same format as addMessage
-              const responseConversation = await attachPopulatedCitations(
-                saved.conversation,
-                [saved.message],
-                savedCitations,
-                session,
+              const responseConversation = await withoutLostAnswers(
+                appConfig,
+                userId,
+                orgId,
+                await attachPopulatedCitations(
+                  saved.conversation,
+                  [saved.message],
+                  savedCitations,
+                  session,
+                ),
               );
 
               // Send the final conversation data in the same format as addMessage
@@ -3676,11 +3710,15 @@ async function regenerateAnswersInternal(
 
     // Format previous conversations up to this message (exclude last bot
     // response and the user query that triggered it)
-    const allMessagesForRegen = (await getMessages(
-      existingConversation._id,
-      { orgId: existingConversation.orgId },
-      session,
-    )) as Array<IMessage & { _id?: string }>;
+    const allMessagesForRegen = await historyForModel(
+      appConfig,
+      viewerOf(userId, orgId),
+      (await getMessages(
+        existingConversation._id,
+        { orgId: existingConversation.orgId },
+        session,
+      )) as Array<IMessage & { _id?: string }>,
+    );
     // The turn being regenerated (its user query, its answer, and any
     // `tool_call` rows saved after it) is excluded by position, not by a
     // fixed `slice(0, -2)`: an ask_user_question turn ends with tool rows.
@@ -4014,7 +4052,12 @@ async function regenerateAnswersInternal(
             );
           }
 
-          const responseConversation = regeneratedConversation;
+          const responseConversation = await withoutLostAnswers(
+            appConfig,
+            userId,
+            orgId,
+            regeneratedConversation,
+          );
 
           // Send final response event with the complete conversation data
           sendSSECompleteEvent(
@@ -7337,11 +7380,15 @@ export const addMessageStreamToAgentConversation =
       const confirmedConversation = existingConversation as ChatSessionDto;
 
       // Format previous conversations for context (excluding the user message we just added)
-      const allMessagesSoFar = (await getMessages(
-        confirmedConversation._id,
-        { orgId: confirmedConversation.orgId },
-        session,
-      )) as IMessage[];
+      const allMessagesSoFar = await historyForModel(
+        appConfig,
+        viewerOf(userId, orgId),
+        (await getMessages(
+          confirmedConversation._id,
+          { orgId: confirmedConversation.orgId },
+          session,
+        )) as IMessage[],
+      );
       const previousConversations = formatPreviousConversations(
         allMessagesSoFar.slice(0, -1),
       );
@@ -7748,11 +7795,16 @@ export const addMessageStreamToAgentConversation =
               const savedCitations = saved.citations;
 
               // Return the updated conversation in the same format as addMessage
-              const responseConversation = await attachPopulatedCitations(
-                saved.conversation,
-                [saved.message],
-                savedCitations,
-                session,
+              const responseConversation = await withoutLostAnswers(
+                appConfig,
+                userId,
+                orgId,
+                await attachPopulatedCitations(
+                  saved.conversation,
+                  [saved.message],
+                  savedCitations,
+                  session,
+                ),
               );
 
               // Send the final conversation data in the same format as addMessage

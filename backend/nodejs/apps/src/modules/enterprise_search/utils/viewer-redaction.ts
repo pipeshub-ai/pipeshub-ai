@@ -1,12 +1,19 @@
 /**
- * A shared conversation or search is rendered for the person looking at it: as
- * the owner sees it, except that every structured reference to a record the
- * viewer cannot read (citation, attachment, reference data, applied filter,
- * tool result, search hit) loses its id, name, link and text and shows as a
- * placeholder. The owner sees everything.
- * Free text stays as written: the answer, reasoning prose and follow-up
- * questions (accepted residual risk, as before). Tool steps and their results
- * are shown as written too; per-record redaction of them is a follow-up.
+ * A chat answer is shown only while its reader can still read every record it
+ * used (citations, attachments, reference data, applied filters). If any one is
+ * out of reach, the WHOLE answer (text, reasoning, citations, follow-up
+ * suggestions, tool steps and results) is replaced by a marker, for the owner
+ * and for shared viewers alike: a blended answer cannot be cut sentence by
+ * sentence. The user's own question stays. If the access check cannot answer,
+ * the answers that name records are hidden with a different reason, so an
+ * outage reads as temporary. Answers that name no record are left as stored.
+ * Known limit: a record an answer used but did not cite is not detected.
+ *
+ * A shared conversation or search is also rendered for the person looking at
+ * it: every structured reference to a record the viewer cannot read (citation,
+ * attachment, reference data, applied filter, search hit) in another user's
+ * messages loses its id, name, link and text and shows as a placeholder.
+ * A saved search of the viewer's own passes through.
  */
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
@@ -19,6 +26,18 @@ import { getConversationRepository } from '../../../libs/repositories/conversati
 const logger = Logger.getInstance({ service: 'Viewer Redaction' });
 
 export const REDACTED = { redacted: true, reason: 'no_access' } as const;
+/** Marker on an answer hidden because a record it used is no longer readable. */
+export const ANSWER_LOST = {
+  redacted: true,
+  reason: 'no_longer_accessible',
+} as const;
+/** Marker on an answer hidden because the access check could not answer. */
+export const ANSWER_UNCONFIRMED = {
+  redacted: true,
+  reason: 'access_check_unavailable',
+} as const;
+const ANSWER_LOST_TEXT = 'This answer used content you can no longer access.';
+const ANSWER_UNCONFIRMED_TEXT = "We couldn't confirm your access. Try again.";
 const ACCESS_CHECK_BATCH = 500;
 
 type Viewer = { userId: string; orgId: string };
@@ -32,6 +51,8 @@ export const viewerOf = (userId: unknown, orgId: unknown): Viewer => ({
 export interface Readable {
   ids: Set<string>;
   urls: Set<string>;
+  /** The check could not answer: nothing is readable, and that is not a verdict. */
+  failed?: boolean;
 }
 
 const isStringList = (value: unknown): value is string[] =>
@@ -103,7 +124,7 @@ export const readableRecordIds = async (
     logger.error('Viewer access check failed; redacting every source', {
       error: error instanceof Error ? error.message : String(error),
     });
-    return { ids: new Set(), urls: new Set() };
+    return { ids: new Set(), urls: new Set(), failed: true };
   }
 };
 
@@ -128,6 +149,7 @@ interface RefEntry {
   metadata?: { recordId?: string } | Map<string, string>;
 }
 export interface ViewerMessage {
+  messageType?: string;
   citations?: Array<CitationEntry | null>;
   attachments?: Array<AttachmentEntry | null>;
   referenceData?: Array<RefEntry | null>;
@@ -193,9 +215,34 @@ const citedDoc = (c: CitationEntry | null): CitedDoc | string | undefined => {
   return id.toString();
 };
 
+const isAnswer = (m: ViewerMessage): boolean =>
+  m.messageType === 'bot_response';
+
+/** What the hidden answer keeps: who, when and which message, never what was said. */
+const hiddenAnswer = (
+  m: object,
+  marker: typeof ANSWER_LOST | typeof ANSWER_UNCONFIRMED,
+): Record<string, unknown> => ({
+  ...m,
+  content: marker === ANSWER_LOST ? ANSWER_LOST_TEXT : ANSWER_UNCONFIRMED_TEXT,
+  citations: [],
+  attachments: [],
+  referenceData: [],
+  followUpQuestions: [],
+  reasoning: [],
+  tools: [],
+  parts: [],
+  appliedFilters: undefined,
+  metadata: undefined,
+  confidence: undefined,
+  answerHidden: { ...marker },
+});
+
 /**
- * Redacts what `viewer` cannot read in the messages of conversations they do not
- * own. `ownerOf` gives a message's conversation owner; the owner's own pass through.
+ * Hides, for `viewer`, every answer that used a record they cannot read, and
+ * redacts what they cannot read in the messages of conversations they do not
+ * own. `ownerOf` gives a message's conversation owner. One batched access check
+ * covers the whole list: ceil(records / 500) calls to the query service.
  */
 export const redactMessagesFor = async <M extends ViewerMessage>(
   appConfig: AppConfig,
@@ -203,12 +250,13 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
   messages: M[],
   ownerOf: (message: M) => string | undefined,
 ): Promise<M[]> => {
-  const others = messages.filter((m) => ownerOf(m) !== viewer.userId);
-  if (others.length === 0) return messages;
+  const isOthers = (m: M): boolean => ownerOf(m) !== viewer.userId;
+  const checked = messages.filter((m) => isOthers(m) || isAnswer(m));
+  if (checked.length === 0) return messages;
 
   // Citations stored as bare ids (archives) are resolved to their record here.
   const bare = new Set<string>();
-  for (const m of others) {
+  for (const m of checked) {
     for (const c of m.citations ?? []) {
       const d = citedDoc(c);
       if (typeof d === 'string') bare.add(d);
@@ -238,7 +286,7 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
   const readable = await readableRecordIds(
     appConfig,
     viewer,
-    others.flatMap((m) => [
+    checked.flatMap((m) => [
       ...(m.citations ?? []).map(recordIdOf),
       ...(m.attachments ?? []).map((a) => a?.recordId),
       ...(m.referenceData ?? []).flatMap((e) => {
@@ -247,13 +295,44 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
       }),
       ...filterLists(m.appliedFilters).flatMap(([, l]) => l.flatMap(refIds)),
     ]) as string[],
-    others.flatMap((m) => (m.referenceData ?? []).map((e) => e?.webUrl ?? '')),
+    checked.flatMap((m) => (m.referenceData ?? []).map((e) => e?.webUrl ?? '')),
   );
   const ok = (id?: string): boolean => id !== undefined && readable.ids.has(id);
   const okUrl = (u?: string): boolean =>
     u !== undefined && readable.urls.has(u);
+  // A reference that names no record or address (a web page, a lost citation row)
+  // is no record the viewer could have lost.
+  const namesRecord = (e: RefEntry): boolean =>
+    (e.recordId ?? refMeta(e) ?? '') !== '' || (e.webUrl ?? '') !== '';
+  const refsOf = (m: M): number =>
+    (m.citations ?? []).filter((c) => recordIdOf(c) !== undefined).length +
+    (m.attachments ?? []).filter((a) => (a?.recordId ?? '') !== '').length +
+    (m.referenceData ?? []).filter((e) => e && namesRecord(e)).length +
+    filterLists(m.appliedFilters).reduce(
+      (n, [, l]) => n + l.flatMap(refIds).length,
+      0,
+    );
+  const usedLostRecord = (m: M): boolean =>
+    (m.citations ?? []).some((c) => {
+      const id = recordIdOf(c);
+      return id !== undefined && !ok(id);
+    }) ||
+    (m.attachments ?? []).some(
+      (a) => (a?.recordId ?? '') !== '' && !ok(a?.recordId),
+    ) ||
+    (m.referenceData ?? []).some(
+      (e) => e && namesRecord(e) && !refVisible(e, ok, okUrl),
+    ) ||
+    filterLists(m.appliedFilters).some(([, l]) =>
+      l.some((e) => refIds(e).length > 0 && !refVisible(e, ok)),
+    );
   return messages.map((m) => {
-    if (ownerOf(m) === viewer.userId) return m;
+    if (isAnswer(m)) {
+      if (readable.failed && refsOf(m) > 0)
+        return hiddenAnswer(m, ANSWER_UNCONFIRMED) as M;
+      if (usedLostRecord(m)) return hiddenAnswer(m, ANSWER_LOST) as M;
+    }
+    if (!isOthers(m)) return m;
     const view: Record<string, unknown> = { ...(m as object) };
     if (m.citations)
       view.citations = m.citations.map((c) =>
@@ -279,6 +358,24 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
     return view as M;
   });
 };
+
+/**
+ * The stored history of a chat as the model may be told it: an answer that used
+ * a record `viewer` can no longer read (or cannot be confirmed readable) goes
+ * with no text, so a follow-up cannot make the model repeat it.
+ */
+export const historyForModel = async <M extends ViewerMessage>(
+  appConfig: AppConfig,
+  viewer: Viewer,
+  messages: M[],
+): Promise<M[]> =>
+  (
+    await redactMessagesFor(appConfig, viewer, messages, () => viewer.userId)
+  ).map((m) =>
+    (m as { answerHidden?: unknown }).answerHidden !== undefined
+      ? { ...m, content: '' }
+      : m,
+  );
 
 const plain = (s: ViewerSearch): ViewerSearch =>
   s.toObject ? s.toObject() : s;
