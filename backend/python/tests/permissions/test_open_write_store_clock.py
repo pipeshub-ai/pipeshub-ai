@@ -74,14 +74,16 @@ async def test_a_dead_write_is_not_recovered_inside_its_grace_by_the_store_clock
     assert await recover_expired_writes(g, "c") == 1
 
 
+@pytest.mark.parametrize("delayed", [1, 2, 3])
 @pytest.mark.parametrize("step", ["open", "renew"])
-async def test_a_lease_write_that_lands_late_is_measured_again_from_when_it_landed(monkeypatch: pytest.MonkeyPatch, step: str) -> None:
-    """A deadline read before a write that took minutes is that much shorter than a lease: a live write could be recovered early."""
+async def test_a_lease_write_that_lands_late_is_measured_again_from_when_it_landed(monkeypatch: pytest.MonkeyPatch, step: str, delayed: int) -> None:
+    """A deadline read before a write that took minutes is that much shorter than a lease: a live write could be recovered early. The lease is
+    measured again from when the write landed; when that renewal is late as well, it is marked `k` and the sweep never judges it by its deadline."""
     monkeypatch.setattr(sg, "STORE_CLOCK_TIMEOUT_SECONDS", 0.05)
     store = Clock()
     g = StoreGraph(store)
     token = await open_write(g, "c", ["r1"]) if step == "renew" else None
-    real, slow = g.update_node_fields_if_match, {"left": 1}
+    real, slow = g.update_node_fields_if_match, {"left": delayed}
 
     async def late(*a: object, **k: object) -> object:
         done = await real(*a, **k)
@@ -92,7 +94,14 @@ async def test_a_lease_write_that_lands_late_is_measured_again_from_when_it_land
         return done
     g.update_node_fields_if_match = late  # type: ignore[method-assign]
     token = await open_write(g, "c", ["r1"]) if step == "open" else await renew_write(g, "c", token, ["r1"])
-    assert parse_open_writes(g.app[OPEN_WRITES_KEY])[token]["u"] == int(store()) + OPEN_WRITE_SECONDS
+    lease = parse_open_writes(g.app[OPEN_WRITES_KEY])[token]
+    if delayed == 1:
+        assert lease["u"] == int(store()) + OPEN_WRITE_SECONDS and "k" not in lease
+    else:
+        assert lease.get("k") == 1
+        store.now += OPEN_WRITE_SECONDS + OPEN_WRITE_GRACE_SECONDS + 1
+        assert await recover_expired_writes(g, "c") == 0          # not judged by a deadline that could be short: re-leased first
+        assert token in parse_open_writes(g.app[OPEN_WRITES_KEY])
 
 
 async def test_a_renewal_pushes_the_deadline_by_the_store_clock(monkeypatch: pytest.MonkeyPatch) -> None:
