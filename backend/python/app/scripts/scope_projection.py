@@ -66,12 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def _sweep(args: argparse.Namespace, graph_provider: Any, pipeline: Any, logger: Any) -> int:  # noqa: ANN401
-    from app.services.permissions.mode import scope_fields_enabled
     from app.services.vector_db.scope_sweep import ScopeSweep, sweep_forever
 
-    if not scope_fields_enabled():
-        sys.stderr.write(json.dumps({"error": "turn the scope fields on (ACL_SCOPE_FIELDS) before sweeping"}) + "\n")
-        return EXIT_FAILED
     sweep = ScopeSweep(graph_provider, pipeline.vector_db_service, pipeline.collection_locator, logger=logger)
 
     async def orgs() -> list[str]:
@@ -165,6 +161,13 @@ async def _main(argv: list[str]) -> int:
             return await _view(args, graph_provider, pipeline, container.config_service())
         if pipeline is None:
             sys.stderr.write(json.dumps({"error": "no indexing pipeline (vector store not configured)"}) + "\n")
+            return EXIT_FAILED
+        from app.services.permissions.mode import scope_fields_enabled
+
+        if not scope_fields_enabled():
+            # before registering: a process with the flag off records the deployment as switched off, and the next start with it on
+            # moves the generation, so every stamp already written goes stale
+            sys.stderr.write(json.dumps({"error": f"turn the scope fields on (ACL_SCOPE_FIELDS) before the {args.command}"}) + "\n")
             return EXIT_FAILED
         # The stamps this run writes carry the deployment's generation, which a service resolves at start; so does this process.
         await register_scope_generation(container.config_service(), logger)

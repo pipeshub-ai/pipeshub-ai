@@ -5,11 +5,14 @@ from __future__ import annotations
 import contextlib
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from app.scripts import scope_projection
 from app.services.permissions import scope_fields
 
 
 async def test_run_resolves_the_scope_generation_before_the_first_write(monkeypatch) -> None:
+    monkeypatch.setenv("ACL_SCOPE_FIELDS", "on")
     order: list[str] = []
     container = MagicMock()
     container.graph_provider = AsyncMock(return_value=MagicMock(disconnect=AsyncMock()))
@@ -190,10 +193,27 @@ async def test_sweep_with_an_interval_goes_on_after_a_listing_that_fails(monkeyp
     assert len(runs) == 2 and waits == [5, 5]      # the first round's error did not end the loop
 
 
+@pytest.mark.parametrize("command", [["run", "--connector", "c"], ["sweep"], ["rewrite", "--connector", "c"]])
+async def test_a_writing_command_with_the_scope_fields_off_records_nothing(monkeypatch, command) -> None:
+    """Registering from a process with the flag off would record the deployment as switched off; the next start with it on would then move
+    the generation and make every stamp already written stale. So the command refuses before it registers anything."""
+    monkeypatch.delenv("ACL_SCOPE_FIELDS", raising=False)
+    monkeypatch.delenv("ACL_FILTER_MODE", raising=False)
+    container = MagicMock()
+    container.graph_provider = AsyncMock(return_value=MagicMock(disconnect=AsyncMock()))
+    monkeypatch.setattr("app.containers.indexing.IndexingAppContainer.init", lambda name: container)
+    monkeypatch.setattr("app.modules.indexing.vector_membership_backfill._resolve_indexing_pipeline", AsyncMock(return_value=MagicMock()))
+    register = AsyncMock()
+    monkeypatch.setattr("app.services.permissions.wiring.register_scope_generation", register)
+    assert await scope_projection._main([command[0], "--org", "o", *command[1:]]) == 1
+    register.assert_not_awaited()
+
+
 def _rewrite_env(monkeypatch, outcomes: dict) -> list:
     """``outcomes``: connector -> a RewriteResult state, or an exception to raise."""
     from app.services.vector_db.scope_rewrite import RewriteResult
 
+    monkeypatch.setenv("ACL_SCOPE_FIELDS", "on")
     container = MagicMock()
     container.graph_provider = AsyncMock(return_value=MagicMock(disconnect=AsyncMock()))
     monkeypatch.setattr("app.containers.indexing.IndexingAppContainer.init", lambda name: container)
