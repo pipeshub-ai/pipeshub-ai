@@ -5,7 +5,7 @@ import math
 import os
 import time
 import traceback
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -279,6 +279,7 @@ class _QueryPlan:
     sparse: list | None = None
     collections: list[str] | None = None
     access_notices: list[dict[str, str]] = field(default_factory=list)  # codes for the viewer; the client words them
+    access_apps: list[dict[str, Any]] = field(default_factory=list)  # the connectors those codes came from, for the empty-result variant
     # Largest single-query batch of the last attempt, before the cross-query
     # dedupe. Exhaustion is a per-query property: the merged total cannot show
     # it, because overlapping queries shrink it for a reason that has nothing
@@ -899,7 +900,8 @@ class RetrievalService:
             plan = _QueryPlan()
             if use_containers:
                 # Only connectors this person is gated into: a notice never confirms that a source exists.
-                plan.access_notices = access_status.notices(await access_status.read_apps(self.graph_provider, containers.app_ids))
+                plan.access_apps = await self._notice_apps(containers.app_ids, user_id, org_id)
+                plan.access_notices = access_status.notices(plan.access_apps)
                 degraded_notice.note_access(plan.access_notices)
 
             def empty(message: str, status: Status) -> dict[str, Any]:
@@ -914,8 +916,11 @@ class RetrievalService:
                     response["searchIncomplete"] = incomplete
                 if plan.degraded:
                     response["searchDegraded"] = True
-                if plan.access_notices:
-                    response["accessNotices"] = plan.access_notices
+                # Nothing found: a syncing connector is now worth saying, whatever its history.
+                notices = access_status.notices(plan.access_apps, empty=True)
+                if notices:
+                    degraded_notice.note_access(notices)
+                    response["accessNotices"] = notices
                 return response
 
             # Graph key for KH permission_role checks (Location trails).
@@ -2564,6 +2569,19 @@ class RetrievalService:
         except Exception as exc:
             raise PermissionVerificationUnavailableError(str(exc)) from exc
 
+    async def _notice_apps(self, app_ids: Iterable[str], user_id: str, org_id: str) -> list[dict[str, Any]]:
+        """The documents of the connectors a notice may be about: the ones this person is gated into, minus the demo apps they switched off. A run
+        that searches several times reads each connector once (`degraded_notice.app_memo`)."""
+        ids = frozenset(app_ids) - await self._excluded_demo_apps(user_id, org_id)
+        memo = degraded_notice.app_memo()
+        need = sorted(i for i in ids if memo is None or i not in memo)
+        fetched = await access_status.read_apps(self.graph_provider, need) if need else []
+        if memo is None:
+            return fetched
+        memo.update(dict.fromkeys(need))
+        memo.update({str(a.get("id") or a.get("_key")): a for a in fetched})
+        return [a for i in sorted(ids) if (a := memo.get(i)) is not None]
+
     async def _excluded_demo_apps(self, user_id: str, org_id: str) -> frozenset[str]:
         """The Acme Corp demo connectors this person has switched off, if any."""
         try:
@@ -2937,6 +2955,9 @@ class RetrievalService:
         }
 
         status_code = status_code_mapping.get(status, 500)  # Default to 500 for unknown status
+        if status is Status.PERMISSION_CHECK_UNAVAILABLE:
+            # A chat run that hit this says so on its final answer too, like the other notices.
+            degraded_notice.note_access([{"code": "check_unavailable"}])
 
         return {
             "searchResults": [],

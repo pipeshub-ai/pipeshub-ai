@@ -9,7 +9,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
  * One page for revoked, never-had and deleted, so it confirms nothing about which.
  * Copies an id and a time only: no names, which could themselves be restricted.
  */
-export function NoAccessPage({ recordId, sourceUrl, vendor }: { recordId?: string; sourceUrl?: string; vendor?: string }) {
+export function NoAccessPage({ recordId }: { recordId?: string }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const copy = async () => {
@@ -27,13 +27,6 @@ export function NoAccessPage({ recordId, sourceUrl, vendor }: { recordId?: strin
       <Text size="2" color="gray" style={{ maxWidth: 480 }}>{t('accessNotice.noAccess.body')}</Text>
       <Text size="2" color="gray" style={{ maxWidth: 480 }}>{t('accessNotice.noAccess.justGotAccess')}</Text>
       <Flex gap="2" wrap="wrap" justify="center">
-        {sourceUrl && (
-          <Button asChild size="2" style={{ minHeight: 44 }}>
-            <a href={sourceUrl} target="_blank" rel="noopener noreferrer">
-              {vendor ? t('accessNotice.noAccess.openIn', { vendor }) : t('accessNotice.noAccess.openInSource')}
-            </a>
-          </Button>
-        )}
         <Button size="2" variant="soft" style={{ minHeight: 44 }} onClick={() => void copy()}>
           {t('accessNotice.noAccess.copyDetails')}
         </Button>

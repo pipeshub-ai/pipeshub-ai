@@ -22,13 +22,23 @@ PENDING = json.dumps({"root-1": 5})
 def test_a_connector_with_pending_roots_or_syncing_gets_a_code_with_its_own_name_only() -> None:
     apps = [
         {"id": "c1", "name": "Jira", PENDING_KEY: PENDING, "status": "IDLE", "orgId": "o", "secret": "x"},
-        {"id": "c2", "name": "Drive", "status": "SYNCING"},
+        {"id": "c2", "name": "Drive", "status": "SYNCING"},  # never finished a sync
         {"id": "c3", "name": "Quiet", "status": "IDLE"},
     ]
     assert access_status.notices(apps) == [
         {"code": "permissions_updating", "connectorId": "c1", "connectorName": "Jira"},
         {"code": "connector_syncing", "connectorId": "c2", "connectorName": "Drive"},
     ]
+
+
+def test_a_routine_resync_of_an_established_connector_says_nothing_unless_the_search_found_nothing() -> None:
+    established = {"id": "c1", "name": "Jira", "status": "SYNCING", "lastSyncFinishedAtTimestamp": 1700000000000}
+    assert access_status.notices([established]) == []
+    assert access_status.notices([established], empty=True) == [{"code": "connector_syncing", "connectorId": "c1", "connectorName": "Jira"}]
+    first = {"id": "c2", "status": "FULL_SYNCING"}
+    assert access_status.notices([first]) == [{"code": "connector_syncing", "connectorId": "c2"}]
+    idle = {"id": "c3", "status": "IDLE"}
+    assert access_status.notices([idle], empty=True) == []
 
 
 def test_an_unreadable_list_of_roots_reads_as_updating_never_as_nothing() -> None:
@@ -84,12 +94,12 @@ def service(logger, mock_config_service, mock_vector_db_service, mock_graph_prov
 
 async def test_a_search_reads_only_the_connectors_the_person_is_gated_into_and_reports_their_notices(service) -> None:
     containers = MagicMock(is_empty=False, app_ids=frozenset({"c1"}))
-    read = AsyncMock(return_value=[{"id": "c1", "name": "Jira", "status": "SYNCING"}])
+    read = AsyncMock(return_value=[{"id": "c1", "name": "Jira", "status": "SYNCING"}])  # never finished a sync
     with patch.object(service, "_resolve_search_scope", AsyncMock(return_value=(containers, {}, {"_key": "k"}))), \
             patch.object(service, "_permission_filter", AsyncMock(return_value=None)), \
             patch.object(access_status, "read_apps", read), patch.object(mod, "access_status", access_status):
         result = await service.search_with_filters(queries=["q"], user_id="u1", org_id="o1")
-    assert read.await_args.args[1] == frozenset({"c1"})
+    assert read.await_args.args[1] == ["c1"]
     assert result["status"] == Status.ACCESSIBLE_RECORDS_NOT_FOUND.value
     assert result["accessNotices"] == [{"code": "connector_syncing", "connectorId": "c1", "connectorName": "Jira"}]
 
@@ -101,3 +111,79 @@ async def test_a_search_with_no_notices_has_no_such_field(service) -> None:
             patch.object(access_status, "read_apps", AsyncMock(return_value=[{"id": "c1", "status": "IDLE"}])):
         result = await service.search_with_filters(queries=["q"], user_id="u1", org_id="o1")
     assert "accessNotices" not in result
+
+
+async def test_an_empty_search_names_a_syncing_connector_that_a_non_empty_one_would_not(service) -> None:
+    containers = MagicMock(is_empty=False, app_ids=frozenset({"c1"}))
+    established = {"id": "c1", "name": "Jira", "status": "SYNCING", "lastSyncFinishedAtTimestamp": 1700000000000}
+    with patch.object(service, "_resolve_search_scope", AsyncMock(return_value=(containers, {}, {"_key": "k"}))), \
+            patch.object(service, "_permission_filter", AsyncMock(return_value=None)), \
+            patch.object(access_status, "read_apps", AsyncMock(return_value=[established])):
+        result = await service.search_with_filters(queries=["q"], user_id="u1", org_id="o1")
+    assert result["accessNotices"] == [{"code": "connector_syncing", "connectorId": "c1", "connectorName": "Jira"}]
+
+
+async def test_a_demo_app_the_person_switched_off_is_not_read(service) -> None:
+    containers = MagicMock(is_empty=False, app_ids=frozenset({"c1", "demo"}))
+    read = AsyncMock(return_value=[])
+    with patch.object(service, "_resolve_search_scope", AsyncMock(return_value=(containers, {}, {"_key": "k"}))), \
+            patch.object(service, "_permission_filter", AsyncMock(return_value=None)), \
+            patch.object(service, "_excluded_demo_apps", AsyncMock(return_value=frozenset({"demo"}))), \
+            patch.object(access_status, "read_apps", read):
+        await service.search_with_filters(queries=["q"], user_id="u1", org_id="o1")
+    assert read.await_args.args[1] == ["c1"]
+
+
+@degraded_notice.scoped
+async def _two_searches(service: RetrievalService, read: AsyncMock):  # noqa: ANN202
+    apps = []
+    for _ in range(3):
+        apps.append(await service._notice_apps(frozenset({"c1", "c2"}), "u1", "o1"))
+    yield apps
+
+
+async def test_a_run_reads_each_connector_once_however_often_it_searches(service) -> None:
+    read = AsyncMock(return_value=[{"id": "c1", "status": "SYNCING"}])
+    with patch.object(service, "_excluded_demo_apps", AsyncMock(return_value=frozenset())), patch.object(access_status, "read_apps", read):
+        (apps,) = [a async for a in _two_searches(service, read)]
+    assert read.await_count == 1 and read.await_args.args[1] == ["c1", "c2"]
+    assert all(a == [{"id": "c1", "status": "SYNCING"}] for a in apps)  # c2 was not returned and is not asked about again
+
+
+async def test_outside_a_tracked_run_nothing_is_remembered(service) -> None:
+    read = AsyncMock(return_value=[])
+    with patch.object(service, "_excluded_demo_apps", AsyncMock(return_value=frozenset())), patch.object(access_status, "read_apps", read):
+        await service._notice_apps(frozenset({"c1"}), "u1", "o1")
+        await service._notice_apps(frozenset({"c1"}), "u1", "o1")
+    assert read.await_count == 2
+
+
+@degraded_notice.scoped
+async def _unavailable(service: RetrievalService):  # noqa: ANN202
+    service._create_empty_response("x", Status.PERMISSION_CHECK_UNAVAILABLE)
+    yield degraded_notice.flag({"answer": "x"})
+
+
+async def test_a_check_that_could_not_be_made_reaches_the_final_chat_answer_too(service) -> None:
+    (final,) = [e async for e in _unavailable(service)]
+    assert final["accessNotices"] == [{"code": "check_unavailable"}]
+
+
+async def test_a_successful_search_carries_the_notices_of_the_connectors_it_reached(service, mock_graph_provider, mock_vector_db_service) -> None:
+    from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
+    record = {"_key": "rec1", "virtualRecordId": "vr1", "origin": "google_drive", "recordName": "Runbook",
+              "webUrl": "https://example.com/doc", "mimeType": "application/pdf", "connectorName": "gdrive"}
+    hit = {"content": "rollback steps", "score": 0.9, "metadata": {"virtualRecordId": "vr1", "orgId": "o1", "recordId": "rec1", "point_id": "p1"}}
+    mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "t@example.com"}
+    mock_graph_provider.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"rec1"}), records_by_vrid={"vr1": "rec1"}))
+    mock_graph_provider.get_records_by_record_ids.return_value = [dict(record)]
+    containers = MagicMock(is_empty=False, app_ids=frozenset({"c1"}), scope_connector_ids=None)
+    updating = {"id": "c1", "name": "Jira", PENDING_KEY: PENDING, "status": "IDLE"}
+    with patch.object(service, "_resolve_search_scope", AsyncMock(return_value=(containers, {}, {"_key": "user-key"}))), \
+            patch.object(service, "_permission_filter", AsyncMock(return_value=({}, set()))), \
+            patch.object(service, "_search_and_adjudicate", AsyncMock(return_value=([hit], {"vr1": "rec1"}, False))), \
+            patch.object(service, "_notice_apps", AsyncMock(return_value=[updating])):
+        result = await service.search_with_filters(queries=["q"], user_id="u1", org_id="o1")
+    assert result["status"] == Status.SUCCESS.value, result.get("message")
+    assert result["accessNotices"] == [{"code": "permissions_updating", "connectorId": "c1", "connectorName": "Jira"}]

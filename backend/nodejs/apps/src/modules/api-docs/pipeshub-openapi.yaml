@@ -2557,6 +2557,8 @@ components:
         The `code` field is a machine-readable string identifying the error type (e.g.
         `HTTP_UNAUTHORIZED`, `HTTP_NOT_FOUND`, `VALIDATION_ERROR`, `INTERNAL_ERROR`).
       properties:
+        accessNotices:
+          $ref: '#/components/schemas/AccessNotices'
         error:
           type: object
           additionalProperties: false
@@ -49480,6 +49482,10 @@ paths:
             selected below app level exists or is readable by the caller
             ("Nothing in your selection is available to search"). The
             search is not persisted in this case.
+
+            The body is the usual error envelope. When a source the caller can search is still
+            syncing or updating permissions, it also carries `accessNotices` (codes only, no
+            record, container or person), so a client can say why nothing was found.
           content:
             application/json:
               schema:
@@ -49512,6 +49518,9 @@ paths:
           description: |
             The upstream AI search service is temporarily unavailable, or
             could not be reached (for example, it is still starting).
+
+            When the service could not check what the caller may read, the usual error envelope
+            also carries `accessNotices` with the code `check_unavailable`, and no results are shown.
           content:
             application/json:
               schema:

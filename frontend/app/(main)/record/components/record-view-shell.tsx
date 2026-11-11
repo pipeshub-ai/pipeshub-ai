@@ -133,7 +133,21 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
 
     (async () => {
       try {
-        const details = await KnowledgeBaseApi.getRecordDetails(recordId);
+        let details: RecordDetailsResponse;
+        try {
+          details = await KnowledgeBaseApi.getRecordDetails(recordId);
+        } catch (detailsErr) {
+          if (cancelled) return;
+          // Only this request says "no access": a 403 or 404 from it looks the same on purpose (revoked, never held and
+          // deleted must not be told apart). A failure of the preview or the stream below keeps its own handling.
+          const status = (detailsErr as { statusCode?: number })?.statusCode;
+          if (status === 403 || status === 404) {
+            setNoAccess(true);
+            setIsLoading(false);
+            return;
+          }
+          throw detailsErr;
+        }
         if (cancelled) return;
 
         const canPreviewRecord =
@@ -222,10 +236,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
         }
       } catch (e) {
         if (cancelled) return;
-        // 403 and 404 look the same on purpose: a revoked, a never-held and a deleted record must not be told apart.
-        const status = (e as { statusCode?: number })?.statusCode;
-        if (status === 403 || status === 404) setNoAccess(true);
-        else setError(getErrorMessage(e, t('recordView.loadFailed')));
+        setError(getErrorMessage(e, t('recordView.loadFailed')));
         setIsLoading(false);
       }
     })();

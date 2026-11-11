@@ -5915,8 +5915,6 @@
       "title": "Sie haben keinen Zugriff auf dieses Element",
       "body": "Es wurde möglicherweise verschoben, gelöscht oder eingeschränkt. Fragen Sie den Eigentümer oder öffnen Sie es dort, wo es herkommt, falls Sie den Link haben.",
       "justGotAccess": "Gerade Zugriff an der Quelle erhalten? Neuer Zugriff erscheint nach der nächsten Synchronisierung.",
-      "openIn": "In {{vendor}} öffnen",
-      "openInSource": "Original öffnen",
       "copyDetails": "Details für einen Admin kopieren",
       "copied": "Details kopiert"
     }

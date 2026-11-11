@@ -238,6 +238,10 @@ export class ErrorMiddleware {
         // Stack traces should NEVER be exposed to clients, even in development
         // They are logged server-side only for debugging
       },
+       // Codes the client words ("a source is still syncing"): carried on the error by the route that has them, never text.
+      ...(Array.isArray(error.metadata?.accessNotices) && {
+        accessNotices: error.metadata.accessNotices,
+      }),
     };
 
     const retryAfter = error.metadata?.retryAfter;

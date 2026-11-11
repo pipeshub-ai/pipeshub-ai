@@ -5990,8 +5990,6 @@
       "title": "No tiene acceso a este elemento",
       "body": "Puede que se haya movido, eliminado o restringido. Pregunte al propietario o ábralo donde se originó si tiene el enlace.",
       "justGotAccess": "¿Acaba de obtener acceso en el origen? El nuevo acceso aparece tras la próxima sincronización.",
-      "openIn": "Abrir en {{vendor}}",
-      "openInSource": "Abrir el original",
       "copyDetails": "Copiar los detalles para un administrador",
       "copied": "Detalles copiados"
     }

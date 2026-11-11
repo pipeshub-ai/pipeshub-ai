@@ -5915,8 +5915,6 @@
       "title": "You don't have access to this item",
       "body": "It may have been moved, deleted or restricted. Ask the owner, or open it where it came from if you have the link.",
       "justGotAccess": "Just got access at the source? New access appears after the next sync.",
-      "openIn": "Open in {{vendor}}",
-      "openInSource": "Open the original",
       "copyDetails": "Copy details for an admin",
       "copied": "Details copied"
     }

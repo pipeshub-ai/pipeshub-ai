@@ -93,10 +93,12 @@ def status(app: Mapping[str, Any], *, reach_minutes: int | None = None, now: dat
     }
 
 
-def notices(apps: Iterable[Mapping[str, Any]]) -> list[dict[str, str]]:
+def notices(apps: Iterable[Mapping[str, Any]], *, empty: bool = False) -> list[dict[str, str]]:
     """What a search tells the person who ran it, as codes (the client words them): `permissions_updating` while subtrees of a connector await a
-    rewrite (or the list of them cannot be read), `connector_syncing` while it syncs. The caller passes only the connectors that person is
-    gated into, so nothing here names a connector they cannot already see, and nothing names a record, container or person."""
+    rewrite (or the list of them cannot be read), `connector_syncing` while it syncs and either it has never finished a sync (its content is
+    still arriving) or the search found nothing (`empty`): a routine resync of an established connector changes nothing the person sees. The
+    caller passes only the connectors that person is gated into, so nothing here names a connector they cannot already see, and nothing names a
+    record, container or person."""
     out: list[dict[str, str]] = []
     for app in apps:
         cid = str(app.get("id") or app.get("_key") or "")
@@ -107,7 +109,7 @@ def notices(apps: Iterable[Mapping[str, Any]]) -> list[dict[str, str]]:
             updating = True
         if updating:
             out.append({"code": "permissions_updating", "connectorId": cid, **label})
-        if app.get("status") in RUNNING:
+        if app.get("status") in RUNNING and (empty or not app.get(K.LAST_SYNC_FINISHED_AT)):
             out.append({"code": "connector_syncing", "connectorId": cid, **label})
     return out
 

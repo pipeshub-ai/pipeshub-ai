@@ -133,4 +133,15 @@ describe('RecordViewShell when the record cannot be read', () => {
     await waitFor(() => expect(screen.queryByText('loading')).toBeNull());
     expect(screen.queryByTestId('no-access-page')).toBeNull();
   });
+
+  it('keeps the preview handling when only the stream says 404: the record opens, it is not a no-access page', async () => {
+    const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
+    vi.mocked(KnowledgeBaseApi.streamRecord).mockRejectedValue({ type: 'NOT_FOUND', message: 'file gone', statusCode: 404 });
+    renderShell();
+
+    await waitFor(() => expect(screen.queryByText('loading')).toBeNull());
+    expect(screen.queryByTestId('no-access-page')).toBeNull();
+    expect(await screen.findByTestId('metadata')).toBeTruthy();
+    vi.mocked(KnowledgeBaseApi.streamRecord).mockImplementation(async () => new Blob(['x'], { type: 'application/pdf' }));
+  });
 });

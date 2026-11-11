@@ -48,11 +48,10 @@ describe('NoAccessPage', () => {
     expect(screen.queryByRole('link')).toBeNull();
   });
 
-  it('offers Open in the source when the user already holds the link', () => {
-    ui(<NoAccessPage recordId="r1" sourceUrl="https://x.atlassian.net/p/1" vendor="Jira" />);
-    const link = screen.getByRole('link', { name: 'Open in Jira' });
-    expect(link.getAttribute('href')).toBe('https://x.atlassian.net/p/1');
-    expect(link.getAttribute('rel')).toContain('noopener');
+  it('offers no link to the original, which would say where the item lives', () => {
+    ui(<NoAccessPage recordId="r1" />);
+    expect(screen.queryByRole('link')).toBeNull();
+    expect(screen.getAllByRole('button')).toHaveLength(1);
   });
 
   it('copies the id and time only, and announces it', async () => {

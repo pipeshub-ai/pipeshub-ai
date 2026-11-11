@@ -207,9 +207,14 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
           type: ErrorType.NOT_FOUND,
           message: message || 'The requested resource was not found.',
           statusCode: status,
-          details: bodyStatus
-            ? { ...baseDetails, apiStatus: bodyStatus, ...(data?.accessNotices ? { accessNotices: data.accessNotices } : {}) }
-            : data?.details,
+          details:
+            bodyStatus || data?.accessNotices
+              ? {
+                  ...baseDetails,
+                  ...(bodyStatus ? { apiStatus: bodyStatus } : {}),
+                  ...(data?.accessNotices ? { accessNotices: data.accessNotices } : {}),
+                }
+              : data?.details,
           originalError: error,
         };
       }
@@ -246,7 +251,7 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
           type: ErrorType.SERVER_ERROR,
           message: serverMessage || busyMessage(retryAfterSeconds(error)),
           statusCode: status,
-          details: data?.details,
+          details: data?.accessNotices ? { ...data?.details, accessNotices: data.accessNotices } : data?.details,
           originalError: error,
         };
       }
@@ -358,5 +363,7 @@ export function isSearchNoAccessibleDocumentsNotFound(error: unknown): boolean {
   if (!isProcessedError(error) || error.type !== ErrorType.NOT_FOUND) return false;
   const apiStatus = error.details?.apiStatus;
   if (apiStatus === SEARCH_ACCESSIBLE_RECORDS_NOT_FOUND_STATUS) return true;
+  // The server says why nothing was found as notice codes, with no status of its own.
+  if (Array.isArray(error.details?.accessNotices)) return true;
   return (error.message || '').includes(SEARCH_NO_ACCESSIBLE_DOCUMENTS_FRAGMENT);
 }

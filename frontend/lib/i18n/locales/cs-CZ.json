@@ -6065,8 +6065,6 @@
       "title": "K této položce nemáte přístup",
       "body": "Mohla být přesunuta, smazána nebo omezena. Zeptejte se vlastníka, nebo ji otevřete tam, odkud pochází, pokud máte odkaz.",
       "justGotAccess": "Právě jste získali přístup ve zdroji? Nový přístup se objeví po další synchronizaci.",
-      "openIn": "Otevřít v {{vendor}}",
-      "openInSource": "Otevřít originál",
       "copyDetails": "Zkopírovat podrobnosti pro správce",
       "copied": "Podrobnosti zkopírovány"
     }
