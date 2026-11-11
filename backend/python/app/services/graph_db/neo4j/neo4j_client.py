@@ -375,7 +375,10 @@ class Neo4jClient:
                 if not databases:
                     # Database doesn't exist, create it
                     self.logger.info(f"📦 Database '{self.database}' not found. Creating it...")
-                    await session.run(f"CREATE DATABASE `{self.database}` IF NOT EXISTS")
+                    # Without WAIT this returns before the database is online,
+                    # and the startup migrations query it straight after connect.
+                    created = await session.run(f"CREATE DATABASE `{self.database}` IF NOT EXISTS WAIT")
+                    await created.consume()
                     self.logger.info(f"✅ Database '{self.database}' created successfully")
                 else:
                     self.logger.info(f"✅ Database '{self.database}' already exists")
