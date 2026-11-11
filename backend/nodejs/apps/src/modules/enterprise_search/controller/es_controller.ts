@@ -359,6 +359,40 @@ export {
 
 export { handleBackendError };
 
+/** Rows read before a page to find the answer its leading `tool_call` rows belong to. */
+const TURN_LOOKBACK = 50;
+
+/**
+ * `redactMessagesFor` for one page of a conversation. A page can start with the
+ * `tool_call` rows of an answer on the page before, and they are hidden with it,
+ * so the rows just before the page (a bounded window by position, read through
+ * the repository) are judged with it. Only read when the page starts that way.
+ */
+const redactPageFor = async <M extends ViewerMessage>(
+  appConfig: AppConfig,
+  viewer: ReturnType<typeof viewerOf>,
+  conversation: { _id: string; orgId: string },
+  messages: M[],
+  skip: number,
+  ownerOf: (message: M) => string | undefined,
+): Promise<M[]> => {
+  const lead =
+    skip > 0 && messages[0]?.messageType === 'tool_call'
+      ? ((await getMessages(conversation._id, {
+          orgId: conversation.orgId,
+          skip: Math.max(0, skip - TURN_LOOKBACK),
+          limit: Math.min(skip, TURN_LOOKBACK),
+        })) as M[])
+      : [];
+  const out = await redactMessagesFor(
+    appConfig,
+    viewer,
+    [...lead, ...messages],
+    ownerOf,
+  );
+  return out.slice(lead.length);
+};
+
 /**
  * The final conversation of a turn carries every stored message, and the chat
  * rebuilds its thread from it: answers built from a record the user can no
@@ -2650,10 +2684,12 @@ export const getConversationById =
         orgId,
       );
       // Another viewer sees only what they may read of each message.
-      conversationResponse.messages = await redactMessagesFor(
+      conversationResponse.messages = await redactPageFor(
         appConfig,
         viewerOf(userId, orgId),
+        session,
         conversationResponse.messages,
+        skip,
         () => initiatorId,
       );
 
@@ -8394,10 +8430,12 @@ export const getAgentConversationById =
       );
       // Another viewer (a project member, or a user it is shared with) sees only
       // what they may read of each message.
-      conversationResponse.messages = await redactMessagesFor(
+      conversationResponse.messages = await redactPageFor(
         appConfig,
         viewerOf(userId, orgId),
+        session,
         conversationResponse.messages,
+        skip,
         () => initiatorId,
       );
 

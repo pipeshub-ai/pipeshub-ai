@@ -16,6 +16,7 @@ import { ChatSession } from '../../../../src/modules/enterprise_search/schema/ch
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import EnterpriseSemanticSearch from '../../../../src/modules/enterprise_search/schema/search.schema'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
+import { MongoConversationRepository } from '../../../../src/libs/repositories/conversation/mongo'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
@@ -710,6 +711,28 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
     expect(JSON.stringify([rows[2], rows[4]])).to.not.contain(SECRET)
     expect(rows[7].content).to.equal('kept card')
     expect(rows[7].answerHidden).to.equal(undefined)
+  })
+
+  it('a page that starts with the tool_call rows of an answer on the page before hides them too', async () => {
+    stubAccess(['rec-ok', 'att-ok'])
+    const rows = [
+      { messageType: 'user_query', content: QUESTION, ...at(0) },
+      { ...answer(), ...at(1) },
+      card(2),
+      card(3),
+    ]
+    stubConversation(rows)
+    // Two rows a page: the second page holds only the card rows, the answer is on the first.
+    sinon.stub(MongoConversationRepository.prototype, 'listMessages').callsFake(async (_id: string, q: any) =>
+      rows.slice(q.skip ?? 0, (q.skip ?? 0) + (q.limit ?? rows.length)).map((dto) => ({ dto: { ...dto } })) as any,
+    )
+    const r = res()
+    await getConversationById(appConfig)(req(OWNER, { params: { conversationId: SESSION }, query: { page: '1', limit: '2' } }), r, sinon.stub())
+    const page = r.json.firstCall.args[0].conversation.messages as any[]
+
+    expect(page.map((m) => m.messageType)).to.deep.equal(['tool_call', 'tool_call'])
+    for (const m of page) expect(m.answerHidden).to.deep.equal(lost)
+    expect(JSON.stringify(page)).to.not.contain(SECRET)
   })
 
   it('tool_call rows are hidden as unconfirmed when the check cannot answer', async () => {
