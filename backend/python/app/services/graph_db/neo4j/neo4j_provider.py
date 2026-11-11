@@ -19465,6 +19465,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         per_address: int = 2,
         transaction: str | None = None,
+        *,
+        include_deleted: bool = False,
     ) -> list[dict[str, Any]]:
         if not weburls or not org_id:
             return []
@@ -19475,7 +19477,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         MATCH (r:Record {{webUrl: url, orgId: $org_id}})
         WHERE r.recordType <> 'LINK'
           AND (r.isPlaceholder IS NULL OR r.isPlaceholder = false)
-          AND {cypher_live_record("r")}
+          AND ({"true" if include_deleted else cypher_live_record("r")})
         WITH url, r ORDER BY coalesce(r.isDependentNode, false), r.id
         WITH url, collect(r)[0..$per_address] AS kept
         UNWIND kept AS r

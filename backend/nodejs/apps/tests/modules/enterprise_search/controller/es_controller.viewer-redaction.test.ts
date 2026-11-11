@@ -2,7 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { Types } from 'mongoose'
-import { readableRecordIds, historyForModel, viewerOf, newReadable, redactMessagesFor } from '../../../../src/modules/enterprise_search/utils/viewer-redaction'
+import { readableRecordIds, historyForModel, viewerOf, newReadable, redactMessagesFor, redactConversationFor } from '../../../../src/modules/enterprise_search/utils/viewer-redaction'
 import { addComputedFields, formatPreviousConversations } from '../../../../src/modules/enterprise_search/utils/utils'
 import {
   searchArchivedConversations,
@@ -735,6 +735,28 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
     expect(JSON.stringify(page)).to.not.contain(SECRET)
   })
 
+  it('hides a turn\'s tool rows whatever order the client sorts the page in', async () => {
+    stubAccess(['rec-ok', 'att-ok'])
+    stubConversation([
+      { messageType: 'user_query', content: QUESTION, ...at(0) },
+      { ...answer(), ...at(1) },
+      card(2),
+      { messageType: 'user_query', content: 'Next question', ...at(3) },
+      { messageType: 'bot_response', content: 'Plain answer', citations: [], ...at(4) },
+      { messageType: 'tool_call', content: 'kept card', tools: [{ toolName: 'ask_user_question', toolResult: 'kept' }], ...at(5) },
+    ])
+    const r = res()
+    await getConversationById(appConfig)(req(OWNER, { params: { conversationId: SESSION }, query: { sortBy: 'messageType' } }), r, sinon.stub())
+    const rows = r.json.firstCall.args[0].conversation.messages as any[]
+
+    // Sorted by type the plain answer comes between the lost answer and its card.
+    expect(rows.map((m) => m.messageType)).to.deep.equal(['bot_response', 'bot_response', 'tool_call', 'tool_call', 'user_query', 'user_query'])
+    const secretCard = rows.find((m) => m._id === undefined && m.answerHidden !== undefined && m.messageType === 'tool_call')
+    expect(secretCard, 'the card of the lost answer is hidden').to.not.equal(undefined)
+    expect(JSON.stringify(rows)).to.not.contain(SECRET)
+    expect(rows.find((m) => m.content === 'kept card')).to.not.equal(undefined)
+  })
+
   it('tool_call rows are hidden as unconfirmed when the check cannot answer', async () => {
     stubAccess(null)
     stubConversation([{ messageType: 'user_query', content: QUESTION, ...at(0) }, { ...answer(), ...at(1) }, card(2)])
@@ -758,6 +780,25 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
     expect(m.answerHidden).to.deep.equal(lost)
   })
 
+  it('a just-streamed answer is never replaced by the unconfirmed notice, an earlier one is', async () => {
+    stubAccess(null)
+    const fresh = { _id: 'fresh-id', messageType: 'bot_response', content: 'Fresh answer', attachments: [{ recordId: 'att-new' }] }
+    const old = { _id: 'old-id', messageType: 'bot_response', content: 'Old answer', attachments: [{ recordId: 'att-old' }] }
+    const out: any = await redactConversationFor(appConfig, viewerOf(OWNER, ORG), { messages: [old, fresh] }, { freshIds: ['fresh-id'] })
+
+    expect(out.messages[0].answerHidden).to.deep.equal({ redacted: true, reason: 'access_check_unavailable' })
+    expect(out.messages[1].content).to.equal('Fresh answer')
+    expect(out.messages[1].answerHidden).to.equal(undefined)
+  })
+
+  it('a shared viewer sees a web reference as it is, and an unreadable record\'s link as hidden', async () => {
+    stubAccess([], ['https://example.com/page'])
+    stubConversation([{ messageType: 'user_query', content: QUESTION, referenceData: [{ name: 'Example', webUrl: 'https://example.com/page' }, { name: SECRET, webUrl: 'https://wiki/page' }] }])
+    const m = await fetchConversation(VIEWER)
+    expect(m.referenceData[0].name).to.equal('Example')
+    expect(m.referenceData[1]).to.deep.equal({ redacted: true, reason: 'no_access', name: 'Restricted source' })
+  })
+
   it('records the history check settled are not asked about again for the final conversation', async () => {
     const asked = stubAccess(['rec-ok', 'att-ok'])
     const memo = newReadable()
@@ -765,7 +806,7 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
     const stored: any[] = [asked_(), answer()]
     await historyForModel(appConfig, viewer, stored, memo)
     const fresh = { messageType: 'bot_response', content: 'new', citations: [], attachments: [{ recordId: 'att-new' }] }
-    await redactMessagesFor(appConfig, viewer, [...stored, fresh] as any, () => OWNER, memo)
+    await redactMessagesFor(appConfig, viewer, [...stored, fresh] as any, () => OWNER, { known: memo })
 
     expect(asked.flat().sort()).to.deep.equal(['att-new', 'att-no', 'att-ok', 'rec-no', 'rec-ok'])
   })

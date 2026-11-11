@@ -84,6 +84,7 @@ export const readableRecordIds = async (
   recordIds: string[],
   webUrls: string[] = [],
   known: Readable = newReadable(),
+  timeoutMs = 15000,
 ): Promise<Readable> => {
   const ids = [...new Set(recordIds.filter(Boolean))].filter(
     (i) => !known.asked.has(`i:${i}`),
@@ -125,7 +126,7 @@ export const readableRecordIds = async (
           recordIds: ids.slice(i, i + ACCESS_CHECK_BATCH),
           webUrls: urls.slice(i, i + ACCESS_CHECK_BATCH),
         },
-        timeoutMs: 15000,
+        timeoutMs,
       }).execute();
       if (response.statusCode !== 200) {
         throw new Error(
@@ -134,6 +135,9 @@ export const readableRecordIds = async (
       }
       const accessible: unknown = response.data?.accessible ?? [];
       const accessibleUrls: unknown = response.data?.accessibleUrls ?? [];
+      // Node and the query service ship in one image, so this is not version skew in practice; a
+      // service that omits `unmatchedUrls` reads as no unmatched address, so a web link counts as a
+      // record and the answer is hidden (fails closed, never shown).
       const unmatchedUrls: unknown = response.data?.unmatchedUrls ?? [];
       // Only lists of strings: a string is read per character, String(['id']) is 'id'.
       if (
@@ -183,6 +187,7 @@ interface RefEntry {
   metadata?: { recordId?: string } | Map<string, string>;
 }
 export interface ViewerMessage {
+  _id?: unknown;
   messageType?: string;
   content?: string;
   citations?: Array<CitationEntry | null>;
@@ -250,6 +255,14 @@ const citedDoc = (c: CitationEntry | null): CitedDoc | string | undefined => {
   return id.toString();
 };
 
+export interface RedactOptions<M> {
+  /** What an earlier check of this request settled: those records are not asked again. */
+  known?: Readable;
+  timeoutMs?: number;
+  /** A message the run just produced: retrieval checked its access, so a check that cannot answer never hides it. */
+  fresh?: (message: M) => boolean;
+}
+
 const isAnswer = (m: ViewerMessage): boolean =>
   m.messageType === 'bot_response';
 
@@ -284,8 +297,9 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
   viewer: Viewer,
   messages: M[],
   ownerOf: (message: M) => string | undefined,
-  known?: Readable,
+  opts: RedactOptions<M> = {},
 ): Promise<M[]> => {
+  const { known, timeoutMs, fresh } = opts;
   const isOthers = (m: M): boolean => ownerOf(m) !== viewer.userId;
   const checked = messages.filter((m) => isOthers(m) || isAnswer(m));
   if (checked.length === 0) return messages;
@@ -333,10 +347,12 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
     ]) as string[],
     checked.flatMap((m) => (m.referenceData ?? []).map((e) => e?.webUrl ?? '')),
     known,
+    timeoutMs,
   );
   const ok = (id?: string): boolean => id !== undefined && readable.ids.has(id);
+  // An address no record is stored at is a plain web reference, shown as it is.
   const okUrl = (u?: string): boolean =>
-    u !== undefined && readable.urls.has(u);
+    u !== undefined && (readable.urls.has(u) || readable.unmatched.has(u));
   // What a message used: record ids, and addresses where a reference has no record id.
   // An address no record is stored at (a public web page) is no record the viewer could have lost,
   // and neither is a citation without a record id (a web citation, a deleted citation row).
@@ -375,7 +391,9 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
         urls.some((u) => !readable.asked.has(`u:${u}`));
       hiddenTurn =
         readable.failed === true && unverified
-          ? ANSWER_UNCONFIRMED
+          ? fresh?.(m) === true
+            ? null
+            : ANSWER_UNCONFIRMED
           : ids.some((id) => !ok(id)) || urls.some((u) => !okUrl(u))
             ? ANSWER_LOST
             : null;
@@ -415,6 +433,9 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
   });
 };
 
+/** The turn-start check is on the way to the first token: it gives up sooner and fails closed. */
+const HISTORY_CHECK_TIMEOUT_MS = 5000;
+
 /**
  * The stored history of a chat as the model may be told it: an answer that used
  * a record `viewer` can no longer read (or cannot be confirmed readable) goes
@@ -427,18 +448,45 @@ export const historyForModel = async <M extends ViewerMessage>(
   known?: Readable,
 ): Promise<M[]> =>
   (
-    await redactMessagesFor(
-      appConfig,
-      viewer,
-      messages,
-      () => viewer.userId,
+    await redactMessagesFor(appConfig, viewer, messages, () => viewer.userId, {
       known,
-    )
+      timeoutMs: HISTORY_CHECK_TIMEOUT_MS,
+    })
   ).map((m) =>
     (m as { answerHidden?: unknown }).answerHidden !== undefined
       ? { ...m, content: '' }
       : m,
   );
+
+/**
+ * A conversation about to leave in a response or an event (the final conversation
+ * of a turn, the one an error event carries): its stored messages go through the
+ * same hiding as a fetch. `freshIds` are the answers the run just produced.
+ */
+export const redactConversationFor = async <C extends { messages?: unknown }>(
+  appConfig: AppConfig,
+  viewer: Viewer,
+  conversation: C,
+  opts: { known?: Readable; freshIds?: unknown[] } = {},
+): Promise<C> => {
+  if (!Array.isArray(conversation.messages)) return conversation;
+  const fresh = new Set((opts.freshIds ?? []).map(String));
+  return {
+    ...conversation,
+    messages: await redactMessagesFor(
+      appConfig,
+      viewer,
+      conversation.messages as ViewerMessage[],
+      () => viewer.userId,
+      {
+        known: opts.known,
+        fresh: (m) =>
+          m._id !== undefined &&
+          fresh.has((m._id as { toString(): string }).toString()),
+      },
+    ),
+  };
+};
 
 const plain = (s: ViewerSearch): ViewerSearch =>
   s.toObject ? s.toObject() : s;

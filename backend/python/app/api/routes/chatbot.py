@@ -1332,7 +1332,10 @@ async def check_viewer_record_access(
     by_url: dict[str, list[str]] = {}
     if urls:
         try:
-            rows = await graph_provider.get_records_by_weburls(urls, org_id, per_address=_RECORDS_PER_URL_LIMIT)
+            # Deleted records too: a deleted record's address is that record's, as its id is.
+            rows = await graph_provider.get_records_by_weburls(
+                urls, org_id, per_address=_RECORDS_PER_URL_LIMIT, include_deleted=True,
+            )
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Access check unavailable") from exc
         for row in rows:

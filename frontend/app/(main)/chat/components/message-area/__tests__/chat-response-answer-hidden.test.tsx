@@ -63,6 +63,30 @@ describe('ChatResponse hidden answer', () => {
     expect(streamMessageForSlot).toHaveBeenCalledWith('slot-1', 'What was Q3 revenue?', { query: 'q' });
   });
 
+  it('Ask again resends the hidden turn\'s own filters and files, not the composer\'s', () => {
+    const node = (id: string) => ({ id, name: id, nodeType: '', connector: '' });
+    const att = { recordId: 'r1', recordName: 'a.pdf', mimeType: 'application/pdf', extension: 'pdf', virtualRecordId: 'v1' };
+    const request: Record<string, unknown> = { query: 'q', filters: { apps: ['composer'], kb: [] } };
+    buildRequest.mockReturnValueOnce(request as never);
+    renderRow({
+      answerHidden: { redacted: true, reason: 'no_longer_accessible' },
+      appliedFilters: { apps: [node('app-1')], kb: [node('kb-1')], records: [node('rec-1')] },
+      attachments: [att],
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Ask again' }));
+
+    expect(request.filters).toEqual({ apps: ['app-1'], kb: ['kb-1'], records: ['rec-1'] });
+    expect(request.attachments).toEqual([att]);
+  });
+
+  it('shows the notice without Ask again to someone the chat was shared with', () => {
+    useChatStore.setState({ activeSlotId: 'slot-1', slots: { 'slot-1': { isStreaming: false, isOwner: false } } as never });
+    renderRow({ answerHidden: { redacted: true, reason: 'no_longer_accessible' } });
+
+    expect(screen.getByTestId('answer-hidden').textContent).toContain('no longer access');
+    expect(screen.queryByRole('button', { name: 'Ask again' })).toBeNull();
+  });
+
   it('shows no notice for an ordinary answer', () => {
     renderRow({ answer: 'Revenue was 4M.' });
     expect(screen.queryByTestId('answer-hidden')).toBeNull();

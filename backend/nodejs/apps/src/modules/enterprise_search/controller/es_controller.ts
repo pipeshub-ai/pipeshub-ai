@@ -120,7 +120,7 @@ import {
 import {
   historyForModel,
   newReadable,
-  type Readable as AccessMemo,
+  redactConversationFor,
   redactMessagesFor,
   redactSearchesFor,
   viewerOf,
@@ -393,32 +393,6 @@ const redactPageFor = async <M extends ViewerMessage>(
   return out.slice(lead.length);
 };
 
-/**
- * The final conversation of a turn carries every stored message, and the chat
- * rebuilds its thread from it: answers built from a record the user can no
- * longer read go out hidden, as in a fetch. `known` is what the turn's history
- * check already settled, so those records are not asked about again.
- */
-const withoutLostAnswers = async <C extends { messages?: unknown }>(
-  appConfig: AppConfig,
-  userId: unknown,
-  orgId: unknown,
-  conversation: C,
-  known: AccessMemo,
-): Promise<C> => {
-  if (!Array.isArray(conversation.messages)) return conversation;
-  return {
-    ...conversation,
-    messages: await redactMessagesFor(
-      appConfig,
-      viewerOf(userId, orgId),
-      conversation.messages as ViewerMessage[],
-      () => String(userId),
-      known,
-    ),
-  };
-};
-
 // Common helper to start AI streams with consistent error mapping and logging
 export const startAIStream = async (
   options: AICommandOptions,
@@ -569,7 +543,10 @@ export const resolveChatAttachmentMimeType = (
   if (dot < 0) return null;
   const extension = name.slice(dot + 1).toLowerCase();
   // Own keys only: a file named "x.constructor" would otherwise resolve to Object.
-  return Object.prototype.hasOwnProperty.call(CHAT_ATTACHMENT_MIME_BY_EXTENSION, extension)
+  return Object.prototype.hasOwnProperty.call(
+    CHAT_ATTACHMENT_MIME_BY_EXTENSION,
+    extension,
+  )
     ? (CHAT_ATTACHMENT_MIME_BY_EXTENSION[extension] ?? null)
     : null;
 };
@@ -1676,28 +1653,30 @@ export const addMessageStream =
 
       // Format previous conversations for context (excluding the user message we just added)
       const accessMemo = newReadable();
-      const allMessagesSoFar = await historyForModel(
-        appConfig,
-        viewerOf(userId, orgId),
-        (await getMessages(
-          confirmedConversation._id,
-          { orgId: confirmedConversation.orgId },
-          session,
-        )) as IMessage[],
-        accessMemo,
-      );
+      // The history's access check runs while the project loads: both come before the first token.
+      const [allMessagesSoFar, followUpProject] = await Promise.all([
+        historyForModel(
+          appConfig,
+          viewerOf(userId, orgId),
+          (await getMessages(
+            confirmedConversation._id,
+            { orgId: confirmedConversation.orgId },
+            session,
+          )) as IMessage[],
+          accessMemo,
+        ),
+        loadProjectForSession(
+          confirmedConversation.orgId,
+          confirmedConversation.userId,
+          confirmedConversation.projectId,
+          {
+            caller: projectCallerFromRequest(req, appConfig),
+            conversationId: confirmedConversation._id,
+          },
+        ),
+      ]);
       const previousConversations = formatPreviousConversations(
         allMessagesSoFar.slice(0, -1),
-      );
-
-      const followUpProject = await loadProjectForSession(
-        confirmedConversation.orgId,
-        confirmedConversation.userId,
-        confirmedConversation.projectId,
-        {
-          caller: projectCallerFromRequest(req, appConfig),
-          conversationId: confirmedConversation._id,
-        },
       );
       const aiRequest = buildAiChatRequest({ kind: 'assistant' }, req.body, {
         conversationId,
@@ -2089,17 +2068,16 @@ export const addMessageStream =
               const savedCitations = saved.citations;
 
               // Return the updated conversation in the same format as addMessage
-              const responseConversation = await withoutLostAnswers(
+              const responseConversation = await redactConversationFor(
                 appConfig,
-                userId,
-                orgId,
+                viewerOf(userId, orgId),
                 await attachPopulatedCitations(
                   saved.conversation,
                   [saved.message],
                   savedCitations,
                   session,
                 ),
-                accessMemo,
+                { known: accessMemo, freshIds: [saved.message._id] },
               );
 
               // Send the final conversation data in the same format as addMessage
@@ -2661,12 +2639,6 @@ export const getConversationById =
 
       const conversationWithMessages = attachMessages(session, messages);
 
-      // Sort messages using existing helper
-      const sortedMessages = sortMessages(
-        conversationWithMessages?.messages || [],
-        messageSortOptions as { field: keyof IMessage },
-      );
-
       const conversationResponse = await attachSharedByIfRecipient(
         buildConversationResponse(
           conversationWithMessages as unknown as ChatSessionDto,
@@ -2679,19 +2651,23 @@ export const getConversationById =
             hasNextPage: skip > 0,
             hasPrevPage: skip + effectiveLimit < totalMessages,
           },
-          sortedMessages,
+          conversationWithMessages?.messages || [],
         ),
         orgId,
       );
-      // Another viewer sees only what they may read of each message.
-      conversationResponse.messages = await redactPageFor(
-        appConfig,
-        viewerOf(userId, orgId),
-        session,
-        conversationResponse.messages,
-        skip,
-        () => initiatorId,
-      );
+      // Hidden in stored order, then sorted as the client asked: a turn's tool rows follow their
+      // answer, and `sortBy` must not separate them first.
+      conversationResponse.messages = sortMessages(
+        (await redactPageFor(
+          appConfig,
+          viewerOf(userId, orgId),
+          session,
+          conversationResponse.messages,
+          skip,
+          () => initiatorId,
+        )) as never,
+        messageSortOptions as { field: keyof IMessage },
+      ) as unknown as typeof conversationResponse.messages;
 
       // Build filters metadata using existing helper
       const filtersMetadata = buildFiltersMetadata(
@@ -3755,16 +3731,11 @@ async function regenerateAnswersInternal(
     // Format previous conversations up to this message (exclude last bot
     // response and the user query that triggered it)
     const accessMemo = newReadable();
-    const allMessagesForRegen = await historyForModel(
-      appConfig,
-      viewerOf(userId, orgId),
-      (await getMessages(
-        existingConversation._id,
-        { orgId: existingConversation.orgId },
-        session,
-      )) as Array<IMessage & { _id?: string }>,
-      accessMemo,
-    );
+    const allMessagesForRegen = (await getMessages(
+      existingConversation._id,
+      { orgId: existingConversation.orgId },
+      session,
+    )) as Array<IMessage & { _id?: string }>;
     // The turn being regenerated (its user query, its answer, and any
     // `tool_call` rows saved after it) is excluded by position, not by a
     // fixed `slice(0, -2)`: an ask_user_question turn ends with tool rows.
@@ -3784,10 +3755,16 @@ async function regenerateAnswersInternal(
       );
       if (questionIdx >= 0) regenUserIdx = questionIdx;
     }
+    // Only the history that goes to the model is checked, not the turn being redone.
     const previousConversations = formatPreviousConversations(
-      regenUserIdx >= 0
-        ? allMessagesForRegen.slice(0, regenUserIdx)
-        : allMessagesForRegen.slice(0, -2),
+      await historyForModel(
+        appConfig,
+        viewerOf(userId, orgId),
+        regenUserIdx >= 0
+          ? allMessagesForRegen.slice(0, regenUserIdx)
+          : allMessagesForRegen.slice(0, -2),
+        accessMemo,
+      ),
     );
 
     // The title of a chat is its first question, so editing that question moves the title too,
@@ -4098,12 +4075,11 @@ async function regenerateAnswersInternal(
             );
           }
 
-          const responseConversation = await withoutLostAnswers(
+          const responseConversation = await redactConversationFor(
             appConfig,
-            userId,
-            orgId,
+            viewerOf(userId, orgId),
             regeneratedConversation,
-            accessMemo,
+            { known: accessMemo, freshIds: [messageId] },
           );
 
           // Send final response event with the complete conversation data
@@ -4148,9 +4124,10 @@ async function regenerateAnswersInternal(
                 { orgId: updatedConversation.orgId },
                 session,
               );
-              const plainConversation = attachMessages(
-                updatedConversation,
-                messages,
+              const plainConversation = await redactConversationFor(
+                appConfig,
+                viewerOf(userId, orgId),
+                attachMessages(updatedConversation, messages),
               );
               await sendSSEErrorEvent(
                 res,
@@ -4213,9 +4190,10 @@ async function regenerateAnswersInternal(
                 { orgId: updatedConversation.orgId },
                 session,
               );
-              const plainConversation = attachMessages(
-                updatedConversation,
-                messages,
+              const plainConversation = await redactConversationFor(
+                appConfig,
+                viewerOf(userId, orgId),
+                attachMessages(updatedConversation, messages),
               );
               await sendSSEErrorEvent(
                 res,
@@ -4290,6 +4268,7 @@ async function regenerateAnswersInternal(
           requestId || '',
           'stream_error',
           protocol,
+          { appConfig, userId, orgId },
         );
       } catch (dbError: any) {
         logger.error('Failed to replace message with error', {
@@ -4335,6 +4314,7 @@ async function regenerateAnswersInternal(
         requestId || '',
         'regeneration_error',
         protocol,
+        { appConfig, userId, orgId },
       );
     } catch (dbError: any) {
       logger.error('Failed to mark conversation as failed in catch block', {
@@ -7428,28 +7408,30 @@ export const addMessageStreamToAgentConversation =
 
       // Format previous conversations for context (excluding the user message we just added)
       const accessMemo = newReadable();
-      const allMessagesSoFar = await historyForModel(
-        appConfig,
-        viewerOf(userId, orgId),
-        (await getMessages(
-          confirmedConversation._id,
-          { orgId: confirmedConversation.orgId },
-          session,
-        )) as IMessage[],
-        accessMemo,
-      );
+      // The history's access check runs while the project loads: both come before the first token.
+      const [allMessagesSoFar, followUpProject] = await Promise.all([
+        historyForModel(
+          appConfig,
+          viewerOf(userId, orgId),
+          (await getMessages(
+            confirmedConversation._id,
+            { orgId: confirmedConversation.orgId },
+            session,
+          )) as IMessage[],
+          accessMemo,
+        ),
+        loadProjectForSession(
+          confirmedConversation.orgId,
+          confirmedConversation.userId,
+          confirmedConversation.projectId,
+          {
+            caller: projectCallerFromRequest(req, appConfig),
+            conversationId: confirmedConversation._id,
+          },
+        ),
+      ]);
       const previousConversations = formatPreviousConversations(
         allMessagesSoFar.slice(0, -1),
-      );
-
-      const followUpProject = await loadProjectForSession(
-        confirmedConversation.orgId,
-        confirmedConversation.userId,
-        confirmedConversation.projectId,
-        {
-          caller: projectCallerFromRequest(req, appConfig),
-          conversationId: confirmedConversation._id,
-        },
       );
       const aiRequest = buildAiChatRequest(
         { kind: 'agent', agentKey: agentKey as string },
@@ -7844,17 +7826,16 @@ export const addMessageStreamToAgentConversation =
               const savedCitations = saved.citations;
 
               // Return the updated conversation in the same format as addMessage
-              const responseConversation = await withoutLostAnswers(
+              const responseConversation = await redactConversationFor(
                 appConfig,
-                userId,
-                orgId,
+                viewerOf(userId, orgId),
                 await attachPopulatedCitations(
                   saved.conversation,
                   [saved.message],
                   savedCitations,
                   session,
                 ),
-                accessMemo,
+                { known: accessMemo, freshIds: [saved.message._id] },
               );
 
               // Send the final conversation data in the same format as addMessage
@@ -8400,12 +8381,6 @@ export const getAgentConversationById =
 
       const conversationWithMessages = attachMessages(session, messages);
 
-      // Sort messages using existing helper
-      const sortedMessages = sortMessages(
-        conversationWithMessages?.messages || [],
-        messageSortOptions as { field: keyof IMessage },
-      );
-
       // Build conversation response using existing helper
       const builtResponse = buildConversationResponse(
         conversationWithMessages,
@@ -8418,7 +8393,7 @@ export const getAgentConversationById =
           hasNextPage: skip > 0,
           hasPrevPage: skip + effectiveLimit < totalMessages,
         },
-        sortedMessages,
+        conversationWithMessages?.messages || [],
       );
       // The recipient list is the owner's business: a viewer is told who shared
       // the chat, never who else can read it.
@@ -8428,16 +8403,19 @@ export const getAgentConversationById =
           : { ...builtResponse, sharedWith: undefined },
         orgId as string,
       );
-      // Another viewer (a project member, or a user it is shared with) sees only
-      // what they may read of each message.
-      conversationResponse.messages = await redactPageFor(
-        appConfig,
-        viewerOf(userId, orgId),
-        session,
-        conversationResponse.messages,
-        skip,
-        () => initiatorId,
-      );
+      // Hidden in stored order, then sorted as the client asked: a turn's tool rows follow their
+      // answer, and `sortBy` must not separate them first.
+      conversationResponse.messages = sortMessages(
+        (await redactPageFor(
+          appConfig,
+          viewerOf(userId, orgId),
+          session,
+          conversationResponse.messages,
+          skip,
+          () => initiatorId,
+        )) as never,
+        messageSortOptions as { field: keyof IMessage },
+      ) as unknown as typeof conversationResponse.messages;
 
       // Build filters metadata using existing helper
       const filtersMetadata = buildFiltersMetadata(

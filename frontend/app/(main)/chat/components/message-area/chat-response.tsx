@@ -42,7 +42,7 @@ import { useChatStore } from '../../store';
 import { useRenderSlotId } from './render-slot';
 import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { ConversationMessage, AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, AppliedFilterNode, MessagePart } from '../../types';
+import { buildAssistantApiFilters, type ConversationMessage, type AskUserQuestionAnswer, type AskUserQuestionPayload, type AttachmentRef, type ConfidenceLevel, type ModelInfo, type StatusMessage, type ResponseTab, type ChatArtifact, type AppliedFilters as AppliedFiltersData, type AppliedFilterNode, type MessagePart } from '../../types';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
@@ -262,8 +262,22 @@ export const ChatResponse = React.memo(function ChatResponse({
     const slot = activeSlotId ? useChatStore.getState().slots[activeSlotId] : null;
     if (!activeSlotId || !slot || slot.isStreaming) return;
     const request = buildStreamChatRequestForSlot(activeSlotId, question);
-    if (request) void streamMessageForSlot(activeSlotId, question, request);
-  }, [activeSlotId, question]);
+    if (!request) return;
+    // The turn's own scope and files, not what the composer holds now. The server's usual
+    // checks apply: a file the person can no longer read is refused as always.
+    if (appliedFilters) {
+      request.appliedFilters = appliedFilters;
+      request.filters = buildAssistantApiFilters({
+        apps: appliedFilters.apps.map((a) => a.id),
+        kb: appliedFilters.kb.map((k) => k.id),
+        recordGroups: (appliedFilters.recordGroups ?? []).map((g) => g.id),
+        records: (appliedFilters.records ?? []).map((r) => r.id),
+        recordsExact: (appliedFilters.recordsExact ?? []).map((r) => r.id),
+      });
+    }
+    if (attachments && attachments.length > 0) request.attachments = attachments;
+    void streamMessageForSlot(activeSlotId, question, request);
+  }, [activeSlotId, question, appliedFilters, attachments]);
   const activeExpandedMessageId = useChatStore((s) =>
     activeSlotId ? s.slots[activeSlotId]?.activeExpandedMessageId ?? null : null
   );
@@ -1201,9 +1215,11 @@ export const ChatResponse = React.memo(function ChatResponse({
               ? t('chat.answerHidden.unconfirmed')
               : t('chat.answerHidden.lost')}
           </Text>
-          <Button size="1" variant="soft" onClick={askAgain}>
-            {t('chat.answerHidden.askAgain')}
-          </Button>
+          {isChatOwner && (
+            <Button size="1" variant="soft" onClick={askAgain}>
+              {t('chat.answerHidden.askAgain')}
+            </Button>
+          )}
         </Flex>
       )}
 

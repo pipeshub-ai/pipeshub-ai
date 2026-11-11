@@ -7,7 +7,11 @@ import {
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 import type { AppConfig } from '../../tokens_manager/config/config';
-import { historyForModel } from './viewer-redaction';
+import {
+  historyForModel,
+  newReadable,
+  type Readable,
+} from './viewer-redaction';
 import { Logger } from '../../../libs/services/logger.service';
 import { CONVERSATION_STATUS } from '../constants/constants';
 import {
@@ -76,6 +80,8 @@ export interface ContinuedConversation {
   conversation: ChatSessionDto;
   /** History before this turn, in the shape the AI backend expects. */
   previousConversations: ReturnType<typeof formatPreviousConversations>;
+  /** What this turn's history check settled, so the response check does not ask again. */
+  access: Readable;
 }
 
 /** Who is asking. */
@@ -120,11 +126,18 @@ export const continueConversation = async (
     );
     return { conversation: saved ?? found, rows };
   });
+  const access = newReadable();
   return {
     conversation,
     previousConversations: formatPreviousConversations(
-      await historyForModel(appConfig, viewer, rows as unknown as IMessage[]),
+      await historyForModel(
+        appConfig,
+        viewer,
+        rows as unknown as IMessage[],
+        access,
+      ),
     ),
+    access,
   };
 };
 

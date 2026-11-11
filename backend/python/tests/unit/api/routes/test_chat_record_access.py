@@ -59,7 +59,7 @@ async def test_urls_map_to_records_and_are_readable_only_when_every_record_is() 
         out = await check_viewer_record_access(
             _request({"recordIds": ["a"], "webUrls": ["u1", "u2", "gone", "u1"]}), graph, VIEWER
         )
-    graph.get_records_by_weburls.assert_awaited_once_with(["u1", "u2", "gone"], "org-1", per_address=50)
+    graph.get_records_by_weburls.assert_awaited_once_with(["u1", "u2", "gone"], "org-1", per_address=50, include_deleted=True)
     check.assert_awaited_once_with(graph, {"a", "r1", "r2", "r3"}, "viewer", "org-1")
     # u2 has an unreadable record at its address, "gone" resolves to nothing.
     assert out == {"accessible": [], "accessibleUrls": ["u1"], "unmatchedUrls": ["gone"]}
@@ -103,3 +103,15 @@ async def test_an_address_with_no_record_is_unmatched_not_unreadable() -> None:
         out = await check_viewer_record_access(_request({"webUrls": ["known", "https://example.com/page"]}), graph, VIEWER)
     assert out["accessibleUrls"] == []
     assert out["unmatchedUrls"] == ["https://example.com/page"]
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_records_address_is_unreadable_like_its_id() -> None:
+    graph = AsyncMock()
+    # The graph returns the deleted record at its address; deleted nodes are never accessible.
+    graph.get_records_by_weburls = AsyncMock(return_value=_rows(("gone-record", "https://wiki/page")))
+    with patch("app.api.routes.chatbot.accessible_node_ids", AsyncMock(return_value=set())):
+        out = await check_viewer_record_access(_request({"webUrls": ["https://wiki/page"]}), graph, VIEWER)
+    assert out["accessibleUrls"] == []
+    assert out["unmatchedUrls"] == []
+    assert graph.get_records_by_weburls.await_args.kwargs["include_deleted"] is True

@@ -515,6 +515,29 @@ describe('es_controller streaming answers', () => {
     expect(sent.some((m) => m.content === 'A fresh answer.')).to.equal(true)
   })
 
+  it('regenerateAnswers: the error event of a run that never finished hides an earlier answer the user lost', async () => {
+    const flow = flows[2] as Flow
+    const lostHistory: Flow = {
+      ...flow,
+      prepare: (store) => {
+        const prepared = flow.prepare(store)
+        const session = prepared.existing!
+        const earlier = store.addMessage(session, { messageType: 'bot_response', content: 'An earlier lost answer.', attachments: [{ recordId: 'rec-lost', recordName: 'lost.pdf' }] })
+        earlier.set('seq', 0)
+        return prepared
+      },
+    }
+    const run = await startStream(lostHistory, undefined, (ai) => ai.reply(/\/chat\/records\/access$/, 200, { accessible: [], accessibleUrls: [] }))
+    run.ai.finish()
+    await run.res.ended
+
+    const errors = run.res.eventsOf('RUN_ERROR')
+    const carried = errors.flatMap((e) => (e.data.conversation?.messages ?? []) as Array<Record<string, unknown>>)
+    expect(carried.length, 'the event carries the conversation').to.be.greaterThan(0)
+    expect(carried.some((m) => m.answerHidden !== undefined)).to.equal(true)
+    expect(JSON.stringify(errors)).to.not.contain('An earlier lost answer.')
+  })
+
   it('addMessageStream: a stack trace saved from an earlier failed turn never reaches the browser', async () => {
     const run = await startStream(flows[1] as Flow)
     run.conversation().set('conversationErrors', [
