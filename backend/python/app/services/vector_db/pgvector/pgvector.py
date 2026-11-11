@@ -21,6 +21,10 @@ from app.core import org_context
 from app.core.db import CapabilityError, DbError
 from app.core.db.shared import acquire_db, release_db
 from app.modules.retrieval import degraded_notice
+from app.services.permissions.scope_fields import (
+    SCOPE_FIELDS_VERSION,
+    current_scope_generation,
+)
 from app.services.vector_db.filters import (
     build_filter_expression,
     build_generic_conditions,
@@ -453,8 +457,10 @@ class PgVectorService(IVectorDBService):
         return int(row["n"]), float(row["ahead"])
 
     async def unreadable_group_rows(self, org_id: str) -> int:
-        """How many of the org's group rows hold a stamp of a deciding kind but a NULL list its rule reads (a data fault): a served search hides their
-        points, since the verdict cannot be read. A container stamp reads only lists that cannot be NULL, so it is never counted.
+        """How many of the org's group rows hold a stamp a served search trusts (this version and generation, with connectors) of a deciding kind but a
+        NULL list its rule reads (a data fault): such a list admits nothing on its own, so a served search can hide their points (a union or
+        intersection row may still pass on its other list). A stale stamp is left to the request's arms, and a container stamp reads only lists that
+        cannot be NULL, so neither is counted.
 
         shortcut: reads the org's group rows without an index on the stamp; an operator command, run it when asked, not per request."""
         db, _ = self._assert_connected()
@@ -463,9 +469,10 @@ class PgVectorService(IVectorDBService):
             n = await db.run(lambda tx: tx.fetchval(
                 """/* pipeshub:pgvector.unreadable_group_rows */
                 SELECT count(*) FROM retrieval.point_groups
-                WHERE org_id = $1 AND scope_stamp IN ('container', 'union', 'intersection', 'override') AND scope_version IS NOT NULL
-                  AND scope_generation IS NOT NULL AND connector_ids IS NOT NULL
-                  AND ((scope_stamp <> 'container' AND acl_scope IS NULL) OR (scope_stamp IN ('union', 'intersection') AND path_ids IS NULL))""", org), idempotent=True, custom_plan=True)
+                WHERE org_id = $1 AND scope_stamp IN ('container', 'union', 'intersection', 'override') AND scope_version = $2::int
+                  AND scope_generation = $3::int AND cardinality(connector_ids) > 0
+                  AND ((scope_stamp <> 'container' AND acl_scope IS NULL) OR (scope_stamp IN ('union', 'intersection') AND path_ids IS NULL))""",
+                org, SCOPE_FIELDS_VERSION, current_scope_generation()), idempotent=True, custom_plan=True)
         return int(n)
 
     async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:

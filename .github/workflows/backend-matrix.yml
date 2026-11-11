@@ -143,6 +143,7 @@ on:
       - 'backend/python/tests/permissions/mutations.py'
       - 'backend/python/tests/permissions/oracle.py'
       - 'backend/python/tests/permissions/scope_corpus.py'
+      - 'backend/python/tests/permissions/serving_corpus.py'
       - 'backend/python/tests/permissions/scope_layer.py'
       - 'backend/python/tests/permissions/stamp_world.py'
       - 'backend/python/tests/permissions/store_harness.py'

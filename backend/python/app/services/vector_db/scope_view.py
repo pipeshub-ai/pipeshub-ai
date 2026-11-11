@@ -156,7 +156,7 @@ async def org_view(graph_provider: IGraphDBProvider, org_id: str, vector_db: IVe
                 n = await unreadable(org_id)
                 SERVING_UNREADABLE_ROWS.set("pgvector", org_id, value=n)
                 if n:
-                    view.notes.append(f"unreadable_group_rows: {n} pgvector group row(s) hold a trusted stamp with a NULL list; a served search hides their points; index them again")
+                    view.notes.append(f"unreadable_group_rows: {n} pgvector group row(s) hold a trusted stamp with a NULL list, which can hide their points in a served search; index them again")
             except Exception as exc:
                 view.notes.append(f"unreadable_group_rows_unknown: the vector store could not count them ({type(exc).__name__})")
         return view

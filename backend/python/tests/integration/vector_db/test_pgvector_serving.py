@@ -91,6 +91,22 @@ async def test_only_a_group_the_filter_cannot_decide_is_counted_as_unreadable(st
     finally:
         await conn.close()
     assert await store.unreadable_group_rows(A) == 1          # an override stamp reads its acl_scope
+    conn = await store.env.admin()
+    try:
+        await conn.execute("UPDATE retrieval.point_groups SET scope_version = scope_version - 1 WHERE org_id = $1 AND group_key = 'override'", A)
+    finally:
+        await conn.close()
+    assert await store.unreadable_group_rows(A) == 0          # a stamp of another version is left to the request's arms: nothing is hidden
+
+
+async def test_a_union_group_with_a_null_acl_scope_is_counted_but_still_admitted_on_its_path(store) -> None:
+    conn = await store.env.admin()
+    try:
+        await conn.execute("UPDATE retrieval.point_groups SET acl_scope = NULL WHERE org_id = $1 AND group_key = 'union'", A)
+    finally:
+        await conn.close()
+    assert await store.unreadable_group_rows(A) == 1          # a data fault all the same
+    assert "union" in await search(store, f(readable_scopes=EVERYTHING, readable_groups=EVERYTHING, defer=True))      # its path still reaches
 
 
 async def test_no_group_row_and_a_trust_nothing_filter_are_the_arms_alone(store) -> None:
