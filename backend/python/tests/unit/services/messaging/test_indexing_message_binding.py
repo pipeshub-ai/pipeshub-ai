@@ -129,7 +129,7 @@ class TestRedisIndexing:
         c = _redis()
         c.message_handler = _failing_handler(ConnectionError("down"))
         assert await c._process_message_wrapper("record-events", "5-0", {"value": _value()}) is False
-        lines = _lines(caplog, "handler line", "Error in process_message_wrapper", "Transient error for")
+        lines = _lines(caplog, "handler line", "index.end")
         for fields in lines.values():
             _assert_bound(fields, "5-0", "record-events")
 
@@ -138,13 +138,17 @@ class TestRedisIndexing:
         c._requeue_message = AsyncMock()
         c.message_handler = _failing_handler(ConnectionError("down"))
         await c._process_message_wrapper("record-events", "5-0", {"value": _value()})
-        _assert_bound(_lines(caplog, "Re-queued")["Re-queued"], "5-0", "record-events")
+        end = _lines(caplog, "index.end")["index.end"]
+        _assert_bound(end, "5-0", "record-events")
+        assert (end["disposition"], end["attempt"]) == ("retry", 1)
 
     async def test_dead_letter_line_after_a_terminal_failure_carries_the_message(self, caplog) -> None:
         c = _redis()
         c.message_handler = _failing_handler(NonRetryableError("bad"))
         await c._process_message_wrapper("record-events", "5-0", {"value": _value()})
-        _assert_bound(_lines(caplog, "Dead-lettered")["Dead-lettered"], "5-0", "record-events")
+        end = _lines(caplog, "index.end")["index.end"]
+        _assert_bound(end, "5-0", "record-events")
+        assert (end["disposition"], end["reason"]) == ("dead_letter", "terminal")
 
     async def test_a_recovered_entry_out_of_attempts_is_dead_lettered_in_its_context(self, caplog) -> None:
         c = _redis(retry_manager=_Tracker({"7-0": 3}))
@@ -171,7 +175,7 @@ class TestKafkaIndexing:
         c = _kafka()
         c.message_handler = _failing_handler(NonRetryableError("bad"))
         await c._IndexingKafkaConsumer__process_message_wrapper(_kafka_message(_value().encode()))
-        lines = _lines(caplog, "handler line", "Error in process_message_wrapper")
+        lines = _lines(caplog, "handler line", "index.end")
         for fields in lines.values():
             _assert_bound(fields, "record-events-0-3", "record-events")
 
