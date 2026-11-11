@@ -48,6 +48,7 @@ if TYPE_CHECKING:
 
 
 _KB = Connectors.KNOWLEDGE_BASE.value
+_PRINCIPALS_PAGE = 5000      # the LIMIT of each branch of graph.principals_by_email
 _ORG_FIELD = "orgId"  # the org property of a graph document, not a claim
 
 
@@ -125,6 +126,24 @@ class IdentityMixin(PgBase):
     async def _id_rows(self, sql: str, args: list[Any], transaction: str | None, *, write: bool = False) -> list:
         return await self._q(lambda tx: tx.fetch(sql, *args), transaction, write=write)
 
+    async def _principals_by_email(self, colls: list[str], emails: list[str], transaction: str | None) -> list | None:
+        """The vetted read of graph_0006: ``(coll, node_id, doc)`` of the users, groups and persons (as ``colls`` names them) whose lower-cased email is one of
+        ``emails``. None when it cannot answer for the arguments (out of its bounds) or a page may not be all of the matches: the caller reads with its statement."""
+        current_org_id()      # no org is an error here, as for the statement: the function would answer nothing
+        if not emails or len(emails) > 1000 or not all(isinstance(e, str) and 0 < len(e) <= 1000 for e in emails):
+            return None
+        rows = await self._id_rows("/* pipeshub:graph.principals_by_email */ SELECT coll, node_id, doc FROM graph.principals_by_email($1::text[], $2::text[])", [colls, emails], transaction)
+        return rows if len(rows) < _PRINCIPALS_PAGE else None
+
+    async def _by_external(self, coll: str, connector_id: str, external_id: str, transaction: str | None) -> list:
+        """The group, record group or role (``coll``) of the connector with this external id: the vetted read of graph_0008, or the statement for a value out of its bounds."""
+        org = current_org_id()
+        if isinstance(connector_id, str) and isinstance(external_id, str) and 0 < len(connector_id) <= 200 and 0 < len(external_id) <= 2000:
+            return await self._id_rows("/* pipeshub:graph.node_by_external */ SELECT node_id, doc FROM graph.node_by_external($1, $2, $3)", [coll, connector_id, external_id], transaction)
+        key = "externalRoleId" if coll == "roles" else "externalGroupId"
+        return await self._id_rows("/* pipeshub:graph.node_by_external_plain */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND doc->>$3 = $4 AND doc->>'connectorId' = $5 LIMIT 1",
+                                   [org, coll, key, external_id, connector_id], transaction)
+
     async def _enrich_created_by(self, entities: list[dict], transaction: str | None = None) -> None:
         """createdByUser (graph id, userId, name, email) from the createdBy graph keys, one query for all of them."""
         keys = list({e["createdBy"] for e in entities if e and e.get("createdBy") and e["createdBy"] != "system"})
@@ -157,8 +176,12 @@ class IdentityMixin(PgBase):
                                 org_id: str | None = None) -> User | None:
         if not self._mine(org_id):
             return None
-        d = await self._one("/* pipeshub:graph.get_user_by_email */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = lower($2) LIMIT 1",
-                            current_org_id(), email, transaction=transaction)
+        rows = await self._principals_by_email(["users"], [email], transaction)
+        if rows is not None:
+            d = _doc(rows[0]["doc"]) if rows else None
+        else:
+            d = await self._one("/* pipeshub:graph.get_user_by_email */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = lower($2) LIMIT 1",
+                                current_org_id(), email, transaction=transaction)
         return User.from_arango_user(_arango(d, "users")) if d else None
 
     @_soft(dict, flag=True)
@@ -168,9 +191,11 @@ class IdentityMixin(PgBase):
         wanted = list(dict.fromkeys(e.lower() for e in emails if e))
         if not wanted or not self._mine(org_id):
             return {}
-        # lower(doc->>'email') is the expression index nodes_user_email (org_id, lower(doc->>'email')).
-        rows = await self._id_rows("/* pipeshub:graph.get_users_by_emails */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = ANY($2::text[])",
-                                   [org, wanted], transaction)
+        # lower(doc->>'email') is the expression index nodes_user_email (org_id, lower(doc->>'email')), which the vetted read reaches.
+        rows = await self._principals_by_email(["users"], wanted, transaction)
+        if rows is None:
+            rows = await self._id_rows("/* pipeshub:graph.get_users_by_emails */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = ANY($2::text[])",
+                                       [org, wanted], transaction)
         out: dict[str, User] = {}
         for r in rows:
             d = _arango(_doc(r["doc"]), "users")
@@ -294,9 +319,16 @@ class IdentityMixin(PgBase):
         if "@" in wanted:
             if not is_full_address(wanted):
                 return []
+            found = await self._principals_by_email(["person"], [wanted], None)
+            if found is not None:      # by id in byte order, as COLLATE "C": a str compares by code point, which is the UTF-8 byte order
+                return [{"id": r["node_id"], "fullName": (d := _doc(r["doc"])).get("fullName"), "email": d.get("email")}
+                        for r in sorted(found, key=lambda r: r["node_id"])[:max(1, limit)]]
             rows = await self._id_rows("""/* pipeshub:graph.find_people_by_email */ SELECT p.id, p.doc->>'fullName' AS "fullName", p.doc->>'email' AS email FROM graph.nodes p
                 WHERE p.org_id = $1 AND p.coll = 'person' AND lower(p.doc->>'email') = $2 ORDER BY p.id COLLATE "C" LIMIT $3""", [current_org_id(), wanted, max(1, limit)], None)
             return [dict(r) for r in rows]
+        if len(wanted) <= 400 and limit <= 1000:      # the vetted read of graph_0006, which narrows and orders as the statement below does, by the indexes of the person's name
+            rows = await self._id_rows("/* pipeshub:graph.people_by_name */ SELECT node_id AS id, doc FROM graph.people_by_name($1, $2)", [wanted, max(1, limit)], None)
+            return [{"id": r["id"], "fullName": (d := _doc(r["doc"])).get("fullName"), "email": d.get("email")} for r in rows]
         rows = await self._id_rows("""/* pipeshub:graph.find_people */ WITH u AS (
               SELECT x.id, x.doc, array_to_string(array_remove(string_to_array(lower(coalesce(x.doc->>'fullName', '')), ' '), ''), ' ') AS name,
                      array_to_string(array_remove(string_to_array(lower(coalesce(x.doc->>'firstName', '') || ' ' || coalesce(x.doc->>'lastName', '')), ' '), ''), ' ') AS parts
@@ -438,8 +470,7 @@ class IdentityMixin(PgBase):
     # ---- groups and roles ----------------------------------------------------------------------------------------
     @_soft(None, flag=True)
     async def get_user_group_by_external_id(self, connector_id: str, external_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> AppUserGroup | None:
-        rows = await self._id_rows("""/* pipeshub:graph.get_user_group_by_external_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'groups'
-            AND doc->>'externalGroupId' = $2 AND doc->>'connectorId' = $3 LIMIT 1""", [current_org_id(), external_id, connector_id], transaction)
+        rows = await self._by_external("groups", connector_id, external_id, transaction)
         return AppUserGroup.from_arango_base_user_group(_arango(_doc(rows[0]["doc"]), "groups")) if rows else None
 
     @_soft(list, flag=True)
@@ -472,8 +503,7 @@ class IdentityMixin(PgBase):
 
     @_soft(None, flag=True)
     async def get_app_role_by_external_id(self, connector_id: str, external_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> AppRole | None:
-        rows = await self._id_rows("""/* pipeshub:graph.get_app_role_by_external_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'roles'
-            AND doc->>'externalRoleId' = $2 AND doc->>'connectorId' = $3 LIMIT 1""", [current_org_id(), external_id, connector_id], transaction)
+        rows = await self._by_external("roles", connector_id, external_id, transaction)
         return AppRole.from_arango_base_role(_arango(_doc(rows[0]["doc"]), "roles")) if rows else None
 
     async def batch_upsert_user_groups(self, user_groups: list, transaction: str | None = None) -> None:

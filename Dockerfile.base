@@ -8,7 +8,7 @@
 #   python-deps-<hash>   site-packages, from the lockfile, plus NLTK, the
 #                        fastembed BM25 model and Chromium. No embedding or
 #                        reranker weights.
-#   runtime-<hash>       apt runtime stack, Node 22, LibreOffice, Chromium's
+#   runtime-<hash>       apt runtime stack, Node 24, LibreOffice, Chromium's
 #                        system libraries, cypher-shell. No Python packages.
 #   models-bge-<hash>    python-deps plus BAAI/bge-large-en-v1.5 and
 #                        BAAI/bge-reranker-base. Only the full app image copies
@@ -26,7 +26,7 @@
 # Docker Hub and GHCR. See .github/workflows/base-images.yml.
 
 ARG PYTHON_IMAGE=python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
-ARG NODE_IMAGE=node:22-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392
+ARG NODE_IMAGE=node:24-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.8.22@sha256:9874eb7afe5ca16c363fe80b294fe700e460df29a55532bbfea234a0f12eddb1
 
 # Default builds python-deps from scratch. Override with a previously published

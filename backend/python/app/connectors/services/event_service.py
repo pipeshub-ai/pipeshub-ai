@@ -45,6 +45,7 @@ from app.connectors.core.base.data_processor.storage_cleanup import (
     StorageCleanupHelper,
 )
 from app.connectors.services.entity_cleanup_intents import record_pending_entity_cleanup
+from app.connectors.services.late_write_sweep import record_pending_late_write_sweep
 from app.connectors.services.storage_release import (
     record_pending_storage_release,
     release_connector_storage,
@@ -1711,7 +1712,8 @@ class EventService:
 
             # Recorded before the graph rows go: a lost deleteConnectorEntities
             # is then still reconciled by the indexing service, and an unfinished
-            # storage release by this service. Raises, which aborts the delete,
+            # storage release and what indexing writes after the delete by this
+            # service. Raises, which aborts the delete,
             # when an intent cannot be recorded.
             # The service-wide store, not the org's: the reconcilers read these
             # back without knowing which org a key belongs to.
@@ -1722,6 +1724,9 @@ class EventService:
             )
             await record_pending_storage_release(
                 config_service, org_id=org_id, connector_id=connector_id,
+            )
+            await record_pending_late_write_sweep(
+                config_service, self.graph_provider, org_id=org_id, connector_id=connector_id,
             )
             self.logger.info(
                 f"Storage release intent recorded | org={org_id} connector={connector_id}"
@@ -1751,6 +1756,14 @@ class EventService:
                         f"its storage release stays pending"
                     )
                     return True
+                if result.get("partial"):
+                    # Part of it is gone and the app's grants with it: reverting the status would show an active connector nobody can open.
+                    # It stays DELETING; a redelivery of this event finishes it, and so does the storage-release reconciler once the
+                    # delivery attempts are used up.
+                    self.logger.error(
+                        f"Deletion of connector {connector_id} stopped part way and stays DELETING: {result.get('error')}"
+                    )
+                    return False
                 raise Exception(result.get("error", "Unknown deletion failure from graph DB"))
             graph_deleted = True
 

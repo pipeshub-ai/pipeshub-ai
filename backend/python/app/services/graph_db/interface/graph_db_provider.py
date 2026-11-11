@@ -5095,6 +5095,13 @@ class IGraphDBProvider(ABC):
         "no scopes"."""
         raise NotImplementedError(f"{type(self).__name__} has no permission hierarchy view")
 
+    async def store_time(self) -> float:
+        """The store's own clock, in epoch seconds. Leases that a writer and a sweeper judge are written and read by this clock, so a host whose
+        clock is off cannot make a live lease look dead. A provider that cannot say raises, and so does a read slower than
+        ``STORE_CLOCK_TIMEOUT_SECONDS`` as far as the callers are concerned: a writer then writes its lease by the local clock and marks it unknown,
+        a sweep recovers nothing that round, and the operator view reports the unknown clock. Nothing is recovered by the local clock."""
+        raise NotImplementedError(f"{type(self).__name__} has no store clock")
+
     async def increment_node_field(
         self, key: str, collection: str, field: str, transaction: str | None = None
     ) -> int | None:
@@ -6212,6 +6219,21 @@ class IGraphDBProvider(ABC):
         sweep too -- both halves have to be removed here.
 
         Returns the number of block nodes removed.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def sweep_deleted_connector_writes(
+        self, connector_id: str, record_group_ids: Sequence[str] = (),
+    ) -> tuple[int, int]:
+        """One pass over a deleted connector: remove the blocks and stage states that still
+        carry its ``connectorId``, which indexing already in flight can write after the delete.
+        A store that writes an edge without checking its ends also removes the record links
+        that carry one of the connector's ``record_group_ids``: the code graph writes a file's
+        edges after its blocks, and those edges carry no ``connectorId``.
+
+        Returns ``(removed, left)``, ``left`` being what a count finds right after. Raises when
+        the store does. Never call it for a connector that still exists: it removes all of them.
         """
         raise NotImplementedError
 

@@ -68,9 +68,15 @@ class OrganizationsMixin(IdentityMixin):
         wanted = sorted({k for k in keys if k})
         if not org_id or not wanted or not self._mine(org_id):
             return []
-        rows = await self._id_rows("""/* pipeshub:graph.find_organizations */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'organizations'
-            AND doc->>'parentOrgId' = $2 AND doc->>'normalizedName' = ANY($3::text[]) AND doc->'isExternal' = 'true'::jsonb ORDER BY id COLLATE "C" """,
-                                   [current_org_id(), org_id, wanted], transaction)
+        rows = None
+        if len(org_id) <= 200 and len(wanted) <= 1000 and all(len(k) <= 1000 for k in wanted):      # the vetted read of graph_0006
+            got = await self._id_rows("/* pipeshub:graph.organizations_by_name */ SELECT node_id AS id, doc FROM graph.organizations_by_name($1, $2::text[])", [org_id, wanted], transaction)
+            if len(got) < 5000:      # a full page may not be all of them
+                rows = sorted(got, key=lambda r: r["id"])      # byte order, as COLLATE "C": a str compares by code point, which is the UTF-8 byte order
+        if rows is None:
+            rows = await self._id_rows("""/* pipeshub:graph.find_organizations */ SELECT id, doc FROM graph.nodes WHERE org_id = $1 AND coll = 'organizations'
+                AND doc->>'parentOrgId' = $2 AND doc->>'normalizedName' = ANY($3::text[]) AND doc->'isExternal' = 'true'::jsonb ORDER BY id COLLATE "C" """,
+                                       [current_org_id(), org_id, wanted], transaction)
         return [{"id": r["id"], "name": (d := _doc(r["doc"])).get("name"), "normalizedName": d.get("normalizedName")} for r in rows]
 
     async def create_organization_if_absent(self, org_id: str, node: dict[str, Any], transaction: str | None = None) -> None:

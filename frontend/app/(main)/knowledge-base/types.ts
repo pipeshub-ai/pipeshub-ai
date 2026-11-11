@@ -263,6 +263,9 @@ export interface KnowledgeHubNode {
   recordGroupType?: string | null;
   indexingStatus?: IndexingStatus | null;
   reason?: string | null;
+  /** Chunks embedded so far and chunks needed; set only while an `IN_PROGRESS` record is embedding. */
+  embedDone?: number | null;
+  embedTotal?: number | null;
   sizeInBytes?: number | null;
   mimeType?: string | null;
   extension?: string | null;

@@ -1529,6 +1529,17 @@ class TestHandleDelete:
             assert service.graph_provider.batch_upsert_nodes.await_count >= 1
 
     @pytest.mark.asyncio
+    async def test_a_delete_that_stopped_part_way_stays_deleting(self, service) -> None:
+        """Part of the connector and its grants are gone: reverting the status would show an active connector nobody can open."""
+        service.graph_provider.get_document = AsyncMock(return_value={"_key": "c1", "status": "DELETING"})
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": False, "partial": True, "error": "worker killed"})
+        with current_coordinator() as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            result = await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1", "previousIsActive": True})
+        assert result is False
+        service.graph_provider.batch_upsert_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_a_connector_the_graph_delete_already_removed_is_acked_not_recreated(self, service):
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={
             "success": False, "error": "Connector instance c1 not found"
@@ -1632,11 +1643,47 @@ class TestHandleDelete:
         with current_coordinator() as mock_stm:
             mock_stm.cancel_sync = AsyncMock()
             assert await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}) is True
-        assert calls[:3] == [
+        assert calls[:4] == [
             "intent:/services/entityCleanup/pending/c1:org1",
             "intent:/services/storageRelease/pending/c1:org1",
+            "intent:/services/lateWriteSweep/pending/c1:org1",
             "graph-delete",
         ]
+
+    @pytest.mark.asyncio
+    async def test_the_late_write_intent_keeps_the_groups_read_before_the_graph_delete(self, service) -> None:
+        """Late links carry a record group and no connector, and the groups go with the delete."""
+        written: dict[str, dict] = {}
+        config_svc = AsyncMock()
+        config_svc.get_config = AsyncMock(return_value=None)
+        config_svc.set_config = AsyncMock(side_effect=lambda key, value: written.__setitem__(key, value) or True)
+        service.graph_provider.get_nodes_by_filters = AsyncMock(return_value=[{"_key": "rg-1"}, {"_key": "rg-2"}])
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True, "virtual_record_ids": []})
+        service.app_container.config_service.return_value = config_svc
+        with current_coordinator() as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            assert await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}) is True
+
+        assert written["/services/lateWriteSweep/pending/c1"]["recordGroupIds"] == ["rg-1", "rg-2"]
+        assert service.graph_provider.get_nodes_by_filters.await_args.kwargs["filters"] == {"connectorId": "c1"}
+
+    @pytest.mark.asyncio
+    async def test_groups_that_cannot_be_read_refuse_the_delete(self, service) -> None:
+        """Deleted without them, the links indexing writes late would never be swept."""
+        written: dict[str, dict] = {}
+        service.graph_provider.get_document = AsyncMock(return_value={"_key": "c1", "status": "DELETING"})
+        config_svc = AsyncMock()
+        config_svc.get_config = AsyncMock(return_value=None)
+        config_svc.set_config = AsyncMock(side_effect=lambda key, value: written.__setitem__(key, value) or True)
+        service.graph_provider.get_nodes_by_filters = AsyncMock(side_effect=RuntimeError("timeout"))
+        service.graph_provider.delete_connector_instance = AsyncMock()
+        service.app_container.config_service.return_value = config_svc
+        with current_coordinator() as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            assert await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}) is False
+
+        assert "/services/lateWriteSweep/pending/c1" not in written
+        service.graph_provider.delete_connector_instance.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_graph_delete_without_a_recorded_intent(self, service):

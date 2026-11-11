@@ -111,6 +111,8 @@ class StampNode:
     vrid: str | None = None
     #: A BELONGS_TO edge to the app itself (what makes a record a member of an app that opens everything).
     belongs_app: bool = False
+    #: The record's origin as stored (a record of no connector is told apart by it).
+    origin: str | None = None
 
 
 @dataclass(frozen=True)
