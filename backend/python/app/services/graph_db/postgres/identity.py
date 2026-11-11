@@ -483,14 +483,17 @@ class IdentityMixin(PgBase):
                 member_edges = [{"from_id": u.id, "from_collection": "users", "to_id": org_node, "to_collection": "organizations", "createdAtTimestamp": u.created_at,
                                  "updatedAtTimestamp": u.updated_at, "entityType": "ORGANIZATION"} for u in new.values() if not u.is_guest]
                 await self.batch_create_edges(member_edges, CollectionNames.BELONGS_TO.value, tx)
+            def pick(u: AppUser) -> tuple[str, bool]:      # the user a source account resolves to: its existing link, else the first by id
+                return next((linked[(u.source_user_id, i)] for i, _ in shared.get(low[u.email], []) if (u.source_user_id, i) in linked), have[low[u.email]])
+
             # a guest an earlier sync made an org member loses it, unless an admin invite made them active
-            heal = list({have[low[u.email]][0] for u in users if u.is_guest and low[u.email] not in new and not have[low[u.email]][1]})
+            heal = list({pick(u)[0] for u in users if u.is_guest and low[u.email] not in new and not pick(u)[1]})
             if heal:
                 await self._q(lambda t: t.execute("""/* pipeshub:graph.guest_org_edge_heal */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'belongsTo'
                     AND from_coll = 'users' AND from_id = ANY($2::text[]) AND to_coll = 'organizations' AND to_id = $3""", org, heal, org_node), tx, write=True)
             links = {}
             for u in users:
-                key = next((linked[(u.source_user_id, i)][0] for i, _ in shared.get(low[u.email], []) if (u.source_user_id, i) in linked), have[low[u.email]][0])
+                key = pick(u)[0]
                 links[key] = {"from_id": key, "from_collection": "users", "to_id": connector_id, "to_collection": "apps", "sourceUserId": u.source_user_id,
                               "isExternalUser": False, "syncState": "NOT_STARTED", "lastSyncUpdate": now, "createdAtTimestamp": now, "updatedAtTimestamp": now}
             await self.batch_create_edges(list(links.values()), CollectionNames.USER_APP_RELATION.value, tx)

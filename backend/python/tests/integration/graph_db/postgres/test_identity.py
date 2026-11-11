@@ -225,6 +225,16 @@ async def test_a_source_account_already_linked_to_one_of_two_users_sharing_an_ad
     assert ("a-dup", "src-fresh") in {(r["id"], r["sourceUserId"]) for r in await w.p.get_app_user_links(w.org, APP)}
 
 
+async def test_a_guest_linked_to_one_of_two_users_sharing_an_address_loses_only_that_users_membership(w: World) -> None:
+    for key in ("a-g", "b-g"):
+        await w.nodes("users", {"_key": key, "email": "g@x.com", "isActive": False})
+        await w.edge("belongsTo", ("users", key), ("organizations", w.org), entityType="ORGANIZATION")
+    await w.edge("userAppRelation", ("users", "b-g"), ("apps", APP), sourceUserId="src-gst")
+    await w.p.batch_upsert_app_users([app_user("g@x.com", "gst", guest=True)])          # the guest's source account is linked to b-g
+    members = {e["from_id"] for e in await w.p.get_edges_to_node(f"organizations/{w.org}", "belongsTo")}
+    assert "a-g" in members and "b-g" not in members                                     # the linked user lost it, not the first by id
+
+
 async def test_groups_and_roles_round_trip_in_the_ambient_org_whatever_the_model_says(w: World) -> None:
     g = AppUserGroup(app_name=Connectors.JIRA, connector_id=APP, source_user_group_id="ext-g", name="G", org_id="some-other-org")
     r = AppRole(app_name=Connectors.JIRA, connector_id=APP, source_role_id="ext-r", name="R", org_id="some-other-org")
