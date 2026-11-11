@@ -137,7 +137,8 @@ def _from_app(f: _Facts, t: str, trace: list[tuple[_Why, str]] | None = None) ->
     frontier = {t}
     for _ in range(MAX_DEPTH):
         nxt: set[str] = set()
-        for cid in frontier:
+        # Sorted: `_denied` keeps the first failure met, so a set's hash order would change the answer from one process to the next.
+        for cid in sorted(frontier):
             c = f.nodes[cid]
             for p in c.parents:
                 if p not in f.nodes:
@@ -306,8 +307,8 @@ class ExplainService:
         elif not graph_admitted and walk.code in (NO_GRANT, RESTRICTED_CONTAINER, ITEM_RESTRICTED, PARENT_NOT_READABLE) and \
                 await self._pending(org_id, facts, record_id):
             walk = _Walk(False, PENDING_REWRITE)
-        chain = self._chain(facts, target)
         container_id = walk.node_id if walk.node_id and walk.node_id != record_id else None
+        chain = self._chain(facts, target, container_id)
         if container_id is None and walk.code in (NO_GRANT, NOT_LINKED):
             container_id = chain[-1] if chain else None
         named = await self._names(org_id, asker_key, facts, [*chain, *([container_id] if container_id else [])])
@@ -337,12 +338,15 @@ class ExplainService:
         return seen
 
     @staticmethod
-    def _chain(f: _Facts, target: StampNode) -> list[str]:
-        """The target's ancestors, from the app down, following the first parent of each (parents sorted by id)."""
+    def _chain(f: _Facts, target: StampNode, through: str | None = None) -> list[str]:
+        """The target's ancestors, from the app down, following the first parent of each (parents sorted by id), except that a
+        parent above which `through` lies is taken first, so the path shown runs through the container the reason names."""
         out: list[str] = []
         node = target
         for _ in range(MAX_DEPTH):
             parents = sorted(p for p in node.parents if p in f.nodes)
+            if through is not None and through not in out:
+                parents.sort(key=lambda p: through not in ExplainService._chain_all(f, p))
             if not parents or parents[0] in out:
                 break
             out.append(parents[0])
@@ -351,6 +355,8 @@ class ExplainService:
 
     async def _names(self, org_id: str, asker_key: str, f: _Facts, ids: list[str]) -> dict[str, ContainerRef]:
         want = frozenset(ids)
+        if not want:
+            return {}
         asker = await self._principals.principal(org_id, asker_key)
         readable = await self._principals.readable(org_id, asker, want)
 

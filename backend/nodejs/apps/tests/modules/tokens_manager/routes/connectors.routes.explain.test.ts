@@ -1,6 +1,9 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import yaml from 'js-yaml'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import { ADMIN, MEMBER, MEMBER_ID, Harness, call, sessionToken, startHarness } from './connectors-http-harness'
 import { Logger } from '../../../../src/libs/services/logger.service'
 
@@ -104,5 +107,22 @@ describe('Connector routes: why a person cannot read a record', () => {
 
     expect(over.status).to.equal(429)
     expect(h.backend.callsTo('GET', BACKEND_PATH)).to.have.length(30)
+  })
+})
+
+describe('The explanation route in the OpenAPI spec', () => {
+  type Schema = { nullable?: boolean; allOf?: unknown; $ref?: string; properties?: Record<string, Schema>; items?: Schema }
+  const spec = yaml.load(
+    readFileSync(join(__dirname, '..', '..', '..', '..', 'src', 'modules', 'api-docs', 'pipeshub-openapi.yaml'), 'utf8'),
+  ) as { components: { schemas: Record<string, Schema> }; paths: Record<string, any> }
+  const answer = spec.paths['/connectors/{connectorId}/permissions/explain'].get.responses['200'].content['application/json']
+    .schema as Schema
+
+  it('makes the container nullable in a schema of its own, and a path item not nullable', () => {
+    const container = answer.properties!.container
+    expect(container.allOf).to.equal(undefined)
+    expect(spec.components.schemas[container.$ref!.split('/').pop()!].nullable).to.equal(true)
+    const item = spec.components.schemas[answer.properties!.path.items!.$ref!.split('/').pop()!]
+    expect(item.nullable).to.not.equal(true)
   })
 })

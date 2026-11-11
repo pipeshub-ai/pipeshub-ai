@@ -2558,6 +2558,18 @@ components:
           description: Null when the admin asking cannot read the container.
         restricted:
           type: boolean
+    PermissionExplainContainerOrNull:
+      type: object
+      nullable: true
+      description: The container the reason is about, when it names one; null when it names none.
+      required: [name, restricted]
+      properties:
+        name:
+          type: string
+          nullable: true
+          description: Null when the admin asking cannot read the container.
+        restricted:
+          type: boolean
     ErrorResponse:
       type: object
       additionalProperties: false
@@ -54783,10 +54795,7 @@ paths:
                       - deleted_at_source
                       - unexplained
                   container:
-                    nullable: true
-                    allOf:
-                      - $ref: '#/components/schemas/PermissionExplainContainer'
-                    description: The container the reason is about, when it names one.
+                    $ref: '#/components/schemas/PermissionExplainContainerOrNull'
                   path:
                     type: array
                     description: Containers from the connector down to the record's parent.

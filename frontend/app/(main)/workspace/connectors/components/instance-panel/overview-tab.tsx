@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect, useReducer } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
-import { Flex, Text, Box, Button } from '@radix-ui/themes';
+import { Flex, Text, Box } from '@radix-ui/themes';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { ConnectorOverviewExtras } from '@/config';
 import { useConnectorsStore } from '../../store';
@@ -78,7 +78,6 @@ export function OverviewTab({
   const [isRetryEntitiesBusy, setIsRetryEntitiesBusy] = useState(false);
   const [isStopBusy, setIsStopBusy] = useState(false);
   const isAdmin = useUserStore(selectIsAdmin);
-  const [accessCheckOpen, setAccessCheckOpen] = useState(false);
 
   // The panel outlives the run, so a stop the backend could not complete
   // synchronously would otherwise leave this stuck and block the next stop.
@@ -422,19 +421,9 @@ export function OverviewTab({
         onConfirm={() => void handleConfirmStopSync()}
       />
       {isAdmin === true && instance._key ? (
-        <>
-          <Flex>
-            <Button type="button" variant="soft" color="gray" size="2" onClick={() => setAccessCheckOpen(true)}>
-              {t('workspace.connectors.accessCheck.open')}
-            </Button>
-          </Flex>
-          <AccessCheckDialog
-            open={accessCheckOpen}
-            onOpenChange={setAccessCheckOpen}
-            connectorId={instance._key}
-            container={nestedModalHost}
-          />
-        </>
+        <Flex>
+          <AccessCheckDialog connectorId={instance._key} container={nestedModalHost} />
+        </Flex>
       ) : null}
       <ConnectorOverviewExtras connectorId={instance._key ?? null} refreshKey={panelRefreshKey} />
     </Flex>

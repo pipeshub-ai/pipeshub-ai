@@ -3385,7 +3385,9 @@
           "failed": "No pudimos comprobarlo. Inténtelo de nuevo.",
           "notFound": "No encontramos esa persona o ese registro en este conector.",
           "rateLimited": "Demasiadas comprobaciones. Inténtelo de nuevo en un minuto."
-        }
+        },
+        "peopleRetry": "Reintentar",
+        "askedAbout": "Sobre el registro {{record}}"
       }
     },
     "mcpServers": {

@@ -3492,7 +3492,9 @@
           "failed": "无法完成检查。请重试。",
           "notFound": "在此连接器中找不到该人员或记录。",
           "rateLimited": "检查次数过多。请一分钟后重试。"
-        }
+        },
+        "peopleRetry": "重试",
+        "askedAbout": "关于记录 {{record}}"
       }
     },
     "mcpServers": {

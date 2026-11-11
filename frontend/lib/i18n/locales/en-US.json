@@ -3511,7 +3511,9 @@
           "failed": "We could not check. Try again.",
           "notFound": "We could not find that person or record in this connector.",
           "rateLimited": "Too many checks. Try again in a minute."
-        }
+        },
+        "peopleRetry": "Try again",
+        "askedAbout": "About record {{record}}"
       }
     },
     "mcpServers": {

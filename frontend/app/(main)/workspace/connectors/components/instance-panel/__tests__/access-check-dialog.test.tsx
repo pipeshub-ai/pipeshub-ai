@@ -1,6 +1,8 @@
 import React from 'react';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { screen, fireEvent, cleanup, waitFor, render } from '@testing-library/react';
+import { Theme } from '@radix-ui/themes';
+import { SWRConfig } from 'swr';
 import '@/lib/__tests__/test-i18n';
 
 const explainAccess = vi.fn();
@@ -8,13 +10,13 @@ vi.mock('../../../api', () => ({
   ConnectorsApi: { explainAccess: (...args: unknown[]) => explainAccess(...args) },
 }));
 const listUsers = vi.fn();
-vi.mock('@/app/(main)/workspace/users/api', () => ({
-  UsersApi: { listUsers: (...args: unknown[]) => listUsers(...args) },
+vi.mock('@/lib/api/fetcher', () => ({
+  configuredFetcher: (...args: unknown[]) => listUsers(...args),
 }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 
 import { AccessCheckDialog } from '../access-check-dialog';
-import { installDomShims, renderInTheme } from '../../../__tests__/fixtures';
+import { installDomShims } from '../../../__tests__/fixtures';
 import type { AccessExplanation } from '../../../types';
 
 const DANA = { userId: 'u-dana', id: 'k-dana', name: 'Dana Reyes', hasLoggedIn: true };
@@ -29,11 +31,24 @@ const answer = (over: Partial<AccessExplanation> = {}): AccessExplanation => ({
 
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
-async function open(onOpenChange = vi.fn()) {
-  renderInTheme(<AccessCheckDialog open onOpenChange={onOpenChange} connectorId="conn-1" />);
+/** A fresh cache per render, so one test's people list is never another's. */
+function renderDialog() {
+  return render(
+    <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+      <Theme>
+        <AccessCheckDialog connectorId="conn-1" />
+      </Theme>
+    </SWRConfig>
+  );
+}
+
+const trigger = () => screen.getByRole('button', { name: "Check someone's access" });
+
+async function open() {
+  renderDialog();
+  fireEvent.click(trigger());
   await waitFor(() => expect(listUsers).toHaveBeenCalled());
   await settle();
-  return onOpenChange;
 }
 
 async function pickDana() {
@@ -50,7 +65,7 @@ async function check(record = 'rec-1') {
 
 beforeEach(() => {
   installDomShims();
-  listUsers.mockReset().mockResolvedValue({ users: [DANA], totalCount: 1 });
+  listUsers.mockReset().mockResolvedValue({ users: [DANA] });
   explainAccess.mockReset();
 });
 afterEach(() => cleanup());
@@ -71,12 +86,12 @@ describe('AccessCheckDialog', () => {
   });
 
   it('keeps focus inside the dialog and closes on Escape', async () => {
-    const onOpenChange = await open();
+    await open();
 
     expect(screen.getByRole('dialog').contains(document.activeElement)).toBe(true);
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
 
-    expect(onOpenChange).toHaveBeenCalledWith(false);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
   it('says it is checking, then names the person, the reason, the next step and the reference', async () => {
@@ -135,10 +150,67 @@ describe('AccessCheckDialog', () => {
     expect(document.activeElement?.textContent).toBe('Result');
   });
 
-  it('says so when the list of people cannot be loaded', async () => {
-    listUsers.mockRejectedValue(new Error('nope'));
-    renderInTheme(<AccessCheckDialog open onOpenChange={() => {}} connectorId="conn-1" />);
+  it('reads the people only once the dialog is open', async () => {
+    renderDialog();
+    await settle();
+    expect(listUsers).not.toHaveBeenCalled();
 
+    fireEvent.click(trigger());
+
+    await waitFor(() => expect(listUsers).toHaveBeenCalledTimes(1));
+  });
+
+  it('says so when the list of people cannot be loaded, and asks again on Try again', async () => {
+    listUsers.mockRejectedValueOnce(new Error('nope'));
+    renderDialog();
+    fireEvent.click(trigger());
     expect(await screen.findByText('We could not load the list of people.')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => expect(listUsers).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull());
+    await pickDana();
+  });
+
+  it('shows the record the verdict is about, and drops the verdict when the record or the person changes', async () => {
+    explainAccess.mockResolvedValue(answer());
+    await open();
+    await check('rec-1');
+    await screen.findByRole('heading', { name: 'Dana Reyes cannot see this record.' });
+    expect(screen.getByText('About record rec-1')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('Record ID'), { target: { value: 'rec-2' } });
+
+    expect(screen.queryByRole('heading', { name: /Dana Reyes/ })).toBeNull();
+    expect(screen.queryByText('About record rec-1')).toBeNull();
+  });
+
+  it('ignores the answer to a check whose inputs changed while it was running', async () => {
+    let finish: (a: AccessExplanation) => void = () => {};
+    explainAccess.mockReturnValue(new Promise<AccessExplanation>((r) => (finish = r)));
+    await open();
+    await check('rec-1');
+    expect(screen.getByRole('status')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('Record ID'), { target: { value: 'rec-2' } });
+    finish(answer());
+    await settle();
+
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(screen.queryByRole('heading', { name: /Dana Reyes/ })).toBeNull();
+    expect(screen.queryByText(/Reference:/)).toBeNull();
+  });
+
+  it('returns focus to the button that opened it', async () => {
+    renderDialog();
+    const opener = trigger();
+    fireEvent.click(opener);
+    await screen.findByRole('dialog');
+
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(document.activeElement).toBe(opener);
   });
 });

@@ -3613,7 +3613,9 @@
           "failed": "Kontrolu se nepodařilo provést. Zkuste to znovu.",
           "notFound": "Tato osoba nebo záznam v tomto konektoru nebyl nalezen.",
           "rateLimited": "Příliš mnoho kontrol. Zkuste to znovu za minutu."
-        }
+        },
+        "peopleRetry": "Zkusit znovu",
+        "askedAbout": "K záznamu {{record}}"
       }
     },
     "mcpServers": {
