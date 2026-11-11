@@ -93,7 +93,7 @@ def status(app: Mapping[str, Any], *, reach_minutes: int | None = None, now: dat
     }
 
 
-def notices(apps: Iterable[Mapping[str, Any]], *, empty: bool = False) -> list[dict[str, str]]:
+def notices(apps: Iterable[Mapping[str, Any]], *, empty: bool = False) -> list[dict[str, Any]]:
     """What a search tells the person who ran it, as codes (the client words them): `permissions_updating` while subtrees of a connector await a
     rewrite (or the list of them cannot be read), `connector_syncing` while it syncs and either it has never finished a sync (its content is
     still arriving) or the search found nothing (`empty`): a routine resync of an established connector changes nothing the person sees. The
@@ -109,8 +109,10 @@ def notices(apps: Iterable[Mapping[str, Any]], *, empty: bool = False) -> list[d
             updating = True
         if updating:
             out.append({"code": "permissions_updating", "connectorId": cid, **label})
-        if app.get("status") in RUNNING and (empty or not app.get(K.LAST_SYNC_FINISHED_AT)):
-            out.append({"code": "connector_syncing", "connectorId": cid, **label})
+        first = not app.get(K.LAST_SYNC_FINISHED_AT)
+        if app.get("status") in RUNNING and (empty or first):
+            # `firstSync`: it has never finished a sync, so there is nothing to search yet (a resync of an established connector has).
+            out.append({"code": "connector_syncing", "connectorId": cid, **label, **({"firstSync": True} if first else {})})
     return out
 
 

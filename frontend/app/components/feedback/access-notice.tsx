@@ -9,6 +9,8 @@ export interface AccessNotice {
   code: 'permissions_updating' | 'connector_syncing' | 'check_unavailable';
   connectorId?: string;
   connectorName?: string;
+  /** On `connector_syncing`: it has never finished a sync, so there is nothing to search yet (a resync is not that). */
+  firstSync?: boolean;
 }
 
 export function readAccessNotices(value: unknown): AccessNotice[] {

@@ -413,6 +413,7 @@ export interface IAIResponse {
     code: string;
     connectorId?: string;
     connectorName?: string;
+    firstSync?: boolean;
   }[];
   // Reference data for follow-up queries (IDs from tool responses)
   referenceData?: IReferenceDataItem[];

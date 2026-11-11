@@ -27,16 +27,17 @@ def test_a_connector_with_pending_roots_or_syncing_gets_a_code_with_its_own_name
     ]
     assert access_status.notices(apps) == [
         {"code": "permissions_updating", "connectorId": "c1", "connectorName": "Jira"},
-        {"code": "connector_syncing", "connectorId": "c2", "connectorName": "Drive"},
+        {"code": "connector_syncing", "connectorId": "c2", "connectorName": "Drive", "firstSync": True},
     ]
 
 
 def test_a_routine_resync_of_an_established_connector_says_nothing_unless_the_search_found_nothing() -> None:
     established = {"id": "c1", "name": "Jira", "status": "SYNCING", "lastSyncFinishedAtTimestamp": 1700000000000}
     assert access_status.notices([established]) == []
+    # a resync that found nothing is not "nothing to search yet": no firstSync, so the client does not say so
     assert access_status.notices([established], empty=True) == [{"code": "connector_syncing", "connectorId": "c1", "connectorName": "Jira"}]
     first = {"id": "c2", "status": "FULL_SYNCING"}
-    assert access_status.notices([first]) == [{"code": "connector_syncing", "connectorId": "c2"}]
+    assert access_status.notices([first]) == [{"code": "connector_syncing", "connectorId": "c2", "firstSync": True}]
     idle = {"id": "c3", "status": "IDLE"}
     assert access_status.notices([idle], empty=True) == []
 
@@ -101,7 +102,7 @@ async def test_a_search_reads_only_the_connectors_the_person_is_gated_into_and_r
         result = await service.search_with_filters(queries=["q"], user_id="u1", org_id="o1")
     assert read.await_args.args[1] == ["c1"]
     assert result["status"] == Status.ACCESSIBLE_RECORDS_NOT_FOUND.value
-    assert result["accessNotices"] == [{"code": "connector_syncing", "connectorId": "c1", "connectorName": "Jira"}]
+    assert result["accessNotices"] == [{"code": "connector_syncing", "connectorId": "c1", "connectorName": "Jira", "firstSync": True}]
 
 
 async def test_a_search_with_no_notices_has_no_such_field(service) -> None:
@@ -184,3 +185,47 @@ async def test_a_successful_search_carries_the_notices_of_the_connectors_it_reac
         result = await service.search_with_filters(queries=["q"], user_id="u1", org_id="o1")
     assert result["status"] == Status.SUCCESS.value, result.get("message")
     assert result["accessNotices"] == [{"code": "permissions_updating", "connectorId": "c1", "connectorName": "Jira"}]
+
+
+# The record-id path: no containers, so the connectors come from the person's own gate.
+async def _record_id_search(service, mock_graph_provider, gated, apps, *, filters=None, time_range=None, excluded=frozenset()):  # noqa: ANN001, ANN202
+    mock_graph_provider.get_knowledge_hub_access_v3 = AsyncMock(return_value={"gated_app_ids": list(gated)})
+    mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "t@example.com"}
+    read = AsyncMock(return_value=apps)
+    with patch.object(service, "_excluded_demo_apps", AsyncMock(return_value=excluded)), \
+            patch.object(service, "_get_accessible_virtual_ids_task", AsyncMock(return_value={})), \
+            patch.object(access_status, "read_apps", read):
+        result = await service.search_with_filters(queries=["q"], user_id="u1", org_id="o1", filter_groups=filters, time_range=time_range)
+    return result, read
+
+
+SYNCING = {"id": "c1", "name": "Jira", "status": "FULL_SYNCING"}
+
+
+async def test_the_record_id_path_reports_notices_for_the_connectors_the_person_is_gated_into(service, mock_graph_provider) -> None:
+    # a switched-off demo app keeps the record-id path; a date range does too
+    result, read = await _record_id_search(service, mock_graph_provider, {"c1", "demo", "c9"}, [SYNCING], excluded=frozenset({"demo"}),
+                                           time_range={"start": 1, "end": 2})
+    assert read.await_args.args[1] == ["c1", "c9"]  # the demo app is dropped; both are in the person's gate
+    assert result["status"] == Status.ACCESSIBLE_RECORDS_NOT_FOUND.value
+    assert result["accessNotices"] == [{"code": "connector_syncing", "connectorId": "c1", "connectorName": "Jira", "firstSync": True}]
+
+
+async def test_a_connector_outside_the_persons_gate_is_never_read_on_the_record_id_path(service, mock_graph_provider) -> None:
+    _, read = await _record_id_search(service, mock_graph_provider, set(), [], time_range={"start": 1, "end": 2})
+    read.assert_not_awaited()
+
+
+async def test_a_scoped_record_id_search_reads_only_the_scoped_connectors_within_the_gate(service, mock_graph_provider) -> None:
+    _, read = await _record_id_search(service, mock_graph_provider, {"c1", "c2"}, [], filters={"apps": ["c2", "c3"]}, time_range={"start": 1, "end": 2})
+    assert read.await_args.args[1] == ["c2"]
+
+
+async def test_an_unreadable_gate_gives_no_notices_and_does_not_fail_the_search(service, mock_graph_provider) -> None:
+    mock_graph_provider.get_knowledge_hub_access_v3 = AsyncMock(side_effect=ConnectionError("down"))
+    mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "t@example.com"}
+    with patch.object(service, "_excluded_demo_apps", AsyncMock(return_value=frozenset())), \
+            patch.object(service, "_get_accessible_virtual_ids_task", AsyncMock(return_value={})):
+        result = await service.search_with_filters(queries=["q"], user_id="u1", org_id="o1", time_range={"start": 1, "end": 2})
+    assert result["status"] == Status.ACCESSIBLE_RECORDS_NOT_FOUND.value
+    assert "accessNotices" not in result

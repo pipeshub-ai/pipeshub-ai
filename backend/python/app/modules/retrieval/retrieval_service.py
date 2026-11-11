@@ -865,6 +865,17 @@ class RetrievalService:
                     PERMISSION_CHECK_UNAVAILABLE_MESSAGE, Status.PERMISSION_CHECK_UNAVAILABLE
                 )
             use_containers = containers is not None
+            # The connectors this search reached, on either path: what a notice may be about.
+            notice_apps = await self._notice_apps(
+                await self._notice_app_ids(containers, user, org_id, filters), user_id, org_id
+            )
+
+            def nothing_found(message: str) -> dict[str, Any]:
+                response = self._create_empty_response(message, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                if notices := access_status.notices(notice_apps, empty=True):
+                    degraded_notice.note_access(notices)
+                    response["accessNotices"] = notices
+                return response
 
             # Under container scoping the accessible map is not built up front —
             # it is the *output* of adjudicating what the search returned. So
@@ -876,10 +887,10 @@ class RetrievalService:
             if use_containers:
                 if containers.is_empty:
                     self.logger.warning(f"No accessible containers for user {user_id} and org {org_id}")
-                    return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                    return nothing_found(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE)
             elif not accessible_virtual_id_to_record_id:
                 self.logger.warning(f"No accessible documents found for user {user_id} and org {org_id}")
-                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return nothing_found(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE)
 
             # The entity filter runs inside the permission scope: what it matches in
             # records this user cannot read must change neither the answer nor "too broad".
@@ -898,11 +909,9 @@ class RetrievalService:
                         return self._create_empty_response(ENTITY_FILTER_NO_MATCH_MESSAGE, Status.EMPTY_RESPONSE)
 
             plan = _QueryPlan()
-            if use_containers:
-                # Only connectors this person is gated into: a notice never confirms that a source exists.
-                plan.access_apps = await self._notice_apps(containers.app_ids, user_id, org_id)
-                plan.access_notices = access_status.notices(plan.access_apps)
-                degraded_notice.note_access(plan.access_notices)
+            plan.access_apps = notice_apps
+            plan.access_notices = access_status.notices(notice_apps)
+            degraded_notice.note_access(plan.access_notices)
 
             def empty(message: str, status: Status) -> dict[str, Any]:
                 if entity_filtered and status in (Status.EMPTY_RESPONSE, Status.ACCESSIBLE_RECORDS_NOT_FOUND):
@@ -2568,6 +2577,24 @@ class RetrievalService:
             raise
         except Exception as exc:
             raise PermissionVerificationUnavailableError(str(exc)) from exc
+
+    async def _notice_app_ids(
+        self, containers: "AccessibleContainers | None", user: dict[str, Any] | None, org_id: str, filters: dict[str, Any] | None,
+    ) -> frozenset[str]:
+        """The connectors a notice may be about: those the containers reach, or, on the record-id path, those this person is gated into
+        (the one connector gate), narrowed to the connectors the request is scoped to. Never a connector outside their reach."""
+        if containers is not None:
+            return frozenset(containers.app_ids)
+        user_key = (user.get("_key") or user.get("id")) if user else None
+        if not user_key:
+            return frozenset()
+        try:
+            gated = frozenset((await self.graph_provider.get_knowledge_hub_access_v3(user_key, org_id)).get("gated_app_ids") or ())
+        except Exception as exc:
+            self.logger.warning("connector gate unreadable for access notices (user=%s): %s", user_key, exc)
+            return frozenset()
+        scoped = requested_scope_ids(filters)
+        return gated if scoped is None else gated & frozenset(scoped)
 
     async def _notice_apps(self, app_ids: Iterable[str], user_id: str, org_id: str) -> list[dict[str, Any]]:
         """The documents of the connectors a notice may be about: the ones this person is gated into, minus the demo apps they switched off. A run

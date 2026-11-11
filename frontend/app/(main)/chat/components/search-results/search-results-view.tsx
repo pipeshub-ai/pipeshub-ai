@@ -123,7 +123,8 @@ export function SearchResultsView() {
   const accessNotices = readAccessNotices(
     (searchResponseMeta?.searchResponse as { accessNotices?: unknown } | undefined)?.accessNotices
   );
-  const syncing = accessNotices.find((n) => n.code === 'connector_syncing');
+  // "Nothing to search yet" is only true of a connector that has never finished a sync; a resync gets the banner and the usual no-match text.
+  const syncing = accessNotices.find((n) => n.code === 'connector_syncing' && n.firstSync === true);
   const showsEmptyState =
     !isSearching && !searchError && searchResults.length === 0 && unindexedMatches.length === 0 && !!searchQuery;
   const setMode = useChatStore((s) => s.setMode);

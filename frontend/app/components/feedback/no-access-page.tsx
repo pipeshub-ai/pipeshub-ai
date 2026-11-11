@@ -9,7 +9,8 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
  * One page for revoked, never-had and deleted, so it confirms nothing about which.
  * Copies an id and a time only: no names, which could themselves be restricted.
  */
-export function NoAccessPage({ recordId }: { recordId?: string }) {
+/** `onBack` is the way out: the page replaces a record view that had its own Back button. */
+export function NoAccessPage({ recordId, onBack }: { recordId?: string; onBack?: () => void }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const copy = async () => {
@@ -27,6 +28,11 @@ export function NoAccessPage({ recordId }: { recordId?: string }) {
       <Text size="2" color="gray" style={{ maxWidth: 480 }}>{t('accessNotice.noAccess.body')}</Text>
       <Text size="2" color="gray" style={{ maxWidth: 480 }}>{t('accessNotice.noAccess.justGotAccess')}</Text>
       <Flex gap="2" wrap="wrap" justify="center">
+        {onBack ? (
+          <Button size="2" style={{ minHeight: 44 }} onClick={onBack}>
+            {t('common.back')}
+          </Button>
+        ) : null}
         <Button size="2" variant="soft" style={{ minHeight: 44 }} onClick={() => void copy()}>
           {t('accessNotice.noAccess.copyDetails')}
         </Button>

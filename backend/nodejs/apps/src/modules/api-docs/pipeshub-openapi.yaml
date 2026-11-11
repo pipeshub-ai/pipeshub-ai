@@ -12675,6 +12675,11 @@ components:
             type: string
           connectorName:
             type: string
+          firstSync:
+            type: boolean
+            description: |
+              On `connector_syncing`: `true` when the connector has never finished a sync, so there is nothing to
+              search yet. Absent for a routine resync of a connector that has synced before.
     SemanticSearchUnindexedMatch:
       type: object
       additionalProperties: false

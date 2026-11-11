@@ -138,7 +138,7 @@ describe('search response meta', () => {
       searchQuery: 'q',
       searchError: null,
       searchResults: [],
-      searchResponseMeta: { searchResponse: { searchResults: [], accessNotices: [{ code: 'connector_syncing', connectorName: 'Jira' }] } },
+      searchResponseMeta: { searchResponse: { searchResults: [], accessNotices: [{ code: 'connector_syncing', connectorName: 'Jira', firstSync: true }] } },
       isSearching: false,
     });
     const { container } = render(<Theme><SearchResultsView /></Theme>);
@@ -147,6 +147,20 @@ describe('search response meta', () => {
     expect(container.textContent).not.toContain('chat.noResultsFor');
     // Said once, in the empty state, not again in the notice above it.
     expect(container.textContent).not.toContain('accessNotice.connector_syncing');
+  });
+
+  it('on an empty search during a routine resync, says the usual no-match and shows the incomplete banner', () => {
+    useChatStore.setState({
+      searchQuery: 'q',
+      searchError: null,
+      searchResults: [],
+      searchResponseMeta: { searchResponse: { searchResults: [], accessNotices: [{ code: 'connector_syncing', connectorName: 'Jira' }] } },
+      isSearching: false,
+    });
+    const { container, getByRole } = render(<Theme><SearchResultsView /></Theme>);
+    expect(container.textContent).toContain('chat.noResultsFor');
+    expect(container.textContent).not.toContain('accessNotice.emptySyncing');
+    expect(getByRole('status').textContent).toContain('accessNotice.connector_syncing');
   });
 
   it('keeps the syncing notice above results when the search found something', () => {

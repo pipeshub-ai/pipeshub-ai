@@ -135,7 +135,10 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
       try {
         let details: RecordDetailsResponse;
         try {
-          details = await KnowledgeBaseApi.getRecordDetails(recordId);
+          // No toast for a refusal: the server's words for a 403 ("not shared with this connected app") would confirm the record exists.
+          details = await KnowledgeBaseApi.getRecordDetails(recordId, {
+            suppressErrorToast: (e) => e.statusCode === 403 || e.statusCode === 404,
+          });
         } catch (detailsErr) {
           if (cancelled) return;
           // Only this request says "no access": a 403 or 404 from it looks the same on purpose (revoked, never held and
@@ -438,7 +441,7 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
     );
   }
 
-  if (noAccess) return <NoAccessPage recordId={recordId} />;
+  if (noAccess) return <NoAccessPage recordId={recordId} onBack={goBack} />;
 
   return (
     <Flex
