@@ -1829,6 +1829,8 @@ export class UserAccountController {
       sessionInfo.userId = String(user._id);
       sessionInfo.currentStep++;
       await this.sessionService.updateSession(sessionInfo);
+      // The step is passed once it is saved, even if the lookups below fail.
+      audit('auth.sign_in', { ...who, outcome: 'partial' });
 
       const allowedMethods =
         sessionInfo.authConfig[sessionInfo.currentStep]?.allowedMethods.map(
@@ -1855,7 +1857,6 @@ export class UserAccountController {
         authProviders.microsoft = cfg.data;
       }
 
-      audit('auth.sign_in', { ...who, outcome: 'partial' });
       res.json({
         status: 'success',
         nextStep: sessionInfo.currentStep,

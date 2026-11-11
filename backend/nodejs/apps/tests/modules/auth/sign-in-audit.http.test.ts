@@ -124,6 +124,7 @@ describe('auth audit lines (HTTP)', function () {
   let sessionEnding: { activityType: string; createdAt: Date } | null;
   let emailTaken: boolean;
   let mailFails: boolean;
+  let configFails: boolean;
   let otpCodes: string[];
   let iam: Record<string, (...args: any[]) => Promise<any>>;
   let savedLevel: string;
@@ -226,12 +227,14 @@ describe('auth audit lines (HTTP)', function () {
       },
     };
     const configService = {
-      getConfig: async (_backend: string, path: string) =>
-        path === MICROSOFT_AUTH_CONFIG_PATH
+      getConfig: async (_backend: string, path: string) => {
+        if (configFails) throw new Error('config service down');
+        return path === MICROSOFT_AUTH_CONFIG_PATH
           ? { data: { clientId: MS_CLIENT, tenantId: OUR_TENANT, enableJit: jit } }
           : path === GOOGLE_AUTH_CONFIG_PATH
             ? { data: { clientId: 'google-client', enableJit: jit } }
-            : { data: {} },
+            : { data: {} };
+      },
     };
     const events = { start: async () => undefined, stop: async () => undefined, publishEvent: async () => undefined };
     const config = { jwtSecret: JWT_SECRET, scopedJwtSecret: SCOPED_SECRET, cmBackend: 'http://cm', connectorBackend: 'http://connector.test', frontendUrl: 'http://app', iamBackend: IAM_BACKEND, maxAuthRequestsPerMinute, rsAvailable: 'false' };
@@ -270,6 +273,7 @@ describe('auth audit lines (HTTP)', function () {
     sessionEnding = null;
     emailTaken = false;
     mailFails = false;
+    configFails = false;
     maxAuthRequestsPerMinute = 10000;
     delete process.env.TURNSTILE_SECRET_KEY;
     savedLevel = root().level;
@@ -484,6 +488,16 @@ describe('auth audit lines (HTTP)', function () {
         { event: 'auth.sign_in', outcome: 'partial', actor: alice._id, auth_method: 'password' },
         { event: 'auth.sign_in', outcome: 'success', actor: alice._id, auth_method: 'otp' },
       ]);
+    });
+
+    it('T6 a first step whose next-step lookup then fails is still one partial line', async () => {
+      steps = [['password'], ['google']];
+      const token = await initAuth(alice.email);
+      configFails = true;
+      records.length = 0;
+      const r = await call('POST', '/authenticate', { method: 'password', credentials: { password: PASSWORD } }, { 'x-session-token': token });
+      expect(r.status).to.equal(500);
+      expect(audits()).to.deep.equal([{ event: 'auth.sign_in', outcome: 'partial', actor: alice._id, auth_method: 'password' }]);
     });
 
     it('T7 Google sign-in success', async () => {
