@@ -5217,7 +5217,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             org_id = self.data_entities_processor.org_id
             updated_records = []
             non_updated_records = []
-            unreadable: List[Record] = []
+            unreadable: list[Record] = []
             for record in records:
                 try:
                     updated_record_data = await self._check_and_fetch_updated_record(org_id, record)
