@@ -305,7 +305,8 @@ export function MessageActions({
   const handleFork = useCallback(async () => {
     if (!messageId || isForking) return;
     const state = useChatStore.getState();
-    const slot = state.activeSlotId ? state.slots[state.activeSlotId] : null;
+    const slotId = state.activeSlotId;
+    const slot = slotId ? state.slots[slotId] : null;
     const convId = slot?.convId;
     if (!convId) return;
 
@@ -317,9 +318,12 @@ export function MessageActions({
         : await ChatApi.forkConversation(convId, messageId);
       bumpConversationsVersion();
       // The original keeps its cached copy when the user comes back, so it learns of the fork now, not on reload.
-      if (state.activeSlotId) {
-        state.updateSlot(state.activeSlotId, {
-          forks: [...(slot.forks ?? []), { conversationId: result.id, title: result.title, fromMessageId: messageId }],
+      // Read the slot again: a reload during the request may have changed its forks or the chat it holds.
+      const latest = useChatStore.getState();
+      const current = slotId ? latest.slots[slotId] : null;
+      if (slotId && current?.convId === convId && !current.forks?.some((f) => f.conversationId === result.id)) {
+        latest.updateSlot(slotId, {
+          forks: [...(current.forks ?? []), { conversationId: result.id, title: result.title, fromMessageId: messageId }],
         });
       }
       router.push(

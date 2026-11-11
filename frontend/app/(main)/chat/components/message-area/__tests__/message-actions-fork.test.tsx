@@ -127,6 +127,32 @@ describe('fork button on a message', () => {
     expect(h.updateSlot.mock.calls[0][1].forks.map((f: { conversationId: string }) => f.conversationId)).toEqual(['fork-1', 'fork-9']);
   });
 
+  it('keeps a fork that a reload added while the request was in flight, and does not add it twice', async () => {
+    h.forkConversation.mockImplementation(async () => {
+      h.slot.forks = [{ conversationId: 'fork-9', title: 'Fork of A', fromMessageId: 'msg-2' }];
+      return { id: 'fork-9', title: 'Fork of A', forkedFrom: {}, messageCount: 2 };
+    });
+    renderActions('msg-2');
+
+    fireEvent.click(screen.getByLabelText('chat.forkFromHere'));
+
+    await waitFor(() => expect(h.push).toHaveBeenCalled());
+    expect(h.updateSlot).not.toHaveBeenCalled();
+  });
+
+  it('does not touch the slot if it now holds a different chat', async () => {
+    h.forkConversation.mockImplementation(async () => {
+      h.slot.convId = 'conv-other';
+      return { id: 'fork-9', title: 'Fork of A', forkedFrom: {}, messageCount: 2 };
+    });
+    renderActions('msg-2');
+
+    fireEvent.click(screen.getByLabelText('chat.forkFromHere'));
+
+    await waitFor(() => expect(h.push).toHaveBeenCalled());
+    expect(h.updateSlot).not.toHaveBeenCalled();
+  });
+
   it('adds nothing when the fork fails', async () => {
     h.forkConversation.mockRejectedValue(new Error('boom'));
     renderActions('msg-2');
