@@ -660,6 +660,7 @@ export function loadHistoricalMessages(
         metadata: {
           custom: {
             citationMaps: buildCitationMapsFromApi([]),
+            ...(msg.answerHidden ? { answerHidden: msg.answerHidden } : {}),
           },
         },
       });

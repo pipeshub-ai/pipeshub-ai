@@ -124,6 +124,7 @@ import {
   redactMessagesFor,
   redactSearchesFor,
   viewerOf,
+  startsTurn,
   type ViewerMessage,
 } from '../utils/viewer-redaction';
 import {
@@ -359,14 +360,17 @@ export {
 
 export { handleBackendError };
 
-/** Rows read before a page to find the answer its leading `tool_call` rows belong to. */
-const TURN_LOOKBACK = 50;
+/** Rows read per step, and steps allowed, when a turn runs past the edge of a page. */
+const TURN_READ_ROWS = 50;
+const TURN_READ_STEPS = 10;
 
 /**
- * `redactMessagesFor` for one page of a conversation. A page can start with the
- * `tool_call` rows of an answer on the page before, and they are hidden with it,
- * so the rows just before the page (a bounded window by position, read through
- * the repository) are judged with it. Only read when the page starts that way.
+ * `redactMessagesFor` for one page of a conversation. A turn's rows go with its
+ * hidden answer wherever they sit, and a turn can run past either edge of the
+ * page, so the rows back to the turn's question and forward to the next one are
+ * read through the repository and judged with the page. Each side reads at most
+ * `TURN_READ_STEPS` steps of `TURN_READ_ROWS`; past that the turn's rows on the
+ * page are hidden as unconfirmed, never shown.
  */
 const redactPageFor = async <M extends ViewerMessage>(
   appConfig: AppConfig,
@@ -374,23 +378,56 @@ const redactPageFor = async <M extends ViewerMessage>(
   conversation: { _id: string; orgId: string },
   messages: M[],
   skip: number,
+  total: number,
   ownerOf: (message: M) => string | undefined,
 ): Promise<M[]> => {
-  const lead =
-    skip > 0 && messages[0]?.messageType === 'tool_call'
-      ? ((await getMessages(conversation._id, {
-          orgId: conversation.orgId,
-          skip: Math.max(0, skip - TURN_LOOKBACK),
-          limit: Math.min(skip, TURN_LOOKBACK),
-        })) as M[])
-      : [];
+  const read = async (from: number, limit: number): Promise<M[]> =>
+    (await getMessages(conversation._id, {
+      orgId: conversation.orgId,
+      skip: from,
+      limit,
+    })) as M[];
+  let lead: M[] = [];
+  let leadUnknown = false;
+  if (skip > 0 && messages.length > 0 && !startsTurn(messages[0] as M)) {
+    let end = skip;
+    for (let steps = 0; end > 0; steps += 1) {
+      if (steps >= TURN_READ_STEPS) {
+        leadUnknown = true;
+        break;
+      }
+      const from = Math.max(0, end - TURN_READ_ROWS);
+      const rows = await read(from, end - from);
+      lead = [...rows, ...lead];
+      end = from;
+      if (rows.some(startsTurn)) break;
+    }
+  }
+  const trail: M[] = [];
+  let trailUnknown = false;
+  for (let from = skip + messages.length, steps = 0; from < total; steps += 1) {
+    if (steps >= TURN_READ_STEPS) {
+      trailUnknown = true;
+      break;
+    }
+    const rows = await read(from, Math.min(TURN_READ_ROWS, total - from));
+    if (rows.length === 0) break;
+    const next = rows.findIndex(startsTurn);
+    if (next >= 0) {
+      trail.push(...rows.slice(0, next));
+      break;
+    }
+    trail.push(...rows);
+    from += rows.length;
+  }
   const out = await redactMessagesFor(
     appConfig,
     viewer,
-    [...lead, ...messages],
+    [...lead, ...messages, ...trail],
     ownerOf,
+    { leadUnknown, trailUnknown },
   );
-  return out.slice(lead.length);
+  return out.slice(lead.length, lead.length + messages.length);
 };
 
 // Common helper to start AI streams with consistent error mapping and logging
@@ -2661,6 +2698,7 @@ export const getConversationById =
           session,
           conversationResponse.messages,
           skip,
+          totalMessages,
           () => initiatorId,
         )) as never,
         messageSortOptions as { field: keyof IMessage },
@@ -8409,6 +8447,7 @@ export const getAgentConversationById =
           session,
           conversationResponse.messages,
           skip,
+          totalMessages,
           () => initiatorId,
         )) as never,
         messageSortOptions as { field: keyof IMessage },

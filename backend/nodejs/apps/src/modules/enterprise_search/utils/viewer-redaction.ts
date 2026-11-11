@@ -261,10 +261,21 @@ export interface RedactOptions<M> {
   timeoutMs?: number;
   /** A message the run just produced: retrieval checked its access, so a check that cannot answer never hides it. */
   fresh?: (message: M) => boolean;
+  /** The rows before the first question are the tail of a turn that began off the page and could not be read: its rows are hidden as unconfirmed. */
+  leadUnknown?: boolean;
+  /** The last turn goes on past the page and could not be read: its rows are hidden as unconfirmed. */
+  trailUnknown?: boolean;
 }
 
+// A classified failure is stored as the turn's answer with type `error`, and still carries what it said.
+type HiddenMarker = typeof ANSWER_LOST | typeof ANSWER_UNCONFIRMED;
+
 const isAnswer = (m: ViewerMessage): boolean =>
-  m.messageType === 'bot_response';
+  m.messageType === 'bot_response' || m.messageType === 'error';
+/** A question that opens a turn; `User selections:` is the user's reply to a card of the same turn. */
+export const startsTurn = (m: ViewerMessage): boolean =>
+  m.messageType === 'user_query' &&
+  !(m.content ?? '').startsWith('User selections:');
 
 /** What the hidden answer keeps: who, when and which message, never what was said. */
 const hiddenAnswer = (
@@ -301,8 +312,12 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
 ): Promise<M[]> => {
   const { known, timeoutMs, fresh } = opts;
   const isOthers = (m: M): boolean => ownerOf(m) !== viewer.userId;
-  const checked = messages.filter((m) => isOthers(m) || isAnswer(m));
-  if (checked.length === 0) return messages;
+  // The question's own files and filters are used by its answer too (a stopped answer stores none).
+  const checked = messages.filter(
+    (m) => isOthers(m) || isAnswer(m) || startsTurn(m),
+  );
+  if (checked.length === 0 && !opts.leadUnknown && !opts.trailUnknown)
+    return messages;
 
   // Citations stored as bare ids (archives) are resolved to their record here.
   const bare = new Set<string>();
@@ -312,24 +327,37 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
       if (typeof d === 'string') bare.add(d);
     }
   }
-  const recordOfCitation = new Map<string, string>();
+  const docOfCitation = new Map<
+    string,
+    { recordId?: string; webUrl?: string }
+  >();
   if (bare.size > 0) {
     const docs = await getConversationRepository().getCitations(
       [...bare],
       viewer.orgId,
     );
     for (const d of docs) {
-      const recordId = (d.metadata as { recordId?: string } | undefined)
-        ?.recordId;
-      if (d._id && recordId !== undefined && recordId !== '')
-        recordOfCitation.set(d._id, recordId);
+      const meta = d.metadata as
+        { recordId?: string; webUrl?: string } | undefined;
+      if (d._id) docOfCitation.set(d._id, meta ?? {});
     }
   }
-  const recordIdOf = (c: CitationEntry | null): string | undefined => {
+  const metaOf = (
+    c: CitationEntry | null,
+  ): { recordId?: string; webUrl?: string } | undefined => {
     const d = citedDoc(c);
-    return typeof d === 'string'
-      ? recordOfCitation.get(d)
-      : d?.metadata?.recordId;
+    return typeof d === 'string' ? docOfCitation.get(d) : d?.metadata;
+  };
+  const recordIdOf = (c: CitationEntry | null): string | undefined => {
+    const id = metaOf(c)?.recordId;
+    return id === undefined || id === '' ? undefined : id;
+  };
+  // A web citation names an address instead of a record.
+  const webUrlOf = (c: CitationEntry | null): string | undefined => {
+    const url = metaOf(c)?.webUrl;
+    return recordIdOf(c) === undefined && url !== undefined && url !== ''
+      ? url
+      : undefined;
   };
 
   // One batched check for every record the viewer is shown a reference to.
@@ -345,7 +373,10 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
       }),
       ...filterLists(m.appliedFilters).flatMap(([, l]) => l.flatMap(refIds)),
     ]) as string[],
-    checked.flatMap((m) => (m.referenceData ?? []).map((e) => e?.webUrl ?? '')),
+    checked.flatMap((m) => [
+      ...(m.referenceData ?? []).map((e) => e?.webUrl ?? ''),
+      ...(m.citations ?? []).map((c) => webUrlOf(c) ?? ''),
+    ]),
     known,
     timeoutMs,
   );
@@ -353,15 +384,23 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
   // An address no record is stored at is a plain web reference, shown as it is.
   const okUrl = (u?: string): boolean =>
     u !== undefined && (readable.urls.has(u) || readable.unmatched.has(u));
-  // What a message used: record ids, and addresses where a reference has no record id.
-  // An address no record is stored at (a public web page) is no record the viewer could have lost,
-  // and neither is a citation without a record id (a web citation, a deleted citation row).
-  const usedBy = (m: M): { ids: string[]; urls: string[] } => {
+  // What a message used: record ids, and addresses where a reference has no record id. An address
+  // no record is stored at (a public web page) is no record the viewer could have lost. A stored
+  // citation that cannot be read at all (its row is gone) is unknown, never "record-free".
+  const usedBy = (
+    m: M,
+  ): { ids: string[]; urls: string[]; unknown: boolean } => {
     const ids: string[] = [];
     const urls: string[] = [];
+    let unknown = false;
     for (const c of m.citations ?? []) {
+      if (c === null) continue;
       const id = recordIdOf(c);
+      const url = webUrlOf(c);
       if (id !== undefined) ids.push(id);
+      else if (url !== undefined) {
+        if (!readable.unmatched.has(url)) urls.push(url);
+      } else if (metaOf(c) === undefined) unknown = true;
     }
     for (const a of m.attachments ?? [])
       if ((a?.recordId ?? '') !== '') ids.push(a?.recordId as string);
@@ -377,34 +416,58 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
     }
     for (const [, l] of filterLists(m.appliedFilters))
       ids.push(...l.flatMap(refIds));
-    return { ids, urls };
+    return { ids, urls, unknown };
   };
-  // Every message of a hidden answer's turn goes with it: a `tool_call` row (an ask_user_question
-  // card) follows its answer, and the chat shows it as that answer's. A `User selections:` question
-  // is the user's own and keeps the turn open; any other question or a new answer ends it.
-  let hiddenTurn: typeof ANSWER_LOST | typeof ANSWER_UNCONFIRMED | null = null;
-  return messages.map((m) => {
-    if (isAnswer(m)) {
+  // Turns: a question that opens one, up to the next. A turn's rows go with its hidden answer
+  // wherever they sit (the live path saves a card before its answer, a regeneration after it).
+  const turnOf: number[] = [];
+  const turnDeps: Array<{ ids: string[]; urls: string[] }> = [
+    { ids: [], urls: [] },
+  ];
+  let turn = 0;
+  for (const m of messages) {
+    if (startsTurn(m)) {
+      turn += 1;
       const { ids, urls } = usedBy(m);
-      const unverified =
-        ids.some((id) => !readable.asked.has(`i:${id}`)) ||
-        urls.some((u) => !readable.asked.has(`u:${u}`));
-      hiddenTurn =
-        readable.failed === true && unverified
-          ? fresh?.(m) === true
-            ? null
-            : ANSWER_UNCONFIRMED
-          : ids.some((id) => !ok(id)) || urls.some((u) => !okUrl(u))
-            ? ANSWER_LOST
-            : null;
-      if (hiddenTurn !== null) return hiddenAnswer(m, hiddenTurn) as M;
+      turnDeps[turn] = { ids, urls };
+    }
+    turnOf.push(turn);
+  }
+  const verdictOf = (m: M, t: number): HiddenMarker | null => {
+    const own = usedBy(m);
+    const ids = [...own.ids, ...(turnDeps[t]?.ids ?? [])];
+    const urls = [...own.urls, ...(turnDeps[t]?.urls ?? [])];
+    // A settled denial hides the answer whatever else could not be checked.
+    if (
+      ids.some((id) => readable.asked.has(`i:${id}`) && !ok(id)) ||
+      urls.some((u) => readable.asked.has(`u:${u}`) && !okUrl(u))
+    )
+      return ANSWER_LOST;
+    const unverified =
+      own.unknown ||
+      ids.some((id) => !readable.asked.has(`i:${id}`)) ||
+      urls.some((u) => !readable.asked.has(`u:${u}`));
+    return unverified && fresh?.(m) !== true ? ANSWER_UNCONFIRMED : null;
+  };
+  const answerVerdict: Array<HiddenMarker | null> = messages.map((m, i) =>
+    isAnswer(m) ? verdictOf(m, turnOf[i] ?? 0) : null,
+  );
+  const turnVerdict = new Map<number, HiddenMarker>();
+  answerVerdict.forEach((v, i) => {
+    const t = turnOf[i] ?? 0;
+    if (v !== null && turnVerdict.get(t) !== ANSWER_LOST) turnVerdict.set(t, v);
+  });
+  if (opts.leadUnknown === true && !turnVerdict.has(0))
+    turnVerdict.set(0, ANSWER_UNCONFIRMED);
+  if (opts.trailUnknown === true && !turnVerdict.has(turn))
+    turnVerdict.set(turn, ANSWER_UNCONFIRMED);
+  return messages.map((m, i) => {
+    if (isAnswer(m)) {
+      const v = answerVerdict[i] ?? null;
+      if (v !== null) return hiddenAnswer(m, v) as M;
     } else if (m.messageType === 'tool_call') {
-      if (hiddenTurn !== null) return hiddenAnswer(m, hiddenTurn) as M;
-    } else if (
-      m.messageType === 'user_query' &&
-      !(m as { content?: string }).content?.startsWith('User selections:')
-    ) {
-      hiddenTurn = null;
+      const v = turnVerdict.get(turnOf[i] ?? 0);
+      if (v !== undefined) return hiddenAnswer(m, v) as M;
     }
     if (!isOthers(m)) return m;
     const view: Record<string, unknown> = { ...(m as object) };

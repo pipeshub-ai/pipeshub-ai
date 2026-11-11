@@ -5,6 +5,7 @@ import '@/lib/__tests__/test-i18n';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
 import { useChatStore } from '@/chat/store';
 import { buildMessagePairs } from '../message-pairs';
+import { loadHistoricalMessages } from '../../../runtime';
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
@@ -15,7 +16,7 @@ const { streamMessageForSlot, buildRequest } = vi.hoisted(() => ({
   buildRequest: vi.fn(() => ({ query: 'q' })),
 }));
 vi.mock('../../../streaming', () => ({ streamMessageForSlot }));
-vi.mock('../../../runtime', () => ({ buildStreamChatRequestForSlot: buildRequest }));
+vi.mock('../../../runtime', async (importOriginal) => ({ ...(await importOriginal<object>()), buildStreamChatRequestForSlot: buildRequest }));
 vi.mock('../render-slot', () => ({ useRenderSlotId: () => 'slot-1' }));
 
 import { ChatResponse } from '../chat-response';
@@ -60,7 +61,7 @@ describe('ChatResponse hidden answer', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Ask again' }));
 
     expect(buildRequest).toHaveBeenCalledWith('slot-1', 'What was Q3 revenue?');
-    expect(streamMessageForSlot).toHaveBeenCalledWith('slot-1', 'What was Q3 revenue?', { query: 'q' });
+    expect(streamMessageForSlot).toHaveBeenCalledWith('slot-1', 'What was Q3 revenue?', { query: 'q', filters: { apps: [], kb: [] } });
   });
 
   it('Ask again resends the hidden turn\'s own filters and files, not the composer\'s', () => {
@@ -77,6 +78,25 @@ describe('ChatResponse hidden answer', () => {
 
     expect(request.filters).toEqual({ apps: ['app-1'], kb: ['kb-1'], records: ['rec-1'] });
     expect(request.attachments).toEqual([att]);
+  });
+
+  it('Ask again resets to no filters when the original turn had none', () => {
+    const request: Record<string, unknown> = { query: 'q', filters: { apps: ['composer'], kb: ['picked'] }, appliedFilters: { apps: [], kb: [] } };
+    buildRequest.mockReturnValueOnce(request as never);
+    renderRow({ answerHidden: { redacted: true, reason: 'no_longer_accessible' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Ask again' }));
+
+    expect(request.filters).toEqual({ apps: [], kb: [] });
+    expect(request).not.toHaveProperty('appliedFilters');
+  });
+
+  it('carries the marker of a hidden failure row (type error) to its row', () => {
+    const rows = loadHistoricalMessages([
+      { _id: 'u', messageType: 'user_query', content: 'Q', contentFormat: 'MARKDOWN', citations: [], followUpQuestions: [], referenceData: [], modelInfo: {}, createdAt: '', updatedAt: '', feedback: [] },
+      { _id: 'e', messageType: 'error', content: 'hidden', contentFormat: 'MARKDOWN', citations: [], followUpQuestions: [], referenceData: [], modelInfo: {}, createdAt: '', updatedAt: '', feedback: [], answerHidden: { redacted: true, reason: 'no_longer_accessible' } },
+    ] as never);
+    const custom = rows.messages.find((m) => m.id === 'e')?.metadata?.custom as { answerHidden?: unknown };
+    expect(custom.answerHidden).toEqual({ redacted: true, reason: 'no_longer_accessible' });
   });
 
   it('shows the notice without Ask again to someone the chat was shared with', () => {

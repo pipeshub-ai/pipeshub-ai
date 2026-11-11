@@ -274,6 +274,10 @@ export const ChatResponse = React.memo(function ChatResponse({
         records: (appliedFilters.records ?? []).map((r) => r.id),
         recordsExact: (appliedFilters.recordsExact ?? []).map((r) => r.id),
       });
+    } else {
+      // An unscoped question stays unscoped, whatever the composer holds now.
+      delete request.appliedFilters;
+      request.filters = { apps: [], kb: [] };
     }
     if (attachments && attachments.length > 0) request.attachments = attachments;
     void streamMessageForSlot(activeSlotId, question, request);

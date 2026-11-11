@@ -296,11 +296,12 @@ describe('shared chats: per-viewer citations', () => {
     expect(new Set(asked.flat()).size).to.equal(1100)
   })
 
-  it('a citation whose document was deleted is a placeholder, not passed through', async () => {
+  it('a citation whose document was deleted hides the answer as unconfirmed, never as record-free', async () => {
     stubAccess(['rec-ok'])
-    stubConversation([{ messageType: 'bot_response', content: 'x', citations: [{ citationId: null, excerpt: SECRET }] }])
+    stubConversation([{ messageType: 'bot_response', content: SECRET, citations: [{ citationId: null, excerpt: SECRET }] }])
     const message = await fetchConversation(VIEWER)
-    expect(message.citations).to.deep.equal([{ redacted: true, reason: 'no_access' }])
+    expect(message.answerHidden).to.deep.equal({ redacted: true, reason: 'access_check_unavailable' })
+    expect(JSON.stringify(message)).to.not.contain(SECRET)
   })
 
   it('the owner is recognised when the chat stores its initiator as an ObjectId', async () => {
@@ -311,7 +312,7 @@ describe('shared chats: per-viewer citations', () => {
     )
     const message = await fetchConversation(OWNER)
     expect(message.citations[1].citationData.content).to.equal(SECRET)
-    expect(asked).to.have.length(0)
+    expect(asked.length, 'the question\'s files and filters are checked for its answer').to.be.at.most(1)
   })
 
   it('an agent conversation opened by a project member or shared user is redacted too', async () => {
@@ -333,14 +334,14 @@ describe('shared chats: per-viewer citations', () => {
     expect(message.attachments).to.deep.equal([{ recordId: 'att-ok', recordName: 'ok.pdf' }])
   })
 
-  it('the owner sees everything and no access check is made', async () => {
-    const asked = stubAccess([])
+  it('the owner\'s own question is passed through untouched', async () => {
+    stubAccess([])
     stubPeerConversation([answer()])
     const message = await fetchConversation(OWNER)
 
     expect(message.citations[1].citationData.content).to.equal(SECRET)
     expect(message.attachments[1].recordId).to.equal('att-no')
-    expect(asked).to.have.length(0)
+    expect(message.answerHidden).to.equal(undefined)
   })
 
   it('redacts everything when the access check fails', async () => {
@@ -734,6 +735,106 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
     expect(page.map((m) => m.messageType)).to.deep.equal(['tool_call', 'tool_call'])
     for (const m of page) expect(m.answerHidden).to.deep.equal(lost)
     expect(JSON.stringify(page)).to.not.contain(SECRET)
+  })
+
+  const pageOf = async (userId: string, rows: any[], query: Record<string, string>) => {
+    stubConversation(rows)
+    sinon.stub(MongoConversationRepository.prototype, 'listMessages').callsFake(async (_id: string, q: { skip?: number; limit?: number }) => {
+      const skip = q.skip ?? 0
+      return rows.slice(skip, skip + (q.limit ?? rows.length)).map((dto) => ({ dto: { ...dto } })) as any
+    })
+    const r = res()
+    await getConversationById(appConfig)(req(userId, { params: { conversationId: SESSION }, query }), r, sinon.stub())
+    return r.json.firstCall.args[0].conversation.messages as any[]
+  }
+
+  it('a card saved before its answer (the live order) is hidden with it, in the fetch and in the model history', async () => {
+    stubAccess(['rec-ok', 'att-ok'])
+    const rows = [{ messageType: 'user_query', content: QUESTION, ...at(0) }, card(1), { ...answer(), ...at(2) }]
+    stubConversation(rows)
+    const shown = await fetchRows(OWNER)
+    expect(shown[1].answerHidden).to.deep.equal(lost)
+    expect(JSON.stringify(shown)).to.not.contain(SECRET)
+
+    const history = await historyForModel(appConfig, viewerOf(OWNER, ORG), rows.map((m) => ({ ...m })) as any)
+    expect(JSON.stringify(formatPreviousConversations(history as any))).to.not.contain(SECRET)
+  })
+
+  it('an answer stored as a classified failure (type error) is hidden like any answer', async () => {
+    stubAccess(['rec-ok', 'att-ok'])
+    stubConversation([{ messageType: 'user_query', content: QUESTION, ...at(0) }, { ...answer(), messageType: 'error', ...at(1) }])
+    const rows = await fetchRows(OWNER)
+    expect(rows[1].answerHidden).to.deep.equal(lost)
+    expect(JSON.stringify(rows[1])).to.not.contain(SECRET)
+  })
+
+  it('a stopped answer is hidden when the question\'s own file or filter is lost', async () => {
+    stubAccess(['att-ok'])
+    stubConversation([
+      { messageType: 'user_query', content: QUESTION, attachments: [{ recordId: 'att-no', recordName: 'x.pdf' }], ...at(0) },
+      { messageType: 'bot_response', content: SECRET, status: 'stopped', citations: [], ...at(1) },
+    ])
+    const rows = await fetchRows(OWNER)
+    expect(rows[1].answerHidden).to.deep.equal(lost)
+    expect(JSON.stringify(rows[1])).to.not.contain(SECRET)
+  })
+
+  it('a page that starts with a User selections row and a card reads back to the question', async () => {
+    stubAccess(['rec-ok', 'att-ok'])
+    const page = await pageOf(OWNER, [
+      { messageType: 'user_query', content: QUESTION, ...at(0) },
+      { ...answer(), ...at(1) },
+      { messageType: 'user_query', content: 'User selections: A', ...at(2) },
+      card(3),
+    ], { page: '1', limit: '2' })
+    expect(page[1].answerHidden).to.deep.equal(lost)
+    expect(JSON.stringify(page)).to.not.contain(SECRET)
+  })
+
+  it('a page that ends on a card whose answer is on the next page hides the card', async () => {
+    stubAccess(['rec-ok', 'att-ok'])
+    const page = await pageOf(OWNER, [
+      { messageType: 'user_query', content: QUESTION, ...at(0) },
+      card(1),
+      { ...answer(), ...at(2) },
+      { messageType: 'user_query', content: 'Next', ...at(3) },
+    ], { page: '2', limit: '2' })
+    expect(page.map((m) => m.messageType)).to.deep.equal(['user_query', 'tool_call'])
+    expect(page[1].answerHidden).to.deep.equal(lost)
+    expect(JSON.stringify(page)).to.not.contain(SECRET)
+  })
+
+  it('a turn longer than one read step is still found; one longer than the cap is hidden as unconfirmed', async () => {
+    stubAccess(['rec-ok', 'att-ok'])
+    const turn = (cards: number) => [
+      { messageType: 'user_query', content: QUESTION, ...at(0) },
+      { ...answer(), ...at(1) },
+      ...Array.from({ length: cards }, (_, i) => card(2 + i)),
+    ]
+    const long = await pageOf(OWNER, turn(60), { page: '1', limit: '1' })
+    expect(long[0].answerHidden).to.deep.equal(lost)
+    sinon.restore()
+
+    stubAccess(['rec-ok', 'att-ok'])
+    const huge = await pageOf(OWNER, turn(700), { page: '1', limit: '1' })
+    expect(huge[0].answerHidden).to.deep.equal({ redacted: true, reason: 'access_check_unavailable' })
+    expect(JSON.stringify(huge)).to.not.contain(SECRET)
+  })
+
+  it('a record already known to be denied hides a fresh answer even when a new record could not be checked', async () => {
+    stubAccess(null)
+    const memo = newReadable()
+    memo.asked.add('i:att-no')
+    const fresh = { _id: 'f', messageType: 'bot_response', content: 'x', attachments: [{ recordId: 'att-no' }, { recordId: 'att-new' }] }
+    const out: any[] = await redactMessagesFor(appConfig, viewerOf(OWNER, ORG), [fresh] as any, () => OWNER, { known: memo, fresh: () => true })
+    expect(out[0].answerHidden).to.deep.equal(lost)
+  })
+
+  it('a web citation whose address matches no record keeps the answer; a citation with no row hides it', async () => {
+    stubAccess([], ['https://example.com/page'])
+    stubConversation([{ messageType: 'bot_response', content: 'Web answer', citations: [{ citationId: { _id: 'c', content: 'x', metadata: { webUrl: 'https://example.com/page' } } }] }])
+    const [m] = await fetchRows(OWNER)
+    expect(m.content).to.equal('Web answer')
   })
 
   it('hides a turn\'s tool rows whatever order the client sorts the page in', async () => {

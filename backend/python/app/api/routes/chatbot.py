@@ -1333,6 +1333,9 @@ async def check_viewer_record_access(
     if urls:
         try:
             # Deleted records too: a deleted record's address is that record's, as its id is.
+            # Known limit: a record removed outright leaves no row, so its address reads as unmatched
+            # (a web page). Answers that cite it by record id are still hidden; only one that names it
+            # by address alone is not.
             rows = await graph_provider.get_records_by_weburls(
                 urls, org_id, per_address=_RECORDS_PER_URL_LIMIT, include_deleted=True,
             )
