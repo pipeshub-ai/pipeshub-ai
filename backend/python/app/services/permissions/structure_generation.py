@@ -15,6 +15,9 @@ import json
 import logging
 import secrets
 import time
+from time import (
+    monotonic,  # (bound here: tests replace this module's `time` to move its wall clock)
+)
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
@@ -45,8 +48,13 @@ PENDING_KEY = "scopeProjectionPendingRoots"
 OPEN_WRITES_KEY = "scopeProjectionOpenWrites"
 #: How long a write that has opened a connector may run before the sweep reads it as dead. A write with long steps renews it before each one.
 OPEN_WRITE_SECONDS = 600
-#: Past its deadline a write is still given this long, for the skew between the clock of the writer and the clock of the sweep.
+#: Past its deadline a write is still given this long. The operating assumption the sweep's safety rests on: the skew between the store's
+#: nodes, plus the delay between reading the store's clock and committing the lease written from it, stays within this. A lease write seen to
+#: land later than `STORE_CLOCK_TIMEOUT_SECONDS` is measured again or marked `k` (best effort: a lost race leaves it as written, and the writer
+#: renews before every long step and before the write that matters).
 OPEN_WRITE_GRACE_SECONDS = 120
+# A slower answer from the store's clock is not trusted: the time it gives is already that old when the lease is written or judged.
+STORE_CLOCK_TIMEOUT_SECONDS = 5.0
 
 
 def whole_number(value: object) -> int | None:
@@ -195,7 +203,7 @@ def parse_open_writes(raw: object) -> dict[str, dict[str, Any]]:
             roots = entry.get("r")
             if until is None or not (roots is None or (isinstance(roots, list) and all(isinstance(r, str) for r in roots))):
                 raise ValueError
-            out[str(token)] = {"u": until, **({"r": roots} if roots is not None else {})}
+            out[str(token)] = {"u": until, **({"r": roots} if roots is not None else {}), **({"k": 1} if entry.get("k") else {})}
         return out
     except (ValueError, TypeError, AttributeError, KeyError):
         raise OpenWritesUnreadable(f"not an open-writes value: {raw!r:.80}") from None
@@ -220,8 +228,33 @@ async def _backoff(attempt: int) -> None:
     await asyncio.sleep(secrets.randbelow(1 + min(400, 10 * 2 ** min(attempt, 6))) / 1000)
 
 
+async def store_now(graph_provider: Any, clock: Callable[[], float] | None = None) -> float | None:  # noqa: ANN401
+    """Now by the clock the writers and the sweep of a lease share: the graph store's (one node's clock: the Neo4j leader, the ArangoDB coordinator,
+    the PostgreSQL primary, so as close to the other hosts' as NTP keeps them). ``clock`` (tests) replaces it. None, logged, when the store cannot
+    say, does not answer within ``STORE_CLOCK_TIMEOUT_SECONDS``, or has no store clock: the sweep then recovers nothing that round and the writers
+    mark their lease `k` (see `open_write`). It is not a single cluster clock: two ArangoDB coordinators or a Neo4j leader change can answer from
+    clocks as far apart as NTP lets them drift, which ``OPEN_WRITE_GRACE_SECONDS`` must cover."""
+    if clock is not None:
+        return clock()
+    try:
+        return await asyncio.wait_for(graph_provider.store_time(), STORE_CLOCK_TIMEOUT_SECONDS)
+    except Exception:  # TimeoutError included: a late answer is treated as no answer
+        logging.getLogger(__name__).warning("the graph store's clock could not be read in %ss", STORE_CLOCK_TIMEOUT_SECONDS, exc_info=True)
+        return None
+
+
+async def _lease_deadline(graph_provider: Any, clock: Callable[[], float] | None, *, tries: int = 3) -> tuple[int, bool]:  # noqa: ANN401
+    """``(deadline, from the store's clock)`` for a lease written now. A clock that cannot be read is tried again; after that the local clock is
+    used and the caller marks the lease `k`, so that the sweep does not trust its deadline (see `recover_expired_writes`)."""
+    for attempt in range(tries):
+        if (now := await store_now(graph_provider, clock)) is not None:
+            return int(now) + OPEN_WRITE_SECONDS, True
+        await _backoff(attempt)
+    return int(time.time()) + OPEN_WRITE_SECONDS, False
+
+
 async def open_write(graph_provider: Any, connector_id: str, roots: Collection[str] | None = None, *,  # noqa: ANN401
-                     attempts: int = 30, clock: Callable[[], float] = time.time) -> str | None:
+                     attempts: int = 30, clock: Callable[[], float] | None = None) -> str | None:
     """Count one write that could not be undone as opened on the connector (`OPENED_KEY`) and record a lease for it, in one compare-and-set: a
     process that dies before it closes the write leaves a lease that runs out, and the sweep then does what the write would have done
     (`recover_expired_writes`) instead of waiting for an operator. ``roots``: the records the write will register once it is done (kept only up
@@ -243,11 +276,22 @@ async def open_write(graph_provider: Any, connector_id: str, roots: Collection[s
                 raise ScopeGenerationError(f"could not open a write on connector {connector_id}: no such connector")
             return None
         token = secrets.token_hex(8)
-        entry: dict[str, Any] = {"u": int(clock()) + OPEN_WRITE_SECONDS}
+        # A store clock that cannot be read must not refuse the caller's write: the lease is then marked `k`, not trusted by the sweep.
+        started = monotonic()
+        until, by_store = await _lease_deadline(graph_provider, clock)
+        entry: dict[str, Any] = {"u": until, **({} if by_store else {"k": 1})}
         if roots is not None and len(roots) <= MAX_PENDING_ROOTS:
             entry["r"] = sorted(roots)
         if await _swap(graph_provider, connector_id, {OPEN_WRITES_KEY: _dump_open_writes({**held, token: entry}), OPENED_KEY: (whole_number(opened) or 0) + 1},
                        {OPEN_WRITES_KEY: raw, OPENED_KEY: opened}):
+            if by_store and monotonic() - started > STORE_CLOCK_TIMEOUT_SECONDS:
+                # the write landed late, so its deadline is that much shorter than a lease: measure it again from now
+                try:
+                    return await renew_write(graph_provider, connector_id, token, roots, clock=clock, again=False)
+                except BaseException:
+                    # nobody holds the token yet, so close its lease here, or the connector stays not current until the sweep
+                    await asyncio.shield(close_write(graph_provider, connector_id, token))
+                    raise
             return token
         await _backoff(attempt)
     if await graph_provider.increment_node_field(connector_id, CollectionNames.APPS.value, OPENED_KEY) is None:
@@ -284,13 +328,14 @@ async def close_write(graph_provider: Any, connector_id: str, token: str | None,
 
 
 async def renew_write(graph_provider: Any, connector_id: str, token: str | None, roots: Collection[str] | None = None, *,  # noqa: ANN401
-                      attempts: int = 10, clock: Callable[[], float] = time.time) -> str | None:
+                      attempts: int = 10, clock: Callable[[], float] | None = None, again: bool = True) -> str | None:
     """Push the deadline of a write that is still running, right before a long step or the write that matters. When the lease is gone (the sweep
     read the write as dead and closed it) the write is opened again with its roots, so a registration happens again for what lands from here on
     instead of the write going on unfenced; the new token is returned. A renewal that cannot be written leaves the old lease running."""
     if token is None:
         return None
-    for attempt in range(attempts):
+    distrust, attempt = False, 0
+    while attempt < attempts:      # (a late write's follow-up is not an attempt: it must happen even after the last one)
         app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) or {}
         raw = app.get(OPEN_WRITES_KEY) or None
         try:
@@ -299,39 +344,77 @@ async def renew_write(graph_provider: Any, connector_id: str, token: str | None,
             return token
         if token not in held:
             return await open_write(graph_provider, connector_id, roots, clock=clock)
-        held[token] = {**held[token], "u": int(clock()) + OPEN_WRITE_SECONDS}
+        started = monotonic()
+        until, by_store = await _lease_deadline(graph_provider, clock)
+        by_store = by_store and not distrust
+        # (never shortened by a clock that is not the store's: a host far behind it would write a deadline that is already past)
+        kept = {f: v for f, v in held[token].items() if f != "k"}
+        held[token] = {**kept, "u": until if by_store else max(held[token]["u"], until), **({} if by_store else {"k": 1})}
         if await _swap(graph_provider, connector_id, {OPEN_WRITES_KEY: _dump_open_writes(held)}, {OPEN_WRITES_KEY: raw}):
+            if by_store and monotonic() - started > STORE_CLOCK_TIMEOUT_SECONDS:
+                # landed late: once more from now; late again, the lease is marked `k` (a mark no delay can make wrong), so a store that
+                # stays slow neither keeps the writer here nor leaves a deadline the sweep would trust
+                again, distrust = False, not again
+                continue
             return token
         await _backoff(attempt)
+        attempt += 1
     return token
 
 
-async def recover_expired_writes(graph_provider: Any, connector_id: str, *, clock: Callable[[], float] = time.time) -> int:  # noqa: ANN401
+async def recover_expired_writes(graph_provider: Any, connector_id: str, *, clock: Callable[[], float] | None = None) -> int:  # noqa: ANN401
     """Close the writes of the connector whose lease ran out (past `OPEN_WRITE_GRACE_SECONDS`): the process that opened them is gone. When every
     one of them recorded its roots they are registered, as the write would have done after itself (the subtree is hidden and the engine
     rewrites it); otherwise the connector is marked unsafe, as `--close-open-mark` does (a full pass). The registration comes first and the
     close is one compare-and-set that also counts them, so a crash in between repeats the registration (harmless) and never loses it, and a
     write that finishes late finds its lease gone and registers its own roots again. Returns how many writes it closed (0 on a lost race).
 
-    shortcut: a write is read as dead by the clock of whoever sweeps. A long write renews its lease before each long step and before the write that
-    matters (`renew_write`), and finds itself recovered by reopening, so what lands afterwards is registered again; what remains is a sweeper whose
-    clock runs more than the grace (120 s) ahead of the writer's, which can recover a live write once between two renewals, and the write that
-    lands in that gap is registered by its own `finally` (or, if the process dies there, only by the next expiry). Upgrade with a store-side
-    clock for the deadline."""
+    Deadlines are written and judged by the store's clock (`store_now`), so a host with a wrong clock can neither recover a live write nor keep a dead
+    one. When the store's clock cannot be read nothing is recovered (0): the connector stays not current and the operator view shows it. A lease
+    its writer could not time by the store's clock (marked `k`) is never read as dead on its own deadline; the first sweep that sees it gives it a
+    full lease by the store's clock, so a live write is recovered only after a lease the store has measured, and a dead one still is."""
     app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) or {}
     raw, closed = app.get(OPEN_WRITES_KEY) or None, app.get(CLOSED_KEY)
     held = parse_open_writes(raw)
-    cutoff = clock() - OPEN_WRITE_GRACE_SECONDS
-    dead = {t: e for t, e in held.items() if e["u"] <= cutoff}
-    if not dead or (closed is not None and whole_number(closed) is None):
+    started = monotonic()
+    now = await store_now(graph_provider, clock)
+    if now is None:
         return 0
-    updates: dict[str, Any] = {OPEN_WRITES_KEY: _dump_open_writes({t: e for t, e in held.items() if t not in dead}), CLOSED_KEY: (whole_number(closed) or 0) + len(dead)}
+    cutoff = now - OPEN_WRITE_GRACE_SECONDS
+    relet = {t for t, e in held.items() if e.get("k")}
+    dead = {t: e for t, e in held.items() if not e.get("k") and e["u"] <= cutoff}
+    released = {t: ({**{f: v for f, v in e.items() if f != "k"}, "u": int(now) + OPEN_WRITE_SECONDS} if e.get("k") else e) for t, e in held.items()}
+    if not dead or (closed is not None and whole_number(closed) is None):
+        if relet and await _swap(graph_provider, connector_id, {OPEN_WRITES_KEY: _dump_open_writes(released)}, {OPEN_WRITES_KEY: raw}):  # (lost: next sweep)
+            await _unless_on_time(graph_provider, connector_id, relet, started)      # (the dead leases stay: with the counter unreadable they are the only record)
+        return 0
+    kept = {t: e for t, e in released.items() if t not in dead}
+    updates: dict[str, Any] = {OPEN_WRITES_KEY: _dump_open_writes(kept), CLOSED_KEY: (whole_number(closed) or 0) + len(dead)}
     if all("r" in e for e in dead.values()):
         if roots := sorted({r for e in dead.values() for r in e["r"]}):
             await register_pending_roots(graph_provider, connector_id, roots)
     else:
         updates[UNSAFE_KEY] = new_unsafe_mark()
-    return len(dead) if await _swap(graph_provider, connector_id, updates, {OPEN_WRITES_KEY: raw, CLOSED_KEY: closed}) else 0
+    if not await _swap(graph_provider, connector_id, updates, {OPEN_WRITES_KEY: raw, CLOSED_KEY: closed}):
+        return 0
+    await _unless_on_time(graph_provider, connector_id, relet, started)
+    return len(dead)
+
+
+async def _unless_on_time(graph_provider: Any, connector_id: str, relet: Collection[str], started: float) -> None:  # noqa: ANN401
+    """A sweep that re-leased `k` leases by the store's clock and wrote them late wrote deadlines that much shorter: mark them `k` again (a mark no
+    delay can make wrong) for the next sweep. Once: a lost race means their writer or another sweep has written them since."""
+    if not relet or monotonic() - started <= STORE_CLOCK_TIMEOUT_SECONDS:
+        return
+    try:
+        app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) or {}
+        raw = app.get(OPEN_WRITES_KEY) or None
+        held = parse_open_writes(raw)
+        if any(t in held and not held[t].get("k") for t in relet):
+            await _swap(graph_provider, connector_id, {OPEN_WRITES_KEY: _dump_open_writes({t: {**e, "k": 1} if t in relet else e for t, e in held.items()})},
+                        {OPEN_WRITES_KEY: raw})
+    except Exception:
+        logging.getLogger(__name__).warning("could not mark the late re-leases of connector %s unknown; they run on the sweep's deadline", connector_id, exc_info=True)
 
 
 class OpenWrites:
