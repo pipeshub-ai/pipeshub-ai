@@ -3440,6 +3440,59 @@
         "cancel": "取消",
         "continueTeam": "繼續使用團隊連接器",
         "goToPersonal": "設定個人連接器"
+      },
+      "accessCheck": {
+        "open": "檢查某人的存取權限",
+        "title": "檢查某人的存取權限",
+        "description": "查看某人能否讀取此連接器中的記錄，以及無法讀取的原因。",
+        "personLabel": "人員",
+        "personPlaceholder": "選擇人員",
+        "peopleLoading": "正在載入人員...",
+        "peopleFailed": "無法載入人員清單。",
+        "recordLabel": "記錄 ID",
+        "recordHint": "開啟記錄並複製其 ID。",
+        "check": "檢查",
+        "checking": "正在檢查...",
+        "close": "關閉",
+        "resultHeading": "結果",
+        "restrictedArea": "受限區域",
+        "theyFallback": "此人",
+        "pathLabel": "位置：{{path}}",
+        "reference": "參考編號：{{ref}}（如果原因看起來不對，請提供給支援人員）",
+        "verdict": {
+          "granted": "{{name}} 可以檢視此記錄。",
+          "denied": "{{name}} 無法檢視此記錄。"
+        },
+        "reason": {
+          "granted": "如果它在搜尋中缺失，可能是尚未建立索引，或連接器仍在同步。",
+          "not_linked": "{{name}} 沒有連結到此連接器的帳戶。",
+          "no_grant": "{{container}} 中沒有任何內容授予 {{name}} 存取權限。",
+          "restricted_container": "{{container}} 僅限其他人存取。",
+          "item_restricted": "此記錄有自己的限制，{{name}} 不在其中。",
+          "parent_not_readable": "{{name}} 無法開啟此記錄所需的上層項目。",
+          "pending_rewrite": "此記錄所在的資料夾正在更新。",
+          "syncing": "連接器尚未完成此部分的同步。",
+          "scheme_unreadable": "連接器無法讀取此區域的存取規則，因此對所有人隱藏。",
+          "deleted_at_source": "此記錄已在來源端刪除。",
+          "unexplained": "我們無法顯示原因。"
+        },
+        "next": {
+          "not_linked": "請在來源端修復帳戶，然後同步。",
+          "no_grant": "請在來源端新增 {{name}}。",
+          "restricted_container": "請讓擁有者新增 {{name}}。",
+          "item_restricted": "請讓擁有者新增 {{name}}。",
+          "parent_not_readable": "請將上層項目共用給 {{name}}。",
+          "pending_rewrite": "請等待幾分鐘後再檢查。",
+          "syncing": "請等待同步完成。",
+          "scheme_unreadable": "請在來源端修復同步帳戶的權限。",
+          "deleted_at_source": "無需操作。",
+          "unexplained": "請聯絡支援人員並提供參考編號。"
+        },
+        "errors": {
+          "failed": "無法完成檢查。請再試一次。",
+          "notFound": "在此連接器中找不到該人員或記錄。",
+          "rateLimited": "檢查次數過多。請一分鐘後再試。"
+        }
       }
     },
     "mcpServers": {

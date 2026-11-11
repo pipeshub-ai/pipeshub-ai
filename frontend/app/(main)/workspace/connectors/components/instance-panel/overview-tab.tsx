@@ -3,7 +3,8 @@
 import { useState, useCallback, useEffect, useReducer } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
-import { Flex, Text, Box } from '@radix-ui/themes';
+import { Flex, Text, Box, Button } from '@radix-ui/themes';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { ConnectorOverviewExtras } from '@/config';
 import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
@@ -28,6 +29,7 @@ import { IndexingStatsPanel } from '@/app/components/indexing-stats/indexing-sta
 import { CodeGraphStatus } from './code-graph-status';
 import { LastRunSummary } from './last-run-summary';
 import { ActionItemsCallout } from './action-items-callout';
+import { AccessCheckDialog } from './access-check-dialog';
 
 // ========================================
 // Props
@@ -75,6 +77,8 @@ export function OverviewTab({
   const [isRetryClassificationBusy, setIsRetryClassificationBusy] = useState(false);
   const [isRetryEntitiesBusy, setIsRetryEntitiesBusy] = useState(false);
   const [isStopBusy, setIsStopBusy] = useState(false);
+  const isAdmin = useUserStore(selectIsAdmin);
+  const [accessCheckOpen, setAccessCheckOpen] = useState(false);
 
   // The panel outlives the run, so a stop the backend could not complete
   // synchronously would otherwise leave this stuck and block the next stop.
@@ -417,6 +421,21 @@ export function OverviewTab({
         isLoading={isStopBusy}
         onConfirm={() => void handleConfirmStopSync()}
       />
+      {isAdmin === true && instance._key ? (
+        <>
+          <Flex>
+            <Button type="button" variant="soft" color="gray" size="2" onClick={() => setAccessCheckOpen(true)}>
+              {t('workspace.connectors.accessCheck.open')}
+            </Button>
+          </Flex>
+          <AccessCheckDialog
+            open={accessCheckOpen}
+            onOpenChange={setAccessCheckOpen}
+            connectorId={instance._key}
+            container={nestedModalHost}
+          />
+        </>
+      ) : null}
       <ConnectorOverviewExtras connectorId={instance._key ?? null} refreshKey={panelRefreshKey} />
     </Flex>
   );

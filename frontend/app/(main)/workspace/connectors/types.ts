@@ -668,3 +668,31 @@ export interface LastSyncSummary {
   stopReason?: 'max_pages' | 'time_limit' | 'stalled' | 'rate_limited' | null;
   resumed?: boolean;
 }
+
+/** A container in an access explanation; a null name is one the admin asking cannot read. */
+export interface AccessExplanationContainer {
+  name: string | null;
+  restricted: boolean;
+}
+
+export type AccessExplanationCode =
+  | 'granted'
+  | 'not_linked'
+  | 'no_grant'
+  | 'restricted_container'
+  | 'item_restricted'
+  | 'parent_not_readable'
+  | 'pending_rewrite'
+  | 'syncing'
+  | 'scheme_unreadable'
+  | 'deleted_at_source'
+  | 'unexplained';
+
+/** GET /connectors/{connectorId}/permissions/explain */
+export interface AccessExplanation {
+  admitted: boolean;
+  code: AccessExplanationCode;
+  container: AccessExplanationContainer | null;
+  path: AccessExplanationContainer[];
+  reference: string;
+}

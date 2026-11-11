@@ -3440,6 +3440,59 @@
         "cancel": "취소",
         "continueTeam": "팀 커넥터로 계속",
         "goToPersonal": "개인 커넥터 설정"
+      },
+      "accessCheck": {
+        "open": "사용자의 접근 권한 확인",
+        "title": "사용자의 접근 권한 확인",
+        "description": "이 커넥터의 레코드를 특정 사용자가 읽을 수 있는지, 읽을 수 없다면 이유가 무엇인지 확인합니다.",
+        "personLabel": "사용자",
+        "personPlaceholder": "사용자 선택",
+        "peopleLoading": "사용자를 불러오는 중...",
+        "peopleFailed": "사용자 목록을 불러오지 못했습니다.",
+        "recordLabel": "레코드 ID",
+        "recordHint": "레코드를 열어 ID를 복사하세요.",
+        "check": "확인",
+        "checking": "확인하는 중...",
+        "close": "닫기",
+        "resultHeading": "결과",
+        "restrictedArea": "제한된 영역",
+        "theyFallback": "이 사용자",
+        "pathLabel": "위치: {{path}}",
+        "reference": "참조: {{ref}} (이유가 잘못된 것 같으면 지원팀에 전달하세요)",
+        "verdict": {
+          "granted": "{{name}}님은 이 레코드를 볼 수 있습니다.",
+          "denied": "{{name}}님은 이 레코드를 볼 수 없습니다."
+        },
+        "reason": {
+          "granted": "검색에 나타나지 않는다면 아직 색인되지 않았거나 커넥터가 아직 동기화 중일 수 있습니다.",
+          "not_linked": "{{name}}님의 계정이 이 커넥터에 연결되어 있지 않습니다.",
+          "no_grant": "{{container}}의 어떤 항목도 {{name}}님에게 접근 권한을 주지 않습니다.",
+          "restricted_container": "{{container}}은(는) 다른 사용자로 제한되어 있습니다.",
+          "item_restricted": "이 레코드에는 자체 제한이 있으며 {{name}}님은 포함되어 있지 않습니다.",
+          "parent_not_readable": "{{name}}님은 이 레코드에 필요한 상위 항목을 열 수 없습니다.",
+          "pending_rewrite": "이 레코드가 있는 폴더를 업데이트하는 중입니다.",
+          "syncing": "커넥터가 이 부분의 동기화를 아직 끝내지 않았습니다.",
+          "scheme_unreadable": "커넥터가 이 영역의 접근 규칙을 읽을 수 없어 모든 사용자에게 숨겨져 있습니다.",
+          "deleted_at_source": "이 레코드는 원본에서 삭제되었습니다.",
+          "unexplained": "이유를 표시할 수 없습니다."
+        },
+        "next": {
+          "not_linked": "원본에서 계정을 수정한 다음 동기화하세요.",
+          "no_grant": "원본에서 {{name}}님을 추가하세요.",
+          "restricted_container": "소유자에게 {{name}}님을 추가해 달라고 요청하세요.",
+          "item_restricted": "소유자에게 {{name}}님을 추가해 달라고 요청하세요.",
+          "parent_not_readable": "상위 항목을 {{name}}님과 공유하세요.",
+          "pending_rewrite": "몇 분 기다린 후 다시 확인하세요.",
+          "syncing": "동기화가 끝날 때까지 기다리세요.",
+          "scheme_unreadable": "원본에서 동기화 계정의 권한을 수정하세요.",
+          "deleted_at_source": "할 일이 없습니다.",
+          "unexplained": "지원팀에 문의하고 참조를 알려 주세요."
+        },
+        "errors": {
+          "failed": "확인하지 못했습니다. 다시 시도하세요.",
+          "notFound": "이 커넥터에서 해당 사용자 또는 레코드를 찾을 수 없습니다.",
+          "rateLimited": "확인 요청이 너무 많습니다. 1분 후에 다시 시도하세요."
+        }
       }
     },
     "mcpServers": {
