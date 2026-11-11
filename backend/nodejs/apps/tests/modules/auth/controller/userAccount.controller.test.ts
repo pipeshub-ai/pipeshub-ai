@@ -47,6 +47,7 @@ import {
   ServiceUnavailableError,
 } from '../../../../src/libs/errors/http.errors';
 import { useCommunitySignInLists } from '../../../helpers/sign-in-lists';
+import { stubGoogleIdTokenCheck } from '../../../helpers/google-id-token';
 
 // The account-locked email is sent in the background; this lets it run.
 const settle = () => new Promise((resolve) => setImmediate(resolve));
@@ -2726,7 +2727,7 @@ describe('UserAccountController', () => {
     // and be answered with a 500.
     describe('when the account was deleted after the link was sent', () => {
       beforeEach(() => {
-        const realIam = new IamService(mockConfig, mockLogger);
+        const realIam = new IamService(mockConfig);
         mockIamService.getUserById.callsFake((id: string, token: string) =>
           realIam.getUserById(id, token),
         );
@@ -3430,12 +3431,9 @@ describe('UserAccountController', () => {
         data: { clientId: 'google-client-id' },
       });
 
-      // Stub OAuth2Client to return null payload
-      const { OAuth2Client } = require('google-auth-library');
-      const verifyStub = sinon.stub().resolves({
+      stubGoogleIdTokenCheck().resolves({
         getPayload: () => null,
-      });
-      sinon.stub(OAuth2Client.prototype, 'verifyIdToken').callsFake(verifyStub);
+      } as any);
 
       try {
         await controller.authenticateWithGoogle(user, 'fake-credential', '127.0.0.1');
@@ -3452,10 +3450,9 @@ describe('UserAccountController', () => {
         data: { clientId: 'google-client-id' },
       });
 
-      const { OAuth2Client } = require('google-auth-library');
-      sinon.stub(OAuth2Client.prototype, 'verifyIdToken').resolves({
+      stubGoogleIdTokenCheck().resolves({
         getPayload: () => ({ email: 'other@test.com' }),
-      });
+      } as any);
 
       try {
         await controller.authenticateWithGoogle(user, 'fake-credential', '127.0.0.1');
@@ -3473,10 +3470,9 @@ describe('UserAccountController', () => {
         data: { clientId: 'google-client-id' },
       });
 
-      const { OAuth2Client } = require('google-auth-library');
-      sinon.stub(OAuth2Client.prototype, 'verifyIdToken').resolves({
+      stubGoogleIdTokenCheck().resolves({
         getPayload: () => ({ email: 'test@test.com' }),
-      });
+      } as any);
       sinon.stub(UserActivities, 'create').resolves({} as any);
 
       await controller.authenticateWithGoogle(user, 'fake-credential', '127.0.0.1');
@@ -3708,7 +3704,7 @@ describe('UserAccountController', () => {
 
       expect(result.statusCode).to.equal(200);
       expect(save.calledOnce).to.be.true;
-      expect(mockLogger.error.calledWith("The sign-in code email couldn't be sent")).to.be.true;
+      expect(mockLogger.warn.calledWith("The sign-in code email couldn't be sent")).to.be.true;
     });
   });
 

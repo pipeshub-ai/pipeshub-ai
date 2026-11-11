@@ -137,7 +137,8 @@ if log_once(f"envelope:stripped:{topic}", 30): ...          # bounded keys only,
 
 - Bindable ids (`LOG_FIELD_NAMES`): `conversation_id`, `agent_id`, `run_id`, `parent_run_id`, `agent_run_id`, `attempt`, `connector_id`,
   `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`, `mcp_server_id`, `toolset_id`, `job`, and for credential
-  refresh `refresh_kind`, `trigger`, `provider`, `scheduled_by`, `owner_id`. A module that needs another adds it there and here. A name with
+  refresh `refresh_kind`, `trigger`, `provider`, `scheduled_by`, `owner_id`, and for broker messages `topic`, `message_id`, `event_type`.
+  A module that needs another adds it there and here. A name with
   a credential word in it (`token`, `secret`, `credential`, …) is masked like a secret, so ids never use one. Another key, or `org_id`/`user_id`, raises `ValueError`. `None` values are skipped. Pass literal keyword
   arguments, not a `**dict`. Do not hold `log_fields` across `yield` in an async generator.
 - `log_event(logger, event, /, *, level=logging.INFO, **fields)`: message = the event name; `None` values, identity names and record
@@ -309,6 +310,43 @@ although some of it stayed; batch writes still run in a real transaction. Record
 the processor are not counted. A rename or move that the connector sends through `on_records_moved` rewrites the
 stored record in place and is not counted either, unless the old record is missing and the move falls back to a plain add.
 
+## Messaging consumers
+
+The Redis Streams and Kafka consumers handle each delivery inside `message_log.delivery`
+(`app/services/messaging/message_log.py`). It binds `topic` (the Kafka topic or Redis stream) and `message_id` (the Redis entry id,
+or `<topic>-<partition>-<offset>` on Kafka); then the producer's request id, before the envelope is checked; then, once it is
+verified, the envelope's org and user, `event_type`, and the payload's `record_id` and `connector_id`. Every line of the delivery
+carries them: the handler's own, and the ack, retry or dead-letter decision. Before verification, and on a rejected envelope,
+`org_id` is the org the producer claims, not a verified one. The indexing consumers bind the same for a record's whole run
+(`message_log.bound_message`), the main-loop recovery and dead-letter path included; their end line is the indexing summary.
+
+| Event | Level | Fields |
+| --- | --- | --- |
+| `message.end` | INFO for `success` and `skipped`; WARNING when the message will be retried; ERROR when it is dead-lettered (acknowledged or committed and dropped: nothing else records it); a retried `internal` or `misconfigured` failure is ERROR; a cancelled delivery INFO | `outcome`, `disposition` (`ack`, `retry`, `dead_letter`), `reason`, `code`, `attempt`, `duration_ms`, `size_bytes`; when an exception ended it, `error_class` and `error_type`, and `error_message` except for an unparseable message or a failure the handler already logged |
+
+- Exactly one `message.end` per delivery, written after the broker call (XACK, commit, seek) that carries out the decision. A
+  delivery that ends any other way (an error in the ack, a stop mid-handler) is `failure` with `disposition=retry`: the entry stays
+  pending, the offset is read again. A redelivery is a new delivery with its own line. One exception: a stop in the short
+  window after the XACK or commit, while the retry count is cleared, also says `retry` for a message already settled.
+- `attempt` is the number of this delivery: 1 for a new message; after failures, the failure count with a retry tracker, or Redis's
+  delivery count (`times_delivered`) without one.
+- Kafka with no retry tracker commits a failed message: `disposition=dead_letter`. Redis with none leaves it pending: `retry`.
+- `reason`: `duplicate` (the envelope was already handled), `already_settled` (Kafka: the offset was settled before), `no_value`,
+  `handler_false` (the handler returned false; it logged why), `exception`, `unparseable` (not JSON, not an envelope, or not a valid
+  message), `envelope_rejected` with `code` (`bad_signature`, `stale`, `malformed`, `org_mismatch`, `no_key`, …),
+  `attempts_exhausted` (dead-lettered before running again), `no_handler`, `cancelled`. A rejected envelope is ERROR with no stack:
+  most codes are our own configuration (a key rotation, a backlog older than the age limit), and each drops every message on the topic.
+- A handler logs its own failure once (`entity_event.failed`, `entity_event.step_failed` with `step`, `message.handler_failed`,
+  `ai_config.refresh_failed`) and returns false or raises; `message.end` does not repeat its text. A user event's failure carries
+  `target_user_id`, the user the event is about (`user_id` is who sent it). `target_user_id` is not passed through the provider's
+  `log_identity`.
+- The message value and its payload are never logged whole. Lines carry only the ids taken from it (`record_id`, `connector_id`,
+  `target_user_id`). A message that cannot be parsed logs its `size_bytes`; a validation error's text is left out (it quotes the
+  payload's values). A handler's other exception text is logged as raised, so an error that quotes a payload value carries it.
+- Work a handler starts in its own context (the sync task manager) keeps the message's ids; `message.end` is written when the
+  delivery ends, not when that work does. The connector link passes started by `userAdded` run as an org job instead
+  (`ctx_kind=job ctx_source=job:connector_link`), with only `connector_id`.
+
 ## Agent loop events (Python)
 
 One chat turn is reconstructable from these lines; each carries the bound `org_id`, `user_id`, `conversation_id`,
@@ -447,6 +485,39 @@ quote the refresh token in prose no redactor recognises. When the exception chai
 a refresh service (`log_refresh_failure`) leaves the text out of `error_message` and the stack (each exception shows as
 `Type: <message omitted>`) and logs `http_status` and `oauth_error` instead.
 
+## Auth audit events (Node)
+
+Every security decision of sign-in, lockout, OTP, password reset and change, SSO, JIT provisioning, sign-out and the sign-in
+policy is one INFO line on the `audit` logger (`libs/services/audit.ts`), message = the event. Fields: `org_id`, `actor` (the
+account the decision is about; null for an unknown account), `target` (an admin action's account), `outcome`, `reason`,
+`auth_method` (an `AuthMethodType` value; anything else is `other`). Never an email, name, IP, password, code or token: the
+access line has `client_ip` and the same `request_id`.
+
+| Event | Outcome | `reason` on failure | `auth_method` |
+| --- | --- | --- | --- |
+| `auth.sign_in` | `success`, `partial` (a step passed, more required), `failure` | `unknown_user`, `bad_password`, `no_password`, `bad_otp`, `no_otp`, `otp_expired`, `otp_already_used`, `locked`, `account_disabled`, `service_account`, `account_changed`, `method_not_allowed`, `captcha_failed`, `no_session`, `session_expired`, `sso_token_invalid`, `sso_token_expired`, `sso_wrong_tenant`, `sso_no_email`, `sso_email_mismatch`, `no_account`, `account_removed` | yes |
+| `auth.account.lock` | `success`, `reason=too_many_attempts` | | `password`, `otp` |
+| `auth.account.unlock` | `success`, `reason=block_expired` or `admin`; `target` = the account | | |
+| `auth.otp.send` | `success`, `failure` | `unknown_user`, `locked` | `otp` |
+| `auth.password_reset.request` | `success`, `failure` | `unknown_user`, `captcha_failed` | |
+| `auth.password_setup.request` | `success` | | |
+| `auth.password_reset.complete` | `success`, `failure` | `no_token`, `token_invalid`, `token_expired`, `link_used`, `locked`, `unknown_user` | |
+| `auth.password.change` | `success`, `failure` | `bad_current_password`, `captcha_failed`, `locked` | |
+| `auth.account.setup` | `success` | | `password` |
+| `auth.email.change` | `success` (`reason=link` or `sso_mail_claim`), `failure` | `no_token`, `token_invalid`, `token_expired`, `link_used`, `email_taken` | |
+| `auth.sign_out` | `success` | | |
+| `auth.session.refresh` | `failure` only | `no_token`, `token_invalid`, `token_expired`, `session_ended`, `account_inactive`, `no_credentials`, `locked` | |
+| `auth.policy.update` | `success`, `failure` | `not_admin` | |
+| `auth.jit_provision` | `success` | | `google`, `microsoft` |
+
+How a refusal gets its line: the code that refuses throws its error tagged with `refusal(error, reason)` (`authRefusal` in
+`modules/auth/utils/sign-in-audit.ts` checks the code). The tag is invisible to the client and to the logs. The handler, or the
+refusing middleware (`authSessionMiddleware`; `scopedTokenValidator` for the refresh, password-reset and email-validation
+scopes only), calls `auditRefusal` once in its catch; it writes a line only for a reason its event may carry
+(`AUTH_AUDIT_REASONS`). An untagged error is a system failure: no audit line, and the error middleware logs it once.
+Not audited: body validation 400s, rate limits, regular-JWT failures on authenticated routes, and service-to-service scoped tokens.
+Each still has its `http.request.error` (or the limiter's) line.
+
 ## Upstream calls (Node)
 
 Every call through a service command or an instrumented axios instance writes one `upstream.call.end` line **per attempt**,
@@ -485,9 +556,10 @@ their own HTTP clients.
 - **Streams.** The chat stream's line is written when the body ends (DEBUG), fails midway (`unavailable`, with the 200), or
   is aborted by us (`cancelled`, INFO). A consumer that destroys the stream without aborting the call does not end it early:
   the line is written when the service ends the body.
-- **Known gaps.** A timed-out `AIServiceCommand` call is retried on its already-aborted signal, so it writes 3 `timeout`
-  lines though only the first reached the wire. A caller that expects a 404 (an existence check) still gets a WARNING
-  `not_found` line: the transport cannot know what the caller expects.
+- **Retries.** An `AIServiceCommand`'s `timeoutMs` is one budget across its attempts and backoff waits: once it, or the
+  caller's signal, is spent, no further attempt starts, so a timed-out call writes one `timeout` line.
+- **Known gaps.** A caller that expects a 404 (an existence check) still gets a WARNING `not_found` line: the transport
+  cannot know what the caller expects.
 - **New calls** use a command or axios, so they get the line; do not log the call again at the call site. A new raw `fetch`
   goes through `upstreamFetch`, and adds `injectRequestHeaders` only when the target is a PipesHub service: it does not
   check the destination, and the request id and MCP relay header must not reach a third party (the axios adapter adds them
@@ -521,8 +593,9 @@ safety net; it cannot recognise content, so the rules below still apply.
 - **Field names** are snake_case and the same in Python and Node: `org_id`, `user_id`, `request_id`, `conversation_id`, `agent_id`,
   `run_id`, `parent_run_id`, `attempt`, `connector_id`, `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`,
   `mcp_server_id`, `toolset_id`, `job`, `workload`, `duration_ms`, `status`, `error_class`, `error_type`, `outcome`, `method`,
-  `route`, `client_ip`, `reason`. Python also has `ctx_kind`, `ctx_source`, `error_message` and `cause_type`; Node's `error` is
-  an object (`error.message`). Node also has `upstream` and `network_code` (on `upstream.call.end`).
+  `route`, `client_ip`, `reason`, `topic`, `message_id`, `event_type`, `disposition`, `target_user_id`. Python also has
+  `ctx_kind`, `ctx_source`, `error_message` and `cause_type`; Node's `error` is an object (`error.message`). Node also has
+  `upstream` and `network_code` (on `upstream.call.end`).
 - **Fields are scalars**: ids, sizes, counts, enums. Never pass a config, a request, a response or a document as a field.
 - **Log an error once**, at the layer that handles it, with `error_class.log_failure` (see "Failures"). Lower layers raise
   (`raise … from e`), they do not log and re-raise.

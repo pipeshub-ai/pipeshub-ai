@@ -37,6 +37,7 @@ from app.services.messaging.kafka.config.kafka_config import (
 from app.services.messaging.error_classifier import is_expected_outcome
 from app.services.messaging.kafka.handlers.ai_config import AiConfigEventService
 from app.services.vector_db.rebuild_state import redis_from_config_service
+from app.utils import error_class
 
 
 def _str_or_none(value: Any) -> str | None:  # noqa: ANN401 - a message field of unknown type
@@ -175,11 +176,10 @@ class KafkaUtils:
                     logger.error("Missing payload in message")
                     return False
 
-                logger.info(f"Processing entity event: {event_type}")
                 return await entity_event_service.process_event(event_type, payload)
 
             except Exception as e:
-                logger.error(f"Error processing entity message: {str(e)}", exc_info=True)
+                error_class.log_failure(logger, "message.handler_failed", e)
                 return False
 
         return handle_entity_message
@@ -319,7 +319,7 @@ class KafkaUtils:
                 return await event_service.process_event(event_type, payload)
 
             except Exception as e:
-                logger.error(f"Error processing sync message: {str(e)}", exc_info=True)
+                error_class.log_failure(logger, "message.handler_failed", e)
                 return False
 
         return handle_sync_message
@@ -401,11 +401,10 @@ class KafkaUtils:
                     logger.debug(f"Skipping non-AI config event: {event_type}")
                     return True
 
-                logger.info(f"Processing AI config event: {event_type}")
                 return await aiconfig_event_service.process_event(event_type, payload)
 
             except Exception as e:
-                logger.error(f"Error processing AI config message: {str(e)}", exc_info=True)
+                error_class.log_failure(logger, "message.handler_failed", e)
                 return False
 
         return handle_aiconfig_message
