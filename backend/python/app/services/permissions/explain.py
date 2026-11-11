@@ -319,9 +319,13 @@ class ExplainService:
 
     async def _in_org(self, org_id: str, viewer_key: str) -> bool:
         """The person is a user of this organisation (the org-scoped user lookup both stores have); one of another is not found."""
-        doc = await self._provider.get_document(viewer_key, CollectionNames.USERS.value) or {}
-        email = doc.get("email")
-        found = await self._provider.get_users_by_emails([email], org_id=org_id) if email else {}
+        # Without raise_on_error a failed read looks like "no such user", which would answer a store outage with a 404.
+        try:
+            doc = await self._provider.get_document(viewer_key, CollectionNames.USERS.value, raise_on_error=True) or {}
+            email = doc.get("email")
+            found = await self._provider.get_users_by_emails([email], org_id=org_id, raise_on_error=True) if email else {}
+        except Exception as exc:
+            raise ViewerScopesUnavailable("graph_error") from exc
         return any(u.id == viewer_key for u in found.values())
 
     def _mismatch(self, m: Mismatch) -> None:
@@ -364,9 +368,10 @@ class ExplainService:
             frontier = nxt
         reach, frontier = {through} & ancestors, [through] if through in ancestors else []
         while frontier:
-            nxt = [c for i in frontier for c in children.get(i, ()) if c not in reach]
-            reach.update(nxt)
-            frontier = nxt
+            # A set: two frontier nodes that share a child must not queue it twice, or each layer doubles the work.
+            nxt = {c for i in frontier for c in children.get(i, ())} - reach
+            reach |= nxt
+            frontier = list(nxt)
         return reach
 
     @staticmethod

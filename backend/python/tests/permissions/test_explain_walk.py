@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import resource
 import subprocess
 import sys
 import textwrap
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.permissions import explain as ex
+from app.services.permissions.errors import ViewerScopesUnavailable
 from app.services.permissions.ports import StampNode
 
 
@@ -86,6 +88,70 @@ def test_a_wide_hierarchy_with_shared_ancestors_is_read_once_per_node() -> None:
 
     assert "g0_1" in chain and chain[0] == "A"
     assert _Counting.reads <= 4 * len(nodes), _Counting.reads
+
+
+def test_shared_children_are_queued_once_per_layer() -> None:
+    """Thirty layers of two nodes that each have both nodes above them: queued twice per layer the frontier doubles each layer
+    (a billion entries), so the walk runs in a process whose memory is capped and must finish."""
+    script = textwrap.dedent("""
+        from tests.permissions.test_explain_walk import _n, ex
+        layers = 30
+        nodes = [_n("A", "app")]
+        for k in range(layers):
+            above = ("A",) if k == 0 else (f"g{k-1}_0", f"g{k-1}_1")
+            nodes += [_n(f"g{k}_{w}", "group", above, above) for w in range(2)]
+        nodes.append(_n("r", "record", (f"g{layers-1}_0", f"g{layers-1}_1")))
+        f = ex._Facts({n.id: n for n in nodes}, frozenset(), frozenset({"A"}), "A", False)
+        print(len(ex.ExplainService._reaching(f, f.nodes["r"], "g0_1")))
+    """)
+    cap = 2 * 1024**3
+    done = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=60,
+        env={"PYTHONPATH": ":".join(sys.path)},
+        preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_AS, (cap, cap)),  # noqa: PLW1509
+    )
+    assert done.returncode == 0, done.stderr[-300:]
+    assert done.stdout.strip() == "60"  # g0_1, the 58 nodes of the layers below it, and the record
+
+
+class _Provider:
+    def __init__(self, document: dict | None, users: dict, fail: str | None = None) -> None:
+        self.document, self.users, self.fail, self.kwargs = document, users, fail, []
+
+    async def get_document(self, key: str, collection: str, **kw: object) -> dict | None:
+        self.kwargs.append(("get_document", kw))
+        if self.fail == "document":
+            raise ConnectionError("down")
+        return self.document
+
+    async def get_users_by_emails(self, emails: list[str], **kw: object) -> dict:
+        self.kwargs.append(("get_users_by_emails", kw))
+        if self.fail == "users":
+            raise ConnectionError("down")
+        return self.users
+
+
+def _service(provider: _Provider) -> ex.ExplainService:
+    service = ex.ExplainService.__new__(ex.ExplainService)
+    service._provider = provider  # type: ignore[assignment]
+    return service
+
+
+@pytest.mark.parametrize("fail", ["document", "users"])
+async def test_a_failed_read_of_the_person_is_unavailable_not_a_person_of_another_organisation(fail: str) -> None:
+    provider = _Provider({"email": "d@x"}, {}, fail)
+    with pytest.raises(ViewerScopesUnavailable):
+        await _service(provider)._in_org("org", "k-dana")
+
+
+async def test_a_successful_read_decides_membership_and_asks_for_failures_to_raise() -> None:
+    member = _Provider({"email": "d@x"}, {"d@x": SimpleNamespace(id="k-dana")})
+    stranger = _Provider({"email": "d@x"}, {})
+    unknown = _Provider(None, {})
+    assert await _service(member)._in_org("org", "k-dana") is True
+    assert await _service(stranger)._in_org("org", "k-dana") is False
+    assert await _service(unknown)._in_org("org", "k-dana") is False
+    assert member.kwargs == [("get_document", {"raise_on_error": True}), ("get_users_by_emails", {"org_id": "org", "raise_on_error": True})]
 
 
 async def test_nothing_to_name_asks_nothing_about_the_asking_admin() -> None:
