@@ -213,6 +213,10 @@ def _delegated_scopes() -> list[str]:
     return merge_scopes(GoogleClient.delegated_scopes_for("drive"), GoogleClient.delegated_scopes_for("admin"))
 
 
+class _ItemReadFailed(Exception):
+    """An item's permissions could not be read: it is neither changed nor unchanged."""
+
+
 @ConnectorBuilder("Drive Workspace")\
     .in_group("Google Workspace")\
     .with_description("Sync files and folders from Google Drive")\
@@ -339,10 +343,6 @@ def _delegated_scopes() -> list[str]:
         .with_agent_support(True)
     )\
     .build_decorator()
-
-class _ItemReadFailed(Exception):
-    """An item's permissions could not be read: it is neither changed nor unchanged."""
-
 
 class GoogleDriveTeamConnector(BaseConnector):
     def __init__(
