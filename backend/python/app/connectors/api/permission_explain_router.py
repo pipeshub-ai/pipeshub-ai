@@ -16,7 +16,6 @@ from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailable
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider  # noqa: TC001 - FastAPI reads the annotation at runtime
 from app.services.permissions.errors import ViewerScopesUnavailable
 from app.services.permissions.explain import (
-    ContainerRef,
     ExplainNotFound,
     ExplainService,
 )
