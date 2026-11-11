@@ -186,3 +186,25 @@ def test_a_lease_inside_its_grace_never_prints_a_negative_time() -> None:
     app = {**current_app(), OPENED_KEY: 1, OPEN_WRITES_KEY: f'{{"t":{{"u":{int(clock.now) - 10}}}}}'}
     v = connector_view("c", app, clock=clock)
     assert not v.attention and v.info == ["1 write(s) in flight, the next lease has run out and is inside its grace"]
+
+
+class UnreadableVdb(Vdb):
+    def __init__(self, n: int | Exception) -> None:
+        super().__init__((0, 0.0))
+        self.n = n
+
+    async def unreadable_group_rows(self, org: str) -> int:
+        if isinstance(self.n, Exception):
+            raise self.n
+        return self.n
+
+
+async def test_group_rows_with_a_trusted_stamp_and_a_null_list_are_shown_and_counted() -> None:
+    from app.services.permissions.metrics import SERVING_UNREADABLE_ROWS
+
+    apps = Apps({"_key": "c", **current_app()})
+    view = await org_view(apps, "o", UnreadableVdb(4), clock=Clock())
+    assert view.needs_attention and "unreadable_group_rows: 4" in view.lines()[-1]
+    assert SERVING_UNREADABLE_ROWS._metric.labels("pgvector", "o")._value.get() == 4
+    assert not (await org_view(apps, "o", UnreadableVdb(0), clock=Clock())).needs_attention
+    assert "unreadable_group_rows_unknown" in (await org_view(apps, "o", UnreadableVdb(RuntimeError("x")), clock=Clock())).notes[0]

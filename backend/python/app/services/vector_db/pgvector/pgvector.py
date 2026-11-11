@@ -21,6 +21,10 @@ from app.core import org_context
 from app.core.db import CapabilityError, DbError
 from app.core.db.shared import acquire_db, release_db
 from app.modules.retrieval import degraded_notice
+from app.services.permissions.scope_fields import (
+    SCOPE_FIELDS_VERSION,
+    current_scope_generation,
+)
 from app.services.vector_db.filters import (
     build_filter_expression,
     build_generic_conditions,
@@ -451,6 +455,25 @@ class PgVectorService(IVectorDBService):
                 FROM retrieval.point_groups WHERE org_id = $1 AND computed_at > clock_timestamp() + make_interval(secs => $2::float8)""",
                 org, float(min_ahead_seconds)), idempotent=True, custom_plan=True)
         return int(row["n"]), float(row["ahead"])
+
+    async def unreadable_group_rows(self, org_id: str) -> int:
+        """How many of the org's group rows hold a stamp a served search trusts (this version and generation, with connectors) of a deciding kind but a
+        NULL list its rule reads (a data fault): such a list admits nothing on its own, so a served search can hide their points (a union or
+        intersection row may still pass on its other list). A stale stamp is left to the request's arms, and a container stamp reads only lists that
+        cannot be NULL, so neither is counted.
+
+        shortcut: reads the org's group rows without an index on the stamp; an operator command, run it when asked, not per request."""
+        db, _ = self._assert_connected()
+        org = require_org(org_id)
+        with org_scope(org):
+            n = await db.run(lambda tx: tx.fetchval(
+                """/* pipeshub:pgvector.unreadable_group_rows */
+                SELECT count(*) FROM retrieval.point_groups
+                WHERE org_id = $1 AND scope_stamp IN ('container', 'union', 'intersection', 'override') AND scope_version = $2::int
+                  AND scope_generation = $3::int AND cardinality(connector_ids) > 0
+                  AND ((scope_stamp <> 'container' AND acl_scope IS NULL) OR (scope_stamp IN ('union', 'intersection') AND path_ids IS NULL))""",
+                org, SCOPE_FIELDS_VERSION, current_scope_generation()), idempotent=True, custom_plan=True)
+        return int(n)
 
     async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
         db, catalog = self._assert_connected()
