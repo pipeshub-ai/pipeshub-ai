@@ -3334,6 +3334,61 @@
         "continueTeam": "Continuar con el conector de equipo",
         "goToPersonal": "Configurar conector personal"
       },
+      "accessCheck": {
+        "open": "Comprobar el acceso de una persona",
+        "title": "Comprobar el acceso de una persona",
+        "description": "Compruebe si una persona puede leer un registro de este conector y, si no, por qué.",
+        "personLabel": "Persona",
+        "personPlaceholder": "Elegir una persona",
+        "peopleLoading": "Cargando personas...",
+        "peopleFailed": "No pudimos cargar la lista de personas.",
+        "recordLabel": "ID del registro",
+        "recordHint": "Abra el registro y copie su ID.",
+        "check": "Comprobar",
+        "checking": "Comprobando...",
+        "close": "Cerrar",
+        "resultHeading": "Resultado",
+        "restrictedArea": "un área restringida",
+        "theyFallback": "Esta persona",
+        "pathLabel": "Ubicación: {{path}}",
+        "reference": "Referencia: {{ref}} (facilítela al soporte si el motivo parece incorrecto)",
+        "verdict": {
+          "granted": "{{name}} puede ver este registro.",
+          "denied": "{{name}} no puede ver este registro."
+        },
+        "reason": {
+          "granted": "Si no aparece en la búsqueda, puede que aún no esté indexado o que el conector siga sincronizando.",
+          "not_linked": "{{name}} no tiene ninguna cuenta vinculada a este conector.",
+          "no_grant": "Nada en {{container}} da acceso a {{name}}.",
+          "restricted_container": "{{container}} está limitado a otras personas.",
+          "item_restricted": "Este registro tiene su propio límite y {{name}} no está incluido.",
+          "parent_not_readable": "{{name}} no puede abrir un elemento superior que este registro necesita.",
+          "pending_rewrite": "La carpeta de este registro se está actualizando.",
+          "syncing": "El conector no ha terminado de sincronizar esta parte.",
+          "scheme_unreadable": "El conector no puede leer las reglas de acceso de esta área, por lo que está oculta para todos.",
+          "deleted_at_source": "Este registro se eliminó en el origen.",
+          "unexplained": "No podemos mostrar el motivo."
+        },
+        "next": {
+          "not_linked": "Corrija la cuenta en el origen y luego sincronice.",
+          "no_grant": "Añada a {{name}} en el origen.",
+          "restricted_container": "Pida al propietario que añada a {{name}}.",
+          "item_restricted": "Pida al propietario que añada a {{name}}.",
+          "parent_not_readable": "Comparta el elemento superior con {{name}}.",
+          "pending_rewrite": "Espere unos minutos y vuelva a comprobar.",
+          "syncing": "Espere a que termine la sincronización.",
+          "scheme_unreadable": "Corrija el permiso de la cuenta de sincronización en el origen.",
+          "deleted_at_source": "No hay nada que hacer.",
+          "unexplained": "Póngase en contacto con el soporte y facilite la referencia."
+        },
+        "errors": {
+          "failed": "No pudimos comprobarlo. Inténtelo de nuevo.",
+          "notFound": "No encontramos esa persona o ese registro en este conector.",
+          "rateLimited": "Demasiadas comprobaciones. Inténtelo de nuevo en un minuto."
+        },
+        "peopleRetry": "Reintentar",
+        "askedAbout": "Sobre el registro {{record}}"
+      },
       "access": {
         "title": "Acceso",
         "loading": "Cargando los detalles de acceso…",
