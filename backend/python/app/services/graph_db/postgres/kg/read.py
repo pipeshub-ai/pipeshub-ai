@@ -130,7 +130,7 @@ async def decide(tx: Tx, org: str, ids: list[str], access: dict[str, Any]) -> De
             to_walk(i, "no_app")
             continue
         if app not in served:
-            served[app] = await drainer.serves(tx, org, app)
+            served[app] = not (net.DISTRUSTED and await net.distrusted(tx, org, app)) and await drainer.serves(tx, org, app)
         if not served[app]:
             to_walk(i, "not_current")
         elif r["deleted"]:
@@ -189,5 +189,5 @@ async def accessible_rows(run: Callable[[Callable[[Tx], Awaitable[Any]]], Awaita
     ANSWERS.inc("kg", value=len(d.admit) + d.denied)
     ANSWERS.inc("walk", value=len(d.walk))
     if db is not None and (d.admit or d.denied):
-        net.maybe_sample(run, db, org, ids, access)
+        net.maybe_sample(run, db, org, d.admit | d.deny, access)
     return list(rows.values())

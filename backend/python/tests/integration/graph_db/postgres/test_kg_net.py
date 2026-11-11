@@ -12,7 +12,10 @@ import asyncpg
 import pytest
 
 from app.core.db import DbConfig, KernelDB
+from app.services.graph_db.postgres.kg import backfill as bf
 from app.services.graph_db.postgres.kg import bootstrap, net
+from app.services.graph_db.postgres.kg import read as kg_read
+from app.services.graph_db.postgres.kg import verify as verify_mod
 from app.services.graph_db.postgres.kg.worker import KgWorker
 from app.services.graph_db.postgres.provider import PostgresGraphProvider
 
@@ -160,8 +163,13 @@ async def test_the_sample_is_bounded_in_share_size_and_number(pg_db, monkeypatch
     assert seen == [2]                                                        # a busy process skips the sample
 
 
-async def test_the_verify_catches_a_stale_copy_and_demotes_and_leaves_a_good_one(pg_db, monkeypatch) -> None:
+@pytest.fixture
+def no_jitter(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PG_KG_VERIFY_EVERY_S", "60")
+    monkeypatch.setattr(net, "_jitter", lambda: 0.0)
+
+
+async def test_the_verify_catches_a_stale_copy_and_demotes_and_leaves_a_good_one(pg_db, no_jitter) -> None:
     p, good, stale = prov(pg_db), new_org(), new_org()
     await _enforce(p, pg_db, good)
     await _enforce(p, pg_db, stale)
@@ -170,59 +178,166 @@ async def test_the_verify_catches_a_stale_copy_and_demotes_and_leaves_a_good_one
     assert await net.verify_due(pg_db, stale, {}) == 1 and await _mode(p, stale) == "legacy"
 
 
-async def test_the_verify_is_bounded_per_pass_scheduled_stoppable_and_cut_for_a_large_connector(pg_db, monkeypatch) -> None:
-    monkeypatch.setenv("PG_KG_VERIFY_EVERY_S", "60")
+async def test_a_record_kg_holds_that_the_graph_does_not_is_caught_by_the_chunked_verify(pg_db, no_jitter) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org)
+    await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk) SELECT $1, 80000001, 3, 'ghost', 3, k.sk FROM kg.node_keys k WHERE k.org_id = $1 AND k.coll = 1 AND k.id = 'drv'", org)
+    assert await net.verify_due(pg_db, org, {}) == 1 and await _mode(p, org) == "legacy"
+
+
+async def test_the_verify_is_bounded_per_pass_scheduled_stoppable(pg_db, no_jitter, monkeypatch) -> None:
     p, org = prov(pg_db), new_org()
     await _enforce(p, pg_db, org, apps=2)                                      # three connectors
     monkeypatch.setattr(net, "VERIFY_PER_PASS", 1)
-    due: dict = {}
-    assert [await net.verify_due(pg_db, org, due) for _ in range(4)] == [1, 1, 1, 0]       # one a pass, each once, then none is due
-    assert len(due) == 3
-    due.clear()
+    states: dict = {}
+    assert [await net.verify_due(pg_db, org, states) for _ in range(4)] == [1, 1, 1, 0]       # one a pass, each once, then none is due
+    assert len(states) == 3
+    states.clear()
     stop = asyncio.Event()
     stop.set()
-    assert await net.verify_due(pg_db, org, due, stop) == 0                    # stopped: nothing is verified
+    assert await net.verify_due(pg_db, org, states, stop) == 0 and all(st.cursor is None or st.cursor.pages <= 1 for st in states.values())      # stopped: no more than the page in hand
     monkeypatch.setenv("PG_KG_VERIFY_EVERY_S", "0")
     assert await net.verify_due(pg_db, org, {}) == 0                           # never
-    monkeypatch.setenv("PG_KG_VERIFY_EVERY_S", "60")
+
+
+async def test_a_connector_too_large_for_one_pass_is_verified_over_several_from_its_cursor(pg_db, no_jitter, monkeypatch, caplog) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org, extra=12)
+    await _admin("DELETE FROM kg.records WHERE org_id = $1 AND id = 'x9'", org)                  # a stale row, found by a page late in the verify
+    monkeypatch.setattr(verify_mod, "PAGE", 3)
+    monkeypatch.setattr(net, "VERIFY_BUDGET_S", 0.0)                           # one page a pass
+    states: dict = {}
+    passes = 0
+    seen_pages: list[int] = []
+    while await _mode(p, org) == "enforce" and passes < 60:
+        await net.verify_due(pg_db, org, states)
+        passes += 1
+        if (st := states.get((org, "drv"))) and st.cursor:
+            seen_pages.append(st.cursor.pages)
+    assert await _mode(p, org) == "legacy"                                     # found at the end, after many passes
+    assert passes > 4 and seen_pages == sorted(seen_pages) and len(set(seen_pages)) > 3      # a cursor that moved forward and was kept between passes
+
+
+async def test_a_verify_that_does_not_finish_in_its_intervals_is_logged_and_raised_not_demoted(pg_db, no_jitter, monkeypatch, caplog) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org, extra=6)
+    monkeypatch.setattr(verify_mod, "PAGE", 2)
+    monkeypatch.setattr(net, "VERIFY_BUDGET_S", 0.0)
+    monkeypatch.setattr(net, "OVERDUE_INTERVALS", 0)
+    raised: list[float] = []
+    monkeypatch.setattr(net, "OVERDUE", type("G", (), {"set": staticmethod(lambda *a, value: raised.append(value))})())
+    states: dict = {}
+    with caplog.at_level("ERROR"):
+        for _ in range(3):
+            await net.verify_due(pg_db, org, states)
+    assert "has not completed a verify" in caplog.text and max(raised) >= 1
+    assert await _mode(p, org) == "enforce"                                    # being large is not a reason to demote
+
+
+async def test_a_complete_verify_sets_the_last_verified_gauge(pg_db, no_jitter, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org)
+    sets: list[tuple] = []
+    monkeypatch.setattr(net, "LAST_VERIFIED", type("G", (), {"set": staticmethod(lambda *labels, value: sets.append((labels, value)))})())
+    before = time.time()
+    assert await net.verify_due(pg_db, org, {}) == 1
+    assert [labels for labels, _ in sets] == [("drv",)] and before <= sets[0][1] <= time.time()
+    sets.clear()
     await _admin("DELETE FROM kg.records WHERE org_id = $1 AND id = 'r3'", org)
-    monkeypatch.setattr(net, "VERIFY_PER_PASS", 5)
-    monkeypatch.setattr(net, "VERIFY_TIMEOUT", "50ms")
-    real = net.verify_app
-
-    async def slow(tx, o, app) -> object:
-        await tx.fetchval("SELECT pg_sleep(1)")                                # a connector too large for the limit
-        return await real(tx, o, app)
-    monkeypatch.setattr(net, "verify_app", slow)
-    assert await net.verify_due(pg_db, org, {}) == 0                           # cut by the limit: left to the sample, not demoted, not promoted
-    assert await _enforced(pg_db, org) == 3
+    await net.verify_due(pg_db, org, {})
+    assert sets == []                                                          # a verify that found a difference is not a verified connector
 
 
-async def test_a_verify_that_fails_changes_nothing(pg_db, monkeypatch) -> None:
-    monkeypatch.setenv("PG_KG_VERIFY_EVERY_S", "60")
+async def test_the_first_verifies_are_spread_over_the_interval(pg_db, monkeypatch) -> None:
+    monkeypatch.setenv("PG_KG_VERIFY_EVERY_S", "1000")
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org, apps=2)
+    draws = iter([0.1, 0.5, 0.9])
+    monkeypatch.setattr(net, "_jitter", lambda: next(draws))
+    states: dict = {}
+    assert await net.verify_due(pg_db, org, states) == 0                       # none is due yet
+    now = time.monotonic()
+    waits = sorted(st.due - now for st in states.values())
+    assert [round(w / 100) for w in waits] == [1, 5, 9]
+
+
+async def test_a_verify_that_fails_changes_nothing(pg_db, no_jitter, monkeypatch) -> None:
     p, org = prov(pg_db), new_org()
     await _enforce(p, pg_db, org)
     await _admin("DELETE FROM kg.records WHERE org_id = $1 AND id = 'r3'", org)
 
     async def boom(*_a: object, **_k: object) -> None:
         raise RuntimeError("the database went away")
-    due: dict = {}
+    states: dict = {}
     with monkeypatch.context() as m:
-        m.setattr(net, "verify_app", boom)
-        assert await net.verify_due(pg_db, org, due) == 0
-    assert await _mode(p, org) == "enforce" and due[(org, "drv")] > time.monotonic()      # left as it is, and tried again next period
+        m.setattr(net, "verify_chunk", boom)
+        assert await net.verify_due(pg_db, org, states) == 0
+    assert await _mode(p, org) == "enforce" and states[(org, "drv")].due > time.monotonic() and states[(org, "drv")].cursor is None      # left as it is, tried again next period
 
 
-async def test_the_worker_verifies_on_its_pass_and_demotes(pg_db, monkeypatch) -> None:
-    monkeypatch.setenv("PG_KG_VERIFY_EVERY_S", "60")
+async def test_a_chunk_that_runs_past_its_limit_is_cut_and_nothing_changes(pg_db, no_jitter, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org)
+    await _admin("DELETE FROM kg.records WHERE org_id = $1 AND id = 'r3'", org)
+    monkeypatch.setattr(net, "VERIFY_TIMEOUT", "50ms")
+    real = net.verify_chunk
+
+    async def slow(tx, o, app, cur) -> bool:
+        await tx.fetchval("SELECT pg_sleep(1)")
+        return await real(tx, o, app, cur)
+    monkeypatch.setattr(net, "verify_chunk", slow)
+    assert await net.verify_due(pg_db, org, {}) == 0
+    assert await _mode(p, org) == "enforce"
+
+
+async def test_the_worker_verifies_in_a_task_of_its_own_and_demotes(pg_db, no_jitter, monkeypatch) -> None:
+    monkeypatch.setattr(net, "VERIFY_TICK_S", 0.2)
     p, org = prov(pg_db), new_org()
     await _enforce(p, pg_db, org)
     await _admin("DELETE FROM kg.records WHERE org_id = $1 AND id = 'r3'", org)
 
     async def orgs() -> list[str]:
         return [org]
-    await KgWorker(pg_db, orgs, poll_s=0.2).run_once()
-    assert await _mode(p, org) == "legacy"
+    worker = KgWorker(pg_db, orgs, poll_s=0.2)
+    worker.start()
+    try:
+        assert await _until(lambda: _is_legacy(p, org), 60)
+    finally:
+        await worker.stop()
+
+
+async def test_the_drain_goes_on_while_a_verify_is_in_progress(pg_db, no_jitter, monkeypatch) -> None:
+    monkeypatch.setattr(net, "VERIFY_TICK_S", 0.2)
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def blocked(db, o, app, cur) -> str:
+        entered.set()
+        await release.wait()
+        return "skipped"
+    monkeypatch.setattr(net, "_chunk", blocked)
+
+    async def orgs() -> list[str]:
+        return [org]
+    worker = KgWorker(pg_db, orgs, poll_s=0.2)
+    worker.start()
+    try:
+        await asyncio.wait_for(entered.wait(), 60)                              # the verify is in progress and stays so
+        with ctx(org):
+            await p.batch_upsert_nodes([{"_key": "r1", "recordName": "renamed while verifying"}], "records")
+        assert await _until(lambda: _log_empty(p, org), 60)                     # the drain took the change meanwhile
+        assert not release.is_set()
+    finally:
+        release.set()
+        await worker.stop()
+
+
+async def _log_empty(p, org: str) -> bool:
+    async def go(tx) -> int:
+        return await tx.fetchval("SELECT count(*) FROM kg.graph_changes WHERE org_id = $1", org)
+    with ctx(org):
+        return await p._q(go, None) == 0
 
 
 async def test_the_query_service_that_cannot_write_kg_asks_the_worker_to_demote(pg_db, every_check, monkeypatch) -> None:
@@ -273,3 +388,186 @@ async def test_a_demotion_notice_is_only_acted_on_for_an_org_the_worker_serves(p
     await net.demote_requested(pg_db, mine, payload)
     assert await _mode(p, org) == "legacy"
     assert net.parse_ask('["a", 1]') is None and net.parse_ask("[") is None
+
+
+# ---- a difference takes effect in the process that found it, whatever happens to the demotion ------------------------------------------------
+
+async def test_when_the_demotion_fails_and_the_notice_is_lost_the_next_check_in_the_process_uses_the_walk(pg_db, every_check, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org)
+    await _admin("UPDATE kg.records SET class_id = $2 WHERE org_id = $1 AND id = 'r2' AND coll = 3", org, await _class(org, "[[]]"))
+
+    async def fails(*_a: object, **_k: object) -> None:
+        raise RuntimeError("this role may not write kg")
+
+    async def lost(*_a: object, **_k: object) -> None:
+        return None
+    decided: list[int] = []
+    real = kg_read.decide
+
+    async def spy(*a: object, **k: object) -> object:
+        d = await real(*a, **k)
+        decided.append(len(d.admit) + d.denied)
+        return d
+    monkeypatch.setattr(bf, "demote", fails)
+    monkeypatch.setattr(net, "_ask", lost)
+    monkeypatch.setattr(kg_read, "decide", spy)
+    assert "r2" in await _ask(p, org)                                         # kg's answer: the sample sees the difference after it
+    await net.settle()
+    assert await _mode(p, org) == "enforce"                                   # nothing demoted it
+    decided.clear()
+    assert "r2" not in await _ask(p, org)                                     # and the next answer is the walk's, not kg's
+    assert decided == [0]
+
+
+async def test_a_distrust_is_lifted_when_the_mode_change_is_seen_and_the_connector_is_served_again_after_a_re_promotion(pg_db, every_check, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org)
+    await _admin("UPDATE kg.records SET class_id = $2 WHERE org_id = $1 AND id = 'r2' AND coll = 3", org, await _class(org, "[[]]"))
+    await _ask(p, org)
+    await net.settle()
+    assert (org, "drv") in net.DISTRUSTED and await _mode(p, org) == "legacy"
+    await _ask(p, org)                                                         # the mode is seen to have changed: trusted again, and (legacy) the walk answers
+    assert (org, "drv") not in net.DISTRUSTED
+    bootstrap._HELD.clear()
+    due: dict = {}
+    for _ in range(40):
+        await bootstrap.bring_to_enforce(pg_db, org, due)
+        if await _mode(p, org) == "enforce":
+            break
+    seen: list[int] = []
+    real = kg_read.decide
+
+    async def spy(*a: object, **k: object) -> object:
+        d = await real(*a, **k)
+        seen.append(len(d.admit) + d.denied)
+        return d
+    monkeypatch.setattr(kg_read, "decide", spy)
+    assert "r2" not in await _ask(p, org) and seen and seen[-1] > 0           # kg answers again, from a copy that agrees with the graph
+
+
+async def test_a_re_promotion_the_process_never_saw_as_legacy_is_recognised_by_the_new_verify(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org)
+    net.distrust(org, "drv")
+    await net._remember(pg_db, org, "drv")
+    assert net.DISTRUSTED[(org, "drv")] is not None
+    async def read(tx) -> bool:
+        return await net.distrusted(tx, org, "drv")
+    with ctx(org):
+        assert await pg_db.run(read) is True                                  # still the copy that was found different
+    await _admin("UPDATE kg.projection_state SET verified_at = now() + interval '1 hour' WHERE org_id = $1 AND app_sk <> 0", org)      # a verify since (a re-promotion)
+    with ctx(org):
+        assert await pg_db.run(read) is False and (org, "drv") not in net.DISTRUSTED
+
+
+@pytest.fixture
+async def query_db(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
+    direct = os.environ["PG_CORE_URL"]
+    monkeypatch.setenv("PG_CORE_URL", os.environ["PG_QUERY_URL"])
+    qdb = KernelDB(DbConfig.from_env("query"))
+    await qdb.start()
+    monkeypatch.setenv("PG_CORE_URL", direct)
+    yield qdb
+    await qdb.close()
+
+
+async def _marks(org: str) -> int:
+    con = await asyncpg.connect(os.environ["PG_ADMIN_URL"])
+    try:
+        return await con.fetchval("SELECT count(*) FROM kg.graph_changes WHERE org_id = $1 AND ends @> ARRAY['3:@demote']", org)
+    finally:
+        await con.close()
+
+
+async def test_a_demotion_the_worker_cannot_hear_is_still_found_in_the_change_log_on_its_next_pass(pg_db, query_db, monkeypatch, caplog) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org)
+    with caplog.at_level("INFO"):
+        await net.demote(query_db, org, ["drv"], source="sample", why="seeded")            # the query role: the demotion is refused, so it asks
+    expected = [r for r in caplog.records if "could not demote" in r.getMessage()]
+    assert len(expected) == 1 and expected[0].levelname == "INFO" and expected[0].exc_info is None      # one line, no traceback
+    assert await _mode(p, org) == "enforce" and await _marks(org) == 1         # the notice went nowhere; the request row is there
+
+    async def orgs() -> list[str]:
+        return [org]
+    worker = KgWorker(pg_db, orgs, dsn=None, poll_s=0.2)                        # no listener: a polling worker
+    await worker.run_once()
+    assert await _mode(p, org) == "legacy" and await _marks(org) == 0           # demoted from the request row, which is gone
+
+
+async def test_the_request_is_sent_once_a_hold_window_and_again_until_the_mode_changes(pg_db, query_db, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org)
+    monkeypatch.setattr(net, "HOLD_S", 0.4)
+    net._ASKED.clear()
+    await net.demote(query_db, org, ["drv"], source="sample", why="seeded")
+    await net.demote(query_db, org, ["drv"], source="sample", why="seeded again")          # a second sample hit in the same window
+    assert await _marks(org) == 1                                              # one request, not one per hit
+    await asyncio.sleep(1.2)                                                   # the asking task goes on while the connector is enforced
+    assert await _marks(org) >= 2
+    await net.shutdown()
+
+
+async def test_stop_cancels_the_samples_and_the_demotions_in_flight_and_leaves_no_task(pg_db, every_check, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org)
+    gate = asyncio.Event()
+
+    async def hang(*_a: object, **_k: object) -> object:
+        await gate.wait()
+    monkeypatch.setattr(net, "compare", hang)
+
+    async def orgs() -> list[str]:
+        return [org]
+    worker = KgWorker(pg_db, orgs, poll_s=0.2)
+    worker.start()
+    await _ask(p, org)                                                         # starts a sample that never ends
+    spawned = asyncio.get_running_loop().create_task(asyncio.sleep(60))
+    worker._demotes.add(spawned)
+    assert net._SAMPLES.get(asyncio.get_running_loop())
+    await worker.stop()
+    assert not net._SAMPLES.get(asyncio.get_running_loop()) and spawned.cancelled() and worker._verify_task.done()
+    assert not [t for t in asyncio.all_tasks() if t.get_name() in ("kg-verify", "kg-worker", "kg-demote") and not t.done()]
+
+
+async def test_the_samples_draw_their_ids_from_the_nodes_kg_decided(pg_db, every_check, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org)
+    got: list[list[str]] = []
+    real = net._sample
+
+    async def spy(run, db, o, ids, access) -> None:
+        got.append(list(ids))
+        await real(run, db, o, ids, access)
+    monkeypatch.setattr(net, "_sample", spy)
+    with ctx(org):
+        await p._kh_v3_accessible_rows("u1", org, [*IDS, *(f"nothing{i}" for i in range(40))], [], access=None, transaction=None)
+    await net.settle()
+    assert got and set(got[0]) <= set(IDS) and not any(i.startswith("nothing") for i in got[0])      # the 40 unknown ids are the walk's and are not repeated
+
+
+async def test_the_statements_of_the_chunked_verify_are_index_ranges(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org)
+    await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk) SELECT $1, 70000000 + g, 3, 'chunk-r' || g, 3, k.sk FROM generate_series(1, 12000) g, kg.node_keys k WHERE k.org_id = $1 AND k.coll = 1 AND k.id = 'drv' AND g > 0", org)
+    await _admin("INSERT INTO kg.node_keys (org_id, coll, id, sk) SELECT $1, 3, 'chunk-r' || g, 70000000 + g FROM generate_series(1, 12000) g", org)
+    await _admin("INSERT INTO graph.nodes (org_id, coll, id, doc) SELECT $1, 'records', 'chunk-r' || g, jsonb_build_object('connectorId', 'drv', 'orgId', $1::text) FROM generate_series(1, 12000) g", org)
+    await _admin("INSERT INTO kg.scope_members (org_id, principal_sk, node_sk, gtype, app_sk) SELECT $1, 1, 70000000 + g, 'USER', k.sk FROM generate_series(1, 12000) g, kg.node_keys k WHERE k.org_id = $1 AND k.coll = 1 AND k.id = 'drv'", org)
+    for state in ("fresh", "analysed"):
+        if state == "analysed":
+            await _admin("ANALYZE kg.records; ANALYZE kg.scope_members; ANALYZE kg.node_keys; ANALYZE graph.nodes")
+
+        async def go(tx) -> dict[str, str]:
+            sk = await tx.fetchval("SELECT k.sk FROM kg.node_keys k WHERE k.org_id = $1 AND k.coll = 1 AND k.id = 'drv'", org)
+            await tx.fetchval(net.CHUNK_PROFILE, "30s")
+            plans = {}
+            for name, sql, args in (("ghosts", verify_mod.GHOSTS, (org, sk, 0, 2000, "drv")), ("grants", verify_mod.GRANT_GHOSTS, (org, sk, 0, 0, "", 2000))):
+                plans[name] = "\n".join(r[0] for r in await tx.fetch("EXPLAIN (COSTS OFF) " + sql, *args))
+            return plans
+        with ctx(org):
+            plans = await pg_db.run(go, custom_plan=True)
+        for name, plan in plans.items():
+            assert "Seq Scan" not in plan, (state, name, plan)
+        assert "records_app" in plans["ghosts"] or "records_pkey" in plans["ghosts"], plans["ghosts"]
+        assert "Index Scan using scope_members" in plans["grants"] or "Index Only Scan using scope_members" in plans["grants"], plans["grants"]

@@ -49,7 +49,8 @@ class KgWorker:
         self._demotes: set[asyncio.Task] = set()
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
-        self._verify_due: dict[tuple[str, str], float] = {}  # when an enforced connector is next verified against the graph (net)
+        self._verify_states: dict[tuple[str, str], net.VerifyState] = {}      # each enforced connector's turn and verify in progress (net)
+        self._verify_task: asyncio.Task | None = None
         self._due: dict[tuple[str, str], float] = {}        # when a connector may next be taken to enforce (bootstrap)
         self.passes = 0                                    # loop iterations done (tests wait on it)
 
@@ -69,6 +70,10 @@ class KgWorker:
         for org in await self._orgs():
             if self._stop.is_set():
                 break                                      # what is left stays in the log for the next start
+            try:
+                rows += await net.demote_pending(self._db, org)      # before the drain: a request row is a change the drain would take
+            except Exception:
+                logger.exception("kg demotion requests failed for an org; retrying")
             rows += await drain_or_retry(self._db, org, page=self._page, stop=self._stop)
             if self._stop.is_set():
                 break                                      # shutting down: no new unit for the gauges
@@ -82,9 +87,6 @@ class KgWorker:
                 rows += await bootstrap.bring_to_enforce(self._db, org, self._due, self._stop)
             except Exception:
                 logger.exception("kg bootstrap failed for an org; retrying")
-            if self._stop.is_set():
-                break
-            await net.verify_due(self._db, org, self._verify_due, self._stop)
             if self._stop.is_set():
                 break
             try:
@@ -138,6 +140,18 @@ class KgWorker:
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(self._stop.wait(), self._poll)
 
+    async def _verify_loop(self) -> None:
+        """The periodic verify of the enforced connectors (``net.verify_due``), in a task of its own."""
+        while not self._stop.is_set():
+            try:
+                for org in await self._orgs():
+                    await net.verify_due(self._db, org, self._verify_states, self._stop)
+            except Exception:
+                LOOP_FAILED.inc("verify")
+                logger.exception("kg verify iteration failed; continuing")
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._stop.wait(), net.VERIFY_TICK_S)
+
     def _died(self, task: asyncio.Task) -> None:
         if not task.cancelled() and task.exception() is not None:
             logger.error("kg worker task ended", exc_info=task.exception())
@@ -150,12 +164,18 @@ class KgWorker:
                 ln.start()
         self._task = spawn_detached(self._loop(), name="kg-worker")
         self._task.add_done_callback(self._died)
+        self._verify_task = spawn_detached(self._verify_loop(), name="kg-verify")       # apart from the drain: a slow verify never holds a projection
 
     async def stop(self) -> None:
         self._stop.set()
         self._wake.set()
         for ln in self._listeners:
             await ln.stop()
+        for t in (*self._demotes, self._verify_task):
+            if t is not None:
+                t.cancel()
+        await asyncio.gather(*(t for t in (*self._demotes, self._verify_task) if t is not None), return_exceptions=True)
+        await net.shutdown()
         if self._task is not None:
             done, _ = await asyncio.wait({self._task}, timeout=STOP_TIMEOUT_S)      # a batch or a verify in flight ends by itself; past the limit it is cut
             if not done:

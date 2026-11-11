@@ -21,12 +21,19 @@ import math
 import os
 import random
 import time
+import weakref
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.core.org_context import bind
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.kg import backfill, bootstrap, drainer
-from app.services.graph_db.postgres.kg.verify import verify_app, verify_principals
+from app.services.graph_db.postgres.kg.verify import (
+    Cursor,
+    verify_chunk,
+    verify_principals,
+)
+from app.services.graph_db.postgres.kg.writers import KgWriter
 from app.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
@@ -37,20 +44,34 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 SAMPLE_ENV, EVERY_ENV = "PG_KG_SHADOW_SAMPLE", "PG_KG_VERIFY_EVERY_S"
 CHANNEL = "pipeshub_kg_demote"
-SAMPLE_IDS = 500                 # asked nodes a sample repeats (a call asks for up to tens of thousands; each node is decided on its own)
-MAX_SAMPLES = 4                  # samples in flight in one process: a busy process skips the sample rather than queue the walk
-VERIFY_PER_PASS = 2              # connectors one worker pass verifies; the rest wait for the next pass
-VERIFY_TIMEOUT = "120s"          # a verify reads every record of the connector in one snapshot; a connector too large for it is cut here (counted as an error) and tried again next period
+SAMPLE_IDS = 500                 # nodes kg decided that a sample repeats (a call decides up to tens of thousands; each node is decided on its own)
+# Samples in flight in one process. Each holds one connection of the service's pool for up to the walk's 10 s limit, and the pool is PG_POOL_MAX (10 by default): at most a quarter of it,
+# so the requests that matter keep their connections even if every sample is slow (a test holds this to DbConfig's default).
+MAX_SAMPLES = 2
+VERIFY_PER_PASS = 2              # connectors one verify pass works on; the rest wait for the next pass
+VERIFY_TICK_S = 5.0              # how often the verify task looks for a connector whose turn has come
+VERIFY_BUDGET_S = 20.0           # seconds one connector's chunks run per pass; the next pass goes on from the cursor
+VERIFY_TIMEOUT = "30s"           # one chunk of a verify (a page of a connector), in a snapshot of its own
+OVERDUE_INTERVALS = 24           # a full verify not completed within this many intervals is logged as an error and raised on the gauge
+MARKER = "3:@demote"             # the one key of a demotion request in the change log: a record that is not there, so the drain re-projects nothing for it
+# One worker serves the org (OSS runs one process), so the hold and the distrusted set are per process: a second process would hold its own.
 HOLD_S = 300.0                   # after a demotion by the net, the bootstrap leaves the connector alone this long
 
 NET = METRICS_BACKEND.counter("pipeshub_kg_net_total", "Checks of an enforced connector against the walk, by where they ran and what they found (over: kg admitted what the walk denies; under: kg denied what the walk admits; same; skipped; busy: a sample found the process at its limit; error)", ["source", "result"])
+LAST_VERIFIED = METRICS_BACKEND.gauge("pipeshub_kg_net_last_verified_seconds", "Unix time a connector's last complete verify against the graph finished (alert when it is older than a few verify intervals)", ["connector"])
+OVERDUE = METRICS_BACKEND.gauge("pipeshub_kg_net_verify_overdue", "Enforced connectors whose full verify has not completed within 24 verify intervals", ["org"])
 DEMOTED = METRICS_BACKEND.counter("pipeshub_kg_net_demoted_total", "Connectors taken back to the walk because kg differs from it", ["source"])
 
 ENFORCED = """/* pipeshub:kg.net_enforced */ SELECT k.id FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
     WHERE s.org_id = $1 AND k.coll = 1 AND s.mode = 'enforce' ORDER BY k.id"""
 
-_SAMPLES: set[asyncio.Task] = set()
-_WARNED: set[tuple[str, str]] = set()
+_SAMPLES: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, set[asyncio.Task]] = weakref.WeakKeyDictionary()     # per loop: a loop that died leaves no sample counted as in flight
+_RETRY: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Task] = weakref.WeakKeyDictionary()
+# Connectors this process has found different from the walk: (org, connector) -> when the copy was last verified (None: not known). ``read`` never answers a node of one from kg, whatever
+# happens to the demotion that follows. An entry goes when the connector is seen no longer enforced or verified again (a re-promotion), or at restart.
+DISTRUSTED: dict[tuple[str, str], str | None] = {}
+_ASKING: dict[tuple[str, str], KernelDB] = {}      # distrusted connectors whose demotion this process has asked the worker for
+_ASKED: dict[tuple[str, str], float] = {}          # when it last did, to ask once per hold window
 
 
 def _number(name: str, default: float, low: float, high: float) -> float:
@@ -81,25 +102,94 @@ def verify_every() -> float:
     return _number(EVERY_ENV, 3600.0, 0.0, 30 * 86400.0)
 
 
+# ---- distrust: what a difference does in the process that found it, at once ---------------------------------------------------------------------
+
+STATE = """/* pipeshub:kg.net_state */ SELECT s.mode, s.verified_at::text AS at FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
+    WHERE s.org_id = $1 AND k.coll = 1 AND k.id = $2"""
+
+
+def distrust(org: str, app: str) -> None:
+    """From now on this process answers no node of the connector from kg. Synchronous and first: nothing that follows (a demotion that fails, a notice nobody hears) can undo it."""
+    DISTRUSTED.setdefault((org, app), None)
+
+
+async def distrusted(tx: Tx, org: str, app: str) -> bool:
+    """Whether this process distrusts the connector. A connector seen no longer enforced, or verified again since (a re-promotion), is trusted again, as the worker's mode change says."""
+    if (org, app) not in DISTRUSTED:
+        return False
+    row = await tx.fetchrow(STATE, org, app)
+    at = DISTRUSTED[(org, app)]
+    if row is None or row["mode"] != "enforce" or (at is not None and row["at"] != at):
+        DISTRUSTED.pop((org, app), None)
+        _ASKING.pop((org, app), None)
+        return False
+    return True
+
+
+async def _remember(db: KernelDB, org: str, app: str) -> None:
+    """Note when the distrusted copy was last verified, so that a re-promotion (which verifies again) is recognised. Best effort: unknown means trusted again only when seen not enforced."""
+    async def go(tx: Tx) -> str | None:
+        row = await tx.fetchrow(STATE, org, app)
+        return row["at"] if row and row["mode"] == "enforce" else None
+    try:
+        with bind(drainer._ctx(org)):
+            at = await db.run(go)
+    except Exception:
+        return
+    if (org, app) in DISTRUSTED and at is not None:
+        DISTRUSTED[(org, app)] = at
+
+
 async def demote(db: KernelDB, org: str, apps: Iterable[str], *, source: str, why: str) -> None:
-    """Take these connectors back to the walk. A process whose role may not write kg (the query service) asks the worker instead."""
+    """Take these connectors back to the walk. This process distrusts them first. A process whose role may not write kg (the query service) asks the worker instead, by a notice and a
+    request row in the change log, and asks again each hold window until it sees the connector's mode change."""
     for app in sorted(set(apps)):
+        distrust(org, app)
         logger.error("kg connector %s of org %s goes back to the walk (%s): %s", app, org, source, why)
         DEMOTED.inc(source)
         bootstrap.hold(org, app, HOLD_S)
         try:
             await backfill.demote(db, org, app)
         except Exception:
-            logger.warning("kg could not demote %s here; asking the worker", app, exc_info=True)
+            logger.info("kg could not demote %s here (this role may not write kg); asking the worker", app)
+            _ASKING[(org, app)] = db
             await _ask(db, org, app)
+            _keep_asking()
+        await _remember(db, org, app)
 
 
-async def _ask(db: KernelDB, org: str, app: str) -> None:
+async def _ask(db: KernelDB, org: str, app: str, *, force: bool = False) -> None:
+    """A notice (fast, lost if nobody listens) and a request row in the change log (durable: the worker finds it on its next pass). Once per connector per hold window unless ``force``."""
+    now = time.monotonic()
+    if not force and _ASKED.get((org, app), 0.0) > now:
+        return
+    _ASKED[(org, app)] = now + HOLD_S
+
+    async def go(tx: Tx) -> None:
+        await tx.execute("/* pipeshub:kg.demote_ask */ SELECT pg_notify($1, $2)", CHANNEL, json.dumps([org, app]))
+        await tx.execute("/* pipeshub:kg.demote_mark */ INSERT INTO kg.graph_changes (org_id, app_id, ends) VALUES ($1, $2, ARRAY[$3]::text[])", org, app, MARKER)
     try:
         with bind(drainer._ctx(org)):
-            await db.run(lambda tx: tx.execute("/* pipeshub:kg.demote_ask */ SELECT pg_notify($1, $2)", CHANNEL, json.dumps([org, app])))
+            await db.run(go, write=True)
     except Exception:
-        logger.exception("kg could not ask for the demotion of %s", app)
+        logger.warning("kg could not ask for the demotion of %s", app, exc_info=True)
+
+
+def _keep_asking() -> None:
+    """One task per event loop that asks again every hold window for each distrusted connector still enforced, until the mode change is seen."""
+    loop = asyncio.get_running_loop()
+    if (task := _RETRY.get(loop)) is not None and not task.done():
+        return
+
+    async def again() -> None:
+        while _ASKING:
+            await asyncio.sleep(HOLD_S)
+            for (org, app), db in list(_ASKING.items()):
+                if (org, app) in DISTRUSTED:
+                    await _ask(db, org, app, force=True)
+                else:
+                    _ASKING.pop((org, app), None)
+    _RETRY[loop] = loop.create_task(again())
 
 
 def parse_ask(payload: str) -> tuple[str, str] | None:
@@ -112,7 +202,7 @@ def parse_ask(payload: str) -> tuple[str, str] | None:
 
 
 async def demote_requested(db: KernelDB, orgs: Callable[[], Awaitable[list[str]]], payload: str) -> None:
-    """The worker's side of :func:`_ask`. Only an organization the worker serves is acted on."""
+    """The worker's side of the notice. Only an organization the worker serves is acted on."""
     try:
         ask = parse_ask(payload)
         if ask is None:
@@ -125,11 +215,41 @@ async def demote_requested(db: KernelDB, orgs: Callable[[], Awaitable[list[str]]
         logger.exception("kg demotion asked for (%r) failed", payload[:200])
 
 
+async def demote_pending(db: KernelDB, org: str) -> int:
+    """The worker's side of the request rows: demote each connector one names and delete the row. Works with no listener, so a notice nobody heard is not a demotion lost."""
+    async def find(tx: Tx) -> list[Any]:
+        return list(await tx.fetch("/* pipeshub:kg.demote_find */ SELECT id, app_id FROM kg.graph_changes WHERE org_id = $1 AND ends @> ARRAY[$2]::text[] ORDER BY id", org, MARKER))
+    with bind(drainer._ctx(org)):
+        rows = await db.run(find)
+    for app in sorted({r["app_id"] for r in rows if r["app_id"]}):
+        logger.error("kg connector %s of org %s goes back to the walk (asked by another process)", app, org)
+        bootstrap.hold(org, app, HOLD_S)
+        await backfill.demote(db, org, app)
+
+    async def drop(tx: Tx) -> None:
+        await KgWriter(tx).changes_delete([r["id"] for r in rows])
+    if rows:
+        with bind(drainer._ctx(org)):
+            await db.run(drop, write=True)
+    return len({r["app_id"] for r in rows})
+
+
+async def shutdown() -> None:
+    """Cancel and await what this loop has in flight: the samples and the asking task."""
+    loop = asyncio.get_running_loop()
+    tasks = [*list(_SAMPLES.get(loop, ())), *([t] if (t := _RETRY.get(loop)) is not None else [])]
+    for t in tasks:
+        t.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    _SAMPLES.pop(loop, None)
+    _RETRY.pop(loop, None)
+
+
 # ---- the sample ------------------------------------------------------------------------------------------------------------------------------
 
 async def compare(tx: Tx, org: str, ids: list[str], access: dict[str, Any]) -> tuple[set[str], str]:
-    """In the caller's snapshot: the connectors whose answers differ between kg and the walk for the asked ids, and what the difference is (``over`` if kg admitted something the walk
-    denied, else ``under``). Only nodes kg decides itself are compared: the rest is the walk's already."""
+    """In the caller's snapshot: the connectors whose answers differ between kg and the walk for the ids (nodes kg decided), and what the difference is (``over`` if kg admitted something
+    the walk denied, else ``under``)."""
     from app.services.graph_db.postgres.kg import read
     await tx.fetchval(read.PROFILE)
     d = await read.decide(tx, org, ids, access)
@@ -154,42 +274,75 @@ async def _sample(run: Callable[[Callable[[Tx], Awaitable[Any]]], Awaitable[Any]
         await demote(db, org, apps, source="sample", why=f"kg {'admitted what the walk denies' if found == 'over' else 'denied what the walk admits'}")
 
 
-def maybe_sample(run: Callable[[Callable[[Tx], Awaitable[Any]]], Awaitable[Any]], db: KernelDB, org: str, ids: list[str], access: dict[str, Any]) -> None:
-    """Repeat a share of the reader's answers by the walk, off the caller's path (a task with the caller's context, so its org)."""
+def maybe_sample(run: Callable[[Callable[[Tx], Awaitable[Any]]], Awaitable[Any]], db: KernelDB, org: str, decided: Iterable[str], access: dict[str, Any]) -> None:
+    """Repeat a share of the reader's answers by the walk, off the caller's path (a task with the caller's context, so its org). ``decided``: the nodes kg answered itself."""
     rate = sample_rate()
     if rate <= 0 or random.random() >= rate:
         return
-    if len(_SAMPLES) >= MAX_SAMPLES:
+    loop = asyncio.get_running_loop()
+    live = _SAMPLES.setdefault(loop, set())
+    if len(live) >= MAX_SAMPLES:
         NET.inc("sample", "busy")
         return
-    task = asyncio.get_running_loop().create_task(_sample(run, db, org, random.sample(ids, min(len(ids), SAMPLE_IDS)), access))
-    _SAMPLES.add(task)
-    task.add_done_callback(_SAMPLES.discard)
+    nodes = list(decided)
+    task = loop.create_task(_sample(run, db, org, random.sample(nodes, min(len(nodes), SAMPLE_IDS)), access))
+    live.add(task)
+    task.add_done_callback(live.discard)
 
 
 async def settle() -> None:
-    """Wait for the samples in flight (tests and shutdown)."""
-    while _SAMPLES:
-        await asyncio.gather(*list(_SAMPLES), return_exceptions=True)
+    """Wait for the samples this loop has in flight (tests)."""
+    while live := _SAMPLES.get(asyncio.get_running_loop()):
+        await asyncio.gather(*list(live), return_exceptions=True)
 
 
 # ---- the periodic verify --------------------------------------------------------------------------------------------------------------------
 
-async def _verify_one(db: KernelDB, org: str, app: str) -> str:
-    """The connector against the graph in one snapshot: ``same``, ``differs``, or ``skipped`` (not served in that snapshot: a change waits in the log and kg is behind by design)."""
+ENFORCED = """/* pipeshub:kg.net_enforced */ SELECT k.id FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
+    WHERE s.org_id = $1 AND k.coll = 1 AND s.mode = 'enforce' ORDER BY k.id"""
+
+
+# The planner profile of the reader (no bitmap scans: with no statistics one can read the whole org) and the limit of one page.
+CHUNK_PROFILE = "/* pipeshub:kg.net_verify_limit */ SELECT set_config('enable_bitmapscan', 'off', true), set_config('statement_timeout', $1, true)"
+
+
+def _jitter() -> float:
+    return random.random()
+
+
+@dataclass
+class VerifyState:
+    """One connector's place in the verify: when it is next due, and a verify in progress (its cursor, and when it began)."""
+    due: float
+    cursor: Cursor | None = None
+    since: float | None = None
+    flagged: bool = False
+
+
+async def _chunk(db: KernelDB, org: str, app: str, cur: Cursor) -> str:
+    """One page of the verify in a snapshot of its own: ``skipped`` when the connector is not served in it (a change waits in the log, so kg is behind the graph by design), else ``done`` or
+    ``more``."""
     async def go(tx: Tx) -> str:
+        await tx.fetchval(CHUNK_PROFILE, VERIFY_TIMEOUT)
         if not await drainer.serves(tx, org, app):
             return "skipped"
-        await tx.fetchval("/* pipeshub:kg.net_verify_limit */ SELECT set_config('statement_timeout', $1, true)", VERIFY_TIMEOUT)
-        res = await verify_app(tx, org, app) + await verify_principals(tx, org)
-        return "same" if res.ok else "differs"
+        return "done" if await verify_chunk(tx, org, app, cur) else "more"
+    with bind(drainer._ctx(org)):
+        return await db.run(go, isolation="repeatable_read", custom_plan=True)
+
+
+async def _principals(db: KernelDB, org: str) -> bool:
+    async def go(tx: Tx) -> bool:
+        await tx.fetchval(CHUNK_PROFILE, VERIFY_TIMEOUT)
+        return (await verify_principals(tx, org)).ok
     with bind(drainer._ctx(org)):
         return await db.run(go, isolation="repeatable_read")
 
 
-async def verify_due(db: KernelDB, org: str, due: dict[tuple[str, str], float], stop: asyncio.Event | None = None) -> int:
-    """Verify the enforced connectors of ``org`` whose turn has come (``due``: when each is next verified), at most ``VERIFY_PER_PASS`` of them, the longest waiting first; a difference
-    demotes. Returns the connectors verified. Never raises: a verify that fails changes nothing and is tried again next period."""
+async def verify_due(db: KernelDB, org: str, states: dict[tuple[str, str], VerifyState], stop: asyncio.Event | None = None) -> int:
+    """Work on the enforced connectors of ``org`` whose turn has come (a verify in progress, or ``due`` passed), at most ``VERIFY_PER_PASS`` of them, each for at most ``VERIFY_BUDGET_S``
+    seconds: a page at a time, so a connector too large for one unit is verified over several passes from its cursor. A difference demotes. Returns the verifies completed. Never raises:
+    a page that fails drops that verify (it starts again next period) and changes nothing. A first due time is spread over the interval, so a start-up does not verify every connector at once."""
     every = verify_every()
     if every <= 0:
         return 0
@@ -204,20 +357,54 @@ async def verify_due(db: KernelDB, org: str, due: dict[tuple[str, str], float], 
         logger.warning("kg verify could not list the enforced connectors of an org", exc_info=True)
         return 0
     now = time.monotonic()
-    turn = sorted((a for a in apps if due.get((org, a), 0.0) <= now), key=lambda a: due.get((org, a), 0.0))[:VERIFY_PER_PASS]
-    done = 0
+    for app in apps:
+        states.setdefault((org, app), VerifyState(due=now + _jitter() * every))
+    overdue = 0
+    for app in apps:
+        st = states[(org, app)]
+        if st.since is not None and now - st.since > OVERDUE_INTERVALS * every:
+            overdue += 1
+            if not st.flagged:
+                st.flagged = True
+                logger.error("kg connector %s of org %s has not completed a verify in %d intervals", app, org, OVERDUE_INTERVALS)
+    OVERDUE.set(org, value=overdue)
+    turn = sorted((a for a in apps if states[(org, a)].cursor is not None or states[(org, a)].due <= now), key=lambda a: states[(org, a)].due)[:VERIFY_PER_PASS]
+    completed = 0
     for app in turn:
-        if stop is not None and stop.is_set():
+        st = states[(org, app)]
+        deadline = time.monotonic() + VERIFY_BUDGET_S
+        while True:
+            if st.cursor is None:
+                st.cursor, st.since = Cursor(), st.since or time.monotonic()
+            try:
+                found = await _chunk(db, org, app, st.cursor)
+            except Exception:
+                NET.inc("verify", "error")
+                logger.warning("kg verify of connector %s failed; it is left as it is and starts again next period", app, exc_info=True)
+                st.cursor, st.due = None, time.monotonic() + every
+                break
+            if found == "skipped":
+                NET.inc("verify", "skipped")
+                break
+            if found == "more":
+                if (stop is not None and stop.is_set()) or time.monotonic() >= deadline:
+                    break                                      # a page was done; the next pass goes on from the cursor
+                continue
+            ok = st.cursor.res.ok
+            try:
+                ok = ok and await _principals(db, org)
+            except Exception:
+                NET.inc("verify", "error")
+                logger.warning("kg verify of the principals failed; connector %s is left as it is", app, exc_info=True)
+                st.cursor, st.due = None, time.monotonic() + every
+                break
+            NET.inc("verify", "same" if ok else "differs")
+            if not ok:
+                logger.error("kg verify of connector %s of org %s: %s", app, org, st.cursor.res.summary())
+                await demote(db, org, [app], source="verify", why="the copy differs from the graph")
+            else:
+                LAST_VERIFIED.set(app, value=time.time())
+            st.cursor, st.since, st.flagged, st.due = None, None, False, time.monotonic() + every
+            completed += 1
             break
-        due[(org, app)] = time.monotonic() + every
-        try:
-            found = await _verify_one(db, org, app)
-        except Exception:
-            NET.inc("verify", "error")
-            logger.warning("kg verify of connector %s failed; it is left as it is", app, exc_info=True)
-            continue
-        NET.inc("verify", found)
-        if found == "differs":
-            await demote(db, org, [app], source="verify", why="the copy differs from the graph")
-        done += found != "skipped"
-    return done
+    return completed
