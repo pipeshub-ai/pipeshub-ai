@@ -207,7 +207,8 @@ async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max
     with bind(_ctx(org)):
         rounds = 0
         while (drain_rounds is None or rounds < drain_rounds) and not (stop is not None and stop.is_set()):     # until nothing is left (a round takes pages until the log is empty); None = no cap
-            if not (await drain_org(db, org, max_rows=page if drain_rounds is not None else None, stop=stop)).rows:
+            bounded = {"page": page, "max_rows": page} if drain_rounds is not None else {}      # a page commits whole: a bounded round must also take small pages
+            if not (await drain_org(db, org, stop=stop, **bounded)).rows:
                 break
             rounds += 1
         if stop is not None and stop.is_set():

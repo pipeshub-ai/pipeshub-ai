@@ -371,10 +371,12 @@ async def test_a_log_that_keeps_gaining_rows_is_waited_for_not_chased_and_the_ne
     await _world(p, quiet)
     rounds = {"n": 0}
     real_drain = bf.drain_org
+    asked: list[dict] = []
 
     async def endless(db, o, **k) -> object:
         if o != busy:
             return await real_drain(db, o, **k)
+        asked.append(k)
         rounds["n"] += 1
         with ctx(busy):
             await p.batch_upsert_nodes([{"_key": "r1", "recordName": f"changed {rounds['n']}"}], "records")        # a writer is always ahead of the drain
@@ -390,6 +392,7 @@ async def test_a_log_that_keeps_gaining_rows_is_waited_for_not_chased_and_the_ne
     out = await bf.backfill(pg_db, busy, "drv", drain_rounds=3)
     assert not out.flipped and out.reason == "pending" and out.pending > 0
     assert rounds["n"] == 3 and busy not in stamped                              # three rounds, then back: nothing was stamped meanwhile
+    assert all(k.get("page") and k.get("page") == k.get("max_rows") for k in asked), asked      # a bounded round reads small pages too: one commits whole
 
     async def orgs() -> list[str]:
         return [busy, quiet]
