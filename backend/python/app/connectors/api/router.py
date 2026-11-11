@@ -161,6 +161,7 @@ from app.connectors.services.vector_store_rebuild import (
     start_vector_store_reindex,
 )
 from app.edition_containers import ConnectorAppContainer
+from app.core.org_context import current_org_id
 from app.core.signed_url import SIGNED_URL_PURPOSE, SignedUrlHandler
 from app.models.entities import ArtifactRecord, Record, RecordType
 from app.modules.demo_data.access import is_hidden_demo_record
@@ -10448,7 +10449,7 @@ async def delete_oauth_config(
 async def _sync_interval_minutes(request: Request, connector_id: str) -> int | None:
     """How often the connector's own schedule runs, which is how soon a change at the source reaches PipesHub; None when it is not scheduled or unreadable."""
     try:
-        config = await resolve_config_service(request.app.container, request.state.user.get("orgId")).get_config(_get_config_path_for_instance(connector_id))
+        config = await resolve_config_service(request.app.container, current_org_id()).get_config(_get_config_path_for_instance(connector_id))
         sync = (config or {}).get("sync") or {}
         minutes = int((sync.get("scheduledConfig") or {}).get("intervalMinutes") or 0)
         return minutes if str(sync.get("selectedStrategy", "")).upper() == "SCHEDULED" and minutes > 0 else None
@@ -10462,7 +10463,7 @@ async def get_permission_status(
     connector_id: str, request: Request, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> dict[str, Any]:
     """Admin only. A caller who is not an admin, and a connector of another organisation, both get the 404 of a connector that is not there."""
-    org_id = request.state.user.get("orgId")
+    org_id = current_org_id()
     app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value) if is_request_admin(request) else None
     if not app or not org_id or not await request.app.state.connector_registry.belongs_to_org(app, org_id):
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This connector"))

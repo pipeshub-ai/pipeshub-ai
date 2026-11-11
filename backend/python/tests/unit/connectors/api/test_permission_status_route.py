@@ -8,6 +8,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.connectors.api import router as r
+from app.core import org_context
 
 
 def _req(role: str = "admin", *, sync: dict | None = None, belongs: bool = True) -> tuple[MagicMock, MagicMock]:
@@ -30,6 +31,12 @@ def _graph(app: dict | None) -> MagicMock:
 @pytest.fixture(autouse=True)
 def _no_store_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(r, "store_now", AsyncMock(return_value=None))
+
+
+@pytest.fixture(autouse=True)
+def _org() -> object:
+    with org_context.for_org("o1", job="test"):      # the route reads the request's org from the context, as the auth entry binds it
+        yield
 
 
 async def _call(role: str = "admin", app: dict | None = None, *, sync: dict | None = None, belongs: bool = True, monkeypatch: pytest.MonkeyPatch | None = None) -> tuple[dict, MagicMock]:
