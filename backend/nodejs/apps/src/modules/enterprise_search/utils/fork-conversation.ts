@@ -45,12 +45,55 @@ const MESSAGE_COPY_OMIT = new Set([
   'detailsHidden',
 ]);
 
-export function buildForkTitle(originalTitle?: string | null): string {
+export function buildForkTitle(
+  originalTitle?: string | null,
+  ordinal = 1,
+): string {
   const base = (originalTitle ?? '').trim() || 'Untitled';
-  const titled = `${FORK_TITLE_PREFIX}${base}`;
-  return titled.length <= FORK_TITLE_MAX_LENGTH
-    ? titled
-    : titled.slice(0, FORK_TITLE_MAX_LENGTH);
+  const suffix = ordinal > 1 ? ` (${ordinal})` : '';
+  return (
+    `${FORK_TITLE_PREFIX}${base}`.slice(
+      0,
+      FORK_TITLE_MAX_LENGTH - suffix.length,
+    ) + suffix
+  );
+}
+
+/**
+ * "Fork of X", then "Fork of X (2)", "(3)" and so on, the first number no
+ * other live fork of this chat uses, so two forks of one chat can be told
+ * apart in the list. Never fails the fork: without the list it is "Fork of X".
+ */
+export async function forkTitleFor(
+  source: Pick<ChatSessionDto, '_id' | 'title' | 'agentKey'>,
+  userId: string,
+  orgId: string,
+  repo: ConversationRepository = getConversationRepository(),
+): Promise<string> {
+  try {
+    const scope: SessionScope = source.agentKey
+      ? { kind: 'agent', agentKey: source.agentKey }
+      : { kind: 'chat' };
+    const earlier = await repo.listForksOf(scope, source._id, {
+      orgId,
+      userId,
+    });
+    const taken = new Set(earlier.map((fork) => fork.title));
+    let ordinal = 1;
+    while (
+      ordinal <= earlier.length &&
+      taken.has(buildForkTitle(source.title, ordinal))
+    ) {
+      ordinal += 1;
+    }
+    return buildForkTitle(source.title, ordinal);
+  } catch (error) {
+    logger.warn('Could not number a fork', {
+      conversationId: source._id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return buildForkTitle(source.title);
+  }
 }
 
 export function stripMessageForCopy(
@@ -293,7 +336,7 @@ export async function copySessionUpToMessage(
       orgId,
       userId,
       initiator: userId,
-      title: buildForkTitle(source.title),
+      title: await forkTitleFor(source, userId, orgId, repo),
       lastActivityAt: Date.now(),
       status: CONVERSATION_STATUS.COMPLETE,
       modelInfo: source.modelInfo,

@@ -5,7 +5,7 @@ import { useAui, useAuiState } from '@assistant-ui/react';
 import { Flex, Box, IconButton } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { ChatResponse } from './chat-response';
-import { ForkedIntoLine, ForkOriginLine } from './fork-origin-line';
+import { ForkedIntoLine, ForkOriginHeader, ForkOriginLine } from './fork-origin-line';
 import { useChatStore } from '../../store';
 import { useCompareStore } from '../../compare/compare-store';
 import { useCompareLifecycle } from '../../compare/use-compare-lifecycle';
@@ -1128,6 +1128,10 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
             </Flex>
           )}
 
+          {forkedFrom && (
+            <ForkOriginHeader origin={forkedFrom} agentId={threadAgentId} projectId={slotProjectId} />
+          )}
+
           {messagePairs.map((pair, index) => {
             const isLast = index === messagePairs.length - 1;
             const compared = isLast ? compareTurn : undefined;
@@ -1188,7 +1192,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
                 </ErrorBoundary>
 
                 {forkedFrom?.atMessageId && pair.messageId === forkedFrom.atMessageId && (
-                  <ForkOriginLine origin={forkedFrom} agentId={threadAgentId} projectId={slotProjectId} />
+                  <ForkOriginLine />
                 )}
 
                 {pair.messageId && forks?.some((f) => f.fromMessageId === pair.messageId) && (

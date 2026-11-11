@@ -316,6 +316,12 @@ export function MessageActions({
         ? await AgentsApi.forkAgentConversation(agentId, convId, messageId)
         : await ChatApi.forkConversation(convId, messageId);
       bumpConversationsVersion();
+      // The original keeps its cached copy when the user comes back, so it learns of the fork now, not on reload.
+      if (state.activeSlotId) {
+        state.updateSlot(state.activeSlotId, {
+          forks: [...(slot.forks ?? []), { conversationId: result.id, title: result.title, fromMessageId: messageId }],
+        });
+      }
       router.push(
         buildChatHref({
           agentId,

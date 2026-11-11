@@ -10,8 +10,8 @@ import type { ForkChild, ForkOrigin } from '../../types';
 
 const RULE_STYLE: React.CSSProperties = { flex: 1, height: 1, background: 'var(--slate-a5)' };
 
-/** The line a fork shows after the last message it copied, naming the chat it came from. */
-export function ForkOriginLine({
+/** Top of a fork: where it was copied from, as a link, so it is clear before any scrolling. */
+export function ForkOriginHeader({
   origin,
   agentId,
   projectId,
@@ -24,6 +24,35 @@ export function ForkOriginLine({
   return (
     <Flex
       align="center"
+      gap="1"
+      wrap="wrap"
+      data-testid="fork-origin-header"
+      style={{ color: 'var(--slate-11)', minWidth: 0 }}
+    >
+      <MaterialIcon name="subdirectory_arrow_right" size={14} color="var(--slate-11)" />
+      <Text size="2">{t('chat.forkedFrom')}</Text>
+      {origin.title === null ? (
+        <Text size="2">· {t('chat.forkOriginUnavailable')}</Text>
+      ) : (
+        <ThemeLink asChild size="2">
+          <Link
+            href={buildChatHref({ agentId, projectId, conversationId: origin.conversationId })}
+            style={{ overflowWrap: 'anywhere' }}
+          >
+            {origin.title || t('chat.untitledChat')}
+          </Link>
+        </ThemeLink>
+      )}
+    </Flex>
+  );
+}
+
+/** The line a fork shows after the last message it copied: everything above is the copy, what follows is new. */
+export function ForkOriginLine() {
+  const { t } = useTranslation();
+  return (
+    <Flex
+      align="center"
       gap="3"
       data-testid="fork-origin-line"
       style={{ color: 'var(--slate-11)', marginTop: 'var(--space-6)' }}
@@ -31,19 +60,7 @@ export function ForkOriginLine({
       <Box aria-hidden="true" style={RULE_STYLE} />
       <Flex align="center" justify="center" gap="1" wrap="wrap" style={{ minWidth: 0 }}>
         <MaterialIcon name="call_split" size={14} color="var(--slate-11)" />
-        <Text size="1">{t('chat.forkedFromHere')} ·</Text>
-        {origin.title === null ? (
-          <Text size="1">{t('chat.forkOriginUnavailable')}</Text>
-        ) : (
-          <ThemeLink asChild size="1">
-            <Link
-              href={buildChatHref({ agentId, projectId, conversationId: origin.conversationId })}
-              style={{ overflowWrap: 'anywhere' }}
-            >
-              {origin.title || t('chat.untitledChat')}
-            </Link>
-          </ThemeLink>
-        )}
+        <Text size="1">{t('chat.copiedUpToHere')}</Text>
       </Flex>
       <Box aria-hidden="true" style={RULE_STYLE} />
     </Flex>
@@ -71,7 +88,7 @@ export function ForkedIntoLine({
       <Box aria-hidden="true" style={RULE_STYLE} />
       <Flex align="center" justify="center" gap="2" wrap="wrap" style={{ minWidth: 0 }}>
         <MaterialIcon name="call_split" size={14} color="var(--slate-11)" />
-        <Text size="1">{t('chat.forkedInto')} ·</Text>
+        <Text size="1">{t('chat.forkedHere')} ·</Text>
         {forks.map((fork) => (
           <ThemeLink asChild size="1" key={fork.conversationId}>
             <Link

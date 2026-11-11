@@ -2,7 +2,7 @@ import React from 'react';
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
-import { ForkedIntoLine, ForkOriginLine } from '../fork-origin-line';
+import { ForkedIntoLine, ForkOriginHeader, ForkOriginLine } from '../fork-origin-line';
 
 afterEach(cleanup);
 
@@ -14,17 +14,17 @@ function hrefOf(link: HTMLElement) {
 
 const origin = { conversationId: 'orig-9', messageId: 'p-5', title: 'Quarterly numbers', atMessageId: 'c-2' };
 
-describe('ForkOriginLine', () => {
-  it('says the chat was forked from here and names the original as a link to it', () => {
-    render(<ForkOriginLine origin={origin} agentId={null} projectId={null} />);
+describe('ForkOriginHeader', () => {
+  it('says the chat was forked from the original and links to it', () => {
+    render(<ForkOriginHeader origin={origin} agentId={null} projectId={null} />);
 
-    expect(screen.getByText(/Forked from here/)).toBeTruthy();
+    expect(screen.getByText('Forked from')).toBeTruthy();
     const link = screen.getByRole('link', { name: 'Quarterly numbers' });
     expect(hrefOf(link)).toEqual({ path: '/chat', params: { conversationId: 'orig-9' } });
   });
 
   it('opens the original inside the same project', () => {
-    render(<ForkOriginLine origin={origin} agentId={null} projectId="proj-3" />);
+    render(<ForkOriginHeader origin={origin} agentId={null} projectId="proj-3" />);
 
     expect(hrefOf(screen.getByRole('link'))).toEqual({
       path: '/chat',
@@ -33,7 +33,7 @@ describe('ForkOriginLine', () => {
   });
 
   it('opens the original inside the same agent, ahead of a project', () => {
-    render(<ForkOriginLine origin={origin} agentId="agent-7" projectId="proj-3" />);
+    render(<ForkOriginHeader origin={origin} agentId="agent-7" projectId="proj-3" />);
 
     expect(hrefOf(screen.getByRole('link'))).toEqual({
       path: '/chat',
@@ -42,16 +42,28 @@ describe('ForkOriginLine', () => {
   });
 
   it('gives no link, and says so, when the original cannot be opened', () => {
-    render(<ForkOriginLine origin={{ ...origin, title: null }} agentId={null} projectId={null} />);
+    render(<ForkOriginHeader origin={{ ...origin, title: null }} agentId={null} projectId={null} />);
 
     expect(screen.queryByRole('link')).toBeNull();
-    expect(screen.getByText('the original chat is no longer available')).toBeTruthy();
+    expect(screen.getByText(/the original chat is no longer available/)).toBeTruthy();
   });
 
   it('still links to an original that has no title', () => {
-    render(<ForkOriginLine origin={{ ...origin, title: '' }} agentId={null} projectId={null} />);
+    render(<ForkOriginHeader origin={{ ...origin, title: '' }} agentId={null} projectId={null} />);
 
-    expect(hrefOf(screen.getByRole('link'))).toEqual({ path: '/chat', params: { conversationId: 'orig-9' } });
+    expect(hrefOf(screen.getByRole('link', { name: 'Untitled chat' }))).toEqual({
+      path: '/chat',
+      params: { conversationId: 'orig-9' },
+    });
+  });
+});
+
+describe('ForkOriginLine', () => {
+  it('marks where the copy ends and the new messages begin, with no link', () => {
+    render(<ForkOriginLine />);
+
+    expect(screen.getByText('Copied up to here · new messages start below')).toBeTruthy();
+    expect(screen.queryByRole('link')).toBeNull();
   });
 });
 
@@ -64,7 +76,7 @@ describe('ForkedIntoLine', () => {
   it('says the chat was forked into others and links to each fork', () => {
     render(<ForkedIntoLine forks={forks} agentId={null} projectId={null} />);
 
-    expect(screen.getByText(/Forked into/)).toBeTruthy();
+    expect(screen.getByText(/Forked here/)).toBeTruthy();
     const links = screen.getAllByRole('link');
     expect(links.map((l) => hrefOf(l))).toEqual([
       { path: '/chat', params: { conversationId: 'f-1' } },

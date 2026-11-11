@@ -8,6 +8,7 @@ import { ProjectService } from '../../../../src/modules/projects/services/projec
 import { ForbiddenError, NotFoundError, InternalServerError } from '../../../../src/libs/errors/http.errors'
 import {
   buildForkTitle,
+  forkTitleFor,
   FORK_TITLE_MAX_LENGTH,
   FORK_TITLE_PREFIX,
   stripMessageForCopy,
@@ -671,5 +672,56 @@ describe('resolveForks', () => {
   it('does not fail the caller when the lookup breaks', async () => {
     const listForksOf = sinon.stub().rejects(new Error('db down'))
     expect(await resolveForks(session, 'u1', { listForksOf } as never)).to.deep.equal([])
+  })
+})
+
+describe('fork titles', () => {
+  const source = { _id: 'c1', title: 'Refund policy' }
+  const withTitles = (...titles: string[]) =>
+    ({ listForksOf: sinon.stub().resolves(titles.map((title, i) => ({ _id: `f${i}`, title }))) }) as never
+
+  it('numbers the second and later forks of one chat', () => {
+    expect(buildForkTitle('Refund policy', 1)).to.equal('Fork of Refund policy')
+    expect(buildForkTitle('Refund policy', 2)).to.equal('Fork of Refund policy (2)')
+    expect(buildForkTitle('Refund policy', 10)).to.equal('Fork of Refund policy (10)')
+  })
+
+  it('keeps the number when a long title is cut', () => {
+    const titled = buildForkTitle('x'.repeat(300), 3)
+    expect(titled.length).to.equal(FORK_TITLE_MAX_LENGTH)
+    expect(titled.endsWith(' (3)')).to.equal(true)
+  })
+
+  it('leaves the first fork unnumbered', async () => {
+    expect(await forkTitleFor(source, 'u1', 'o1', withTitles())).to.equal('Fork of Refund policy')
+  })
+
+  it('numbers the next fork after the ones that exist', async () => {
+    expect(await forkTitleFor(source, 'u1', 'o1', withTitles('Fork of Refund policy'))).to.equal('Fork of Refund policy (2)')
+    expect(
+      await forkTitleFor(source, 'u1', 'o1', withTitles('Fork of Refund policy', 'Fork of Refund policy (2)')),
+    ).to.equal('Fork of Refund policy (3)')
+  })
+
+  it('reuses a number freed by a deleted fork instead of repeating a live one', async () => {
+    expect(await forkTitleFor(source, 'u1', 'o1', withTitles('Fork of Refund policy (2)'))).to.equal('Fork of Refund policy')
+    expect(
+      await forkTitleFor(source, 'u1', 'o1', withTitles('Fork of Refund policy', 'Fork of Refund policy (3)')),
+    ).to.equal('Fork of Refund policy (2)')
+  })
+
+  it('ignores forks the user renamed', async () => {
+    expect(await forkTitleFor(source, 'u1', 'o1', withTitles('EU only'))).to.equal('Fork of Refund policy')
+  })
+
+  it("asks for the agent scope on an agent chat, and only for the caller's own forks", async () => {
+    const listForksOf = sinon.stub().resolves([])
+    await forkTitleFor({ ...source, agentKey: 'a1' }, 'u1', 'o1', { listForksOf } as never)
+    expect(listForksOf.firstCall.args).to.deep.equal([{ kind: 'agent', agentKey: 'a1' }, 'c1', { orgId: 'o1', userId: 'u1' }])
+  })
+
+  it('still names the fork when the list cannot be read', async () => {
+    const repo = { listForksOf: sinon.stub().rejects(new Error('db down')) } as never
+    expect(await forkTitleFor(source, 'u1', 'o1', repo)).to.equal('Fork of Refund policy')
   })
 })

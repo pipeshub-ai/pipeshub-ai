@@ -858,7 +858,7 @@ describe('MessageList — a forked chat', () => {
     expect(copiedRow.contains(lines[0])).toBe(true);
   });
 
-  it('links to the original chat', () => {
+  it('links to the original chat from the top of the fork', () => {
     thread.messages = withIds;
     openConversation('fork-1', { forkedFrom: origin });
 
@@ -878,6 +878,36 @@ describe('MessageList — a forked chat', () => {
       path: '/chat',
       params: { agentId: 'agent-7', conversationId: 'orig-9' },
     });
+  });
+
+  it('shows where the fork came from at the very top, before the first message', () => {
+    thread.messages = withIds;
+    openConversation('fork-1', { forkedFrom: origin });
+
+    render(<MessageList />);
+
+    const header = screen.getByTestId('fork-origin-header');
+    const first = screen.getByLabelText('What is our refund policy?');
+    expect(header.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('shows the header on a fork made before the position was recorded', () => {
+    thread.messages = withIds;
+    openConversation('fork-1', { forkedFrom: { ...origin, atMessageId: undefined } });
+
+    render(<MessageList />);
+
+    expect(screen.getByTestId('fork-origin-header')).toBeTruthy();
+    expect(screen.queryByTestId('fork-origin-line')).toBeNull();
+  });
+
+  it('shows no header on a chat that is not a fork', () => {
+    thread.messages = withIds;
+    openConversation('conv-1');
+
+    render(<MessageList />);
+
+    expect(screen.queryByTestId('fork-origin-header')).toBeNull();
   });
 
   it('shows no line on a chat that is not a fork', () => {
