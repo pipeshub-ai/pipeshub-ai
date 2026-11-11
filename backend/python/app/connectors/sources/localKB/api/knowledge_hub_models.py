@@ -83,6 +83,8 @@ class NodeItem(BaseModel):
     recordGroupType: Optional[str] = Field(None, description="Record group type (only when nodeType is recordGroup, e.g. SLACK_CHANNEL, CONFLUENCE_SPACES)")
     indexingStatus: Optional[str] = Field(None, description="Indexing status (only when nodeType is record)")
     reason: Optional[str] = Field(None, description="Reason for current indexing status (e.g. failure reason)")
+    embedDone: Optional[int] = Field(None, description="Vector points written so far (one per chunk or image); set only while indexingStatus is IN_PROGRESS and the record is embedding")
+    embedTotal: Optional[int] = Field(None, description="Distinct vector points the record needs (one per chunk or image); set only while indexingStatus is IN_PROGRESS and the record is embedding")
     createdAt: int = Field(..., description="Creation timestamp (epoch ms)")
     updatedAt: int = Field(..., description="Update timestamp (epoch ms)")
     sizeInBytes: Optional[int] = Field(None, description="File size in bytes (only for file records)")

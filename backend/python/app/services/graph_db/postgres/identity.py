@@ -135,6 +135,15 @@ class IdentityMixin(PgBase):
         rows = await self._id_rows("/* pipeshub:graph.principals_by_email */ SELECT coll, node_id, doc FROM graph.principals_by_email($1::text[], $2::text[])", [colls, emails], transaction)
         return rows if len(rows) < _PRINCIPALS_PAGE else None
 
+    async def _by_external(self, coll: str, connector_id: str, external_id: str, transaction: str | None) -> list:
+        """The group, record group or role (``coll``) of the connector with this external id: the vetted read of graph_0008, or the statement for a value out of its bounds."""
+        org = current_org_id()
+        if isinstance(connector_id, str) and isinstance(external_id, str) and 0 < len(connector_id) <= 200 and 0 < len(external_id) <= 2000:
+            return await self._id_rows("/* pipeshub:graph.node_by_external */ SELECT node_id, doc FROM graph.node_by_external($1, $2, $3)", [coll, connector_id, external_id], transaction)
+        key = "externalRoleId" if coll == "roles" else "externalGroupId"
+        return await self._id_rows("/* pipeshub:graph.node_by_external_plain */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND doc->>$3 = $4 AND doc->>'connectorId' = $5 LIMIT 1",
+                                   [org, coll, key, external_id, connector_id], transaction)
+
     async def _enrich_created_by(self, entities: list[dict], transaction: str | None = None) -> None:
         """createdByUser (graph id, userId, name, email) from the createdBy graph keys, one query for all of them."""
         keys = list({e["createdBy"] for e in entities if e and e.get("createdBy") and e["createdBy"] != "system"})
@@ -461,8 +470,7 @@ class IdentityMixin(PgBase):
     # ---- groups and roles ----------------------------------------------------------------------------------------
     @_soft(None, flag=True)
     async def get_user_group_by_external_id(self, connector_id: str, external_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> AppUserGroup | None:
-        rows = await self._id_rows("""/* pipeshub:graph.get_user_group_by_external_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'groups'
-            AND doc->>'externalGroupId' = $2 AND doc->>'connectorId' = $3 LIMIT 1""", [current_org_id(), external_id, connector_id], transaction)
+        rows = await self._by_external("groups", connector_id, external_id, transaction)
         return AppUserGroup.from_arango_base_user_group(_arango(_doc(rows[0]["doc"]), "groups")) if rows else None
 
     @_soft(list, flag=True)
@@ -495,8 +503,7 @@ class IdentityMixin(PgBase):
 
     @_soft(None, flag=True)
     async def get_app_role_by_external_id(self, connector_id: str, external_id: str, transaction: str | None = None, *, raise_on_error: bool = False) -> AppRole | None:
-        rows = await self._id_rows("""/* pipeshub:graph.get_app_role_by_external_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'roles'
-            AND doc->>'externalRoleId' = $2 AND doc->>'connectorId' = $3 LIMIT 1""", [current_org_id(), external_id, connector_id], transaction)
+        rows = await self._by_external("roles", connector_id, external_id, transaction)
         return AppRole.from_arango_base_role(_arango(_doc(rows[0]["doc"]), "roles")) if rows else None
 
     async def batch_upsert_user_groups(self, user_groups: list, transaction: str | None = None) -> None:

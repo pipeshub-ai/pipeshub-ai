@@ -237,6 +237,10 @@ the auth middleware bound.
   `exc` may be None for a failure with no exception (an OAuth callback that answers a redirect); `error_class` is then required
   (TypeError otherwise), and the line has no `error_type`, `error_message`, `cause_type` or stack. An `HTTPException` raised
   anywhere below is handed over by the exception handler, which then calls the handler registered before it.
+- Ids: `bind_request_log_fields(request, toolset_id=…)` puts them on the route's lines and on this one. A router binds its path
+  parameters with `dependencies=[Depends(path_log_fields(instance_id="toolset_id"))]` (an async dependency: a sync one runs in
+  a thread, and the route's own lines would lose the binding). A route marks the `HTTPException` it raises, not its cause, then
+  raises it `from` the cause. `add_request_log_fields(request, oauth_error=…)` adds a bounded event field to this line only.
 - `cause_type` is the type name of the innermost cause (`__cause__`, else `__context__` unless suppressed; a group counts as its
   first leaf), on a failure line whose exception has a chain; it is a type name only, so it stays with
   `include_error_text=False`. For `HTTPException from MCPOAuthError from httpx.ConnectError` the line has
@@ -380,13 +384,22 @@ the batch is launched before the calls are dispatched.
 | `tool.blocked` | WARNING, once per streak | `tool_path`, `consecutive_failures` |
 | `mcp.connect.end` | success DEBUG, failure INFO | `mcp_server_id`, `transport`, `mode`, `protocol_version`, `outcome`, `error_class`, `mcp_reason`, `status`, `error_type`, `cause_type` (the innermost cause's type), `duration_ms` |
 | `mcp.retry` | WARNING; `reason=renegotiate` INFO | `mcp_server_id`, `op` (connect, list, call), `reason` (token_refresh, resend, relist, renegotiate), `error_type` |
-| `mcp.discover.end` | a failure at its class's level; `reason=no_attached_tools` WARNING | `mcp_server_id`, `outcome`, `error_class`, `mcp_reason`, `error_type`, `source`, `duration_ms` |
+| `mcp.discover.end` | a failure at its class's level, INFO for a sign-in failure with `source=listing`; skipped (`reason=no_attached_tools`, `listing_deadline`) WARNING | `mcp_server_id`, `outcome`, `error_class`, `mcp_reason`, `error_type`, `source` (turn, listing), `reason` (when skipped), `duration_ms` |
 | `mcp.result.schema_mismatch` | WARNING (the result is kept) | `error_type` |
 | `mcp.redirect_refused` | WARNING (the call fails with a blocked-URL error) | `mcp_server_id`, `target_host` |
 | `mcp.session.ended` | WARNING, when a closed connection had a recorded cause | `mcp_server_id`, `error_type` |
 | `mcp.load.end` | INFO, once per turn | `servers`, `servers_loaded`, `tools_listed`, `failed` |
 | `openapi.retry` | WARNING | `status`, `reason` |
 | `tool_approval.run_failed` | DEBUG in practice: the executor already logged it | `error_class`, `error_type` |
+| `mcp.route.failed`, `toolset.route.failed` | the failure's class's level | `op` (the step), `error_class`, `error_type`, `error_message` (our own errors only; not for a provider or factory call), the bound ids |
+
+- **Routes** (`api/routes/mcp_servers.py`, `toolsets.py`, `api_toolsets.py`): a request's failure is on its `http.request.end`, with
+  `mcp_server_id`, `toolset_id` or `agent_id`, `reason`, and no server or provider text. `*.route.failed` is only for a step the route
+  swallows and goes on without (counting a toolset's users, cancelling a refresh task). An MCP listing writes one
+  `mcp.discover.end source=listing` per server it couldn't list (INFO when it only needs a sign-in); `source=turn` is a chat
+  turn's. `toolset.route.failed op=load_instances` also appears on agent chat requests (`get_authenticated_toolsets`). An OAuth
+  callback's failure is on the line with `outcome=failure` and the body's `error` code as `reason`; a provider's `error=` is
+  `reason=provider_error` with `oauth_error` (a code RFC 6749 or OpenID Connect defines, else `other`) and is never ERROR.
 
 - Every tool call has exactly one `tool_call.end` at INFO or above, whatever the exit: run, raised, denied, blocked, malformed,
   duplicate, skipped by Stop before it ran, or a parked call once its card is settled. A card never answered leaves only the DEBUG line.

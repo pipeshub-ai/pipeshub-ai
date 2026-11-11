@@ -736,6 +736,8 @@
     "indexingStatus": {
       "completed": "已完成",
       "inProgress": "进行中",
+      "embeddingProgress_one": "正在嵌入 {{done, number}} / {{total, number}} 个分块",
+      "embeddingProgress_other": "正在嵌入 {{done, number}} / {{total, number}} 个分块",
       "failed": "失败",
       "fileTypeNotSupported": "不支持的文件类型",
       "notStarted": "未开始",

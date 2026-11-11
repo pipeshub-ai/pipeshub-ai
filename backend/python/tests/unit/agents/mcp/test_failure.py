@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import httpx
@@ -20,10 +21,12 @@ from app.agents.mcp.errors import (
 from app.agents.mcp.failure import (
     MCPFailureReason,
     classify_mcp_failure,
+    log_discover_end,
     mcp_error_class,
 )
 from app.agents.mcp.oauth_client import MCPOAuthError
 from app.agents.mcp.token_refresh import MCPTokenRefreshError
+from app.utils.logger import log_record_fields
 from tests.unit.agents.mcp.refresh_failures import (
     lock_contention_error,
     token_endpoint_error,
@@ -174,3 +177,22 @@ class TestTheLogErrorClass:
 
     def test_the_callers_reason_is_used_when_given(self) -> None:
         assert mcp_error_class(RuntimeError("?"), MCPFailureReason.TIMEOUT) == "timeout"
+
+
+def test_log_discover_end_names_its_source_and_takes_a_level(caplog: pytest.LogCaptureFixture) -> None:
+    log = logging.getLogger("app.test.discover")
+    caplog.set_level(logging.DEBUG, logger=log.name)
+
+    log_discover_end(log, "mcp-1", MCPConnectionError("down"), source="listing", mcp_reason="unreachable")
+    log_discover_end(log, "mcp-2", None, source="listing", reason="listing_deadline")
+    log_discover_end(log, "mcp-3", MCPOAuthError("x", error_code="invalid_grant"), source="listing", level=logging.INFO)
+
+    lines = [(r.levelno, log_record_fields(r)) for r in caplog.records]
+    assert [(level, f["mcp_server_id"], f["source"], f["outcome"], f.get("error_class"), f.get("reason"))
+            for level, f in lines] == [
+        (logging.WARNING, "mcp-1", "listing", "failure", "unavailable", None),
+        (logging.WARNING, "mcp-2", "listing", "skipped", None, "listing_deadline"),
+        (logging.INFO, "mcp-3", "listing", "failure", "auth_expired", None),
+    ]
+    assert all(r.getMessage() == "mcp.discover.end" and "error_message" not in log_record_fields(r)
+               for r in caplog.records)

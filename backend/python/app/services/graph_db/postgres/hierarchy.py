@@ -152,8 +152,12 @@ class HierarchyMixin(PgBase):
         return bool(n)
 
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str, transaction: str | None = None) -> RecordGroup | None:
-        d = await self._one("""/* pipeshub:graph.get_record_group_by_external_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'recordGroups'
-            AND doc->>'connectorId' = $2 AND doc->>'externalGroupId' = $3 LIMIT 1""", current_org_id(), connector_id, external_id, transaction=transaction)
+        org = current_org_id()
+        if isinstance(connector_id, str) and isinstance(external_id, str) and 0 < len(connector_id) <= 200 and 0 < len(external_id) <= 2000:      # the vetted read of graph_0008
+            d = await self._one("/* pipeshub:graph.node_by_external */ SELECT node_id, doc FROM graph.node_by_external('recordGroups', $1, $2)", connector_id, external_id, transaction=transaction)
+        else:
+            d = await self._one("""/* pipeshub:graph.get_record_group_by_external_id */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'recordGroups'
+                AND doc->>'connectorId' = $2 AND doc->>'externalGroupId' = $3 LIMIT 1""", org, connector_id, external_id, transaction=transaction)
         return RecordGroup.from_arango_base_record_group(_arango(d, "recordGroups")) if d else None
 
     async def batch_upsert_record_groups(

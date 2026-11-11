@@ -66,6 +66,7 @@ from app.modules.indexing.recovery_budget import (
     recovery_exhausted,
     recovery_tracking_id,
 )
+from app.modules.indexing.scope_sweep_loop import run_scope_sweep_loop
 from app.modules.indexing.vector_membership_backfill import (
     run_vector_membership_backfill_loop,
 )
@@ -2676,6 +2677,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_named_entity_sweep_loop(app_container, graph_provider),
             worker_loop,
         )
+        app.state.scope_sweep_future = asyncio.run_coroutine_threadsafe(
+            run_scope_sweep_loop(app_container, graph_provider, _all_org_ids),
+            worker_loop,
+        )
     else:
         app.state.recovery_task = spawn_detached(
             run_stale_recovery_loop(app_container, graph_provider)
@@ -2691,6 +2696,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         app.state.named_entity_sweep_task = spawn_detached(
             run_named_entity_sweep_loop(app_container, graph_provider)
+        )
+        app.state.scope_sweep_task = spawn_detached(
+            run_scope_sweep_loop(app_container, graph_provider, _all_org_ids)
         )
 
     # On every store, not only Neo4j: on the loop records are indexed on, beside the
@@ -2751,6 +2759,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
         except Exception as e:
             logger.error(f"❌ Error during recovery future shutdown: {str(e)}")
+
+    scope_sweep_task = getattr(app.state, "scope_sweep_task", None)
+    if scope_sweep_task:
+        if not scope_sweep_task.done():
+            scope_sweep_task.cancel()
+        try:
+            await scope_sweep_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Error during scope sweep shutdown: {str(e)}")
+
+    scope_sweep_future = getattr(app.state, "scope_sweep_future", None)
+    if scope_sweep_future:
+        if not scope_sweep_future.done():
+            scope_sweep_future.cancel()
+        try:
+            await asyncio.wrap_future(scope_sweep_future)
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        except Exception as e:
+            logger.error(f"Error during scope sweep future shutdown: {str(e)}")
 
     backfill_task = getattr(app.state, "backfill_task", None)
     if backfill_task:

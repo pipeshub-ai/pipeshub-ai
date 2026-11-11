@@ -10,7 +10,8 @@ from its first attempt to ``COMPLETED`` or to the dead letter.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+import math
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import pytest
@@ -27,9 +28,11 @@ from app.modules.indexing.record_progress import (
     StallHistory,
     begin_progress,
     carried_counters,
+    current_progress,
     end_progress,
 )
 from tests.unit.modules.transformers.test_vectorstore_resume import (  # noqa: F401 - fixtures
+    BATCH,
     RECORD,
     Chain,
     Cut,
@@ -39,16 +42,48 @@ from tests.unit.modules.transformers.test_vectorstore_resume import (  # noqa: F
     _json_bytes,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 DELIVERY = "d1"
 
 
-class SlowEmbedder(Embedder):
-    """Takes ``delay`` per batch; can stop answering after some batches of each attempt."""
+class ChainClock:
+    """The clock of ``RecordProgress`` in tests that assert on the chain's embedding time.
 
-    def __init__(self, delay: float = 0.0) -> None:
+    It moves only by what ``SlowEmbedder`` says each batch took, so the time recorded on the node, and
+    whether the ceiling is reached, do not depend on how busy the host is. It starts at the loop's time,
+    so a stall deadline computed from it is never earlier than the real budget, rounded up to a whole
+    second so that the times it measures are exact.
+    """
+
+    def __init__(self) -> None:
+        self.now = float(math.ceil(asyncio.get_running_loop().time()))
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _run_out_the_budget() -> None:
+    """The consumer's budget expires now, as a cap that ran out during this batch would."""
+    progress = current_progress()
+    assert progress is not None and progress.budget is not None
+    progress.budget.reschedule(asyncio.get_running_loop().time())
+
+
+class SlowEmbedder(Embedder):
+    """Takes ``delay`` per batch; can stop answering, or run out the attempt's budget, after some batches of each attempt.
+
+    With a ``clock`` the delay is added to that clock instead of slept.
+    """
+
+    def __init__(self, delay: float = 0.0, clock: ChainClock | None = None) -> None:
         super().__init__()
         self.delay = delay
+        self.clock = clock
         self.hang_after: int | None = None
+        # Where a cap cuts an attempt, in batches rather than seconds, so a busy host cannot move the cut.
+        self.budget_after: int | None = None
         self.fail_first_with: BaseException | None = None
         self._in_attempt = 0
 
@@ -61,7 +96,13 @@ class SlowEmbedder(Embedder):
             raise error
         if self.hang_after is not None and self._in_attempt >= self.hang_after:
             await asyncio.sleep(3600)
-        await asyncio.sleep(self.delay)
+        if self.budget_after is not None and self._in_attempt >= self.budget_after:
+            _run_out_the_budget()
+            await asyncio.sleep(3600)
+        if self.clock is None:
+            await asyncio.sleep(self.delay)
+        else:
+            self.clock.now += self.delay
         self._in_attempt += 1
         return await super().aembed_documents(texts)
 
@@ -84,8 +125,10 @@ class Consumer:
 
     def __init__(
         self, chain: Chain, *, cap: float, floor: float, ceiling: float = 21_600.0, max_counted: int = 3,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self.chain, self.cap, self.floor, self.ceiling, self.max_counted = chain, cap, floor, ceiling, max_counted
+        self.clock = clock
         self.counted = 0
         self.uncounted = 0
         self.attempts = 0
@@ -96,7 +139,7 @@ class Consumer:
         seconds, uncounted = carried_counters(marker, DELIVERY)
         p = RecordProgress(
             floor_seconds=self.floor, ceiling_seconds=self.floor, record_ceiling_seconds=self.ceiling,
-            history=StallHistory(),
+            history=StallHistory(), **({} if self.clock is None else {"clock": self.clock}),
         )
         p.bind(
             record_id=RECORD, delivery_id=DELIVERY, prior_seconds=seconds, prior_uncounted=uncounted or 0,
@@ -129,29 +172,35 @@ class Consumer:
                 end_progress()
 
 
-async def _chain(items: int, delay: float = 0.0) -> Chain:
+async def _chain(items: int, delay: float = 0.0, *, budget_after: int | None = None, clock: ChainClock | None = None) -> Chain:
     chain = Chain(items)
-    chain.embedder = SlowEmbedder(delay)
+    chain.embedder = SlowEmbedder(delay, clock)
+    chain.embedder.budget_after = budget_after
     return await chain.start()
+
+
+#: A cap that never expires on its own: tests that need a cut make one with ``budget_after``.
+LONG_CAP = 60.0
 
 
 @pytest.mark.asyncio
 class TestARecordThatMakesProgress:
-    @pytest.mark.timeout(120)  # 18 s idle on four cores; a loaded runner must not hit the 30 s default
+    @pytest.mark.timeout(120)  # 2 s idle; parsing and building 1,200 rows took 35 s at a 3% CPU share
     async def test_a_1200_row_file_finishes_within_a_short_budget_without_dead_lettering_or_embedding_twice(self) -> None:
         # Kills: a counted cut (dead letter after 3 short budgets); a resume that embeds a batch again;
         # a stall limit that cuts a record that keeps finishing batches.
         chain = Chain(content=_json_bytes(1200))
-        chain.embedder = SlowEmbedder(0.25)
+        chain.embedder = SlowEmbedder(0.02)
+        chain.embedder.budget_after = 5  # each budget has room for five batches
         await chain.start()
-        # Long enough that a busy runner still finishes a batch in every attempt: one that finishes none is rightly counted.
-        consumer = Consumer(chain, cap=4.0, floor=2.0)
+        consumer = Consumer(chain, cap=LONG_CAP, floor=2.0)
 
         assert await consumer.run() == "completed"
 
         wanted = await chain.wanted_ids()
         assert consumer.counted == 0
-        assert consumer.uncounted >= 3  # a 15 s embed in 4 s budgets
+        # One cut per five batches; a stall cut in between would add one.
+        assert consumer.uncounted == math.ceil(_batches(len(wanted)) / 5) - 1
         assert chain.parse_calls == 1
         assert chain.ids() == wanted
         # Every point was embedded exactly once: the batch in flight at a cut never finished.
@@ -161,8 +210,9 @@ class TestARecordThatMakesProgress:
 
     async def test_the_embedding_time_of_the_chain_accumulates_on_the_node_across_cuts(self) -> None:
         # Kills: a clock kept in the process or in a message, which a restart would lose.
-        chain = await _chain(300, 0.1)
-        consumer = Consumer(chain, cap=0.8, floor=0.5)
+        clock = ChainClock()
+        chain = await _chain(300, 0.25, budget_after=3, clock=clock)
+        consumer = Consumer(chain, cap=LONG_CAP, floor=LONG_CAP, clock=clock)
         cuts: list[float] = []
         original = consumer.progress
 
@@ -173,34 +223,32 @@ class TestARecordThatMakesProgress:
         consumer.progress = watch  # type: ignore[method-assign]
         assert await consumer.run() == "completed"
         assert consumer.uncounted >= 2
-        assert cuts == sorted(cuts) and cuts[-1] > cuts[1] > 0
+        # Each cut adds its three batches of 0.25 s to what the node already had.
+        assert cuts == [0.75 * n for n in range(consumer.attempts)]
 
     async def test_a_chain_that_keeps_making_progress_ends_at_the_ceiling_and_dead_letters_as_before(self) -> None:
         # Kills: no ceiling, which would let a chain whose points keep vanishing requeue for ever.
-        # Budgets long enough that the first attempt of a cold test process still finishes a batch (one that
-        # finishes none is rightly counted), and a chain long enough not to finish before the ceiling.
-        chain = await _chain(2400, 0.05)
-        consumer = Consumer(chain, cap=0.8, floor=0.6, ceiling=2.8)
+        # Every attempt embeds two batches of 1 s: the chain has 2 s, then 4 s, then 6 s > 5 s.
+        clock = ChainClock()
+        chain = await _chain(300, 1.0, budget_after=2, clock=clock)
+        consumer = Consumer(chain, cap=LONG_CAP, floor=LONG_CAP, ceiling=5.0, clock=clock)
         assert await consumer.run() == "dead-lettered"
-        assert consumer.counted == 3
-        assert consumer.uncounted >= 2
-        assert chain.graph.node[EMBED_SECONDS] >= 0.0
+        assert (consumer.counted, consumer.uncounted, consumer.attempts) == (3, 2, 5)
+        assert chain.graph.node[EMBED_SECONDS] == 4.0  # a counted cut writes nothing
 
-    @pytest.mark.timeout(90)
     async def test_the_ceiling_stays_on_the_node_through_a_restart_of_the_process(self) -> None:
         # Kills: a ceiling held in memory. A new consumer object, as after a restart or a stale
         # recovery, has only the node. Its ceiling is the time the node already records, so its
-        # first productive cut is counted only if it reads that time from the node. How the first
-        # consumer's chain ended (at the ceiling, or a cut that finished no batch on a slow
-        # runner) does not matter.
-        chain = await _chain(2400, 0.125)
-        first = Consumer(chain, cap=3.75, floor=2.5, ceiling=6.25, max_counted=1)
+        # first productive cut is counted only if it reads that time from the node.
+        clock = ChainClock()
+        chain = await _chain(300, 1.0, budget_after=2, clock=clock)
+        first = Consumer(chain, cap=LONG_CAP, floor=LONG_CAP, ceiling=5.0, max_counted=1, clock=clock)
         assert await first.run() == "dead-lettered"
-        assert first.uncounted >= 1
+        assert first.uncounted == 2
         spent = chain.graph.node[EMBED_SECONDS]
-        assert spent >= 2.5
+        assert spent == 4.0
 
-        second = Consumer(chain, cap=3.75, floor=2.5, ceiling=spent, max_counted=1)
+        second = Consumer(chain, cap=LONG_CAP, floor=LONG_CAP, ceiling=spent, max_counted=1, clock=clock)
         assert second.progress().prior_seconds == spent
         assert await second.run() == "dead-lettered"
         assert second.uncounted == 0
@@ -306,8 +354,8 @@ class TestTheMarkerCountersAndProgress:
         assert first[EMBED_SECONDS] == 0.0 and first[EMBED_UNCOUNTED] == 0 and first[EMBED_DONE] == 0
 
     async def test_the_plan_reports_how_many_points_the_resume_found(self) -> None:
-        chain = await _chain(120, 0.1)
-        consumer = Consumer(chain, cap=0.45, floor=0.3)
+        chain = await _chain(120, budget_after=2)
+        consumer = Consumer(chain, cap=LONG_CAP, floor=LONG_CAP)
         planned: list[tuple[int, int]] = []
         real_plan = RecordProgress.plan
 
@@ -318,7 +366,7 @@ class TestTheMarkerCountersAndProgress:
         with patch.object(RecordProgress, "plan", spy):
             await consumer.run()
         assert planned[0][1] == 0
-        assert planned[1][1] > 0 and planned[1][0] == planned[0][0]
+        assert planned[1] == (planned[0][0], 2 * BATCH)
 
     async def test_progress_is_written_to_the_record_for_display_and_only_every_few_batches(self) -> None:
         # Kills: a display write per batch; a display value read back to decide anything.
@@ -382,17 +430,17 @@ class TestAfterTheEmbedding:
         # whose verification outlasts the stall limit although the cap has room for it.
         from app.modules.transformers.vectorstore import VectorStore
 
-        chain = await _chain(120, 0.1)
-        consumer = Consumer(chain, cap=0.45, floor=0.3, max_counted=1)
+        # The first attempt is cut after four of the seven batches; the second embeds the rest, then verifies.
+        chain = await _chain(120, budget_after=4)
+        consumer = Consumer(chain, cap=10.0, floor=0.5, max_counted=1)
         real_verify = VectorStore._fence_and_verify
 
         async def slow_verify(self: VectorStore, *a: Any, **k: Any) -> None:  # noqa: ANN401
-            await asyncio.sleep(0.35)
+            await asyncio.sleep(1.5)  # three stall limits, well inside the cap
             await real_verify(self, *a, **k)
 
         with patch.object(VectorStore, "_fence_and_verify", slow_verify):
-            consumer.cap = 0.45
             outcome = await consumer.run()
         assert outcome == "completed"
-        assert consumer.counted == 0
+        assert (consumer.counted, consumer.uncounted) == (0, 1)
         assert consumer.progresses[-1].finished

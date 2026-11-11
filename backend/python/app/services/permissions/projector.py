@@ -138,6 +138,10 @@ class ScopeProjector:
         rule = Rule.CONTAINER if app.opens else rule_for(app.connector_type)
         equals = self._equals_group(nodes, rid, path, app, app_id)
         try:
+            if equals and not app.opens and not nodes[rid].groups:
+                # no record group to match: the connector arm returns it for any viewer past the gate, yet the container rule would hide it
+                # from one the app does not open to, so no stamp decides it (not a refusal: the connector stays exact)
+                return Projection(rid, ScopeFields.legacy())
             if equals:
                 assert_may_stamp(Rule.CONTAINER, app.connector_type, equals_record_group=True)
                 return Projection(rid, ScopeFields.container())
