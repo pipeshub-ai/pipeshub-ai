@@ -3616,6 +3616,52 @@
         },
         "peopleRetry": "Zkusit znovu",
         "askedAbout": "K záznamu {{record}}"
+      },
+      "access": {
+        "title": "Přístup",
+        "loading": "Načítání podrobností o přístupu…",
+        "loadError": "Podrobnosti o přístupu se nepodařilo načíst.",
+        "retry": "Zkusit znovu",
+        "reach": "Změny v {{connector}} se v PipesHub projeví do {{interval}}.",
+        "reachUnknown": "Změny v {{connector}} se v PipesHub projeví při další synchronizaci.",
+        "syncNow": "Synchronizovat oprávnění nyní",
+        "span": {
+          "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
+          "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
+          "days": "{{count, number(style: unit; unit: day; unitDisplay: long)}}"
+        },
+        "refresh": {
+          "label": "Oprávnění",
+          "succeeded": "Naposledy aktualizováno {{when}}.",
+          "failed": "Poslední aktualizace oprávnění selhala, takže nedávné změny ve zdroji nemusí být ještě uplatněny. Zkuste to znovu volbou „Synchronizovat oprávnění nyní“.",
+          "never": "Oprávnění zatím nebyla aktualizována. Obsah tohoto konektoru zůstane skrytý, dokud neskončí první synchronizace.",
+          "running": "Oprávnění se právě aktualizují.",
+          "incomplete": "Poslední aktualizace oprávnění nedoběhla do konce."
+        },
+        "pending": {
+          "label": "Čeká na použití",
+          "none": "Nic nečeká.",
+          "some_one": "Aktualizuje se {{count}} složka. Je skrytá pro všechny, dokud aktualizace neskončí, obvykle několik minut.",
+          "some_few": "Aktualizují se {{count}} složky. Jsou skryté pro všechny, dokud aktualizace neskončí, obvykle několik minut.",
+          "some_many": "Aktualizuje se {{count}} složky. Jsou skryté pro všechny, dokud aktualizace neskončí, obvykle několik minut.",
+          "some_other": "Aktualizuje se {{count}} složek. Jsou skryté pro všechny, dokud aktualizace neskončí, obvykle několik minut.",
+          "overflow": "Změna se dotkla celého konektoru, proto je nutné jeho index oprávnění zcela znovu vytvořit. Do té doby vyhledávání kontroluje každý výsledek, takže kvůli tomu nic není skryto.",
+          "unknown": "Neznámé: seznam složek čekajících na aktualizaci nelze přečíst. Viz „Vyžaduje pozornost“."
+        },
+        "attention": {
+          "label": "Vyžaduje pozornost ({{count}})",
+          "none": "Nic nevyžaduje pozornost.",
+          "warning": "Položek skrytých v {{container}}: {{items}}. Synchronizační účet nemůže číst oprávnění tohoto kontejneru.",
+          "fix": "Řešení: udělte synchronizačnímu účtu v {{vendor}} oprávnění {{permission}} a poté zvolte Synchronizovat oprávnění nyní.",
+          "showAll": "Zobrazit dalších {{count}}",
+          "warningNoContainer": "Některé položky jsou skryté, protože synchronizační účet nemůže přečíst jejich oprávnění.",
+          "rebuild": "Index oprávnění tohoto konektoru je nutné zcela znovu vytvořit. Do té doby vyhledávání kontroluje každý výsledek, takže kvůli tomu nic není skryto.",
+          "unfinished": "Změna oprávnění neskončila čistě. Požádejte provozovatele PipesHub o kontrolu indexu oprávnění tohoto konektoru.",
+          "stale": "Některé položky rychlejší vyhledávání nemohlo zkontrolovat, a jsou proto nalezeny klasickým vyhledáváním.",
+          "sweep": "Aktualizace oprávnění tohoto konektoru opakovaně selhávají. Požádejte provozovatele PipesHub o kontrolu jeho protokolů.",
+          "other": "Na oprávnění tohoto konektoru se musí někdo podívat.",
+          "unreadable": "Seznam složek čekajících na aktualizaci nelze přečíst. Požádejte provozovatele PipesHub o opětovné vytvoření indexu oprávnění tohoto konektoru. Vyhledávání mezitím kontroluje každý výsledek."
+        }
       }
     },
     "mcpServers": {

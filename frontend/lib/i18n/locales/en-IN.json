@@ -3345,6 +3345,50 @@
         },
         "peopleRetry": "Try again",
         "askedAbout": "About record {{record}}"
+      },
+      "access": {
+        "title": "Access",
+        "loading": "Loading access details…",
+        "loadError": "We could not load access details.",
+        "retry": "Try again",
+        "reach": "Changes in {{connector}} reach PipesHub within {{interval}}.",
+        "reachUnknown": "Changes in {{connector}} reach PipesHub on its next sync.",
+        "syncNow": "Sync permissions now",
+        "span": {
+          "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
+          "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
+          "days": "{{count, number(style: unit; unit: day; unitDisplay: long)}}"
+        },
+        "refresh": {
+          "label": "Permissions",
+          "succeeded": "Last refreshed {{when}}.",
+          "failed": "The last permission refresh failed, so recent changes in the source may not be applied yet. Choose Sync permissions now to try again.",
+          "never": "Permissions have not been refreshed yet. Content from this connector stays hidden until the first sync finishes.",
+          "running": "Refreshing permissions now.",
+          "incomplete": "The last permission refresh did not run to the end."
+        },
+        "pending": {
+          "label": "Waiting to be applied",
+          "none": "Nothing is waiting.",
+          "some_one": "{{count}} folder is being updated. It is hidden from everyone until the update finishes, usually a few minutes.",
+          "some_other": "{{count}} folders are being updated. They are hidden from everyone until the update finishes, usually a few minutes.",
+          "overflow": "A change reached the whole connector, so its permission index needs to be rebuilt in full. Until then search checks each result, so nothing is hidden by it.",
+          "unknown": "Not known: the list of folders waiting to update can't be read. See Needs attention."
+        },
+        "attention": {
+          "label": "Needs attention ({{count}})",
+          "none": "Nothing needs attention.",
+          "warning": "{{items}} items in {{container}} are hidden. The sync account cannot read this container's permissions.",
+          "fix": "Fix: give the sync account {{permission}} in {{vendor}}, then choose Sync permissions now.",
+          "showAll": "Show {{count}} more",
+          "warningNoContainer": "Some items are hidden because the sync account cannot read their permissions.",
+          "rebuild": "This connector's permission index needs a full rebuild. Until then search checks each result, so nothing is hidden by it.",
+          "unfinished": "A permission change did not finish cleanly. Ask whoever runs PipesHub to check this connector's permission index.",
+          "stale": "Some items could not be checked by the faster search and are found by the classic search instead.",
+          "sweep": "Permission updates keep failing for this connector. Ask whoever runs PipesHub to check its logs.",
+          "other": "Something about this connector's permissions needs a person to look at it.",
+          "unreadable": "The list of folders waiting to update can't be read. Ask whoever runs PipesHub to rebuild this connector's permission index. Search checks each result meanwhile."
+        }
       }
     },
     "mcpServers": {

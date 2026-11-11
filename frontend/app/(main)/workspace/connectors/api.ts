@@ -13,6 +13,7 @@ import type {
   FilterOptionsResponse,
   ConnectorStatsResponse,
   ConnectionCheckResponse,
+  PermissionStatus,
   ReindexStage,
   CodeGraphRepo,
   AccessExplanation,
@@ -530,6 +531,15 @@ export const ConnectorsApi = {
     const { data } = await apiClient.get<AccessExplanation>(
       `${BASE_URL}/${encodeURIComponent(connectorId)}/permissions/explain`,
       { params: { userId, recordId }, suppressErrorToast: true }
+    );
+    return data;
+  },
+
+  /** Admin only: how fresh a connector's permissions are. */
+  async getPermissionStatus(connectorId: string): Promise<PermissionStatus> {
+    const { data } = await apiClient.get<PermissionStatus>(
+      `${BASE_URL}/${connectorId}/permissions/status`,
+      { suppressErrorToast: true }
     );
     return data;
   },

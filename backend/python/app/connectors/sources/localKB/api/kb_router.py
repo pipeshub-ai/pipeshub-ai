@@ -396,7 +396,7 @@ async def update_knowledge_base(
         except ValidationError as ve:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=ve.errors()
+                detail=ve.errors(include_input=False),
             )
         updates = body.model_dump(exclude_none=True)
         if not updates:

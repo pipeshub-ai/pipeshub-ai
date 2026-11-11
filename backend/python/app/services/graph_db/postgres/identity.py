@@ -135,6 +135,28 @@ class IdentityMixin(PgBase):
         rows = await self._id_rows("/* pipeshub:graph.principals_by_email */ SELECT coll, node_id, doc FROM graph.principals_by_email($1::text[], $2::text[])", [colls, emails], transaction)
         return rows if len(rows) < _PRINCIPALS_PAGE else None
 
+    async def _users_by_email_rows(self, org: str, emails: list[str], transaction: str | None) -> list:
+        """``(email, id, active)`` of the users whose lower-cased email is one of the lower-cased ``emails``: the vetted read of graph_0006 for up to its bound of
+        addresses, or the statement for more, for an address out of its bounds or a page that may not be all of the matches. One read either way: chunks would each
+        see their own snapshot, and a login moving between two of them would be missed by both (the batch would then create a duplicate user)."""
+        if emails and len(emails) <= 1000 and all(0 < len(e) <= 1000 for e in emails):
+            rows = await self._id_rows("""/* pipeshub:graph.users_by_email_vetted */ SELECT lower(p.doc->>'email') AS email, p.node_id AS id,
+                   coalesce((p.doc->>'isActive')::boolean, false) AS active FROM graph.principals_by_email(ARRAY['users'], $1::text[]) p ORDER BY p.node_id""", [emails], transaction)
+            if len(rows) < _PRINCIPALS_PAGE:
+                return rows
+        return await self._id_rows("""/* pipeshub:graph.users_by_email */ SELECT lower(doc->>'email') AS email, id, coalesce((doc->>'isActive')::boolean, false) AS active
+                   FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = ANY($2::text[]) ORDER BY id""", [org, emails], transaction)
+
+    async def _verified_email_peers(self, org: str, email: str, transaction: str | None) -> list:
+        """The users whose lower-cased email is ``email``'s, by id: the vetted read of graph_0006, or the statement for an address out of its bounds."""
+        if 0 < len(email) <= 1000:
+            rows = await self._id_rows("/* pipeshub:graph.verified_email_peers_vetted */ SELECT p.doc FROM graph.principals_by_email(ARRAY['users'], ARRAY[$1]::text[]) p ORDER BY p.node_id",
+                                       [email], transaction)
+            if len(rows) < _PRINCIPALS_PAGE:
+                return rows
+        return await self._id_rows("/* pipeshub:graph.verified_email_peers */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = lower($2) ORDER BY id",
+                                   [org, email], transaction)
+
     async def _by_external(self, coll: str, connector_id: str, external_id: str, transaction: str | None) -> list:
         """The group, record group or role (``coll``) of the connector with this external id: the vetted read of graph_0008, or the statement for a value out of its bounds."""
         org = current_org_id()
@@ -423,9 +445,21 @@ class IdentityMixin(PgBase):
             # the database lowers an address, as it lowers the stored ones: Python's lower() may disagree on non-ASCII letters
             low = {r["raw"]: r["low"] for r in await self._id_rows("/* pipeshub:graph.lower_emails */ SELECT e AS raw, lower(e) AS low FROM unnest($1::text[]) e",
                                                                    [list({u.email for u in users})], tx)}
-            have = {r["email"]: (r["id"], bool(r["active"])) for r in await self._id_rows(
-                """/* pipeshub:graph.users_by_email */ SELECT lower(doc->>'email') AS email, id, coalesce((doc->>'isActive')::boolean, false) AS active
-                   FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = ANY($2::text[])""", [org, sorted(set(low.values()))], tx)}
+            have: dict[str, tuple[str, bool]] = {}
+            shared: dict[str, list[tuple[str, bool]]] = {}
+            for r in await self._users_by_email_rows(org, sorted(set(low.values())), tx):      # by id, either read: users sharing an address resolve to the first
+                have.setdefault(r["email"], (r["id"], bool(r["active"])))
+                shared.setdefault(r["email"], []).append((r["id"], bool(r["active"])))
+            # Users sharing an address: a source account already linked to one of them keeps that link, so a sync never links it to a second user
+            # (both would then hold what the source account may read). Only an account with no link takes the first by id.
+            linked: dict[tuple[str, str], tuple[str, bool]] = {}
+            if ids := [i for c in shared.values() if len(c) > 1 for i, _ in c]:
+                active = {i: a for c in shared.values() for i, a in c}
+                for r in await self._id_rows("""/* pipeshub:graph.app_links_of_shared_addresses */ SELECT from_id AS id, doc->>'sourceUserId' AS sid FROM graph.edges
+                        WHERE org_id = $1 AND coll = 'userAppRelation' AND from_coll = 'users' AND to_coll = 'apps' AND to_id = $2 AND from_id = ANY($3::text[])
+                        ORDER BY from_id""", [org, connector_id, ids], tx):
+                    if r["sid"]:
+                        linked.setdefault((r["sid"], r["id"]), (r["id"], active[r["id"]]))
             new: dict[str, Any] = {}
             for u in users:
                 if low[u.email] not in have and low[u.email] not in new:
@@ -449,14 +483,17 @@ class IdentityMixin(PgBase):
                 member_edges = [{"from_id": u.id, "from_collection": "users", "to_id": org_node, "to_collection": "organizations", "createdAtTimestamp": u.created_at,
                                  "updatedAtTimestamp": u.updated_at, "entityType": "ORGANIZATION"} for u in new.values() if not u.is_guest]
                 await self.batch_create_edges(member_edges, CollectionNames.BELONGS_TO.value, tx)
+            def pick(u: AppUser) -> tuple[str, bool]:      # the user a source account resolves to: its existing link, else the first by id
+                return next((linked[(u.source_user_id, i)] for i, _ in shared.get(low[u.email], []) if (u.source_user_id, i) in linked), have[low[u.email]])
+
             # a guest an earlier sync made an org member loses it, unless an admin invite made them active
-            heal = list({have[low[u.email]][0] for u in users if u.is_guest and low[u.email] not in new and not have[low[u.email]][1]})
+            heal = list({pick(u)[0] for u in users if u.is_guest and low[u.email] not in new and not pick(u)[1]})
             if heal:
                 await self._q(lambda t: t.execute("""/* pipeshub:graph.guest_org_edge_heal */ DELETE FROM graph.edges WHERE org_id = $1 AND coll = 'belongsTo'
                     AND from_coll = 'users' AND from_id = ANY($2::text[]) AND to_coll = 'organizations' AND to_id = $3""", org, heal, org_node), tx, write=True)
             links = {}
             for u in users:
-                key = have[low[u.email]][0]
+                key = pick(u)[0]
                 links[key] = {"from_id": key, "from_collection": "users", "to_id": connector_id, "to_collection": "apps", "sourceUserId": u.source_user_id,
                               "isExternalUser": False, "syncState": "NOT_STARTED", "lastSyncUpdate": now, "createdAtTimestamp": now, "updatedAtTimestamp": now}
             await self.batch_create_edges(list(links.values()), CollectionNames.USER_APP_RELATION.value, tx)
@@ -879,9 +916,7 @@ class IdentityMixin(PgBase):
             keep_key = graph_user_key(_arango(_doc(found[0]["doc"]), "users")) if found else None
             if not keep_key:
                 return None
-            peers = [_arango(_doc(r["doc"]), "users") for r in await self._id_rows(
-                "/* pipeshub:graph.verified_email_peers */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = lower($2) ORDER BY id",
-                [org, email], tid)]
+            peers = [_arango(_doc(r["doc"]), "users") for r in await self._verified_email_peers(org, email, tid)]
             stubs: list[str] = []
             for peer in peers:
                 kind = classify_email_peer(user_id, keep_key, peer)
