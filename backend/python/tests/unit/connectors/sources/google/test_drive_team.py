@@ -452,7 +452,7 @@ class TestFetchPermissions:
             return_value=(service, "editor@example.com", ("pid", "editor@example.com", {"id": "file-1"}))
         )
 
-        async def failing_read(*args, **kwargs):
+        async def failing_read(*args: object, **kwargs: object) -> None:
             connector._sync_ledger.fail_item()
 
         connector._process_drive_item = AsyncMock(side_effect=failing_read)
