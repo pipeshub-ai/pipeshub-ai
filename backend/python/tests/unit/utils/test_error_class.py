@@ -422,3 +422,24 @@ class TestLogFailure:
         assert "secret-arg" not in record.exc_text
         assert "RuntimeError: <message omitted>" in record.exc_text and "KeyError: <message omitted>" in record.exc_text
         assert "direct cause" in record.exc_text and "test_error_class.py" in record.exc_text
+
+
+def test_on_chain_follows_cause_and_unsuppressed_context_like_the_text() -> None:
+    target = ValueError("marked")
+    try:
+        raise target
+    except ValueError:
+        try:
+            raise RuntimeError("implicit")
+        except RuntimeError as implicit:
+            caught = implicit
+    explicit = RuntimeError("explicit")
+    explicit.__cause__ = target
+    suppressed = RuntimeError("from None")
+    suppressed.__context__, suppressed.__suppress_context__ = target, True
+
+    assert EC.on_chain(target, target)
+    assert EC.on_chain(caught, target)
+    assert EC.on_chain(explicit, target)
+    assert not EC.on_chain(suppressed, target)
+    assert not EC.on_chain(RuntimeError("unrelated"), target)

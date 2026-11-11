@@ -17,11 +17,13 @@ from __future__ import annotations
 import contextlib
 import logging
 import random  # noqa: TC003
+import time
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from app.services.permissions.currency import app_is_current
 from app.services.permissions.pending import parse
+from app.services.permissions.rewrite_lease import REWRITE_LEASE_SECONDS, RewriteLease
 from app.services.permissions.scope_fields import (
     SCOPE_FIELDS_VERSION,
     ScopeFields,
@@ -160,12 +162,12 @@ class Env:
         for field_name, schema in (*PAYLOAD_KEYWORD_INDEXES, *SCOPE_KEYWORD_INDEXES, *SCOPE_INTEGER_INDEXES):      # (the search filter reads them)
             await vdb.create_index(collection, field_name, schema)
         await vdb.make_searchable(collection)      # (a set_payload finds only the points a search sees)
-        backfill = ScopeBackfill(loaded.graph, vdb, loaded.locator, log)
+        backfill = ScopeBackfill(loaded.graph, vdb, loaded.locator, log, clock=advancing_clock())
         for app in loaded.apps:
             done = await backfill.run_connector(ORG, app)
             assert done.state == DONE, done.line()
         await vdb.make_searchable(collection)
-        env = cls(vdb, loaded, world, world, share, chunks, backfill, ScopeRewriteJob(loaded.graph, vdb, loaded.locator, settle_seconds=settle_seconds))
+        env = cls(vdb, loaded, world, world, share, chunks, backfill, ScopeRewriteJob(loaded.graph, vdb, loaded.locator, settle_seconds=settle_seconds, clock=advancing_clock()))
         # points the first back-fill left on the stale marker (a stale count alone also counts a placeholder, which has a virtual record and no point)
         env.unstamped = sum(1 for f in (await read_stamps(vdb, loaded)).values() if f is not None and f.version == 0)
         assert not env.unstamped, f"the first back-fill left {env.unstamped} point(s) on the stale marker: the world is not one to start from"
@@ -394,6 +396,18 @@ def random_change(world: World, rng: random.Random) -> Mutation | None:
     return Mutation("moved", node.id, ref=to.id, value=to.id if to.kind == "group" else "")
 
 
+def advancing_clock(offset: float = 0) -> Any:
+    """A clock for a job's lease that moves a lease's length on every reading: a run killed or failed half way leaves its lease behind, and the
+    next run of the same job (what a restarted process is) finds it run out. A test that wants the lease held uses its own clock."""
+    t = [time.time() + offset]
+
+    def now() -> float:
+        t[0] += REWRITE_LEASE_SECONDS + 1
+        return t[0]
+
+    return now
+
+
 class Killed(BaseException):
     """A process killed mid-run: not an Exception, so nothing in the job may swallow it."""
 
@@ -446,8 +460,11 @@ async def held_up_writer(env: Env, layer: str, monkeypatch: Any) -> None:
     from .model import Mutation as M
 
     await env.change((M("moved", "page:Handbook", "space:ALL", "space:ALL"),))
-    b = ScopeRewriteJob(env.graph, env.vdb, env.loaded.locator, settle_seconds=0.5)
+    # (B starts after A's lease has run out, which is how a second rewriter gets in at all)
+    b = ScopeRewriteJob(env.graph, env.vdb, env.loaded.locator, settle_seconds=0.5, clock=advancing_clock(offset=100 * REWRITE_LEASE_SECONDS))
     seen, held, stale_writes, violations = Log(), {"done": False}, [], []      # (a failed assert inside a request would be taken for a failed root)
+    if layer == "generation_check":      # (the lease would stop A first: each layer is shown alone)
+        monkeypatch.setattr(RewriteLease, "holds", lambda self, app: True)
     if layer == "store_fence":
         async def no_check(*a: Any, **k: Any) -> None:
             return None

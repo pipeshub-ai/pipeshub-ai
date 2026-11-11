@@ -199,3 +199,107 @@ functions:
       RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
         WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'virtualRecordId' = ANY(p_vrids) AND n.doc->>'orgId' = v_org
         LIMIT 5000;
+
+# ---- the knowledge graph's per-record lookups (graph_0006) -------------------------------------------------------------------------
+# Same reason again: the keys below have expression indexes the services' own role cannot reach. Each function answers one lookup from the org of app.org_id.
+
+  # One page of a connector's records after an id (byte order: the collation ucs_basic orders as "C" does, and the checks read no quoted name), for the vector membership scans (index nodes_record_connector_c).
+  - name: graph.records_page_by_connector
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_connector_id, type: text, length: [1, 200]}
+      - {name: p_after, type: text, default: "''", length: [0, 200]}
+      - {name: p_limit, type: int, default: "1000", range: [1, 1000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'records' AND n.doc->>'connectorId' = p_connector_id AND (p_after = '' OR n.id COLLATE ucs_basic > p_after COLLATE ucs_basic)
+        ORDER BY n.doc->>'connectorId', n.id COLLATE ucs_basic LIMIT p_limit;      -- the key in the order: under row-level security the planner does not treat the connector as one value, and would sort the whole connector
+
+  # The external organisations of one parent that have one of the normalized names (index nodes_organization_name); up to 5000.
+  - name: graph.organizations_by_name
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_parent_id, type: text, length: [1, 200]}
+      - {name: p_names, type: "text[]", max_items: 1000, item_not_null: true, item_length: [1, 1000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT n.id, n.doc FROM graph.nodes n
+        WHERE n.org_id = v_org AND n.coll = 'organizations' AND n.doc->>'normalizedName' = ANY(p_names)
+          AND n.doc->>'parentOrgId' = p_parent_id AND n.doc @> '{"isExternal": true}'
+        LIMIT 5000;
+
+  # The person with one source key, the lowest id (index nodes_person_source_key).
+  - name: graph.person_by_source_key
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_source_key, type: text, length: [1, 400]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      -- the ids by the key's index first, then ordered: an order in the same query can walk the primary key and filter the whole collection
+      RETURN QUERY WITH m AS MATERIALIZED (SELECT n.id FROM graph.nodes n WHERE n.org_id = v_org AND n.coll = 'person' AND n.doc->>'sourceKey' = p_source_key)
+        SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = v_org AND n.coll = 'person' AND n.id = (SELECT min(m.id) FROM m) LIMIT 1;
+
+  # The users, groups and persons (as p_colls names them) whose lower-cased email is one of the lower-cased p_emails (indexes nodes_user_email, nodes_group_email, nodes_person_email); up to 5000 of each.
+  - name: graph.principals_by_email
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_colls, type: "text[]", max_items: 3, item_not_null: true, item_enum: [users, groups, person]}
+      - {name: p_emails, type: "text[]", max_items: 1000, item_not_null: true, item_length: [1, 1000]}
+    returns: "TABLE (coll text, node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      -- one branch for each collection, so that the partial index of the collection matches
+      RETURN QUERY (SELECT 'users'::text, n.id, n.doc FROM graph.nodes n WHERE 'users' = ANY(p_colls) AND n.org_id = v_org AND n.coll = 'users'
+          AND lower(n.doc->>'email') IN (SELECT lower(e) FROM unnest(p_emails) e) LIMIT 5000)
+        UNION ALL (SELECT 'groups'::text, n.id, n.doc FROM graph.nodes n WHERE 'groups' = ANY(p_colls) AND n.org_id = v_org AND n.coll = 'groups'
+          AND lower(n.doc->>'email') IN (SELECT lower(e) FROM unnest(p_emails) e) LIMIT 5000)
+        UNION ALL (SELECT 'person'::text, n.id, n.doc FROM graph.nodes n WHERE 'person' = ANY(p_colls) AND n.org_id = v_org AND n.coll = 'person'
+          AND lower(n.doc->>'email') IN (SELECT lower(e) FROM unnest(p_emails) e) LIMIT 5000);
+
+  # The persons whose name matches a name typed by a person (lower-cased, blanks collapsed, as the provider normalizes it), best first: the ones whose full name or first
+  # and last name equal it, else the ones whose full name or one of its words begins with it (three letters at least). The predicates of the first step are those of
+  # the indexes nodes_person_name, nodes_person_parts and nodes_person_name_trgm (a name holding the typed one is a superset of the beginnings).
+  - name: graph.people_by_name
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_name, type: text, length: [1, 400]}
+      - {name: p_limit, type: int, default: "10", range: [1, 1000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY WITH u AS (SELECT n.id, n.doc, btrim(regexp_replace(lower(coalesce(n.doc->>'fullName', '')), ' +', ' ', 'g'), ' ') AS name,
+            btrim(regexp_replace(lower(coalesce(n.doc->>'firstName', '') || ' ' || coalesce(n.doc->>'lastName', '')), ' +', ' ', 'g'), ' ') AS parts
+          FROM graph.nodes n WHERE n.org_id = v_org AND n.coll = 'person' AND (
+            btrim(regexp_replace(lower(coalesce(n.doc->>'fullName', '')), ' +', ' ', 'g'), ' ') = p_name
+            OR btrim(regexp_replace(lower(coalesce(n.doc->>'firstName', '') || ' ' || coalesce(n.doc->>'lastName', '')), ' +', ' ', 'g'), ' ') = p_name
+            OR (length(p_name) >= 3 AND btrim(regexp_replace(lower(coalesce(n.doc->>'fullName', '')), ' +', ' ', 'g'), ' ')
+                LIKE '%' || replace(replace(replace(p_name, '\', '\\'), '%', '\%'), '_', '\_') || '%'))),
+        hits AS (SELECT u.id, u.doc, u.name, (u.name = p_name OR u.parts = p_name) AS exact FROM u
+          WHERE u.name = p_name OR u.parts = p_name
+            OR (length(p_name) >= 3 AND (starts_with(u.name, p_name) OR EXISTS (SELECT 1 FROM unnest(string_to_array(u.name, ' ')) w WHERE starts_with(w, p_name)))))
+        SELECT h.id, h.doc FROM hits h WHERE h.exact OR NOT EXISTS (SELECT 1 FROM hits x WHERE x.exact)
+        ORDER BY h.name COLLATE ucs_basic, h.id COLLATE ucs_basic LIMIT p_limit;
