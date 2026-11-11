@@ -736,6 +736,8 @@
     "indexingStatus": {
       "completed": "완료",
       "inProgress": "진행 중",
+      "embeddingProgress_one": "임베딩 중 {{done, number}} / {{total, number}}개 청크",
+      "embeddingProgress_other": "임베딩 중 {{done, number}} / {{total, number}}개 청크",
       "failed": "실패",
       "fileTypeNotSupported": "지원되지 않는 파일 형식",
       "notStarted": "시작 전",

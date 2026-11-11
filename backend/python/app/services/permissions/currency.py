@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import AppStatus, CollectionNames
 from app.services.permissions.pending import parse
 from app.services.permissions.scope_fields import (
     SCOPE_FIELDS_VERSION,
@@ -70,9 +70,35 @@ def app_is_current(app: Mapping[str, object] | None) -> bool:
     return stamped_from is not None and held is not None and stamped_from == held
 
 
+#: A running sync writes grants and memberships and moves the viewer-scope version only when it ends, so the cached scopes of a viewer who gained access
+#: during it are stale: the connector is read with the legacy check until the sync is over.
+_RUNNING = frozenset({AppStatus.SYNCING.value, AppStatus.FULL_SYNCING.value})
+
+
+def app_is_served(app: Mapping[str, object] | None) -> bool:
+    """Whether a search may be decided by the stamps of this connector now: current, no pending root, and no sync running. A pending root hides its subtree
+    from the filter and its container points are not read from their stamps, so the stamps alone would under-admit: the connector is read
+    with the legacy check until the roots are rewritten. An unreadable list is not current already."""
+    return app_is_current(app) and not parse((app or {}).get(PENDING_KEY)) and (app or {}).get("status") not in _RUNNING
+
+
 class StampCurrency:
     def __init__(self, graph_provider: IGraphDBProvider) -> None:
         self._graph = graph_provider
+
+    async def served(self, connector_ids: Iterable[str]) -> frozenset[str]:
+        """The connectors among ``connector_ids`` whose stamps may decide a search now (`app_is_served`), from one batched read of their app
+        documents, made for this call and kept by nobody: the answer moves in the transaction that moves the generation, so a cached one is
+        a window in which a revoked access still admits. A read that fails, or a connector it does not return, is not served. Runs inside the
+        organisation the connectors belong to."""
+        ids = sorted(set(connector_ids))
+        if not ids:
+            return frozenset()
+        try:
+            found = await self._graph.get_nodes_by_field_in(CollectionNames.APPS.value, "_key", ids, raise_on_error=True)
+        except Exception:
+            return frozenset()
+        return frozenset(key for d in found or [] if isinstance(d, dict) and (key := str(d.get("_key") or d.get("id"))) in ids and app_is_served(d))
 
     async def current(self, connector_ids: Iterable[str]) -> frozenset[str]:
         """The connectors among ``connector_ids`` whose stamps are usable now. Runs inside the organisation the connectors belong to. A

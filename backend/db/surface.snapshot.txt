@@ -1187,12 +1187,25 @@ extension vector schema=ext owner=<bootstrap-superuser>
 func graph.blocks_by_name(text,text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=cb2d61dbf4fa5a83445d28bdda0486bb ext=-
 func graph.blocks_by_record(text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=523eb45c3655082b03631500638ae570 ext=-
 func graph.code_files_by_path(text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=7a77f90546ea23c4be106caaf27764e9 ext=-
+func graph.named_entities_by_alias(text,text[],text[],integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=27ffd53475e34a3b42c305c2143d20c9 ext=-
+func graph.named_entities_by_keys(text,text,text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=3bd6e8bf058c6abcef3f3348ef40172b ext=-
+func graph.named_entities_by_prefix(text,text[],text[],integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=37f17dcddeb6ed1ca914d7b826980eea ext=-
+func graph.node_by_external(text,text,text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=6b7eba149b6b104d4aeb9e5ef3c1498c ext=-
+func graph.organizations_by_name(text,text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=eca43e268ae674d89a640b7045e320c4 ext=-
+func graph.people_by_name(text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=97899f621fc8f1df2db1839c3377bea8 ext=-
+func graph.person_by_source_key(text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=12840a225084e186be637e399efea078 ext=-
+func graph.principals_by_email(text[],text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=6a33bd7db303fb546e7d022e6e760846 ext=-
 func graph.record_by_external(text,text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=fecf8201da859ec9b8130c4a6c38c607 ext=-
+func graph.records_by_revision(text[],text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=fabfcd807dfc2dc04e8e24e2166fe227 ext=-
 func graph.records_by_virtual_id(text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=3df6f9c4d84262a8f7f4e7737a445350 ext=-
+func graph.records_page_by_connector(text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=c8e66f78a7a13bd1a9d13be306081920 ext=-
+func graph.stage_states_by_revision(text,text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=60eaee6b0646cff685230c159b49ebff ext=-
+func graph.stage_states_page(text,text,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=a3208be1a7eb86259c302986beb3a97f ext=-
 func graph.system_app(text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=ef1fbddbd72fc30dec6a4841e6c3691e ext=-
 func graph.system_apps(boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=48011eecd76084ecc02f84468779b9b1 ext=-
 func graph.system_orgs(boolean,boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=e304f1fb996469c629ea8ca32ecee2c6 ext=-
 func graph.user_by_user_id(text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=06aa7f0e52fbe10f39035dc887d816dc ext=-
+func graph.value_mentions_by_records(text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=2b9b901ead6fbde52bb4cdc8db310454 ext=-
 func identity.gauge_auth_configs() owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=3552003eb4695b7ca0cab3eeae5e9e09 ext=-
 func identity.gauge_live_orgs() owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=f76feba6daecb9efd1f27e8c4fcf3455 ext=-
 func identity.gauge_user_counts() owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=9e6fc8a791411aba6338419c433f72cc ext=-
@@ -1290,12 +1303,48 @@ funcacl graph.blocks_by_record(text,text[],jsonb[],boolean,text,integer) pipeshu
 funcacl graph.code_files_by_path(text,text[],jsonb[],boolean,text,integer) pipeshub_connectors EXECUTE
 funcacl graph.code_files_by_path(text,text[],jsonb[],boolean,text,integer) pipeshub_indexing EXECUTE
 funcacl graph.code_files_by_path(text,text[],jsonb[],boolean,text,integer) pipeshub_query EXECUTE
+funcacl graph.named_entities_by_alias(text,text[],text[],integer) pipeshub_connectors EXECUTE
+funcacl graph.named_entities_by_alias(text,text[],text[],integer) pipeshub_indexing EXECUTE
+funcacl graph.named_entities_by_alias(text,text[],text[],integer) pipeshub_query EXECUTE
+funcacl graph.named_entities_by_keys(text,text,text[]) pipeshub_connectors EXECUTE
+funcacl graph.named_entities_by_keys(text,text,text[]) pipeshub_indexing EXECUTE
+funcacl graph.named_entities_by_keys(text,text,text[]) pipeshub_query EXECUTE
+funcacl graph.named_entities_by_prefix(text,text[],text[],integer) pipeshub_connectors EXECUTE
+funcacl graph.named_entities_by_prefix(text,text[],text[],integer) pipeshub_indexing EXECUTE
+funcacl graph.named_entities_by_prefix(text,text[],text[],integer) pipeshub_query EXECUTE
+funcacl graph.node_by_external(text,text,text) pipeshub_connectors EXECUTE
+funcacl graph.node_by_external(text,text,text) pipeshub_indexing EXECUTE
+funcacl graph.node_by_external(text,text,text) pipeshub_query EXECUTE
+funcacl graph.organizations_by_name(text,text[]) pipeshub_connectors EXECUTE
+funcacl graph.organizations_by_name(text,text[]) pipeshub_indexing EXECUTE
+funcacl graph.organizations_by_name(text,text[]) pipeshub_query EXECUTE
+funcacl graph.people_by_name(text,integer) pipeshub_connectors EXECUTE
+funcacl graph.people_by_name(text,integer) pipeshub_indexing EXECUTE
+funcacl graph.people_by_name(text,integer) pipeshub_query EXECUTE
+funcacl graph.person_by_source_key(text) pipeshub_connectors EXECUTE
+funcacl graph.person_by_source_key(text) pipeshub_indexing EXECUTE
+funcacl graph.person_by_source_key(text) pipeshub_query EXECUTE
+funcacl graph.principals_by_email(text[],text[]) pipeshub_connectors EXECUTE
+funcacl graph.principals_by_email(text[],text[]) pipeshub_indexing EXECUTE
+funcacl graph.principals_by_email(text[],text[]) pipeshub_query EXECUTE
 funcacl graph.record_by_external(text,text) pipeshub_connectors EXECUTE
 funcacl graph.record_by_external(text,text) pipeshub_indexing EXECUTE
 funcacl graph.record_by_external(text,text) pipeshub_query EXECUTE
+funcacl graph.records_by_revision(text[],text[]) pipeshub_connectors EXECUTE
+funcacl graph.records_by_revision(text[],text[]) pipeshub_indexing EXECUTE
+funcacl graph.records_by_revision(text[],text[]) pipeshub_query EXECUTE
 funcacl graph.records_by_virtual_id(text[]) pipeshub_connectors EXECUTE
 funcacl graph.records_by_virtual_id(text[]) pipeshub_indexing EXECUTE
 funcacl graph.records_by_virtual_id(text[]) pipeshub_query EXECUTE
+funcacl graph.records_page_by_connector(text,text,integer) pipeshub_connectors EXECUTE
+funcacl graph.records_page_by_connector(text,text,integer) pipeshub_indexing EXECUTE
+funcacl graph.records_page_by_connector(text,text,integer) pipeshub_query EXECUTE
+funcacl graph.stage_states_by_revision(text,text) pipeshub_connectors EXECUTE
+funcacl graph.stage_states_by_revision(text,text) pipeshub_indexing EXECUTE
+funcacl graph.stage_states_by_revision(text,text) pipeshub_query EXECUTE
+funcacl graph.stage_states_page(text,text,text,text,integer) pipeshub_connectors EXECUTE
+funcacl graph.stage_states_page(text,text,text,text,integer) pipeshub_indexing EXECUTE
+funcacl graph.stage_states_page(text,text,text,text,integer) pipeshub_query EXECUTE
 funcacl graph.system_app(text) pipeshub_connectors EXECUTE
 funcacl graph.system_app(text) pipeshub_indexing EXECUTE
 funcacl graph.system_apps(boolean,text,text,integer) pipeshub_connectors EXECUTE
@@ -1306,6 +1355,9 @@ funcacl graph.system_orgs(boolean,boolean,text,text,integer) pipeshub_query EXEC
 funcacl graph.user_by_user_id(text) pipeshub_connectors EXECUTE
 funcacl graph.user_by_user_id(text) pipeshub_indexing EXECUTE
 funcacl graph.user_by_user_id(text) pipeshub_query EXECUTE
+funcacl graph.value_mentions_by_records(text[]) pipeshub_connectors EXECUTE
+funcacl graph.value_mentions_by_records(text[]) pipeshub_indexing EXECUTE
+funcacl graph.value_mentions_by_records(text[]) pipeshub_query EXECUTE
 funcacl identity.gauge_auth_configs() pipeshub_jobs EXECUTE
 funcacl identity.gauge_live_orgs() pipeshub_jobs EXECUTE
 funcacl identity.gauge_user_counts() pipeshub_jobs EXECUTE
@@ -1422,10 +1474,19 @@ index graph.nodes_block_name on graph.nodes unique=false exclusion=false valid=t
 index graph.nodes_block_record on graph.nodes unique=false exclusion=false valid=true def=49c4a104b5d1bd103fe19163130fe052
 index graph.nodes_codefile_path on graph.nodes unique=false exclusion=false valid=true def=a0ca69de02117c30b4a5b6c5f666ed6e
 index graph.nodes_group_by_external on graph.nodes unique=false exclusion=false valid=true def=b8bd5c14dc0ab6ce8b252f15de2cf812
+index graph.nodes_group_email on graph.nodes unique=false exclusion=false valid=true def=2cb5691aa86567072a8f53cc8229f0fb
 index graph.nodes_group_external on graph.nodes unique=false exclusion=false valid=true def=82c18bdfd57b6cb002b36f3cedcdaca2
+index graph.nodes_ne_aliases on graph.nodes unique=false exclusion=false valid=true def=1efb3b62d1caedf23c23a308969a1476
 index graph.nodes_ne_kind_key on graph.nodes unique=false exclusion=false valid=true def=47fc150762c94fa2fa36620a7a676ad7
 index graph.nodes_org_by_id on graph.nodes unique=false exclusion=false valid=true def=6385b1241b0a62b5d98a1ca4c43f3c8f
+index graph.nodes_organization_name on graph.nodes unique=false exclusion=false valid=true def=fc91064c31ad533e2a3df905bd1469a1
+index graph.nodes_person_email on graph.nodes unique=false exclusion=false valid=true def=d97e006cb156afd59d89ab95b21bf017
+index graph.nodes_person_name on graph.nodes unique=false exclusion=false valid=true def=8ac1de8fd095bc7e45bc83ed9bb58c09
+index graph.nodes_person_name_trgm on graph.nodes unique=false exclusion=false valid=true def=f9bf7602f344bbc33beb12e2ebc150f8
+index graph.nodes_person_parts on graph.nodes unique=false exclusion=false valid=true def=3426868b8c8675e27958efabae345f13
+index graph.nodes_person_source_key on graph.nodes unique=false exclusion=false valid=true def=d323e5dcb2e3f071a2800438a9566e43
 index graph.nodes_pkey on graph.nodes unique=true exclusion=false valid=true def=de1eb284c514a58aa3faf661f3ec3508
+index graph.nodes_record_connector_c on graph.nodes unique=false exclusion=false valid=true def=4563f2292eb5e031c329251800726514
 index graph.nodes_record_connector_id on graph.nodes unique=false exclusion=false valid=true def=e9822c643d639761d85db36c3c97c7b7
 index graph.nodes_record_external on graph.nodes unique=false exclusion=false valid=true def=722f3304e57357338b93de57feed4e54
 index graph.nodes_record_parent on graph.nodes unique=false exclusion=false valid=true def=355737265fa9f21dc8128c5a660c4f99
@@ -1433,6 +1494,7 @@ index graph.nodes_record_trash on graph.nodes unique=false exclusion=false valid
 index graph.nodes_record_virtual_rev on graph.nodes unique=false exclusion=false valid=true def=a10c3897ff0363e31ff8ae7c8069dcea
 index graph.nodes_record_vrid on graph.nodes unique=false exclusion=false valid=true def=c8f1528dde8fa54a9cf01bc2dfd49d53
 index graph.nodes_role_by_external on graph.nodes unique=false exclusion=false valid=true def=353135118a2dd9ecdfe83e015234d030
+index graph.nodes_stage_page on graph.nodes unique=false exclusion=false valid=true def=140fa8afcd2b00f79ba1a2852132a781
 index graph.nodes_stage_revision on graph.nodes unique=false exclusion=false valid=true def=f470ce92e9ebd24b110106584a1c4de4
 index graph.nodes_stage_status on graph.nodes unique=false exclusion=false valid=true def=fc471448d0d184fc42b726fc4f117562
 index graph.nodes_taxonomy_norm on graph.nodes unique=false exclusion=false valid=true def=359f3c603a370bb08133047e8b2fbffa

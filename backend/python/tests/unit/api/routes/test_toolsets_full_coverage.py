@@ -484,16 +484,17 @@ class TestCreateOrUpdateToolsetOAuthConfig:
             assert result is not None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_exception_raises_500(self):
         from app.api.routes.toolsets import _create_or_update_toolset_oauth_config
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value=[])
 
-        with patch("app.api.routes.toolsets._prepare_toolset_auth_config", new_callable=AsyncMock, side_effect=Exception("fail")):
-            result = await _create_or_update_toolset_oauth_config(
+        with patch("app.api.routes.toolsets._prepare_toolset_auth_config", new_callable=AsyncMock, side_effect=Exception("fail")), \
+             pytest.raises(HTTPException) as exc:
+            await _create_or_update_toolset_oauth_config(
                 "jira", {}, "Jira", "u1", "org1", cs, MagicMock(), "http://localhost"
             )
-            assert result is None
+        assert (exc.value.status_code, exc.value.__cause__ is not None) == (500, True)
 
 
 class TestPrepareToolsetAuthConfig:

@@ -17,6 +17,7 @@ import httpx
 
 from app.agents.tools.factories.base import ToolsetAuthError
 from app.agents.tools.factories.registry import ClientFactoryRegistry
+from app.utils.logging_fields import log_event
 
 if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
@@ -24,6 +25,13 @@ if TYPE_CHECKING:
 __all__ = ["ToolInstanceCreator", "configured_name_matches"]
 
 logger = logging.getLogger(__name__)
+
+
+def _log_retry(app_name: str, attempt: int, exc: Exception, backoff: float) -> None:
+    log_event(
+        logger, "toolset.client.retry", level=logging.WARNING, toolset=app_name, attempt=attempt + 1,
+        max_attempts=_MAX_CLIENT_CREATION_ATTEMPTS, error_type=type(exc).__name__, delay_ms=round(backoff * 1000),
+    )
 
 _TRANSIENT_EXCEPTIONS: tuple[type[Exception], ...] = (
     httpx.RemoteProtocolError,
@@ -141,7 +149,7 @@ class ToolInstanceCreator:
             if toolset_config:
                 self._log.debug("Creating client for %s with toolset config", app_name)
             else:
-                self._log.warning("No toolset config for %s, using empty config", app_name)
+                log_event(logger, "toolset.config_missing", level=logging.WARNING, toolset=app_name)
 
             try:
                 client = await self._create_client_with_retry(factory, app_name, config)
@@ -150,7 +158,7 @@ class ToolInstanceCreator:
             except ToolsetAuthError:
                 raise
             except Exception as e:
-                self._log.error("Failed to create client for %s: %s", app_name, e, exc_info=True)
+                # Raised `from e`: the tool loader logs it once (toolset.load_failed).
                 error_msg = str(e).lower()
                 if any(s in error_msg for s in ("not authenticated", "oauth", "authentication")):
                     raise ValueError(
@@ -190,11 +198,7 @@ class ToolInstanceCreator:
                 if attempt == _MAX_CLIENT_CREATION_ATTEMPTS - 1:
                     break
                 backoff = 0.5 * (2 ** attempt)
-                self._log.warning(
-                    "Transient error creating %s client (attempt %d/%d): %s — retrying in %.1fs",
-                    app_name, attempt + 1, _MAX_CLIENT_CREATION_ATTEMPTS,
-                    type(e).__name__, backoff,
-                )
+                _log_retry(app_name, attempt, e, backoff)
                 await asyncio.sleep(backoff)
             except Exception as e:
                 error_msg = str(e).lower()
@@ -207,11 +211,7 @@ class ToolInstanceCreator:
                     if attempt == _MAX_CLIENT_CREATION_ATTEMPTS - 1:
                         break
                     backoff = 0.5 * (2 ** attempt)
-                    self._log.warning(
-                        "Transient error creating %s client (attempt %d/%d): %s — retrying in %.1fs",
-                        app_name, attempt + 1, _MAX_CLIENT_CREATION_ATTEMPTS,
-                        e, backoff,
-                    )
+                    _log_retry(app_name, attempt, e, backoff)
                     await asyncio.sleep(backoff)
                 else:
                     raise
@@ -281,9 +281,7 @@ class ToolInstanceCreator:
 
         config = self._toolset_configs.get(toolset_id)
         if not config:
-            self._log.warning(
-                "Toolset config not found for ID %s (tool: %s)", toolset_id, tool_full_name,
-            )
+            log_event(logger, "toolset.config_missing", level=logging.WARNING, toolset_id=toolset_id)
         return config
 
     def _fallback_creation(self, action_class: type) -> object:

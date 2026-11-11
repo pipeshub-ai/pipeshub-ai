@@ -3,6 +3,7 @@
 import asyncio
 import inspect
 import logging
+import math
 import re
 import traceback
 from collections import Counter
@@ -86,6 +87,30 @@ _START_TYPES = {
     "app": "app", "kb": "app", "recordGroup": "recordGroup",
     "folder": "record", "record": "record",
 }
+
+
+_MAX_SAFE_INTEGER = 2**53 - 1
+
+
+def _embed_progress(doc: dict[str, Any]) -> dict[str, int | None]:
+    """The embedding progress of a record row, or none.
+
+    Only an ``IN_PROGRESS`` record has any: the indexer does not clear the
+    counts when a record is queued, paused or switched to manual indexing, so
+    they can be stale. Both counts are plain numbers read back as stored, so a
+    missing, negative, non-finite, boolean or beyond-JSON-safe pair is dropped
+    rather than shown, and a count that ran ahead of the total is held at it.
+    """
+    none: dict[str, int | None] = {"embedDone": None, "embedTotal": None}
+    if doc.get("indexingStatus") != "IN_PROGRESS":
+        return none
+    done, total = doc.get("embedDone"), doc.get("embedTotal")
+    for value in (done, total):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            return none
+    if total < 1 or done < 0 or total > _MAX_SAFE_INTEGER or done > _MAX_SAFE_INTEGER:
+        return none
+    return {"embedDone": min(int(done), int(total)), "embedTotal": int(total)}
 
 
 def _start_type(parent_type: str | None) -> str:
@@ -1189,6 +1214,8 @@ class KnowledgeHubService:
                 "recordType": doc.get("recordType"),
                 "recordGroupType": doc.get("groupType"),
                 "indexingStatus": doc.get("indexingStatus"),
+                "embedDone": doc.get("embedDone"),
+                "embedTotal": doc.get("embedTotal"),
                 "createdAt": node.created_at or 0,
                 "updatedAt": node.updated_at or 0,
                 "sizeInBytes": doc.get("sizeInBytes"),
@@ -1268,6 +1295,7 @@ class KnowledgeHubService:
             recordGroupType=doc.get('recordGroupType'),
             indexingStatus=doc.get('indexingStatus'),
             reason=doc.get('reason'),
+            **_embed_progress(doc),
             createdAt=doc.get('createdAt', 0),
             updatedAt=doc.get('updatedAt', 0),
             sizeInBytes=doc.get('sizeInBytes'),

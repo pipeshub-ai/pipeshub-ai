@@ -6354,7 +6354,8 @@ class DataSourceEntitiesProcessor:
         connector_id: str
     ) -> bool:
         try:
-            async with self.data_store_provider.transaction() as tx_store:
+            # a webhook event outside any sync: nothing else moves the viewer-scope version for this grant
+            async with self._drop_access_after({connector_id}), self.data_store_provider.transaction() as tx_store:
                 # 1. Look up the user by email
                 user = await tx_store.get_user_by_email(user_email)
                 if not user:

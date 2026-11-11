@@ -223,6 +223,9 @@ app_schema = {
             "scopeProjectionPendingRoots": {"type": ["string", "null"]},  # {root: generation} awaiting a rewrite (see permissions.pending)
             "scopeProjectionOpened": {"type": ["number", "null"]},  # writes started that could not be undone, and finished (see unclosed_writes)
             "scopeProjectionClosed": {"type": ["number", "null"]},
+            "scopeProjectionOpenWrites": {"type": ["string", "null"]},  # {token: {deadline, roots}} of the writes counted as opened (see open_write)
+            "scopeSweepState": {"type": ["string", "null"]},  # {failures, error, retry time} of the sweep of this connector (see scope_sweep)
+            "scopeRewriteLease": {"type": ["string", "null"]},  # {holder, deadline} of the rewriter that holds the connector (see permissions.rewrite_lease)
             # app.services.vector_db.scope_backfill: the checkpoint of the permission scope-field back-fill
             "scopeBackfillState": {"type": ["string", "null"]},
             "scopeBackfillAfter": {"type": ["string", "null"]},
@@ -458,6 +461,11 @@ record_schema = {
             "embedTotal": {"type": ["number", "null"]},
             "embedDeliveryId": {"type": ["string", "null"]},
             "embedStartedMs": {"type": ["number", "null"]},
+            # Seconds of embedding spent by cut attempts of this chain, how many of those cuts were not
+            # counted as failures, and how many points are done (display only; never read to decide).
+            "embedSeconds": {"type": ["number", "null"]},
+            "embedUncounted": {"type": ["number", "null"]},
+            "embedDone": {"type": ["number", "null"]},
         },
         "required": [
             "recordName",

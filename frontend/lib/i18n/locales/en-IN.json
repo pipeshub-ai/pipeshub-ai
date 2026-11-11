@@ -647,6 +647,8 @@
     "indexingStatus": {
       "completed": "Completed",
       "inProgress": "In progress",
+      "embeddingProgress_one": "Embedding {{done, number}} / {{total, number}} chunk",
+      "embeddingProgress_other": "Embedding {{done, number}} / {{total, number}} chunks",
       "failed": "Failed",
       "fileTypeNotSupported": "File type not supported",
       "notStarted": "Not started",

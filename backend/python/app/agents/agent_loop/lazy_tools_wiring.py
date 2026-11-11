@@ -61,6 +61,7 @@ from app.agent_loop_lib.tools.builtin.lazy_toolsets import (
 )
 from app.agent_loop_lib.tools.errors import DuplicateToolNameError, DuplicateToolPathError
 from app.agent_loop_lib.tools.index import ToolsetAwareToolIndex
+from app.utils.logging_fields import log_event
 from app.utils.user_messages import where_to_authenticate
 
 if TYPE_CHECKING:
@@ -219,10 +220,9 @@ def group_connector_toolsets(
         tool_registry.register_toolset(
             group.name, group.description, group.tool_names, parent=CONNECTORS_PARENT,
         )
-    logger.info(
-        "group_connector_toolsets: grouped %d toolset(s) covering %d/%d tool(s): %s",
-        len(candidates), sum(len(g.tool_names) for g in candidates), len(tool_names),
-        sorted(g.name for g in candidates),
+    log_event(
+        logger, "toolsets.grouped", level=logging.DEBUG, toolsets=len(candidates),
+        grouped_tools=sum(len(g.tool_names) for g in candidates), tools=len(tool_names),
     )
     return True
 
