@@ -3691,7 +3691,8 @@ class SharePointConnector(BaseConnector):
             self._refresh_all_groups = False
             self._listing_trusted = False
             # Without an earlier set nobody is known to be enabled either: no group is read until a trusted listing.
-            self._disabled_set_unknown = stored is None
+            # A key never saved reads as {} (not None); a saved empty set is {"emails": []}.
+            self._disabled_set_unknown = "emails" not in (stored or {})
             self._health.skipped("user listing", "not trusted; the claim groups and the disabled set were not rewritten")
         self.logger.info(f"✅ Successfully synced {len(users)} users")
 

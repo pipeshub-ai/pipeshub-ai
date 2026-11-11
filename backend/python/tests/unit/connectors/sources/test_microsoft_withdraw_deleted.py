@@ -510,7 +510,7 @@ async def test_outlook_a_404_then_a_server_error_keeps_access() -> None:
 # ----------------------------------- group writes need a trusted listing
 
 def _sharepoint_sync_point(c: SharePointConnector, emails: list[str] | None) -> None:
-    c.user_sync_point.read_sync_point = AsyncMock(return_value=None if emails is None else {"emails": emails})
+    c.user_sync_point.read_sync_point = AsyncMock(return_value={} if emails is None else {"emails": emails})  # the sync point store answers {} for a key never saved
 
 
 @pytest.mark.asyncio
