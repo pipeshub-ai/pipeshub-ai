@@ -67,12 +67,12 @@ async def _check(p, org: str, user: str, ids: list[str], monkeypatch: pytest.Mon
     walked: list[str] = []
     real_decide, real_walk = kg_read.decide, access_sql.accessible_rows
 
-    async def decide(*a, **k):
+    async def decide(*a, **k) -> kg_read.Decision:
         d = await real_decide(*a, **k)
         seen.update(admit=len(d.admit), denied=d.denied, walk=len(d.walk))
         return d
 
-    async def walk(tx, o, node_ids, vrids, access):
+    async def walk(tx, o, node_ids, vrids, access) -> list[dict]:
         walked.extend(node_ids)
         return await real_walk(tx, o, node_ids, vrids, access)
     with monkeypatch.context() as m:
@@ -151,7 +151,7 @@ async def test_a_connector_with_nodes_before_the_worker_is_backfilled_once_and_a
     from app.services.graph_db.postgres.kg import backfill as bf
     real = bf.verify_app
 
-    async def differs(tx, o, app):
+    async def differs(tx, o, app) -> object:
         res = await real(tx, o, app)
         res.note("extra", "x")
         return res
@@ -170,7 +170,7 @@ async def test_a_connector_with_changes_still_arriving_is_tried_again_later(pg_d
     await _world(p, org)
     real = bootstrap.bf.backfill
 
-    async def pending(db, o, app, **k):
+    async def pending(db, o, app, **k) -> object:
         out = await real(db, o, app, **k)
         out.flipped, out.pending = False, 3
         return out
@@ -188,7 +188,7 @@ async def test_a_promotion_that_is_refused_or_fails_is_logged_and_tried_again_la
     p, org = prov(pg_db), new_org()
     await _world(p, org)
 
-    async def boom(db, o, app):
+    async def boom(db, o, app) -> None:
         raise bootstrap.bf.Refused("changed meanwhile") if failure == "refused" else RuntimeError("database went away")
     due: dict = {}
     with monkeypatch.context() as m, caplog.at_level("WARNING"):
@@ -206,7 +206,7 @@ async def test_two_drains_of_one_org_never_project_at_the_same_time_and_the_log_
     active = {"now": 0, "max": 0, "calls": 0}
     real = drainer.project
 
-    async def slow(tx, o, focus):
+    async def slow(tx, o, focus) -> object:
         active["now"] += 1
         active["calls"] += 1
         active["max"] = max(active["max"], active["now"])
