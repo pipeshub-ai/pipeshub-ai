@@ -9,11 +9,16 @@ export function buildChatHref(options: {
   conversationId?: string | null;
   /** Ignored when `agentId` is set — a thread can't be scoped to both an agent and a project. */
   projectId?: string | null;
+  /** Open the chat scrolled to this message instead of the latest. Needs `conversationId`. */
+  messageId?: string | null;
 }): string {
   const q = new URLSearchParams();
   if (options.agentId) q.set('agentId', options.agentId);
   else if (options.projectId) q.set('projectId', options.projectId);
-  if (options.conversationId) q.set('conversationId', options.conversationId);
+  if (options.conversationId) {
+    q.set('conversationId', options.conversationId);
+    if (options.messageId) q.set('messageId', options.messageId);
+  }
   const qs = q.toString();
   return qs ? `/chat/?${qs}` : '/chat/';
 }

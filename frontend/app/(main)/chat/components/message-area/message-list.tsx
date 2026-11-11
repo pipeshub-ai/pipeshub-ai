@@ -399,9 +399,11 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
    * @param options.chatBecameActive If true, resets isScrolledUp (new context)
    */
   const executeScroll = useCallback((options: {
-    target: 'top-of-last-message' | 'bottom-of-container';
+    target: 'top-of-last-message' | 'bottom-of-container' | 'message';
     behavior: 'auto' | 'smooth' | '80/20-jump';
     chatBecameActive?: boolean;
+    /** Row key of the message to put at the top; used with target 'message'. */
+    messageKey?: string;
   }) => {
     if (!scrollContainerRef.current) {
       return;
@@ -417,9 +419,10 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
     const container = scrollContainerRef.current;
     let targetScrollTop = 0;
 
-    if (options.target === 'top-of-last-message') {
-      if (messageRefs.current.size === 0 || !lastMessageKeyRef.current) return;
-      const element = messageRefs.current.get(lastMessageKeyRef.current);
+    if (options.target === 'top-of-last-message' || options.target === 'message') {
+      const key = options.target === 'message' ? options.messageKey : lastMessageKeyRef.current;
+      if (messageRefs.current.size === 0 || !key) return;
+      const element = messageRefs.current.get(key);
       if (!element) return;
 
       const containerRect = container.getBoundingClientRect();
@@ -779,6 +782,19 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
     const store = useChatStore.getState();
     const slot = activeSlotId ? store.slots[activeSlotId] : null;
     const savedTop = slot?.savedScrollTop;
+
+    // A link from a fork (`?messageId=`) opens the chat at the message it was forked
+    // from, ahead of any saved position. shortcut: only finds it among the loaded
+    // messages; if it is older than the loaded page, the usual scroll applies.
+    const focusId = new URLSearchParams(window.location.search).get('messageId');
+    const focusPair = focusId ? messagePairs.find((p) => p.messageId === focusId) : undefined;
+    if (focusPair) {
+      recalcSpacerHeight();
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        executeScroll({ target: 'message', messageKey: focusPair.key, behavior: 'auto', chatBecameActive: true });
+      }));
+      return;
+    }
 
     // Determine whether the last message is actively streaming RIGHT NOW.
     // Hoisted above the savedTop block so it can be used in both branches.

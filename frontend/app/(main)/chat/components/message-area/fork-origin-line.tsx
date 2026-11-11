@@ -36,7 +36,12 @@ export function ForkOriginHeader({
       ) : (
         <ThemeLink asChild size="2">
           <Link
-            href={buildChatHref({ agentId, projectId, conversationId: origin.conversationId })}
+            href={buildChatHref({
+              agentId,
+              projectId,
+              conversationId: origin.conversationId,
+              messageId: origin.atMessageId,
+            })}
             style={{ overflowWrap: 'anywhere' }}
           >
             {origin.title || t('chat.untitledChat')}

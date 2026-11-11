@@ -865,7 +865,7 @@ describe('MessageList — a forked chat', () => {
     render(<MessageList />);
 
     const link = screen.getByRole('link', { name: 'Refund policy review' });
-    expect(hrefOf(link)).toEqual({ path: '/chat', params: { conversationId: 'orig-9' } });
+    expect(hrefOf(link)).toEqual({ path: '/chat', params: { conversationId: 'orig-9', messageId: 'srv-a1' } });
   });
 
   it('keeps the agent in the link when the fork belongs to an agent', () => {
@@ -876,7 +876,7 @@ describe('MessageList — a forked chat', () => {
 
     expect(hrefOf(screen.getByRole('link', { name: 'Refund policy review' }))).toEqual({
       path: '/chat',
-      params: { agentId: 'agent-7', conversationId: 'orig-9' },
+      params: { agentId: 'agent-7', conversationId: 'orig-9', messageId: 'srv-a1' },
     });
   });
 
