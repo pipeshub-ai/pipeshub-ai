@@ -52,6 +52,8 @@ class SearchPage:
     end_index: int
     next_cursor: str | None
     prev_cursor: str | None
+    # ``total`` stopped at the provider's cap: it is a lower bound, not the exact count.
+    total_capped: bool = False
 
 
 def _connector_key(app_id: str) -> str:
@@ -166,9 +168,10 @@ async def search_page(
     }
 
     if reuse_total:
-        total, counts = cursor.total, cursor.counts_by_type
+        total, counts, total_capped = cursor.total, cursor.counts_by_type, cursor.total_capped
     else:
         total = sum(payload.get("total") or 0 for payload in results)
+        total_capped = any(payload.get("totalCapped") for payload in results)
         counts_counter: Counter[str] = Counter()
         for payload in results:
             counts_counter.update(payload.get("counts") or {})
@@ -194,6 +197,7 @@ async def search_page(
                 direction=next_direction,
                 items_seen=items_seen,
                 total=total,
+                total_capped=total_capped,
                 counts_by_type=counts,
                 filters=filters,
                 sort_by=sort_field,
@@ -232,6 +236,7 @@ async def search_page(
         end_index=seen_before + len(merged.rows),
         next_cursor=next_cursor,
         prev_cursor=prev_cursor,
+        total_capped=total_capped,
     )
 
 

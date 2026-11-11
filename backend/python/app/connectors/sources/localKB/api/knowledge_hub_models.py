@@ -130,7 +130,8 @@ class PaginationInfo(BaseModel):
     by number.
     """
     limit: int = Field(..., description="Items per page")
-    totalItems: int = Field(..., description="Total number of items")
+    totalItems: int = Field(..., description="Total number of items; a lower bound when `totalCapped` is true")
+    totalCapped: bool = Field(False, description="True when `totalItems` stopped at the provider's cap and more items exist; `hasNext` and `nextCursor` stay authoritative")
     hasNext: bool = Field(..., description="Whether there is a next page")
     hasPrev: bool = Field(..., description="Whether there is a previous page")
     startIndex: Optional[int] = Field(None, description="1-based index of the first item on this page")
@@ -191,7 +192,8 @@ class CountItem(BaseModel):
 class CountsInfo(BaseModel):
     """Response model for counts information"""
     items: List[CountItem] = Field(..., description="Breakdown of counts by type")
-    total: int = Field(..., description="Total number of nodes")
+    total: int = Field(..., description="Total number of nodes; a lower bound when `capped` is true")
+    capped: bool = Field(False, description="True when `total` and the counts stopped at the provider's cap")
 
 class PermissionsInfo(BaseModel):
     """Response model for permissions information"""

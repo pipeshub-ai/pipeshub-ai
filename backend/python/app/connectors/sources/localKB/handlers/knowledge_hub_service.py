@@ -356,8 +356,9 @@ class KnowledgeHubService:
         direction = cursor.direction if cursor else "next"
 
         if cursor is not None and cursor.total is not None:
-            total, counts = cursor.total, cursor.counts_by_type
+            total, counts, total_capped = cursor.total, cursor.counts_by_type, cursor.total_capped
         else:
+            total_capped = bool(part.get("totalCapped"))
             total = part["total"] if part["total"] is not None else len(rows)
             if want_counts and part.get("counts") is not None:
                 counts = part["counts"]
@@ -384,6 +385,7 @@ class KnowledgeHubService:
                     direction=next_direction,
                     items_seen=items_seen,
                     total=total,
+                    total_capped=total_capped,
                     counts_by_type=counts,
                     filters=filters,
                     sort_by=sort_field,
@@ -409,6 +411,7 @@ class KnowledgeHubService:
             if rows and has_next else None,
             prev_cursor=issue(rows[0], "prev", seen_before)
             if rows and has_prev else None,
+            total_capped=total_capped,
         )
 
     async def _v2_nodes(
@@ -897,6 +900,7 @@ class KnowledgeHubService:
                 pagination=PaginationInfo(
                     limit=limit,
                     totalItems=total_count,
+                    totalCapped=page_result.total_capped,
                     hasNext=has_next,
                     hasPrev=has_prev,
                     startIndex=page_result.start_index,
@@ -969,6 +973,7 @@ class KnowledgeHubService:
                     response.counts = CountsInfo(
                         items=count_items,
                         total=total_count,  # Use actual total count, not paginated length
+                        capped=page_result.total_capped,
                     )
 
                 if permissions_task is not None:

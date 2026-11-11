@@ -202,6 +202,9 @@ class KnowledgeHubCursor:
     direction: str = "next"
     items_seen: int = 0
     total: int | None = None
+    # ``total`` is a lower bound (the provider stopped counting at its cap); carried with the
+    # total so every page of the listing says the same.
+    total_capped: bool = False
     counts_by_type: dict[str, int] | None = None
     filters: dict[str, Any] | None = None
     sort_by: str | None = None
@@ -230,7 +233,7 @@ class KnowledgeHubCursor:
         # unset fields are the common case.
         optional = (
             ("p", self.live.to_wire() if self.live else None),
-            ("tc", self.total), ("cb", self.counts_by_type), ("f", self.filters),
+            ("tc", self.total), ("tk", True if self.total_capped else None), ("cb", self.counts_by_type), ("f", self.filters),
             ("sb", self.sort_by), ("so", self.sort_order),
             ("pi", self.parent_id), ("pt", self.parent_type),
             ("vp", self.via_parent_id), ("m", self.mode),
@@ -259,6 +262,7 @@ class KnowledgeHubCursor:
             direction=direction,
             items_seen=items_seen,
             total=wire.get("tc"),
+            total_capped=wire.get("tk") is True,
             counts_by_type=wire.get("cb"),
             filters=wire.get("f"),
             sort_by=wire.get("sb"),
