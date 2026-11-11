@@ -104,6 +104,47 @@ async def test_a_lease_write_that_lands_late_is_measured_again_from_when_it_land
         assert token in parse_open_writes(g.app[OPEN_WRITES_KEY])
 
 
+async def test_a_late_renewal_on_its_last_attempt_is_still_measured_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sg, "STORE_CLOCK_TIMEOUT_SECONDS", 0.05)
+    store = Clock()
+    g = StoreGraph(store)
+    token = await open_write(g, "c", ["r1"])
+    real, slow = g.update_node_fields_if_match, {"left": 1}
+
+    async def landing_late(*a: object, **k: object) -> object:
+        done = await real(*a, **k)
+        if slow["left"]:
+            slow["left"] -= 1
+            await asyncio.sleep(0.1)
+            store.now += 180
+        return done
+    g.update_node_fields_if_match = landing_late  # type: ignore[method-assign]
+    assert await renew_write(g, "c", token, ["r1"], attempts=1) == token
+    assert parse_open_writes(g.app[OPEN_WRITES_KEY])[token]["u"] == int(store()) + OPEN_WRITE_SECONDS
+
+
+async def test_a_lease_whose_follow_up_renewal_fails_is_closed_not_left_to_the_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sg, "STORE_CLOCK_TIMEOUT_SECONDS", 0.05)
+    store = Clock()
+    g = StoreGraph(store)
+    real, slow = g.update_node_fields_if_match, {"left": 1}
+
+    async def landing_late(*a: object, **k: object) -> object:
+        done = await real(*a, **k)
+        if slow["left"]:
+            slow["left"] -= 1
+            await asyncio.sleep(0.1)
+        return done
+
+    async def no_renewal(*a: object, **k: object) -> object:
+        raise RuntimeError("store gone")
+    g.update_node_fields_if_match = landing_late  # type: ignore[method-assign]
+    monkeypatch.setattr(sg, "renew_write", no_renewal)
+    with pytest.raises(RuntimeError):
+        await open_write(g, "c", ["r1"])
+    assert parse_open_writes(g.app.get(OPEN_WRITES_KEY)) == {} and unclosed_writes(g.app) == 0
+
+
 async def test_a_renewal_pushes_the_deadline_by_the_store_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     store = Clock()
     g = StoreGraph(store)

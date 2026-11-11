@@ -283,7 +283,12 @@ async def open_write(graph_provider: Any, connector_id: str, roots: Collection[s
                        {OPEN_WRITES_KEY: raw, OPENED_KEY: opened}):
             if by_store and monotonic() - started > STORE_CLOCK_TIMEOUT_SECONDS:
                 # the write landed late, so its deadline is that much shorter than a lease: measure it again from now
-                return await renew_write(graph_provider, connector_id, token, roots, clock=clock, again=False)
+                try:
+                    return await renew_write(graph_provider, connector_id, token, roots, clock=clock, again=False)
+                except BaseException:
+                    # nobody holds the token yet, so close its lease here, or the connector stays not current until the sweep
+                    await asyncio.shield(close_write(graph_provider, connector_id, token))
+                    raise
             return token
         await _backoff(attempt)
     if await graph_provider.increment_node_field(connector_id, CollectionNames.APPS.value, OPENED_KEY) is None:
@@ -326,8 +331,8 @@ async def renew_write(graph_provider: Any, connector_id: str, token: str | None,
     instead of the write going on unfenced; the new token is returned. A renewal that cannot be written leaves the old lease running."""
     if token is None:
         return None
-    distrust = False
-    for attempt in range(attempts):
+    distrust, attempt = False, 0
+    while attempt < attempts:      # (a late write's follow-up is not an attempt: it must happen even after the last one)
         app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) or {}
         raw = app.get(OPEN_WRITES_KEY) or None
         try:
@@ -350,6 +355,7 @@ async def renew_write(graph_provider: Any, connector_id: str, token: str | None,
                 continue
             return token
         await _backoff(attempt)
+        attempt += 1
     return token
 
 
