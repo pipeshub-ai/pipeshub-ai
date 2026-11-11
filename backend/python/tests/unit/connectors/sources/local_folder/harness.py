@@ -121,6 +121,10 @@ class FakeSyncPoint:
         return dict(self.doc)
 
     async def update_sync_point(self, key, data, encrypt_fields=None):
+        # The Neo4j store keeps each value as a node property: a collection inside a collection is refused there.
+        for name, value in data.items():
+            assert not (isinstance(value, (list, tuple)) and any(isinstance(v, (list, tuple, dict)) for v in value)), f"sync point {name} is not storable"
+            assert not isinstance(value, dict), f"sync point {name} is not storable"
         self.doc.update(data)  # merge, like the real stores
 
 

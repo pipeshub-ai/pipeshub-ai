@@ -9,6 +9,7 @@ Filesystem watching is not implemented: a scheduled rescan is cheap with the man
 """
 
 import asyncio
+import json
 import mimetypes
 import os
 import unicodedata
@@ -87,6 +88,16 @@ def _cfg(sync_cfg: Any, key: str, default: Any = None) -> Any:  # noqa: ANN401
         if isinstance(src, dict) and src.get(key) not in (None, ""):
             return src[key]
     return default
+
+
+def _decode_rows(raw: object) -> list:
+    """The manifest rows of a sync point: a JSON string (current), or the list of lists an earlier version wrote."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return []
+    return raw if isinstance(raw, list) else []
 
 
 def _as_bool(raw: Any, default: bool) -> bool:  # noqa: ANN401, FBT001
@@ -374,7 +385,7 @@ class FolderConnector(BaseConnector):
 
         point = await self.record_sync_point.read_sync_point(self._sync_key())
         # Rows, not a dict: a sync point update merges nested objects and would never drop a key.
-        prev = {r[0]: (r[1], r[2], r[3]) for r in point.get("files") or []}
+        prev = {r[0]: (r[1], r[2], r[3]) for r in _decode_rows(point.get("files"))}
         prev_dirs = set(point.get("dirs") or [])
         if point.get("root") != str(self.root):
             # A different root (or a sync point from before roots were recorded): the manifest is not about this tree.
@@ -472,7 +483,8 @@ class FolderConnector(BaseConnector):
         )
         await self._sync_finished({r: manifest[r][1] for r in live if r in manifest}, set(manifest))
         await self.record_sync_point.update_sync_point(self._sync_key(), {
-            "files": [[r, *v] for r, v in manifest.items()],
+            # A JSON string: the Neo4j store refuses a list of lists as a property.
+            "files": json.dumps([[r, *v] for r, v in manifest.items()]),
             "dirs": sorted(dirs | {d for d in prev_dirs if d in undeleted}),
             "root": str(self.root),
             "last_sync_time": started,

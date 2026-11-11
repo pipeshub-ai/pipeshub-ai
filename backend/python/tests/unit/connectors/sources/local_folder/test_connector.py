@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -279,3 +280,14 @@ async def test_code_in_a_git_repository_is_filed_under_the_repositorys_own_group
     # the repository grants no more than the root does (the same single owner) and has no parent, which would rename the repository in the code graph
     assert repo_group.parent_external_group_id is None and repo_group.inherit_permissions is False
     assert [(p.email, p.type) for p in env.graph.perms] == [("dev@example.com", PermissionType.OWNER)] * 2 or {p.email for p in env.graph.perms} == {"dev@example.com"}
+
+
+async def test_a_sync_point_written_as_a_list_of_rows_by_an_earlier_version_is_still_read(env):
+    put(env.root, "a.py")
+    put(env.root, "b.py")
+    await env.c.run_sync()
+    env.c.record_sync_point.doc["files"] = json.loads(env.c.record_sync_point.doc["files"])  # the shape before the rows became a JSON string
+    (env.root / "b.py").unlink()
+    await env.c.run_sync()
+    assert "b.py" not in env.graph.records and "a.py" in env.graph.records  # b.py was known only from the old rows
+    assert isinstance(env.c.record_sync_point.doc["files"], str)
