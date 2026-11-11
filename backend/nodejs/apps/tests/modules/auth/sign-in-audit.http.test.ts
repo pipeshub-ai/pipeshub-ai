@@ -161,17 +161,18 @@ describe('auth audit lines (HTTP)', function () {
   };
 
   async function call(method: 'POST' | 'PUT' | 'GET', path: string, body: unknown = {}, headers: Record<string, string> = {}, mount = '/api/v1/userAccount') {
+    const requestId = `${OUR_REQUESTS}-${++requestSeq}`;
     const res = await fetch(`${baseUrl}${mount}${path}`, {
       method,
-      headers: { 'content-type': 'application/json', 'x-request-id': `${OUR_REQUESTS}-${++requestSeq}`, ...headers },
+      headers: { 'content-type': 'application/json', 'x-request-id': requestId, ...headers },
       body: method === 'GET' ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(5000),
     });
     const text = await res.text();
     let parsed: any = text;
     try { parsed = text ? JSON.parse(text) : undefined; } catch { /* plain text */ }
-    // The access line is written on 'close'; wait for it so every test sees whole requests.
-    await waitForRecord((r) => r.message === 'http.request.end' && r.route?.endsWith(path.split('?')[0]!));
+    // The access line is written on 'close'; wait for this request's own line (not an earlier call to the same route).
+    await waitForRecord((r) => r.message === 'http.request.end' && r.request_id === requestId);
     return { status: res.status, headers: res.headers, body: parsed, text };
   }
   async function initAuth(email?: string): Promise<string> {
@@ -682,16 +683,16 @@ describe('auth audit lines (HTTP)', function () {
       await reset();
       lock(alice);
       await reset(resetToken());
-      await reset(resetToken(person('Gone', 'gone@acme.test')));
+      const gone = person('Gone', 'gone@acme.test');
+      await reset(resetToken(gone));
       expect(audits()).to.deep.equal([
         { event: 'auth.password_reset.complete', outcome: 'failure', reason: 'link_used', actor: alice._id },
         { event: 'auth.password_reset.complete', outcome: 'failure', reason: 'token_expired' },
         { event: 'auth.password_reset.complete', outcome: 'failure', reason: 'token_invalid' },
         { event: 'auth.password_reset.complete', outcome: 'failure', reason: 'no_token' },
         { event: 'auth.password_reset.complete', outcome: 'failure', reason: 'locked', actor: alice._id },
-        { event: 'auth.password_reset.complete', outcome: 'failure', reason: 'unknown_user', actor: audits()[5]?.actor },
+        { event: 'auth.password_reset.complete', outcome: 'failure', reason: 'unknown_user', actor: gone._id },
       ]);
-      expect(audits()[5]?.actor).to.match(/^[a-f0-9]{24}$/);
     });
 
     it('T17 password change: success even when the new token is then refused; wrong current; CAPTCHA', async () => {
