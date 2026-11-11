@@ -2971,9 +2971,9 @@ describe('Enterprise Search Controller', () => {
     }
     const NOTICES = [{ code: 'connector_syncing', connectorId: 'c1', connectorName: 'Jira' }]
 
-    for (const [status, code, notices] of [
-      [404, 'NOT_FOUND', NOTICES],
-      [503, 'check_unavailable', [{ code: 'check_unavailable' }]],
+    for (const [status, notices] of [
+      [404, NOTICES],
+      [503, [{ code: 'check_unavailable' }]],
     ] as const) {
       it(`keeps the error envelope of a ${status} and adds only the access notice codes`, async () => {
         const handler = search(createMockAppConfig())
@@ -3003,7 +3003,6 @@ describe('Enterprise Search Controller', () => {
         expect(body.error).to.have.property('message')
         expect(body).to.not.have.property('status')
         expect(JSON.stringify(body)).to.not.contain('hidden')
-        void code
       })
     }
 

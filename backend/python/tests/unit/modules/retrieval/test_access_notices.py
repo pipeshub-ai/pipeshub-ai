@@ -136,10 +136,7 @@ async def test_a_demo_app_the_person_switched_off_is_not_read(service) -> None:
 
 @degraded_notice.scoped
 async def _two_searches(service: RetrievalService, read: AsyncMock):  # noqa: ANN202
-    apps = []
-    for _ in range(3):
-        apps.append(await service._notice_apps(frozenset({"c1", "c2"}), "u1", "o1"))
-    yield apps
+    yield [await service._notice_apps(frozenset({"c1", "c2"}), "u1", "o1") for _ in range(3)]
 
 
 async def test_a_run_reads_each_connector_once_however_often_it_searches(service) -> None:
