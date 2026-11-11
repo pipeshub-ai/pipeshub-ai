@@ -131,10 +131,26 @@ describe('PermissionFreshness: one state each', () => {
     await screen.findByText(/1 folder is being updated\. It is hidden from everyone/);
   });
 
+  it('an unreadable waiting list is not "nothing is waiting": it says it is not known, and why in the attention list', async () => {
+    getStatus.mockResolvedValue(status({ pending: { roots: 0, unreadable: true, oldestChangesAgo: null }, attention: ['pending_unreadable'] }));
+    renderCard();
+    await screen.findByText(/Not known: the list of folders waiting to update can't be read/);
+    expect(screen.queryByText('Nothing is waiting.')).toBeNull();
+    expect(screen.queryByText(/folders? (is|are) being updated/)).toBeNull();
+    expect(screen.getByRole('listitem').textContent).toContain("The list of folders waiting to update can't be read. Ask whoever runs PipesHub");
+  });
+
+  it('a connector that needs a full rebuild says search still checks each result, not that a change is being applied', async () => {
+    getStatus.mockResolvedValue(status({ attention: ['needs_full_pass'] }));
+    renderCard();
+    expect((await screen.findByRole('listitem')).textContent).toBe("This connector's permission index needs a full rebuild. Until then search checks each result, so nothing is hidden by it.");
+    expect(screen.getByText('Nothing is waiting.')).toBeTruthy();
+  });
+
   it('overflow: says the whole connector is being updated', async () => {
     getStatus.mockResolvedValue(status({ state: 'overflow', attention: ['needs_full_pass'] }));
     renderCard();
-    await screen.findByText(/A large change is being applied to the whole connector/);
+    await screen.findByText(/A change reached the whole connector, so its permission index needs to be rebuilt in full\. Until then search checks each result/);
     expect(screen.queryByText('Nothing is waiting.')).toBeNull();
   });
 });
@@ -148,7 +164,7 @@ describe('PermissionFreshness: needs attention', () => {
     await screen.findByText('Needs attention (5)');
     const items = within(screen.getByRole('list')).getAllByRole('listitem').map((li) => li.textContent);
     expect(items).toEqual([
-      expect.stringContaining('could not be read, or a change was too large to track'),
+      expect.stringContaining("waiting to update can't be read"),
       expect.stringContaining('did not finish cleanly'),
       expect.stringContaining('could not be checked by the faster search'),
       expect.stringContaining('keep failing'),

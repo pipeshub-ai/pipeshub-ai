@@ -14,7 +14,7 @@ const REFRESH_MS = 30_000;
 
 /** The server sends codes; each is worded by one of these keys under `attention.`, and anything else by `other`. */
 const ATTENTION_KEY: Record<string, string> = {
-  pending_unreadable: 'rebuild',
+  pending_unreadable: 'unreadable',
   needs_full_pass: 'rebuild',
   open_write_expired: 'unfinished',
   open_write_unleased: 'unfinished',
@@ -129,7 +129,9 @@ export function PermissionFreshness({
         </Row>
 
         <Row label={k('pending.label')}>
-          {state === 'overflow' ? (
+          {pending.unreadable ? (
+            <Text size="2">{k('pending.unknown')}</Text>
+          ) : state === 'overflow' ? (
             <Text size="2">{k('pending.overflow')}</Text>
           ) : pending.roots === 0 ? (
             <Text size="2">{k('pending.none')}</Text>

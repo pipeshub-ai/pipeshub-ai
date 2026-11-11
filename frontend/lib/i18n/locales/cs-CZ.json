@@ -3590,7 +3590,8 @@
           "some_few": "Aktualizují se {{count}} složky. Jsou skryté pro všechny, dokud aktualizace neskončí, obvykle několik minut.",
           "some_many": "Aktualizuje se {{count}} složky. Jsou skryté pro všechny, dokud aktualizace neskončí, obvykle několik minut.",
           "some_other": "Aktualizuje se {{count}} složek. Jsou skryté pro všechny, dokud aktualizace neskončí, obvykle několik minut.",
-          "overflow": "Na celý konektor se používá rozsáhlá změna. Obsah může zůstat skrytý, dokud neskončí."
+          "overflow": "Změna se dotkla celého konektoru, proto je nutné jeho index oprávnění zcela znovu vytvořit. Do té doby vyhledávání kontroluje každý výsledek, takže kvůli tomu nic není skryto.",
+          "unknown": "Neznámé: seznam složek čekajících na aktualizaci nelze přečíst. Viz „Vyžaduje pozornost“."
         },
         "attention": {
           "label": "Vyžaduje pozornost ({{count}})",
@@ -3599,11 +3600,12 @@
           "fix": "Řešení: udělte synchronizačnímu účtu v {{vendor}} oprávnění {{permission}} a poté zvolte Synchronizovat oprávnění nyní.",
           "showAll": "Zobrazit dalších {{count}}",
           "warningNoContainer": "Některé položky jsou skryté, protože synchronizační účet nemůže přečíst jejich oprávnění.",
-          "rebuild": "Seznam složek čekajících na aktualizaci oprávnění se nepodařilo přečíst, nebo byla změna příliš rozsáhlá na sledování. Požádejte provozovatele PipesHub o opětovné vytvoření indexu oprávnění tohoto konektoru.",
+          "rebuild": "Index oprávnění tohoto konektoru je nutné zcela znovu vytvořit. Do té doby vyhledávání kontroluje každý výsledek, takže kvůli tomu nic není skryto.",
           "unfinished": "Změna oprávnění neskončila čistě. Požádejte provozovatele PipesHub o kontrolu indexu oprávnění tohoto konektoru.",
           "stale": "Některé položky rychlejší vyhledávání nemohlo zkontrolovat, a jsou proto nalezeny klasickým vyhledáváním.",
           "sweep": "Aktualizace oprávnění tohoto konektoru opakovaně selhávají. Požádejte provozovatele PipesHub o kontrolu jeho protokolů.",
-          "other": "Na oprávnění tohoto konektoru se musí někdo podívat."
+          "other": "Na oprávnění tohoto konektoru se musí někdo podívat.",
+          "unreadable": "Seznam složek čekajících na aktualizaci nelze přečíst. Požádejte provozovatele PipesHub o opětovné vytvoření indexu oprávnění tohoto konektoru. Vyhledávání mezitím kontroluje každý výsledek."
         }
       }
     },

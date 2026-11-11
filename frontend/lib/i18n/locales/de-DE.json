@@ -3326,7 +3326,8 @@
           "none": "Nichts wartet.",
           "some_one": "{{count}} Ordner wird aktualisiert. Er ist für alle verborgen, bis die Aktualisierung abgeschlossen ist, meist einige Minuten.",
           "some_other": "{{count}} Ordner werden aktualisiert. Sie sind für alle verborgen, bis die Aktualisierung abgeschlossen ist, meist einige Minuten.",
-          "overflow": "Eine große Änderung wird auf den gesamten Konnektor angewendet. Inhalte bleiben möglicherweise verborgen, bis sie abgeschlossen ist."
+          "overflow": "Eine Änderung betraf den gesamten Konnektor, daher muss sein Berechtigungsindex vollständig neu aufgebaut werden. Bis dahin prüft die Suche jedes Ergebnis, sodass dadurch nichts verborgen wird.",
+          "unknown": "Unbekannt: Die Liste der Ordner, die auf ein Update warten, kann nicht gelesen werden. Siehe „Erfordert Aufmerksamkeit“."
         },
         "attention": {
           "label": "Handlungsbedarf ({{count}})",
@@ -3335,11 +3336,12 @@
           "fix": "Lösung: Geben Sie dem Synchronisierungskonto in {{vendor}} die Berechtigung {{permission}} und wählen Sie dann „Berechtigungen jetzt synchronisieren“.",
           "showAll": "{{count}} weitere anzeigen",
           "warningNoContainer": "Einige Elemente sind verborgen, weil das Synchronisierungskonto ihre Berechtigungen nicht lesen kann.",
-          "rebuild": "Die Liste der Ordner, die auf eine Berechtigungsaktualisierung warten, konnte nicht gelesen werden, oder eine Änderung war zu groß, um sie zu verfolgen. Bitten Sie die Person, die PipesHub betreibt, den Berechtigungsindex dieses Konnektors neu aufzubauen.",
+          "rebuild": "Der Berechtigungsindex dieses Konnektors muss vollständig neu aufgebaut werden. Bis dahin prüft die Suche jedes Ergebnis, sodass dadurch nichts verborgen wird.",
           "unfinished": "Eine Berechtigungsänderung wurde nicht sauber abgeschlossen. Bitten Sie die Person, die PipesHub betreibt, den Berechtigungsindex dieses Konnektors zu prüfen.",
           "stale": "Einige Elemente konnten von der schnelleren Suche nicht geprüft werden und werden stattdessen von der klassischen Suche gefunden.",
           "sweep": "Berechtigungsaktualisierungen für diesen Konnektor schlagen wiederholt fehl. Bitten Sie die Person, die PipesHub betreibt, die Protokolle zu prüfen.",
-          "other": "Bei den Berechtigungen dieses Konnektors muss sich jemand etwas ansehen."
+          "other": "Bei den Berechtigungen dieses Konnektors muss sich jemand etwas ansehen.",
+          "unreadable": "Die Liste der Ordner, die auf ein Update warten, kann nicht gelesen werden. Bitten Sie die Person, die PipesHub betreibt, den Berechtigungsindex dieses Konnektors neu aufzubauen. Die Suche prüft währenddessen jedes Ergebnis."
         }
       }
     },

@@ -12,7 +12,11 @@ from app.services.permissions.scope_fields import (
     SCOPE_FIELDS_VERSION,
     set_resolved_generation,
 )
-from app.services.permissions.structure_generation import GENERATION_KEY, PENDING_KEY
+from app.services.permissions.structure_generation import (
+    GENERATION_KEY,
+    PENDING_KEY,
+    UNSAFE_KEY,
+)
 from app.services.vector_db.scope_backfill import BACKFILL_KEYS as K
 from app.services.vector_db.scope_backfill import DONE
 from app.services.vector_db.scope_sweep import SWEEP_KEY
@@ -85,17 +89,36 @@ def test_pending_roots_count_and_how_many_changes_ago_without_naming_them() -> N
     assert "rootA" not in str(out)
 
 
-def test_unreadable_pending_roots_are_pending_and_need_attention() -> None:
+def test_unreadable_pending_roots_are_not_pending_and_say_so_in_attention() -> None:
     out = st(healthy(**{PENDING_KEY: "not json"}))
-    assert out["state"] == "pending" and out["pending"] == {"roots": 0, "unreadable": True, "oldestChangesAgo": None}
-    assert out["attention"] == ["pending_unreadable"]
+    assert out["state"] == "healthy"        # not "pending": nothing is known to wait, and a connector that is not current hides nothing
+    assert out["pending"] == {"roots": 0, "unreadable": True, "oldestChangesAgo": None}
+    assert out["attention"] == ["pending_unreadable"] and out["serving"]["current"] is False
 
 
 def test_overflow_is_a_change_too_large_to_list_as_subtrees() -> None:
-    """The generation moved and no root was registered (more than the cap, or a change that reaches the whole connector)."""
+    """The structure generation is ahead of the stamped one and no root was registered (more than the cap, or a change that reaches the whole connector)."""
     out = st(healthy(**{GENERATION_KEY: 6}))
     assert out["state"] == "overflow" and out["attention"] == ["needs_full_pass"]
     assert out["pending"]["roots"] == 0 and out["serving"]["served"] is False
+
+
+@pytest.mark.parametrize("over", [
+    {K["state"]: "failed"},
+    {K["state"]: "running"},
+    {K["version"]: SCOPE_FIELDS_VERSION - 1},
+    {K["generation"]: 2},
+    {UNSAFE_KEY: 99},
+], ids=["failed back-fill", "running back-fill", "older field version", "other ACL generation", "unsafe mark"])
+def test_a_connector_that_is_not_current_for_another_reason_is_not_overflow(over: dict) -> None:
+    out = st(healthy(**over))
+    assert out["state"] == "healthy" and out["serving"]["current"] is False
+    assert out["attention"] == ["needs_full_pass"]
+
+
+def test_structure_ahead_of_an_unreadable_stamp_is_not_overflow() -> None:
+    assert st(healthy(**{GENERATION_KEY: 6, K["structure_generation"]: None}))["state"] == "healthy"
+    assert st(healthy(**{GENERATION_KEY: 6, PENDING_KEY: '{"r": 6}'}))["state"] == "pending"      # a root was registered: a subtree rewrite, not the whole connector
 
 
 def test_an_unread_generation_does_not_invent_an_age() -> None:

@@ -3317,7 +3317,8 @@
           "none": "Nothing is waiting.",
           "some_one": "{{count}} folder is being updated. It is hidden from everyone until the update finishes, usually a few minutes.",
           "some_other": "{{count}} folders are being updated. They are hidden from everyone until the update finishes, usually a few minutes.",
-          "overflow": "A large change is being applied to the whole connector. Content may stay hidden until it finishes."
+          "overflow": "A change reached the whole connector, so its permission index needs to be rebuilt in full. Until then search checks each result, so nothing is hidden by it.",
+          "unknown": "Not known: the list of folders waiting to update can't be read. See Needs attention."
         },
         "attention": {
           "label": "Needs attention ({{count}})",
@@ -3326,11 +3327,12 @@
           "fix": "Fix: give the sync account {{permission}} in {{vendor}}, then choose Sync permissions now.",
           "showAll": "Show {{count}} more",
           "warningNoContainer": "Some items are hidden because the sync account cannot read their permissions.",
-          "rebuild": "The list of folders waiting for a permission update could not be read, or a change was too large to track. Ask whoever runs PipesHub to rebuild this connector's permission index.",
+          "rebuild": "This connector's permission index needs a full rebuild. Until then search checks each result, so nothing is hidden by it.",
           "unfinished": "A permission change did not finish cleanly. Ask whoever runs PipesHub to check this connector's permission index.",
           "stale": "Some items could not be checked by the faster search and are found by the classic search instead.",
           "sweep": "Permission updates keep failing for this connector. Ask whoever runs PipesHub to check its logs.",
-          "other": "Something about this connector's permissions needs a person to look at it."
+          "other": "Something about this connector's permissions needs a person to look at it.",
+          "unreadable": "The list of folders waiting to update can't be read. Ask whoever runs PipesHub to rebuild this connector's permission index. Search checks each result meanwhile."
         }
       }
     },

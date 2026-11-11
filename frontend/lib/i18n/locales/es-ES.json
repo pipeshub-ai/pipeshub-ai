@@ -3361,7 +3361,8 @@
           "some_one": "Se está actualizando {{count}} carpeta. Permanece oculta para todos hasta que termine la actualización, normalmente unos minutos.",
           "some_many": "Se están actualizando {{count}} de carpetas. Permanecen ocultas para todos hasta que termine la actualización, normalmente unos minutos.",
           "some_other": "Se están actualizando {{count}} carpetas. Permanecen ocultas para todos hasta que termine la actualización, normalmente unos minutos.",
-          "overflow": "Se está aplicando un cambio grande a todo el conector. Es posible que el contenido siga oculto hasta que termine."
+          "overflow": "Un cambio afectó a todo el conector, por lo que su índice de permisos debe reconstruirse por completo. Hasta entonces la búsqueda comprueba cada resultado, así que no se oculta nada por esto.",
+          "unknown": "Desconocido: no se puede leer la lista de carpetas que esperan una actualización. Consulte «Requiere atención»."
         },
         "attention": {
           "label": "Requiere atención ({{count}})",
@@ -3370,11 +3371,12 @@
           "fix": "Solución: dé a la cuenta de sincronización el permiso {{permission}} en {{vendor}} y luego elija Sincronizar permisos ahora.",
           "showAll": "Mostrar {{count}} más",
           "warningNoContainer": "Algunos elementos están ocultos porque la cuenta de sincronización no puede leer sus permisos.",
-          "rebuild": "No se pudo leer la lista de carpetas que esperan una actualización de permisos, o un cambio fue demasiado grande para seguirlo. Pida a quien administra PipesHub que reconstruya el índice de permisos de este conector.",
+          "rebuild": "El índice de permisos de este conector necesita una reconstrucción completa. Hasta entonces la búsqueda comprueba cada resultado, así que no se oculta nada por esto.",
           "unfinished": "Un cambio de permisos no terminó correctamente. Pida a quien administra PipesHub que revise el índice de permisos de este conector.",
           "stale": "La búsqueda rápida no pudo comprobar algunos elementos; se encuentran con la búsqueda clásica.",
           "sweep": "Las actualizaciones de permisos de este conector siguen fallando. Pida a quien administra PipesHub que revise sus registros.",
-          "other": "Algo en los permisos de este conector requiere que una persona lo revise."
+          "other": "Algo en los permisos de este conector requiere que una persona lo revise.",
+          "unreadable": "No se puede leer la lista de carpetas que esperan una actualización. Pida a quien administra PipesHub que reconstruya el índice de permisos de este conector. Mientras tanto, la búsqueda comprueba cada resultado."
         }
       }
     },

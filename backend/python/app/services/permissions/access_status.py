@@ -45,8 +45,10 @@ def _warnings(raw: object) -> list[dict[str, object]]:
 
 
 def status(app: Mapping[str, Any], *, reach_minutes: int | None = None, now: datetime | None = None, store_time: float | None = None) -> dict[str, Any]:
-    """``state`` is the one a person reads first: running, never (no sync has ended), failed, overflow (a change too large to list as
-    subtrees: the whole connector is rebuilt), pending (subtrees being rewritten), else healthy."""
+    """``state`` is the one a person reads first: running, never (no sync has ended), failed, overflow (the structure moved past the stamped
+    generation and no root was registered: a change too large to list as subtrees, so the whole connector is rebuilt), pending (subtrees
+    being rewritten), else healthy. Anything else that keeps the stamps from being current (a failed back-fill, a version skew, an unreadable
+    roots list) is an ``attention`` code, not a state: a connector that is not current is read by the legacy filter, which hides nothing."""
     view = connector_view("", app, store_time=store_time)
     codes = [a.split(":", 1)[0] for a in view.attention]
     try:
@@ -55,6 +57,8 @@ def status(app: Mapping[str, Any], *, reach_minutes: int | None = None, now: dat
     except PendingUnreadable:
         roots, unreadable = {}, True
     generation = structure_generation_of(app)
+    stamped = whole_number(app.get(BACKFILL_KEYS["structure_generation"]))
+    whole_connector = not roots and not unreadable and generation is not None and stamped is not None and generation > stamped
     finished = _iso(app.get(K.LAST_SYNC_FINISHED_AT))
     running = app.get("status") in RUNNING
     outcome = "running" if running else str(app.get(K.LAST_SYNC_OUTCOME) or "succeeded") if finished else "never"
@@ -64,9 +68,9 @@ def status(app: Mapping[str, Any], *, reach_minutes: int | None = None, now: dat
         state = "never"
     elif outcome == "failed":
         state = "failed"
-    elif "needs_full_pass" in codes:
+    elif whole_connector:
         state = "overflow"
-    elif roots or unreadable:
+    elif roots:
         state = "pending"
     else:
         state = "healthy"

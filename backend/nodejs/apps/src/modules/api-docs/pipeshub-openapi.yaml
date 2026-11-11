@@ -54741,8 +54741,11 @@ paths:
                     type: string
                     description: |
                       The one state to read first: `running` (a sync is running), `never` (no sync has ended),
-                      `failed` (the last sync failed), `overflow` (a change was too large to list as subtrees, so the whole
-                      connector is rebuilt), `pending` (subtrees are being rewritten and hidden until then) or `healthy`.
+                      `failed` (the last sync failed), `overflow` (a change reached the whole connector and no subtree was
+                      registered for it, so the connector's permission index is rebuilt in full), `pending` (subtrees are being
+                      rewritten and hidden until then) or `healthy`. Other reasons the stored permissions are not usable
+                      (an unfinished back-fill, an unreadable list of waiting subtrees) are codes in `attention`, not states;
+                      search reads such a connector with the classic check, which hides nothing.
                     enum: [healthy, running, failed, pending, overflow, never]
                   reachWithinMinutes:
                     type: integer
