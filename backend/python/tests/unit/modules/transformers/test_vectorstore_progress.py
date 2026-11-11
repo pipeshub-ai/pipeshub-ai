@@ -190,7 +190,9 @@ class TestARecordThatMakesProgress:
         consumer = Consumer(chain, cap=2.0, floor=1.5, ceiling=5.0)
         assert await consumer.run() == "dead-lettered"
         assert consumer.counted == 3
-        assert consumer.uncounted >= 2
+        # One attempt's cap is below the ceiling, so a cut counted for the ceiling follows at least one handed back. How
+        # many depends on how late a loaded runner handles a timeout (a first cut of 3 s leaves room for only one more).
+        assert consumer.uncounted >= 1
         assert COUNTED_CEILING in consumer.reasons, consumer.reasons
         assert chain.graph.node[EMBED_SECONDS] > 0.0  # the handed-back cut recorded its embedding time
 
