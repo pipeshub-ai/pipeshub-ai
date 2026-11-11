@@ -27,6 +27,11 @@ PRINCIPALS = ["users", "groups", "roles", "teams", "organizations"]
 
 _VRID_SQL = "/* pipeshub:graph.records_by_virtual_id */ SELECT node_id, doc, doc->>'connectorId' AS app_id FROM graph.records_by_virtual_id($1::text[])"       # the vetted read of graph_0004
 _VRID_PAGE = 5000
+_TARGETS_SQL = """/* pipeshub:graph.access_targets */ SELECT t.coll, t.id, t.doc, CASE WHEN t.coll = 'apps' THEN t.id ELSE t.doc->>'connectorId' END AS app_id
+    FROM graph.nodes t
+    WHERE t.org_id = $1 AND t.doc->>'orgId' = $1 AND NOT coalesce((t.doc->>'isDeleted')::boolean, false)
+      AND (NOT coalesce((t.doc->>'isPlaceholder')::boolean, false) OR t.id = ANY($2::text[]))
+      AND t.coll IN ('records', 'recordGroups', 'apps') AND t.id = ANY($2::text[])"""
 _HIER_TYPES = ["PARENT_CHILD", "ATTACHMENT"]
 _CHUNK = 10_000
 
@@ -299,11 +304,7 @@ async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str
     granted = {g for ids in access["by_connector"].values() for g in ids}
     granted_l = sorted(granted)
     # two statements, each served by one index, instead of one with an OR across them (which plans badly without statistics)
-    rows = await tx.fetch("""/* pipeshub:graph.access_targets */ SELECT t.coll, t.id, t.doc, CASE WHEN t.coll = 'apps' THEN t.id ELSE t.doc->>'connectorId' END AS app_id
-        FROM graph.nodes t
-        WHERE t.org_id = $1 AND t.doc->>'orgId' = $1 AND NOT coalesce((t.doc->>'isDeleted')::boolean, false)
-          AND (NOT coalesce((t.doc->>'isPlaceholder')::boolean, false) OR t.id = ANY($2::text[]))
-          AND t.coll IN ('records', 'recordGroups', 'apps') AND t.id = ANY($2::text[])""", org, node_ids)
+    rows = await tx.fetch(_TARGETS_SQL, org, node_ids)
     if vrids:
         seen_ids = {r["id"] for r in rows}
         found = None
@@ -405,6 +406,17 @@ async def accessible_rows(tx: Tx, org: str, node_ids: list[str], vrids: list[str
                 WHERE e.org_id = $1 AND e.coll = 'permission' AND e.to_coll = 'records' AND e.to_id = ANY($2::text[]) AND e.from_id = ANY($3::text[])
                   AND (e.from_coll <> 'organizations' OR e.doc->>'type' = ANY($4::text[]))""", org, cand, access["grantee_ids"], list(ORG_SHARE_PERMISSION_TYPES)):
                 ok.add(r["to_id"])
+    return await _shape(tx, org, targets, ok)
+
+
+async def admitted_rows(tx: Tx, org: str, ids: list[str]) -> list[dict[str, Any]]:
+    """The rows ``accessible_rows`` returns for ids that something else (the typed graph) has already admitted: read by the same statement, so a node the walk would not even look at
+    (another org's document, a deleted one) is dropped here too, and shaped the same way."""
+    targets = [(r["coll"], r["id"], json.loads(r["doc"]) if isinstance(r["doc"], str) else dict(r["doc"]), r["app_id"]) for r in await tx.fetch(_TARGETS_SQL, org, ids)]
+    return await _shape(tx, org, targets, {t[1] for t in targets})
+
+
+async def _shape(tx: Tx, org: str, targets: list[tuple[str, str, dict[str, Any], str | None]], ok: set[str]) -> list[dict[str, Any]]:
     out = []
     groups: dict[tuple[str, str], list[str]] = {}
     admitted = [(c, i) for c, i, d, a in targets if i in ok]
