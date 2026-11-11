@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import gc
+import itertools
 import struct
 import threading
 import time
@@ -1249,6 +1250,10 @@ class TestQueriesDuringIndexing:
     async def test_queries_start_at_once_and_the_wait_shows_by_priority(self) -> None:
         """The small-tier shape: two slots, one reserved, bulk saturated."""
         manager = ModelManager(max_concurrency=2, query_reserved_slots=1)
+        # Every reading moves a second, so stats() ages and waits are not
+        # rounded to zero by a fast machine.
+        ticks = itertools.count()
+        manager._encode_gate._clock = lambda: float(next(ticks))
         release_bulk = threading.Event()
         model = MagicMock()
 
@@ -1416,6 +1421,45 @@ class TestAbandonedRequests:
 
         assert len(await manager.encode("m", ["a"], should_stop=flaky)) == 1
         assert manager.encode_gate_stats()["in_use"] == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("left", [True, False])
+    async def test_disconnect_check_sees_a_client_that_left_behind_the_telemetry_middleware(self, left) -> None:
+        from fastapi import FastAPI, Request
+
+        from app import embedding_main
+        from app.telemetry.middleware import MetricsMiddleware
+
+        probe = FastAPI()
+        probe.add_middleware(MetricsMiddleware, service_name="probe")
+        seen: list[bool] = []
+        queued = asyncio.Event()
+
+        @probe.post("/p")
+        async def handler(request: Request) -> dict:
+            await request.body()
+            queued.set()
+            await asyncio.sleep(0.05)  # stands in for waiting in the gate queue
+            seen.append(await embedding_main._client_gone(request))
+            return {}
+
+        inbox: asyncio.Queue = asyncio.Queue()
+        inbox.put_nowait({"type": "http.request", "body": b"{}", "more_body": False})
+
+        async def send(_message: dict) -> None:
+            return None
+
+        scope = {
+            "type": "http", "method": "POST", "path": "/p", "headers": [(b"content-length", b"2")],
+            "query_string": b"", "http_version": "1.1", "scheme": "http", "root_path": "",
+            "server": ("t", 80), "client": ("c", 1),
+        }  # fmt: skip
+        run = asyncio.ensure_future(probe(scope, inbox.get, send))
+        await queued.wait()
+        if left:
+            inbox.put_nowait({"type": "http.disconnect"})
+        await run
+        assert seen == [left]
 
     def test_route_passes_the_disconnect_check_and_answers_an_abandoned_request_quietly(self, client) -> None:
         test_client, mock_manager = client

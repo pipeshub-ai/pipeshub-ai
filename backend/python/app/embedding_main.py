@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, Any
 
+import anyio
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -1372,6 +1373,19 @@ async def download_progress(model_name: str) -> JSONResponse:
     )
 
 
+async def _client_gone(request: Request) -> bool:
+    """Whether the client has disconnected.
+
+    ``Request.is_disconnected`` polls inside an already-cancelled scope; behind
+    a ``BaseHTTPMiddleware`` (the telemetry one) that cancel lands before the
+    disconnect is read, so it always answers False. Wait a moment for real.
+    The body is already read by now, so the only message left is a disconnect.
+    """
+    with anyio.move_on_after(0.005):
+        return (await request.receive())["type"] == "http.disconnect"
+    return False
+
+
 @app.post("/v1/embeddings")
 async def create_embeddings(
     request: EmbeddingRequest,
@@ -1402,7 +1416,7 @@ async def create_embeddings(
             texts,
             trust_remote_code=request.trust_remote_code,
             priority=EncodePriority.from_header(x_embedding_priority),
-            should_stop=http_request.is_disconnected,
+            should_stop=lambda: _client_gone(http_request),
         )
     except EncodeAbandoned:
         # Nobody is reading this; 499 is the conventional "client closed request".
