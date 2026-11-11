@@ -21,10 +21,12 @@ import pytest
 
 import app.utils.embedding_gate as gate_module
 from app.exceptions.indexing_exceptions import EmbeddingError
+from app.models.blocks import BlocksContainer
 from app.modules.indexing.record_progress import (
     RecordProgress,
     StallHistory,
     begin_progress,
+    current_progress,
     end_progress,
 )
 from app.services.resource_governor.feedback import (
@@ -42,6 +44,10 @@ from app.utils.embedding_gate import (
 from app.utils.embedding_server_client import EmbeddingServerEmbeddings
 from app.utils.indexing_workers import indexing_worker_count
 from tests.unit.modules.transformers.test_vectorstore_deep import _make_vectorstore
+from tests.unit.modules.transformers.test_vectorstore_point_ids import (
+    _reconciling_store,
+    _text_block,
+)
 
 SERVICE = "default"
 
@@ -952,3 +958,59 @@ class TestBudgetPause:
         with pytest.raises(TimeoutError):
             await TestTheRecordBudget().run_record(cap=2.0, floor=20.0, waits=[1.0, 12.0], gate_limit=1.6)
         assert 2.8 < time.monotonic() - started < 4.1
+
+
+class TestEmbedderSwappedDuringTheWait:
+    async def test_the_embedder_that_chose_the_gate_makes_every_call(self) -> None:
+        gate = make_gate(Health(encode_gate(1)))
+        await gate._current_width()
+        server = FakeServer(gate, slots=1, work=0.0)
+        vs = store_for(server)
+        # Not the bundled client: it does not take ``single_attempt``.
+        replacement = MagicMock()
+        replacement.aembed_documents = AsyncMock(side_effect=lambda texts: [[1.0] for _ in texts])
+
+        ready = asyncio.Event()
+
+        async def other_record() -> None:
+            async with gate.slot(None, attempt_timeout=1.0, service_name=SERVICE):
+                ready.set()
+                await asyncio.sleep(0.1)
+                vs.dense_embeddings = replacement
+
+        blocker = asyncio.create_task(other_record())
+        await ready.wait()
+        with fast(5.0):
+            result = await vs._embed_documents_with_retry(["a"], "r")
+        await blocker
+        assert result == [[1.0]]
+        replacement.aembed_documents.assert_not_called()
+        assert server.requests == 1
+
+
+class TestReconciliationEmbedIsPlanned:
+    async def test_a_gate_wait_longer_than_the_budget_does_not_cancel_a_reconciliation(self) -> None:
+        store, _ = _reconciling_store()
+
+        async def queued(docs: Any, *_args: Any) -> None:
+            async with current_progress().gate_wait():
+                await asyncio.sleep(0.5)
+
+        store._process_document_chunks = queued
+        progress = RecordProgress(
+            floor_seconds=5.0, ceiling_seconds=5.0, record_ceiling_seconds=1e9,
+            history=StallHistory(), gate_pause_limit_seconds=1800.0,
+        )
+        container = BlocksContainer(
+            blocks=[_text_block("b-new", "a long enough sentence to embed as text", 0)], block_groups=[]
+        )
+        begin_progress(progress)
+        try:
+            async with asyncio.timeout(0.3) as budget:
+                progress.attach(budget)
+                await store.index_documents(
+                    container, "org-1", "rec-1", "vr-1", block_ids_to_delete={"b-gone"}, is_reconciliation=True,
+                )
+        finally:
+            end_progress()
+        assert not budget.expired()

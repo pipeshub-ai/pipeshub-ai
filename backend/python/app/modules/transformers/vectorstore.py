@@ -2126,11 +2126,9 @@ class VectorStore(Transformer):
         last_error: BaseException | None = None
         progress = current_progress()
         # isinstance, not getattr: a duck-typed lookup answers for any Mock embedder.
-        gate = (
-            self.dense_embeddings.bulk_gate()
-            if isinstance(self.dense_embeddings, EmbeddingServerEmbeddings)
-            else None
-        )
+        # Read once: a config change can replace the field while a batch waits in the gate.
+        embedder = self.dense_embeddings
+        gate = embedder.bulk_gate() if isinstance(embedder, EmbeddingServerEmbeddings) else None
 
         for attempt in range(1, _EMBEDDING_BATCH_MAX_ATTEMPTS + 1):
             if progress is not None:
@@ -2148,9 +2146,9 @@ class VectorStore(Transformer):
                     # Gated: the client must not sleep through its own backoff while holding the permit;
                     # this loop retries, and sleeps below with the permit released.
                     return await asyncio.wait_for(
-                        self.dense_embeddings.aembed_documents(texts, single_attempt=True)
+                        embedder.aembed_documents(texts, single_attempt=True)
                         if gate is not None
-                        else self.dense_embeddings.aembed_documents(texts),
+                        else embedder.aembed_documents(texts),
                         timeout=attempt_timeout,
                     )
             except asyncio.TimeoutError as e:
@@ -2980,7 +2978,13 @@ class VectorStore(Transformer):
                 langchain_docs = [d for d in documents_to_embed if isinstance(d, Document)]
                 image_chunks = [d for d in documents_to_embed if not isinstance(d, Document)]
                 if langchain_docs:
+                    # Planned like the resumable path, so a wait at the embedding server pauses the budget.
+                    progress = current_progress()
+                    if progress is not None:
+                        progress.plan(len(langchain_docs), 0)
                     await self._process_document_chunks(langchain_docs, record_id, collection_name)
+                    if progress is not None:
+                        progress.finish()
                 if image_chunks:
                     image_base64s = [c.get("image_uri") for c in image_chunks]
                     points = await self._process_image_embeddings(
