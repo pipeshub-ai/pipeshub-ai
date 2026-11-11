@@ -1352,6 +1352,8 @@ async def check_viewer_record_access(
             and len(by_url[u]) < _RECORDS_PER_URL_LIMIT
             and all(r in readable for r in by_url[u])
         ],
+        # An address no record is stored at (a public web page): not a record to lose.
+        "unmatchedUrls": [u for u in urls if not by_url.get(u)],
     }
 
 

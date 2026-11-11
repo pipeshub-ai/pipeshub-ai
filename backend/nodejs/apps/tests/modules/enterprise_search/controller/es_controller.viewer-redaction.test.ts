@@ -2,7 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { Types } from 'mongoose'
-import { readableRecordIds, historyForModel, viewerOf } from '../../../../src/modules/enterprise_search/utils/viewer-redaction'
+import { readableRecordIds, historyForModel, viewerOf, newReadable, redactMessagesFor } from '../../../../src/modules/enterprise_search/utils/viewer-redaction'
 import { addComputedFields, formatPreviousConversations } from '../../../../src/modules/enterprise_search/utils/utils'
 import {
   searchArchivedConversations,
@@ -142,7 +142,7 @@ const res = (): any => {
 
 /** Stubs the access route: it names `readable` as readable; `null` makes it fail. Returns the calls seen. */
 const askedUrls: string[] = []
-const stubAccess = (readable: string[] | null) => {
+const stubAccess = (readable: string[] | null, unmatched: string[] = []) => {
   askedUrls.length = 0
   const asked: string[][] = []
   sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(async function (this: any) {
@@ -151,7 +151,7 @@ const stubAccess = (readable: string[] | null) => {
       asked.push(body.recordIds ?? [])
       askedUrls.push(...(body.webUrls ?? []))
       if (readable === null) throw new Error('access service down')
-      return { statusCode: 200, data: { accessible: readable.filter((r) => !r.startsWith('http')), accessibleUrls: readable.filter((r) => r.startsWith('http')) }, msg: '' } as any
+      return { statusCode: 200, data: { accessible: readable.filter((r) => !r.startsWith('http')), accessibleUrls: readable.filter((r) => r.startsWith('http')), unmatchedUrls: unmatched }, msg: '' } as any
     }
     return { statusCode: 200, data: {}, msg: '' } as any // the unrelated permission sync
   })
@@ -506,15 +506,44 @@ describe('shared chats: per-viewer citations', () => {
     expect(JSON.stringify(r.json.firstCall.args[0].searchHistory)).to.not.contain(SECRET)
   })
 
-  it('a search the viewer owns is returned untouched', async () => {
-    const asked = stubAccess([])
+  it('a search the viewer owns, whose records are all readable, is returned untouched', async () => {
+    const asked = stubAccess(['rec-no'])
     const search = { _id: 's1', userId: VIEWER, citationIds: [citation(CIT_NO, 'rec-no', SECRET)], records: { 'rec-no': 'x' } }
     sinon.stub(EnterpriseSemanticSearch, 'find').returns(chain([search]))
     const r = res()
     await getSearchById(appConfig)(req(VIEWER, { params: { searchId: SESSION } }), r, sinon.stub())
 
     expect(r.json.firstCall.args[0][0]).to.deep.equal(search) // a copy: the repository hands out plain rows
-    expect(asked).to.have.length(0)
+    expect(asked).to.have.length(1)
+  })
+
+  it('a search the viewer owns hides hit text and record entries for a record they lost', async () => {
+    stubAccess(['rec-ok'])
+    const bare = new Types.ObjectId()
+    const search = { _id: 's1', userId: VIEWER, citationIds: [citation(CIT_OK, 'rec-ok', 'readable text'), citation(CIT_NO, 'rec-no', SECRET), bare, { content: 'no record here' }], records: { 'rec-ok': 'a', 'rec-no': SECRET } }
+    sinon.stub(EnterpriseSemanticSearch, 'find').returns(chain([search]))
+    const r = res()
+    await getSearchById(appConfig)(req(VIEWER, { params: { searchId: SESSION } }), r, sinon.stub())
+
+    const out = r.json.firstCall.args[0][0]
+    expect(out.citationIds[0].content).to.equal('readable text')
+    expect(out.citationIds[1]).to.deep.equal({ redacted: true, reason: 'no_longer_accessible' })
+    expect(String(out.citationIds[2])).to.equal(String(bare))
+    expect(out.citationIds[3]).to.deep.equal({ content: 'no record here' })
+    expect(out.records).to.deep.equal({ 'rec-ok': 'a' })
+    expect(JSON.stringify(out)).to.not.contain(SECRET)
+  })
+
+  it('a search the viewer owns hides its hits as unconfirmed when the access check fails', async () => {
+    stubAccess(null)
+    const search = { _id: 's1', userId: VIEWER, citationIds: [citation(CIT_NO, 'rec-no', SECRET)], records: { 'rec-no': SECRET } }
+    sinon.stub(EnterpriseSemanticSearch, 'find').returns(chain([search]))
+    const r = res()
+    await getSearchById(appConfig)(req(VIEWER, { params: { searchId: SESSION } }), r, sinon.stub())
+
+    const out = r.json.firstCall.args[0][0]
+    expect(out.citationIds).to.deep.equal([{ redacted: true, reason: 'access_check_unavailable' }])
+    expect(JSON.stringify(out)).to.not.contain(SECRET)
   })
 })
 
@@ -649,3 +678,73 @@ describe('lost access hides the whole answer, for the owner too', () => {
     expect(formatPreviousConversations(history as any)[1].content).to.equal('')
   })
 })
+
+describe('a hidden answer takes its turn with it; web links are not records', () => {
+  afterEach(() => sinon.restore())
+  const lost = { redacted: true, reason: 'no_longer_accessible' }
+  const at = (i: number) => ({ createdAt: new Date(1000 + i) })
+  const card = (i: number) => ({ messageType: 'tool_call', content: SECRET, tools: [{ toolName: 'ask_user_question', toolResult: { questions: [{ question: SECRET }] } }], ...at(i) })
+  const fetchRows = async (userId: string) => {
+    const r = res()
+    await getConversationById(appConfig)(req(userId, { params: { conversationId: SESSION } }), r, sinon.stub())
+    return r.json.firstCall.args[0].conversation.messages as any[]
+  }
+
+  it('tool_call rows after a hidden answer are hidden; rows of the next turn are not', async () => {
+    stubAccess(['rec-ok', 'att-ok'])
+    stubConversation([
+      { messageType: 'user_query', content: QUESTION, ...at(0) },
+      { ...answer(), ...at(1) },
+      card(2),
+      { messageType: 'user_query', content: 'User selections: A', ...at(3) },
+      card(4),
+      { messageType: 'user_query', content: 'Next question', ...at(5) },
+      { messageType: 'bot_response', content: 'Plain answer', citations: [], ...at(6) },
+      { messageType: 'tool_call', content: 'kept card', tools: [{ toolName: 'ask_user_question', toolResult: 'kept' }], ...at(7) },
+    ])
+    const rows = await fetchRows(OWNER)
+
+    expect(rows[2].answerHidden).to.deep.equal(lost)
+    expect(rows[4].answerHidden).to.deep.equal(lost)
+    expect(rows[3].content).to.equal('User selections: A')
+    expect(JSON.stringify([rows[2], rows[4]])).to.not.contain(SECRET)
+    expect(rows[7].content).to.equal('kept card')
+    expect(rows[7].answerHidden).to.equal(undefined)
+  })
+
+  it('tool_call rows are hidden as unconfirmed when the check cannot answer', async () => {
+    stubAccess(null)
+    stubConversation([{ messageType: 'user_query', content: QUESTION, ...at(0) }, { ...answer(), ...at(1) }, card(2)])
+    const rows = await fetchRows(OWNER)
+    expect(rows[2].answerHidden).to.deep.equal({ redacted: true, reason: 'access_check_unavailable' })
+    expect(JSON.stringify(rows[2])).to.not.contain(SECRET)
+  })
+
+  it('a web-search answer whose link matches no record stays visible', async () => {
+    stubAccess([], ['https://example.com/page'])
+    stubConversation([{ messageType: 'bot_response', content: 'From the web', citations: [], referenceData: [{ name: 'Example', webUrl: 'https://example.com/page' }] }])
+    const [m] = await fetchRows(OWNER)
+    expect(m.content).to.equal('From the web')
+    expect(m.answerHidden).to.equal(undefined)
+  })
+
+  it('a link that resolves to a record the viewer cannot read hides the answer', async () => {
+    stubAccess([], [])
+    stubConversation([{ messageType: 'bot_response', content: 'From a page', citations: [], referenceData: [{ name: 'Wiki', webUrl: 'https://wiki/page' }] }])
+    const [m] = await fetchRows(OWNER)
+    expect(m.answerHidden).to.deep.equal(lost)
+  })
+
+  it('records the history check settled are not asked about again for the final conversation', async () => {
+    const asked = stubAccess(['rec-ok', 'att-ok'])
+    const memo = newReadable()
+    const viewer = viewerOf(OWNER, ORG)
+    const stored: any[] = [asked_(), answer()]
+    await historyForModel(appConfig, viewer, stored, memo)
+    const fresh = { messageType: 'bot_response', content: 'new', citations: [], attachments: [{ recordId: 'att-new' }] }
+    await redactMessagesFor(appConfig, viewer, [...stored, fresh] as any, () => OWNER, memo)
+
+    expect(asked.flat().sort()).to.deep.equal(['att-new', 'att-no', 'att-ok', 'rec-no', 'rec-ok'])
+  })
+})
+const asked_ = () => ({ messageType: 'user_query', content: QUESTION })

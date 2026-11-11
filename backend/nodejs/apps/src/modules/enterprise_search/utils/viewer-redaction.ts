@@ -47,31 +47,52 @@ export const viewerOf = (userId: unknown, orgId: unknown): Viewer => ({
   orgId: String(orgId),
 });
 
-/** Readable record ids and, apart from them, readable record addresses. */
+/**
+ * What the query service said about records and addresses. Kept across the
+ * checks of one request (pass the same value again) so nothing is asked twice.
+ */
 export interface Readable {
   ids: Set<string>;
   urls: Set<string>;
-  /** The check could not answer: nothing is readable, and that is not a verdict. */
+  /** Addresses no record is stored at (a public web page): not a record to lose. */
+  unmatched: Set<string>;
+  /** Everything already put to the query service, as `i:<id>` and `u:<address>`. */
+  asked: Set<string>;
+  /** The check could not answer: what was not asked before is unknown, not a verdict. */
   failed?: boolean;
 }
+
+export const newReadable = (): Readable => ({
+  ids: new Set(),
+  urls: new Set(),
+  unmatched: new Set(),
+  asked: new Set(),
+});
 
 const isStringList = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((v) => typeof v === 'string');
 
 /**
- * Record ids and record addresses the viewer may read,
- * from the query service's `check_access`. Fails closed: an error means none.
+ * Record ids and record addresses the viewer may read, from the query
+ * service's `check_access`, asking only what `known` has not already settled
+ * (and adding the answer to it). Fails closed: an error leaves the new ones
+ * unknown, which nothing treats as readable.
  */
 export const readableRecordIds = async (
   appConfig: AppConfig,
   viewer: Viewer,
   recordIds: string[],
   webUrls: string[] = [],
+  known: Readable = newReadable(),
 ): Promise<Readable> => {
-  const ids = [...new Set(recordIds.filter(Boolean))];
-  const urls = [...new Set(webUrls.filter(Boolean))];
-  const readable: Readable = { ids: new Set(), urls: new Set() };
-  if (ids.length === 0 && urls.length === 0) return readable;
+  const ids = [...new Set(recordIds.filter(Boolean))].filter(
+    (i) => !known.asked.has(`i:${i}`),
+  );
+  const urls = [...new Set(webUrls.filter(Boolean))].filter(
+    (u) => !known.asked.has(`u:${u}`),
+  );
+  if (ids.length === 0 && urls.length === 0) return { ...known, failed: false };
+  const found = newReadable();
   try {
     const token = new AuthTokenService(
       appConfig.jwtSecret,
@@ -92,6 +113,7 @@ export const readableRecordIds = async (
       const response = await new AIServiceCommand<{
         accessible?: string[];
         accessibleUrls?: string[];
+        unmatchedUrls?: string[];
       }>({
         uri: `${appConfig.aiBackend}/api/v1/chat/records/access`,
         method: HttpMethod.POST,
@@ -112,19 +134,31 @@ export const readableRecordIds = async (
       }
       const accessible: unknown = response.data?.accessible ?? [];
       const accessibleUrls: unknown = response.data?.accessibleUrls ?? [];
+      const unmatchedUrls: unknown = response.data?.unmatchedUrls ?? [];
       // Only lists of strings: a string is read per character, String(['id']) is 'id'.
-      if (!isStringList(accessible) || !isStringList(accessibleUrls)) {
+      if (
+        !isStringList(accessible) ||
+        !isStringList(accessibleUrls) ||
+        !isStringList(unmatchedUrls)
+      ) {
         throw new Error('record access returned a malformed body');
       }
-      for (const id of accessible) readable.ids.add(id);
-      for (const u of accessibleUrls) readable.urls.add(u);
+      for (const id of accessible) found.ids.add(id);
+      for (const u of accessibleUrls) found.urls.add(u);
+      for (const u of unmatchedUrls) found.unmatched.add(u);
     }
-    return readable;
+    // Settled only when every batch answered.
+    for (const id of ids) known.asked.add(`i:${id}`);
+    for (const u of urls) known.asked.add(`u:${u}`);
+    for (const id of found.ids) known.ids.add(id);
+    for (const u of found.urls) known.urls.add(u);
+    for (const u of found.unmatched) known.unmatched.add(u);
+    return { ...known, failed: false };
   } catch (error: unknown) {
     logger.error('Viewer access check failed; redacting every source', {
       error: error instanceof Error ? error.message : String(error),
     });
-    return { ids: new Set(), urls: new Set(), failed: true };
+    return { ...known, failed: true };
   }
 };
 
@@ -150,6 +184,7 @@ interface RefEntry {
 }
 export interface ViewerMessage {
   messageType?: string;
+  content?: string;
   citations?: Array<CitationEntry | null>;
   attachments?: Array<AttachmentEntry | null>;
   referenceData?: Array<RefEntry | null>;
@@ -249,6 +284,7 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
   viewer: Viewer,
   messages: M[],
   ownerOf: (message: M) => string | undefined,
+  known?: Readable,
 ): Promise<M[]> => {
   const isOthers = (m: M): boolean => ownerOf(m) !== viewer.userId;
   const checked = messages.filter((m) => isOthers(m) || isAnswer(m));
@@ -296,41 +332,61 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
       ...filterLists(m.appliedFilters).flatMap(([, l]) => l.flatMap(refIds)),
     ]) as string[],
     checked.flatMap((m) => (m.referenceData ?? []).map((e) => e?.webUrl ?? '')),
+    known,
   );
   const ok = (id?: string): boolean => id !== undefined && readable.ids.has(id);
   const okUrl = (u?: string): boolean =>
     u !== undefined && readable.urls.has(u);
-  // A reference that names no record or address (a web page, a lost citation row)
-  // is no record the viewer could have lost.
-  const namesRecord = (e: RefEntry): boolean =>
-    (e.recordId ?? refMeta(e) ?? '') !== '' || (e.webUrl ?? '') !== '';
-  const refsOf = (m: M): number =>
-    (m.citations ?? []).filter((c) => recordIdOf(c) !== undefined).length +
-    (m.attachments ?? []).filter((a) => (a?.recordId ?? '') !== '').length +
-    (m.referenceData ?? []).filter((e) => e && namesRecord(e)).length +
-    filterLists(m.appliedFilters).reduce(
-      (n, [, l]) => n + l.flatMap(refIds).length,
-      0,
-    );
-  const usedLostRecord = (m: M): boolean =>
-    (m.citations ?? []).some((c) => {
+  // What a message used: record ids, and addresses where a reference has no record id.
+  // An address no record is stored at (a public web page) is no record the viewer could have lost,
+  // and neither is a citation without a record id (a web citation, a deleted citation row).
+  const usedBy = (m: M): { ids: string[]; urls: string[] } => {
+    const ids: string[] = [];
+    const urls: string[] = [];
+    for (const c of m.citations ?? []) {
       const id = recordIdOf(c);
-      return id !== undefined && !ok(id);
-    }) ||
-    (m.attachments ?? []).some(
-      (a) => (a?.recordId ?? '') !== '' && !ok(a?.recordId),
-    ) ||
-    (m.referenceData ?? []).some(
-      (e) => e && namesRecord(e) && !refVisible(e, ok, okUrl),
-    ) ||
-    filterLists(m.appliedFilters).some(([, l]) =>
-      l.some((e) => refIds(e).length > 0 && !refVisible(e, ok)),
-    );
+      if (id !== undefined) ids.push(id);
+    }
+    for (const a of m.attachments ?? [])
+      if ((a?.recordId ?? '') !== '') ids.push(a?.recordId as string);
+    for (const e of m.referenceData ?? []) {
+      if (!e) continue;
+      const id = e.recordId ?? refMeta(e) ?? '';
+      if (id !== '') ids.push(id);
+      else if (
+        (e.webUrl ?? '') !== '' &&
+        !readable.unmatched.has(e.webUrl ?? '')
+      )
+        urls.push(e.webUrl as string);
+    }
+    for (const [, l] of filterLists(m.appliedFilters))
+      ids.push(...l.flatMap(refIds));
+    return { ids, urls };
+  };
+  // Every message of a hidden answer's turn goes with it: a `tool_call` row (an ask_user_question
+  // card) follows its answer, and the chat shows it as that answer's. A `User selections:` question
+  // is the user's own and keeps the turn open; any other question or a new answer ends it.
+  let hiddenTurn: typeof ANSWER_LOST | typeof ANSWER_UNCONFIRMED | null = null;
   return messages.map((m) => {
     if (isAnswer(m)) {
-      if (readable.failed && refsOf(m) > 0)
-        return hiddenAnswer(m, ANSWER_UNCONFIRMED) as M;
-      if (usedLostRecord(m)) return hiddenAnswer(m, ANSWER_LOST) as M;
+      const { ids, urls } = usedBy(m);
+      const unverified =
+        ids.some((id) => !readable.asked.has(`i:${id}`)) ||
+        urls.some((u) => !readable.asked.has(`u:${u}`));
+      hiddenTurn =
+        readable.failed === true && unverified
+          ? ANSWER_UNCONFIRMED
+          : ids.some((id) => !ok(id)) || urls.some((u) => !okUrl(u))
+            ? ANSWER_LOST
+            : null;
+      if (hiddenTurn !== null) return hiddenAnswer(m, hiddenTurn) as M;
+    } else if (m.messageType === 'tool_call') {
+      if (hiddenTurn !== null) return hiddenAnswer(m, hiddenTurn) as M;
+    } else if (
+      m.messageType === 'user_query' &&
+      !(m as { content?: string }).content?.startsWith('User selections:')
+    ) {
+      hiddenTurn = null;
     }
     if (!isOthers(m)) return m;
     const view: Record<string, unknown> = { ...(m as object) };
@@ -368,9 +424,16 @@ export const historyForModel = async <M extends ViewerMessage>(
   appConfig: AppConfig,
   viewer: Viewer,
   messages: M[],
+  known?: Readable,
 ): Promise<M[]> =>
   (
-    await redactMessagesFor(appConfig, viewer, messages, () => viewer.userId)
+    await redactMessagesFor(
+      appConfig,
+      viewer,
+      messages,
+      () => viewer.userId,
+      known,
+    )
   ).map((m) =>
     (m as { answerHidden?: unknown }).answerHidden !== undefined
       ? { ...m, content: '' }
@@ -394,9 +457,13 @@ const recordEntries = (s: ViewerSearch): Array<[string, string]> =>
   s.records instanceof Map ? [...s.records] : Object.entries(s.records ?? {});
 
 /**
- * Saved searches of other users shared with the viewer: unreadable hits become
- * placeholders (a populated hit without a readable record is unreadable; a bare id is dropped) and unreadable entries
- * leave `records`.
+ * Saved searches, for the person looking at them. A hit on a record the viewer
+ * cannot read becomes a placeholder and its `records` entry is dropped. On a
+ * search of another user's (a populated hit without a record is unreadable; a
+ * bare id is dropped) the placeholder is `no_access`. On the viewer's own, a
+ * hit with no record to check and a bare id (no text) stay, and the placeholder
+ * says why: `no_longer_accessible`, or `access_check_unavailable` if the check
+ * could not answer.
  */
 export const redactSearchesFor = async <S extends ViewerSearch>(
   appConfig: AppConfig,
@@ -405,28 +472,31 @@ export const redactSearchesFor = async <S extends ViewerSearch>(
 ): Promise<S[]> => {
   const isOthers = (s: ViewerSearch): boolean =>
     String(s.userId) !== viewer.userId;
-  const others = searches.filter(isOthers).map(plain);
-  if (others.length === 0) return searches;
+  const all = searches.map(plain);
   const readable = await readableRecordIds(
     appConfig,
     viewer,
-    others.flatMap((s) => [
+    all.flatMap((s) => [
       ...(s.citationIds ?? []).filter(isHit).map(hitRecord),
       ...recordEntries(s).map(([k]) => keyToRecordId(k)),
     ]) as string[],
   );
+  const verdict = readable.failed === true ? ANSWER_UNCONFIRMED : ANSWER_LOST;
   return searches.map((s) => {
-    if (!isOthers(s)) return s;
     const o = plain(s);
+    const others = isOthers(s);
     const view: Record<string, unknown> = {
       ...o,
-      // The spec types the history's `citationIds` as id strings, so a bare id (it cannot be
-      // checked) is left out; a populated hit the viewer cannot read becomes a placeholder.
-      citationIds: (o.citationIds ?? []).flatMap((h) =>
-        isHit(h)
-          ? [readable.ids.has(hitRecord(h) ?? '') ? h : { ...REDACTED }]
-          : [],
-      ),
+      // The spec types the history's `citationIds` as id strings, so another user's bare id (it
+      // cannot be checked) is left out; a populated hit the viewer cannot read becomes a placeholder.
+      citationIds: (o.citationIds ?? []).flatMap((h) => {
+        if (!isHit(h)) return others ? [] : [h];
+        const id = hitRecord(h);
+        if (!others && (id === undefined || id === '')) return [h];
+        return [
+          readable.ids.has(id ?? '') ? h : { ...(others ? REDACTED : verdict) },
+        ];
+      }),
       records: Object.fromEntries(
         recordEntries(o).filter(([k]) => readable.ids.has(keyToRecordId(k))),
       ),

@@ -119,6 +119,8 @@ import {
 } from '../utils/utils';
 import {
   historyForModel,
+  newReadable,
+  type Readable as AccessMemo,
   redactMessagesFor,
   redactSearchesFor,
   viewerOf,
@@ -360,13 +362,15 @@ export { handleBackendError };
 /**
  * The final conversation of a turn carries every stored message, and the chat
  * rebuilds its thread from it: answers built from a record the user can no
- * longer read go out hidden, as in a fetch.
+ * longer read go out hidden, as in a fetch. `known` is what the turn's history
+ * check already settled, so those records are not asked about again.
  */
 const withoutLostAnswers = async <C extends { messages?: unknown }>(
   appConfig: AppConfig,
   userId: unknown,
   orgId: unknown,
   conversation: C,
+  known: AccessMemo,
 ): Promise<C> => {
   if (!Array.isArray(conversation.messages)) return conversation;
   return {
@@ -376,6 +380,7 @@ const withoutLostAnswers = async <C extends { messages?: unknown }>(
       viewerOf(userId, orgId),
       conversation.messages as ViewerMessage[],
       () => String(userId),
+      known,
     ),
   };
 };
@@ -1636,6 +1641,7 @@ export const addMessageStream =
       );
 
       // Format previous conversations for context (excluding the user message we just added)
+      const accessMemo = newReadable();
       const allMessagesSoFar = await historyForModel(
         appConfig,
         viewerOf(userId, orgId),
@@ -1644,6 +1650,7 @@ export const addMessageStream =
           { orgId: confirmedConversation.orgId },
           session,
         )) as IMessage[],
+        accessMemo,
       );
       const previousConversations = formatPreviousConversations(
         allMessagesSoFar.slice(0, -1),
@@ -2058,6 +2065,7 @@ export const addMessageStream =
                   savedCitations,
                   session,
                 ),
+                accessMemo,
               );
 
               // Send the final conversation data in the same format as addMessage
@@ -3710,6 +3718,7 @@ async function regenerateAnswersInternal(
 
     // Format previous conversations up to this message (exclude last bot
     // response and the user query that triggered it)
+    const accessMemo = newReadable();
     const allMessagesForRegen = await historyForModel(
       appConfig,
       viewerOf(userId, orgId),
@@ -3718,6 +3727,7 @@ async function regenerateAnswersInternal(
         { orgId: existingConversation.orgId },
         session,
       )) as Array<IMessage & { _id?: string }>,
+      accessMemo,
     );
     // The turn being regenerated (its user query, its answer, and any
     // `tool_call` rows saved after it) is excluded by position, not by a
@@ -4057,6 +4067,7 @@ async function regenerateAnswersInternal(
             userId,
             orgId,
             regeneratedConversation,
+            accessMemo,
           );
 
           // Send final response event with the complete conversation data
@@ -7380,6 +7391,7 @@ export const addMessageStreamToAgentConversation =
       const confirmedConversation = existingConversation as ChatSessionDto;
 
       // Format previous conversations for context (excluding the user message we just added)
+      const accessMemo = newReadable();
       const allMessagesSoFar = await historyForModel(
         appConfig,
         viewerOf(userId, orgId),
@@ -7388,6 +7400,7 @@ export const addMessageStreamToAgentConversation =
           { orgId: confirmedConversation.orgId },
           session,
         )) as IMessage[],
+        accessMemo,
       );
       const previousConversations = formatPreviousConversations(
         allMessagesSoFar.slice(0, -1),
@@ -7805,6 +7818,7 @@ export const addMessageStreamToAgentConversation =
                   savedCitations,
                   session,
                 ),
+                accessMemo,
               );
 
               // Send the final conversation data in the same format as addMessage
