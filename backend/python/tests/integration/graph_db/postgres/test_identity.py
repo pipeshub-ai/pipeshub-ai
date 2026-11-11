@@ -204,6 +204,10 @@ async def test_synced_users_are_looked_up_by_the_vetted_email_read_and_the_state
     sent.clear()
     await w.p.batch_upsert_app_users([app_user("e" * 1001 + "@x.com", "n3")])
     assert "users_by_email" in sent and "users_by_email_vetted" not in sent
+    sent.clear()
+    many = [f"u{i}@x.com" for i in range(1000)] + ["old@x.com"]          # past the function's bound: one statement, one snapshot, not two chunks
+    rows = await w.p._users_by_email_rows(w.org, many, None)
+    assert sent == ["users_by_email"] and {r["email"]: r["id"] for r in rows} == {"old@x.com": "existing"}
 
 
 async def test_groups_and_roles_round_trip_in_the_ambient_org_whatever_the_model_says(w: World) -> None:

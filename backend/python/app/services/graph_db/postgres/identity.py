@@ -136,18 +136,14 @@ class IdentityMixin(PgBase):
         return rows if len(rows) < _PRINCIPALS_PAGE else None
 
     async def _users_by_email_rows(self, org: str, emails: list[str], transaction: str | None) -> list:
-        """``(email, id, active)`` of the users whose lower-cased email is one of the lower-cased ``emails``: the vetted read of graph_0006 in chunks of its bound, or the statement
-        for an address out of its bounds or a page that may not be all of the matches."""
-        if emails and all(0 < len(e) <= 1000 for e in emails):
-            out: list = []
-            for i in range(0, len(emails), 1000):
-                rows = await self._id_rows("""/* pipeshub:graph.users_by_email_vetted */ SELECT lower(p.doc->>'email') AS email, p.node_id AS id,
-                       coalesce((p.doc->>'isActive')::boolean, false) AS active FROM graph.principals_by_email(ARRAY['users'], $1::text[]) p""", [emails[i:i + 1000]], transaction)
-                if len(rows) >= _PRINCIPALS_PAGE:
-                    break
-                out += rows
-            else:
-                return out
+        """``(email, id, active)`` of the users whose lower-cased email is one of the lower-cased ``emails``: the vetted read of graph_0006 for up to its bound of
+        addresses, or the statement for more, for an address out of its bounds or a page that may not be all of the matches. One read either way: chunks would each
+        see their own snapshot, and a login moving between two of them would be missed by both (the batch would then create a duplicate user)."""
+        if emails and len(emails) <= 1000 and all(0 < len(e) <= 1000 for e in emails):
+            rows = await self._id_rows("""/* pipeshub:graph.users_by_email_vetted */ SELECT lower(p.doc->>'email') AS email, p.node_id AS id,
+                   coalesce((p.doc->>'isActive')::boolean, false) AS active FROM graph.principals_by_email(ARRAY['users'], $1::text[]) p""", [emails], transaction)
+            if len(rows) < _PRINCIPALS_PAGE:
+                return rows
         return await self._id_rows("""/* pipeshub:graph.users_by_email */ SELECT lower(doc->>'email') AS email, id, coalesce((doc->>'isActive')::boolean, false) AS active
                    FROM graph.nodes WHERE org_id = $1 AND coll = 'users' AND lower(doc->>'email') = ANY($2::text[])""", [org, emails], transaction)
 
