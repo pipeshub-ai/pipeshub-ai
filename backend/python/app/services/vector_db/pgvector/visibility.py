@@ -64,7 +64,7 @@ class Scope:
     def key(self) -> str:
         """A cache key: a digest of a canonical encoding, equal for equal scopes (lists and extra conditions) and, unlike ``hash()``, the
         same in every process and without collisions to speak of."""
-        flt = None if self.scope_filter is None else [*self.scope_filter.lists(), self.scope_filter.version, self.scope_filter.generation]
+        flt = None if self.scope_filter is None else [*self.scope_filter.lists(), self.scope_filter.version, self.scope_filter.generation, self.scope_filter.defer]
         canon = json.dumps([self.args(), repr(self.extra), flt], separators=(",", ":"))
         return hashlib.sha256(canon.encode()).hexdigest()
 
@@ -76,7 +76,7 @@ class Scope:
     @property
     def matches_nothing(self) -> bool:
         """Whether the scope filter can trust nothing, so every statement renders ``AND false``: the answer is empty and nothing needs asking."""
-        return self.scope_filter is not None and self.scope_filter.trusts_nothing
+        return self.scope_filter is not None and self.scope_filter.matches_nothing
 
     def extra_sql(self, first_param: int = 12) -> tuple[str, list]:
         """``(" AND (...)", parameters from first_param)`` for the extra conditions and the scope filter, or ``("", [])``."""

@@ -28,6 +28,9 @@ def _p99_ms(fn, rounds: int = 1500) -> float:
 
 
 def test_lane_lease_cost_against_heavy_slot_cost(tmp_path: Path) -> None:
+    """The tail against the heavy slot measured in the same run; the absolute budget on the median, which a stalled runner barely moves (an
+    absolute 3 ms p99 failed at 3.6 ms on a busy runner, against 0.08 ms on a quiet host). A lease that is slow every time fails the median, one
+    slow only now and then fails the ratio."""
     budget = LaneBudget.open(plan_lanes(cpus=16, heavy=16), tmp_path / "lanes", memory_reader=Mem())
     # The governor sizes its heavy slots by the heavy ceiling, so their cost grows
     # with the host. A 64-core host (heavy 62) is the like-for-like set; the
@@ -47,12 +50,12 @@ def test_lane_lease_cost_against_heavy_slot_cost(tmp_path: Path) -> None:
 
     try:
         for _ in range(3):  # a loaded host: take the best of three runs, same run for both
-            lane_p99, slot_p99 = _p99_ms(lane), _p99_ms(slot)
-            if lane_p99 < 3.0 and lane_p99 <= 3 * slot_p99:
+            lane_median, lane_p99, slot_p99 = _quantile_ms(lane, 0.5), _p99_ms(lane), _p99_ms(slot)
+            if lane_median < 1.0 and lane_p99 <= 3 * slot_p99:
                 break
         print(f"16-slot heavy set p99 {_p99_ms(lambda: small.try_acquire(8).release()):.3f} ms")
-        print(f"lane p99 {lane_p99:.3f} ms, heavy slot p99 {slot_p99:.3f} ms, ratio {lane_p99 / slot_p99:.2f}")
-        assert lane_p99 < 3.0
+        print(f"lane median {lane_median:.3f} ms, p99 {lane_p99:.3f} ms, heavy slot p99 {slot_p99:.3f} ms, ratio {lane_p99 / slot_p99:.2f}")
+        assert lane_median < 1.0
         assert lane_p99 <= 3 * slot_p99
     finally:
         budget.close()
