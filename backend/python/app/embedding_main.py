@@ -29,10 +29,12 @@ from typing import TYPE_CHECKING, Annotated, Any
 import anyio
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.api.middlewares.body_limit import BodyLimitMiddleware
+from app.api.validation_errors import input_free_422
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
@@ -1262,6 +1264,7 @@ app = FastAPI(
     description="OpenAI-compatible API for local dense embedding models",
     version="1.0.0",
     lifespan=lifespan,
+    exception_handlers={RequestValidationError: input_free_422},
 )
 
 # Size caps: refuse before the body is buffered. The indexing client sends at
