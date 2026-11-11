@@ -23,6 +23,7 @@ from app.modules.indexing.embed_resume import (
     marker_of,
 )
 from app.modules.indexing.record_progress import (
+    COUNTED_CEILING,
     RecordProgress,
     StallHistory,
     begin_progress,
@@ -89,6 +90,7 @@ class Consumer:
         self.counted = 0
         self.uncounted = 0
         self.attempts = 0
+        self.reasons: list[str] = []
         self.progresses: list[RecordProgress] = []
 
     def progress(self) -> RecordProgress:
@@ -119,9 +121,11 @@ class Consumer:
                     await self.chain.attempt(DELIVERY, **attempt_kw)
                 return "completed"
             except TimeoutError:
-                if await progress.settle_cut(lease_intact=True, running=True) is None:
+                reason = await progress.settle_cut(lease_intact=True, running=True)
+                if reason is None:
                     self.uncounted += 1
                     continue
+                self.reasons.append(reason)
                 self.counted += 1
                 if self.counted >= self.max_counted:
                     return "dead-lettered"
@@ -175,16 +179,20 @@ class TestARecordThatMakesProgress:
         assert consumer.uncounted >= 2
         assert cuts == sorted(cuts) and cuts[-1] > cuts[1] > 0
 
+    @pytest.mark.timeout(90)
     async def test_a_chain_that_keeps_making_progress_ends_at_the_ceiling_and_dead_letters_as_before(self) -> None:
         # Kills: no ceiling, which would let a chain whose points keep vanishing requeue for ever.
-        # Budgets long enough that the first attempt of a cold test process still finishes a batch (one that
-        # finishes none is rightly counted), and a chain long enough not to finish before the ceiling.
-        chain = await _chain(2400, 0.05)
-        consumer = Consumer(chain, cap=0.8, floor=0.6, ceiling=2.8)
+        # The ceiling lies between one attempt's budget and two, so the first productive cut is handed
+        # back and a later one is counted for the ceiling. What is asserted is that reason: with short
+        # budgets a loaded runner can finish no batch in an attempt, which is rightly counted too, and
+        # three of those dead-letter the chain without the ceiling ever being reached.
+        chain = await _chain(2400, 0.125)
+        consumer = Consumer(chain, cap=3.0, floor=2.0, ceiling=4.0)
         assert await consumer.run() == "dead-lettered"
         assert consumer.counted == 3
-        assert consumer.uncounted >= 2
-        assert chain.graph.node[EMBED_SECONDS] >= 0.0
+        assert consumer.uncounted >= 1
+        assert COUNTED_CEILING in consumer.reasons, consumer.reasons
+        assert chain.graph.node[EMBED_SECONDS] > 0.0  # the handed-back cut recorded its embedding time
 
     @pytest.mark.timeout(90)
     async def test_the_ceiling_stays_on_the_node_through_a_restart_of_the_process(self) -> None:
