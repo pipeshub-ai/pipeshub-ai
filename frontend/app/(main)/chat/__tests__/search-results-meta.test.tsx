@@ -145,6 +145,27 @@ describe('search response meta', () => {
     expect(container.textContent).toContain('accessNotice.emptySyncing');
     expect(container.textContent).toContain('accessNotice.noAccess.justGotAccess');
     expect(container.textContent).not.toContain('chat.noResultsFor');
+    // Said once, in the empty state, not again in the notice above it.
+    expect(container.textContent).not.toContain('accessNotice.connector_syncing');
+  });
+
+  it('keeps the syncing notice above results when the search found something', () => {
+    useChatStore.setState({
+      searchQuery: 'q',
+      searchError: null,
+      searchResults: [
+        {
+          score: 0.9,
+          citationType: 'vectordb|document',
+          content: 'text',
+          metadata: { orgId: 'o', recordId: 'r1', virtualRecordId: 'v1', recordName: 'One', recordType: 'FILE', origin: 'CONNECTOR', connector: 'JIRA', connectorId: 'c1' },
+        } as never,
+      ],
+      searchResponseMeta: { searchResponse: { searchResults: [], accessNotices: [{ code: 'connector_syncing', connectorName: 'Jira' }] } },
+      isSearching: false,
+    });
+    const { getByRole } = render(<Theme><SearchResultsView /></Theme>);
+    expect(getByRole('status').textContent).toContain('accessNotice.connector_syncing');
   });
 
   it('keeps the plain empty message when there is no notice', () => {

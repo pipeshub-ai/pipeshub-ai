@@ -124,6 +124,8 @@ export function SearchResultsView() {
     (searchResponseMeta?.searchResponse as { accessNotices?: unknown } | undefined)?.accessNotices
   );
   const syncing = accessNotices.find((n) => n.code === 'connector_syncing');
+  const showsEmptyState =
+    !isSearching && !searchError && searchResults.length === 0 && unindexedMatches.length === 0 && !!searchQuery;
   const setMode = useChatStore((s) => s.setMode);
   const { onPreview } = useCitationActions();
 
@@ -269,7 +271,12 @@ export function SearchResultsView() {
             <SearchDegradedNote />
           )}
 
-        {!isSearching && !searchError && <AccessNotices notices={accessNotices} />}
+        {!isSearching && !searchError && (
+          <AccessNotices
+            // The empty state below already says this source is syncing; don't say it twice.
+            notices={showsEmptyState && syncing ? accessNotices.filter((n) => n !== syncing) : accessNotices}
+          />
+        )}
 
         {/* Loading state */}
         {isSearching && (
@@ -295,7 +302,7 @@ export function SearchResultsView() {
         )}
 
         {/* Empty state */}
-        {!isSearching && !searchError && searchResults.length === 0 && unindexedMatches.length === 0 && searchQuery && (
+        {showsEmptyState && (
           <Flex
             direction="column"
             align="center"
