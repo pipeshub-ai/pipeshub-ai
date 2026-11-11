@@ -23,6 +23,7 @@ from app.agent_loop_lib.tools.builtin.coordination.handoff import HandoffTool
 from app.agent_loop_lib.tools.builtin.coordination.spawn_agent import SpawnAgentTool
 from app.agent_loop_lib.tools.executor import ToolExecutor, log_tool_call_end
 from app.agent_loop_lib.tools.registry import ToolRegistry
+from app.schema.node_validator import NodeSchemaValidator
 from app.utils import error_class
 from app.utils.logger import log_record_fields
 from app.utils.logging_fields import current_log_fields
@@ -118,6 +119,24 @@ class TestOutcomes:
         assert "error_message" not in fields
         assert _SENTINEL not in (record.exc_text or "")
         assert result.is_error and result.content == repr(_SENTINEL)
+
+    async def test_a_schema_rejected_write_reaches_the_model_without_the_rejected_value(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # The error text is the tool result the LLM provider (and Opik) receive.
+        seeded = "+1 555 0100 Seeded"
+
+        async def write(**_kwargs: Any) -> ToolOutput:  # noqa: ANN401
+            NodeSchemaValidator().validate_node("users", {"email": "u1@example.invalid", "businessPhones": seeded})
+            return ToolOutput(success=True, data="written")
+
+        caplog.set_level(logging.DEBUG)
+        result = await _executor(_Tool(write)).call_tool(_call())
+
+        assert result.is_error
+        assert seeded not in result.content
+        assert "at 'businessPhones': value is not of type 'array'" in result.content
+        assert all(seeded not in r.getMessage() + str(log_record_fields(r)) for r in caplog.records)
 
     async def test_an_upstream_timeout_is_a_warning_without_a_stack(self, caplog: pytest.LogCaptureFixture) -> None:
         caplog.set_level(logging.DEBUG)
