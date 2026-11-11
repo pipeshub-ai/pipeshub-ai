@@ -3299,6 +3299,48 @@
         "cancel": "Abbrechen",
         "continueTeam": "Mit Team-Connector fortfahren",
         "goToPersonal": "Persönlichen Connector einrichten"
+      },
+      "access": {
+        "title": "Zugriff",
+        "loading": "Zugriffsdetails werden geladen…",
+        "loadError": "Die Zugriffsdetails konnten nicht geladen werden.",
+        "retry": "Erneut versuchen",
+        "reach": "Änderungen in {{connector}} erreichen PipesHub innerhalb von {{interval}}.",
+        "reachUnknown": "Änderungen in {{connector}} erreichen PipesHub bei der nächsten Synchronisierung.",
+        "syncNow": "Berechtigungen jetzt synchronisieren",
+        "span": {
+          "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
+          "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
+          "days": "{{count, number(style: unit; unit: day; unitDisplay: long)}}"
+        },
+        "refresh": {
+          "label": "Berechtigungen",
+          "succeeded": "Zuletzt aktualisiert: {{when}}.",
+          "failed": "Die letzte Aktualisierung der Berechtigungen ist fehlgeschlagen, daher sind neue Änderungen in der Quelle möglicherweise noch nicht übernommen. Wählen Sie „Berechtigungen jetzt synchronisieren“, um es erneut zu versuchen.",
+          "never": "Die Berechtigungen wurden noch nicht aktualisiert. Inhalte dieses Connectors bleiben verborgen, bis die erste Synchronisierung abgeschlossen ist.",
+          "running": "Berechtigungen werden gerade aktualisiert.",
+          "incomplete": "Die letzte Berechtigungsaktualisierung wurde nicht bis zum Ende ausgeführt."
+        },
+        "pending": {
+          "label": "Wartet auf Anwendung",
+          "none": "Nichts wartet.",
+          "some_one": "{{count}} Ordner wird aktualisiert. Er ist für alle verborgen, bis die Aktualisierung abgeschlossen ist, meist einige Minuten.",
+          "some_other": "{{count}} Ordner werden aktualisiert. Sie sind für alle verborgen, bis die Aktualisierung abgeschlossen ist, meist einige Minuten.",
+          "overflow": "Eine große Änderung wird auf den gesamten Konnektor angewendet. Inhalte bleiben möglicherweise verborgen, bis sie abgeschlossen ist."
+        },
+        "attention": {
+          "label": "Handlungsbedarf ({{count}})",
+          "none": "Es besteht kein Handlungsbedarf.",
+          "warning": "{{items}} Elemente in {{container}} sind verborgen. Das Synchronisierungskonto kann die Berechtigungen dieses Containers nicht lesen.",
+          "fix": "Lösung: Geben Sie dem Synchronisierungskonto in {{vendor}} die Berechtigung {{permission}} und wählen Sie dann „Berechtigungen jetzt synchronisieren“.",
+          "showAll": "{{count}} weitere anzeigen",
+          "warningNoContainer": "Einige Elemente sind verborgen, weil das Synchronisierungskonto ihre Berechtigungen nicht lesen kann.",
+          "rebuild": "Die Liste der Ordner, die auf eine Berechtigungsaktualisierung warten, konnte nicht gelesen werden, oder eine Änderung war zu groß, um sie zu verfolgen. Bitten Sie die Person, die PipesHub betreibt, den Berechtigungsindex dieses Konnektors neu aufzubauen.",
+          "unfinished": "Eine Berechtigungsänderung wurde nicht sauber abgeschlossen. Bitten Sie die Person, die PipesHub betreibt, den Berechtigungsindex dieses Konnektors zu prüfen.",
+          "stale": "Einige Elemente konnten von der schnelleren Suche nicht geprüft werden und werden stattdessen von der klassischen Suche gefunden.",
+          "sweep": "Berechtigungsaktualisierungen für diesen Konnektor schlagen wiederholt fehl. Bitten Sie die Person, die PipesHub betreibt, die Protokolle zu prüfen.",
+          "other": "Bei den Berechtigungen dieses Konnektors muss sich jemand etwas ansehen."
+        }
       }
     },
     "mcpServers": {
