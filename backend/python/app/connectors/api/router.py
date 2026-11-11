@@ -50,6 +50,7 @@ from app.agents.actions.knowledge_graph.views import (
     render_navigation_view,
 )
 from app.api.connection_limit import (
+    connection_apps,
     hide_record_parents_outside_connection,
     hide_source_paths,
     ids_outside_connection,
@@ -161,6 +162,7 @@ from app.connectors.services.vector_store_rebuild import (
     start_vector_store_reindex,
 )
 from app.edition_containers import ConnectorAppContainer
+from app.core.org_context import current_org_id
 from app.core.signed_url import SIGNED_URL_PURPOSE, SignedUrlHandler
 from app.models.entities import ArtifactRecord, Record, RecordType
 from app.modules.demo_data.access import is_hidden_demo_record
@@ -174,7 +176,8 @@ from app.services.featureflag.platform_settings import (
 )
 from app.services.graph_db.common.utils import api_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.permissions.structure_generation import note_structure_change
+from app.services.permissions import access_status
+from app.services.permissions.structure_generation import note_structure_change, store_now
 from app.services.vector_db.rebuild_state import PHASE_DROPPING, get_cleanup_phase
 from app.utils.api_call import make_api_call
 from app.utils.chat_helpers import (
@@ -10442,3 +10445,36 @@ async def delete_oauth_config(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=action_failed("delete this sign-in app")
         ) from e
+
+
+async def _sync_interval_minutes(request: Request, connector_id: str) -> int | None:
+    """How often the connector's own schedule runs, which is how soon a change at the source reaches PipesHub; None when it is not scheduled or unreadable."""
+    try:
+        config = await resolve_config_service(request.app.container, current_org_id()).get_config(_get_config_path_for_instance(connector_id))
+        sync = (config or {}).get("sync") or {}
+        minutes = int((sync.get("scheduledConfig") or {}).get("intervalMinutes") or 0)
+        return minutes if str(sync.get("selectedStrategy", "")).upper() == "SCHEDULED" and minutes > 0 else None
+    except Exception:
+        logger.warning("Could not read the sync schedule of connector %s", connector_id)
+        return None
+
+
+@router.get("/api/v1/connectors/{connector_id}/permissions/status", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+async def get_permission_status(
+    connector_id: str, request: Request, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
+) -> dict[str, Any]:
+    """Admin only. Everyone who may not read the connector gets the 404 of a missing one: a non-admin, another organisation's connector, another
+    user's personal connector (the registry's read gate), and a connected app whose limit does not name the whole connector (its counts could not be limited)."""
+    not_found_error = HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This connector"))
+    org_id = current_org_id()
+    user_id = request.state.user.get("userId")
+    app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value) if is_request_admin(request) else None
+    if not app or not org_id or not await request.app.state.connector_registry.get_connector_instance(
+        connector_id=connector_id, user_id=user_id, org_id=org_id, is_admin=True
+    ):
+        raise not_found_error
+    if connection_limit(request.state.user) is not None:
+        whole, _ = await connection_apps(request, graph_provider, org_id, user_id)
+        if connector_id not in whole:
+            raise not_found_error
+    return access_status.status(app, reach_minutes=await _sync_interval_minutes(request, connector_id), store_time=await store_now(graph_provider))

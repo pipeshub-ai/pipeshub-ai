@@ -49,7 +49,7 @@ for _m in _MIXINS:
 
 
 class PostgresGraphProvider(*_MIXINS, PgBase, IGraphDBProvider):
-    pass
+    ENTITY_INDEX_PAGE_ORDER = "c"      # records page in byte order (the vetted connector page), not the database's default collation
 
 
 _STUBBED: set[str] = set()

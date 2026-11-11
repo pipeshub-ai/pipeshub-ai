@@ -401,6 +401,8 @@ class TestModelManager:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert manager.encode_gate_stats()["in_use"] == 1  # the thread is still in the tokenizer
+        # ...and in the model, so the idle reaper must keep it.
+        assert manager._in_use == {manager._cache_key("m"): 1}
 
         release.set()
         for _ in range(100):
@@ -408,6 +410,7 @@ class TestModelManager:
                 break
             await asyncio.sleep(0.01)
         assert manager.encode_gate_stats()["in_use"] == 0
+        assert manager._in_use == {}
 
     def test_a_model_without_a_default_prompt_adds_no_tokens(self) -> None:
         manager = ModelManager()
@@ -1366,7 +1369,7 @@ class TestAbandonedRequests:
         started = threading.Event()
         manager = self._manager(release, calls, started)
         task = asyncio.ensure_future(manager.encode("m", ["a"]))
-        await asyncio.to_thread(started.wait, 5)  # the thread is inside the model
+        assert await asyncio.to_thread(started.wait, 5)  # the thread is inside the model
         task.cancel()  # the request is cancelled while its thread is inside the model
         with pytest.raises(asyncio.CancelledError):
             await task

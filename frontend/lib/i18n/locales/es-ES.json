@@ -3333,6 +3333,51 @@
         "cancel": "Cancelar",
         "continueTeam": "Continuar con el conector de equipo",
         "goToPersonal": "Configurar conector personal"
+      },
+      "access": {
+        "title": "Acceso",
+        "loading": "Cargando los detalles de acceso…",
+        "loadError": "No se pudieron cargar los detalles de acceso.",
+        "retry": "Reintentar",
+        "reach": "Los cambios en {{connector}} llegan a PipesHub en {{interval}}.",
+        "reachUnknown": "Los cambios en {{connector}} llegan a PipesHub en su próxima sincronización.",
+        "syncNow": "Sincronizar permisos ahora",
+        "span": {
+          "minutes": "{{count, number(style: unit; unit: minute; unitDisplay: long)}}",
+          "hours": "{{count, number(style: unit; unit: hour; unitDisplay: long)}}",
+          "days": "{{count, number(style: unit; unit: day; unitDisplay: long)}}"
+        },
+        "refresh": {
+          "label": "Permisos",
+          "succeeded": "Última actualización: {{when}}.",
+          "failed": "La última actualización de permisos falló, así que puede que los cambios recientes en el origen aún no se hayan aplicado. Elija «Sincronizar permisos ahora» para volver a intentarlo.",
+          "never": "Los permisos aún no se han actualizado. El contenido de este conector permanece oculto hasta que termine la primera sincronización.",
+          "running": "Actualizando permisos ahora.",
+          "incomplete": "La última actualización de permisos no llegó a terminar."
+        },
+        "pending": {
+          "label": "Pendiente de aplicar",
+          "none": "No hay nada pendiente.",
+          "some_one": "Se está actualizando {{count}} carpeta. Permanece oculta para todos hasta que termine la actualización, normalmente unos minutos.",
+          "some_many": "Se están actualizando {{count}} de carpetas. Permanecen ocultas para todos hasta que termine la actualización, normalmente unos minutos.",
+          "some_other": "Se están actualizando {{count}} carpetas. Permanecen ocultas para todos hasta que termine la actualización, normalmente unos minutos.",
+          "overflow": "Un cambio afectó a todo el conector, por lo que su índice de permisos debe reconstruirse por completo. Hasta entonces la búsqueda comprueba cada resultado, así que no se oculta nada por esto.",
+          "unknown": "Desconocido: no se puede leer la lista de carpetas que esperan una actualización. Consulte «Requiere atención»."
+        },
+        "attention": {
+          "label": "Requiere atención ({{count}})",
+          "none": "Nada requiere atención.",
+          "warning": "{{items}} elementos de {{container}} están ocultos. La cuenta de sincronización no puede leer los permisos de este contenedor.",
+          "fix": "Solución: dé a la cuenta de sincronización el permiso {{permission}} en {{vendor}} y luego elija Sincronizar permisos ahora.",
+          "showAll": "Mostrar {{count}} más",
+          "warningNoContainer": "Algunos elementos están ocultos porque la cuenta de sincronización no puede leer sus permisos.",
+          "rebuild": "El índice de permisos de este conector necesita una reconstrucción completa. Hasta entonces la búsqueda comprueba cada resultado, así que no se oculta nada por esto.",
+          "unfinished": "Un cambio de permisos no terminó correctamente. Pida a quien administra PipesHub que revise el índice de permisos de este conector.",
+          "stale": "La búsqueda rápida no pudo comprobar algunos elementos; se encuentran con la búsqueda clásica.",
+          "sweep": "Las actualizaciones de permisos de este conector siguen fallando. Pida a quien administra PipesHub que revise sus registros.",
+          "other": "Algo en los permisos de este conector requiere que una persona lo revise.",
+          "unreadable": "No se puede leer la lista de carpetas que esperan una actualización. Pida a quien administra PipesHub que reconstruya el índice de permisos de este conector. Mientras tanto, la búsqueda comprueba cada resultado."
+        }
       }
     },
     "mcpServers": {

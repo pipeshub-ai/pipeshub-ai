@@ -525,6 +525,10 @@ class IGraphDBProvider(ABC):
        and new generic format to ensure smooth migration.
     """
 
+    #: How ``page_entity_index_source`` orders a connector's records, when it differs from the order this store always used. It is part of the
+    #: entity index's pass marker, so a pass saved under another order starts over instead of resuming a cursor that could skip rows.
+    ENTITY_INDEX_PAGE_ORDER: str = ""
+
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
         instrument_org_methods(cls)  # shadow/enforce check of every org_id argument

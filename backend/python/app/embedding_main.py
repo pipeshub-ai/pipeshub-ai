@@ -1018,16 +1018,20 @@ class ModelManager:
                 return [len(i) for i in ids]
 
             if counter.tokenizer is None:
-                # Uses the model's own tokenizer, so it holds an encode slot until
-                # its thread ends, even if this request is cancelled meanwhile.
+                # Uses the model's own tokenizer, so it holds an encode slot and
+                # the model's lease until its thread ends, even if this request is
+                # cancelled meanwhile: the idle reaper must not drop the model.
                 token = await self._encode_gate.acquire(EncodePriority.BULK)
                 try:
                     fallback = spawn_detached(asyncio.to_thread(_count), name="embedding-count")
                 except BaseException:
                     self._encode_gate.release(EncodePriority.BULK, token)
                     raise
+                lease_key = self._cache_key(model_name)
+                self._in_use[lease_key] += 1
 
                 def _release_slot(done: asyncio.Future[list[int]]) -> None:
+                    self._drop_lease(lease_key)
                     self._encode_gate.release(EncodePriority.BULK, token)
                     if not done.cancelled():
                         done.exception()  # mark retrieved when nobody is waiting any more
