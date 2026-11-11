@@ -1202,6 +1202,8 @@ func graph.records_by_virtual_id(text[]) owner=pipeshub_vetted_graph secdef=true
 func graph.records_page_by_connector(text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=c8e66f78a7a13bd1a9d13be306081920 ext=-
 func graph.stage_states_by_revision(text,text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=60eaee6b0646cff685230c159b49ebff ext=-
 func graph.stage_states_page(text,text,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=a3208be1a7eb86259c302986beb3a97f ext=-
+func graph.stage_states_stale(text[],bigint,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=5bf31d0a9c981b840094d9d290c48b93 ext=-
+func graph.stage_states_unheld(text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=728a7b7598098d4e7c698760a693996e ext=-
 func graph.system_app(text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=ef1fbddbd72fc30dec6a4841e6c3691e ext=-
 func graph.system_apps(boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=48011eecd76084ecc02f84468779b9b1 ext=-
 func graph.system_orgs(boolean,boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=e304f1fb996469c629ea8ca32ecee2c6 ext=-
@@ -1349,6 +1351,12 @@ funcacl graph.stage_states_by_revision(text,text) pipeshub_query EXECUTE
 funcacl graph.stage_states_page(text,text,text,text,integer) pipeshub_connectors EXECUTE
 funcacl graph.stage_states_page(text,text,text,text,integer) pipeshub_indexing EXECUTE
 funcacl graph.stage_states_page(text,text,text,text,integer) pipeshub_query EXECUTE
+funcacl graph.stage_states_stale(text[],bigint,integer) pipeshub_connectors EXECUTE
+funcacl graph.stage_states_stale(text[],bigint,integer) pipeshub_indexing EXECUTE
+funcacl graph.stage_states_stale(text[],bigint,integer) pipeshub_query EXECUTE
+funcacl graph.stage_states_unheld(text[]) pipeshub_connectors EXECUTE
+funcacl graph.stage_states_unheld(text[]) pipeshub_indexing EXECUTE
+funcacl graph.stage_states_unheld(text[]) pipeshub_query EXECUTE
 funcacl graph.system_app(text) pipeshub_connectors EXECUTE
 funcacl graph.system_app(text) pipeshub_indexing EXECUTE
 funcacl graph.system_apps(boolean,text,text,integer) pipeshub_connectors EXECUTE

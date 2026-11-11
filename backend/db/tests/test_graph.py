@@ -1034,3 +1034,93 @@ def test_the_declared_record_groups_use_the_connectors_index_where_the_plain_sta
         plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, "SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = 'recordGroups' "
                                                                               "AND n.doc->>'connectorId' = 'c0' AND n.doc->>'permissionModel' = 'RECORD_GROUP_LEVEL'")
         assert not any(re.search(r"Index Cond: .*connectorId", p) for p in plans), plans[0]
+
+
+STALE_PLAIN = """SELECT id FROM graph.nodes WHERE org_id = current_setting('app.org_id') AND coll = 'stageStates' AND doc->>'status' = ANY(%s::text[])
+                 AND doc->'updatedAtMs' < to_jsonb(%s::bigint) ORDER BY doc->'updatedAtMs' LIMIT %s"""
+UNHELD_PLAIN = """WITH g AS (SELECT s.doc->>'virtualRecordId' AS v, s.doc->>'rev' AS rev, max(coalesce((s.doc->>'updatedAtMs')::numeric, 0)) AS newest FROM graph.nodes s
+                    WHERE s.org_id = current_setting('app.org_id') AND s.coll = 'stageStates' AND s.doc->>'virtualRecordId' = ANY(%s::text[]) AND s.doc->>'rev' IS NOT NULL GROUP BY 1, 2)
+                 SELECT g.v, g.rev FROM g WHERE g.newest < %s::bigint AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = current_setting('app.org_id') AND r.coll = 'records'
+                    AND r.doc->>'virtualRecordId' = g.v AND r.doc->>'contentRev' = g.rev) ORDER BY g.v, g.rev"""
+
+
+UNHELD_NEW = """SELECT virtual_record_id, revision FROM graph.stage_states_unheld(%s::text[]) GROUP BY 1, 2 HAVING max(coalesce(updated_at_ms::numeric, 0)) < %s::bigint ORDER BY 1, 2"""      # the caller's grouping
+
+
+def _seed_sweeps(c):
+    for org in (A, B):
+        as_role(c, "pipeshub_connectors", org)
+        for i, (status, vrid, rev, at) in enumerate((("PENDING", "v1", "1", 100), ("PENDING", "v1", "2", 200), ("RUNNING", "v2", "1", 300), ("DONE", "v3", "1", 400), ("PENDING", "v4", "1", None),
+                                                    ("RUNNING", "v5", "1", 150), ("FAILED", "v6", "1", 50), ("PENDING", "v1", "1", 120), ("PENDING", None, None, 90))):
+            doc = {"status": status, **({"virtualRecordId": vrid} if vrid else {}), **({"rev": rev} if rev else {}), **({"updatedAtMs": at} if at is not None else {})}
+            c.execute(NODE, (org, "stageStates", f"s{i}", json.dumps(doc)))
+        for i, (vrid, rev) in enumerate((("v1", "2"), ("v2", "1"), ("v3", "9"))):          # v1 rev 2 and v2 rev 1 are held; v1 rev 1, v3 rev 1, v5, v6 are not
+            c.execute(NODE, (org, "records", f"r{i}", json.dumps({"virtualRecordId": vrid, "contentRev": rev})))
+    as_role(c, "pipeshub_connectors", A)
+    c.execute(NODE, (A, "stageStates", "only-a", json.dumps({"status": "PENDING", "virtualRecordId": "v7", "rev": "1", "updatedAtMs": 10})))
+
+
+def test_the_stale_stage_states_and_the_unheld_revisions_are_what_the_plain_statements_read_for_the_org_alone(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        _seed_sweeps(c)
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for statuses in (["PENDING"], ["PENDING", "RUNNING"], ["PENDING", "PENDING", "DONE", "FAILED", "RUNNING"], ["nope"], []):
+                for before in (0, 100, 151, 1000):
+                    for limit in (1, 2, 1000):
+                        assert _ids(c, "SELECT node_id FROM graph.stage_states_stale(%s::text[], %s::bigint, %s)", statuses, before, limit) == _ids(c, STALE_PLAIN, statuses, before, limit), (org, statuses, before, limit)
+            for vrids in (["v1"], ["v1", "v1", "v2", "v3"], ["v1", "v3", "v4", "v5", "v6", "v7"], ["nope"], []):
+                for before in (0, 100, 130, 1000):
+                    assert _ids(c, UNHELD_NEW, vrids, before) == _ids(c, UNHELD_PLAIN, vrids, before), (org, vrids, before)
+        as_role(c, "pipeshub_connectors", A)
+        assert _ids(c, "SELECT node_id FROM graph.stage_states_stale('{PENDING}', 1000, 3)") == ["only-a", "s8", "s0"]
+        assert _ids(c, UNHELD_NEW, ["v1", "v3", "v7"], 1000) == [("v1", "1"), ("v3", "1"), ("v7", "1")]
+        as_role(c, "pipeshub_connectors", B)
+        assert _ids(c, UNHELD_NEW, ["v7"], 1000) == []
+
+
+def test_the_sweep_reads_answer_nothing_without_an_org_refuse_bad_arguments_and_are_for_the_graph_services(rdb):
+    cluster, name = rdb
+    calls = {"stage_states_stale": "('{PENDING}', 1000, 10)", "stage_states_unheld": "('{v1}')"}
+    bad = [("stage_states_stale", "(%s::text[], %s::bigint, %s)", a) for a in ((None, 1, 1), ([None], 1, 1), ([""], 1, 1), (["s" * 101], 1, 1), (["s"] * 21, 1, 1), (["s"], None, 1), (["s"], 1, None), (["s"], 1, 0), (["s"], 1, 1001))] + [
+        ("stage_states_unheld", "(%s::text[])", a) for a in ((None,), ([None],), ([""],), (["v" * 201],), (["v"] * 1001,))]
+    with connect(cluster, name) as c:
+        _seed_sweeps(c)
+        for org in ("", "c" * 24):
+            as_role(c, "pipeshub_connectors", org)
+            for fn, args in calls.items():
+                assert c.execute(f"SELECT count(*) FROM graph.{fn}{args}").fetchone()[0] == 0, (org, fn)
+        as_role(c, "pipeshub_connectors", A)
+        for fn, marks, args in bad:
+            with pytest.raises(psycopg.errors.InvalidParameterValue):
+                c.execute(f"SELECT * FROM graph.{fn}{marks}", args)
+            c.execute("ROLLBACK")
+        for role, ok in (("pipeshub_connectors", True), ("pipeshub_indexing", True), ("pipeshub_query", True), ("pipeshub_node", False), ("pipeshub_jobs", False)):
+            for fn in calls:
+                has = c.execute("SELECT has_function_privilege(%s, p.oid, 'EXECUTE') FROM pg_proc p WHERE p.pronamespace = 'graph'::regnamespace AND p.proname = %s", (role, fn)).fetchone()[0]
+                assert has is ok, (role, fn)
+
+
+def test_the_sweep_reads_use_their_indexes_where_the_plain_statements_cannot(rdb):
+    """30,000 stage states and records in the org (and as many in another). Seven calls: the plpgsql plan cache goes generic after five."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            c.execute("INSERT INTO graph.nodes SELECT %s, 'stageStates', 's' || lpad(i::text, 6, '0'), jsonb_build_object('status', (ARRAY['PENDING','DONE','FAILED','RUNNING'])[1 + i %% 4], "
+                      "'virtualRecordId', 'v' || i, 'rev', '1', 'updatedAtMs', 1000 + i) FROM generate_series(1, 30000) i", (org,))
+            c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 'r' || i, jsonb_build_object('virtualRecordId', 'v' || i, 'contentRev', '2') FROM generate_series(1, 30000) i", (org,))
+        c.execute("RESET ROLE")
+        c.execute("ANALYZE graph.nodes")
+        plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, "SELECT node_id FROM graph.stage_states_stale(%s::text[], %s::bigint, %s)", (["PENDING", "RUNNING"], 100000, 50))
+        for i in (0, 6):
+            assert re.search(r"Index Cond: .*status.*updatedAtMs", plans[i]) and "nodes_stage_status" in plans[i] and "Seq Scan on" not in plans[i], (i, plans[i])
+            assert re.search(r"Limit[^\n]*\n\s*->\s+(Merge Append|Index Scan using \S*nodes_stage_status)", plans[i]), (i, plans[i])      # the index gives each status's order: a sort of every state of the status would read them all
+        plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, "SELECT virtual_record_id FROM graph.stage_states_unheld(%s::text[])", (["v7", "v77", "v777"],))
+        for i in (0, 6):
+            assert "nodes_stage_revision" in plans[i] and "nodes_record_virtual_rev" in plans[i] and "Seq Scan on" not in plans[i], (i, plans[i])
+        # the plain statements the provider sent before: the org only
+        for sql, params, key in ((STALE_PLAIN, (["PENDING", "RUNNING"], 100000, 50), "status"), (UNHELD_PLAIN, (["v7", "v77", "v777"], 100000), "virtualRecordId")):
+            plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, sql, params)
+            assert not any(re.search(rf"Index Cond: .*{key}", p) for p in plans), (key, plans[0])
