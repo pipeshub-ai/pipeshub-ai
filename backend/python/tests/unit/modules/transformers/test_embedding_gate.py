@@ -160,7 +160,6 @@ class TestWhatIsGated:
 
     async def test_the_clients_own_backoff_does_not_hold_the_permit(self) -> None:
         import openai
-
         from app.utils.embedding_server_client import EmbeddingServerEmbeddings as Client
 
         gate = make_gate(Health(encode_gate(1)))

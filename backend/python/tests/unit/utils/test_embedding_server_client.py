@@ -577,7 +577,9 @@ class TestEmbeddingServerEmbeddings:
     @patch("app.utils.embedding_retry.asyncio.sleep", new_callable=AsyncMock)
     @patch("app.utils.embedding_server_client.OpenAIEmbeddings")
     @pytest.mark.asyncio
-    async def test_aembed_documents_single_attempt_fails_at_once_without_a_backoff_sleep(self, mock_openai_cls, sleep):
+    async def test_aembed_documents_single_attempt_fails_at_once_without_a_backoff_sleep(
+        self, mock_openai_cls: MagicMock, sleep: AsyncMock
+    ) -> None:
         mock_inner = MagicMock()
         mock_inner.aembed_documents = AsyncMock(side_effect=openai.APIConnectionError(request=MagicMock()))
         mock_openai_cls.return_value = mock_inner
