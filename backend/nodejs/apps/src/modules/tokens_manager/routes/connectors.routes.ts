@@ -485,7 +485,8 @@ const adminOrNotFound = async (
   next: NextFunction,
 ): Promise<void> => {
   try {
-    const { userId, orgId } = req.user || {};
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
     if (!userId || !orgId || !(await isUserOrgAdmin(userId, orgId))) {
       throw new NotFoundError('Route not found');
     }
@@ -738,7 +739,7 @@ export function createConnectorRouter(
    */
   router.get(
     '/:connectorId/permissions/explain',
-    authMiddleware.authenticate,
+    (req, res, next) => authMiddleware.authenticate(req, res, next),
     requireScopes(OAuthScopeNames.CONNECTOR_READ),
     adminOrNotFound,
     createKeyedRateLimiter(logger, {

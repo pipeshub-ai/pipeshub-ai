@@ -17,9 +17,9 @@ import pytest
 
 from app.services.permissions import explain as ex
 from app.services.permissions.explain import ExplainNotFound, ExplainService
-from app.services.permissions.ports import ScopeNode  # noqa: F401
 
-from .model import Node, WorldBuilder
+from .graph import Namespace, compile_world
+from .model import Node, World, WorldBuilder
 from .runner import OracleLayer, targets
 from .scenario import load_all
 
@@ -108,8 +108,8 @@ async def test_the_verdict_equals_check_access_and_the_code_maps_from_the_oracle
             await layer.preload(chunk)
             for world in chunk:
                 ns = await layer._ns(world)
-                if len(layer.shape(__import__("tests.permissions.graph", fromlist=["x"]).compile_world(world, ns.prefix))["nodes"]) != \
-                        len(__import__("tests.permissions.graph", fromlist=["x"]).compile_world(world, ns.prefix)["nodes"]):
+                if len(layer.shape(compile_world(world, ns.prefix))["nodes"]) != \
+                        len(compile_world(world, ns.prefix)["nodes"]):
                     continue  # the store cannot hold a node of this world (an unknown rule on Arango)
                 nodes = targets(world)
                 for viewer in world.users():
@@ -132,7 +132,7 @@ async def test_the_verdict_equals_check_access_and_the_code_maps_from_the_oracle
         assert all(m.graph_admitted and not m.walk_admitted for m in service.mismatches), (layer.name, service.export_mismatches()[:5])
 
 
-def _world():  # noqa: ANN202
+def _world() -> World:
     """`hr` is limited to its own reader; `pay` sits under it. `dana` reads neither, `boss` reads `hr` and not `pay`'s sibling."""
     b = WorldBuilder()
     for u in ("dana", "boss", "hrer"):
@@ -157,7 +157,7 @@ def _world():  # noqa: ANN202
     return b.build()
 
 
-async def _load(layer: GraphCheckLayer):  # noqa: ANN202
+async def _load(layer: GraphCheckLayer) -> tuple[World, Namespace]:
     w = _world()
     await layer.preload([w])
     return w, await layer._ns(w)
@@ -165,7 +165,7 @@ async def _load(layer: GraphCheckLayer):  # noqa: ANN202
 
 @pytest.mark.integration
 @pytest.mark.timeout(3000)
-async def test_a_container_the_asking_admin_cannot_read_is_a_restricted_area(graph_layers: list[GraphCheckLayer], monkeypatch) -> None:  # noqa: ANN001
+async def test_a_container_the_asking_admin_cannot_read_is_a_restricted_area(graph_layers: list[GraphCheckLayer], monkeypatch) -> None:
     for layer in graph_layers:
         _, ns = await _load(layer)
         service = ExplainService(layer._provider)  # type: ignore[arg-type]
@@ -200,7 +200,7 @@ async def test_a_record_open_to_the_person_is_granted_and_an_unknown_person_or_r
 
 @pytest.mark.integration
 @pytest.mark.timeout(3000)
-async def test_a_walk_that_disagrees_with_the_graph_keeps_the_graphs_verdict_and_is_counted(graph_layers: list[GraphCheckLayer], monkeypatch) -> None:  # noqa: ANN001
+async def test_a_walk_that_disagrees_with_the_graph_keeps_the_graphs_verdict_and_is_counted(graph_layers: list[GraphCheckLayer], monkeypatch) -> None:
     real = ex._walk
     for layer in graph_layers:
         _, ns = await _load(layer)
@@ -220,15 +220,17 @@ async def test_a_walk_that_disagrees_with_the_graph_keeps_the_graphs_verdict_and
 
 @pytest.mark.integration
 @pytest.mark.timeout(3000)
-async def test_a_denial_under_a_pending_root_says_the_subtree_is_being_updated(graph_layers: list[GraphCheckLayer], monkeypatch) -> None:  # noqa: ANN001
+async def test_a_denial_under_a_pending_root_says_the_subtree_is_being_updated(graph_layers: list[GraphCheckLayer], monkeypatch) -> None:
     for layer in graph_layers:
         _, ns = await _load(layer)
         provider = layer._provider
         service = ExplainService(provider)  # type: ignore[arg-type]
         view = provider.permission_hierarchy_view()  # type: ignore[attr-defined]
 
-        async def pending(org_id: str) -> dict:
-            return {ns.id("A"): frozenset({ns.id("hr")})}
+        roots = {ns.id("A"): frozenset({ns.id("hr")})}
+
+        async def pending(org_id: str, roots: dict = roots) -> dict:
+            return roots
 
         monkeypatch.setattr(provider, "permission_hierarchy_view", lambda: type("V", (), {"pending_scopes": staticmethod(pending)})())
         got = await service.explain(ns.org, ns.id("dana"), ns.id("doc"), asker_key=ns.id("boss"))

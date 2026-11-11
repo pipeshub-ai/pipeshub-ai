@@ -2262,7 +2262,8 @@ export const explainPermission =
         HttpMethod.GET,
         buildProxyHeaders(req),
       );
-      const data = response?.data as { code?: string; admitted?: boolean } | undefined;
+      const data = response?.data as
+        { code?: string; admitted?: boolean } | undefined;
       outcome = {
         status: response?.statusCode,
         code: data?.code,

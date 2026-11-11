@@ -65,7 +65,7 @@ from app.connectors.core.sync.task_manager import (
 )
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.connectors.api.artifacts_router import artifacts_router
-from app.connectors.api.permission_explain_router import permission_explain_router
+from app.connectors.api.permission_explain_router import permission_explain_router  # noqa: E402
 from app.connectors.sources.localKB.api.kb_router import install_push_routes, kb_router
 from app.connectors.sources.web.crawl4ai_fetcher import close_shared_fetcher  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.connectors.sources.localKB.api.knowledge_hub_router import (

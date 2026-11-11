@@ -6,16 +6,19 @@ is not there, so a caller that reaches this service directly learns nothing.
 
 from __future__ import annotations
 
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.api.middlewares.auth import is_request_admin, require_scopes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider  # noqa: TC001 - FastAPI reads the annotation at runtime
 from app.services.permissions.errors import ViewerScopesUnavailable
-from app.services.permissions.explain import ContainerRef, ExplainNotFound, ExplainService
+from app.services.permissions.explain import (
+    ContainerRef,
+    ExplainNotFound,
+    ExplainService,
+)
 from app.utils.user_lookup import get_user_or_503
 
 permission_explain_router = APIRouter(tags=["Permissions"])
