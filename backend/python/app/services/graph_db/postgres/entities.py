@@ -314,14 +314,15 @@ class EntityMixin(PgBase):
 async def _replace_values(tx: Tx, org: str, record_id: str, docs: list[dict]) -> None:
     rows = {d["id"]: {k: v for k, v in d.items() if v is not None} for d in docs}      # a repeated id: the last one wins; a null is not stored (``SET v = doc``)
     held = None
-    if 0 < len(record_id) <= 200:      # the rows are found by the vetted read of graph_0007
-        held = [r["node_id"] for r in await tx.fetch("/* pipeshub:graph.value_mentions_by_records */ SELECT node_id FROM graph.value_mentions_by_records($1::text[])", [record_id])]
-        if len(held) >= MENTIONS_BOUND:      # at its bound the list may be partial
-            held = None
-    if held is not None:
-        await tx.execute("""/* pipeshub:graph.replace_named_entity_values_stale_ids */ DELETE FROM graph.nodes WHERE org_id = $1 AND coll = 'valueMentions' AND id = ANY($2::text[])""",
-                         org, [i for i in held if i not in rows])
-    else:
+    if 0 < len(record_id) <= 200:
+        # One statement finds the rows by the vetted read of graph_0007 and deletes them, so a row committed in between cannot be missed, as with the
+        # plain delete. It deletes nothing when the read is at its bound (it may be partial): the plain delete then runs.
+        held = await tx.fetchval("""/* pipeshub:graph.replace_named_entity_values_stale_vetted */ WITH h AS MATERIALIZED (
+                SELECT node_id FROM graph.value_mentions_by_records($2::text[])),
+              d AS (DELETE FROM graph.nodes WHERE org_id = $1 AND coll = 'valueMentions' AND id IN (SELECT node_id FROM h) AND doc->>'recordId' = $5
+                AND id <> ALL($3::text[]) AND (SELECT count(*) FROM h) < $4 RETURNING 1)
+            SELECT count(*) FROM h""", org, [record_id], list(rows), MENTIONS_BOUND, record_id)
+    if held is None or held >= MENTIONS_BOUND:
         await tx.execute("""/* pipeshub:graph.replace_named_entity_values_stale */ DELETE FROM graph.nodes WHERE org_id = $1 AND coll = 'valueMentions'
             AND doc->>'recordId' = $2 AND id <> ALL($3::text[])""", org, record_id, list(rows))
     if rows:

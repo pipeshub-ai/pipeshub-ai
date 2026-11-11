@@ -216,9 +216,11 @@ async def test_a_result_at_the_bound_of_a_vetted_read_is_read_by_the_plain_state
                     "stage_states_by_revision", "stage_states_for_revision", "get_stage_states_with_records_vetted", "get_stage_states_with_records"]
 
 
-async def test_a_stage_state_with_an_empty_or_overlong_revision_is_given_no_record_and_logged(world, caplog: pytest.LogCaptureFixture) -> None:
+async def test_a_stage_state_with_an_overlong_revision_is_read_by_the_plain_statement_with_its_records(world, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The vetted function does not take the revision, so it could not find the state's records; the page is read plainly instead of losing them."""
     a, _ = world
     await a.batch_upsert_nodes([{"_key": "long", "orgId": a.org, "connectorId": "c1", "stage": "indexing", "status": "PENDING", "virtualRecordId": "v1", "rev": "r" * 300}], "stageStates")
-    with caplog.at_level(logging.WARNING, logger="kgl"):
-        assert await a.get_stage_states_with_records(a.org, "c1", "indexing", "PENDING", limit=10) == [("long", [])]
-    assert "1 stage state(s) of connector c1 name a virtual record or revision outside 1..200 characters" in caplog.text
+    await a.batch_upsert_nodes([{"_key": "rl", "orgId": a.org, "connectorId": "c1", "recordName": "rl", "virtualRecordId": "v1", "contentRev": "r" * 300}], "records")
+    sent = spy(monkeypatch)
+    assert await a.get_stage_states_with_records(a.org, "c1", "indexing", "PENDING", limit=10) == [("long", ["rl"])]
+    assert sent == ["get_stage_states_with_records_vetted", "get_stage_states_with_records"]

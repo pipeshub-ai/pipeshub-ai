@@ -586,8 +586,6 @@ class CodeGraphMixin(PgBase):
             return []
         rows = None
         if limit <= 1000 and all(isinstance(v, str) and 0 < len(v) <= 200 for v in (connector_id, stage, status)) and len(after_key or "") <= 200 and after_key != "":      # the vetted reads of graph_0008
-            # shortcut: a state whose virtual record or revision is empty or longer than the function takes (200) is given no record, and the count is logged; ids are uuids, so none is
-            # expected, raise the function's bound if one shows up
             rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_stage_states_with_records_vetted */ WITH st AS (SELECT p.node_id AS id, p.doc->>'virtualRecordId' AS vrid, p.doc->>'rev' AS rev
                     FROM graph.stage_states_page($1, $2, $3, coalesce($4, ''), $5) p),
                   rr AS (SELECT x.node_id AS id, x.doc FROM graph.records_by_revision(
@@ -600,7 +598,9 @@ class CodeGraphMixin(PgBase):
                   AND r.doc->>'connectorId' = $1 AND NOT coalesce((r.doc->>'isPlaceholder')::boolean, false) AND NOT coalesce((r.doc->>'isDeleted')::boolean, false)
                   AND NOT (coalesce(r.doc->>'indexingStatus', '') = ANY($6::text[]))
                 GROUP BY st.id ORDER BY st.id""", connector_id, stage, status, after_key, limit, exclude_indexing_statuses or []), None)
-            if rows and rows[0]["read"] >= VETTED_BOUND:      # the records read are at the bound of the function: they may be partial
+            # The records read are at the bound of the function (they may be partial), or a state names a virtual record or revision the function does not
+            # take: the plain statement reads the page.
+            if rows and (rows[0]["read"] >= VETTED_BOUND or rows[0]["skipped"]):
                 rows = None
         if rows is None:
             rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_stage_states_with_records */ WITH st AS (SELECT s.id, s.doc->>'virtualRecordId' AS vrid, s.doc->>'rev' AS rev
@@ -611,9 +611,6 @@ class CodeGraphMixin(PgBase):
                   AND r.doc->>'connectorId' = $3 AND NOT coalesce((r.doc->>'isPlaceholder')::boolean, false) AND NOT coalesce((r.doc->>'isDeleted')::boolean, false)
                   AND NOT (coalesce(r.doc->>'indexingStatus', '') = ANY($8::text[]))
                 GROUP BY st.id ORDER BY st.id""", org, _STAGES, connector_id, stage, status, after_key, limit, exclude_indexing_statuses or []), None)
-        if rows and rows[0].get("skipped"):
-            self.logger.warning("get_stage_states_with_records: %s stage state(s) of connector %s name a virtual record or revision outside 1..200 characters and were given no record",
-                                rows[0]["skipped"], connector_id)
         return [(r["key"], list(r["records"])) for r in rows]
 
     async def get_record_content_revs(self, record_ids: list[str], *, status_field: str, statuses: list[str],
