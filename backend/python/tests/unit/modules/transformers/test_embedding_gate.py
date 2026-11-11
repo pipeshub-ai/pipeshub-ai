@@ -15,7 +15,7 @@ import http.server
 import threading
 import time
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -110,7 +110,7 @@ class FakeServer(EmbeddingServerEmbeddings):
             finally:
                 self.oldest_started = None
 
-    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+    async def aembed_documents(self, texts: list[str], **_kwargs: Any) -> list[list[float]]:
         # The real server cannot cancel an encode that is running: the slot is held until it ends,
         # whatever the client does.
         self.requests += 1
@@ -157,6 +157,29 @@ class TestWhatIsGated:
             results = await embed(store_for(server), 8)
         assert all(not isinstance(r, Exception) for r in results)
         assert server.max_arrived == 2
+
+    async def test_the_clients_own_backoff_does_not_hold_the_permit(self) -> None:
+        import openai
+
+        from app.utils.embedding_server_client import EmbeddingServerEmbeddings as Client
+
+        gate = make_gate(Health(encode_gate(1)))
+        with patch("app.utils.embedding_server_client.OpenAIEmbeddings") as openai_cls:
+            inner = MagicMock()
+            inner.aembed_documents = AsyncMock(side_effect=[openai.APIConnectionError(request=MagicMock()), [[1.0]]])
+            openai_cls.return_value = inner
+            client = Client(max_retries=3)
+        client.bulk_gate = lambda: gate  # type: ignore[method-assign]
+        # asyncio.sleep is one object for both loops, so tell them apart by the delay: 7.7 is the client's.
+        with (
+            patch("app.utils.embedding_retry.retry_delay_seconds", return_value=7.7),
+            patch("asyncio.sleep", new_callable=AsyncMock) as slept,
+            fast(5.0),
+        ):
+            result = await store_for(client)._embed_documents_with_retry(["t"], "r")
+        assert result == [[1.0]]
+        assert inner.aembed_documents.await_count == 2  # the gated loop retried it, with the permit released between
+        assert all(c.args != (7.7,) for c in slept.await_args_list)
 
     async def test_a_mock_embedder_and_other_providers_are_not_gated(self) -> None:
         # A duck-typed lookup would answer for a Mock; a hosted or LAN provider has no gate and takes main's path.

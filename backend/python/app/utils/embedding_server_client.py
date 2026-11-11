@@ -168,10 +168,11 @@ class EmbeddingServerEmbeddings(Embeddings):
             backpressure_coordinator=self._backpressure_coordinator,
         )
 
-    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+    async def aembed_documents(self, texts: list[str], *, single_attempt: bool = False) -> list[list[float]]:
+        # single_attempt: the caller retries, so no backoff sleep here (it may hold a bulk permit).
         return await await_with_retry(
             lambda: self._inner.aembed_documents(texts),
-            max_retries=self.max_retries,
+            max_retries=1 if single_attempt else self.max_retries,
             operation="aembed_documents",
             service_name=_EMBEDDING_SERVER_SERVICE_NAME,
             backpressure_coordinator=self._backpressure_coordinator,

@@ -2145,8 +2145,12 @@ class VectorStore(Transformer):
                     if gate is not None
                     else contextlib.nullcontext()
                 ):
+                    # Gated: the client must not sleep through its own backoff while holding the permit;
+                    # this loop retries, and sleeps below with the permit released.
                     return await asyncio.wait_for(
-                        self.dense_embeddings.aembed_documents(texts),
+                        self.dense_embeddings.aembed_documents(texts, single_attempt=True)
+                        if gate is not None
+                        else self.dense_embeddings.aembed_documents(texts),
                         timeout=attempt_timeout,
                     )
             except asyncio.TimeoutError as e:
