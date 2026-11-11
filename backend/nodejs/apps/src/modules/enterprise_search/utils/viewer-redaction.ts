@@ -449,9 +449,17 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
       urls.some((u) => !readable.asked.has(`u:${u}`));
     return unverified && fresh?.(m) !== true ? ANSWER_UNCONFIRMED : null;
   };
-  const answerVerdict: Array<HiddenMarker | null> = messages.map((m, i) =>
-    isAnswer(m) ? verdictOf(m, turnOf[i] ?? 0) : null,
-  );
+  // A turn that runs past what could be read may hold records nobody saw: its answers are
+  // unconfirmed too (a settled denial still says lost).
+  const unreadTurn = (t: number): boolean =>
+    (opts.leadUnknown === true && t === 0) ||
+    (opts.trailUnknown === true && t === turn);
+  const answerVerdict: Array<HiddenMarker | null> = messages.map((m, i) => {
+    if (!isAnswer(m)) return null;
+    const t = turnOf[i] ?? 0;
+    const v = verdictOf(m, t);
+    return v === null && unreadTurn(t) ? ANSWER_UNCONFIRMED : v;
+  });
   const turnVerdict = new Map<number, HiddenMarker>();
   answerVerdict.forEach((v, i) => {
     const t = turnOf[i] ?? 0;

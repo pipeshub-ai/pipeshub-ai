@@ -806,19 +806,38 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
 
   it('a turn longer than one read step is still found; one longer than the cap is hidden as unconfirmed', async () => {
     stubAccess(['rec-ok', 'att-ok'])
-    const turn = (cards: number) => [
+    // The live order: the question, its cards, then the answer.
+    const turn = (cards: number, answerRow: any) => [
       { messageType: 'user_query', content: QUESTION, ...at(0) },
-      { ...answer(), ...at(1) },
-      ...Array.from({ length: cards }, (_, i) => card(2 + i)),
+      ...Array.from({ length: cards }, (_, i) => card(1 + i)),
+      { ...answerRow, ...at(1 + cards) },
     ]
-    const long = await pageOf(OWNER, turn(60), { page: '1', limit: '1' })
-    expect(long[0].answerHidden).to.deep.equal(lost)
+    const lostAnswer = answer()
+    const long = await pageOf(OWNER, turn(60, lostAnswer), { page: '1', limit: '2' })
+    expect(long.map((m) => m.answerHidden)).to.deep.equal([lost, lost])
     sinon.restore()
 
+    // A stopped answer names no record, so only the unknown turn can hide it.
     stubAccess(['rec-ok', 'att-ok'])
-    const huge = await pageOf(OWNER, turn(700), { page: '1', limit: '1' })
-    expect(huge[0].answerHidden).to.deep.equal({ redacted: true, reason: 'access_check_unavailable' })
+    const stopped = { messageType: 'bot_response', content: SECRET, status: 'stopped', citations: [] }
+    const huge = await pageOf(OWNER, turn(700, stopped), { page: '1', limit: '2' })
+    const unconfirmed = { redacted: true, reason: 'access_check_unavailable' }
+    expect(huge.map((m) => m.answerHidden)).to.deep.equal([unconfirmed, unconfirmed])
     expect(JSON.stringify(huge)).to.not.contain(SECRET)
+  })
+
+  it('an answer at the end of a page whose turn runs on past the cap is hidden as unconfirmed', async () => {
+    stubAccess(['rec-ok', 'att-ok'])
+    const stopped = { messageType: 'bot_response', content: SECRET, status: 'stopped', citations: [] }
+    const rows = [
+      { messageType: 'user_query', content: QUESTION, ...at(0) },
+      { ...stopped, ...at(1) },
+      ...Array.from({ length: 700 }, (_, i) => card(2 + i)),
+    ]
+    const oldest = await pageOf(OWNER, rows, { page: '351', limit: '2' })
+    expect(oldest.map((m) => m.messageType)).to.deep.equal(['user_query', 'bot_response'])
+    expect(oldest[1].answerHidden).to.deep.equal({ redacted: true, reason: 'access_check_unavailable' })
+    expect(JSON.stringify(oldest)).to.not.contain(SECRET)
   })
 
   it('a record already known to be denied hides a fresh answer even when a new record could not be checked', async () => {
