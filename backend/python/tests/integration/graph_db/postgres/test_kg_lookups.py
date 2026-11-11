@@ -102,3 +102,125 @@ async def test_each_lookup_answers_for_the_org_alone(world, pg_db) -> None:
     # each org sees its own rows with the ids and keys they share
     assert (await a.get_user_by_email("ANN@x.com")).id == "u1" and (await b.get_user_by_email("ANN@x.com")).id == "u1"
     assert [p["id"] for p in await b.find_people(b.org, "ann lee")] == ["p1"]
+
+
+async def seed_entities(p: OrgBound) -> None:
+    await p.batch_upsert_nodes([{"_key": "ne1", "orgId": p.org, "kind": "person", "normKey": "anna lee", "normalizedAliases": ["annie"], "name": "Anna Lee"},
+                                {"_key": "ne2", "orgId": p.org, "kind": "person", "normKey": "anna lee smith", "name": "Anna Lee Smith"}], "namedEntities")
+    await p.batch_upsert_nodes([{"_key": "r1:v1", "orgId": p.org, "recordId": "r1", "kind": "date", "name": "May", "startMs": 5, "endMs": 9}], "valueMentions")
+    await p.batch_upsert_nodes([{"_key": "s1", "orgId": p.org, "virtualRecordId": "v1", "rev": "1", "stage": "x", "status": "DONE"}], "stageStates")
+
+
+async def test_each_entity_lookup_reads_its_vetted_function_for_the_org_alone(world, monkeypatch: pytest.MonkeyPatch) -> None:
+    a, b = world
+    for p in (a, b):
+        await seed_entities(p)
+    await a.batch_upsert_nodes([{"_key": "only-a", "orgId": a.org, "kind": "person", "normKey": "anna lee a", "normalizedAliases": ["annie a"]}], "namedEntities")
+    sent = spy(monkeypatch)
+    assert [d["id"] for d in await a.find_named_entities(a.org, "person", ["annie", "anna lee smith"])] == ["ne1", "ne2"]
+    assert [r["id"] for r in await a.find_named_entities_by_alias(a.org, [("person", "annie a")])] == ["only-a"]
+    assert [r["id"] for r in await a.find_named_entities_by_key_prefix(a.org, [("person", "anna lee")])] == ["only-a", "ne2"]
+    assert [d.get("id") for d in await a.get_named_entities_for_record("r1")][-1] == "r1:v1"
+    assert await a.get_named_entity_date_spans(a.org, ["r1"], 0, 20) == {"r1": (True, 4)}
+    assert [d["id"] for d in await a.stage_states_for_revision("v1", "1")] == ["s1"]
+    assert sent == ["named_entities_by_keys", "named_entities_by_alias", "named_entities_by_prefix", "get_named_entities_for_record", "value_mentions_by_records",
+                    "get_named_entity_date_spans_vetted", "stage_states_by_revision"]
+    assert await b.find_named_entities(b.org, "person", ["annie a"]) == [] and await b.find_named_entities_by_alias(b.org, [("person", "annie a")]) == []
+    assert await b.find_named_entities(a.org, "person", ["annie"]) == []          # an org argument other than the ambient one reads nothing
+    sent.clear()
+    await a.find_named_entities(a.org, "person", ["k" * 2000])
+    await a.stage_states_for_revision("v" * 300, "1")
+    assert sent == ["find_named_entities", "stage_states_for_revision"]
+
+
+async def seed_external(p: OrgBound) -> None:
+    await p.batch_upsert_nodes([{"_key": "ug1", "orgId": p.org, "connectorId": "c1", "connectorName": "DRIVE", "createdAtTimestamp": 1, "updatedAtTimestamp": 1, "externalGroupId": "e1", "name": "Group", "email": "g@x.com"}], "groups")
+    await p.batch_upsert_nodes([{"_key": "rg1", "orgId": p.org, "connectorId": "c1", "connectorName": "DRIVE", "createdAtTimestamp": 1, "updatedAtTimestamp": 1, "externalGroupId": "e1", "groupName": "Record group"}], "recordGroups")
+    await p.batch_upsert_nodes([{"_key": "ro1", "orgId": p.org, "connectorId": "c1", "connectorName": "DRIVE", "createdAtTimestamp": 1, "updatedAtTimestamp": 1, "externalRoleId": "e1", "name": "Role"}], "roles")
+    await p.batch_upsert_nodes([{"_key": "s1", "orgId": p.org, "connectorId": "c1", "stage": "indexing", "status": "PENDING", "virtualRecordId": "v1", "rev": "1"},
+                                {"_key": "s2", "orgId": p.org, "connectorId": "c1", "stage": "indexing", "status": "PENDING", "virtualRecordId": "v2", "rev": "1"}], "stageStates")
+    await p.batch_upsert_nodes([{"_key": "r1", "orgId": p.org, "connectorId": "c1", "virtualRecordId": "v1", "contentRev": "1", "indexingStatus": "NOT_STARTED"},
+                                {"_key": "r2", "orgId": p.org, "connectorId": "c1", "virtualRecordId": "v1", "contentRev": "1", "isDeleted": True},
+                                {"_key": "r3", "orgId": p.org, "connectorId": "c2", "virtualRecordId": "v1", "contentRev": "1"}], "records")
+
+
+async def test_groups_roles_and_the_stage_sweep_read_their_vetted_functions_for_the_org_alone(world, monkeypatch: pytest.MonkeyPatch) -> None:
+    a, b = world
+    for p in (a, b):
+        await seed_external(p)
+    await a.batch_upsert_nodes([{"_key": "only-a", "orgId": a.org, "connectorId": "c1", "connectorName": "DRIVE", "createdAtTimestamp": 1, "updatedAtTimestamp": 1, "externalGroupId": "only-a", "name": "n"}], "groups")
+    sent = spy(monkeypatch)
+    assert (await a.get_user_group_by_external_id("c1", "e1")).id == "ug1"
+    assert (await a.get_record_group_by_external_id("c1", "e1")).id == "rg1"
+    assert (await a.get_app_role_by_external_id("c1", "e1")).id == "ro1"
+    assert await a.get_stage_states_with_records(a.org, "c1", "indexing", "PENDING", limit=10) == [("s1", ["r1"]), ("s2", [])]
+    assert await a.get_stage_states_with_records(a.org, "c1", "indexing", "PENDING", limit=10, after_key="s1", exclude_indexing_statuses=["NOT_STARTED"]) == [("s2", [])]
+    assert sent == ["node_by_external", "node_by_external", "node_by_external", "get_stage_states_with_records_vetted", "get_stage_states_with_records_vetted"]
+    assert await b.get_user_group_by_external_id("c1", "only-a") is None and (await a.get_user_group_by_external_id("c1", "only-a")).id == "only-a"
+    assert await b.get_stage_states_with_records(a.org, "c1", "indexing", "PENDING", limit=10) == []          # an org argument other than the ambient one reads nothing
+    sent.clear()
+    await a.get_user_group_by_external_id("c" * 300, "e1")
+    await a.get_stage_states_with_records(a.org, "c1", "indexing", "PENDING", limit=5000)
+    assert sent == ["node_by_external_plain", "get_stage_states_with_records"]
+
+
+async def test_value_mentions_are_read_whole_for_a_chunk_and_a_record_over_a_hundred_thousand(world, pg_db) -> None:
+    """A date-span chunk of 5,000 records holding 102,500 mentions, and one record of 100,001: the lookups answer as the statements did, none fails or loses rows."""
+    from app.core.org_context import OrgContext, bind
+    a, _ = world
+
+    async def fill(tx: Tx) -> None:
+        await tx.execute("""INSERT INTO graph.nodes SELECT $1, 'valueMentions', 'm' || r || '_' || i, jsonb_build_object('orgId', $1::text, 'recordId', 'rec' || r, 'kind', 'date',
+                'startMs', 5, 'endMs', 9, 'name', 'n' || i) FROM generate_series(1, 4100) r, generate_series(1, 25) i""", a.org)
+
+    async def fill_one(tx: Tx) -> None:
+        await tx.execute("""INSERT INTO graph.nodes SELECT $1, 'valueMentions', 'h' || i, jsonb_build_object('orgId', $1::text, 'recordId', 'huge', 'kind', 'date',
+                'startMs', 5, 'endMs', 9, 'name', 'n' || i) FROM generate_series(1, 100001) i""", a.org)
+    with bind(OrgContext(a.org, None, "job", "job:test", "t")):
+        await pg_db.run(fill, write=True)
+        await pg_db.run(fill_one, write=True)
+    spans = await a.get_named_entity_date_spans(a.org, [f"rec{r}" for r in range(1, 5001)], 0, 20)
+    assert len(spans) == 4100 and set(spans.values()) == {(True, 4)}
+    assert len(await a.get_named_entities_for_record("huge")) == 100001
+    await a.replace_named_entity_values("huge", [])
+    assert await a.get_named_entities_for_record("huge") == []
+    assert len(await a.get_named_entities_for_record("rec7")) == 25
+
+
+async def test_a_result_at_the_bound_of_a_vetted_read_is_read_by_the_plain_statement(world, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A read that returns as many rows as its function's bound may be partial: the same call is repeated with the plain statement and answers the same."""
+    a, _ = world
+    await seed_entities(a)
+    await seed_external(a)
+    expected = {
+        "keys": [d["id"] for d in await a.find_named_entities(a.org, "person", ["annie", "anna lee smith"])],
+        "alias": [r["id"] for r in await a.find_named_entities_by_alias(a.org, [("person", "annie")])],
+        "prefix": [r["id"] for r in await a.find_named_entities_by_key_prefix(a.org, [("person", "anna lee")])],
+        "spans": await a.get_named_entity_date_spans(a.org, ["r1"], 0, 20),
+        "entity": [d["id"] for d in await a.get_named_entities_for_record("r1")],
+        "stages": [d["id"] for d in await a.stage_states_for_revision("v1", "1")],
+        "sweep": await a.get_stage_states_with_records(a.org, "c1", "indexing", "PENDING", limit=10),
+    }
+    for name in ("entity_reads.VETTED_BOUND", "entity_reads.MENTIONS_BOUND", "entities.MENTIONS_BOUND", "codegraph.VETTED_BOUND"):
+        monkeypatch.setattr(f"app.services.graph_db.postgres.{name}", 1)
+    sent = spy(monkeypatch)
+    assert [d["id"] for d in await a.find_named_entities(a.org, "person", ["annie", "anna lee smith"])] == expected["keys"]
+    assert [r["id"] for r in await a.find_named_entities_by_alias(a.org, [("person", "annie")])] == expected["alias"]
+    assert [r["id"] for r in await a.find_named_entities_by_key_prefix(a.org, [("person", "anna lee")])] == expected["prefix"]
+    assert await a.get_named_entity_date_spans(a.org, ["r1"], 0, 20) == expected["spans"]
+    assert [d["id"] for d in await a.get_named_entities_for_record("r1")] == expected["entity"]
+    assert [d["id"] for d in await a.stage_states_for_revision("v1", "1")] == expected["stages"]
+    assert await a.get_stage_states_with_records(a.org, "c1", "indexing", "PENDING", limit=10) == expected["sweep"]
+    assert sent == ["named_entities_by_keys", "find_named_entities", "named_entities_by_alias", "find_named_entities_by_alias", "named_entities_by_prefix", "find_named_entities_by_key_prefix",
+                    "get_named_entity_date_spans_vetted", "get_named_entity_date_spans", "get_named_entities_for_record", "value_mentions_by_records", "get_named_entities_for_record_values",
+                    "stage_states_by_revision", "stage_states_for_revision", "get_stage_states_with_records_vetted", "get_stage_states_with_records"]
+
+
+async def test_a_stage_state_with_an_overlong_revision_is_read_by_the_plain_statement_with_its_records(world, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The vetted function does not take the revision, so it could not find the state's records; the page is read plainly instead of losing them."""
+    a, _ = world
+    await a.batch_upsert_nodes([{"_key": "long", "orgId": a.org, "connectorId": "c1", "stage": "indexing", "status": "PENDING", "virtualRecordId": "v1", "rev": "r" * 300}], "stageStates")
+    await a.batch_upsert_nodes([{"_key": "rl", "orgId": a.org, "connectorId": "c1", "recordName": "rl", "virtualRecordId": "v1", "contentRev": "r" * 300}], "records")
+    sent = spy(monkeypatch)
+    assert await a.get_stage_states_with_records(a.org, "c1", "indexing", "PENDING", limit=10) == [("long", ["rl"])]
+    assert sent == ["get_stage_states_with_records_vetted", "get_stage_states_with_records"]

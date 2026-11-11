@@ -19,6 +19,9 @@ if TYPE_CHECKING:
 
 _HIER = ("PARENT_CHILD", "ATTACHMENT")
 _VALIDATOR = NodeSchemaValidator()
+# The bound of the vetted lookups of graph_0007 and graph_0008 (value mentions: one more): a read that returns that many rows may be partial, and the caller reads with its own statement.
+VETTED_BOUND = 100_000
+MENTIONS_BOUND = 100_001
 
 
 class NotImplementedInPostgres(NotImplementedError):
