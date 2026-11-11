@@ -84,7 +84,9 @@ class Explanation:
     def as_dict(self) -> dict[str, object]:
         """The one wire shape: verdict, code, containers (a name or "restricted") and the reference. Nothing of the record itself, and no
         id or link: what the asking admin may not read is never in it."""
-        ref = lambda c: None if c is None else {"name": c.name, "restricted": c.restricted}  # noqa: E731
+        def ref(c: ContainerRef | None) -> dict[str, object] | None:
+            return None if c is None else {"name": c.name, "restricted": c.restricted}
+
         return {"admitted": self.admitted, "code": self.code, "container": ref(self.container),
                 "path": [ref(c) for c in self.path], "reference": self.reference}
 
