@@ -9,6 +9,24 @@ class AgentError(AgentLoopError):
     """Unrecoverable agent error."""
 
 
+class SpawnDepthError(AgentError):
+    """A child was refused: the spawn tree is already at its maximum depth."""
+
+
+def spawn_refusal(exc: BaseException) -> dict[str, str] | None:
+    """The `tool_call.end` fields of a spawn the library refused (the model asked for something it
+    can't do: not our fault, so WARNING with no stack), or None for any other failure."""
+    # Imported here: spawn_scheduler imports the coordination tools, which import this module.
+    from app.agent_loop_lib.agent.spawn_scheduler import SpawnDependencyError
+
+    if isinstance(exc, SpawnDepthError):
+        return {"reason": "max_spawn_depth", "error_class": "bad_request"}
+    if isinstance(exc, SpawnDependencyError):
+        # A failed prerequisite, or one of the batch's validation errors (duplicate task_id, cycle, ...).
+        return {"reason": "dependency_failed", "error_class": "bad_request"}
+    return None
+
+
 class ToolError(AgentLoopError):
     """Tool execution failed."""
 
