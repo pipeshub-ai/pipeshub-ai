@@ -6216,6 +6216,21 @@ class IGraphDBProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def sweep_deleted_connector_writes(
+        self, connector_id: str, record_group_ids: Sequence[str] = (),
+    ) -> tuple[int, int]:
+        """One pass over a deleted connector: remove the blocks and stage states that still
+        carry its ``connectorId``, which indexing already in flight can write after the delete.
+        A store that writes an edge without checking its ends also removes the record links
+        that carry one of the connector's ``record_group_ids``: the code graph writes a file's
+        edges after its blocks, and those edges carry no ``connectorId``.
+
+        Returns ``(removed, left)``, ``left`` being what a count finds right after. Raises when
+        the store does. Never call it for a connector that still exists: it removes all of them.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def delete_connector_instance(
         self,
         connector_id: str,

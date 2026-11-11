@@ -493,3 +493,220 @@ def test_the_hot_lookups_keep_their_key_index_when_the_planner_expects_a_big_col
         as_role(c, "pipeshub_connectors", A)
         assert [r[0] for r in c.execute("SELECT node_id FROM graph.blocks_by_record('rare', '{}', '{}', true, '', 1000)")] == ["bz0", "bz1", "bz2"]
         assert [r[0] for r in c.execute("SELECT node_id FROM graph.blocks_by_record('rare', '{}', '{}', true, 'bz0', 1)")] == ["bz1"]
+
+
+# ---- the knowledge graph's per-record lookups (graph_0006) ------------------------------------------------------------------------------
+def _seed_kg(c):
+    """The same ids and keys in both orgs, awkward ones included: mixed-case and non-ASCII ids (byte order is not the database's order), repeated source keys and
+    emails in other cases, blanks and wildcard characters in names, a person with no name."""
+    for org in (A, B):
+        as_role(c, "pipeshub_connectors", org)
+        for i in ("a1", "B1", "_x", "éa", "Zed", "z9", "c2only"):
+            c.execute(NODE, (org, "records", i, json.dumps({"connectorId": "c2" if i == "c2only" else "c1", "orgId": org})))
+        c.execute(NODE, (org, "records", "norec", json.dumps({"orgId": org})))                                              # no connectorId
+        for i, (key, ext, parent, norm) in enumerate((("acme", True, org, "acme"), ("acme", False, org, "acme"), ("acme", True, "other", "acme"), ("beta", True, org, "beta"), ("acme", True, org, "acme"))):
+            c.execute(NODE, (org, "organizations", f"o{i}", json.dumps({"normalizedName": norm, "isExternal": ext, "parentOrgId": parent, "name": key})))
+        for pid, doc in (("p1", {"sourceKey": "c1:u1", "fullName": "Ann Lee", "email": "Ann@X.com"}), ("p0", {"sourceKey": "c1:u1", "fullName": "Ann  Lee ", "email": "ann@x.com"}),
+                         ("p2", {"sourceKey": "c1:u2", "fullName": "Annabel Stone", "firstName": "Anna", "lastName": "Stone", "email": "stone@x.com"}),
+                         ("p3", {"fullName": "100% Joe_Smith\\", "email": "JOE@x.com"}), ("p4", {"firstName": "Lee", "lastName": "Ann"}), ("p5", {"email": "none@x.com"}),
+                         ("p6", {"fullName": "Mary Ann Smith"}), ("p7", {"fullName": "ANN"})):
+            c.execute(NODE, (org, "person", pid, json.dumps(doc)))
+        for gid, email in (("g1", "Team@X.com"), ("g2", "ann@x.com"), ("g3", None)):
+            c.execute(NODE, (org, "groups", gid, json.dumps({"email": email} if email else {"name": "n"})))
+        for uid, email in (("u1", "Ann@X.com"), ("u2", "other@x.com")):
+            c.execute(NODE, (org, "users", uid, json.dumps({"email": email, "userId": uid})))
+        c.execute(NODE, (org, "recordGroups", "rg", json.dumps({"email": "ann@x.com", "connectorId": "c1", "sourceKey": "c1:u1", "normalizedName": "acme"})))      # another collection
+    as_role(c, "pipeshub_connectors", A)
+    c.execute(NODE, (A, "person", "pa", json.dumps({"fullName": "Only A", "email": "onlya@x.com", "sourceKey": "c1:only-a"})))
+
+
+def _ids(c, sql, *args):
+    return [tuple(r) if len(r) > 1 else r[0] for r in c.execute(sql, args[0] if args and isinstance(args[0], dict) else args)]
+
+
+def test_the_records_of_a_connector_page_in_byte_order_as_the_plain_statement_did(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        _seed_kg(c)
+        plain = """SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = 'records' AND n.doc->>'connectorId' = %s
+                   AND (%s::text IS NULL OR n.id COLLATE "C" > %s::text COLLATE "C") ORDER BY n.id COLLATE "C" LIMIT %s"""
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for conn in ("c1", "c2", "nope"):
+                for after in (None, "B1", "Zed", "zzz", "_x"):
+                    for n in (1, 2, 1000):
+                        old = _ids(c, plain, conn, after, after, n)
+                        assert _ids(c, "SELECT node_id FROM graph.records_page_by_connector(%s, %s, %s)", conn, after or "", n) == old, (org, conn, after, n)
+        as_role(c, "pipeshub_connectors", A)
+        assert _ids(c, "SELECT node_id FROM graph.records_page_by_connector('c1', '', 1000)") == ["B1", "Zed", "_x", "a1", "z9", "éa"]
+        assert _ids(c, "SELECT node_id FROM graph.records_page_by_connector('c1', 'Zed', 2)") == ["_x", "a1"]
+
+
+def test_organisations_by_name_return_what_the_plain_statement_returned(rdb):
+    cluster, name = rdb
+    plain = """SELECT id FROM graph.nodes WHERE org_id = current_setting('app.org_id') AND coll = 'organizations' AND doc->>'parentOrgId' = %s
+               AND doc->>'normalizedName' = ANY(%s::text[]) AND doc->'isExternal' = 'true'::jsonb ORDER BY id COLLATE "C" """
+    with connect(cluster, name) as c:
+        _seed_kg(c)
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for parent in (org, A, B, "other"):
+                for names in (["acme"], ["beta", "acme"], ["nope"], [], ["acme", "acme"]):
+                    assert sorted(_ids(c, "SELECT node_id FROM graph.organizations_by_name(%s, %s::text[])", parent, names)) == _ids(c, plain, parent, names), (org, parent, names)
+        as_role(c, "pipeshub_connectors", A)
+        assert sorted(_ids(c, "SELECT node_id FROM graph.organizations_by_name(%s, '{acme,beta}')", A)) == ["o0", "o3", "o4"]
+
+
+def test_a_person_by_source_key_is_the_lowest_id_of_the_org_alone(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        _seed_kg(c)
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for key in ("c1:u1", "c1:u2", "c1:only-a", "C1:U1", "nope"):
+                old = _ids(c, "SELECT id FROM graph.nodes WHERE org_id = current_setting('app.org_id') AND coll = 'person' AND doc->>'sourceKey' = %s ORDER BY id LIMIT 1", key)
+                assert _ids(c, "SELECT node_id FROM graph.person_by_source_key(%s)", key) == old, (org, key)
+        as_role(c, "pipeshub_connectors", A)
+        assert _ids(c, "SELECT node_id FROM graph.person_by_source_key('c1:u1')") == ["p0"]
+        assert _ids(c, "SELECT node_id FROM graph.person_by_source_key('c1:only-a')") == ["pa"]
+        as_role(c, "pipeshub_connectors", B)
+        assert _ids(c, "SELECT node_id FROM graph.person_by_source_key('c1:only-a')") == []
+
+
+def test_principals_by_email_return_the_users_groups_and_persons_of_the_org_whose_lowered_email_is_asked(rdb):
+    cluster, name = rdb
+    plain = """SELECT coll, id FROM graph.nodes WHERE org_id = current_setting('app.org_id') AND coll = ANY(%s::text[])
+               AND lower(doc->>'email') IN (SELECT lower(x) FROM unnest(%s::text[]) x) ORDER BY coll, id"""
+    with connect(cluster, name) as c:
+        _seed_kg(c)
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for colls in (["users"], ["groups"], ["person"], ["users", "groups", "person"], ["person", "users"], []):
+                for emails in (["ann@x.com"], ["ANN@X.COM", "team@x.com"], ["onlya@x.com"], ["nope"], ["joe@x.com", "stone@x.com", "none@x.com"]):
+                    new = sorted(_ids(c, "SELECT coll, node_id FROM graph.principals_by_email(%s::text[], %s::text[])", colls, emails))
+                    assert new == _ids(c, plain, colls, emails), (org, colls, emails)
+        as_role(c, "pipeshub_connectors", A)
+        assert sorted(_ids(c, "SELECT coll, node_id FROM graph.principals_by_email('{users,groups,person}', '{ANN@x.com}')")) == [("groups", "g2"), ("person", "p0"), ("person", "p1"), ("users", "u1")]
+        as_role(c, "pipeshub_connectors", B)
+        assert _ids(c, "SELECT node_id FROM graph.principals_by_email('{users,groups,person}', '{onlya@x.com}')") == []
+
+
+# The statement of find_people before the vetted read (blank-collapsed, lower-cased name given).
+OLD_PEOPLE = """WITH u AS (
+  SELECT x.id, array_to_string(array_remove(string_to_array(lower(coalesce(x.doc->>'fullName', '')), ' '), ''), ' ') AS name,
+         array_to_string(array_remove(string_to_array(lower(coalesce(x.doc->>'firstName', '') || ' ' || coalesce(x.doc->>'lastName', '')), ' '), ''), ' ') AS parts
+  FROM graph.nodes x WHERE x.org_id = current_setting('app.org_id') AND x.coll = 'person'),
+hits AS (SELECT id, name, (name = %(w)s OR parts = %(w)s) AS exact FROM u
+  WHERE name = %(w)s OR parts = %(w)s OR (length(%(w)s) >= 3 AND (starts_with(name, %(w)s) OR EXISTS (SELECT 1 FROM unnest(string_to_array(name, ' ')) w WHERE starts_with(w, %(w)s)))))
+SELECT id FROM hits WHERE exact OR NOT EXISTS (SELECT 1 FROM hits WHERE exact) ORDER BY name COLLATE "C", id COLLATE "C" LIMIT %(n)s"""
+
+
+def test_people_by_name_return_what_the_plain_statement_returned(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        _seed_kg(c)
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for w in ("ann", "ann lee", "lee ann", "lee", "an", "stone", "anna stone", "mary", "ann smith", "100%", "100% joe_smith\\", "%", "_", "\\", "joe", "o_e", "only a", "nope", "smith"):
+                for n in (1, 3, 1000):
+                    assert _ids(c, "SELECT node_id FROM graph.people_by_name(%s, %s)", w, n) == _ids(c, OLD_PEOPLE, {"w": w, "n": n}), (org, w, n)
+        as_role(c, "pipeshub_connectors", A)
+        assert _ids(c, "SELECT node_id FROM graph.people_by_name('ann', 10)") == ["p7"]                              # an exact name wins over the beginnings
+        assert _ids(c, "SELECT node_id FROM graph.people_by_name('ann lee', 10)") == ["p0", "p1"]
+        assert _ids(c, "SELECT node_id FROM graph.people_by_name('ann', 10)") != _ids(c, "SELECT node_id FROM graph.people_by_name('anna', 10)")
+        assert _ids(c, "SELECT node_id FROM graph.people_by_name('only a', 10)") == ["pa"]
+        as_role(c, "pipeshub_connectors", B)
+        assert _ids(c, "SELECT node_id FROM graph.people_by_name('only a', 10)") == []
+
+
+KG_LOOKUPS = {
+    "records_page_by_connector": ("(%s, %s, %s)", ("c1", "", 10)),
+    "organizations_by_name": ("(%s, %s::text[])", (A, ["acme"])),
+    "person_by_source_key": ("(%s)", ("c1:u1",)),
+    "principals_by_email": ("(%s::text[], %s::text[])", (["users", "groups", "person"], ["ann@x.com"])),
+    "people_by_name": ("(%s, %s)", ("ann", 10)),
+}
+
+
+def test_a_per_record_lookup_answers_nothing_without_an_org_or_for_another_one(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        _seed_kg(c)
+        for org in ("", "c" * 24):
+            as_role(c, "pipeshub_connectors", org)
+            for fn, (marks, args) in KG_LOOKUPS.items():
+                assert c.execute(f"SELECT count(*) FROM graph.{fn}{marks}", args).fetchone()[0] == 0, (org, fn)
+
+
+BAD_KG = [
+    ("records_page_by_connector", "(%s, %s, %s)", a) for a in ((None, "", 10), ("", "", 10), ("c" * 201, "", 10), ("c", None, 10), ("c", "x" * 201, 10), ("c", "", 0), ("c", "", 1001), ("c", "", None))] + [
+    ("organizations_by_name", "(%s, %s::text[])", a) for a in ((None, []), ("", []), ("p" * 201, []), ("p", None), ("p", [None]), ("p", [""]), ("p", ["n" * 1001]), ("p", ["n"] * 1001))] + [
+    ("person_by_source_key", "(%s)", a) for a in ((None,), ("",), ("k" * 401,))] + [
+    ("principals_by_email", "(%s::text[], %s::text[])", a) for a in ((None, ["a"]), (["users"], None), ([None], ["a"]), (["other"], ["a"]), (["users"] * 4, ["a"]), (["users"], [None]),
+                                                                  (["users"], [""]), (["users"], ["e" * 1001]), (["users"], ["e"] * 1001))] + [
+    ("people_by_name", "(%s, %s)", a) for a in ((None, 10), ("", 10), ("n" * 401, 10), ("n", 0), ("n", 1001), ("n", None))]
+
+
+@pytest.mark.parametrize(("fn", "marks", "args"), BAD_KG, ids=[f"{f}-{i}" for i, (f, _, _) in enumerate(BAD_KG)])
+def test_a_per_record_lookup_refuses_a_bad_argument(rdb, fn, marks, args):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        as_role(c, "pipeshub_connectors", A)
+        with pytest.raises(psycopg.errors.InvalidParameterValue):
+            c.execute(f"SELECT * FROM graph.{fn}{marks}", args)
+
+
+def test_only_the_graph_services_may_call_a_per_record_lookup(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        for role, ok in (("pipeshub_connectors", True), ("pipeshub_indexing", True), ("pipeshub_query", True), ("pipeshub_node", False), ("pipeshub_jobs", False)):
+            for fn in KG_LOOKUPS:
+                has = c.execute("SELECT has_function_privilege(%s, p.oid, 'EXECUTE') FROM pg_proc p WHERE p.pronamespace = 'graph'::regnamespace AND p.proname = %s", (role, fn)).fetchone()[0]
+                assert has is ok, (role, fn)
+
+
+def test_the_per_record_lookups_use_their_index_where_the_plain_statement_cannot(rdb):
+    """At 20,000 documents of each kind in the org (and 20,000 more in another): the function reaches the partial index of its key (no sequential scan of
+    the org), the plain statement the provider sent before reaches the org only. Seven calls: the plpgsql plan cache goes generic after five."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            c.execute("INSERT INTO graph.nodes SELECT %s, 'records', 'r' || lpad(i::text, 6, '0'), jsonb_build_object('orgId', %s::text, 'connectorId', 'c' || (i %% 4)) FROM generate_series(1, 20000) i", (org, org))
+            c.execute("INSERT INTO graph.nodes SELECT %s, 'organizations', 'o' || i, jsonb_build_object('normalizedName', 'n' || i, 'parentOrgId', %s::text, 'isExternal', true) FROM generate_series(1, 20000) i", (org, org))
+            c.execute("INSERT INTO graph.nodes SELECT %s, 'person', 'p' || i, jsonb_build_object('sourceKey', 'k:' || i, 'email', 'p' || i || '@Example.com', "
+                      "'fullName', (ARRAY['Ann','Bob','Cy','Dee','Eve','Flo','Gus','Hal'])[1 + i %% 8] || ' ' || md5(i::text), 'firstName', 'F' || i, 'lastName', 'L' || i) FROM generate_series(1, 20000) i", (org,))
+            c.execute("INSERT INTO graph.nodes SELECT %s, 'groups', 'g' || i, jsonb_build_object('email', 'g' || i || '@Example.com') FROM generate_series(1, 20000) i", (org,))
+            c.execute("INSERT INTO graph.nodes SELECT %s, 'users', 'u' || i, jsonb_build_object('email', 'u' || i || '@Example.com', 'userId', 'x' || i) FROM generate_series(1, 20000) i", (org,))
+        c.execute("RESET ROLE")
+        c.execute("ANALYZE graph.nodes")
+        cases = [
+            ("records_page_by_connector", "graph.records_page_by_connector(%s, %s, %s)", ("c1", "r010000", 100), "nodes_record_connector_c"),
+            ("records_page_by_connector", "graph.records_page_by_connector(%s, %s, %s)", ("c1", "", 100), "nodes_record_connector_c"),
+            ("organizations_by_name", "graph.organizations_by_name(%s, %s::text[])", (A, ["n777", "n9"]), "nodes_organization_name"),
+            ("person_by_source_key", "graph.person_by_source_key(%s)", ("k:777",), "nodes_person_source_key"),
+            ("principals_by_email", "graph.principals_by_email(%s::text[], %s::text[])", (["users"], ["U777@example.com"]), "org_id_lower_idx"),      # the baseline's index of nodes_user_email has its generated name
+            ("principals_by_email", "graph.principals_by_email(%s::text[], %s::text[])", (["groups"], ["G777@example.com"]), "nodes_group_email"),
+            ("principals_by_email", "graph.principals_by_email(%s::text[], %s::text[])", (["person"], ["P777@example.com"]), "nodes_person_email"),
+            ("principals_by_email", "graph.principals_by_email(%s::text[], %s::text[])", (["users", "groups", "person"], ["x@example.com"]), "nodes_group_email"),
+            ("people_by_name", "graph.people_by_name(%s, %s)", ("ann " + __import__("hashlib").md5(b"8").hexdigest(), 10), "nodes_person_name"),
+            ("people_by_name", "graph.people_by_name(%s, %s)", ("f777 l777", 10), "nodes_person_parts"),
+            ("people_by_name", "graph.people_by_name(%s, %s)", ("zzzzq", 10), "nodes_person_name_trgm"),
+        ]
+        for fn, call, params, index in cases:
+            plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, f"SELECT node_id FROM {call}", params)
+            for i in (0, 6):
+                assert _uses(plans[i], index), (fn, params, i, plans[i])
+                assert "Seq Scan on" not in plans[i], (fn, params, i, plans[i])
+                if fn == "records_page_by_connector":      # the index gives the order: a sort would read the whole connector for each page
+                    assert not re.search(r"\bSort\b", plans[i]), (params, i, plans[i])
+        # the plain statements the provider sent before reach the org and nothing finer: the key is in no index condition
+        plain = {
+            "connectorId": ("records", "n.doc->>'connectorId' = 'c1' AND n.id COLLATE \"C\" > 'r010000' ORDER BY n.id COLLATE \"C\" LIMIT 100"),
+            "normalizedName": ("organizations", "n.doc->>'normalizedName' = ANY('{n777,n9}'::text[])"),
+            "sourceKey": ("person", "n.doc->>'sourceKey' = 'k:777'"),
+            "email": ("groups", "lower(n.doc->>'email') = 'g777@example.com'"),
+        }
+        for key, (coll, pred) in plain.items():
+            plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, f"SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = '{coll}' AND {pred}")
+            assert not any(re.search(rf"Index Cond: .*{key}", p) for p in plans), (key, plans[0])

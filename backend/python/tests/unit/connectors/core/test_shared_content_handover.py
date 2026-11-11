@@ -189,6 +189,13 @@ class FakeGraph:
     async def get_record_group_path(self, record_group_id, **_kw):
         return self.groups.get(record_group_id, [])
 
+    async def get_nodes_by_filters(self, collection, filters, return_fields=None, transaction=None, **_kw) -> list[dict]:
+        """A connector's record groups, as the late-write intent reads them before the delete."""
+        assert collection == CollectionNames.RECORD_GROUPS.value and set(filters) == {"connectorId"}
+        groups = {r["recordGroupId"] for r in self.records.values()
+                  if r["connectorId"] == filters["connectorId"] and r["recordGroupId"]}
+        return [{"_key": g} for g in sorted(groups)]
+
     async def get_record_group_by_id(self, record_group_id, **_kw):
         return None
 
