@@ -970,3 +970,67 @@ def test_the_external_and_stage_lookups_use_their_index_where_the_plain_statemen
             plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, f"SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = '{coll}' "
                                                                                     f"AND n.doc->>'{key}' = 'e777' AND n.doc->>'connectorId' = 'c7' LIMIT 1")
             assert not any(re.search(rf"Index Cond: .*{key}", p) for p in plans), (coll, plans[0])
+
+
+def _seed_record_groups(c):
+    for org in (A, B):
+        as_role(c, "pipeshub_connectors", org)
+        for i, (conn, model, deleted) in enumerate((("c1", "RECORD_GROUP_LEVEL", False), ("c1", "RECORD_GROUP_LEVEL", True), ("c1", "OTHER", False), ("c1", None, False),
+                                                    ("c2", "RECORD_GROUP_LEVEL", False), ("c1", "RECORD_GROUP_LEVEL", None))):
+            doc = {"connectorId": conn, **({"permissionModel": model} if model else {}), **({} if deleted is None else {"isDeleted": deleted})}
+            c.execute(NODE, (org, "recordGroups", f"rg{i}", json.dumps(doc)))
+        c.execute(NODE, (org, "groups", "g0", json.dumps({"connectorId": "c1", "permissionModel": "RECORD_GROUP_LEVEL"})))        # another collection with the same keys
+    as_role(c, "pipeshub_connectors", A)
+    c.execute(NODE, (A, "recordGroups", "only-a", json.dumps({"connectorId": "c1", "permissionModel": "RECORD_GROUP_LEVEL", "isDeleted": False})))
+
+
+def test_the_declared_record_groups_of_a_connector_are_what_the_plain_statement_read_for_the_org_alone(rdb):
+    cluster, name = rdb
+    plain = """SELECT id FROM graph.nodes WHERE org_id = current_setting('app.org_id') AND coll = 'recordGroups' AND doc->>'connectorId' = %s
+               AND doc->>'permissionModel' = 'RECORD_GROUP_LEVEL' AND NOT coalesce((doc->>'isDeleted')::boolean, false) ORDER BY id"""
+    with connect(cluster, name) as c:
+        _seed_record_groups(c)
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            for conn in ("c1", "c2", "nope"):
+                live = "SELECT node_id FROM graph.declared_record_groups(%s) WHERE NOT coalesce(is_deleted::boolean, false)"          # the caller casts the flag
+                assert sorted(_ids(c, live, conn)) == _ids(c, plain, conn), (org, conn)
+        as_role(c, "pipeshub_connectors", A)
+        assert sorted(_ids(c, "SELECT node_id FROM graph.declared_record_groups('c1')")) == ["only-a", "rg0", "rg1", "rg5"]          # the deleted one too: the caller drops it
+        as_role(c, "pipeshub_connectors", B)
+        assert sorted(_ids(c, "SELECT node_id FROM graph.declared_record_groups('c1')")) == ["rg0", "rg1", "rg5"]
+
+
+def test_the_declared_record_groups_answer_nothing_without_an_org_refuse_bad_arguments_and_are_for_the_graph_services(rdb):
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        _seed_record_groups(c)
+        for org in ("", "c" * 24):
+            as_role(c, "pipeshub_connectors", org)
+            assert c.execute("SELECT count(*) FROM graph.declared_record_groups('c1')").fetchone()[0] == 0, org
+        as_role(c, "pipeshub_connectors", A)
+        for arg in (None, "", "c" * 201):
+            with pytest.raises(psycopg.errors.InvalidParameterValue):
+                c.execute("SELECT * FROM graph.declared_record_groups(%s)", (arg,))
+            c.execute("ROLLBACK")
+        for role, ok in (("pipeshub_connectors", True), ("pipeshub_indexing", True), ("pipeshub_query", True), ("pipeshub_node", False), ("pipeshub_jobs", False)):
+            has = c.execute("SELECT has_function_privilege(%s, p.oid, 'EXECUTE') FROM pg_proc p WHERE p.pronamespace = 'graph'::regnamespace AND p.proname = 'declared_record_groups'", (role,)).fetchone()[0]
+            assert has is ok, role
+
+
+def test_the_declared_record_groups_use_the_connectors_index_where_the_plain_statement_cannot(rdb):
+    """30,000 record groups in the org (and as many in another). Seven calls: the plpgsql plan cache goes generic after five."""
+    cluster, name = rdb
+    with connect(cluster, name) as c:
+        for org in (A, B):
+            as_role(c, "pipeshub_connectors", org)
+            c.execute("INSERT INTO graph.nodes SELECT %s, 'recordGroups', 'rg' || i, jsonb_build_object('connectorId', 'c' || (i %% 10), 'externalGroupId', 'e' || i, "
+                      "'permissionModel', CASE WHEN i %% 20 = 0 THEN 'RECORD_GROUP_LEVEL' ELSE 'OTHER' END) FROM generate_series(1, 30000) i", (org,))
+        c.execute("RESET ROLE")
+        c.execute("ANALYZE graph.nodes")
+        plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, "SELECT node_id FROM graph.declared_record_groups(%s)", ("c0",))
+        for i in (0, 6):
+            assert re.search(r"Index Cond: .*connectorId", plans[i]) and "Seq Scan on" not in plans[i], (i, plans[i])
+        plans = vetted_harness.plans_auto_explain(c, "pipeshub_connectors", A, "SELECT n.id FROM graph.nodes n WHERE n.org_id = current_setting('app.org_id') AND n.coll = 'recordGroups' "
+                                                                              "AND n.doc->>'connectorId' = 'c0' AND n.doc->>'permissionModel' = 'RECORD_GROUP_LEVEL'")
+        assert not any(re.search(r"Index Cond: .*connectorId", p) for p in plans), plans[0]

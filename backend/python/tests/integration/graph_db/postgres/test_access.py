@@ -229,6 +229,26 @@ async def test_a_declared_scope_opens_what_hangs_in_it_when_the_declaration_is_g
     assert await w.allowed("u", "inDecl", "inSub", "underOther", "sub") == {"inDecl", "inSub", "sub"}
 
 
+async def test_the_declared_groups_of_a_connector_are_read_by_the_vetted_function_and_by_the_statement_at_its_bound(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    from .test_kg_lookups import spy
+    await w.nodes("recordGroups", {"_key": "decl", "connectorId": APP, "permissionModel": "RECORD_GROUP_LEVEL"}, {"_key": "gone", "connectorId": APP, "permissionModel": "RECORD_GROUP_LEVEL", "isDeleted": True})
+    await w.nodes("records", rec("inDecl"))
+    await w.child(("apps", APP), ("recordGroups", "decl"), inherits=False)
+    await w.edge("belongsTo", ("records", "inDecl"), ("recordGroups", "decl"))
+    await w.edge("permission", ("users", "u"), ("recordGroups", "decl"), type="USER", role="READER")
+    from app.services.graph_db.postgres import access as access_sql
+
+    async def reach() -> set:
+        return (await w.p._q(lambda tx: access_sql.reachable_records(tx, w.org, {"by_connector": {APP: ["decl"]}}, [APP]), None))[0]
+    sent = spy(monkeypatch)
+    assert "inDecl" in await reach()          # the granted declaration opens what belongs to it
+    assert "declared_record_groups" in sent and "access_declared_groups" not in sent
+    sent.clear()
+    monkeypatch.setattr("app.services.graph_db.postgres.access._DECLARED_BOUND", 0)          # a read that reaches the bound may be partial: the statement answers the same
+    assert "inDecl" in await reach()
+    assert "access_declared_groups" in sent          # the function was asked first, and its answer at the bound was not trusted
+
+
 async def test_a_source_account_the_user_authenticated_as_adds_its_grants_inside_that_connector(w: World) -> None:
     await w.nodes("users", {"_key": "src"}, {"_key": "notauser"})
     await w.nodes("groups", {"_key": "srcgrp"})

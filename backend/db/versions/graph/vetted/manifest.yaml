@@ -472,3 +472,21 @@ functions:
       IF cardinality(p_virtual_record_ids) <> cardinality(p_revs) THEN RAISE EXCEPTION 'p_virtual_record_ids and p_revs differ in length' USING ERRCODE = '22023'; END IF;
       RETURN QUERY SELECT n.id, n.doc FROM (SELECT DISTINCT q.v, q.r FROM unnest(p_virtual_record_ids, p_revs) AS q(v, r)) p
         JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'records' AND n.doc->>'virtualRecordId' = p.v AND n.doc->>'contentRev' = p.r LIMIT 100000;
+
+# ---- a connector's declared record groups (graph_0009) --------------------------------------------------------------------------------
+# Same reason as above, for the record groups of a connector that the access check reads on every request.
+
+  # The ids of a connector's record groups that declare their own permission model, with the text of their isDeleted flag (the caller casts it: a cast here could raise on a document's data) (index of the record groups by connector and external id); up to 100,000.
+  - name: graph.declared_record_groups
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_connector_id, type: text, length: [1, 200]}
+    returns: "TABLE (node_id text, is_deleted text)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT n.id, n.doc->>'isDeleted' FROM graph.nodes n WHERE n.org_id = v_org AND n.coll = 'recordGroups' AND n.doc->>'connectorId' = p_connector_id
+          AND n.doc->>'permissionModel' = 'RECORD_GROUP_LEVEL' LIMIT 100000;
