@@ -485,6 +485,39 @@ quote the refresh token in prose no redactor recognises. When the exception chai
 a refresh service (`log_refresh_failure`) leaves the text out of `error_message` and the stack (each exception shows as
 `Type: <message omitted>`) and logs `http_status` and `oauth_error` instead.
 
+## Auth audit events (Node)
+
+Every security decision of sign-in, lockout, OTP, password reset and change, SSO, JIT provisioning, sign-out and the sign-in
+policy is one INFO line on the `audit` logger (`libs/services/audit.ts`), message = the event. Fields: `org_id`, `actor` (the
+account the decision is about; null for an unknown account), `target` (an admin action's account), `outcome`, `reason`,
+`auth_method` (an `AuthMethodType` value; anything else is `other`). Never an email, name, IP, password, code or token: the
+access line has `client_ip` and the same `request_id`.
+
+| Event | Outcome | `reason` on failure | `auth_method` |
+| --- | --- | --- | --- |
+| `auth.sign_in` | `success`, `partial` (a step passed, more required), `failure` | `unknown_user`, `bad_password`, `no_password`, `bad_otp`, `no_otp`, `otp_expired`, `otp_already_used`, `locked`, `account_disabled`, `service_account`, `account_changed`, `method_not_allowed`, `captcha_failed`, `no_session`, `session_expired`, `sso_token_invalid`, `sso_token_expired`, `sso_wrong_tenant`, `sso_no_email`, `sso_email_mismatch`, `no_account`, `account_removed` | yes |
+| `auth.account.lock` | `success`, `reason=too_many_attempts` | | `password`, `otp` |
+| `auth.account.unlock` | `success`, `reason=block_expired` or `admin`; `target` = the account | | |
+| `auth.otp.send` | `success`, `failure` | `unknown_user`, `locked` | `otp` |
+| `auth.password_reset.request` | `success`, `failure` | `unknown_user`, `captcha_failed` | |
+| `auth.password_setup.request` | `success` | | |
+| `auth.password_reset.complete` | `success`, `failure` | `no_token`, `token_invalid`, `token_expired`, `link_used`, `locked`, `unknown_user` | |
+| `auth.password.change` | `success`, `failure` | `bad_current_password`, `captcha_failed`, `locked` | |
+| `auth.account.setup` | `success` | | `password` |
+| `auth.email.change` | `success` (`reason=link` or `sso_mail_claim`), `failure` | `no_token`, `token_invalid`, `token_expired`, `link_used`, `email_taken` | |
+| `auth.sign_out` | `success` | | |
+| `auth.session.refresh` | `failure` only | `no_token`, `token_invalid`, `token_expired`, `session_ended`, `account_inactive`, `no_credentials`, `locked` | |
+| `auth.policy.update` | `success`, `failure` | `not_admin` | |
+| `auth.jit_provision` | `success` | | `google`, `microsoft` |
+
+How a refusal gets its line: the code that refuses throws its error tagged with `refusal(error, reason)` (`authRefusal` in
+`modules/auth/utils/sign-in-audit.ts` checks the code). The tag is invisible to the client and to the logs. The handler, or the
+refusing middleware (`authSessionMiddleware`; `scopedTokenValidator` for the refresh, password-reset and email-validation
+scopes only), calls `auditRefusal` once in its catch; it writes a line only for a reason its event may carry
+(`AUTH_AUDIT_REASONS`). An untagged error is a system failure: no audit line, and the error middleware logs it once.
+Not audited: body validation 400s, rate limits, regular-JWT failures on authenticated routes, and service-to-service scoped tokens.
+Each still has its `http.request.error` (or the limiter's) line.
+
 ## Upstream calls (Node)
 
 Every call through a service command or an instrumented axios instance writes one `upstream.call.end` line **per attempt**,
