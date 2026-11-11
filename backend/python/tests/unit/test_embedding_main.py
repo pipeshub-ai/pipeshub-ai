@@ -1363,11 +1363,14 @@ class TestAbandonedRequests:
         release, calls = threading.Event(), []
         manager = self._manager(release, calls)
         task = asyncio.ensure_future(manager.encode("m", ["a"]))
-        await asyncio.sleep(0.05)
+        while not calls:  # the thread is inside the model
+            await asyncio.sleep(0)
         task.cancel()  # the request is cancelled while its thread is inside the model
         with pytest.raises(asyncio.CancelledError):
             await task
         assert manager.encode_gate_stats()["in_use"] == 1
+        # The thread still uses the model, so the idle reaper must keep it.
+        assert manager._in_use == {manager._cache_key("m"): 1}
 
         # A second request has to wait for that thread, not run beside it.
         follower = asyncio.ensure_future(manager.encode("m", ["b"]))
@@ -1377,6 +1380,7 @@ class TestAbandonedRequests:
         await asyncio.wait_for(follower, timeout=2)
         assert calls == ["a", "b"]
         assert manager.encode_gate_stats()["in_use"] == 0
+        assert manager._in_use == {}
 
     @pytest.mark.asyncio
     async def test_a_client_that_leaves_after_the_encode_gets_the_abandon_signal_not_an_error(self) -> None:
