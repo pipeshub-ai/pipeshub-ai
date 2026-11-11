@@ -6,6 +6,7 @@ one standing either.
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -74,9 +75,11 @@ async def test_a_dead_write_is_not_recovered_inside_its_grace_by_the_store_clock
     assert await recover_expired_writes(g, "c") == 1
 
 
+@pytest.mark.parametrize("before_commit", [False, True])
 @pytest.mark.parametrize("delayed", [1, 2, 3])
 @pytest.mark.parametrize("step", ["open", "renew"])
-async def test_a_lease_write_that_lands_late_is_measured_again_from_when_it_landed(monkeypatch: pytest.MonkeyPatch, step: str, delayed: int) -> None:
+async def test_a_lease_write_that_lands_late_is_measured_again_from_when_it_landed(monkeypatch: pytest.MonkeyPatch, step: str, delayed: int,
+                                                                                    before_commit: bool) -> None:
     """A deadline read before a write that took minutes is that much shorter than a lease: a live write could be recovered early. The lease is
     measured again from when the write landed; when that renewal is late as well, it is marked `k` and the sweep never judges it by its deadline."""
     monkeypatch.setattr(sg, "STORE_CLOCK_TIMEOUT_SECONDS", 0.05)
@@ -86,6 +89,11 @@ async def test_a_lease_write_that_lands_late_is_measured_again_from_when_it_land
     real, slow = g.update_node_fields_if_match, {"left": delayed}
 
     async def late(*a: object, **k: object) -> object:
+        if slow["left"] and before_commit:        # minutes pass between the clock read and the commit
+            slow["left"] -= 1
+            await asyncio.sleep(0.1)
+            store.now += 180
+            return await real(*a, **k)
         done = await real(*a, **k)
         if slow["left"]:
             slow["left"] -= 1
@@ -102,6 +110,31 @@ async def test_a_lease_write_that_lands_late_is_measured_again_from_when_it_land
         store.now += OPEN_WRITE_SECONDS + OPEN_WRITE_GRACE_SECONDS + 1
         assert await recover_expired_writes(g, "c") == 0          # not judged by a deadline that could be short: re-leased first
         assert token in parse_open_writes(g.app[OPEN_WRITES_KEY])
+
+
+@pytest.mark.parametrize("dead", [False, True])
+async def test_a_sweep_whose_re_lease_lands_late_marks_it_unknown_again(monkeypatch: pytest.MonkeyPatch, dead: bool) -> None:
+    """The sweep re-leases a `k` lease by the store's clock; written minutes after that read, the deadline would be that much short."""
+    monkeypatch.setattr(sg, "STORE_CLOCK_TIMEOUT_SECONDS", 0.05)
+    store = Clock()
+    g = StoreGraph(store)
+    a_finished_pass(g.app)
+    g.app[OPEN_WRITES_KEY] = json.dumps({"live": {"u": int(store()), "k": 1, "r": ["r1"]},
+                                         **({"gone": {"u": int(store()) - DEAD, "r": ["r2"]}} if dead else {})})
+    real, slow = g.update_node_fields_if_match, {"left": 1}
+
+    async def late(*a: object, **k: object) -> object:
+        if slow["left"]:
+            slow["left"] -= 1
+            await asyncio.sleep(0.1)
+            store.now += 180                      # the re-lease commits minutes after the sweep read the clock
+        return await real(*a, **k)
+    g.update_node_fields_if_match = late  # type: ignore[method-assign]
+    assert await recover_expired_writes(g, "c") == (1 if dead else 0)
+    assert parse_open_writes(g.app[OPEN_WRITES_KEY]) == {"live": {"u": int(store()) - 180 + OPEN_WRITE_SECONDS, "k": 1, "r": ["r1"]}}
+    store.now += OPEN_WRITE_SECONDS + OPEN_WRITE_GRACE_SECONDS
+    assert await recover_expired_writes(g, "c") == 0          # not judged on the short deadline: re-leased again, on time now
+    assert parse_open_writes(g.app[OPEN_WRITES_KEY])["live"] == {"u": int(store()) + OPEN_WRITE_SECONDS, "r": ["r1"]}
 
 
 async def test_a_late_renewal_on_its_last_attempt_is_still_measured_again(monkeypatch: pytest.MonkeyPatch) -> None:
