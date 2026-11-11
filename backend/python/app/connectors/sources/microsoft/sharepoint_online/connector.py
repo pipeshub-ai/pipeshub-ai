@@ -675,13 +675,6 @@ class SharePointConnector(BaseConnector):
         # Cache for site metadata
         self.site_cache: Dict[str, SiteMetadata] = {}
 
-        # Per site, the site groups (ids as strings) that hold a tenant-wide claim, and
-        # which one. Rebuilt by _sync_user_groups.
-        self._org_wide_site_groups: dict[str, dict[str, set[str]]] = {}
-        # Per site, the site groups whose members this run could not read.
-        self._unreadable_site_groups: dict[str, set[str]] = {}
-        # Sites whose SharePoint groups this run listed in full; a group grant elsewhere is unknown.
-        self._site_groups_read: set[str] = set()
         self._reset_permission_caches()
         self._health = SyncHealth()
         # Emails of accounts the tenant has disabled or deleted, from this run's user list.
@@ -728,6 +721,14 @@ class SharePointConnector(BaseConnector):
         self._unified_groups: dict[str, bool | None] = {}
         self._directory_object_types: dict[str, str | None] = {}
         self._directory_role_members: dict[str, list[dict]] = {}
+        # Per site, the site groups (ids as strings) that hold a tenant-wide claim, and which one.
+        # Rebuilt by _sync_user_groups; empty at the start of every run, so a run that does not read the
+        # groups cannot grant from an earlier run's.
+        self._org_wide_site_groups: dict[str, dict[str, set[str]]] = {}
+        # Per site, the site groups whose members this run could not read.
+        self._unreadable_site_groups: dict[str, set[str]] = {}
+        # Sites whose SharePoint groups this run listed in full; a group grant elsewhere is unknown.
+        self._site_groups_read: set[str] = set()
 
     @staticmethod
     def _build_credential(credential_cls: type, **kwargs: str) -> object:
@@ -2667,6 +2668,12 @@ class SharePointConnector(BaseConnector):
                 return {'id': user_id, 'email': email, 'name': getattr(item, 'display_name', 'Unknown')}
         return None
 
+    def _require_known_disabled_set(self) -> None:
+        """Raises while no disabled set is known: a member list filtered by an incomplete set could include an
+        account the tenant has disabled, so what it grants is unknown and the caller keeps what is stored."""
+        if self._disabled_set_unknown:
+            raise RuntimeError("the disabled accounts are not known yet; no group member list is read")
+
     async def _fetch_graph_group_members(self, group_id: str, is_owner: bool = False) -> List[dict]:
         """The enabled user accounts of an Entra group (through nested groups), or of its owners.
 
@@ -2675,6 +2682,7 @@ class SharePointConnector(BaseConnector):
         and has nobody in it; SharePoint keeps the claims of deleted Microsoft 365 groups in its site groups
         and role assignments.
         """
+        self._require_known_disabled_set()
         group = self.client.groups.by_group_id(group_id)
         builder = group.owners if is_owner else group.transitive_members
         users: list[dict] = []
@@ -2992,6 +3000,7 @@ class SharePointConnector(BaseConnector):
         members can't all be read; a partial answer is not kept for the rest of the run."""
         if role_id in self._directory_role_members:
             return self._directory_role_members[role_id]
+        self._require_known_disabled_set()
         users: list[dict] = []
         members = self.client.directory_roles.by_directory_role_id(role_id).members
         async with self.rate_limiter:

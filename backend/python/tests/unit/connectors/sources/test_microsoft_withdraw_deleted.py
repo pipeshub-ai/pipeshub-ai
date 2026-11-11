@@ -709,3 +709,44 @@ async def test_outlook_empty_page_with_lost_users_is_untrusted_through_the_count
     c, stored = _outlook(["a", "gone"], [_page([_graph_user("a")], "https://next", count=3), _page([], "https://next2"), _page([_graph_user("b")])])
     await c._sync_users()
     assert set(stored) == {"a", "gone"} and c._users_trusted is False
+
+
+@pytest.mark.asyncio
+async def test_sharepoint_a_run_that_reads_no_group_cannot_grant_from_an_earlier_runs_site_groups() -> None:
+    from unittest.mock import patch
+
+    from app.models.permission import PermissionType
+
+    c, _ = _sharepoint(["a", "b"], [_app_user("a")], complete=False)
+    _sharepoint_sync_point(c, None)
+    c._site_groups_read = {"s"}
+    c._org_wide_site_groups = {"s": {"1": {"everyone"}}}
+    c._unreadable_site_groups = {"s": {"2"}}
+    for name in ("_reinitialize_credential_if_needed", "_report_missing_graph_permission", "_remove_deleted_sites", "_remove_filtered_out"):
+        setattr(c, name, AsyncMock())
+    c._get_all_sites = AsyncMock(return_value=[])
+    c._sync_user_groups = AsyncMock()
+    c.drive_delta_sync_point = MagicMock(read_sync_point=AsyncMock(return_value=None))
+    with patch("app.connectors.sources.microsoft.sharepoint_online.connector.load_connector_filters",
+               AsyncMock(return_value=(MagicMock(), MagicMock()))):
+        with pytest.raises(SharePointSyncIncomplete):
+            await c.run_sync()
+    assert c._site_groups_read == set() and c._org_wide_site_groups == {} and c._unreadable_site_groups == {}
+    with pytest.raises(RuntimeError, match="were not read"):
+        c._site_group_permissions("s", "1", PermissionType.READ)
+
+
+@pytest.mark.asyncio
+async def test_sharepoint_group_members_are_not_expanded_while_the_disabled_set_is_unknown() -> None:
+    from app.models.permission import PermissionType
+
+    c, _ = _sharepoint([], [])
+    c.client = MagicMock()
+    c.client.groups.by_group_id.return_value.owners.get = AsyncMock(return_value=MagicMock(value=[], odata_next_link=None))
+    c._disabled_set_unknown = True
+    with pytest.raises(RuntimeError, match="not known"):
+        await c._m365_owner_permissions("g1", PermissionType.READ)
+    with pytest.raises(RuntimeError, match="not known"):
+        await c._get_directory_role_member_users("role1")
+    c._disabled_set_unknown = False
+    assert await c._m365_owner_permissions("g1", PermissionType.READ) == []
