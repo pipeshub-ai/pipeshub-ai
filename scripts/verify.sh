@@ -134,6 +134,31 @@ run shell "omnigent helper tests" \
   'exists integrations/omnigent/tests/scripts_test.sh' \
   bash integrations/omnigent/tests/scripts_test.sh
 
+run shell "docker image static tests" \
+  'have python3' \
+  python3 deployment/tests/test_docker_images.py
+
+run shell "base image tag tests" \
+  'exists scripts/docker/base_tag_test.sh' \
+  bash scripts/docker/base_tag_test.sh
+
+run shell "layer diff tests" \
+  'have python3' \
+  python3 scripts/docker/layer_diff_test.py
+
+run shell "docker build context budget" \
+  'have python3' \
+  bash deployment/docker-compose/tests/build_context_test.sh
+
+# Image builds are too slow for the default run. CI calls the scripts directly.
+run shell "docker image structure" \
+  '[ "${PIPESHUB_DOCKER_IMAGE_TESTS:-}" = 1 ] && have docker' \
+  bash deployment/docker-compose/tests/image_structure_test.sh
+
+run shell "docker layer reuse" \
+  '[ "${PIPESHUB_DOCKER_IMAGE_TESTS:-}" = 1 ] && have docker' \
+  bash deployment/docker-compose/tests/layer_reuse_test.sh
+
 # ── python ───────────────────────────────────────────────────────────────────
 PY="${PYTHON:-python3}"
 run python "python unit tests" \

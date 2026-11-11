@@ -183,7 +183,8 @@ Create the virtualenv once. Then start each process in its own terminal, with th
 cd backend/python
 python3.12 -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
-pip install uv
+pip install 'uv==0.8.22'
+uv lock --check            # fails if pyproject.toml and uv.lock disagree
 uv pip install -e .
 python -c "import nltk; nltk.download('punkt')"
 

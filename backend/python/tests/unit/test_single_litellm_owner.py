@@ -3,7 +3,7 @@
 crawl4ai pins `unclecode-litellm`, a fork that installs into the same top-level litellm/ directory as
 the real litellm. Installed side by side, the files of whichever lands last win and fork-only files stay
 behind, so the tree is a mix of two releases (the symptom was `NameError: name 'List' is not defined`
-in litellm/fine_tuning/main.py). pyproject.toml excludes the fork; these tests keep it excluded and
+in litellm/fine_tuning/main.py). pyproject.toml drops the fork from the lock; these tests keep it excluded and
 catch any other distribution that starts writing into litellm/.
 """
 
@@ -68,15 +68,15 @@ def test_guard_detects_a_second_owner() -> None:
 
 def test_manifest_excludes_the_fork_and_keeps_the_real_package() -> None:
     data = tomllib.loads(BACKEND_MANIFEST.read_text(encoding="utf-8"))
-    assert FORK in data["tool"]["uv"]["exclude-dependencies"]
+    assert f"{FORK} ; sys_platform == 'never'" in data["tool"]["uv"]["override-dependencies"]
     assert any(d.replace(" ", "").lower().startswith("litellm") for d in data["project"]["dependencies"])
 
 
-@pytest.mark.parametrize("path", ["Dockerfile", "deployment/docker-compose/hot-reload/Dockerfile.dev"])
-def test_images_built_over_an_older_base_drop_the_fork(path) -> None:
-    text = (REPO_ROOT / path).read_text(encoding="utf-8")
+def test_image_built_over_an_older_base_drops_the_fork() -> None:
+    text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     uninstall = text.index(f"uv pip uninstall --system {FORK}")
-    assert uninstall < text.index("--reinstall-package litellm -e .")
+    assert uninstall < text.index('--require-hashes "$@"')
+    assert "set -- --reinstall-package litellm" in text
 
 
 def _bash_repair() -> str:

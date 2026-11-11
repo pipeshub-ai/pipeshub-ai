@@ -143,10 +143,15 @@ PROBE_URL=https://pipeshub.example.com bash deployment/docker-compose/tests/heal
 | `PIPESHUB_PROBE_URL` | Variables | The deployment to probe; the probe skips if unset |
 | `PIPESHUB_PROBE_TOKEN` | Secrets | Only if health needs auth |
 
-The base images (`pipeshubai/pipeshub-ai-base:python-deps`, `:python-deps-slim`,
-`:runtime`) are still built deliberately rather than on every release — see the
-header of `Dockerfile.base`. The release workflow pulls them and fails clearly if
-they are missing, rather than silently rebuilding a forty-minute layer.
+The base images (`pipeshubai/pipeshub-ai-base:python-deps-<hash>`,
+`:runtime-<hash>`, `:models-bge-<hash>`) are published by
+`.github/workflows/base-images.yml` when `Dockerfile.base` or `backend/python/uv.lock`
+changes on main, and by the release workflow when a tag needs a hash that is not
+on Docker Hub yet. Floating tags (`python-deps`, `runtime`, `models-bge`) move
+only from main. There is no `python-deps-slim` tag: slim and full share
+`python-deps`, and only the full app image copies the model layer. The release
+build fails if that base does not match the lock (`REQUIRE_CURRENT_BASE=1`)
+instead of quietly installing a delta.
 
 ## Testing the tooling itself
 

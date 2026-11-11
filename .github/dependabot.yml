@@ -97,7 +97,7 @@ updates:
         patterns: ["*"]
 
   - package-ecosystem: docker
-    directories: [/, /backend/nodejs/apps, /backend/python, /deployment/sandbox]
+    directories: [/, /deployment/sandbox]
     schedule: { interval: monthly }
     open-pull-requests-limit: 3
     groups:

@@ -119,7 +119,7 @@ wait_ready() {
 # await_services <name> <pid> <url> ...: waits for every service at once. Returns 1 as soon as one fails, without
 # waiting for the others; only the waiters started here are stopped.
 await_services() {
-    local dir i=0 pids=() names=() done_count=0 total result
+    local dir i=0 pids=() done_count=0 total result
     dir=$(mktemp -d)
     while [ $# -ge 3 ]; do
         ( set +e; wait_ready "$1" "$2" "$3"; echo $? > "$dir/$i" ) &      # errexit would end the waiter at its failure, before the status is written
@@ -309,6 +309,15 @@ cleanup() {
 trap cleanup SIGTERM SIGINT SIGQUIT
 
 log "=== Process Monitor Starting ==="
+# Slim does not bake Chromium. Off by default: the first crawl downloads it.
+# A failure here must not stop the other processes.
+if [ "${PIPESHUB_PREFETCH_BROWSERS:-false}" = "true" ]; then
+    log "PIPESHUB_PREFETCH_BROWSERS=true — downloading Chromium in the background"
+    (
+        cd /app/python
+        python -c 'import asyncio; from app.utils.browser_install import ensure_chromium; asyncio.run(ensure_chromium())' || true
+    ) &
+fi
 start_nodejs
 if [ "${PIPESHUB_SKIP_SLACKBOT:-false}" = "true" ]; then
     log "PIPESHUB_SKIP_SLACKBOT=true — skipping Slack Bot"
