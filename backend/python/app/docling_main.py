@@ -11,8 +11,10 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.api.validation_errors import input_free_422
 from app.config.constants.http_status_code import HttpStatusCode
 from app.containers.docling import DoclingAppContainer, initialize_container
 from app.modules.parsers.pdf.docling_processor import (
@@ -163,11 +165,14 @@ app = FastAPI(
     title="Docling Processing Service",
     description="Microservice for PDF processing using Docling",
     version="1.0.0",
+    exception_handlers={RequestValidationError: input_free_422},
 )
 
 # Trace context — outermost.
 app.add_middleware(RequestContextMiddleware)
 
+# The mounted app answers its own routes' 422s, so it needs the handler too.
+docling_app.add_exception_handler(RequestValidationError, input_free_422)
 # Mount the Docling service routes
 app.mount("/", docling_app)
 
