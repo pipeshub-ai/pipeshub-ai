@@ -197,14 +197,15 @@ async def test_sweep_with_an_interval_goes_on_after_a_listing_that_fails(monkeyp
 async def test_a_writing_command_with_the_scope_fields_off_records_nothing(monkeypatch, command) -> None:
     """Registering from a process with the flag off would record the deployment as switched off; the next start with it on would then move
     the generation and make every stamp already written stale. So the command refuses before it registers anything."""
-    monkeypatch.delenv("ACL_SCOPE_FIELDS", raising=False)
-    monkeypatch.delenv("ACL_FILTER_MODE", raising=False)
     container = MagicMock()
     container.graph_provider = AsyncMock(return_value=MagicMock(disconnect=AsyncMock()))
     monkeypatch.setattr("app.containers.indexing.IndexingAppContainer.init", lambda name: container)
     monkeypatch.setattr("app.modules.indexing.vector_membership_backfill._resolve_indexing_pipeline", AsyncMock(return_value=MagicMock()))
     register = AsyncMock()
     monkeypatch.setattr("app.services.permissions.wiring.register_scope_generation", register)
+    # after the patches: importing the container loads a local .env, which could switch the fields back on
+    monkeypatch.delenv("ACL_SCOPE_FIELDS", raising=False)
+    monkeypatch.delenv("ACL_FILTER_MODE", raising=False)
     assert await scope_projection._main([command[0], "--org", "o", *command[1:]]) == 1
     register.assert_not_awaited()
 
