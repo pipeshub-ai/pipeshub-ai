@@ -47,9 +47,11 @@ from app.services.messaging.error_classifier import (
     is_expected_outcome,
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
+from app.services.messaging.message_log import bound_message
 from app.services.messaging.postgres.queue import Delivery, PgQueue
 from app.services.pg_runtime import QUEUE_CHANNEL, PgListener, listen_dsn
 from app.utils import error_class
+from app.utils import indexing_timing as timing
 from app.utils.request_context import bind_context, context_from_envelope, reset_context
 
 if TYPE_CHECKING:
@@ -373,16 +375,42 @@ class PgMessagingConsumer(IMessagingConsumer):
                 self._wake.set()
 
     async def _settle(self, d: Delivery) -> None:
+        if not self.indexing:
+            await self._decide(d)
+            return
+        # One record delivery, one index.end (as the Redis and Kafka indexing consumers): the decision below notes on it,
+        # and the line is written in the message's root, org and ids, as P8's bound_message gives the other two.
+        seen: dict[str, Any] = {}
+        timeline, token = timing.begin_record(None)
+        timeline.mark(timing.ADMITTED)
+        timing.note(attempt=d.attempts)
+        outcome = "failed"
+        try:
+            outcome = await self._decide(d, seen)
+        except asyncio.CancelledError:
+            timing.note(reason="cancelled")  # shutdown: left claimed and handed out again, as Redis and Kafka say it
+            raise
+        finally:
+            timeline.mark(timing.RELEASED)
+            with bound_message(seen.get("parsed"), seen.get("root")):
+                timing.end_record(timeline, token, outcome=outcome, logger=self.logger)
+
+    async def _decide(self, d: Delivery, seen: "dict[str, Any] | None" = None) -> str:
+        """Process ``d`` and ack, nack or dead-letter it; returns the indexing timeline's outcome."""
         group, max_attempts = self.config.group_id, messaging_env.max_delivery_attempts
         if (
             d.attempts > max_attempts
         ):  # handed out past the limit (a consumer that keeps dying mid-handler)
             # The sink needs the message to find its record: without it the record stays IN_PROGRESS and recovery hands it back for ever.
-            await self._abandon(d, await self._parse_for_sink(d), "delivery attempts exhausted")
-            return
+            timing.note(reason="unfinished_attempts")
+            parsed = await self._parse_for_sink(d)
+            if parsed is not None:
+                self._remember(parsed, seen)
+            await self._abandon(d, parsed, "delivery attempts exhausted")
+            return "failed"
         final = d.attempts >= max_attempts
         try:
-            success, terminal, parsed, err = await self._process(d, final=final)
+            success, terminal, parsed, err = await self._process(d, final=final, seen=seen)
         except RequeueWithoutAttempt as e:
             # Queue time, not a failure (a stage whose dependency is paused, a record whose lease stayed held): visible again after the
             # delay with the attempt this claim counted given back, so waiting never dead-letters it.
@@ -395,6 +423,7 @@ class PgMessagingConsumer(IMessagingConsumer):
                 min(_handback_base_s() * 2 ** min(n - 1, 10), _HANDBACK_CAP_S),     # grows with every hand-back of this message
             )
             reason = type(e).__name__
+            timing.note(code=reason, pool=getattr(e, "pool", None))
             self._handback_log[reason] = self._handback_log.get(reason, 0) + 1
             self.logger.debug("%s handed back without counting an attempt (%d so far, retry in %.1fs): %s", d.message_id, n, delay, e)
             if self.stage_admission is not None and e.pauses_consumer:
@@ -402,15 +431,27 @@ class PgMessagingConsumer(IMessagingConsumer):
             if e.counts_toward_backstop and n > _handback_limit():
                 # handed back for ever (a lease that is never freed): charged as a failure, so the delivery limit ends it
                 await self.queue.nack(group, d, delay, f"handed back {n} times: {e}"[:500])
-                return
+                timing.note(disposition="retry", reason="backstop")
+                return "failed"
             await self.queue.nack(group, d, delay, str(e), refund=True)
-            return
+            timing.note(disposition="retry")
+            return "requeued"
         self._handbacks.pop((d.topic, d.message_id), None)
         if success:
-            await self.queue.ack(group, d)
-        elif terminal:
+            try:
+                await self.queue.ack(group, d)
+            except Exception as e:
+                # Indexed: the expired claim redelivers it and the redelivery is deduped. In a record's run its index.end says it.
+                if not timing.note(disposition="retry", reason="ack_failed", exc=e):
+                    raise
+                return "ok"
+            timing.note(disposition="ack")
+            return "ok"
+        if terminal:
+            timing.note(reason="terminal")
             await self._abandon(d, parsed, err or "terminal error")
         elif final:
+            timing.note(reason="attempts_exhausted")
             await self._abandon(d, parsed, err or f"failed {d.attempts} times")
         else:
             delay = (
@@ -419,13 +460,22 @@ class PgMessagingConsumer(IMessagingConsumer):
                 else min(_retry_base_s() * d.attempts, 30.0)
             )
             await self.queue.nack(group, d, delay, err)
-            self.logger.warning(
-                "Transient failure on %s (%d/%d), retrying in %.0fs",
-                d.message_id,
-                d.attempts,
-                max_attempts,
-                delay,
-            )
+            if not timing.note(disposition="retry"):  # in a record's run, its index.end says it
+                self.logger.warning(
+                    "Transient failure on %s (%d/%d), retrying in %.0fs",
+                    d.message_id,
+                    d.attempts,
+                    max_attempts,
+                    delay,
+                )
+        return "failed"
+
+    @staticmethod
+    def _remember(parsed: StreamMessage, seen: "dict[str, Any] | None") -> None:
+        """The record's end line is written in this message's context and names its record."""
+        if seen is not None:
+            seen["parsed"] = parsed
+        timing.note(record_id=parsed.payload.get("recordId"), event_type=parsed.eventType)
 
     async def _parse_for_sink(self, d: Delivery) -> StreamMessage | None:
         """The message of a delivery that will not be processed, for the disposition sink; None when it cannot be read."""
@@ -448,13 +498,14 @@ class PgMessagingConsumer(IMessagingConsumer):
             reason=reason,
             attempts=d.attempts,
         )
-        # An expected outcome was logged once at INFO when the handler raised it.
-        log = self.logger.info if isinstance(reason, _ExpectedOutcome) else self.logger.warning
-        log("Dead-lettered %s (%s): %s", d.message_id, describe_message(parsed), reason)
         await self.queue.dead(self.config.group_id, d, reason)
+        if not timing.note(disposition="dead_letter"):  # in a record's run, its index.end says it
+            # An expected outcome was logged once at INFO when the handler raised it.
+            log = self.logger.info if isinstance(reason, _ExpectedOutcome) else self.logger.warning
+            log("Dead-lettered %s (%s): %s", d.message_id, describe_message(parsed), reason)
 
     async def _process(
-        self, d: Delivery, *, final: bool
+        self, d: Delivery, *, final: bool, seen: "dict[str, Any] | None" = None
     ) -> tuple[bool, bool, StreamMessage | None, str]:
         """(success, terminal, parsed message, error text)."""
         if self.message_handler is None:
@@ -466,17 +517,24 @@ class PgMessagingConsumer(IMessagingConsumer):
         if not isinstance(raw, dict):
             return False, True, None, "message is not an object"
         parsed: StreamMessage | None = None
-        token = bind_context(context_from_envelope(raw))
+        root = context_from_envelope(raw)
+        token = bind_context(root)
+        if seen is not None:
+            seen["root"] = root  # the record's end line is written in the root its lines ran in
         try:
             if self.indexing:
                 try:
                     parsed = await open_stream_message(d.topic, raw, StreamMessage)
                 except DuplicateEnvelope:
+                    timing.note(outcome="skipped", reason="duplicate_envelope")
                     return True, False, None, ""
                 except EnvelopeRejected as e:
+                    timing.note(reason="envelope_rejected", code=e.reason)
                     return False, True, None, f"envelope rejected: {e.reason}"
                 if parsed is None:
+                    timing.note(reason="unparseable")
                     return False, True, None, "unparseable message"
+                self._remember(parsed, seen)
                 parsed.is_final_failure = final
                 # A hand-back is a nack of the same row, so the row names the event across its retries.
                 stamp_delivery_id(parsed.payload, f"{d.topic}:{d.message_id}")
@@ -497,17 +555,19 @@ class PgMessagingConsumer(IMessagingConsumer):
             raise
         except Exception as e:
             expected = is_expected_outcome(e)
-            if expected:
-                # Expected (deleted while indexed, refused by the source): the handler
-                # already logged it once, so no traceback at error level here.
-                self.logger.info(
-                    "Message %s ended as expected: %s: %s", d.message_id, type(e).__name__, e
-                )
-            else:
-                # No error text: a pydantic ValidationError quotes the payload, and the handler's own line names the failure.
-                error_class.log_failure(
-                    self.logger, "message.handler_failed", e, include_error_text=False, message_id=d.message_id
-                )
+            # In a record's run (the indexing consumer) its index.end writes the failure once.
+            if not timing.note(exc=e):
+                if expected:
+                    # Expected (deleted while indexed, refused by the source): the handler
+                    # already logged it once, so no traceback at error level here.
+                    self.logger.info(
+                        "Message %s ended as expected: %s: %s", d.message_id, type(e).__name__, e
+                    )
+                else:
+                    # No error text: a pydantic ValidationError quotes the payload, and the handler's own line names the failure.
+                    error_class.log_failure(
+                        self.logger, "message.handler_failed", e, include_error_text=False, message_id=d.message_id
+                    )
             terminal = (
                 MessageErrorClassifier.classify_by_exception(e)
                 == MessageErrorType.TERMINAL

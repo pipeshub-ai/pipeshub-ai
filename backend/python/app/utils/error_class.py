@@ -28,7 +28,7 @@ from app.utils.log_redaction import (
     redact_error_for_log,
     redact_secrets_in_text,
 )
-from app.utils.logging_fields import event_fields
+from app.utils.logging_fields import event_fields, log_event
 from app.utils.oauth_errors import is_permanent_grant_rejection
 
 ERROR_CLASSES: frozenset[str] = frozenset({
@@ -99,6 +99,16 @@ def first_leaf(exc: BaseException) -> BaseException:
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
         exc = exc.exceptions[0]
     return exc
+
+
+def has_chain(exc: BaseException) -> bool:
+    """Whether ``exc`` was raised from, or while handling, another exception: when ``cause_type`` says something."""
+    return exc.__cause__ is not None or (exc.__context__ is not None and not exc.__suppress_context__)
+
+
+def quotes_content(exc: BaseException) -> bool:
+    """Whether a link of the chain is a content error: its text, and every text above it, can quote the document's name."""
+    return any(isinstance(link, CONTENT_ERRORS) for link in _chain(exc))
 
 
 def innermost_type(exc: BaseException) -> str:
@@ -306,3 +316,20 @@ def log_failure(
         # Text-free on purpose: this path skips the masking and include_error_text.
         with contextlib.suppress(Exception):
             logger.log(level or logging.ERROR, event, extra={"error_type": type(exc).__name__}, stacklevel=2)
+
+
+def log_unit_end(
+    logger: logging.Logger, event: str, exc: BaseException | None, /, *,
+    level: int, error_class: str | None = None, include_error_text: bool = True, **fields: object,
+) -> None:
+    """The end line of one unit of work, at ``level``. Without an exception, the event with ``error_class`` when
+    given. With one not yet logged this high, :func:`log_failure` (the stack once, at ERROR). With one already
+    logged at ``level`` or higher, the event with its class and type: no text and no second stack."""
+    if exc is None:
+        log_event(logger, event, level=level, error_class=error_class, **fields)
+        return
+    cls = error_class or classify_error(exc)
+    if already_logged(exc, level):
+        log_event(logger, event, level=level, error_class=cls, error_type=type(exc).__name__, **fields)
+        return
+    log_failure(logger, event, exc, level=level, error_class=cls, include_error_text=include_error_text, **fields)

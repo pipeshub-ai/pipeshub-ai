@@ -133,13 +133,9 @@ def _status_class(status: int) -> str:
     return "internal" if status == 500 else error_class.classify_error(status)
 
 
-def _has_chain(exc: BaseException) -> bool:
-    return exc.__cause__ is not None or (exc.__context__ is not None and not exc.__suppress_context__)
-
-
 def _handed_over_class(exc: BaseException) -> str:
     """A bare HTTPException is its own status's class; one raised from a failure is that failure's class (P1b)."""
-    if isinstance(exc, StarletteHTTPException) and not _has_chain(exc):
+    if isinstance(exc, StarletteHTTPException) and not error_class.has_chain(exc):
         return _status_class(exc.status_code)
     return error_class.classify_error(exc)
 
@@ -231,7 +227,7 @@ def _log_exception(failure: _Failure, cls: str, **fields: object) -> None:
         log_event(logger, EVENT, level=error_class.level_for(cls), outcome="failure", error_class=cls, **fields)
         return
     # A type name only, so it stays with include_error_text=False.
-    cause_type = error_class.innermost_type(exc) if _has_chain(exc) else None
+    cause_type = error_class.innermost_type(exc) if error_class.has_chain(exc) else None
     if not error_class.already_logged(exc, error_class.level_for(cls)):
         error_class.log_failure(logger, EVENT, exc, error_class=cls, include_error_text=failure.include_error_text,
                                 cause_type=cause_type, **fields)

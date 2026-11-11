@@ -5,6 +5,7 @@ INFO, writes no status and leaves the record's queued duplicates alone, and no
 later layer logs it at error.
 """
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -78,8 +79,9 @@ class TestHandler:
     """Driven through the real event processor and Markdown processor: the record
     is deleted while it is parsed, so the processor's own read finds it gone."""
 
-    async def _index(self, parse_fails_with: Exception | None = None) -> tuple[MagicMock, MagicMock, MagicMock]:
-        logger = MagicMock()
+    async def _index(self, parse_fails_with: Exception | None = None) -> tuple[logging.Logger, MagicMock, MagicMock]:
+        # A real logger: lines written through log_failure/log_event never reach a mock's .error/.warning.
+        logger = logging.getLogger("test.p6.record_deleted")
         gp = AsyncMock()
         gp.update_node = AsyncMock(return_value=True)
         record = {"_key": "r1", "virtualRecordId": "vr1", "orgId": "org-1", "origin": "UPLOAD",
@@ -124,19 +126,23 @@ class TestHandler:
                 if c.args[2].get("indexingStatus") == ProgressStatus.FAILED.value]
 
     @pytest.mark.asyncio
-    async def test_a_deletion_logs_one_info_and_writes_nothing(self) -> None:
-        logger, gp, handler = await self._index()
-        logger.error.assert_not_called()
-        deleted = [c for c in logger.info.call_args_list if "deleted while it was being indexed" in str(c.args[0])]
-        assert len(deleted) == 1
+    async def test_a_deletion_logs_nothing_above_debug_and_writes_nothing(self, caplog) -> None:
+        # The consumer's index.end says it, at INFO.
+        with caplog.at_level(logging.DEBUG, logger="test.p6.record_deleted"):
+            _, gp, handler = await self._index()
+        assert [
+            r.getMessage() for r in caplog.records
+            if r.levelno > logging.DEBUG and not r.getMessage().startswith("Initializing")  # construction, not the run
+        ] == []
+        assert any("deleted while it was being indexed" in r.getMessage() for r in caplog.records)
         assert self._failed_writes(gp) == []
         handler._propagate_primary_failure_to_queued_duplicates.assert_not_called()
         handler._trigger_next_queued_duplicate.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_a_processing_failure_is_still_a_final_failure(self) -> None:
-        logger, gp, handler = await self._index(parse_fails_with=ValueError("bad file"))
-        errors = [c for c in logger.error.call_args_list if "Final failure" in str(c.args[0])]
-        assert len(errors) == 1
+    async def test_a_processing_failure_is_still_a_final_failure_logged_by_the_consumer_only(self, caplog) -> None:
+        with caplog.at_level(logging.DEBUG, logger="test.p6.record_deleted"):
+            _, gp, handler = await self._index(parse_fails_with=ValueError("bad file"))
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
         assert len(self._failed_writes(gp)) == 1
         handler._propagate_primary_failure_to_queued_duplicates.assert_awaited_once()

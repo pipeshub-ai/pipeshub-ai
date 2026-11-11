@@ -149,7 +149,7 @@ class Harness:
         ) > 0
 
     def log_lines(self) -> str:
-        return "\n".join(str(call.args[0]) for call in self.logger.info.call_args_list)
+        return "\n".join(str(call.args[0]) for call in self.logger.debug.call_args_list)
 
 
 @pytest.fixture
@@ -315,8 +315,8 @@ async def test_an_oversized_text_file_is_marked_too_large_and_never_reaches_mark
     assert "up to 1 MB" in write["reason"]
     assert "CODE_FILE_MAX_SIZE_MB" in write["reason"]
     assert write["reason"].endswith("and then choose Index all on the repository.")
-    # The log names the file and its size, so an operator can find it.
-    assert "dump.sql" in harness.log_lines()
+    # The log names the record (never the file name) and its size, so an operator can find it.
+    assert "rec-1" in harness.log_lines() and "dump.sql" not in harness.log_lines()
     assert str(size) in harness.log_lines()
 
 

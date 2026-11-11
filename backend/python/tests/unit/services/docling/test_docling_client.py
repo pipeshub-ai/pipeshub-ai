@@ -206,9 +206,10 @@ class TestParsePdfBatched:
             ),
             pytest.raises(DoclingUnavailableError) as raised,
         ):
-            await client.parse_pdf_batched("doc.pdf", small_pdf)
+            await client.parse_pdf_batched("Quarterly-Secret-Plan.pdf", small_pdf)
 
         assert isinstance(raised.value, IndexingError)
+        assert "Quarterly-Secret-Plan" not in str(raised.value)  # its text can reach index.end
         assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TRANSIENT
 
 

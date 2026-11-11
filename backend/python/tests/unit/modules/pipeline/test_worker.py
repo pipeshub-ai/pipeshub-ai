@@ -693,3 +693,54 @@ async def test_a_job_of_another_connector_runs_as_before() -> None:
     h.seed(job)
     await h.deliver(job)
     assert h.stage.runs == 1 and h.state(job).status is ProgressStatus.COMPLETED
+
+
+class TestEndLine:
+    """A stage delivery's one line is the consumer's index.end; the worker only notes the job on it."""
+
+    @staticmethod
+    async def _deliver_in_a_record(h: _Harness, job: StageJob, caplog) -> list[logging.LogRecord]:
+        from app.utils import indexing_timing as timing
+
+        timeline, token = timing.begin_record(None, "stageJob", "light")
+        outcome = "failed"
+        with caplog.at_level(logging.DEBUG):
+            try:
+                await h.deliver(job)
+                outcome = "ok"
+            except Exception as e:
+                timing.note(exc=e)
+            finally:
+                timing.end_record(timeline, token, outcome=outcome, logger=logging.getLogger("t.consumer"))
+        return [r for r in caplog.records if r.getMessage() == timing.INDEX_END]
+
+    @pytest.mark.asyncio
+    async def test_a_completed_job_is_one_line_naming_the_job(self, caplog) -> None:
+        h, job = _Harness(), _job()
+        h.seed(job)
+        (end,) = await self._deliver_in_a_record(h, job, caplog)
+        assert (end.outcome, end.stage, end.job, end.record_id) == ("success", "classify", job.job_id, "rec-1")
+        assert [r for r in caplog.records if r.name == "t" and r.levelno >= logging.WARNING] == []
+
+    @pytest.mark.asyncio
+    async def test_a_failing_stage_is_one_failure_line(self, caplog) -> None:
+        h, job = _Harness(), _job()
+        h.seed(job)
+        h.stage.result = ProcessingError("model refused")
+        (end,) = await self._deliver_in_a_record(h, job, caplog)
+        assert (end.outcome, end.stage, end.error_type) == ("failure", "classify", "ProcessingError")
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == ["index.end"]
+
+    @pytest.mark.asyncio
+    async def test_a_failure_whose_state_another_worker_took_leaves_one_warning(self, caplog) -> None:
+        h, job = _Harness(), _job()
+        h.seed(job)
+        h.stage.delay = 0.05
+        h.stage.result = ProcessingError("Quarterly-Secret-Plan.docx could not be classified")
+        with caplog.at_level(logging.DEBUG):
+            run = asyncio.create_task(h.deliver(job))
+            await _reclaimed_and_taken_by(h, job, other="w2")
+            await run
+        (line,) = [r for r in caplog.records if r.getMessage() == "stage.run_failed"]
+        assert (line.levelno, line.reason, line.error_type) == (logging.WARNING, "superseded", "ProcessingError")
+        assert not hasattr(line, "error_message")

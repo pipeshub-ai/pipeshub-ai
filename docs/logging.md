@@ -245,7 +245,8 @@ the auth middleware bound.
   a thread, and the route's own lines would lose the binding). A route marks the `HTTPException` it raises, not its cause, then
   raises it `from` the cause. `add_request_log_fields(request, oauth_error=…)` adds a bounded event field to this line only.
 - `cause_type` is the type name of the innermost cause (`__cause__`, else `__context__` unless suppressed; a group counts as its
-  first leaf), on a failure line whose exception has a chain; it is a type name only, so it stays with
+  first leaf), on a failure line whose exception has a chain (`error_class.has_chain`; omitted otherwise, since it would repeat
+  `error_type`; `http.request.end` and `index.end` follow this rule); it is a type name only, so it stays with
   `include_error_text=False`. For `HTTPException from MCPOAuthError from httpx.ConnectError` the line has
   `error_type=HTTPException cause_type=ConnectError`: the middle domain error is not on the line. A route that needs its domain
   code there marks it with `reason=`.
@@ -343,7 +344,7 @@ or `<topic>-<partition>-<offset>` on Kafka); then the producer's request id, bef
 verified, the envelope's org and user, `event_type`, and the payload's `record_id` and `connector_id`. Every line of the delivery
 carries them: the handler's own, and the ack, retry or dead-letter decision. Before verification, and on a rejected envelope,
 `org_id` is the org the producer claims, not a verified one. The indexing consumers bind the same for a record's whole run
-(`message_log.bound_message`), the main-loop recovery and dead-letter path included; their end line is the indexing summary.
+(`message_log.bound_message`), the main-loop recovery and dead-letter path included; their end line is `index.end` (see "Indexing").
 
 | Event | Level | Fields |
 | --- | --- | --- |
@@ -374,6 +375,73 @@ carries them: the handler's own, and the ack, retry or dead-letter decision. Bef
 - Work a handler starts in its own context (the sync task manager) keeps the message's ids; `message.end` is written when the
   delivery ends, not when that work does. The connector link passes started by `userAdded` run as an org job instead
   (`ctx_kind=job ctx_source=job:connector_link`), with only `connector_id`.
+
+## Indexing
+
+The indexing consumers (Redis Streams and Kafka, `app/services/messaging/*/indexing_consumer.py`, and the PostgreSQL broker's
+`PgMessagingConsumer(indexing=True)`) open a `RecordTimeline` (`app/utils/indexing_timing.py`) for each delivery that reaches a
+record, and write **one** `index.end` line when it ends, in the `finally` after the releases. P8's `bound_message` gives it the
+delivery's ids on Redis and Kafka; on PostgreSQL the line is written in the root the delivery ran in (the envelope's request id,
+or the one minted for an envelope without one), binds its org and notes `record_id`, `event_type` and `connector_id` from the payload.
+
+| Event | Level | Fields |
+| --- | --- | --- |
+| `index.end` | see below | `outcome` (`success`, `skipped`, `failure`), `disposition` (`ack`, `retry`, `dead_letter`), `reason`, `attempt`, `tier`, `duration_ms`, `record_id`, `event_type`; timings `wait_slot_ms`, `held_ms`, `pre_parse_ms`, `parse_wait_ms`, `parse_ms`, `post_parse_ms`, `stages` (busy time per step, largest first, steps under 50 ms left out), `slow_steps`; what was learned on the way: `extension`, `mime_type`, `size_bytes`, `blocks`, `chunks`, `failed_batches`, `page`, `duplicate_of` (the shared virtual record id; absent while the twin is still being indexed), `timeout_s`, `phase` (`enrichment`), `code` (a hand-back's type), `pool` (the slot a parse-slot wait ran out on), and for a stage job `stage`, `job`; for an exception, the `log_failure` fields and `cause_type` |
+
+Levels and outcome:
+- `ack`: `success`, or `skipped` when the handler noted a skip (`reason`: `duplicate`, `already_indexed`, `not_found`, `in_trash`,
+  `stage_moved`, `no_stage_state`, `connector_missing`, `connector_inactive`, `parse_now_refused`, `folder`, `unsupported_type`,
+  `metadata_file`, `no_virtual_record_id`, `stored_content_missing` (a vector-only reindex whose stored blocks could not be read; the
+  record is marked failed, and `index.blob_read_failed` says why), `duplicate_envelope` (PostgreSQL)). INFO.
+- Handed back without an attempt counted: `skipped`, `retry`; `reason=requeued` is WARNING (waiting on capacity), `contended` INFO.
+- A failure that will be retried: `failure`, `retry`, at WARNING, or ERROR for `internal`/`misconfigured`.
+- Dead-lettered: `reason=terminal` (the content: a corrupt, password-protected or unsupported file) at the class's level, WARNING for
+  a user's file; `attempts_exhausted`, `backstop` (handed back too many times) and `unfinished_attempts` (a crash loop) are ERROR:
+  a human reindexes the record. Kafka with no retry tracker commits the failure: `dead_letter`, `reason=no_retry_tracker`.
+- `shutdown` and `cancelled` are INFO, and so is a record deleted while it was being indexed. A source that refused the item
+  (its 4xx with a stored reason) is `reason=source_refused` at its class's level, WARNING.
+- A branch that leaves the entry pending (`requeue_failed`, `count_failed`, Redis's `no_retry_tracker`) is `disposition=retry` whatever
+  the handler reached.
+- The ack or commit failed after the record was indexed (`reason=ack_failed` or `commit_failed`): `success`, `retry`, WARNING; the
+  redelivery is deduped. An ack that fails while dead-lettering leaves the entry pending: `retry`, `reason=ack_failed`.
+- A failure with no exception and no class is WARNING.
+- `error_class` is `classify_error`'s, except that a `DocumentProcessingError` whose direct cause is a programming error
+  (`KeyError`, `AttributeError`, `TypeError`, `NameError`, `AssertionError`) is `internal`: a bug in our parse code. A library that
+  wraps its own `KeyError` (docling on a zip renamed `.docx`) stays the user's content, `bad_request`. Retries do not read this.
+- No `error_message` when a link of the chain is a content error (`error_class.quotes_content`): the processor copies the parser's
+  text, which quotes the file name. The stack written at ERROR then shows each exception as `Type: <message omitted>`.
+- `INDEXING_TIMING_LOGS=false` silences only `index.slow_step`; the timing fields stay on `index.end`.
+
+Rules for the code on the path:
+- Inner layers (the record handler, the event processor, the processor, the sinks, the stage worker) raise what they cannot handle
+  without logging it, and `indexing_timing.note(...)` what the line should say. The consumer notes `disposition` and `attempt`
+  only after the broker call (XACK, re-queue, commit) returns, and reason codes, never free text.
+- `tests/unit/core/test_indexing_log_once.py` lists the `except` blocks on the path that may still log and raise.
+- A stage job (`StageJobHandler`) notes `stage`, `job` and `record_id` on the delivery's timeline: one `index.end` per stage delivery.
+- A double failure (the status write fails after the record failed) re-raises the record's error `from` the status-write error, so
+  that line's `cause_type` and stack come from the status write.
+
+Other lines on the path, each once:
+
+| Event | Level | When |
+| --- | --- | --- |
+| `index.slow_step` | WARNING | a step ran past `INDEXING_SLOW_STEP_SECONDS`; `step`, `duration_ms`, `threshold_ms`, `detail`, `record_id`; at most three per step per record |
+| `index.parse_fallback` | WARNING | Docling failed (no text) or returned nothing (`reason=no_document`); the PdfPlumber path runs next; `parser` |
+| `index.download_fallback` | WARNING | the signed-URL download failed; the connector stream is tried next (no text: it can carry the URL) |
+| `index.requeue_failed` | WARNING | the re-queue of a failed or handed-back record failed; it stays pending (no text) |
+| `index.commit_failed` | WARNING | Kafka: the offset commit failed (no text) |
+| `index.status_write_failed` | WARNING | the record's FAILED or QUEUED status could not be written; the record's own error is still raised |
+| `index.post_ack_failed` | WARNING | Redis: cleanup after a successful record's XACK failed |
+| `index.blob_read_failed` | WARNING | a vector-only reindex could not read the stored blocks; the record is marked failed |
+| `index.task_failed` | per class | a processing task ended with an exception nobody handled; DEBUG for one already written (by `index.end`, `index.requeue_failed` or `index.commit_failed`) |
+| `stage.run_failed` | WARNING | a stage failed after another worker took its job over (`reason=superseded`): the failure's only trace |
+
+Deliveries that end before the timeline opens write no `index.end`: an unparseable message (a WARNING, the sink's
+`Discarded an unparseable message` ERROR, and on Kafka also `Dead-lettered`), a backoff wait cut short by shutdown, a pending entry
+that is no longer ours, a record already claimed in this process (DEBUG).
+
+Known limitation: failures raised inside `blob_storage.py`, the parsers and `docling_processor` can still log their own lines
+before `index.end` (P6b). docling's own loggers can print the file name.
 
 ## Agent loop events (Python)
 

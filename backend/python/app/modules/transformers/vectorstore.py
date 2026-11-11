@@ -122,7 +122,7 @@ from app.utils.embedding_retry import (
     signal_backpressure_if_rate_limited,
 )
 from app.utils.image_utils import normalize_image_to_base64
-from app.utils.indexing_timing import stage
+from app.utils.indexing_timing import note, stage
 from app.utils.llm import load_ai_models
 from app.utils.openai_hosts import is_openai_api_url
 
@@ -1399,7 +1399,7 @@ class VectorStore(Transformer):
                 reset_membership_context(tokens)
             # The membership and the stamp were read before the embedding: what changed meanwhile is applied now, as for the other points
             await self._resync_membership_after_write(virtual_record_id, record_id)
-        self.logger.debug("✅ Indexed record summary for record %s", record_id)
+        self.logger.debug("Indexed record summary for record %s", record_id)
 
     async def _collection_with_model(self, org_id: str, record: Optional["Record"]) -> str:
         """The record's collection, with the embedding model built on this instance first: a path
@@ -1697,11 +1697,6 @@ class VectorStore(Transformer):
             record_group_ids = state.record_group_ids
             root_record_group_ids = state.root_record_group_ids
         except Exception as e:
-            self.logger.error(
-                "Failed to resolve vector membership for %s: %s",
-                virtual_record_id,
-                e,
-            )
             raise VectorStoreError(
                 f"Could not resolve vector membership for virtual record {virtual_record_id}",
                 details={"virtual_record_id": virtual_record_id, "error": str(e)},
@@ -1907,11 +1902,10 @@ class VectorStore(Transformer):
             )
             await self.vector_db_service.delete_points(collection_name, filter_dict)
             self.logger.info(
-                f"✅ Deleted {len(block_ids)} blocks from vector store "
+                f"Deleted {len(block_ids)} blocks from vector store "
                 f"for virtual_record_id {virtual_record_id}"
             )
         except Exception as e:
-            self.logger.error(f"Error deleting blocks by IDs: {e}")
             raise VectorStoreError(
                 "Failed to delete blocks by IDs", details={"error": str(e)}
             ) from e
@@ -1928,10 +1922,9 @@ class VectorStore(Transformer):
             )
             await self.vector_db_service.delete_points(collection_name, filter_dict)
             self.logger.debug(
-                f"✅ Deleted embeddings for virtual record '{virtual_record_id}'"
+                f"Deleted embeddings for virtual record '{virtual_record_id}'"
             )
         except Exception as e:
-            self.logger.error(f"Error deleting embeddings: {e}")
             raise VectorStoreError(
                 "Failed to delete embeddings", details={"error": str(e)}
             ) from e
@@ -2055,7 +2048,7 @@ class VectorStore(Transformer):
                 collection_name=collection_name, points=points[i:i + batch_size]
             )
         self.logger.info(
-            f"✅ Stored {len(points)} image points in {time.perf_counter() - start:.2f}s"
+            f"Stored {len(points)} image points in {time.perf_counter() - start:.2f}s"
         )
 
     # ------------------------------------------------------------------
@@ -2248,7 +2241,7 @@ class VectorStore(Transformer):
         collection_name: str,
     ) -> None:
         self.logger.debug(
-            f"⏱️ Embedding {len(langchain_document_chunks)} document chunks"
+            f"Embedding {len(langchain_document_chunks)} document chunks"
         )
         use_local_sequential = self._is_local_cpu_embedding()
         max_documents, max_chars = (
@@ -2262,14 +2255,10 @@ class VectorStore(Transformer):
         )
 
         async def process_batch(batch_start: int, batch: List[Document]) -> int:
-            try:
-                await self._embed_and_upsert_documents(
-                    batch, record_id, collection_name, presence
-                )
-                return len(batch)
-            except Exception as e:
-                self.logger.warning(f"Batch at {batch_start} failed: {e}")
-                raise
+            await self._embed_and_upsert_documents(
+                batch, record_id, collection_name, presence
+            )
+            return len(batch)
 
         if not use_local_sequential and self._batches_by_tokens():
             batches = await asyncio.to_thread(
@@ -2304,6 +2293,8 @@ class VectorStore(Transformer):
             results = await asyncio.gather(
                 *[limited(s, b) for s, b in batches], return_exceptions=True
             )
+            # Only the first failure is raised; the count says how many batches went with it.
+            note(failed_batches=sum(isinstance(r, Exception) for r in results) or None)
             for idx, result in enumerate(results):
                 if isinstance(result, NonRetryableError):
                     raise result
@@ -2513,7 +2504,8 @@ class VectorStore(Transformer):
                     "Failed to store documents in vector store",
                     details={"error": str(e)},
                 ) from e
-            self.logger.info(f"Embeddings created and stored for record '{record_id}'")
+            note(chunks=len(langchain_docs) + len(image_chunks))
+            self.logger.debug(f"Embeddings created and stored for record '{record_id}'")
             return
 
         # Delete existing embeddings first (full replace, non-reconciliation path)
@@ -2521,7 +2513,7 @@ class VectorStore(Transformer):
             await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
 
         self.logger.debug(
-            f"📊 Processing {len(langchain_docs)} text + {len(image_chunks)} image chunks"
+            f"Processing {len(langchain_docs)} text + {len(image_chunks)} image chunks"
         )
 
         if image_chunks:
@@ -2542,7 +2534,8 @@ class VectorStore(Transformer):
                     details={"error": str(e)},
                 ) from e
 
-        self.logger.info(f"✅ Embeddings created and stored for record '{record_id}'")
+        note(chunks=len(langchain_docs) + len(image_chunks))
+        self.logger.debug(f"Embeddings created and stored for record '{record_id}'")
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -2656,7 +2649,7 @@ class VectorStore(Transformer):
                     table_blocks.append(block)
 
             self.logger.debug(
-                f"📊 Processing {len(blocks)} blocks and {len(block_groups)} block_groups"
+                f"Processing {len(blocks)} blocks and {len(block_groups)} block_groups"
             )
             self.logger.debug(
                 f"Block classification: text={len(text_blocks)}, image={len(image_blocks)}, "
@@ -2677,7 +2670,7 @@ class VectorStore(Transformer):
                         _record_context_line(record), member_blocks=member_blocks,
                     )
                 )
-                self.logger.info("✅ Added code documents for embedding")
+                self.logger.info("Added code documents for embedding")
 
             # ── Text blocks ──
             if text_blocks:
@@ -2691,7 +2684,7 @@ class VectorStore(Transformer):
                             timeout=_TEXT_PROCESSING_TIMEOUT_S,
                         )
                     documents_to_embed.extend(text_documents)
-                    self.logger.debug("✅ Added text documents for embedding")
+                    self.logger.debug("Added text documents for embedding")
                 except asyncio.TimeoutError:
                     raise DocumentProcessingError(
                         f"Text processing timed out after {_TEXT_PROCESSING_TIMEOUT_S}s "
@@ -2790,7 +2783,7 @@ class VectorStore(Transformer):
                                 "\n\n".join(parts), sql_base_metadata,
                             ))
                             self.logger.info(
-                                f"📊 Added SQL TABLE DDL+Summary for embedding: {fqn}"
+                                f"Added SQL TABLE DDL+Summary for embedding: {fqn}"
                             )
 
                     elif sub_type == "sql_view":
@@ -2827,11 +2820,11 @@ class VectorStore(Transformer):
                                 view_context, sql_base_metadata,
                             ))
                             self.logger.info(
-                                f"📊 Added SQL VIEW for embedding: {fqn}"
+                                f"Added SQL VIEW for embedding: {fqn}"
                             )
                         else:
                             self.logger.warning(
-                                f"⚠️ SQL VIEW {fqn} has no embeddable content, skipping"
+                                f"SQL VIEW {fqn} has no embeddable content, skipping"
                             )
 
                 elif block_group_type == "table":
@@ -2873,7 +2866,7 @@ class VectorStore(Transformer):
                     ))
                     sql_rows_embedded += 1
             if sql_rows_embedded > 0:
-                self.logger.debug(f"📊 Added {sql_rows_embedded} SQL row(s) for embedding")
+                self.logger.debug(f"Added {sql_rows_embedded} SQL row(s) for embedding")
 
             # ── Regular table blocks ──
             for block in table_blocks:
@@ -2935,7 +2928,7 @@ class VectorStore(Transformer):
                 )
 
             if not documents_to_embed:
-                self.logger.warning("⚠️ No documents to embed after filtering by block type")
+                self.logger.warning("No documents to embed after filtering by block type")
                 if block_ids_to_delete:
                     await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id)
                 await self._cleanup_orphaned_embeddings_if_needed(
@@ -2970,12 +2963,12 @@ class VectorStore(Transformer):
                 await self._create_embeddings(documents_to_embed, record_id, virtual_record_id, collection_name, org_id=org_id)
 
             if block_ids_to_delete:
-                self.logger.debug(f"📊 Deleting {len(block_ids_to_delete)} removed blocks")
+                self.logger.debug(f"Deleting {len(block_ids_to_delete)} removed blocks")
                 with stage("vector.delete"):
                     await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name, org_id=org_id)
 
             self.logger.debug(
-                f"✅ Indexing complete for record {record_id}: "
+                f"Indexing complete for record {record_id}: "
                 f"{len(documents_to_embed)} documents"
             )
 
