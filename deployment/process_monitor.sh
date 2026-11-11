@@ -217,7 +217,8 @@ use_own_pg_login() {
     url_var="PG_CORE_${up}_URL"
     pool_var="PG_${up}_POOL_MAX"
     [ -n "${!url_var:-}" ] || return 0
-    export PG_RUNTIME_SERVICE="$1" PG_CORE_URL="${!url_var}"
+    # The pgvector store connects with the same login (it reads PGVECTOR_DSN, else a DSN in the configuration store, which every service would share).
+    export PG_RUNTIME_SERVICE="$1" PG_CORE_URL="${!url_var}" PGVECTOR_DSN="${!url_var}"
     if [ -n "${!pool_var:-}" ]; then export PG_POOL_MAX="${!pool_var}"; fi
 }
 
