@@ -55,32 +55,37 @@ class ServingPlanner:
 
     async def plan(self, org_id: str, user_key: str) -> ScopeFilter | None:
         """The filter to search with, or None for the legacy request. Never raises. Runs inside the organisation."""
+        return (await self.plan_exact(org_id, user_key))[0]
+
+    async def plan_exact(self, org_id: str, user_key: str) -> tuple[ScopeFilter | None, bool]:
+        """`plan`, and whether every connector the viewer is gated into is served and exact: then no point the request returns is left to the arms'
+        guess, so it needs no over-fetch for the post-check's denials (the post-check itself stays on every hit)."""
         try:
-            flt, reason = await asyncio.wait_for(self._plan(org_id, user_key), self._budget)
+            flt, exact, reason = await asyncio.wait_for(self._plan(org_id, user_key), self._budget)
         except TimeoutError:
-            flt, reason = None, "timeout"
+            flt, exact, reason = None, False, "timeout"
         except Exception as exc:
             _logger.warning("serving plan failed: %s", type(exc).__name__)
-            flt, reason = None, "error"
+            flt, exact, reason = None, False, "error"
         SERVING_PLAN.inc(reason)
-        return flt
+        return flt, exact
 
-    async def _plan(self, org_id: str, user_key: str) -> tuple[ScopeFilter | None, str]:
+    async def _plan(self, org_id: str, user_key: str) -> tuple[ScopeFilter | None, bool, str]:
         if not user_key:
-            return None, "no_user"
+            return None, False, "no_user"
         try:
             scopes = await self._scopes.scopes(org_id, user_key)      # the cache or ViewerScopesUnavailable, never a wait on the graph
         except ViewerScopesUnavailable as exc:
             SCOPES_UNAVAILABLE.inc(exc.reason.split(":", 1)[0])
-            return None, "miss"
+            return None, False, "miss"
         if len(scopes.readable_groups) + len(scopes.readable_scopes) + len(scopes.unreadable_restricted) > MAX_SERVED_TERMS:
-            return None, "broad"
-        served = await self._currency.served(scopes.gated_apps)
+            return None, False, "broad"
+        served, exact = await self._currency.read(scopes.gated_apps)
         if not served:
-            return None, "no_served"
+            return None, False, "no_served"
         flt = stamp_filter(scopes, served, defer=True)
         try:
             flt.lists()
         except ScopeFilterTooLarge:
-            return None, "too_large"
-        return flt, "scopes"
+            return None, False, "too_large"
+        return flt, exact == scopes.gated_apps, "scopes"

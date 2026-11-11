@@ -8,7 +8,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.services.permissions.currency import StampCurrency, app_is_served
+from app.services.permissions.currency import (
+    StampCurrency,
+    app_is_exact,
+    app_is_served,
+)
 from app.services.permissions.errors import ViewerScopesUnavailable
 from app.services.permissions.mode import ENV_ACL_FILTER_MODE
 from app.services.permissions.scope_fields import (
@@ -84,6 +88,24 @@ def test_an_idle_or_queued_connector_is_served() -> None:
 
 def test_a_missing_document_is_not_served() -> None:
     assert not app_is_served(None) and not app_is_served({})
+
+
+@pytest.mark.parametrize(("over", "exact"), [
+    ({}, False), ({K["exact"]: False}, False), ({K["exact"]: True}, True), ({K["exact"]: "true"}, False), ({K["exact"]: 1}, False), ({K["exact"]: None}, False),
+    ({K["exact"]: True, K["state"]: "running"}, False), ({K["exact"]: True, "scopeProjectionPendingRoots": '{"r":5}'}, False),
+    ({K["exact"]: True, "status": "SYNCING"}, False), ({K["exact"]: True, "scopeProjectionGeneration": 6}, False)])
+def test_a_connector_is_exact_only_when_it_is_served_and_its_pass_says_so(over: dict, exact: bool) -> None:
+    assert app_is_exact(current(**over)) is exact and not app_is_exact(None) and not app_is_exact({K["exact"]: True})
+
+
+async def test_the_plan_says_exact_only_when_every_gated_connector_is_served_and_exact() -> None:
+    both = {"c1": current(**{K["exact"]: True}), "c2": current(**{K["exact"]: True})}
+    for docs, want in ((both, True), ({**both, "c2": current()}, False), ({"c1": both["c1"]}, False),            # one not exact, one with no document
+                       ({**both, "c2": current(scopeProjectionPendingRoots='{"r":5}', **{K["exact"]: True})}, False)):
+        flt, exact = await planner(docs)[0].plan_exact(ORG, USER)
+        assert (flt is not None, exact) == (True, want), docs
+        assert (await planner(docs)[0].plan(ORG, USER)) == flt                                                     # `plan` is unchanged
+    assert await planner({})[0].plan_exact(ORG, USER) == (None, False)
 
 
 async def test_only_the_served_connectors_are_in_the_filter() -> None:
