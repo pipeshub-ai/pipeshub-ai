@@ -194,6 +194,18 @@ async def test_synced_users_are_created_inactive_members_unless_guests_and_reuse
     await w.p.batch_upsert_app_users([])                                                 # nothing to do
 
 
+async def test_synced_users_are_looked_up_by_the_vetted_email_read_and_the_statement_for_an_address_out_of_its_bounds(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    from .test_kg_lookups import spy
+    await member(w, "existing", userId="ue", email="Old@X.com", isActive=True)
+    sent = spy(monkeypatch)
+    await w.p.batch_upsert_app_users([app_user("old@x.com", "n1"), app_user("new@x.com", "n2")])
+    assert "users_by_email_vetted" in sent and "users_by_email" not in sent
+    assert {u["email"].lower(): u["_key"] for u in await w.p.get_all_documents("users")}["old@x.com"] == "existing"          # found, not duplicated
+    sent.clear()
+    await w.p.batch_upsert_app_users([app_user("e" * 1001 + "@x.com", "n3")])
+    assert "users_by_email" in sent and "users_by_email_vetted" not in sent
+
+
 async def test_groups_and_roles_round_trip_in_the_ambient_org_whatever_the_model_says(w: World) -> None:
     g = AppUserGroup(app_name=Connectors.JIRA, connector_id=APP, source_user_group_id="ext-g", name="G", org_id="some-other-org")
     r = AppRole(app_name=Connectors.JIRA, connector_id=APP, source_role_id="ext-r", name="R", org_id="some-other-org")
