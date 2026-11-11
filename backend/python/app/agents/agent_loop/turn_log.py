@@ -51,14 +51,14 @@ def stop_reason_of(result: AgentResult, *, awaiting_approval: bool = False) -> s
 
 # Exits whose layer already logged the failure: `llm_call.failed`, or the context
 # guards' ERROR before `ContextBudgetExceeded`.
-_LOGGED_BY_THE_LAYER = frozenset({"llm_call_failed", "context_budget_exceeded"})
+LOGGED_BY_THE_LAYER = frozenset({"llm_call_failed", "context_budget_exceeded"})
 
 
 def _end_level(stop_reason: str, fields: dict[str, Any]) -> int:
     # Never two WARN+ lines for one failure.
     if stop_reason == "max_turns":
         return logging.WARNING
-    if stop_reason != "error" or fields.get("end_event") in _LOGGED_BY_THE_LAYER:
+    if stop_reason != "error" or fields.get("end_event") in LOGGED_BY_THE_LAYER:
         return logging.INFO
     cls = fields.get("error_class")
     return error_class.level_for(cls) if cls else logging.WARNING

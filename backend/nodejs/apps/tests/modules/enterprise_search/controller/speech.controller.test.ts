@@ -3,6 +3,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import axios from 'axios'
+import { Logger } from '../../../../src/libs/services/logger.service'
 
 import {
   getSpeechCapabilities,
@@ -556,6 +557,37 @@ describe('SpeechController', () => {
       // The original content-type is deleted; form-data library sets its own
       expect(passedHeaders['content-type']).to.include('multipart/form-data')
       expect(passedHeaders['content-type']).to.not.include('boundary=abc')
+    })
+  })
+
+  // The call's own upstream.call.end line and the error middleware report these; the proxy only maps.
+  describe('logs no upstream answer or failure itself', () => {
+    const levels = () => (['error', 'warn', 'info', 'debug'] as const).map((level) => sinon.stub(Logger.prototype, level))
+
+    it('for a 4xx or 5xx it passes on', async () => {
+      const logs = levels()
+      sinon.stub(axios, 'post').resolves({ status: 500, data: { detail: 'tts broke for alice@example.com' }, headers: {} })
+      await synthesizeSpeech(appConfig)(makeReq(), makeRes(), sinon.stub())
+      sinon.restore()
+      const logs2 = levels()
+      sinon.stub(axios, 'get').resolves({ status: 409, data: { detail: 'no provider' } })
+      await getSpeechCapabilities(appConfig)(makeReq(), makeRes(), sinon.stub())
+      expect([...logs, ...logs2].map((stub) => stub.callCount)).to.deep.equal([0, 0, 0, 0, 0, 0, 0, 0])
+    })
+
+    it('for a thrown answer or a network error, which it keeps as the cause', async () => {
+      const logs = levels()
+      for (const failure of [
+        { response: { status: 500, data: { detail: 'alice@example.com' } } },
+        { code: 'ECONNREFUSED', message: 'connect fail' },
+      ]) {
+        sinon.stub(axios, 'get').rejects(failure)
+        const next = sinon.stub()
+        await getSpeechCapabilities(appConfig)(makeReq(), makeRes(), next)
+        expect(next.firstCall.args[0].cause).to.equal(failure)
+        ;(axios.get as sinon.SinonStub).restore()
+      }
+      expect(logs.map((stub) => stub.callCount)).to.deep.equal([0, 0, 0, 0])
     })
   })
 })

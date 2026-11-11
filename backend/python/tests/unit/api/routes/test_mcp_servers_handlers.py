@@ -910,17 +910,14 @@ class TestDiscoveryHandlers:
                 new=AsyncMock(return_value={"isAuthenticated": True, "credentials": {"apiToken": "t"}}),
             ),
             patch("app.agents.mcp.discovery.discover_tool_listing", new=AsyncMock(side_effect=error)),
-            patch("app.api.routes.mcp_servers.logger") as mock_logger,
         ):
             with pytest.raises(HTTPException) as exc:
                 await get_instance_tools(request, "inst-1")
         assert exc.value.status_code == 502
         assert exc.value.detail == action_failed("load this MCP server's tools")
         assert "SENTINEL" not in exc.value.detail
+        # The cause stays on the chain: http.request.end logs it, without its text (test_mcp_route_logging.py).
         assert exc.value.__cause__ is error
-        log_call = mock_logger.warning.call_args
-        assert log_call.kwargs["exc_info"] is True
-        assert error in log_call.args
 
 
 # ---------------------------------------------------------------------------

@@ -1174,3 +1174,281 @@ def test_call_kind_explain_with_execution_needs_approval(tool_path: str, sql: st
     target = SimpleNamespace(kind="write")
     assert approvals.call_kind(target, tool_path, {"query": sql}) == "destructive"
     assert approvals.call_kind(target, tool_path, {"query": "EXPLAIN SELECT 1"}) == "write"
+
+
+def _answered(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
+    return [log_record_fields(r) | {"_level": r.levelno} for r in caplog.records if r.getMessage() == "tool_approval.answered"]
+
+
+def _one_answered(caplog: pytest.LogCaptureFixture) -> dict[str, object]:
+    (answered,) = _answered(caplog)
+    return answered
+
+
+class TestApprovalDecisionLines:
+    """P3b: the card asked (`tool_approval.requested`) and each answer (`tool_approval.answered`) are one
+    structured line each; the gate's refusals name why on the call's `tool_call.end` (`deny_reason`)."""
+
+    async def test_asking_is_one_info_line_with_the_approval_id(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        store, mcp = _Store(), _Server()
+
+        approval_id = await _ask(store, mcp)
+
+        (asked,) = [r for r in caplog.records if r.getMessage() == "tool_approval.requested"]
+        fields = log_record_fields(asked)
+        assert asked.levelno == logging.INFO
+        assert (fields["approval_id"], fields["source"], fields["kind"], fields["outcome"]) == (approval_id, "mcp", "write", "success")
+        assert (fields["tool_call_id"], fields["mcp_server_id"]) == ("c1", "inst-1")
+
+    @pytest.mark.parametrize("decision,remember,expected", [
+        ("allow", False, {"decision": "approved", "ran": True, "status": "completed", "remember": False}),
+        ("allow", True, {"decision": "approved", "ran": True, "status": "completed", "remembered": "saved"}),
+        ("deny", False, {"decision": "declined", "ran": False, "status": "blocked"}),
+        ("deny", True, {"decision": "declined", "remember": True, "remembered": "saved"}),
+    ])
+    async def test_each_answer_is_one_line(
+        self, decision: str, remember: bool, expected: dict[str, object], caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        store, mcp = _Store(), _Server()
+        approval_id = await _ask(store, mcp)
+        caplog.set_level(logging.DEBUG)
+
+        await _answer(store, mcp, approval_id, decision, remember=remember)
+
+        answered = _one_answered(caplog)
+        assert answered["_level"] == logging.INFO
+        assert (answered["approval_id"], answered["mcp_server_id"], answered["tool_call_id"]) == (approval_id, "inst-1", "c1")
+        assert {k: answered.get(k) for k in expected} == expected
+
+    async def test_an_expired_card(self, caplog: pytest.LogCaptureFixture) -> None:
+        store, mcp = _Store(), _Server()
+        approval_id = await _ask(store, mcp)
+        later = time.time() + approvals.APPROVAL_TTL_SECONDS + 1
+        caplog.set_level(logging.DEBUG)
+
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(approvals.time, "time", lambda: later)
+            await _answer(store, mcp, approval_id, "allow")
+
+        assert _one_answered(caplog)["decision"] == "expired"
+
+    async def test_the_same_answer_twice_and_one_still_being_applied(self, caplog: pytest.LogCaptureFixture) -> None:
+        store, mcp = _Store(), _Server()
+        approval_id = await _ask(store, mcp)
+        await _answer(store, mcp, approval_id, "allow")
+        caplog.set_level(logging.DEBUG)
+        caplog.clear()
+
+        await _answer(store, mcp, approval_id, "allow")
+        assert (_one_answered(caplog)["decision"], _one_answered(caplog)["status"]) == ("already_answered", "completed")
+
+        fresh = _Server()
+        other = await _ask(store, fresh)
+        await approvals.claim_pending(store, other, org_id="org-1", user_id="user-1", conversation_id="conv-1")  # type: ignore[arg-type]
+        caplog.clear()
+        await _answer(store, fresh, other, "allow")
+        assert (_one_answered(caplog)["decision"], _one_answered(caplog)["reason"]) == ("already_answered", "in_progress")
+
+    async def test_a_tool_no_longer_there_and_a_block_set_since(self, caplog: pytest.LogCaptureFixture) -> None:
+        store, mcp = _Store(), _Server()
+        gone = await _ask(store, mcp)
+        caplog.set_level(logging.DEBUG)
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(approvals, "_target_for", lambda *_args: None)
+            await _answer(store, mcp, gone, "allow")
+        assert (_one_answered(caplog)["decision"], _one_answered(caplog)["reason"]) == ("unavailable", "tool_gone")
+
+        blocked = await _ask(store, _Server())
+        await approvals.save_own_rules(store, ToolRules(tools={"create_issue": "block"}), user_id="user-1", instance_id="inst-1")  # type: ignore[arg-type]
+        caplog.clear()
+        await _answer(store, mcp, blocked, "allow")
+        assert (_one_answered(caplog)["decision"], _one_answered(caplog)["status"]) == ("approved", "blocked")
+
+    async def test_stop_while_the_approved_call_runs_still_logs_the_answer(self, caplog: pytest.LogCaptureFixture) -> None:
+        store, mcp = _Store(), _Server()
+        approval_id = await _ask(store, mcp)
+        caplog.set_level(logging.DEBUG)
+
+        class _Stopped:
+            def __init__(self, *_args: Any) -> None:  # noqa: ANN401
+                pass
+
+            async def call_tool(self, *_args: Any, **_kwargs: Any) -> Any:  # noqa: ANN401
+                raise asyncio.CancelledError
+
+        with pytest.MonkeyPatch.context() as m, pytest.raises(asyncio.CancelledError):
+            m.setattr(approvals, "ToolExecutor", _Stopped)
+            await _answer(store, mcp, approval_id, "allow")
+
+        answered = _one_answered(caplog)
+        assert (answered["decision"], answered["ran"], answered["status"], answered["reason"]) == ("approved", True, "failed", "stopped")
+
+    async def test_a_second_cancel_while_the_outcome_is_kept_still_leaves_the_line(self, caplog: pytest.LogCaptureFixture) -> None:
+        store, mcp = _Store(), _Server()
+        approval_id = await _ask(store, mcp)
+        caplog.set_level(logging.DEBUG)
+
+        class _Stopped:
+            def __init__(self, *_args: Any) -> None:  # noqa: ANN401
+                pass
+
+            async def call_tool(self, *_args: Any, **_kwargs: Any) -> Any:  # noqa: ANN401
+                raise asyncio.CancelledError
+
+        async def _cancelled_write(*_args: Any, **_kwargs: Any) -> bool:  # noqa: ANN401
+            raise asyncio.CancelledError
+
+        with pytest.MonkeyPatch.context() as m, pytest.raises(asyncio.CancelledError):
+            m.setattr(approvals, "ToolExecutor", _Stopped)
+            m.setattr(store, "set_config", _cancelled_write)
+            await _answer(store, mcp, approval_id, "allow")
+
+        assert _one_answered(caplog)["reason"] == "stopped"
+
+    async def test_a_row_that_cant_be_shown_doesnt_lose_the_line(self, caplog: pytest.LogCaptureFixture) -> None:
+        store, mcp = _Store(), _Server()
+        approval_id = await _ask(store, mcp)
+        caplog.set_level(logging.DEBUG)
+
+        async def _broken_show(*_args: Any) -> None:  # noqa: ANN401
+            raise RuntimeError("the event stream is gone")
+
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(approvals, "_show", _broken_show)
+            await _answer(store, mcp, approval_id, "deny")
+
+        assert _one_answered(caplog)["decision"] == "declined"
+        # The PRE_AGENT pipeline fails closed on the raise, and now says so once.
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == ["middleware.failed"]
+
+    async def test_an_answer_that_cant_resume_is_ignored_with_a_line(self, caplog: pytest.LogCaptureFixture) -> None:
+        store, mcp = _Store(), _Server()
+        approval_id = await _ask(store, mcp)
+        caplog.set_level(logging.DEBUG)
+        answer = ToolApprovalAnswer(approval_id=approval_id, decision="allow")  # type: ignore[arg-type]
+
+        await _request(_context(store, tool_approval=answer), mcp, _DONE, history=_stopped_turn(), query="just chatting")
+
+        assert mcp.calls == []
+        answered = _one_answered(caplog)
+        assert (answered["decision"], answered["reason"], answered["approval_id"]) == ("ignored", "not_resumable", approval_id)
+
+    async def test_someone_elses_answer_is_a_forbidden_refusal(self, caplog: pytest.LogCaptureFixture) -> None:
+        store, mcp = _Store(), _Server()
+        approval_id = await _ask(store, mcp)
+        caplog.set_level(logging.DEBUG)
+
+        await _answer(store, mcp, approval_id, "allow", user_id="user-2")
+        answered = _one_answered(caplog)
+        assert (answered["_level"], answered["decision"], answered["reason"], answered["error_class"]) == (
+            logging.WARNING, "refused", "other_user", "forbidden",
+        )
+        assert not [r for r in caplog.records if approval_id in r.getMessage()]
+
+        caplog.clear()
+        await _answer(store, mcp, approval_id, "allow", conversation_id="conv-9")
+        answered = _one_answered(caplog)
+        assert (answered["_level"], answered["reason"]) == (logging.INFO, "other_conversation")
+
+    async def test_an_unknown_approval(self, caplog: pytest.LogCaptureFixture) -> None:
+        store, mcp = _Store(), _Server()
+        caplog.set_level(logging.DEBUG)
+        await _answer(store, mcp, "no-such-approval", "allow")
+        answered = _one_answered(caplog)
+        assert (answered["_level"], answered["decision"], answered["reason"]) == (logging.INFO, "refused", "not_found")
+
+    async def test_a_claim_that_fails_is_one_classed_line(self, caplog: pytest.LogCaptureFixture) -> None:
+        store, mcp = _Store(), _Server()
+        approval_id = await _ask(store, mcp)
+        store.reads_fail = True
+        caplog.set_level(logging.DEBUG)
+
+        await _answer(store, mcp, approval_id, "allow")
+
+        (failed,) = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        fields = log_record_fields(failed)
+        assert (failed.getMessage(), fields["decision"], fields["error_class"]) == ("tool_approval.answered", "claim_failed", "unavailable")
+
+    async def test_a_card_that_cant_be_saved(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        store, mcp = _Store(), _Server()
+        store.writes_fail = True
+        await _request(_context(store), mcp, _FILE_IT, _DONE)
+
+        (failed,) = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert (failed.getMessage(), log_record_fields(failed)["error_class"]) == ("tool_approval.requested", "unavailable")
+        (end,) = [r for r in caplog.records if r.getMessage() == "tool_call.end" and log_record_fields(r)["tool_call_id"] == "c1"]
+        assert log_record_fields(end)["deny_reason"] == "approval_not_saved"
+
+        caplog.clear()
+        raising = _Store()
+
+        async def _down(*_args: Any, **_kwargs: Any) -> bool:  # noqa: ANN401
+            raise ConnectionError("the store is down")
+
+        raising.set_config = _down  # type: ignore[method-assign]
+        ctx = await _gate(_context(raising), _adapter(read_only=False))
+        assert ctx.decision_code == "approval_not_saved"
+        (failed,) = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert log_record_fields(failed)["error_class"] == "unavailable"
+
+    async def test_the_gate_names_why_it_refused(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        assert (await _gate(_context(client_name="slack"), _adapter(read_only=False))).decision_code == "unattended"
+        assert (await _gate(_context(), _adapter(read_only=False, name="delete_issue"), key="X")).decision_code == "default_rule"
+        store = _Store()
+        await approvals.save_own_rules(store, ToolRules(tools={"create_issue": "block"}), user_id="user-1", instance_id="inst-1")  # type: ignore[arg-type]
+        assert (await _gate(_context(store), _adapter(read_only=False))).decision_code == "rule"
+        busy = _context()
+        await _gate(busy, _adapter(read_only=False), title="one")
+        assert (await _gate(busy, _adapter(read_only=False, name="update_issue"), key="X")).decision_code == "approval_busy"
+
+        down = _Store()
+        down.reads_fail = True
+        context = _context(down)
+        caplog.clear()
+        first = await _gate(context, _adapter(read_only=True), q="x")
+        second = await _gate(context, _adapter(read_only=True, name="list_issues"), q="y")
+        assert first.decision_code == second.decision_code == "rules_unavailable"
+        assert len([r for r in caplog.records if r.getMessage() == "tool_approval.rules_unavailable"]) == 1
+
+    async def test_what_came_of_dont_ask_again(self, caplog: pytest.LogCaptureFixture) -> None:
+        store, mcp = _Store(), _Server()
+        await _ask(store, mcp)
+        pending = approvals.PendingCall.model_validate(store.pending()[0])
+        caplog.set_level(logging.DEBUG)
+
+        await approvals.save_own_rules(store, ToolRules(tools={"create_issue": "block"}), user_id="user-1", instance_id="inst-1")  # type: ignore[arg-type]
+        assert await approvals._remember(_context(store), pending, "allow") == "block_kept"
+        org_toolset = pending.model_copy(update={"source": "toolset", "personal": False})
+        assert await approvals._remember(_context(store), org_toolset, "allow") == "not_allowed"
+
+        caplog.clear()
+        refusing = _Store()
+        refusing.writes_fail = True
+        assert await approvals._remember(_context(refusing), pending, "block") == "failed"
+        raising = _Store()
+
+        async def _down(*_args: Any, **_kwargs: Any) -> bool:  # noqa: ANN401
+            raise ConnectionError("the store is down")
+
+        raising.set_config = _down  # type: ignore[method-assign]
+        assert await approvals._remember(_context(raising), pending, "block") == "failed"
+        lines = [r for r in caplog.records if r.getMessage() == "tool_approval.rule_not_saved"]
+        assert [(r.levelno, log_record_fields(r)["error_class"]) for r in lines] == [(logging.WARNING, "unavailable")] * 2
+
+        caplog.clear()
+        await approvals._keep_outcome(refusing, "a-1", approvals.Outcome(answer="allowed", status="completed", result="r"))
+        (kept,) = [r for r in caplog.records if r.getMessage() == "tool_approval.outcome_not_kept"]
+        assert log_record_fields(kept)["error_class"] == "unavailable"
+
+    async def test_no_line_carries_the_calls_arguments(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        store, mcp = _Store(), _Server()
+        approval_id = await _ask(store, mcp)
+        await _answer(store, mcp, approval_id, "allow", remember=True)
+        await _answer(store, mcp, approval_id, "allow", user_id="user-2")
+
+        rendered = caplog.text + " ".join(str(log_record_fields(r)) for r in caplog.records)
+        assert "Login is broken" not in rendered

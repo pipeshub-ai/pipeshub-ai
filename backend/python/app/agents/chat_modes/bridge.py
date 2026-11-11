@@ -100,8 +100,9 @@ from app.modules.retrieval.selection_scope import (
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
 from app.utils.conversation_tasks import begin_run, discard_tasks
+from app.utils.error_class import log_failure
 from app.utils.image_admission import admission_from_state
-from app.utils.logging_fields import bind_log_fields
+from app.utils.logging_fields import bind_log_fields, log_event
 from app.utils.stage_timer import RunTimer
 from app.utils.streaming import create_sse_event, handle_simple_mode
 from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
@@ -220,7 +221,7 @@ async def _fetch_available_connectors(
         )
         return connectors
     except Exception as exc:
-        log.debug("run_chat_stream: connector prefetch failed (non-fatal): %s", exc)
+        log_event(log, "connector_prefetch.failed", level=logging.DEBUG, error_type=type(exc).__name__)
         return None
 
 
@@ -490,7 +491,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     graph_provider, user_info.get("userId", ""), user_info.get("orgId", ""), filters,
                 )
             except Exception as exc:
-                log.warning("run_chat_stream: readable-scope check failed, running the turn: %s", exc)
+                # The turn still runs.
+                log_failure(log, "turn_scope.check_failed", exc)
         if unreadable is not None:
             error_code, user_message = unreadable
             run_timing.end(log, "error", error_class="forbidden", code=error_code)
@@ -797,8 +799,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             if context.sandbox_manager is not None:
                 try:
                     await context.sandbox_manager.destroy_all()
-                except Exception:
-                    log.warning("run_chat_stream: sandbox cleanup failed", exc_info=True)
+                except Exception as exc:
+                    log_failure(log, "agent_turn.cleanup_failed", exc, step="sandbox")
             await event_sink.flush()
             await queue.put(_DONE)
 

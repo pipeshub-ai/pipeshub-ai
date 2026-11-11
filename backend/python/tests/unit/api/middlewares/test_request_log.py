@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -24,8 +24,11 @@ from app.api.middlewares.auth import AuthRejected
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.api.middlewares.request_log import (
     RequestLogMiddleware,
+    add_request_log_fields,
+    bind_request_log_fields,
     install_request_logging,
     mark_request_failure,
+    path_log_fields,
 )
 from app.core.org_context import OrgContext, set_request_context
 from app.telemetry.middleware import MetricsMiddleware
@@ -992,3 +995,79 @@ async def test_a_bug_after_the_client_left_is_still_internal_with_its_stack(cloc
     assert record.levelno == logging.ERROR
     assert (fields["error_class"], fields["error_type"]) == ("internal", "KeyError")
     assert record.exc_text
+
+
+# --- ids and fields a route adds -----------------------------------------------------------------------------------
+
+ROUTE_LOGGER = "app.api.routes.test_ids"
+
+
+def _add_id_routes(app: FastAPI) -> None:
+    """A router binding its path parameter as ``toolset_id``, the same route shape without it, and a route adding an
+    event field."""
+    router = APIRouter(prefix="/api/v1/ids", dependencies=[Depends(path_log_fields(instance_id="toolset_id"))])
+
+    @router.get("/{instance_id}")
+    async def with_ids(instance_id: str) -> dict:
+        logging.getLogger(ROUTE_LOGGER).info("inside")
+        return {}
+
+    app.include_router(router)
+
+    @app.get("/api/v1/no-ids/{instance_id}")
+    async def no_ids(instance_id: str) -> dict:
+        logging.getLogger(ROUTE_LOGGER).info("inside")
+        return {}
+
+    @app.get("/api/v1/oauth-field")
+    async def oauth_field(request: Request) -> dict:
+        add_request_log_fields(request, oauth_error="access_denied", unused=None)
+        logging.getLogger(ROUTE_LOGGER).info("inside")
+        return {}
+
+
+def _inside(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
+    return [log_record_fields(r) for r in caplog.records if r.name == ROUTE_LOGGER]
+
+
+async def test_a_router_binds_its_path_ids_on_the_route_lines_and_the_request_line(clock: _Clock, capture) -> None:
+    capture.set_level(logging.DEBUG, logger=ROUTE_LOGGER)
+    app = _build_app(clock, before_install=_add_id_routes)
+
+    await _get(app, "/api/v1/ids/ts-1")
+    _, end = _one_end(capture)
+    (inside,) = _inside(capture)
+    # Also guards the dependency being async: a sync one binds in a worker thread, and the route's line loses the id.
+    assert end["toolset_id"] == "ts-1" and inside["toolset_id"] == "ts-1"
+    assert end["route"] == "/api/v1/ids/{instance_id}"
+
+    capture.clear()
+    await _get(app, "/api/v1/no-ids/ts-1")  # control: the same shape, no dependency
+    _, end = _one_end(capture)
+    (inside,) = _inside(capture)
+    assert "toolset_id" not in end and "toolset_id" not in inside
+
+
+async def test_ids_never_leak_into_the_next_request(clock: _Clock, capture) -> None:
+    app = _build_app(clock, before_install=_add_id_routes)
+
+    for path in ("/api/v1/ids/ts-1", "/api/v1/ids/ts-2", "/api/v1/no-ids/ts-3"):
+        await _get(app, path)
+
+    assert [log_record_fields(r).get("toolset_id") for r in _ends(capture)] == ["ts-1", "ts-2", None]
+
+
+async def test_unknown_ids_raise_and_event_fields_go_on_the_request_line_only(clock: _Clock, capture) -> None:
+    request = Request({"type": "http", "method": "GET", "path": "/", "headers": []})
+    with pytest.raises(ValueError, match="not a bindable log field"):
+        bind_request_log_fields(request, oauth_error="access_denied")
+    assert request_log._FIELDS_KEY not in request.scope
+
+    capture.set_level(logging.DEBUG, logger=ROUTE_LOGGER)
+    app = _build_app(clock, before_install=_add_id_routes)
+    await _get(app, "/api/v1/oauth-field")
+
+    _, end = _one_end(capture)
+    (inside,) = _inside(capture)
+    assert end["oauth_error"] == "access_denied" and "unused" not in end
+    assert "oauth_error" not in inside
