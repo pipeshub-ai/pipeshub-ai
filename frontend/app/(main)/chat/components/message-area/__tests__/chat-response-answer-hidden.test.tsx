@@ -1,0 +1,84 @@
+import React from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, screen } from '@testing-library/react';
+import '@/lib/__tests__/test-i18n';
+import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
+import { useChatStore } from '@/chat/store';
+import { buildMessagePairs } from '../message-pairs';
+
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
+vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
+vi.mock('@/app/(main)/workspace/mcp-servers/api', () => ({ McpServersApi: {} }));
+const { streamMessageForSlot, buildRequest } = vi.hoisted(() => ({
+  streamMessageForSlot: vi.fn(),
+  buildRequest: vi.fn(() => ({ query: 'q' })),
+}));
+vi.mock('../../../streaming', () => ({ streamMessageForSlot }));
+vi.mock('../../../runtime', () => ({ buildStreamChatRequestForSlot: buildRequest }));
+vi.mock('../render-slot', () => ({ useRenderSlotId: () => 'slot-1' }));
+
+import { ChatResponse } from '../chat-response';
+
+const renderRow = (props: Partial<React.ComponentProps<typeof ChatResponse>> = {}) =>
+  renderInTheme(
+    <ChatResponse
+      question="What was Q3 revenue?"
+      answer="This answer used content you can no longer access."
+      messageId="msg-1"
+      isLastMessage
+      {...props}
+    />,
+  );
+
+beforeEach(() => {
+  installBrowserShims();
+  useChatStore.setState({ activeSlotId: 'slot-1', slots: { 'slot-1': { isStreaming: false } } as never });
+});
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+  useChatStore.setState({ activeSlotId: null, slots: {} });
+});
+
+describe('ChatResponse hidden answer', () => {
+  it('shows the question and the lost-access notice instead of the answer actions', () => {
+    renderRow({ answerHidden: { redacted: true, reason: 'no_longer_accessible' } });
+
+    expect(screen.getByText('What was Q3 revenue?')).toBeTruthy();
+    expect(screen.getByTestId('answer-hidden').textContent).toContain('This answer used content you can no longer access.');
+    expect(screen.queryByLabelText('Regenerate')).toBeNull();
+  });
+
+  it('says access could not be confirmed when the check was unavailable', () => {
+    renderRow({ answerHidden: { redacted: true, reason: 'access_check_unavailable' } });
+    expect(screen.getByTestId('answer-hidden').textContent).toContain("We couldn't confirm your access. Try again.");
+  });
+
+  it('Ask again sends the same question as a new turn of this chat', () => {
+    renderRow({ answerHidden: { redacted: true, reason: 'no_longer_accessible' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Ask again' }));
+
+    expect(buildRequest).toHaveBeenCalledWith('slot-1', 'What was Q3 revenue?');
+    expect(streamMessageForSlot).toHaveBeenCalledWith('slot-1', 'What was Q3 revenue?', { query: 'q' });
+  });
+
+  it('shows no notice for an ordinary answer', () => {
+    renderRow({ answer: 'Revenue was 4M.' });
+    expect(screen.queryByTestId('answer-hidden')).toBeNull();
+  });
+});
+
+describe('buildMessagePairs hidden answer', () => {
+  it('carries the marker from the stored message to its row', () => {
+    const marker = { redacted: true, reason: 'no_longer_accessible' } as const;
+    const pairs = buildMessagePairs(
+      [
+        { id: 'u', role: 'user', content: [{ type: 'text', text: 'Q' }] },
+        { id: 'a', role: 'assistant', content: [{ type: 'text', text: 'x' }], metadata: { custom: { messageId: 'a', answerHidden: marker } } },
+      ],
+      { isStreaming: false, streamingQuestion: '', pendingCollections: [], regenerateMessageId: null, emptyCitationMaps: {} as never },
+    );
+    expect(pairs[0].answerHidden).toEqual(marker);
+  });
+});

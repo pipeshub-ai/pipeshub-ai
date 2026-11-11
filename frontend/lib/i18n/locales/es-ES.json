@@ -860,6 +860,11 @@
     "fork": "Bifurcar chat",
     "forkFromHere": "Bifurcar desde aquí",
     "regenerate": "Regenerar",
+    "answerHidden": {
+      "lost": "Esta respuesta usó contenido al que ya no tienes acceso.",
+      "unconfirmed": "No pudimos confirmar tu acceso. Inténtalo de nuevo.",
+      "askAgain": "Preguntar de nuevo"
+    },
     "readAloud": "Leer en voz alta",
     "stopReading": "Dejar de leer",
     "ttsNotSupported": "La conversión de texto a voz no es compatible con este navegador",
