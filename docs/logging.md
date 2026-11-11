@@ -340,8 +340,9 @@ carries them: the handler's own, and the ack, retry or dead-letter decision. Bef
   `ai_config.refresh_failed`) and returns false or raises; `message.end` does not repeat its text. A user event's failure carries
   `target_user_id`, the user the event is about (`user_id` is who sent it). `target_user_id` is not passed through the provider's
   `log_identity`.
-- The message value, its payload and any part of them are never logged. A message that cannot be parsed logs its `size_bytes`; a
-  validation error's text is left out (it quotes the payload's values).
+- The message value and its payload are never logged whole. Lines carry only the ids taken from it (`record_id`, `connector_id`,
+  `target_user_id`). A message that cannot be parsed logs its `size_bytes`; a validation error's text is left out (it quotes the
+  payload's values). A handler's other exception text is logged as raised, so an error that quotes a payload value carries it.
 - Work a handler starts in its own context (the sync task manager) keeps the message's ids; `message.end` is written when the
   delivery ends, not when that work does. The connector link passes started by `userAdded` run as an org job instead
   (`ctx_kind=job ctx_source=job:connector_link`), with only `connector_id`.
