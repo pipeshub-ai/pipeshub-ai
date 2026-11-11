@@ -112,7 +112,7 @@ jobs:
       - name: No unexpected skips, and every case ran
         if: ${{ always() }}
         run: >
-          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/pgvector-junit.xml" --min-tests 443
+          python3 scripts/assert_no_skips.py "$RUNNER_TEMP/pgvector-junit.xml" --min-tests 444
           --expect-suite 'tests.integration.vector_db.test_pgvector_provider_core=8'
           --expect-suite 'tests.integration.vector_db.test_pgvector_probe=2'
           --expect-suite 'tests.integration.vector_db.test_pgvector_writes=62'
@@ -121,5 +121,5 @@ jobs:
           --expect-suite 'tests.integration.vector_db.test_pgvector_scope_filter=224'
           --expect-suite 'tests.integration.vector_db.test_pgvector_pending_corpus=16'
           --expect-suite 'tests.integration.vector_db.test_pgvector_scope_rewrite=10'
-          --expect-suite 'tests.integration.vector_db.test_pgvector_serving=87'
-          --expect-suite 'tests.integration.vector_db.test_pgvector_serving_search=5'
+          --expect-suite 'tests.integration.vector_db.test_pgvector_serving=88'
+          --expect-suite 'tests.integration.vector_db.test_pgvector_serving_search=6'
