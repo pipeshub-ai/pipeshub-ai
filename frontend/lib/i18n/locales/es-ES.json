@@ -654,6 +654,9 @@
     "indexingStatus": {
       "completed": "Completado",
       "inProgress": "En curso",
+      "embeddingProgress_one": "Incrustando {{done, number}} / {{total, number}} fragmento",
+      "embeddingProgress_many": "Incrustando {{done, number}} / {{total, number}} fragmentos",
+      "embeddingProgress_other": "Incrustando {{done, number}} / {{total, number}} fragmentos",
       "failed": "Error",
       "fileTypeNotSupported": "Tipo de archivo no compatible",
       "notStarted": "No iniciado",
