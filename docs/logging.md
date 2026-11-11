@@ -582,6 +582,7 @@ access line has `client_ip` and the same `request_id`.
 | `auth.session.refresh` | `failure` only | `no_token`, `token_invalid`, `token_expired`, `session_ended`, `account_inactive`, `no_credentials`, `locked` | |
 | `auth.policy.update` | `success`, `failure` | `not_admin` | |
 | `auth.jit_provision` | `success` | | `google`, `microsoft` |
+| `auth.email.verify` | `failure` only | `no_token`, `token_invalid`, `token_expired` (the `org:email:verify` and `email:verified` scopes; EE mounts their routes) | |
 
 How a refusal gets its line: the code that refuses throws its error tagged with `refusal(error, reason)` (`authRefusal` in
 `modules/auth/utils/sign-in-audit.ts` checks the code). The tag is invisible to the client and to the logs. The handler, or the
@@ -590,6 +591,32 @@ scopes only), calls `auditRefusal` once in its catch; it writes a line only for 
 (`AUTH_AUDIT_REASONS`). An untagged error is a system failure: no audit line, and the error middleware logs it once.
 Not audited: body validation 400s, rate limits, regular-JWT failures on authenticated routes, and service-to-service scoped tokens.
 Each still has its `http.request.error` (or the limiter's) line.
+
+## User and group audit events (Node)
+
+Every change to a user account, a group or a group membership is one INFO line on the `audit` logger, written right after the
+store write that makes it, with the same fields as the auth events: `org_id`, `actor` (the admin or user who made the change),
+`target` (the account; the group for `group.create`, `group.update` and `group.delete`; the affected user on membership lines),
+`outcome`, `reason`, and `group_id` (the group) on membership lines. Never an email, name,
+role name, group name or field value: a role change is told by the event and its reason.
+
+| Event | Outcome | `reason` | Notes |
+| --- | --- | --- | --- |
+| `user.create` | `success`, `failure` | success: `demo_password` (a demo account got a starting password), else none; failure: `email_taken`, `password_not_allowed` | |
+| `user.invite` | `success`, `failure` | success: `new`, `reinvite`, `resend`; failure: `not_admin`, `admin_limit` | `new` is written when the account is created, even if its mail then fails; `reinvite` and `resend` only after the mail was accepted |
+| `user.restore` | `success` | `invite` | a removed account brought back by an invite |
+| `user.role.change` | `success`, `failure` | success: `promote`, `demote`, `new_admin` (created or invited as admin); failure: `not_admin`, `last_admin`, `admin_limit` | "who made U an admin" is this one event |
+| `user.update` | `success`, `failure` | success: `profile`, `sign_in_state` (an admin set whether the user has signed in); failure: `not_admin` | a user's own first sign-in is `auth.sign_in`, not this |
+| `user.email_change.request` | `success`, `failure` | failure: `not_self`, `email_taken` | the verification link was sent; the change itself is `auth.email.change reason=link` when the link is opened |
+| `user.delete` | `success`, `failure` | failure: `not_member` (only members can be deleted) | |
+| `group.create` | `success` only | | `target` = the group; a reserved name or type is refused as a validation 400, before any audit line |
+| `group.update`, `group.delete` | `success`, `failure` | failure: `protected_group` (the everyone/admin groups) | `target` = the group |
+| `group.member.add`, `group.member.remove` | `success`, `failure` | success: `already_member` / `not_member` on every found pair when the store reports no group changed (also when other requested groups are missing); failure: `not_found` | one line per user × group; invites with groups write `group.member.add` too. On Postgres the store counts live groups, not changed ones, so a no-op is a plain success and `already_member` / `not_member` never fire |
+| `org.create` | `success` | | `actor` = the first admin, `org_id` = the new org |
+
+Refusals use the same tags as the auth events (`userRefusal` / `auditUserRefusal` in `modules/user_management/utils/user-audit.ts`,
+lists in `USER_AUDIT_REASONS`). Not audited: route-guard refusals (`userAdminCheck`, `userAdminOrSelfCheck`, …), validation 400s,
+display-picture changes, and system failures (the error middleware logs those once).
 
 ## Upstream calls (Node)
 
@@ -718,9 +745,10 @@ with `TS_MODULE=backend/nodejs/apps/node_modules/typescript python3 -m unittest 
 - **Field names** are snake_case and the same in Python and Node: `org_id`, `user_id`, `request_id`, `conversation_id`, `agent_id`,
   `run_id`, `parent_run_id`, `attempt`, `connector_id`, `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`,
   `mcp_server_id`, `toolset_id`, `job`, `workload`, `target_user_id`, `source_user_id`, `duration_ms`, `status`, `error_class`,
-  `error_type`, `outcome`, `method`, `route`, `client_ip`, `reason`, `topic`, `message_id`, `event_type`, `disposition`. Python
-  also has `ctx_kind`, `ctx_source`, `error_message` and `cause_type`; Node's `error` is an object (`error.message`). Node also
-  has `upstream` and `network_code` (on `upstream.call.end`).
+  `error_type`, `outcome`, `method`, `route`, `client_ip`, `reason`, `topic`, `message_id`, `event_type`, `disposition`. Node
+  audit lines also have `actor`, `target`, `group_id` and `auth_method`. Python also has `ctx_kind`, `ctx_source`, `error_message`
+  and `cause_type`; Node's `error` is an object (`error.message`). Node also has `upstream` and `network_code` (on
+  `upstream.call.end`).
 - **Fields are scalars**: ids, sizes, counts, enums. Never pass a config, a request, a response or a document as a field.
 - **Log an error once**, at the layer that handles it, with `error_class.log_failure` (see "Failures"). Lower layers raise
   (`raise … from e`), they do not log and re-raise.

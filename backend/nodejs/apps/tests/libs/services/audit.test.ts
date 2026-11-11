@@ -11,6 +11,7 @@ const MESSAGE = Symbol.for('message')
 const ORG = '64f0c0ffee0000000000000a'
 const USER = '64f0c0ffee0000000000000b'
 const TARGET = '64f0c0ffee0000000000000c'
+const GROUP = '64f0c0ffee0000000000000d'
 
 describe('audit(): one fixed-shape line per security event', () => {
   let log: sinon.SinonStub
@@ -186,5 +187,57 @@ describe('audit(): one fixed-shape line per security event', () => {
       auditRefusal('auth.sign_in', refusal(new Error('x'), 'not_admin'), {}, ['locked'])
       expect(log.callCount).to.equal(1)
     })
+  })
+})
+
+describe('audit(): membership group and refusal targets', () => {
+  let log: sinon.SinonStub
+  const freshRoot = (format?: string) => {
+    if (format) process.env.LOG_FORMAT = format
+    else delete process.env.LOG_FORMAT
+    ;(Logger).instance = null
+    log = sinon.stub((Logger.getInstance()).logger, 'log')
+  }
+  beforeEach(() => {
+    const provider = Object.assign(new seam.DefaultLoggingProvider(), { fileLoggingEnabled: () => false })
+    sinon.stub(seam, 'getProvider').callsFake(() => provider)
+    freshRoot()
+  })
+  afterEach(() => {
+    sinon.restore()
+    delete process.env.LOG_FORMAT
+    ;(Logger).instance = null
+  })
+  const record = (): Record<string, any> => log.lastCall.args[0]
+  const consoleLine = (r: Record<string, unknown>): string => {
+    const root = (Logger.getInstance()).logger as winston.Logger
+    const shaped = root.format.transform({ ...r }, {}) as Record<string | symbol, unknown>
+    const console = root.transports.find((t) => t instanceof winston.transports.Console)!
+    return String((console.format!.transform(shaped, {}) as Record<symbol, unknown>)[MESSAGE])
+  }
+
+  it('U1 shows the group as group_id after target, in text and JSON', () => {
+    audit('group.member.add', { actor: USER, org: ORG, target: TARGET, targetIsUser: true, group: GROUP, outcome: 'success' })
+    expect(record()).to.include({ group_id: GROUP, target: TARGET })
+    expect(consoleLine(record())).to.include(`target=${TARGET} group_id=${GROUP}`)
+    freshRoot('json')
+    audit('group.member.add', { actor: USER, org: ORG, target: TARGET, targetIsUser: true, group: GROUP, outcome: 'success' })
+    expect(JSON.parse(consoleLine(record()))).to.include({ group_id: GROUP })
+  })
+
+  it('U2 a group that is not a PipesHub id is rejected like any id: reason invalid_id, nothing of it printed', () => {
+    audit('group.member.add', { actor: USER, org: ORG, target: TARGET, group: 'Engineering <eng@acme.test>', outcome: 'success' })
+    expect(record()).to.include({ reason: 'invalid_id' })
+    expect(JSON.stringify(record())).to.not.include('acme.test')
+  })
+
+  it('U3 [guard] a line without a group has no group_id', () => {
+    audit('user.delete', { actor: USER, org: ORG, target: TARGET, targetIsUser: true, outcome: 'success' })
+    expect(record()).to.not.have.property('group_id')
+  })
+
+  it('U4 [guard: type-only change] auditRefusal carries the target of the refused change', () => {
+    auditRefusal('user.role.change', refusal(new Error('x'), 'last_admin'), { actor: USER, org: ORG, target: TARGET, targetIsUser: true }, ['last_admin'])
+    expect(record()).to.include({ message: 'user.role.change', outcome: 'failure', reason: 'last_admin', target: TARGET })
   })
 })

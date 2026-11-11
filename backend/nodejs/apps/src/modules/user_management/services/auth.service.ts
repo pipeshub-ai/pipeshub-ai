@@ -8,13 +8,10 @@ import {
   serverFailureMessage,
 } from '../../../libs/errors/reader-friendly';
 import { AppConfig } from '../../tokens_manager/config/config';
-import { Logger } from '../../../libs/services/logger.service';
+import { withCause } from '../../../libs/errors/base.error';
 @injectable()
 export class AuthService {
-  constructor(
-    @inject('AppConfig') private authConfig: AppConfig,
-    @inject('Logger') private logger: Logger,
-  ) {}
+  constructor(@inject('AppConfig') private authConfig: AppConfig) {}
   async passwordMethodEnabled(authServiceToken: string) {
     try {
       const config = {
@@ -30,11 +27,6 @@ export class AuthService {
       return { statusCode: response.status, data: response.data };
     } catch (error) {
       if (axios.isAxiosError(error)) {
-        this.logger.error('Error during passwordMethodEnabled:', {
-          status: error.response?.status,
-          data: error.response?.data,
-          message: error.message,
-        });
         throw new AxiosError(
           error.response?.data?.message ||
             'Failed to get response to check password method is enabled or not',
@@ -45,9 +37,13 @@ export class AuthService {
         );
       }
       if (error instanceof HttpError) throw keepDeliberateWording(error);
-      this.logger.error('Checking the sign-in methods failed', { error });
       throw markClientSafe(
-        new InternalServerError(serverFailureMessage('check how you can sign in')),
+        withCause(
+          new InternalServerError(
+            serverFailureMessage('check how you can sign in'),
+          ),
+          error,
+        ),
       );
     }
   }

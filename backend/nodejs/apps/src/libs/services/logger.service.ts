@@ -106,9 +106,9 @@ export interface LoggerConfig {
 
 const DEFAULT_SERVICE = 'default-service';
 
-/** audit() and the auth refusal wrapper log on behalf of their caller, so their frames are skipped like the logger's. */
+/** audit() and the auth / user audit wrappers log on behalf of their caller, so their frames are skipped like the logger's. */
 const AUDIT_FRAME =
-  /[\\/](?:libs[\\/]services[\\/]audit|modules[\\/]auth[\\/]utils[\\/]sign-in-audit)\.[jt]s:/;
+  /[\\/](?:libs[\\/]services[\\/]audit|modules[\\/]auth[\\/]utils[\\/]sign-in-audit|modules[\\/]user_management[\\/]utils[\\/]user-audit)\.[jt]s:/;
 
 /** Event fields a call site may pass in `meta`; they render like the context ids. */
 const EVENT_FIELD_KEYS = [
@@ -125,6 +125,7 @@ const EVENT_FIELD_KEYS = [
   'outcome',
   'actor',
   'target',
+  'group_id',
   'reason',
   'auth_method',
 ] as const;
@@ -203,6 +204,7 @@ const FIELD_TYPES: Readonly<Record<string, (value: unknown) => boolean>> = {
   // An id as shown (raw, or a provider's hash); never an email or a name.
   actor: matches(SHOWN_ID),
   target: matches(SHOWN_ID),
+  group_id: isPipesHubId,
   reason: matches(SNAKE_TOKEN),
   auth_method: matches(TYPE_NAME),
   // Fill the identity only when the request context has none (an audit line before sign-in).
