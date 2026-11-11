@@ -679,6 +679,8 @@ class SharePointConnector(BaseConnector):
         self._health = SyncHealth()
         # Emails of accounts the tenant has disabled or deleted, from this run's user list.
         self._inactive_emails: set[str] = set()
+        # Emails the user listing showed as active; the only users granted directly while no disabled set is known.
+        self._confirmed_active_emails: set[str] = set()
         self._drive_roots: dict[str, str] = {}
         self._discovered_site_ids: set[str] = set()
         # Sites the sync filters excluded this run; what PipesHub stores for them is deleted.
@@ -721,6 +723,8 @@ class SharePointConnector(BaseConnector):
         self._unified_groups: dict[str, bool | None] = {}
         self._directory_object_types: dict[str, str | None] = {}
         self._directory_role_members: dict[str, list[dict]] = {}
+        # Whether this run left out a direct grant because the user's status was not known.
+        self._withheld_unknown_user = False
         # Per site, the site groups (ids as strings) that hold a tenant-wide claim, and which one.
         # Rebuilt by _sync_user_groups; empty at the start of every run, so a run that does not read the
         # groups cannot grant from an earlier run's.
@@ -2849,10 +2853,28 @@ class SharePointConnector(BaseConnector):
 
         return permissions
 
+    def _user_may_be_granted(self, email: str) -> bool:
+        """Whether a grant naming this user is written. Never for an account the tenant has disabled or deleted.
+        While no disabled set is known, only for a user the listing showed as active: the others are withheld
+        without failing the item, and the next run writes them once the set is known."""
+        email = email.lower()
+        if email in self._inactive_emails:
+            return False
+        if self._disabled_set_unknown and email not in self._confirmed_active_emails:
+            self._withheld_unknown_user = True
+            return False
+        return True
+
     def _is_inactive_identity(self, user: object) -> bool:
-        """A Graph identity of an account the tenant has disabled or deleted (it can no longer read anything)."""
+        """A Graph identity whose grant is not written (see _user_may_be_granted)."""
         email = (getattr(user, 'additional_data', None) or {}).get("email")
-        return isinstance(email, str) and email.lower() in self._inactive_emails
+        if isinstance(email, str):
+            return not self._user_may_be_granted(email)
+        if self._disabled_set_unknown:
+            # No email, so the listing cannot have shown this account active: withheld like an unlisted one.
+            self._withheld_unknown_user = True
+            return True
+        return False
 
     async def _graph_group_grant(self, group: object, site_user: object, role: PermissionType) -> list[Permission]:
         """A Graph group grant. An M365 group's owners claim names the whole group, so it is narrowed to the owners."""
@@ -2962,7 +2984,7 @@ class SharePointConnector(BaseConnector):
 
         if principal_type == SP_PRINCIPAL_USER:
             email = principal.get('Email') or principal.get('UserPrincipalName')
-            if email and email.lower() not in self._inactive_emails:
+            if email and self._user_may_be_granted(email):
                 return [Permission(external_id=str(principal.get('Id')), email=email, type=role, entity_type=EntityType.USER)]
         return []
 
@@ -3680,6 +3702,7 @@ class SharePointConnector(BaseConnector):
             )
             raise
         await self.data_entities_processor.on_new_app_users(users)
+        self._confirmed_active_emails = {u.email.lower() for u in users if u.email and u.is_active is not False}
         trusted = getattr(users, "complete", True) and await self._withdraw_unlisted_app_users(users)
         stored = await self.user_sync_point.read_sync_point(INACTIVE_USERS_SYNC_POINT_KEY)
         stored_emails = set((stored or {}).get("emails") or [])
@@ -3867,6 +3890,15 @@ class SharePointConnector(BaseConnector):
                 except Exception as site_error:
                     self._health.skipped(f"site {site_record_group.name}", site_error)
 
+            if self._withheld_unknown_user:
+                # Items are not read again unless their model is out of date: make every one be, so the grants
+                # withheld here are written on the next run. Written after the sites are read and before the model
+                # version below: a run that withheld is never complete (an unknown disabled set skips the user
+                # listing), so the current version is not written over it and the next run reads everything. If
+                # this write fails, the run raises and the next run decides again.
+                await self.drive_delta_sync_point.update_sync_point(
+                    PERMISSION_MODEL_SYNC_POINT_KEY, sync_point_data={"version": 0}
+                )
             if self._health.complete and self._rewrite_all_items:
                 await self.drive_delta_sync_point.update_sync_point(
                     PERMISSION_MODEL_SYNC_POINT_KEY, sync_point_data={"version": PERMISSION_MODEL_VERSION}
