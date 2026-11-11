@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 CHANNELS = ("pipeshub_kg_changes", "pipeshub_kg_restamp")
 RECHECK_S = 0.3
+STOP_TIMEOUT_S = 10.0                              # how long stop() lets the pass in flight end before it cancels it
 MAX_DOUBLINGS = 8                                  # RECHECK_S * 2**8 is past any sensible poll interval
 LOOP_FAILED = METRICS_BACKEND.counter("pipeshub_kg_worker_loop_failed_total", "Iterations of the projection worker's loop that raised and were continued", ["where"])
 
@@ -69,7 +70,7 @@ class KgWorker:
             if self._stop.is_set():
                 break                                      # shutting down: no new unit for the gauges
             try:
-                await bootstrap.bring_to_enforce(self._db, org, self._due)
+                rows += await bootstrap.bring_to_enforce(self._db, org, self._due, self._stop)
             except Exception:
                 logger.exception("kg bootstrap failed for an org; retrying")
             if self._stop.is_set():
@@ -143,7 +144,12 @@ class KgWorker:
         for ln in self._listeners:
             await ln.stop()
         if self._task is not None:
-            await self._task
+            done, _ = await asyncio.wait({self._task}, timeout=STOP_TIMEOUT_S)      # a batch or a verify in flight ends by itself; past the limit it is cut
+            if not done:
+                logger.warning("kg worker did not stop within %.0f s: cancelling its pass in flight (what it had not committed is redone at the next start)", STOP_TIMEOUT_S)
+                self._task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await self._task
 
 
 def start_for(graph_provider: object, logger: logging.Logger) -> KgWorker | None:

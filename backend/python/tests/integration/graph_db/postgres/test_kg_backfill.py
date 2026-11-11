@@ -126,7 +126,7 @@ async def test_a_connector_copied_after_its_neighbour_gives_the_neighbours_child
 async def test_a_backfill_that_is_cut_resumes_at_its_last_committed_batch(pg_db, monkeypatch) -> None:
     p, org = await fresh_world(pg_db)
     part = await bf.backfill(pg_db, org, "app1", page=2, max_batches=1)
-    assert not part.flipped and part.result.missing                         # only some nodes are in kg: the flip is refused, nothing is promised
+    assert not part.flipped and part.reason == "unfinished"                 # only some nodes are in kg: the copy stops at its budget, nothing is verified or promised
     assert (await state(pg_db, org, "app1"))[1] == "legacy"
     real, calls = bf.project, {"n": 0}
 

@@ -35,6 +35,8 @@ from app.services.graph_db.postgres.kg.writers import KgWriter
 from app.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
+    import asyncio
+
     from app.core.db import KernelDB, Tx
 
 logger = logging.getLogger(__name__)
@@ -53,6 +55,8 @@ class Outcome:
     batches: int
     result: Result | None = None
     pending: int = 0
+    reason: str = ""             # why ``flipped`` is false: "unfinished" (a budget or a stop ended the copy; it keeps its cursor), "pending" (changes waiting in the log), "cleared" (a demotion or restart
+                                 # emptied the copy while it was verified), "differs" (the verify found a difference nothing waiting explains)
 
 
 def _ctx(org: str) -> OrgContext:
@@ -86,7 +90,8 @@ async def principal_page(tx: Tx, org: str, after: Key | None, limit: int) -> lis
     return [(r["coll"], r["id"]) for r in rows]
 
 
-async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: int = PAGE, max_batches: int | None = None, restart: bool = False) -> int:
+async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: int = PAGE, max_batches: int | None = None, restart: bool = False,
+                         stop: asyncio.Event | None = None) -> int:
     """Copy one connector (``app_id``) or the org's principals (None) in batches; returns the batches committed in this call. Resumable: a call goes on from the saved cursor."""
     _need_log()
     done = 0
@@ -113,7 +118,7 @@ async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: in
                         await w.scopes_delete(ghosts)
                 await modes.demote(tx, org, app_sk)
             await db.run(reset, write=True)
-        while max_batches is None or done < max_batches:
+        while (max_batches is None or done < max_batches) and not (stop is not None and stop.is_set()):
             async def batch(tx: Tx) -> bool:
                 app_sk = await _app_sk(tx, app_id) if app_id else 0
                 cursor, _ = await modes.state(tx, org, app_sk)
@@ -164,15 +169,30 @@ async def _pending(tx: Tx, org: str, app_id: str) -> int:
         WHERE q.org_id = $1 AND k.coll = 1 AND k.id = $2""", org, app_id)
 
 
-async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max_batches: int | None = None, drain_rounds: int | None = None, restart: bool = False) -> Outcome:
-    """The whole sequence for one connector; resumes where an interrupted call stopped. ``flipped`` is true only when the verify found no difference and nothing waits in the log."""
+async def _copied(db: KernelDB, org: str, app_id: str) -> bool:
+    """Both copies (the org's principals and the connector) are finished."""
+    async def go(tx: Tx) -> bool:
+        return bool(await tx.fetchval("""/* pipeshub:kg.copied */ SELECT coalesce((SELECT p.backfill_cursor = 'done' FROM kg.projection_state p WHERE p.org_id = $1 AND p.app_sk = 0), false)
+            AND coalesce((SELECT s.backfill_cursor = 'done' FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
+                          WHERE s.org_id = $1 AND k.coll = 1 AND k.id = $2), false)""", org, app_id))
+    with bind(_ctx(org)):
+        return await db.run(go)
+
+
+async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max_batches: int | None = None, drain_rounds: int | None = None, restart: bool = False,
+                   stop: asyncio.Event | None = None) -> Outcome:
+    """The whole sequence for one connector; resumes where an interrupted call stopped. ``flipped`` is true only when the verify found no difference and nothing waits in the log.
+    ``max_batches`` (per copy) and ``stop`` end a copy early: the outcome is then not flipped, ``reason`` "unfinished", and the cursor is kept for the next call. The verify itself is one
+    unit and is not interrupted."""
     _need_log()
-    n = await backfill_scope(db, org, None, page=page, max_batches=max_batches, restart=restart)
-    n += await backfill_scope(db, org, app_id, page=page, max_batches=max_batches, restart=restart)
+    n = await backfill_scope(db, org, None, page=page, max_batches=max_batches, restart=restart, stop=stop)
+    n += await backfill_scope(db, org, app_id, page=page, max_batches=max_batches, restart=restart, stop=stop)
+    if not await _copied(db, org, app_id):
+        return Outcome(False, n, None, 0, "unfinished")
     with bind(_ctx(org)):
         rounds = 0
-        while drain_rounds is None or rounds < drain_rounds:            # until nothing is left (a round takes pages until the log is empty); None = no cap
-            if not (await drain_org(db, org)).rows:
+        while (drain_rounds is None or rounds < drain_rounds) and not (stop is not None and stop.is_set()):     # until nothing is left (a round takes pages until the log is empty); None = no cap
+            if not (await drain_org(db, org, stop=stop)).rows:
                 break
             rounds += 1
 
@@ -185,13 +205,13 @@ async def backfill(db: KernelDB, org: str, app_id: str, *, page: int = PAGE, max
             app_sk = await _app_sk(tx, app_id)
             cursor, mode = await modes.state(tx, org, app_sk)
             if pending:      # the log explains a difference: nothing is decided, the caller drains and asks again
-                return Outcome(False, n, res, pending)
+                return Outcome(False, n, res, pending, "pending")
             if cursor != "done":      # a demotion (or a restart) cleared the copy while we verified: it is not a copy any more
-                return Outcome(False, n, res, 0)
+                return Outcome(False, n, res, 0, "cleared")
             if not res.ok:
                 if mode != "legacy":      # nothing waits and kg still differs: back to the walk for readers, and the next backfill starts over
                     await modes.demote(tx, org, app_sk)
-                return Outcome(False, n, res, 0)
+                return Outcome(False, n, res, 0, "differs")
             await KgWriter(tx).projection_set(app_sk, epoch=CODE_EPOCH, mode="enforce" if mode == "enforce" else "shadow", digest=res.digest, cursor="done", verified_at=dt.datetime.now(dt.timezone.utc))
             return Outcome(True, n, res, 0)
         out = await db.run(flip, write=True)

@@ -4,7 +4,8 @@ A connector created on a PostgreSQL graph has nothing to copy: its app node is p
 ``enforce``. A connector that already has nodes (an install that ran with the projection off) is copied, verified and promoted the same way, by the same functions
 (``backfill.backfill``, ``backfill.promote``); nothing here writes a mode. A connector whose verify finds a difference stays on the walk (``backfill`` demotes it) and is logged; it is
 not tried again until the process restarts (``shortcut: a retry is a restart or an operator's backfill, a scheduled re-verify is the drift sampler's job``). A connector that cannot be verified
-only because changes were still arriving (a sync running) is tried again after ``RETRY_S``.
+only because changes were still arriving (a sync running), or because its copy was cleared meanwhile, is tried again after ``RETRY_S``. A copy larger than ``BATCHES`` batches goes on at the next
+pass, from its cursor.
 """
 from __future__ import annotations
 
@@ -18,10 +19,14 @@ from app.services.graph_db.postgres.kg.model import CODE_EPOCH
 from app.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
+    import asyncio
+
     from app.core.db import KernelDB, Tx
 
 logger = logging.getLogger(__name__)
 RETRY_S = 30.0
+PAGE = 1000                  # nodes per copy batch
+BATCHES = 20                 # copy batches per connector and pass: a larger connector is copied over several passes, and the other orgs get their turn in between
 PROMOTED = METRICS_BACKEND.counter("pipeshub_kg_bootstrap_total", "Connectors the worker took to enforce, or left on the walk, by outcome", ["outcome"])
 
 # The connectors of the org that are not enforced at this code's epoch with a verified copy.
@@ -42,27 +47,34 @@ async def candidates(db: KernelDB, org: str) -> list[str]:
         return await db.run(go)
 
 
-async def bring_to_enforce(db: KernelDB, org: str, due: dict[tuple[str, str], float]) -> int:
-    """Backfill, verify and promote every connector of ``org`` that is not enforced and whose turn (``due``: when it may be tried again) has come. Returns the connectors promoted.
-    Never raises for one connector: it is logged and left on the walk."""
-    promoted = 0
+async def bring_to_enforce(db: KernelDB, org: str, due: dict[tuple[str, str], float], stop: asyncio.Event | None = None) -> int:
+    """Backfill, verify and promote every connector of ``org`` that is not enforced and whose turn (``due``: when it may be tried again) has come. Returns the connectors it made progress
+    on (promoted, or copied a further batch of), so a caller that loops on work looks again at once. A copy is bounded to ``BATCHES`` batches per call and ends at ``stop``: it keeps its cursor
+    and the next call goes on. Never raises for one connector: it is logged and left on the walk."""
+    progress = 0
     for app in await candidates(db, org):
+        if stop is not None and stop.is_set():
+            break
         if due.get((org, app), 0.0) > time.monotonic():
             continue
         due[(org, app)] = _NEVER                                  # until the outcome says otherwise
         try:
-            out = await bf.backfill(db, org, app)
+            out = await bf.backfill(db, org, app, page=PAGE, max_batches=BATCHES, stop=stop)
             if not out.flipped:
-                if out.pending:
-                    due[(org, app)] = time.monotonic() + RETRY_S      # changes were still arriving: look again soon
-                    PROMOTED.inc("waiting")
-                else:
+                if out.reason == "unfinished":
+                    due[(org, app)] = 0.0                             # it resumes from its cursor: nothing to wait for
+                    PROMOTED.inc("copying")
+                    progress += 1
+                elif out.reason == "differs":
                     PROMOTED.inc("differs")
                     logger.warning("kg: connector %s differs from the graph and stays on the walk: %s", app, out.result.summary() if out.result else "not verified")
+                else:                                                 # changes still arriving, or the copy was cleared meanwhile: look again soon
+                    due[(org, app)] = time.monotonic() + RETRY_S
+                    PROMOTED.inc("waiting")
                 continue
             await bf.promote(db, org, app)
             PROMOTED.inc("enforce")
-            promoted += 1
+            progress += 1
         except bf.Refused as e:
             due[(org, app)] = time.monotonic() + RETRY_S
             PROMOTED.inc("refused")
@@ -71,4 +83,4 @@ async def bring_to_enforce(db: KernelDB, org: str, due: dict[tuple[str, str], fl
             due[(org, app)] = time.monotonic() + RETRY_S
             PROMOTED.inc("error")
             logger.exception("kg: connector %s could not be taken to enforce; it stays on the walk", app)
-    return promoted
+    return progress

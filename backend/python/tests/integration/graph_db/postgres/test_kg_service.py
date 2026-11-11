@@ -10,7 +10,8 @@ from collections import Counter
 import pytest
 
 from app.services.graph_db.postgres import access as access_sql
-from app.services.graph_db.postgres.kg import bootstrap, drainer
+from app.services.graph_db.postgres.kg import backfill as bf
+from app.services.graph_db.postgres.kg import bootstrap, drainer, modes, worker
 from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.postgres.kg.worker import KgWorker
 
@@ -26,13 +27,15 @@ def _defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-async def _world(p, org: str) -> None:
+async def _world(p, org: str, extra: int = 0) -> None:
     """A connector, two users, three records; u1 may use the connector and holds a grant on r1 only. The writes are the provider's own."""
     with ctx(org):
         await p.batch_upsert_nodes([{"_key": org, "name": "Org"}], "organizations")
         await p.batch_upsert_nodes([{"_key": "drv", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
         await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u1@example.com"}, {"_key": "u2", "orgId": org, "email": "u2@example.com"}], "users")
         await p.batch_upsert_nodes([{"_key": f"r{i}", "recordName": f"R{i}", "connectorId": "drv", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for i in (1, 2, 3)], "records")
+        if extra:
+            await p.batch_upsert_nodes([{"_key": f"x{i}", "recordName": f"X{i}", "connectorId": "drv", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for i in range(extra)], "records")
         await p.batch_create_edges([edge("u1", "users", "drv", "apps"), edge("u2", "users", "drv", "apps")], "userAppRelation")
         await p.batch_create_edges([edge("u1", "users", "r1", "records", type="USER", role="READER")], "permission")
 
@@ -148,7 +151,6 @@ async def test_a_connector_with_nodes_before_the_worker_is_backfilled_once_and_a
     # a second org whose verify finds a difference: kg is made to differ from the graph, the connector stays on the walk and is logged, and it is not tried again
     other = new_org()
     await _world(p, other)
-    from app.services.graph_db.postgres.kg import backfill as bf
     real = bf.verify_app
 
     async def differs(tx, o, app) -> object:
@@ -221,3 +223,131 @@ async def test_two_drains_of_one_org_never_project_at_the_same_time_and_the_log_
     assert first.rows + second.rows > 0 and await _log_rows(p, org) == 0
     await drainer.drain_org(pg_db, org)
     assert await _log_rows(p, org) == 0
+
+
+async def _cursor(p, org: str) -> str | None:
+    async def go(tx) -> str | None:
+        return await tx.fetchval("""SELECT s.backfill_cursor FROM kg.projection_state s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.app_sk
+            WHERE s.org_id = $1 AND k.coll = 1 AND k.id = 'drv'""", org)
+    with ctx(org):
+        return await p._q(go, None)
+
+
+async def test_a_copy_cleared_while_it_is_verified_is_retried_and_only_a_real_difference_is_not(pg_db, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _world(p, org)
+    real = bf.verify_app
+
+    async def clears(tx, o, app) -> object:
+        res = await real(tx, o, app)
+        await modes.demote(tx, o, await bf._app_sk(tx, app))            # a concurrent demotion empties the copy during the flip
+        return res
+    with monkeypatch.context() as m:
+        m.setattr(bf, "verify_app", clears)
+        out = await bf.backfill(pg_db, org, "drv")
+        assert not out.flipped and out.reason == "cleared" and out.pending == 0
+        due: dict = {}
+        assert await bootstrap.bring_to_enforce(pg_db, org, due) == 0
+    assert 0 < due[(org, "drv")] - time.monotonic() <= bootstrap.RETRY_S      # retried later, not treated as a difference
+    due[(org, "drv")] = 0.0
+    assert await bootstrap.bring_to_enforce(pg_db, org, due) == 1 and await _mode(p, org) == "enforce"
+
+    other = new_org()
+    await _world(p, other)
+
+    async def differs(tx, o, app) -> object:
+        res = await real(tx, o, app)
+        res.note("extra", "x")
+        return res
+    with monkeypatch.context() as m:
+        m.setattr(bf, "verify_app", differs)
+        assert (await bf.backfill(pg_db, other, "drv")).reason == "differs"
+
+
+async def test_a_large_copy_resumes_across_passes_keeps_its_cursor_and_still_promotes(pg_db, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _world(p, org, extra=12)
+    monkeypatch.setattr(bootstrap, "PAGE", 2)
+    monkeypatch.setattr(bootstrap, "BATCHES", 1)
+    due: dict = {}
+    passes, cursors = 0, []
+    while await _mode(p, org) != "enforce":
+        assert await bootstrap.bring_to_enforce(pg_db, org, due) >= 1
+        passes += 1
+        cursors.append(await _cursor(p, org))
+        assert passes < 40
+    assert passes > 3                                                         # several passes, each bounded
+    mid = [c for c in cursors if c not in (None, "done")]
+    assert mid and len(set(mid)) == len(mid)                                  # the cursor moved forward each time and was kept between passes
+
+
+async def test_stop_returns_promptly_in_the_middle_of_a_copy_and_the_cursor_is_kept(pg_db, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _world(p, org, extra=8)
+    monkeypatch.setattr(bootstrap, "PAGE", 1)
+    monkeypatch.setattr(bootstrap, "BATCHES", 1000)
+    calls = {"n": 0}
+    real = bf.project
+
+    async def slow(*a, **k) -> object:
+        calls["n"] += 1
+        await asyncio.sleep(0.7)
+        return await real(*a, **k)
+    monkeypatch.setattr(bf, "project", slow)
+
+    async def orgs() -> list[str]:
+        return [org]
+    w = KgWorker(pg_db, orgs, poll_s=0.2)
+    w.start()
+    assert await _until(lambda: _calls_at_least(calls, 6), 60)             # the principals are copied and so is part of the connector
+    t0 = time.monotonic()
+    await w.stop()
+    assert time.monotonic() - t0 < 3, "stop() waited for the whole copy"
+    assert await _mode(p, org) != "enforce"
+    assert await _cursor(p, org) not in (None, "done")                       # what was copied is kept for the next start
+
+
+async def _calls_at_least(calls: dict, n: int) -> bool:
+    return calls["n"] >= n
+
+
+async def test_stop_cuts_a_unit_that_does_not_end_and_says_so(pg_db, monkeypatch, caplog) -> None:
+    p, org = prov(pg_db), new_org()
+    await _world(p, org)
+    entered = asyncio.Event()
+
+    async def hangs(tx, o, app) -> object:
+        entered.set()
+        await asyncio.sleep(120)
+
+    async def orgs() -> list[str]:
+        return [org]
+    monkeypatch.setattr(bf, "verify_app", hangs)
+    monkeypatch.setattr(worker, "STOP_TIMEOUT_S", 0.5)
+    w = KgWorker(pg_db, orgs, poll_s=0.2)
+    w.start()
+    await asyncio.wait_for(entered.wait(), 60)
+    t0 = time.monotonic()
+    with caplog.at_level("WARNING"):
+        await w.stop()
+    assert time.monotonic() - t0 < 5 and "did not stop" in caplog.text
+
+
+async def test_a_second_org_gets_its_turn_while_a_large_connector_is_still_being_copied(pg_db, monkeypatch) -> None:
+    p, big, small = prov(pg_db), new_org(), new_org()
+    await _world(p, big, extra=30)
+    await _world(p, small)
+    monkeypatch.setattr(bootstrap, "PAGE", 3)
+    monkeypatch.setattr(bootstrap, "BATCHES", 3)
+
+    async def orgs() -> list[str]:
+        return [big, small]
+    w = KgWorker(pg_db, orgs, poll_s=0.2)
+    assert await w.run_once() > 0
+    assert await _mode(p, small) == "enforce"                                # the small org was served in the first pass
+    assert await _mode(p, big) != "enforce" and await _cursor(p, big) not in (None, "done")
+    for _ in range(40):
+        await w.run_once()
+        if await _mode(p, big) == "enforce":
+            break
+    assert await _mode(p, big) == "enforce"                                  # and the large one still promotes
