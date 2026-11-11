@@ -49,6 +49,8 @@ const IDLE_SCROLLED_UP_ZONE_PX = 96;
 const IDLE_SCROLL_LOCK_GRACE_MS = 160;
 /** Distance from top (px) at which we trigger loading older messages */
 const LOAD_OLDER_THRESHOLD_PX = 120;
+/** Most older pages fetched to find a linked message before giving up and opening at the latest */
+const FOCUS_MESSAGE_MAX_PAGES = 10;
 
 function isStreamingFlushWithBottom(el: HTMLElement): boolean {
   const { scrollTop, scrollHeight, clientHeight } = el;
@@ -174,6 +176,8 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   const isAutoScrollingRef = useRef(false);
   const autoScrollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasPerformedInitialScrollRef = useRef(false);
+  /** Older pages fetched so far while looking for the fork-point message of a `?messageId=` link. */
+  const focusPagesLoadedRef = useRef(0);
   const prevActiveSlotIdRef = useRef<string | null>(null);
   const wasStreamingRef = useRef(isStreaming);
   /** Detects isStreaming false→true so we clear scroll lock before tail sync (layout phase). */
@@ -755,6 +759,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
       hasPerformedInitialScrollRef.current = false;
       isScrolledUpRef.current = false;
       lockClearedAtMsRef.current = 0;
+      focusPagesLoadedRef.current = 0;
       lastTailSyncScrollTopRef.current = -1;
       // Align wasStreamingRef with the incoming slot's current streaming state
       // so Effect #5 (streaming-completion handler) doesn't fire spuriously.
@@ -776,6 +781,23 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
     if (!isInitialized || messagePairs.length === 0) return;
     if (hasPerformedInitialScrollRef.current) return;
 
+    // A link from a fork (`?messageId=`) opens the chat at the message it was forked
+    // from, ahead of any saved position. Only the newest page is loaded at first, so
+    // an older fork point is looked for page by page, up to FOCUS_MESSAGE_MAX_PAGES.
+    const focusId = new URLSearchParams(window.location.search).get('messageId');
+    const focusPair = focusId ? messagePairs.find((p) => p.messageId === focusId) : undefined;
+    if (
+      focusId && !focusPair && activeSlotId &&
+      hasOlderMessages && focusPagesLoadedRef.current < FOCUS_MESSAGE_MAX_PAGES
+    ) {
+      // Wait out a load already in flight; the effect re-runs when it settles.
+      if (!isLoadingOlder) {
+        focusPagesLoadedRef.current += 1;
+        void loadOlderMessagesForSlot(activeSlotId);
+      }
+      return;
+    }
+
     hasPerformedInitialScrollRef.current = true;
 
     // Check for saved scroll position (returning to a previously viewed chat)
@@ -783,11 +805,6 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
     const slot = activeSlotId ? store.slots[activeSlotId] : null;
     const savedTop = slot?.savedScrollTop;
 
-    // A link from a fork (`?messageId=`) opens the chat at the message it was forked
-    // from, ahead of any saved position. shortcut: only finds it among the loaded
-    // messages; if it is older than the loaded page, the usual scroll applies.
-    const focusId = new URLSearchParams(window.location.search).get('messageId');
-    const focusPair = focusId ? messagePairs.find((p) => p.messageId === focusId) : undefined;
     if (focusPair) {
       recalcSpacerHeight();
       requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -842,7 +859,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
         chatBecameActive: true,
       });
     }));
-  }, [isInitialized, messagePairs.length, activeSlotId, recalcSpacerHeight, executeScroll]);
+  }, [isInitialized, messagePairs.length, activeSlotId, hasOlderMessages, isLoadingOlder, recalcSpacerHeight, executeScroll]);
 
   // ── 2. ResizeObserver on last message element ─────────────────────
   // Tracks the last message's DOM size changes (streaming content growing,

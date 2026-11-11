@@ -1013,3 +1013,92 @@ describe('MessageList — a forked chat', () => {
     });
   });
 });
+
+describe('MessageList — opening at a linked message', () => {
+  const PAGE_1 = [
+    user('u2', 'Who approves exceptions?'),
+    { ...assistant('a2', 'The finance lead approves exceptions.'), metadata: { custom: { messageId: 'srv-a2' } } },
+  ];
+  const OLDER = [
+    user('u1', 'What is our refund policy?'),
+    { ...assistant('a1', 'Refunds are issued within 30 days.'), metadata: { custom: { messageId: 'srv-a1' } } },
+  ];
+  const olderAvailable = { currentPage: 1, hasOlderMessages: true, isLoadingOlder: false };
+
+  const linkTo = (messageId: string) =>
+    window.history.replaceState(null, '', `/chat/?conversationId=conv-1&messageId=${messageId}`);
+
+  afterEach(() => window.history.replaceState(null, '', '/'));
+
+  async function flush() {
+    for (let i = 0; i < 40; i++) await act(async () => { await Promise.resolve(); });
+    settle();
+  }
+
+  it('scrolls to the linked message instead of the latest one', async () => {
+    thread.messages = [...OLDER, ...PAGE_1];
+    geometry.rowTop = { 'What is our refund policy?': 300, 'Who approves exceptions?': 900 };
+    linkTo('srv-a1');
+    openConversation('conv-1');
+
+    render(<MessageList />);
+    await flush();
+
+    expect(scroller().scrollTop).toBe(300);
+    expect(loadOlder).not.toHaveBeenCalled();
+  });
+
+  it('loads older messages until it finds the linked one, then scrolls to it', async () => {
+    thread.messages = PAGE_1;
+    geometry.rowTop = { 'What is our refund policy?': 300, 'Who approves exceptions?': 900 };
+    linkTo('srv-a1');
+    const slotId = openConversation('conv-1', { messagePagination: olderAvailable });
+    loadOlder.mockImplementation(async () => {
+      thread.messages = [...OLDER, ...PAGE_1];
+      useChatStore.getState().updateSlot(slotId, {
+        messagePagination: { currentPage: 2, hasOlderMessages: false, isLoadingOlder: false },
+      });
+    });
+
+    render(<MessageList />);
+    await flush();
+
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+    expect(loadOlder).toHaveBeenCalledWith(slotId);
+    expect(scroller().scrollTop).toBe(300);
+  });
+
+  it('stops after ten pages when the linked message never turns up, and opens at the latest', async () => {
+    thread.messages = PAGE_1;
+    geometry.rowTop = { 'Who approves exceptions?': 600 };
+    linkTo('srv-gone');
+    const slotId = openConversation('conv-1', { messagePagination: olderAvailable });
+    loadOlder.mockImplementation(async () => {
+      const set = (isLoadingOlder: boolean) =>
+        useChatStore.getState().updateSlot(slotId, {
+          messagePagination: { currentPage: 2, hasOlderMessages: true, isLoadingOlder },
+        });
+      set(true);
+      await Promise.resolve();
+      set(false);
+    });
+
+    render(<MessageList />);
+    await flush();
+
+    expect(loadOlder).toHaveBeenCalledTimes(10);
+    expect(scroller().scrollTop).toBe(600);
+  });
+
+  it('opens at the latest, without loading anything, when there is no link', async () => {
+    thread.messages = PAGE_1;
+    geometry.rowTop = { 'Who approves exceptions?': 600 };
+    openConversation('conv-1', { messagePagination: olderAvailable });
+
+    render(<MessageList />);
+    await flush();
+
+    expect(loadOlder).not.toHaveBeenCalled();
+    expect(scroller().scrollTop).toBe(600);
+  });
+});
