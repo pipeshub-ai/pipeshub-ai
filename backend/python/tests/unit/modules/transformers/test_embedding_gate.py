@@ -370,6 +370,16 @@ class TestServerThatIsHungOrDown:
         assert time.monotonic() - started < 2.0
         assert dict(_clean_env.drain().timeouts) == {SERVICE: 1}
 
+    async def test_a_stuck_query_does_not_fail_bulk_waiters_fast(self, _clean_env: DownstreamFeedback) -> None:
+        # The reserved query lane holds an old encode, but bulk is moving: its age is what counts.
+        body = {"encode_gate": {"bulk_limit": 1, "oldest_in_use_age_s": {"query": 99.0, "bulk": 0.0}}}
+        gate = await self.gate_with(Health(body))
+        assert await self.run_waiters(gate, 4, holder_error=TimeoutError()) == ["ran"] * 4
+
+    @pytest.mark.parametrize("ages", [{"query": 99.0}, None, 7])
+    async def test_a_health_body_without_a_bulk_age_is_read_as_not_stuck(self, ages: Any) -> None:
+        assert gate_module._oldest_in_use_age({"encode_gate": {"oldest_in_use_age_s": ages}}) == 0.0
+
     async def test_a_server_that_is_down_fails_every_earlier_waiter_fast(self, _clean_env: DownstreamFeedback) -> None:
         gate = await self.gate_with(Health(error=HealthUnreachable("ConnectError")))
         import openai

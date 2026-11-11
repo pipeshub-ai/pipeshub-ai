@@ -147,13 +147,11 @@ def _log_no_gate_once(url: str) -> None:
 
 
 def _oldest_in_use_age(health: dict[str, Any]) -> float:
+    """Age of the oldest bulk encode; the query lane is reserved apart and says nothing about bulk progress."""
     gate = health.get("encode_gate")
     ages = gate.get("oldest_in_use_age_s") if isinstance(gate, dict) else None
-    values = ages.values() if isinstance(ages, dict) else [ages]
-    return max(
-        (float(v) for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)),
-        default=0.0,
-    )
+    age = ages.get("bulk") if isinstance(ages, dict) else None
+    return float(age) if isinstance(age, (int, float)) and not isinstance(age, bool) else 0.0
 
 
 @dataclass(eq=False)
