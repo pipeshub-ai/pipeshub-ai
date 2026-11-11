@@ -54,6 +54,9 @@ function sanitizeString(value: string): string {
   }
 }
 
+const LOCAL_REPO_PUSH_PATH =
+  /^\/api\/v1\/local-repos\/[^/]+\/(files|manifest)$/;
+
 // Field paths are built from the request's own keys, so only plain names are
 // repeated back; anything else (a key that is itself markup) is not echoed.
 const SAFE_FIELD_PATH = /^[A-Za-z0-9_.[\]-]{1,200}$/;
@@ -428,6 +431,16 @@ export const xssSanitizationMiddleware = (
     }
 
     if (req.path.startsWith('/api/v1/conversations/') && (req.method === 'POST' || req.method === 'PUT')) {
+      next();
+      return;
+    }
+
+    // A pushed repository's files and manifest are source text (markup in it is not markup here: it is stored as a file and shown as text).
+    // Python validates every path and checks each file's sha256. The repository's name is not exempt: it is sanitised like any other name.
+    if (
+      LOCAL_REPO_PUSH_PATH.test(req.path) &&
+      (req.method === 'POST' || req.method === 'PUT')
+    ) {
       next();
       return;
     }

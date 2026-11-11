@@ -105,6 +105,7 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
       'profile',
       'email',
       'conversation:write',
+      'code:write',
       'project:read',
       'project:write',
       'project:delete',

@@ -257,6 +257,15 @@ tags:
       way a browser's `maxLength` does, so an emoji counts as two characters.
   - name: Code Graph
     description: Code repositories indexed into a navigable code graph, and each one's graph status
+  - name: Local Repositories
+    description: |
+      Push a repository from a developer's machine (`pipeshub index`) so its code is indexed into the code
+      graph. The caller sends a manifest (path and sha256 of each file), uploads only the files the server
+      lacks, then commits to start indexing. The repository is identified by a key the client chooses; the
+      organization and user come from the token, and the repository is visible only to the user who pushed it.
+      Files are UTF-8 text; binaries, files over the size limit and the server's default ignore list
+      (`node_modules/`, `dist/`, lockfiles, images, archives) are rejected per file. The limits are returned
+      when the repository is registered.
   - name: Semantic Search
     description: Enterprise semantic search across all indexed knowledge with relevance scoring
   - name: Agents
@@ -587,6 +596,14 @@ x-pipeshub-nav:
           - API Documentation
 components:
   parameters:
+    LocalRepoKey:
+      name: repoKey
+      in: path
+      required: true
+      description: A key the client chooses and keeps for the working copy (8-64 letters, digits, `-` or `_`).
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9_-]{8,64}$'
     RevealStoredSecrets:
       name: reveal
       in: query
@@ -740,6 +757,7 @@ components:
             connector:sync: Trigger connector synchronization
             connector:delete: Delete connectors
             code:read: Read indexed code repositories and their code graph
+            code:write: Push local repositories to be indexed into the code graph
             config:read: Read system configuration
             config:write: Update system configuration
             crawl:read: Read crawling jobs
@@ -792,6 +810,7 @@ components:
             connector:sync: Trigger connector synchronization
             connector:delete: Delete connectors
             code:read: Read indexed code repositories and their code graph
+            code:write: Push local repositories to be indexed into the code graph
             config:read: Read system configuration
             config:write: Update system configuration
             crawl:read: Read crawling jobs
@@ -24774,6 +24793,90 @@ components:
         relatedNote:
           type: string
           description: Set when `relatedEntities` covers only the records on this page.
+    LocalRepoRejected:
+      type: array
+      items:
+        type: object
+        properties:
+          path:
+            type: string
+          reason:
+            type: string
+            enum: [ignored, too_large, invalid_path, too_many_files, hash_mismatch, binary]
+    LocalRepoStatus:
+      type: object
+      properties:
+        repoKey:
+          type: string
+        name:
+          type: string
+        connectorId:
+          type: string
+        state:
+          type: string
+          enum: [empty, syncing, indexing, ready, partial, failed, stuck]
+        note:
+          type: string
+          description: Present when the state is `partial`; says how many files failed to index.
+        error:
+          type: string
+          description: Why the state is `failed` or `stuck`.
+        generation:
+          type: integer
+        syncedGeneration:
+          type: integer
+        files:
+          type: integer
+        lastCommitAt:
+          type: integer
+          nullable: true
+        indexing:
+          type: object
+          properties:
+            total:
+              type: integer
+            notStarted:
+              type: integer
+            queued:
+              type: integer
+            inProgress:
+              type: integer
+            completed:
+              type: integer
+            failed:
+              type: integer
+            skipped:
+              type: integer
+            excluded:
+              type: object
+              additionalProperties:
+                type: integer
+              description: Files left out altogether, by reason (the client's counts and the files a generator's header proved to be generated output).
+        codeGraph:
+          type: string
+          description: Status of the repository's code graph (`ready`, `building`, `no_code`, ...)
+    LocalRepoRegistered:
+      allOf:
+        - $ref: '#/components/schemas/LocalRepoStatus'
+        - type: object
+          properties:
+            created:
+              type: boolean
+            limits:
+              type: object
+              properties:
+                maxFiles:
+                  type: integer
+                maxFileBytes:
+                  type: integer
+                maxBatchFiles:
+                  type: integer
+                maxBatchBytes:
+                  type: integer
+                maxManifestEntries:
+                  type: integer
+                maxTotalBytes:
+                  type: integer
   responses:
     CodeToolResult:
       description: The code tool's result, as the matching `pipeshub_code_*` MCP tool returns it.
@@ -62880,6 +62983,295 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
+  # -------------------- Local repositories --------------------
+  /local-repos:
+    get:
+      tags:
+        - Local Repositories
+      summary: List the caller's local repositories
+      description: Only repositories pushed by the caller are listed.
+      operationId: listLocalRepos
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      responses:
+        '200':
+          description: Repositories
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repos:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LocalRepoStatus'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+  /local-repos/{repoKey}:
+    parameters:
+      - $ref: '#/components/parameters/LocalRepoKey'
+    put:
+      tags:
+        - Local Repositories
+      summary: Register a local repository (idempotent)
+      description: |
+        Creates the repository the first time (201) and returns it afterwards (200). The response carries the
+        limits to batch by. The body may name the repository; it may not name anything else.
+      operationId: registerLocalRepo
+      security:
+        - bearerAuth: []
+        - oauth2: [code:write]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+      responses:
+        '200':
+          description: The repository (already registered)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalRepoRegistered'
+        '201':
+          description: The repository was created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalRepoRegistered'
+        '400':
+          description: Invalid repository key
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+        '409':
+          description: The repository is being deleted
+        '422':
+          description: The body names a field this API does not accept
+    get:
+      tags:
+        - Local Repositories
+      summary: Get a local repository and its indexing status
+      description: |
+        `state` is `empty` (nothing committed), `syncing`, `indexing`, `ready`, `partial` (searchable, but some files failed to index; see `indexing.failed`), `failed` or `stuck` (the commit is
+        more than two minutes old and no sync is running; commit again). Polling also restarts a sync that was
+        coalesced with a newer commit.
+      operationId: getLocalRepo
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      responses:
+        '200':
+          description: The repository
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalRepoStatus'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+        '404':
+          description: No such repository for this user
+    delete:
+      tags:
+        - Local Repositories
+      summary: Delete a local repository
+      description: Deletes the repository's connector (records, symbols, edges, vectors) and the server's copy of the files.
+      operationId: deleteLocalRepo
+      security:
+        - bearerAuth: []
+        - oauth2: [code:write]
+      responses:
+        '202':
+          description: Deletion started
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+        '404':
+          description: No such repository for this user
+  /local-repos/{repoKey}/manifest:
+    parameters:
+      - $ref: '#/components/parameters/LocalRepoKey'
+    post:
+      tags:
+        - Local Repositories
+      summary: Compare a manifest with the server's copy
+      description: |
+        Returns the paths to upload. With `complete: true` the server deletes every path the list leaves out;
+        `deleted` removes paths explicitly (a rename is a deleted path plus a new one).
+      operationId: diffLocalRepoManifest
+      security:
+        - bearerAuth: []
+        - oauth2: [code:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [path, sha256, size]
+                    properties:
+                      path:
+                        type: string
+                        description: Repo-relative, slash separated, NFC
+                      sha256:
+                        type: string
+                        pattern: '^[0-9a-f]{64}$'
+                      size:
+                        type: integer
+                        minimum: 0
+                complete:
+                  type: boolean
+                  default: false
+                deleted:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: What to upload and what was deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  upload:
+                    type: array
+                    items:
+                      type: string
+                  deleted:
+                    type: array
+                    items:
+                      type: string
+                  unchanged:
+                    type: integer
+                  rejected:
+                    $ref: '#/components/schemas/LocalRepoRejected'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+        '404':
+          description: No such repository for this user
+        '413':
+          description: Too many manifest entries
+  /local-repos/{repoKey}/files:
+    parameters:
+      - $ref: '#/components/parameters/LocalRepoKey'
+    put:
+      tags:
+        - Local Repositories
+      summary: Upload changed files
+      description: |
+        A batch of UTF-8 files, each with its sha256. Good files are stored even when others in the batch are rejected.
+      operationId: uploadLocalRepoFiles
+      security:
+        - bearerAuth: []
+        - oauth2: [code:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [files]
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [path, sha256, content]
+                    properties:
+                      path:
+                        type: string
+                      sha256:
+                        type: string
+                        pattern: '^[0-9a-f]{64}$'
+                      content:
+                        type: string
+      responses:
+        '200':
+          description: Stored and rejected paths
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stored:
+                    type: array
+                    items:
+                      type: string
+                  rejected:
+                    $ref: '#/components/schemas/LocalRepoRejected'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+        '404':
+          description: No such repository for this user
+        '413':
+          description: Batch over the file or byte limit
+  /local-repos/{repoKey}/commit:
+    parameters:
+      - $ref: '#/components/parameters/LocalRepoKey'
+    post:
+      tags:
+        - Local Repositories
+      summary: Start indexing the pushed files
+      description: Bumps the repository generation and starts a sync. Safe to call after every burst of changes.
+      operationId: commitLocalRepo
+      security:
+        - bearerAuth: []
+        - oauth2: [code:write]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                excluded:
+                  type: object
+                  additionalProperties:
+                    type: integer
+                  description: What the client left out before sending, as a count per reason (`ignored_folder`, `binary`, `too_large`, `linked`, `unreadable`). Shown in the status.
+      responses:
+        '202':
+          description: Accepted; the current status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalRepoStatus'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+        '404':
+          description: No such repository for this user
 
   # -------------------- Skills --------------------
   /api-toolsets/validate:
