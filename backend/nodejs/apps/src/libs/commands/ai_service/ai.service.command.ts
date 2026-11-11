@@ -14,8 +14,8 @@ export interface AICommandOptions {
   headers?: Record<string, string>;
   queryParams?: Record<string, string | number | boolean>;
   body?: any;
-  // Total budget across all attempts: the abort signal is shared, so a timed-out
-  // first attempt fails the remaining ones immediately.
+  // Total budget across all attempts and the waits between them: once it runs
+  // out no further attempt is made.
   timeoutMs?: number;
   maxAttempts?: number;
 }
@@ -50,6 +50,7 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
   public async execute(): Promise<AIServiceResponse<T>> {
     const url = this.buildUrl();
     const sanitizedHeaders = this.sanitizeHeaders(this.headers);
+    const budget = AbortSignal.timeout(this.timeoutMs);
     const requestOptions: RequestInit = {
       method: this.method,
       headers: sanitizedHeaders,
@@ -61,13 +62,15 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
       // downloading, retry shortly" message the health check produced.
       // Not applied to executeStream(), whose SSE progress stream is meant to
       // outlive any single request.
-      signal: AbortSignal.timeout(this.timeoutMs),
+      signal: budget,
     };
 
     const response = await this.fetchWithRetry(
       (attempt) => upstreamFetch(url, requestOptions, attempt),
       this.maxAttempts,
       300,
+      undefined,
+      budget,
     );
 
     // Assuming the response is JSON; adjust if needed.
@@ -177,8 +180,10 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
         upstreamFetch(url, requestOptions, attempt, (call) => {
           held.call = call;
         }),
-      3,
+      this.maxAttempts,
       300,
+      undefined,
+      signal,
     );
     const end = (result: { status: number; error?: unknown }): void => {
       if (held.call) endUpstreamCall(held.call, result);

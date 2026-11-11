@@ -21,5 +21,6 @@ def validate_run_id(value: str | None) -> str | None:
     try:
         uuid.UUID(value)
     except (ValueError, AttributeError, TypeError) as exc:
-        raise ValueError(f"Invalid runId {value!r}: must be a UUID.") from exc
+        # Not the value: this message reaches the 400 body, which Node logs and shows.
+        raise ValueError("Invalid runId: must be a UUID.") from exc
     return value

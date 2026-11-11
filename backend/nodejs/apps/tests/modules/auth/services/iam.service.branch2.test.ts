@@ -17,7 +17,7 @@ describe('IamService - full branch coverage via real method calls', () => {
   } as any
 
   beforeEach(() => {
-    iamService = new IamService(mockConfig, mockLogger)
+    iamService = new IamService(mockConfig)
     // Stub the axios callable (default export is a function)
     axiosStub = sinon.stub(axios, 'request')
     // Also need to make axios callable - stub the function itself

@@ -169,13 +169,8 @@ class TestMasterFailoverOnARealCluster:
                     continue
                 for stream_name, messages in results:
                     for message_id, fields in messages:
-                        success, is_terminal = (
-                            await consumer._process_message_with_classification(
-                                stream_name, message_id, fields
-                            )
-                        )
-                        await consumer._finalize_message(
-                            stream_name, message_id, success, is_terminal
+                        await consumer._handle_entry(
+                            stream_name, message_id, fields, recovered=False
                         )
                 if not results:
                     await asyncio.sleep(0.5)

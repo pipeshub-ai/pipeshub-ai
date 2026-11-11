@@ -20,8 +20,6 @@ from pydantic import ValidationError
 
 from app.core.envelope import EnvelopeRejected, ctx_of, open_stream_message
 from app.core.org_context import bind_optional, spawn_detached
-from app.core.org_context import pop as pop_org
-from app.core.org_context import push as push_org
 from app.modules.indexing.embed_resume import stamp_delivery_id
 from app.modules.indexing.record_progress import (
     begin_progress,
@@ -66,6 +64,7 @@ from app.services.messaging.kafka.consumer.remembered import (
 from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.membership import register_group
+from app.services.messaging.message_log import bound_message
 from app.services.messaging.scheduling.drr_scheduler import DRRScheduler
 from app.services.messaging.scheduling.interface import (
     EnqueueResult,
@@ -85,11 +84,10 @@ from app.services.resource_governor import ParseTier, Pool
 from app.telemetry.modules import scheduling_metrics as metrics
 from app.utils import indexing_timing as timing
 from app.utils.cpu_offload import offload_if_large
+from app.utils.logging_fields import log_fields
 from app.utils.loop_lag_monitor import LoopLagMonitor, loop_lag_monitor_from_env
 from app.utils.request_context import (
-    bind_context,
     context_from_envelope,
-    reset_context,
     run_in_context,
 )
 
@@ -1155,7 +1153,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                     message,
                                     retry_current=True,
                                 )
-                                self.logger.error(f"Error processing individual message: {e}")
+                                # The type only: a parse error's text can quote the payload's values.
+                                self.logger.error(
+                                    f"Error processing message {message.topic}-{message.partition}-{message.offset}",
+                                    extra={"error_type": type(e).__name__},
+                                )
                                 continue
 
                 except asyncio.CancelledError:
@@ -1280,9 +1282,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 except Exception as e:
                     # The offset is already tracked, so leaving it unresolved
                     # would pin the watermark; hand it back for redelivery.
+                    # The type only: a ValidationError's text quotes the payload's values.
                     self.logger.error(
-                        f"Error enqueuing message {tp}-{message.offset} for "
-                        f"fair scheduling: {e}"
+                        f"Error enqueuing message {tp}-{message.offset} for fair scheduling",
+                        extra={"error_type": type(e).__name__},
                     )
                     await self.__resolve_offset(
                         _InFlightOffset(tp, message.offset),
@@ -1769,8 +1772,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 except Exception as e:
                     # It parsed when it was first read; try again next pass.
                     self.logger.warning(
-                        "Could not parse fetched-back message %s-%s; it stays "
-                        "remembered: %r", position[0], position[1], e,
+                        "Could not parse fetched-back message %s-%s; it stays remembered",
+                        position[0], position[1], extra={"error_type": type(e).__name__},
                     )
                     parsed = None
                 if parsed is not None:
@@ -2109,7 +2112,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
     async def __parse_message(self, message: ConsumerRecord) -> StreamMessage | None:
         """Parse the Kafka message value into a StreamMessage.
 
-        Handles bytes decoding, JSON parsing, and double-encoded JSON.
+        Handles bytes decoding, JSON parsing, and double-encoded JSON. Never logs the value.
 
         Returns:
             StreamMessage, or None for a message that can never parse (poison): not UTF-8, not JSON, a rejected
@@ -2118,51 +2121,45 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         """
         message_id = f"{message.topic}-{message.partition}-{message.offset}"
         message_value = message.value
+        size_bytes = len(message_value) if isinstance(message_value, (bytes, str)) else None
 
-        try:
-            if isinstance(message_value, bytes):
-                message_value = message_value.decode("utf-8")
-                self.logger.debug(f"Decoded bytes message for {message_id}")
+        with log_fields(topic=message.topic, message_id=message_id):
+            try:
+                if isinstance(message_value, bytes):
+                    message_value = message_value.decode("utf-8")
 
-            if isinstance(message_value, str):
-                try:
-                    # Offloaded above a size threshold: a connector can emit a
-                    # record whose whole body rides in the envelope, and
-                    # parsing it inline blocks every other in-flight record on
-                    # this one worker loop.
-                    parsed = await offload_if_large(
-                        _loads_possibly_double_encoded, message_value
-                    )
-                    self.logger.debug(
-                        f"Parsed message {message_id}: type={type(parsed)}"
-                    )
-                    return await open_stream_message(message.topic, parsed, StreamMessage)
-                except EnvelopeRejected as e:
-                    self.logger.error(f"Envelope rejected for {message_id}: {e.reason}")
-                    return None
-                except (ValidationError, TypeError) as e:
-                    # Valid JSON that is not a StreamMessage never becomes one: poison, as in the Redis twin.
-                    # The type only: a ValidationError's text quotes the payload's values.
-                    self.logger.error(f"Failed to parse message {message_id} as StreamMessage: {type(e).__name__}")
-                    return None
-                except json.JSONDecodeError as e:
+                if isinstance(message_value, str):
+                    try:
+                        # Offloaded above a size threshold: a connector can emit a
+                        # record whose whole body rides in the envelope, and
+                        # parsing it inline blocks every other in-flight record on
+                        # this one worker loop.
+                        parsed = await offload_if_large(
+                            _loads_possibly_double_encoded, message_value
+                        )
+                        return await open_stream_message(message.topic, parsed, StreamMessage)
+                    except EnvelopeRejected as e:
+                        self.logger.error(f"Envelope rejected for {message_id}: {e.reason}")
+                        return None
+                    except (ValidationError, TypeError) as e:
+                        # Valid JSON that is not a StreamMessage never becomes one: poison, as in the Redis twin.
+                        # The type only: a ValidationError's text quotes the payload's values.
+                        self.logger.error(f"Failed to parse message {message_id} as StreamMessage: {type(e).__name__}")
+                        return None
+                    except json.JSONDecodeError:
+                        self.logger.error(
+                            f"JSON parsing failed for message {message_id}", extra={"size_bytes": size_bytes}
+                        )
+                        return None
+                else:
                     self.logger.error(
-                        f"JSON parsing failed for message {message_id}: {str(e)}\n"
-                        f"Raw message: {message_value[:1000]}..."
+                        f"Unexpected message value type for {message_id}: {type(message_value)}"
                     )
                     return None
-            else:
-                self.logger.error(
-                    f"Unexpected message value type for {message_id}: {type(message_value)}"
-                )
-                return None
 
-        except UnicodeDecodeError as e:
-            self.logger.error(
-                f"Failed to decode message {message_id}: {str(e)}\n"
-                f"Raw bytes: {str(message_value)[:100]}..."
-            )
-            return None
+            except UnicodeDecodeError:
+                self.logger.error(f"Failed to decode message {message_id}", extra={"size_bytes": size_bytes})
+                return None
 
     async def __start_processing_task(
         self,
@@ -2596,6 +2593,24 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         parsed_message: "StreamMessage | None" = None,
         in_flight: "_InFlightOffset | None" = None,
     ) -> bool:
+        """Process a message with its root, org and ids bound for the whole run, so the lines
+        after the handler (commit, re-queue, the timing summary) carry them too."""
+        message_id = f"{message.topic}-{message.partition}-{message.offset}"
+        with log_fields(topic=message.topic, message_id=message_id):
+            # Reuses the parse __defer_if_retry_not_ready already did; only a
+            # caller that skipped that check (tests, direct invocation) parses here.
+            if parsed_message is None:
+                parsed_message = await self.__parse_message(message)
+            with bound_message(parsed_message):
+                return await self.__process_bound_message(message, waiter_token, parsed_message, in_flight)
+
+    async def __process_bound_message(
+        self,
+        message: ConsumerRecord,
+        waiter_token: "concurrency.GateWaiterToken | None",
+        parsed_message: "StreamMessage | None",
+        in_flight: "_InFlightOffset | None",
+    ) -> bool:
         """Wrapper to handle async task cleanup and semaphore release based on yielded events.
 
         Semaphore lifecycle:
@@ -2647,15 +2662,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             await self.__resolve_offset(in_flight, done=False)
             return False
 
-        # Parse (and, for re-queued messages, wait out any backoff) before
+        # Parsed (and, for re-queued messages, any backoff waited out) before
         # acquiring the parsing semaphore. This way a retry waiting for a
         # downed service to recover only occupies a pending-task slot
         # (counted against backpressure), never a parsing/indexing semaphore
         # slot — the exact resource a sibling record needs to make progress.
-        # Reuses the parse __defer_if_retry_not_ready already did; only a
-        # caller that skipped that check (tests, direct invocation) parses here.
-        if parsed_message is None:
-            parsed_message = await self.__parse_message(message)
         if parsed_message is None:
             self.logger.warning(f"Failed to parse message {message_id}, skipping")
             await self.__commit_if_appropriate(
@@ -2793,21 +2804,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             parsed_message.is_final_failure = will_be_final_on_failure
 
             if self.message_handler:
-                # Carry the producer's trace id into indexing logs.
-                token = bind_context(
-                    context_from_envelope(
-                        {
-                            "requestId": parsed_message.requestId,
-                            "orgId": parsed_message.orgId,
-                        }
-                    )
-                )
                 record_kind = concurrency.record_parse_kind(parsed_message.payload)
                 processing_timeout = messaging_env.record_processing_timeout_for(
                     parsed_message.payload.get("extension"),
                     parsed_message.payload.get("mimeType"),
                 )
-                org_token = push_org(ctx_of(parsed_message))
 
                 progress = new_progress()
                 begin_progress(progress)
@@ -2993,8 +2994,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         await asyncio.gather(renewal_task, return_exceptions=True)
                         renewal_task = None
                     end_progress()
-                    pop_org(org_token)
-                    reset_context(token)
             else:
                 self.logger.error(f"No message handler available for {message_id}")
                 await self.__commit_if_appropriate(
