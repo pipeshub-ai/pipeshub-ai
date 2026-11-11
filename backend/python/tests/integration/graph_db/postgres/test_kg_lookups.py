@@ -79,6 +79,20 @@ async def test_each_lookup_reads_its_vetted_function_and_a_value_out_of_bounds_t
     assert sent == ["page_records_for_vector_membership_backfill", "page_records_for_vector_membership_backfill", "get_person_by_source_key", "get_user_by_email", "find_people"]
 
 
+async def test_the_entity_index_pages_a_connectors_records_by_the_vetted_page_in_byte_order_for_the_org_alone(world, monkeypatch: pytest.MonkeyPatch) -> None:
+    a, b = world
+    await a.batch_upsert_nodes([{"_key": "only-a", "orgId": a.org, "connectorId": "c-a", "recordName": "x"}], "records")
+    sent = spy(monkeypatch)
+    assert [r["_key"] for r in await a.page_entity_index_source("records", "c1", None, 10)] == ["R3", "r1", "r2"]
+    assert [r["_key"] for r in await a.page_entity_index_source("records", "c1", "R3", 1)] == ["r1"]
+    assert [r["_key"] for r in await b.page_entity_index_source("records", "c-a", None, 10)] == [] and [r["_key"] for r in await a.page_entity_index_source("records", "c-a", None, 10)] == ["only-a"]
+    assert sent == ["records_page_by_connector_for_index"] * 4
+    sent.clear()
+    assert [r["_key"] for r in await a.page_entity_index_source("records", "c1", "R3", 5000)] == ["r1", "r2"]          # a page over the function's bound: the statement, in the same order
+    assert [r["_key"] for r in await a.page_entity_index_source("organizations", a.org, None, 10)] == ["o1"]
+    assert sent == ["page_entity_index_source"] * 2
+
+
 async def test_a_full_page_of_matches_is_read_by_the_plain_statement(world, monkeypatch: pytest.MonkeyPatch) -> None:
     a, _ = world
     monkeypatch.setattr("app.services.graph_db.postgres.identity._PRINCIPALS_PAGE", 0)      # a page can never be short
