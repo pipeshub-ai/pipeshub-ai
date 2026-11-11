@@ -472,3 +472,61 @@ functions:
       IF cardinality(p_virtual_record_ids) <> cardinality(p_revs) THEN RAISE EXCEPTION 'p_virtual_record_ids and p_revs differ in length' USING ERRCODE = '22023'; END IF;
       RETURN QUERY SELECT n.id, n.doc FROM (SELECT DISTINCT q.v, q.r FROM unnest(p_virtual_record_ids, p_revs) AS q(v, r)) p
         JOIN graph.nodes n ON n.org_id = v_org AND n.coll = 'records' AND n.doc->>'virtualRecordId' = p.v AND n.doc->>'contentRev' = p.r LIMIT 100000;
+
+# ---- a connector's declared record groups (graph_0009) --------------------------------------------------------------------------------
+# Same reason as above, for the record groups of a connector that the access check reads on every request.
+
+  # The ids of a connector's record groups that declare their own permission model, with the text of their isDeleted flag (the caller casts it: a cast here could raise on a document's data) (index of the record groups by connector and external id); up to 100,000.
+  - name: graph.declared_record_groups
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_connector_id, type: text, length: [1, 200]}
+    returns: "TABLE (node_id text, is_deleted text)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT n.id, n.doc->>'isDeleted' FROM graph.nodes n WHERE n.org_id = v_org AND n.coll = 'recordGroups' AND n.doc->>'connectorId' = p_connector_id
+          AND n.doc->>'permissionModel' = 'RECORD_GROUP_LEVEL' LIMIT 100000;
+
+# ---- the stage sweeps' stale states and unheld revisions (graph_0010) -------------------------------------------------------------------
+# Same reason as above, for the stage states the sweeps read by status and age, or by virtual record.
+
+  # The stage states with one of the statuses, last updated before a time, oldest first (index nodes_stage_status): the oldest p_limit of each status, then the oldest p_limit of those.
+  - name: graph.stage_states_stale
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_statuses, type: "text[]", max_items: 20, item_not_null: true, item_length: [1, 100]}
+      - {name: p_before, type: bigint}
+      - {name: p_limit, type: int, range: [1, 1000]}
+    returns: "TABLE (node_id text, doc jsonb)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT x.id, x.doc FROM (SELECT DISTINCT e FROM unnest(p_statuses) e) st
+        CROSS JOIN LATERAL (SELECT n.id, n.doc FROM graph.nodes n WHERE n.org_id = v_org AND n.coll = 'stageStates' AND n.doc->>'status' = st.e
+            AND n.doc->'updatedAtMs' < to_jsonb(p_before) ORDER BY n.doc->>'status', n.doc->'updatedAtMs' LIMIT p_limit) x
+        ORDER BY x.doc->'updatedAtMs' LIMIT p_limit;      -- the status in the order: without it the planner sorts every state of the status
+
+  # The stage states, with their update time as text (the caller casts it: a cast here could raise on a document's data), of the given virtual records and revisions that no
+  # record holds as its content revision (indexes nodes_stage_revision, nodes_record_virtual_rev); up to 100,000.
+  - name: graph.stage_states_unheld
+    class: read
+    scope: org
+    grants: [pipeshub_connectors, pipeshub_indexing, pipeshub_query]
+    args:
+      - {name: p_virtual_record_ids, type: "text[]", max_items: 1000, item_not_null: true, item_length: [1, 200]}
+    returns: "TABLE (virtual_record_id text, revision text, updated_at_ms text)"
+    reads: [graph.nodes]
+    content_ok: true
+    custom_plan: true
+    body: |
+      RETURN QUERY SELECT s.doc->>'virtualRecordId', s.doc->>'rev', s.doc->>'updatedAtMs' FROM graph.nodes s
+        WHERE s.org_id = v_org AND s.coll = 'stageStates' AND s.doc->>'virtualRecordId' = ANY(p_virtual_record_ids) AND s.doc->>'rev' IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM graph.nodes r WHERE r.org_id = v_org AND r.coll = 'records' AND r.doc->>'virtualRecordId' = s.doc->>'virtualRecordId' AND r.doc->>'contentRev' = s.doc->>'rev')
+        LIMIT 100000;
