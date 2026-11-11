@@ -7,10 +7,13 @@ only by an opaque key, so it cannot choose a path on the server.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
+import logging
 import os
 import re
+import shutil
 import tempfile
 import threading
 import time
@@ -22,6 +25,10 @@ from typing import Any
 from app.connectors.sources.local_folder import scan
 from app.modules.parsers.code_parser.lang_config import detect_language
 
+logger = logging.getLogger(__name__)
+
+LOCAL_REPO_CONNECTOR_NAME = "Local Repository"
+REPO_KEY = "repo_key"
 BASE_ENV = "PIPESHUB_LOCAL_REPO_STORE"
 KEY_RE = re.compile(r"[A-Za-z0-9_-]{8,64}")  # matched whole: `$` would also accept a trailing newline
 SEGMENT_RE = re.compile(r"[A-Za-z0-9_.-]{1,128}")  # org and user ids from the token; still never trusted as a path
@@ -34,6 +41,8 @@ DEFAULT_LIMITS = {
     "maxBatchFiles": 100,
     "maxBatchBytes": 4 * 1024 * 1024,
     "maxManifestEntries": 20000,
+    "maxReposPerUser": 20,
+    "maxUserBytes": 5 * 1024**3,  # all of one user's repositories together
     "maxTotalBytes": 512 * 1024 * 1024,  # what one repository may hold in all, so a user cannot fill the disk with 20000 files of the largest size
 }
 
@@ -53,7 +62,8 @@ class StoreError(ValueError):
 def limits() -> dict[str, int]:
     out = dict(DEFAULT_LIMITS)
     for name, env in (("maxFiles", "PIPESHUB_LOCAL_REPO_MAX_FILES"), ("maxFileBytes", "PIPESHUB_LOCAL_REPO_MAX_FILE_BYTES"),
-                      ("maxTotalBytes", "PIPESHUB_LOCAL_REPO_MAX_TOTAL_BYTES")):
+                      ("maxTotalBytes", "PIPESHUB_LOCAL_REPO_MAX_TOTAL_BYTES"), ("maxReposPerUser", "PIPESHUB_LOCAL_REPO_MAX_REPOS_PER_USER"),
+                      ("maxUserBytes", "PIPESHUB_LOCAL_REPO_MAX_USER_BYTES")):
         try:  # noqa: SIM105
             out[name] = max(1, int(os.environ.get(env, out[name])))
         except ValueError:
@@ -76,7 +86,8 @@ def clean_path(raw: Any) -> str:  # noqa: ANN401
     for seg in path.split("/"):
         # 255 bytes is a file name's limit on the common file systems; longer would end in an OSError, a 500 for the whole batch.
         # '<' and '>' are markup: names are listed in lists and search results, and this API skips the sanitiser.
-        if seg in ("", ".", "..", ".git") or any(ord(c) < 32 or ord(c) == 127 or c in "<>" for c in seg) or len(seg.encode("utf-8", "surrogatepass")) > 255:
+        # Format characters (category Cf: bidi overrides and isolates, zero-width marks) make a name read as another one in a list.
+        if seg in ("", ".", "..", ".git") or any(ord(c) < 32 or ord(c) == 127 or c in "<>" or unicodedata.category(c) == "Cf" for c in seg) or len(seg.encode("utf-8", "surrogatepass")) > 255:
             raise StoreError("invalid_path")
     try:
         path.encode("utf-8")
@@ -164,9 +175,61 @@ class Repo:
             return meta
 
     def commit(self) -> dict[str, Any]:
+        """Publish what is stored: the files the sync may index are the ones listed here, so an upload that never got its commit is not searchable.
+
+        When the last manifest was complete (the whole repository), files in the tree that it does not list (left by an upload that stopped
+        half way) are removed first.
+        shortcut: a path that is committed and then overwritten by an upload that is not yet committed is indexed with the new content at
+        the next sync, because the file is replaced whole (a write is atomic); upgrade by committing the hash and skipping files that differ.
+        """
         with self._lock:
             meta = self.meta()
+            manifest = self.manifest()
+            if meta.get("completeManifest"):
+                self._sweep(manifest)
+            self.tree.mkdir(parents=True, exist_ok=True)
+            self._write_json("committed.json", {path: row[0] for path, row in manifest.items()})
             return self.save_meta(generation=int(meta.get("generation", 0)) + 1, committedAt=int(time.time() * 1000))
+
+    def committed(self) -> dict[str, str]:
+        """path -> sha256 of the files published by the last commit (none before the first)."""
+        try:
+            data = json.loads((self.dir / "committed.json").read_text("utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _sweep(self, manifest: dict[str, list[Any]]) -> None:
+        """Remove every file (and any link, which is never written here) in the tree that the manifest does not list, then the emptied folders."""
+        for dirpath, dirnames, filenames in os.walk(self.tree, topdown=False, followlinks=False):
+            rel_dir = os.path.relpath(dirpath, self.tree).replace(os.sep, "/")
+            for name in filenames:
+                rel = name if rel_dir == "." else f"{rel_dir}/{name}"
+                if rel not in manifest:
+                    Path(dirpath, name).unlink(missing_ok=True)
+            for name in dirnames:
+                if Path(dirpath, name).is_symlink():
+                    Path(dirpath, name).unlink(missing_ok=True)
+            if rel_dir != ".":
+                with contextlib.suppress(OSError):  # a folder that still holds files stays
+                    Path(dirpath).rmdir()
+
+    # ------------------------------------------------------------ what this user holds
+    def _user_dir(self) -> Path:
+        return self.dir.parent
+
+    def user_repos(self) -> int:
+        return sum(1 for d in self._user_dir().glob("*/repo.json")) if self._user_dir().is_dir() else 0
+
+    def user_bytes(self) -> int:
+        """What the user's repositories hold in all (the sizes in each manifest), this one included."""
+        total = 0
+        for f in self._user_dir().glob("*/files.json") if self._user_dir().is_dir() else ():
+            try:
+                total += sum(int(v[1]) for v in json.loads(f.read_text("utf-8")).values())
+            except (OSError, ValueError, TypeError, IndexError):
+                continue
+        return total
 
     # ------------------------------------------------------------ changes
     def _remove(self, manifest: dict[str, list[Any]], path: str) -> None:
@@ -236,6 +299,8 @@ class Repo:
                         out.deleted.append(path)
             if out.deleted:
                 self._write_json("files.json", manifest)
+            if bool(self.meta().get("completeManifest")) != complete:
+                self.save_meta(completeManifest=complete)
         return out
 
     def store(self, files: list[dict[str, Any]]) -> tuple[list[str], list[dict[str, str]]]:
@@ -246,6 +311,7 @@ class Repo:
             manifest = self.manifest()
             tree = self.tree.resolve()
             total = sum(int(v[1]) for v in manifest.values())
+            user_total = self.user_bytes()
             for entry in files:
                 try:
                     path = clean_path(entry.get("path"))
@@ -267,7 +333,8 @@ class Repo:
                         reason = ("too_large" if len(data) > lim["maxFileBytes"]
                                   else "hash_mismatch" if hashlib.sha256(data).hexdigest() != entry.get("sha256")
                                   else "too_many_files" if path not in manifest and len(manifest) >= lim["maxFiles"]
-                                  else "too_large" if total - (manifest.get(path) or [0, 0])[1] + len(data) > lim["maxTotalBytes"] else "")
+                                  else "too_large" if total - (manifest.get(path) or [0, 0])[1] + len(data) > lim["maxTotalBytes"]
+                                  else "user_quota" if user_total - (manifest.get(path) or [0, 0])[1] + len(data) > lim["maxUserBytes"] else "")
                 if reason:
                     rejected.append({"path": path, "reason": reason})
                     continue
@@ -277,6 +344,7 @@ class Repo:
                     rejected.append({"path": path, "reason": exc.reason})
                     continue
                 total += len(data) - (manifest.get(path) or [0, 0])[1]
+                user_total += len(data) - (manifest.get(path) or [0, 0])[1]
                 manifest[path] = [hashlib.sha256(data).hexdigest(), len(data)]
                 stored.append(path)
             self.tree.mkdir(parents=True, exist_ok=True)
@@ -309,7 +377,12 @@ class Repo:
             raise
 
     def destroy(self) -> None:
-        import shutil
-
+        """Remove the mirror. A removal that fails is logged and raised as ``StoreError('remove_failed')``, never silent."""
         with self._lock:
-            shutil.rmtree(self.dir, ignore_errors=True)
+            try:
+                shutil.rmtree(self.dir)
+            except FileNotFoundError:
+                return
+            except OSError as exc:
+                logger.error("local repo: could not remove %s: %s", self.dir, exc)
+                raise StoreError("remove_failed") from exc

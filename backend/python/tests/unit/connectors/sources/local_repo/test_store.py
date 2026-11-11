@@ -199,3 +199,69 @@ def test_a_key_is_matched_whole_so_a_trailing_newline_is_no_key(key):
 def test_a_hash_with_a_trailing_newline_is_not_a_hash(repo):
     d = repo.diff([{"path": "a.py", "sha256": sha("a") + "\n", "size": 1}], False, [])
     assert d.upload == [] and d.rejected == [{"path": "a.py", "reason": "invalid_path"}]
+
+
+def test_a_complete_manifest_commit_removes_files_an_interrupted_upload_left_and_publishes_only_what_it_lists(repo):
+    push(repo, **{"keep.py": "k = 1\n", "half1.py": "h = 1\n", "half2.py": "h = 2\n", "deep/dir/half3.py": "h = 3\n"})  # an upload that "crashed" before its commit
+    (repo.tree / "link").symlink_to("/etc")  # a link can only have come from outside this API
+    assert repo.committed() == {}
+    # the client starts over: its manifest, complete, lists only what the repository holds now
+    d = repo.diff([entry("keep.py", "k = 1\n")], True, [])
+    assert sorted(d.deleted) == ["deep/dir/half3.py", "half1.py", "half2.py"]
+    # a stray the manifest never knew (written, but its row was lost): only the commit's sweep can find it
+    (repo.tree / "stray.py").write_text("s = 1\n")
+    repo.commit()
+    assert sorted(str(p.relative_to(repo.tree)) for p in repo.tree.rglob("*")) == ["keep.py"]
+    assert repo.committed() == {"keep.py": sha("k = 1\n")}
+
+
+def test_an_incomplete_manifest_commit_keeps_what_it_does_not_list(repo):
+    push(repo, **{"a.py": "a\n"})
+    repo.diff([entry("b.py", "b\n")], False, [])  # watch mode: one batch of changes, not the whole repository
+    push_files = repo.store([{"path": "b.py", "sha256": sha("b\n"), "content": "b\n"}])
+    repo.commit()
+    assert sorted(repo.committed()) == ["a.py", "b.py"] and push_files[0] == ["b.py"]
+
+
+def test_a_user_cannot_hold_more_than_the_byte_limit_across_repositories(tmp_path, monkeypatch):
+    monkeypatch.setenv("PIPESHUB_LOCAL_REPO_MAX_USER_BYTES", "10")
+    first = store.Repo("org1", "user1", KEY, base=tmp_path)
+    second = store.Repo("org1", "user1", "other-key-0002", base=tmp_path)
+    third = store.Repo("org1", "user2", KEY, base=tmp_path)
+    for r in (first, second, third):
+        r.save_meta(name="x")
+    assert push(first, **{"a.py": "x" * 6})[0] == ["a.py"]
+    stored, rejected = push(second, **{"b.py": "y" * 6})
+    assert stored == [] and rejected == [{"path": "b.py", "reason": "user_quota"}]
+    assert push(first, **{"a.py": "z" * 9})[0] == ["a.py"]  # replacing its own file stays inside the limit
+    assert push(third, **{"c.py": "w" * 9})[0] == ["c.py"]  # another user has a quota of their own
+    assert first.user_bytes() == 9 and third.user_bytes() == 9
+    assert first.limits["maxUserBytes"] == 10 and first.limits["maxReposPerUser"] == 20
+
+
+def test_the_repository_count_per_user_is_what_the_user_directory_holds(tmp_path):
+    a, b = store.Repo("org1", "user1", KEY, base=tmp_path), store.Repo("org1", "user1", "other-key-0002", base=tmp_path)
+    assert a.user_repos() == 0
+    a.save_meta(name="a")
+    b.save_meta(name="b")
+    assert a.user_repos() == 2 and store.Repo("org1", "user2", KEY, base=tmp_path).user_repos() == 0
+
+
+def test_a_removal_that_fails_is_logged_and_raised_not_ignored(repo, monkeypatch, caplog):
+    monkeypatch.setattr(store.shutil, "rmtree", lambda *a, **k: (_ for _ in ()).throw(PermissionError("denied")))
+    with caplog.at_level("ERROR"), pytest.raises(store.StoreError) as exc:
+        repo.destroy()
+    assert exc.value.reason == "remove_failed" and "could not remove" in caplog.text
+
+
+def test_a_repository_that_is_already_gone_is_a_removal_that_succeeded(repo):
+    repo.destroy()
+    repo.destroy()
+    assert not repo.dir.exists()
+
+
+@pytest.mark.parametrize("path", ["a‮b.py", "a‪b.py", "pkg/⁦x⁩.py", "x‎.py", "x‏y.py", "z​w.py", "﻿bom.py"])
+def test_names_with_bidi_and_other_format_characters_are_refused(repo, path):
+    d = repo.diff([{"path": path, "sha256": sha("x"), "size": 1}], False, [])
+    assert d.upload == [] and d.rejected == [{"path": path, "reason": "invalid_path"}]
+    assert repo.store([{"path": path, "sha256": sha("x"), "content": "x"}])[1][0]["reason"] == "invalid_path"

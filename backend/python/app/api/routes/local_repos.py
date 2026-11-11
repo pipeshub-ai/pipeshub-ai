@@ -10,11 +10,12 @@ from __future__ import annotations  # noqa: I001
 import asyncio
 import json
 import logging
+import unicodedata
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.api.middlewares.auth import require_scopes
 from app.config.constants.service import OAuthScopes
@@ -38,7 +39,24 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/local-repos", tags=["Local repositories"])
+# The same ceiling as the Node API's JSON body limit. shortcut: it trusts the declared Content-Length (the server stops reading at it) and refuses a
+# body with none (chunked); upgrade to counting streamed bytes if a client without a length is ever needed.
+MAX_BODY_BYTES = 10 * 1024 * 1024
+
+
+async def _bounded_body(request: Request) -> None:
+    if request.method not in ("POST", "PUT"):
+        return
+    declared = request.headers.get("content-length")
+    if declared is None:
+        if request.headers.get("transfer-encoding"):
+            raise HTTPException(status_code=411, detail="Send a Content-Length")
+        return
+    if not declared.isdigit() or int(declared) > MAX_BODY_BYTES:
+        raise HTTPException(status_code=413, detail=f"A request body is at most {MAX_BODY_BYTES} bytes")
+
+
+router = APIRouter(prefix="/api/v1/local-repos", tags=["Local repositories"], dependencies=[Depends(_bounded_body)])
 WRITE = Depends(require_scopes(OAuthScopes.CODE_WRITE))
 READ = Depends(require_scopes(OAuthScopes.CODE_READ, OAuthScopes.CODE_WRITE))
 
@@ -46,6 +64,9 @@ READ = Depends(require_scopes(OAuthScopes.CODE_READ, OAuthScopes.CODE_WRITE))
 REKICK_AFTER_MS = 20_000
 # A commit that is still not synced this long after it was made, with no sync running, is reported as stuck instead of syncing for ever.
 STUCK_AFTER_MS = 120_000
+# shortcut: these locks, and the store's thread locks, serialise work inside one process. They hold because the connectors service runs one
+# worker (app.edition_services.max_connector_workers() == 1); with more, two processes could write one mirror at once, so move the locks
+# to the database (or a file lock on the repository directory) before raising that number.
 _register_locks: dict[str, asyncio.Lock] = {}
 
 
@@ -55,6 +76,14 @@ class _Body(BaseModel):
 
 class RegisterBody(_Body):
     name: str | None = Field(default=None, min_length=1, max_length=200, pattern=r"^[^<>]*$")
+
+    @field_validator("name")
+    @classmethod
+    def _no_format_characters(cls, value: str | None) -> str | None:
+        # Bidi overrides and other format characters (category Cf) make a name read as another one in a list.
+        if value is not None and any(unicodedata.category(c) == "Cf" or ord(c) < 32 or ord(c) == 127 for c in value):
+            raise ValueError("a name has no control or format characters")
+        return value
 
 
 class ManifestFile(_Body):
@@ -66,7 +95,7 @@ class ManifestFile(_Body):
 class ManifestBody(_Body):
     files: list[ManifestFile] = Field(default_factory=list)
     complete: bool = False
-    deleted: list[str] = Field(default_factory=list)
+    deleted: list[str] = Field(default_factory=list, max_length=100_000)  # the exact cap is the repository's maxManifestEntries, checked in the route
 
 
 class CommitBody(_Body):
@@ -201,14 +230,16 @@ async def _indexing(request: Request, org_id: str, user_id: str, connector_id: s
     state = ("failed" if counts["failed"] and not counts["completed"] and not (counts["notStarted"] + counts["queued"] + counts["inProgress"])
              else "indexing" if counts["notStarted"] + counts["queued"] + counts["inProgress"] else "ready")
     out: dict[str, Any] = {"indexing": counts}
-    if state == "ready" and counts["completed"]:
+    if state == "ready" and counts["completed"] and CODE_GRAPH_ENABLED:  # with the kill switch off no graph is built, so none is waited for
         graph_state, built_at = await _graph_status(graph, org_id, user_id, connector_id)
         out["codeGraph"] = graph_state
         if graph_state in ("never_built", "building", "waiting_on_indexing", "retrying", "stale", "unknown"):
             state = "indexing"
         elif graph_state in ("failed", "too_large"):
             state = "failed"
-        elif graph_state == "ready" and CODE_GRAPH_ENABLED and code_changed_at > (built_at or 0):
+        elif graph_state == "ready" and code_changed_at > (built_at or 0):
+            # built_at is when the last build STARTED (the code graph's lastEdgeBuildAt): a build that began before the last upload cannot have
+            # seen it, however late it finished.
             # Every record is done, but the last build predates the files pushed since: the build has not been asked for yet.
             out["codeGraph"], state = "stale", "indexing"
     if state == "ready" and files_pushed and not total:
@@ -252,6 +283,8 @@ async def register(request: Request, repo_key: str, body: RegisterBody | None = 
         if instance is not None and instance.get("status") == "DELETING":
             raise HTTPException(status_code=409, detail="This repository is being deleted")
         created = instance is None
+        if created and not repo.exists() and await asyncio.to_thread(repo.user_repos) >= repo.limits["maxReposPerUser"]:
+            raise HTTPException(status_code=409, detail=f"You already have {repo.limits['maxReposPerUser']} repositories on this server, the most one person may keep. Remove one first.")
         if created:
             await asyncio.to_thread(repo.save_meta, name=name, connectorId=None)
             made = await create_connector_instance(_as_json_request(request, {
@@ -274,6 +307,8 @@ async def manifest(request: Request, repo_key: str, body: ManifestBody) -> dict[
     repo = _existing(request, repo_key)
     if len(body.files) > repo.limits["maxManifestEntries"]:
         raise HTTPException(status_code=413, detail=f"At most {repo.limits['maxManifestEntries']} manifest entries per call")
+    if len(body.deleted) > repo.limits["maxManifestEntries"]:
+        raise HTTPException(status_code=413, detail=f"At most {repo.limits['maxManifestEntries']} deleted paths per call")
     diff = await asyncio.to_thread(repo.diff, [f.model_dump() for f in body.files], body.complete, body.deleted)
     return {"upload": diff.upload, "deleted": diff.deleted, "unchanged": diff.unchanged, "rejected": diff.rejected}
 
@@ -285,6 +320,11 @@ async def upload(request: Request, repo_key: str, body: UploadBody) -> dict[str,
     if len(body.files) > lim["maxBatchFiles"] or sum(len(f.content.encode("utf-8", "replace")) for f in body.files) > lim["maxBatchBytes"]:
         raise HTTPException(status_code=413, detail=f"At most {lim['maxBatchFiles']} files and {lim['maxBatchBytes']} bytes per call")
     stored, rejected = await asyncio.to_thread(repo.store, [f.model_dump() for f in body.files])
+    if any(r["reason"] == "user_quota" for r in rejected):
+        # What was within the quota is stored; the rest is refused with a code the client can show.
+        return JSONResponse(status_code=413, content={
+            "detail": f"This would take your repositories past {lim['maxUserBytes']} bytes on this server, the most one person may keep. Remove a repository first.",
+            "stored": stored, "rejected": rejected})
     return {"stored": stored, "rejected": rejected}
 
 
@@ -323,5 +363,8 @@ async def remove(request: Request, repo_key: str) -> JSONResponse:
     meta = await asyncio.to_thread(repo.meta)
     if meta.get("connectorId") and await _instance(request, meta["connectorId"]) is not None:
         await delete_connector_instance(meta["connectorId"], request, await get_graph_provider(request))
-    await asyncio.to_thread(repo.destroy)
+    try:
+        await asyncio.to_thread(repo.destroy)
+    except store.StoreError as exc:
+        raise HTTPException(status_code=500, detail="The repository was removed from the index, but its files could not be removed from the server") from exc
     return JSONResponse(status_code=202, content={"repoKey": repo_key, "state": "deleting"})

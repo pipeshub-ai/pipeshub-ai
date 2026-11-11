@@ -399,7 +399,7 @@ class FolderConnector(BaseConnector):
 
         entries = await asyncio.to_thread(
             lambda: [e for e in scan.walk(self.root, self.user_patterns, self.max_bytes, self.use_gitignore, self.DEFAULT_IGNORES)
-                     if _ext_allowed(e.rel, sync_filters)]
+                     if _ext_allowed(e.rel, sync_filters) and self._is_published(e.rel)]
         )
         self._repos = await asyncio.to_thread(self._find_repos, entries)
         await self._repo_groups(self._repos)
@@ -489,6 +489,10 @@ class FolderConnector(BaseConnector):
             "root": str(self.root),
             "last_sync_time": started,
         })
+
+    def _is_published(self, rel: str) -> bool:
+        """Whether the sync may index this file. Every file of the root, unless a subclass publishes only part of it."""
+        return True
 
     def _may_index_code(self, entry: scan.Entry, name: str) -> tuple[bool, Any]:  # noqa: ANN401, RUF100
         """Whether a code file gets a record, and its role; a connector with more to go on than the path overrides it."""

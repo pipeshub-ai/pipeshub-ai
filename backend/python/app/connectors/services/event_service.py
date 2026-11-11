@@ -26,6 +26,8 @@ from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
+from app.connectors.sources.local_repo.cleanup import remove_mirror
+from app.connectors.sources.local_repo.store import LOCAL_REPO_CONNECTOR_NAME
 from app.connectors.core.sync.sync_dispatcher import SyncSpec
 from app.connectors.core.sync.sync_coordinator import (
     Admission,
@@ -1671,6 +1673,7 @@ class EventService:
         self.logger.info(f"Processing async deletion for {connector_name} connector {connector_id}")
 
         graph_deleted = False
+        owner_id: str | None = None
         try:
             # Stop any sync before deleting the data underneath it.
             #
@@ -1692,6 +1695,7 @@ class EventService:
                 current = await self.graph_provider.get_document(
                     connector_id, CollectionNames.APPS.value
                 )
+                owner_id = (current or {}).get("createdBy")
                 if (current or {}).get(ConnectorStateKeys.PENDING_RESYNC):
                     await self.graph_provider.update_node(
                         connector_id,
@@ -1766,6 +1770,9 @@ class EventService:
                     return False
                 raise Exception(result.get("error", "Unknown deletion failure from graph DB"))
             graph_deleted = True
+            if payload.get("connectorType") == LOCAL_REPO_CONNECTOR_NAME:
+                # The pushed files are the connector's own data: they go with it (a failure is logged and leaves them).
+                await remove_mirror(config_service, self.logger, org_id, owner_id, connector_id)
 
             self.logger.info(
                 f"Graph DB deletion complete for connector {connector_id}. "

@@ -29,8 +29,13 @@ def sha(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def push(repo: store.Repo, **files: str) -> None:
+def push_uncommitted(repo: store.Repo, **files: str) -> None:
     repo.store([{"path": p, "sha256": sha(t), "content": t} for p, t in files.items()])
+
+
+def push(repo: store.Repo, **files: str) -> None:
+    push_uncommitted(repo, **files)
+    repo.commit()  # the sync indexes what a commit published
 
 
 def connector(user_id: str = "u1", key: str = KEY, extra_sync: dict | None = None):
@@ -204,3 +209,14 @@ async def test_reading_a_record_during_the_sync_does_not_forget_the_files_refuse
     env.c._sync_finished = after_a_read
     await env.c.run_sync()
     assert sorted(env.repo.meta()["excludedFiles"]) == ["sdk/g0.py", "sdk/g1.py", "sdk/g2.py"]
+
+
+async def test_files_that_no_commit_published_are_not_indexed_and_the_stray_ones_a_complete_manifest_removed_never_are(env):
+    push_uncommitted(env.repo, **{"half.py": "h = 1\n", "keep.py": "k = 1\n"})  # uploaded, then the client stopped before committing
+    await env.c.run_sync()
+    assert env.graph.records == {}  # nothing is searchable until a commit publishes it
+    env.repo.diff([{"path": "keep.py", "sha256": sha("k = 1\n"), "size": 6}], True, [])  # the client starts over without half.py
+    env.repo.commit()
+    await env.c.run_sync()
+    assert sorted(r for r in env.graph.records if r.endswith(".py")) == ["keep.py"]
+    assert not (env.repo.tree / "half.py").exists()

@@ -69,7 +69,7 @@ def world(tmp_path, monkeypatch):
         return await call_next(request)
 
     app.include_router(local_repos.router)
-    return SimpleNamespace(c=TestClient(app), built=built, toggle=toggle, registry=registry, created=created, stats=stats, submitted=submitted, graph=graph)
+    return SimpleNamespace(c=TestClient(app), graph_module=local_repos, built=built, toggle=toggle, registry=registry, created=created, stats=stats, submitted=submitted, graph=graph)
 
 
 def put_files(world, **files: str):
@@ -335,3 +335,81 @@ def test_ready_waits_while_the_code_graph_status_is_unknown(world, monkeypatch):
     monkeypatch.setattr(local_repos, "_graph_status", AsyncMock(return_value=("unknown", None)))
     status = world.c.get(f"/api/v1/local-repos/{KEY}").json()
     assert status["state"] == "indexing" and status["codeGraph"] == "unknown"
+
+
+def _synced(world, total=1):
+    world.c.put(f"/api/v1/local-repos/{KEY}", json={"name": "shop"})
+    put_files(world, **{"a.py": "x = 1\n"})
+    commit = world.c.post(f"/api/v1/local-repos/{KEY}/commit").json()
+    world.registry.instances["c1"].update(lastSyncStartedAtTimestamp=commit["lastCommitAt"] + 1, lastSyncFinishedAtTimestamp=commit["lastCommitAt"] + 2, lastSyncOutcome="succeeded")
+    world.stats["data"]["stats"] = {"total": total, "indexingStatus": {"COMPLETED": total}}
+
+
+@pytest.mark.parametrize("state", ["never_built", "building", "waiting_on_indexing", "unknown", "stale"])
+def test_with_the_code_graph_kill_switch_off_no_graph_state_holds_a_repository_back(world, monkeypatch, state):
+    _synced(world)
+    monkeypatch.setattr(world.graph_module, "_graph_status", AsyncMock(return_value=(state, None)))
+    monkeypatch.setattr(local_repos, "CODE_GRAPH_ENABLED", False)
+    assert world.c.get(f"/api/v1/local-repos/{KEY}").json()["state"] == "ready"
+    monkeypatch.setattr(local_repos, "CODE_GRAPH_ENABLED", True)
+    assert world.c.get(f"/api/v1/local-repos/{KEY}").json()["state"] == "indexing"  # and with it on, the same graph state is waited for
+
+
+def test_a_build_that_started_before_the_last_upload_does_not_cover_it_however_late_it_finished(world):
+    _synced(world)
+    # built_at is the build's START (the code graph's lastEdgeBuildAt): this one began at 1, before the push, and may have ended long after
+    world.built.at = 1
+    assert world.c.get(f"/api/v1/local-repos/{KEY}").json()["state"] == "indexing"
+    meta = store.Repo("org1", "u1", KEY).meta()
+    world.built.at = meta["codeChangedAt"] + 1  # one that started after the upload did see it
+    assert world.c.get(f"/api/v1/local-repos/{KEY}").json()["state"] == "ready"
+
+
+def test_the_repository_count_per_user_is_capped_with_a_409_and_a_known_repository_is_not_counted(world, monkeypatch):
+    monkeypatch.setenv("PIPESHUB_LOCAL_REPO_MAX_REPOS_PER_USER", "2")
+    assert world.c.put("/api/v1/local-repos/repo-key-aaaa", json={"name": "a"}).status_code == 201
+    assert world.c.put("/api/v1/local-repos/repo-key-bbbb", json={"name": "b"}).status_code == 201
+    over = world.c.put("/api/v1/local-repos/repo-key-cccc", json={"name": "c"})
+    assert over.status_code == 409 and "2 repositories" in over.json()["detail"] and len(world.created) == 2
+    assert world.c.put("/api/v1/local-repos/repo-key-aaaa", json={"name": "a2"}).status_code == 200  # registering one it has is no new repository
+    assert world.c.put("/api/v1/local-repos/repo-key-cccc", json={"name": "c"}, headers={"x-test-user": "u2"}).status_code == 201  # their own count
+
+
+def test_an_upload_past_the_per_user_byte_limit_is_a_413_that_still_stores_what_fits(world, monkeypatch):
+    monkeypatch.setenv("PIPESHUB_LOCAL_REPO_MAX_USER_BYTES", "8")
+    world.c.put(f"/api/v1/local-repos/{KEY}", json={"name": "shop"})
+    r = put_files(world, **{"a.py": "x" * 6, "b.py": "y" * 6})
+    assert r.status_code == 413 and "past 8 bytes" in r.json()["detail"]
+    assert r.json()["stored"] == ["a.py"] and r.json()["rejected"] == [{"path": "b.py", "reason": "user_quota"}]
+
+
+def test_a_body_over_the_limit_or_without_a_length_is_refused_before_it_is_read(world):
+    big = world.c.put(f"/api/v1/local-repos/{KEY}", content=b"{}", headers={"content-length": str(local_repos.MAX_BODY_BYTES + 1), "content-type": "application/json"})
+    assert big.status_code == 413
+    chunked = world.c.put(f"/api/v1/local-repos/{KEY}", content=iter([b'{"name":', b'"x"}']), headers={"content-type": "application/json"})
+    assert chunked.status_code == 411
+    assert world.created == []
+
+
+def test_the_deleted_list_of_a_manifest_has_a_count_cap(world, monkeypatch):
+    world.c.put(f"/api/v1/local-repos/{KEY}", json={"name": "shop"})
+    monkeypatch.setenv("PIPESHUB_LOCAL_REPO_MAX_FILES", "5")
+    from app.connectors.sources.local_repo import store as store_mod
+
+    monkeypatch.setitem(store_mod.DEFAULT_LIMITS, "maxManifestEntries", 3)
+    r = world.c.post(f"/api/v1/local-repos/{KEY}/manifest", json={"files": [], "complete": False, "deleted": [f"p{i}.py" for i in range(4)]})
+    assert r.status_code == 413
+    assert world.c.post(f"/api/v1/local-repos/{KEY}/manifest", json={"files": [], "complete": False, "deleted": ["p1.py"]}).status_code == 200
+
+
+@pytest.mark.parametrize("name", ["a‮b", "⁦x⁩", "x‎", "tab\tname", "z​w"])
+def test_a_repository_name_with_bidi_or_format_characters_is_refused(world, name):
+    assert world.c.put(f"/api/v1/local-repos/{KEY}", json={"name": name}).status_code == 422
+    assert world.created == []
+
+
+def test_a_delete_whose_files_cannot_be_removed_says_so(world, monkeypatch):
+    world.c.put(f"/api/v1/local-repos/{KEY}", json={"name": "shop"})
+    monkeypatch.setattr(store.shutil, "rmtree", lambda *a, **k: (_ for _ in ()).throw(PermissionError("denied")))
+    r = world.c.delete(f"/api/v1/local-repos/{KEY}")
+    assert r.status_code == 500 and "could not be removed" in r.json()["detail"]

@@ -429,6 +429,66 @@ class TestHandleDelete:
         assert service.app_container.messaging_producer.send_message.await_count == 2
 
     @pytest.mark.asyncio
+    async def test_deleting_a_local_repository_connector_removes_its_mirror_and_only_then(self, service, tmp_path, monkeypatch) -> None:
+        """The pushed files go with the connector: they are found from the owner and the repository key in its config."""
+        from app.connectors.sources.local_repo import store
+
+        monkeypatch.setenv(store.BASE_ENV, str(tmp_path))
+        key = "repo-key-0001"
+        repo = store.Repo("org1", "u1", key)
+        repo.save_meta(name="shop")
+        repo.store([{"path": "a.py", "sha256": __import__("hashlib").sha256(b"x").hexdigest(), "content": "x"}])
+        other = store.Repo("org1", "u1", "repo-key-0002")
+        other.save_meta(name="other")
+        service.graph_provider.get_document = AsyncMock(return_value={"createdBy": "u1"})
+        service.app_container.config_service.return_value.get_config = AsyncMock(
+            return_value={"sync": {"customValues": {store.REPO_KEY: key}}})
+        payload = {"orgId": "org1", "connectorId": "c1", "connectorType": "Local Repository"}
+
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
+            mock_rtm.cancel_by_prefix = AsyncMock()
+            # a delete the graph refused leaves the files alone
+            service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": False, "error": "boom"})
+            await service._handle_delete("localrepository", payload)
+            assert repo.exists()
+            service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True})
+            assert await service._handle_delete("localrepository", payload) is True
+
+        assert not repo.dir.exists()
+        assert other.exists()  # another repository of the same user is not touched
+
+    @pytest.mark.asyncio
+    async def test_a_connector_of_another_type_never_touches_a_mirror(self, service, tmp_path, monkeypatch) -> None:
+        from app.connectors.sources.local_repo import store
+
+        monkeypatch.setenv(store.BASE_ENV, str(tmp_path))
+        repo = store.Repo("org1", "u1", "repo-key-0001")
+        repo.save_meta(name="shop")
+        service.graph_provider.get_document = AsyncMock(return_value={"createdBy": "u1"})
+        service.app_container.config_service.return_value.get_config = AsyncMock(
+            return_value={"sync": {"customValues": {store.REPO_KEY: "repo-key-0001"}}})
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
+            mock_rtm.cancel_by_prefix = AsyncMock()
+            await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1", "connectorType": "Gmail"})
+        assert repo.exists()
+
+    @pytest.mark.asyncio
+    async def test_a_mirror_that_cannot_be_removed_is_logged_and_does_not_fail_the_connector_delete(self, service, tmp_path, monkeypatch, mock_logger) -> None:
+        from app.connectors.sources.local_repo import store
+
+        monkeypatch.setenv(store.BASE_ENV, str(tmp_path))
+        store.Repo("org1", "u1", "repo-key-0001").save_meta(name="shop")
+        service.graph_provider.get_document = AsyncMock(return_value={"createdBy": "u1"})
+        service.app_container.config_service.return_value.get_config = AsyncMock(
+            return_value={"sync": {"customValues": {store.REPO_KEY: "repo-key-0001"}}})
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \
+             patch.object(store.shutil, "rmtree", side_effect=PermissionError("denied")):
+            mock_rtm.cancel_by_prefix = AsyncMock()
+            result = await service._handle_delete("localrepository", {"orgId": "org1", "connectorId": "c1", "connectorType": "Local Repository"})
+        assert result is True
+        assert any("could not be removed" in str(c) for c in mock_logger.error.call_args_list)
+
+    @pytest.mark.asyncio
     async def test_a_deleted_connector_frees_its_queue_lane_after_its_cleanup_events(
         self, service
     ) -> None:

@@ -24877,6 +24877,10 @@ components:
                   type: integer
                 maxTotalBytes:
                   type: integer
+                maxReposPerUser:
+                  type: integer
+                maxUserBytes:
+                  type: integer
   responses:
     CodeToolResult:
       description: The code tool's result, as the matching `pipeshub_code_*` MCP tool returns it.
@@ -63057,9 +63061,13 @@ paths:
         '403':
           description: The token lacks the required scope
         '409':
-          description: The repository is being deleted
+          description: The repository is being deleted, or the user already has the most repositories one person may keep (`limits.maxReposPerUser`)
+        '411':
+          description: The request has no Content-Length (a chunked body)
+        '413':
+          description: The request body is over the size limit
         '422':
-          description: The body names a field this API does not accept
+          description: The body names a field this API does not accept, or the name has markup, control or format characters
     get:
       tags:
         - Local Repositories
@@ -63103,6 +63111,8 @@ paths:
           description: The token lacks the required scope
         '404':
           description: No such repository for this user
+        '500':
+          description: The repository was removed from the index but its files could not be removed from the server
   /local-repos/{repoKey}/manifest:
     parameters:
       - $ref: '#/components/parameters/LocalRepoKey'
@@ -63233,7 +63243,7 @@ paths:
         '404':
           description: No such repository for this user
         '413':
-          description: Batch over the file or byte limit
+          description: Batch over the file or byte limit, or the upload would take the user's repositories past the most one person may keep (`limits.maxUserBytes`); the files that fit are stored and listed in `stored`
   /local-repos/{repoKey}/commit:
     parameters:
       - $ref: '#/components/parameters/LocalRepoKey'

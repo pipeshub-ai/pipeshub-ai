@@ -22,10 +22,9 @@ from app.connectors.core.registry.connector_builder import (
 from app.connectors.sources.local_folder import scan
 from app.connectors.sources.local_folder.connector import FolderConnector, _cfg
 from app.connectors.sources.local_repo import store
+from app.connectors.sources.local_repo.store import LOCAL_REPO_CONNECTOR_NAME, REPO_KEY
 from app.modules.parsers.code_parser.file_role import FileRole, has_generator_header, is_generated_content, is_ignored_path, is_sensitive_path, should_index_code_file
 
-LOCAL_REPO_CONNECTOR_NAME = "Local Repository"
-REPO_KEY = "repo_key"
 
 
 @(
@@ -58,6 +57,16 @@ class LocalRepoConnector(FolderConnector):
     CONNECTOR = Connectors.LOCAL_REPO
     FILTER_KEY = "localrepository"
     DEFAULT_IGNORES = scan.PUSHED_REPO_IGNORES  # the client already applied .gitignore; see scan.PUSHED_REPO_IGNORES
+
+    async def run_sync(self) -> None:
+        self._committed: frozenset[str] | None = None  # read from the store once per sync, in the walk
+        await super().run_sync()
+
+    def _is_published(self, rel: str) -> bool:
+        # Only what a commit published: an upload that never got its commit (the client stopped half way) is not indexed or searchable.
+        if getattr(self, "_committed", None) is None:
+            self._committed = frozenset(store.Repo(self.data_entities_processor.org_id, self.created_by, self._repo_key).committed())
+        return rel in self._committed
 
     def _resolve_root(self, sync_cfg: Any) -> Path:  # noqa: ANN401
         # The refusals of the syncs so far, by path. Not reset here: the indexer's content reads call this too, in the middle of a sync, and a reset
