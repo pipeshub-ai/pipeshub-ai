@@ -18,6 +18,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain_core.documents import Document
 
 import app.utils.embedding_gate as gate_module
 from app.exceptions.indexing_exceptions import EmbeddingError
@@ -989,12 +990,16 @@ class TestEmbedderSwappedDuringTheWait:
 
 
 class TestReconciliationEmbedIsPlanned:
-    async def test_a_gate_wait_longer_than_the_budget_does_not_cancel_a_reconciliation(self) -> None:
+    @pytest.mark.parametrize("slow", ["changed blocks", "record summary", "code residue"])
+    async def test_a_gate_wait_longer_than_the_budget_does_not_cancel_a_reconciliation(self, slow: str) -> None:
         store, _ = _reconciling_store()
+        member = object()
+        store._build_record_summary_document = lambda *_a: Document(page_content="record summary", metadata={})
 
         async def queued(docs: Any, *_args: Any) -> None:
-            async with current_progress().gate_wait():
-                await asyncio.sleep(0.5)
+            if docs[0].page_content == slow or (slow == "changed blocks" and docs[0].metadata.get("blockId")):
+                async with current_progress().gate_wait():
+                    await asyncio.sleep(0.5)
 
         store._process_document_chunks = queued
         progress = RecordProgress(
@@ -1004,13 +1009,19 @@ class TestReconciliationEmbedIsPlanned:
         container = BlocksContainer(
             blocks=[_text_block("b-new", "a long enough sentence to embed as text", 0)], block_groups=[]
         )
+        record = MagicMock(semantic_metadata={"summary": "s"}, record_name="n", external_record_id="p")
         begin_progress(progress)
         try:
-            async with asyncio.timeout(0.3) as budget:
-                progress.attach(budget)
-                await store.index_documents(
-                    container, "org-1", "rec-1", "vr-1", block_ids_to_delete={"b-gone"}, is_reconciliation=True,
-                )
+            with patch("app.modules.transformers.vectorstore._is_code_block", lambda b: b is member), patch(
+                "app.modules.transformers.vectorstore.code_residue_documents",
+                lambda *_a: [Document(page_content="code residue", metadata={})],
+            ):
+                async with asyncio.timeout(0.3) as budget:
+                    progress.attach(budget)
+                    await store.index_documents(
+                        container, "org-1", "rec-1", "vr-1", record=record, member_blocks=[member],
+                        block_ids_to_delete={"b-gone"}, is_reconciliation=True,
+                    )
         finally:
             end_progress()
         assert not budget.expired()
