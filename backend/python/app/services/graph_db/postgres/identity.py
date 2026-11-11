@@ -446,8 +446,20 @@ class IdentityMixin(PgBase):
             low = {r["raw"]: r["low"] for r in await self._id_rows("/* pipeshub:graph.lower_emails */ SELECT e AS raw, lower(e) AS low FROM unnest($1::text[]) e",
                                                                    [list({u.email for u in users})], tx)}
             have: dict[str, tuple[str, bool]] = {}
+            shared: dict[str, list[tuple[str, bool]]] = {}
             for r in await self._users_by_email_rows(org, sorted(set(low.values())), tx):      # by id, either read: users sharing an address resolve to the first
                 have.setdefault(r["email"], (r["id"], bool(r["active"])))
+                shared.setdefault(r["email"], []).append((r["id"], bool(r["active"])))
+            # Users sharing an address: a source account already linked to one of them keeps that link, so a sync never links it to a second user
+            # (both would then hold what the source account may read). Only an account with no link takes the first by id.
+            linked: dict[tuple[str, str], tuple[str, bool]] = {}
+            if ids := [i for c in shared.values() if len(c) > 1 for i, _ in c]:
+                active = {i: a for c in shared.values() for i, a in c}
+                for r in await self._id_rows("""/* pipeshub:graph.app_links_of_shared_addresses */ SELECT from_id AS id, doc->>'sourceUserId' AS sid FROM graph.edges
+                        WHERE org_id = $1 AND coll = 'userAppRelation' AND from_coll = 'users' AND to_coll = 'apps' AND to_id = $2 AND from_id = ANY($3::text[])
+                        ORDER BY from_id""", [org, connector_id, ids], tx):
+                    if r["sid"]:
+                        linked.setdefault((r["sid"], r["id"]), (r["id"], active[r["id"]]))
             new: dict[str, Any] = {}
             for u in users:
                 if low[u.email] not in have and low[u.email] not in new:
@@ -478,7 +490,7 @@ class IdentityMixin(PgBase):
                     AND from_coll = 'users' AND from_id = ANY($2::text[]) AND to_coll = 'organizations' AND to_id = $3""", org, heal, org_node), tx, write=True)
             links = {}
             for u in users:
-                key = have[low[u.email]][0]
+                key = next((linked[(u.source_user_id, i)][0] for i, _ in shared.get(low[u.email], []) if (u.source_user_id, i) in linked), have[low[u.email]][0])
                 links[key] = {"from_id": key, "from_collection": "users", "to_id": connector_id, "to_collection": "apps", "sourceUserId": u.source_user_id,
                               "isExternalUser": False, "syncState": "NOT_STARTED", "lastSyncUpdate": now, "createdAtTimestamp": now, "updatedAtTimestamp": now}
             await self.batch_create_edges(list(links.values()), CollectionNames.USER_APP_RELATION.value, tx)

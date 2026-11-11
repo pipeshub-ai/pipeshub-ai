@@ -214,6 +214,17 @@ async def test_synced_users_are_looked_up_by_the_vetted_email_read_and_the_state
         assert [r["id"] for r in await w.p._users_by_email_rows(w.org, emails, None) if r["email"] == "dup@x.com"] == ["a-dup", "b-dup"]
 
 
+async def test_a_source_account_already_linked_to_one_of_two_users_sharing_an_address_keeps_that_link(w: World) -> None:
+    await member(w, "a-dup", userId="ua", email="dup@x.com", isActive=True)
+    await member(w, "b-dup", userId="ub", email="Dup@X.com", isActive=True)
+    await w.edge("userAppRelation", ("users", "b-dup"), ("apps", APP), sourceUserId="src-linked")
+    await w.p.batch_upsert_app_users([app_user("dup@x.com", "linked")])          # source account src-linked, already linked to b-dup
+    links = {(r["id"], r["sourceUserId"]) for r in await w.p.get_app_user_links(w.org, APP)}
+    assert ("b-dup", "src-linked") in links and not any(i == "a-dup" for i, _ in links)          # kept, and never linked to a second user
+    await w.p.batch_upsert_app_users([app_user("dup@x.com", "fresh")])           # an account with no link takes the first by id
+    assert ("a-dup", "src-fresh") in {(r["id"], r["sourceUserId"]) for r in await w.p.get_app_user_links(w.org, APP)}
+
+
 async def test_groups_and_roles_round_trip_in_the_ambient_org_whatever_the_model_says(w: World) -> None:
     g = AppUserGroup(app_name=Connectors.JIRA, connector_id=APP, source_user_group_id="ext-g", name="G", org_id="some-other-org")
     r = AppRole(app_name=Connectors.JIRA, connector_id=APP, source_role_id="ext-r", name="R", org_id="some-other-org")
