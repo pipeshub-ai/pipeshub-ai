@@ -1,8 +1,8 @@
 """The projection worker: projects the change log and publishes the gauges. Woken by NOTIFY, with a safety poll.
 
 ``pipeshub_kg_changes`` is sent at commit by a write unit that changed the graph (flush.wake, coalesced); it only wakes
-the worker, which reads the log itself, so a lost notification costs at most ``poll_s``. The projection default is off (``PG_KG_PROJECT``): nothing starts a worker
-unless it is set to 1, see :func:`enabled`.
+the worker, which reads the log itself, so a lost notification costs at most ``poll_s``. The projection default is on (``PG_KG_PROJECT=0`` is the off switch): no service starts a worker yet,
+see :func:`enabled`.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ LOOP_FAILED = METRICS_BACKEND.counter("pipeshub_kg_worker_loop_failed_total", "I
 
 
 def enabled() -> bool:
-    return os.environ.get("PG_KG_PROJECT") == "1"
+    return os.environ.get("PG_KG_PROJECT") != "0"
 
 
 class KgWorker:

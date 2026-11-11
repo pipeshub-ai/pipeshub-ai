@@ -1,11 +1,11 @@
-"""The projection's mode comes from the environment: off unless PG_KG_PROJECT=1, then async, or inline with PG_KG_FLUSH=inline."""
+"""The projection's mode comes from the environment: async unless PG_KG_PROJECT=0 (off), or inline with PG_KG_FLUSH=inline."""
 import pytest
 
 from app.services.graph_db.postgres.kg import flush
 
 
 @pytest.mark.parametrize(("project", "flush_mode", "mode", "inline"), [
-    (None, None, "off", False), ("0", "inline", "off", False), ("1", None, "async", False), ("1", "async", "async", False), ("1", "inline", "inline", True),
+    (None, None, "async", False), ("", None, "async", False), ("0", "inline", "off", False), ("1", None, "async", False), ("1", "async", "async", False), ("1", "inline", "inline", True),
 ])
 def test_the_mode_follows_the_environment(monkeypatch: pytest.MonkeyPatch, project: str | None, flush_mode: str | None, mode: str, inline: bool) -> None:
     for name, value in (("PG_KG_PROJECT", project), ("PG_KG_FLUSH", flush_mode)):
@@ -33,4 +33,4 @@ def test_the_known_values_and_an_unset_or_empty_setting_are_accepted(monkeypatch
     for var in ("PG_KG_PROJECT", "PG_KG_FLUSH", "PG_KG_GUARD", "PG_KG_STRICT"):
         monkeypatch.setenv(var, "")
     flush.check_env()
-    assert flush.mode() == "off"
+    assert flush.mode() == "async"

@@ -7,7 +7,7 @@
 3. Verify, full, in one unit under the connector's lock; with no change waiting and no difference the state becomes ``shadow`` with the digest and the code epoch.
 The principals of the org (users, groups, roles, teams, organizations) are one pseudo-connector (app_sk 0), done once per org.
 
-A backfill needs the change log to be kept: with the projection off (``PG_KG_PROJECT`` not 1) the connectors service takes its log rows back, so nothing could tell a writer's change from
+A backfill needs the change log to be kept: with the projection off (``PG_KG_PROJECT=0``) the connectors service takes its log rows back, so nothing could tell a writer's change from
 the copy, and the call raises. The same take-back is why a connector goes back to the walk when it deletes rows (flush._take_back, modes.demote_org): the next backfill starts over.
 """
 from __future__ import annotations
@@ -61,7 +61,7 @@ def _ctx(org: str) -> OrgContext:
 
 def _need_log() -> None:
     if flush.mode() == "off":
-        raise ProjectionOff("the projection is off (PG_KG_PROJECT is not 1): the change log is not kept, so a copy could not be told from a change; turn it on first")
+        raise ProjectionOff("the projection is off (PG_KG_PROJECT=0): the change log is not kept, so a copy could not be told from a change; turn it on first")
 
 
 def _parse(cursor: str | None) -> Key | None:

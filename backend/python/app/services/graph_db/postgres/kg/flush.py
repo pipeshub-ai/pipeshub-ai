@@ -4,7 +4,7 @@
 write unit of the connectors service that wrote the graph, :func:`flush` re-projects the nodes its own changes named (rows the capture triggers
 inserted in this very transaction) and acknowledges them. A projection error never fails the connector's write: it is rolled back to a savepoint,
 logged and counted, and the change log rows stay. Strict mode (``PG_KG_STRICT=1``, tests) re-raises instead. Nothing drains the log in the background yet (the drain is the next
-change): with ``PG_KG_PROJECT=1`` the rows of other roles, and those of a failed flush, wait there.
+change): unless ``PG_KG_PROJECT=0`` the rows of other roles, and those of a failed flush, wait there.
 
 ``RuntimeError`` from :func:`project` (it kept reaching connectors it had not locked, nothing written) is "retry later": the rows stay in the log and are never acknowledged as done.
 """
@@ -43,11 +43,11 @@ def check_env() -> None:
 
 
 def mode() -> str:
-    """``off`` (the default: PG_KG_PROJECT is not 1; nothing projects and no worker runs; the connectors service takes back its own log rows at commit and sweeps the others'),
-    ``async`` (PG_KG_PROJECT=1: the writer only logs, the worker projects in large batches off its critical path) or ``inline`` (PG_KG_PROJECT=1 and PG_KG_FLUSH=inline: the writer also
+    """``off`` (PG_KG_PROJECT=0, the off switch; nothing projects and no worker runs; the connectors service takes back its own log rows at commit and sweeps the others'),
+    ``async`` (the default: the writer only logs, the worker projects in large batches off its critical path) or ``inline`` (PG_KG_FLUSH=inline: the writer also
     projects its own changes before COMMIT; tests). Another value of these settings raises (:func:`check_env`)."""
     check_env()
-    if os.environ.get("PG_KG_PROJECT") != "1":
+    if os.environ.get("PG_KG_PROJECT") == "0":
         return "off"
     return "inline" if os.environ.get("PG_KG_FLUSH") == "inline" else "async"
 
