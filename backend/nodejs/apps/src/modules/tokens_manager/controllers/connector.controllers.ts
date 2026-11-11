@@ -2233,3 +2233,57 @@ export const stopConnectorSync =
       return;
     }
   };
+
+/**
+ * Why a person can or cannot read a record, for an organisation admin (the route
+ * checks the role). The audit line names who asked, about whom and which record,
+ * with the reason code the answer gave: ids only, never record content.
+ */
+export const explainPermission =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    const { userId, orgId } = req.user || {};
+    const connectorId = String(req.params.connectorId);
+    const targetUserId = String(req.query.userId);
+    const recordId = String(req.query.recordId);
+    let outcome: Record<string, unknown> = { status: 'failed' };
+    try {
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+      const queryParams = new URLSearchParams({
+        user_id: targetUserId,
+        record_id: recordId,
+      });
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/permissions/explain?${queryParams.toString()}`,
+        HttpMethod.GET,
+        buildProxyHeaders(req),
+      );
+      const data = response?.data as { code?: string; admitted?: boolean } | undefined;
+      outcome = {
+        status: response?.statusCode,
+        code: data?.code,
+        admitted: data?.admitted,
+      };
+      handleConnectorResponse(
+        response,
+        res,
+        'Explaining access',
+        'Explanation not found',
+      );
+    } catch (error: any) {
+      next(handleBackendError(error, 'explain access'));
+    } finally {
+      logger.info('Access explanation requested', {
+        actorUserId: userId,
+        orgId,
+        connectorId,
+        targetUserId,
+        recordId,
+        ...outcome,
+      });
+    }
+  };

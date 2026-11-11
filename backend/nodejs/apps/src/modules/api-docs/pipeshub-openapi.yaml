@@ -2548,6 +2548,16 @@ components:
           type: string
           enum: [never_built, building, ready, stale, waiting_on_indexing, retrying, failed, too_large, unknown]
           description: The least ready state among the anchors' repositories.
+    PermissionExplainContainer:
+      type: object
+      required: [name, restricted]
+      properties:
+        name:
+          type: string
+          nullable: true
+          description: Null when the admin asking cannot read the container.
+        restricted:
+          type: boolean
     ErrorResponse:
       type: object
       additionalProperties: false
@@ -54696,6 +54706,118 @@ paths:
             Internal server error.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /connectors/{connectorId}/permissions/explain:
+    get:
+      tags:
+        - Connector Instances
+      summary: Explain why a person can or cannot read a record
+      description: |
+        For organization admins. Says whether a person can read a record of this
+        connector and, when they cannot, the reason. The answer always equals the
+        access check search and browsing use.
+
+        A container is named only if the admin asking can read it; any other is
+        returned with `name: null` and `restricted: true` (a restricted area).
+        The record's own title is never returned.
+
+        Anyone who is not an org admin gets `404`, as for a route that does not
+        exist. At most 30 checks per admin per minute. Each check is logged with
+        the admin, the person, the record and the reason code.
+      operationId: explainConnectorRecordAccess
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: userId
+          in: query
+          required: true
+          description: The person the question is about.
+          schema:
+            type: string
+            maxLength: 128
+        - name: recordId
+          in: query
+          required: true
+          description: The record, by id.
+          schema:
+            type: string
+            maxLength: 256
+      responses:
+        '200':
+          description: The verdict and the reason.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [admitted, code, container, path, reference]
+                properties:
+                  admitted:
+                    type: boolean
+                    description: Whether the person can read the record.
+                  code:
+                    type: string
+                    enum:
+                      - granted
+                      - not_linked
+                      - no_grant
+                      - restricted_container
+                      - item_restricted
+                      - parent_not_readable
+                      - pending_rewrite
+                      - syncing
+                      - scheme_unreadable
+                      - deleted_at_source
+                      - unexplained
+                  container:
+                    nullable: true
+                    allOf:
+                      - $ref: '#/components/schemas/PermissionExplainContainer'
+                    description: The container the reason is about, when it names one.
+                  path:
+                    type: array
+                    description: Containers from the connector down to the record's parent.
+                    items:
+                      $ref: '#/components/schemas/PermissionExplainContainer'
+                  reference:
+                    type: string
+                    description: Quote this to support when the reason looks wrong.
+        '400':
+          description: A query value is missing or too long.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            The caller is not an org admin, or the person or the record is unknown or
+            not of this connector.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: More than 30 checks in a minute.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: The access check could not answer. Try again.
           content:
             application/json:
               schema:
