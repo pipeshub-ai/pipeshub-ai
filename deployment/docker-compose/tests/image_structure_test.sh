@@ -6,6 +6,10 @@ set -euo pipefail
 IMAGE="${PIPESHUB_IMAGE:?set PIPESHUB_IMAGE to the image to check}"
 VARIANT="${PIPESHUB_IMAGE_VARIANT:-slim}"
 
+# The Node major the images pin (NODE_IMAGE in the root Dockerfile).
+NODE_MAJOR="$(sed -n 's/^ARG NODE_IMAGE=node:\([0-9][0-9]*\)-.*/\1/p' "$(dirname "$0")/../../../Dockerfile" | head -n 1)"
+[ -n "$NODE_MAJOR" ] || { echo "no ARG NODE_IMAGE=node:<major>- in the root Dockerfile" >&2; exit 1; }
+
 echo "image structure: ${IMAGE} (${VARIANT})"
 
 docker run --rm --entrypoint python "$IMAGE" - <<'PY'
@@ -81,14 +85,14 @@ if not Path("/root/.cache/fastembed").is_dir():
 print("runtime imports: ok")
 PY
 
-docker run --rm --entrypoint bash "$IMAGE" -c '
+docker run --rm -e NODE_MAJOR="$NODE_MAJOR" --entrypoint bash "$IMAGE" -c '
 set -euo pipefail
 test -f /app/backend/dist/public/index.html
 test -f /app/backend/src/modules/api-docs/pipeshub-openapi.yaml
 test -x /usr/local/bin/docker-entrypoint.sh
 soffice --version >/dev/null
 cypher-shell --version >/dev/null
-node -e "const v=process.versions.node; if(!v.startsWith(\"22.\")) { console.error(v); process.exit(1); } require(\"/app/backend/dist/node_modules/sharp\");"
+node -e "const v=process.versions.node; if(!v.startsWith(process.env.NODE_MAJOR + \".\")) { console.error(v); process.exit(1); } require(\"/app/backend/dist/node_modules/sharp\");"
 for tool in gcc cargo rustc; do
   if command -v "$tool" >/dev/null 2>&1; then
     echo "$tool must not be in the runtime image" >&2

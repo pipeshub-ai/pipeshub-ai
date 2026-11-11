@@ -65,8 +65,12 @@ jobs:
             echo "| Tag | Result |"
             echo "| --- | --- |"
           } >> "$GITHUB_STEP_SUMMARY"
-          for tag in python-deps python-deps-slim runtime; do
+          for tag in python-deps runtime models-bge; do
             if ! hub="$(crane digest "${HUB_IMAGE}:${tag}")"; then
+              if [ "$tag" = models-bge ]; then      # published only by a run of the publish job from main; until then there is nothing to copy
+                echo "| \`${tag}\` | skipped, not on Docker Hub yet |" >> "$GITHUB_STEP_SUMMARY"
+                continue
+              fi
               echo "::error::Could not read ${HUB_IMAGE}:${tag} from Docker Hub. Check that the tag is published (see the header of Dockerfile.base), then run this workflow again."
               exit 1
             fi
