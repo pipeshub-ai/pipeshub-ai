@@ -326,6 +326,7 @@ async def renew_write(graph_provider: Any, connector_id: str, token: str | None,
     instead of the write going on unfenced; the new token is returned. A renewal that cannot be written leaves the old lease running."""
     if token is None:
         return None
+    distrust = False
     for attempt in range(attempts):
         app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True) or {}
         raw = app.get(OPEN_WRITES_KEY) or None
@@ -337,12 +338,15 @@ async def renew_write(graph_provider: Any, connector_id: str, token: str | None,
             return await open_write(graph_provider, connector_id, roots, clock=clock)
         started = monotonic()
         until, by_store = await _lease_deadline(graph_provider, clock)
+        by_store = by_store and not distrust
         # (never shortened by a clock that is not the store's: a host far behind it would write a deadline that is already past)
         kept = {f: v for f, v in held[token].items() if f != "k"}
         held[token] = {**kept, "u": until if by_store else max(held[token]["u"], until), **({} if by_store else {"k": 1})}
         if await _swap(graph_provider, connector_id, {OPEN_WRITES_KEY: _dump_open_writes(held)}, {OPEN_WRITES_KEY: raw}):
-            if again and by_store and monotonic() - started > STORE_CLOCK_TIMEOUT_SECONDS:
-                again = False      # landed late: once more from now (once, so a store that stays slow cannot keep the writer here)
+            if by_store and monotonic() - started > STORE_CLOCK_TIMEOUT_SECONDS:
+                # landed late: once more from now; late again, the lease is marked `k` (a mark no delay can make wrong), so a store that
+                # stays slow neither keeps the writer here nor leaves a deadline the sweep would trust
+                again, distrust = False, not again
                 continue
             return token
         await _backoff(attempt)
