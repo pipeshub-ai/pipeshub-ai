@@ -1,6 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import { getEventListeners } from 'node:events'
 import http from 'node:http'
 import { AddressInfo } from 'node:net'
 import { BaseCommand, ICommand } from '../../../src/libs/commands/command.interface'
@@ -44,8 +45,10 @@ class TestCommand extends BaseCommand<string> {
     fn: (attempt: number) => Promise<T>,
     retries?: number,
     backoff?: number,
+    shouldRetry?: (error: unknown) => boolean,
+    signal?: AbortSignal,
   ): Promise<T> {
-    return this.fetchWithRetry(fn, retries, backoff)
+    return this.fetchWithRetry(fn, retries, backoff, shouldRetry, signal)
   }
 }
 
@@ -295,15 +298,19 @@ describe('command.interface', () => {
     })
 
     it('should use default values of 3 retries and 300ms backoff', async () => {
+      clock = sinon.useFakeTimers()
       const cmd = new TestCommand('http://example.com')
       const fn = sinon.stub()
       fn.onFirstCall().rejects(new Error('fail'))
       fn.onSecondCall().rejects(new Error('fail'))
       fn.onThirdCall().resolves('ok')
 
-      const result = await cmd.testFetchWithRetry(fn)
-      expect(result).to.equal('ok')
+      const result = cmd.testFetchWithRetry(fn)
+      await clock.runAllAsync()
+      expect(await result).to.equal('ok')
       expect(fn.calledThrice).to.be.true
+      expect(clock.now).to.equal(600 + 1200)
+      clock.restore()
     })
 
     it('should throw the last error when all retries are exhausted', async () => {
@@ -398,6 +405,102 @@ describe('command.interface', () => {
         }
       })
       expect(received).to.deep.equal(['rqbad', 'rqbad'])
+    })
+  })
+
+  describe('fetchWithRetry and the caller signal', () => {
+    const timedOut = () => new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+    // Settles without an unhandled rejection while the fake clock runs.
+    const settle = <T>(p: Promise<T>) =>
+      p.then(
+        (value) => ({ value, error: undefined as unknown }),
+        (error: unknown) => ({ value: undefined as T | undefined, error }),
+      )
+
+    beforeEach(() => {
+      clock = sinon.useFakeTimers()
+    })
+
+    afterEach(() => {
+      clock.restore()
+    })
+
+    it('makes no further attempt and no wait once the signal has aborted', async () => {
+      const controller = new AbortController()
+      const fn = sinon.stub().callsFake(async () => {
+        controller.abort(timedOut())
+        throw controller.signal.reason
+      })
+
+      const result = settle(new TestCommand('http://x').testFetchWithRetry(fn, 3, 300, undefined, controller.signal))
+      await clock.runAllAsync()
+
+      expect(((await result).error as Error).name).to.equal('TimeoutError')
+      expect(fn.callCount).to.equal(1)
+      expect(clock.now).to.equal(0)
+    })
+
+    it('ends a backoff the moment the signal aborts, with its reason', async () => {
+      const controller = new AbortController()
+      const fn = sinon.stub().rejects(new TypeError('fetch failed'))
+      setTimeout(() => controller.abort(timedOut()), 100)
+
+      const result = settle(new TestCommand('http://x').testFetchWithRetry(fn, 3, 300, undefined, controller.signal))
+      await clock.runAllAsync()
+
+      expect(((await result).error as Error).name).to.equal('TimeoutError')
+      expect(fn.callCount).to.equal(1)
+      expect(clock.now).to.equal(100)
+      expect(clock.countTimers()).to.equal(0)
+    })
+
+    it('leaves no abort listener behind after a backoff that ran its course', async () => {
+      const controller = new AbortController()
+      const fn = sinon.stub()
+      fn.onFirstCall().rejects(new TypeError('fetch failed'))
+      fn.onSecondCall().resolves('ok')
+
+      const result = settle(new TestCommand('http://x').testFetchWithRetry(fn, 3, 300, undefined, controller.signal))
+      await clock.runAllAsync()
+
+      expect((await result).value).to.equal('ok')
+      expect(clock.now).to.equal(600)
+      expect(getEventListeners(controller.signal, 'abort')).to.have.length(0)
+    })
+
+    it('keeps every attempt and the full backoff while the signal stays live', async () => {
+      const controller = new AbortController()
+      const fn = sinon.stub().rejects(new TypeError('fetch failed'))
+
+      const result = settle(new TestCommand('http://x').testFetchWithRetry(fn, 3, 300, undefined, controller.signal))
+      await clock.runAllAsync()
+
+      expect(((await result).error as Error).message).to.equal('fetch failed')
+      expect(fn.callCount).to.equal(3)
+      expect(clock.now).to.equal(600 + 1200)
+    })
+
+    it('without a signal, waits the plain backoff as before', async () => {
+      const fn = sinon.stub().rejects(new TypeError('fetch failed'))
+
+      const result = settle(new TestCommand('http://x').testFetchWithRetry(fn, 2, 300))
+      await clock.runAllAsync()
+
+      expect(((await result).error as Error).message).to.equal('fetch failed')
+      expect(fn.callCount).to.equal(2)
+      expect(clock.now).to.equal(600)
+    })
+
+    it('throws the last attempt error with no wait when one attempt is allowed', async () => {
+      const controller = new AbortController()
+      controller.abort(timedOut())
+      const refused = new TypeError('fetch failed')
+      const fn = sinon.stub().rejects(refused)
+
+      const result = settle(new TestCommand('http://x').testFetchWithRetry(fn, 1, 300, undefined, controller.signal))
+
+      expect((await result).error).to.equal(refused)
+      expect(clock.countTimers()).to.equal(0)
     })
   })
 
