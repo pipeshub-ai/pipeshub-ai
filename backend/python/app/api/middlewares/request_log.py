@@ -210,8 +210,7 @@ def _log_exception(failure: _Failure, cls: str, **fields: object) -> None:
         return
     # A type name only, so it stays with include_error_text=False.
     cause_type = error_class.innermost_type(exc) if _has_chain(exc) else None
-    prior = error_class.logged_level(exc)
-    if prior is None or prior < error_class.level_for(cls):
+    if not error_class.already_logged(exc, error_class.level_for(cls)):
         error_class.log_failure(logger, EVENT, exc, error_class=cls, include_error_text=failure.include_error_text,
                                 cause_type=cause_type, **fields)
         return
