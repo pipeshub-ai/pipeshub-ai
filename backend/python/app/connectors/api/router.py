@@ -50,6 +50,7 @@ from app.agents.actions.knowledge_graph.views import (
     render_navigation_view,
 )
 from app.api.connection_limit import (
+    connection_apps,
     hide_record_parents_outside_connection,
     hide_source_paths,
     ids_outside_connection,
@@ -10462,9 +10463,18 @@ async def _sync_interval_minutes(request: Request, connector_id: str) -> int | N
 async def get_permission_status(
     connector_id: str, request: Request, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> dict[str, Any]:
-    """Admin only. A caller who is not an admin, and a connector of another organisation, both get the 404 of a connector that is not there."""
+    """Admin only. Everyone who may not read the connector gets the 404 of a missing one: a non-admin, another organisation's connector, another
+    user's personal connector (the registry's read gate), and a connected app whose limit does not name the whole connector (its counts could not be limited)."""
+    not_found_error = HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This connector"))
     org_id = current_org_id()
+    user_id = request.state.user.get("userId")
     app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value) if is_request_admin(request) else None
-    if not app or not org_id or not await request.app.state.connector_registry.belongs_to_org(app, org_id):
-        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This connector"))
+    if not app or not org_id or not await request.app.state.connector_registry.get_connector_instance(
+        connector_id=connector_id, user_id=user_id, org_id=org_id, is_admin=True
+    ):
+        raise not_found_error
+    if connection_limit(request.state.user) is not None:
+        whole, _ = await connection_apps(request, graph_provider, org_id, user_id)
+        if connector_id not in whole:
+            raise not_found_error
     return access_status.status(app, reach_minutes=await _sync_interval_minutes(request, connector_id), store_time=await store_now(graph_provider))
