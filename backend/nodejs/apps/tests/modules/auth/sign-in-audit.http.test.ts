@@ -24,7 +24,7 @@ import type { AddressInfo } from 'net';
 import type { Server } from 'http';
 import mongoose from 'mongoose';
 import { Container } from 'inversify';
-import { LoginTicket, OAuth2Client } from 'google-auth-library';
+import { LoginTicket } from 'google-auth-library';
 import { createUserAccountRouter } from '../../../src/modules/auth/routes/userAccount.routes';
 import { createOrgAuthConfigRouter } from '../../../src/modules/auth/routes/orgAuthConfig.routes';
 import * as userAdmin from '../../../src/modules/user_management/services/user-admin.service';
@@ -63,6 +63,7 @@ import { TokenScopes } from '../../../src/libs/enums/token-scopes.enum';
 import type { ICacheService } from '../../../src/libs/services/cache/cacheService.interface';
 import { createMockRedisService } from '../../helpers/mock-redis';
 import { useCommunitySignInLists } from '../../helpers/sign-in-lists';
+import { stubGoogleIdTokenCheck } from '../../helpers/google-id-token';
 
 const JWT_SECRET = 'sign-in-audit-jwt-secret';
 const SCOPED_SECRET = 'sign-in-audit-scoped-secret';
@@ -357,10 +358,10 @@ describe('auth audit lines (HTTP)', function () {
     sinon.stub(groupRepo, 'getGroupRepository').returns({ addToEveryone: async () => undefined } as any);
     sinon.stub(resetLinkRepo, 'getResetLinkRepository').returns({ claim: async () => resetLinkClaimed, release: async () => undefined } as any);
     // `email|second` tokens: Google verifies the token twice per sign-in (provider flow, then the method step).
-    sinon.stub(OAuth2Client.prototype, 'verifyIdToken').callsFake((async (opts: { idToken: string }) => {
+    stubGoogleIdTokenCheck().callsFake((async (idToken: string) => {
       // google-auth-library quotes the token it refuses.
-      if (opts.idToken.startsWith('eyJ')) throw new Error(`Invalid token signature: ${opts.idToken}`);
-      const [, email] = opts.idToken.split('|');
+      if (idToken.startsWith('eyJ')) throw new Error(`Invalid token signature: ${idToken}`);
+      const [, email] = idToken.split('|');
       return { getPayload: () => (email ? { email, name: 'Nina Newcomer' } : { name: 'Nina Newcomer' }) } as unknown as LoginTicket;
     }) as any);
     await startApp();
@@ -507,11 +508,11 @@ describe('auth audit lines (HTTP)', function () {
       expectNoPrivateData();
     });
 
-    it('T8 a token Google rejects stays a 500 with no audit line (F31), and the token is in no record', async () => {
+    it('T8 a token Google rejects is sso_token_invalid, still a 500 (F31), and the token is in no record', async () => {
       const forged = jwt.sign({ email: bob.email }, 'forged-key');
       const r = await attempt({ method: 'google', credentials: forged });
       expect(r.status).to.equal(500);
-      expect(audits()).to.deep.equal([]);
+      expect(audits()).to.deep.equal([signInFailure('sso_token_invalid', undefined, 'google')]);
       for (const part of forged.split('.')) expect(JSON.stringify(records)).to.not.include(part);
     });
 

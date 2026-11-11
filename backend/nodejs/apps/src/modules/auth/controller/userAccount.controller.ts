@@ -49,12 +49,12 @@ import {
 import { AuthSessionRequest } from '../middlewares/types';
 
 import { SessionData, SessionService } from '../services/session.service';
-import { OAuth2Client } from 'google-auth-library';
 import {
   MicrosoftSignInConfig,
   microsoftAccountIdentity,
   validateAzureAdUser,
 } from '../utils/azureAdTokenValidation';
+import { verifyGoogleIdToken } from '../utils/googleIdTokenValidation';
 import { IamService } from '../services/iam.service';
 import { MailService } from '../services/mail.service';
 
@@ -1709,13 +1709,7 @@ export class UserAccountController {
       );
     const { clientId } = configManagerResponse.data;
 
-    const client = new OAuth2Client(clientId);
-
-    // Verify the Google ID token
-    const ticket = await client.verifyIdToken({
-      idToken: credential,
-      audience: clientId, // Ensure it matches your client ID
-    });
+    const ticket = await verifyGoogleIdToken(clientId, credential);
 
     const payload = ticket.getPayload();
     if (!payload) {
@@ -2000,11 +1994,10 @@ export class UserAccountController {
                 this.config.scopedJwtSecret,
               );
             const { clientId } = configManagerResponse.data;
-            const client = new OAuth2Client(clientId);
-            const ticket = await client.verifyIdToken({
-              idToken: credentials.credential || credentials,
-              audience: clientId,
-            });
+            const ticket = await verifyGoogleIdToken(
+              clientId,
+              String(credentials.credential || credentials),
+            );
             const payload = ticket.getPayload();
             if (!payload?.email)
               throw authRefusal(

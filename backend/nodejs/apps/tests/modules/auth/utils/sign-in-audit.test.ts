@@ -6,7 +6,8 @@ import axios from 'axios';
 import winston from 'winston';
 import mongoose from 'mongoose';
 import { generateKeyPairSync, KeyObject } from 'crypto';
-import { LoginTicket, OAuth2Client } from 'google-auth-library';
+import { LoginTicket } from 'google-auth-library';
+import { stubGoogleIdTokenCheck } from '../../../helpers/google-id-token';
 import { AUTH_AUDIT_REASONS } from '../../../../src/modules/auth/utils/sign-in-audit';
 import { refusalReason } from '../../../../src/libs/services/audit';
 import { Logger, SNAKE_TOKEN } from '../../../../src/libs/services/logger.service';
@@ -68,7 +69,7 @@ describe('sign-in audit: reason lists and the sites a request cannot reach', () 
   // The sign-in route picks the account by the provider's email, so these can only fire on a direct call.
   it('tags the Google method step: no payload, and an email that is not the account', async () => {
     const google = (payload: unknown) =>
-      sinon.stub(OAuth2Client.prototype, 'verifyIdToken').resolves({ getPayload: () => payload } as unknown as LoginTicket);
+      stubGoogleIdTokenCheck().resolves({ getPayload: () => payload } as unknown as LoginTicket);
     const user = { _id: userId, orgId, email: EMAILS[0] };
     google(undefined);
     const noPayload = await inRequest(() => controller().authenticateWithGoogle(user, 't', '1.1.1.1')).catch((e: unknown) => e);

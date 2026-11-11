@@ -6,7 +6,7 @@ import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import axios from 'axios';
 import nock from 'nock';
-import { LoginTicket, OAuth2Client } from 'google-auth-library';
+import { LoginTicket } from 'google-auth-library';
 import type { NextFunction, RequestHandler, Response } from 'express';
 import { Container } from 'inversify';
 import {
@@ -45,6 +45,7 @@ import type { AuthenticatedServiceRequest } from '../../../../src/libs/middlewar
 import { createMockRedisService } from '../../../helpers/mock-redis';
 import { createMockQuery } from '../../../helpers/mock-mongo';
 import { useCommunitySignInLists } from '../../../helpers/sign-in-lists';
+import { stubGoogleIdTokenCheck } from '../../../helpers/google-id-token';
 
 // Drives the real controller and the real SessionService through whole
 // sign-ins, step after step, the way the /initAuth and /authenticate routes do.
@@ -395,7 +396,7 @@ describe('UserAccountController sign-in flow', () => {
   }
 
   function googleSignsInAs(email: string | undefined) {
-    return sinon.stub(OAuth2Client.prototype, 'verifyIdToken').resolves({
+    return stubGoogleIdTokenCheck().resolves({
       getPayload: () => (email ? { email, name: 'Someone' } : { name: 'Someone' }),
     } as unknown as LoginTicket);
   }
@@ -530,10 +531,8 @@ describe('UserAccountController sign-in flow', () => {
 
       expect(error).to.be.undefined;
       expect(res.body?.message).to.equal('Fully authenticated');
-      expect(verify.firstCall.args[0]).to.deep.include({
-        idToken: 'alice-google-id-token',
-        audience: 'google-client',
-      });
+      expect(verify.firstCall.args[0]).to.equal('alice-google-id-token');
+      expect(verify.firstCall.args[2]).to.equal('google-client');
       expect(
         (jwt.verify(String(res.body?.accessToken), JWT_SECRET) as TokenClaims).userId,
       ).to.equal(alice._id);
