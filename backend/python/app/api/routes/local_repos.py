@@ -204,7 +204,7 @@ async def _indexing(request: Request, org_id: str, user_id: str, connector_id: s
     if state == "ready" and counts["completed"]:
         graph_state, built_at = await _graph_status(graph, org_id, user_id, connector_id)
         out["codeGraph"] = graph_state
-        if graph_state in ("never_built", "building", "waiting_on_indexing", "retrying", "stale"):
+        if graph_state in ("never_built", "building", "waiting_on_indexing", "retrying", "stale", "unknown"):
             state = "indexing"
         elif graph_state in ("failed", "too_large"):
             state = "failed"
@@ -227,7 +227,7 @@ async def _graph_status(graph: Any, org_id: str, user_id: str, connector_id: str
     from app.modules.code_graph.build_state import BuildStateStore, graph_status
 
     try:
-        repos = [r for r in await list_code_repos(graph, org_id, user_id) if r.connector_id == connector_id and r.has_code]
+        repos = [r for r in await list_code_repos(graph, org_id, user_id) if r.connector_id == connector_id]  # the list holds only repos with a readable code file
         if not repos:
             return "no_code", None  # no readable code file: nothing for a graph to be built from
         state = await BuildStateStore(graph).read(org_id, repos[0].group_id)

@@ -281,3 +281,57 @@ def test_status_counts_what_was_left_out_altogether_by_reason(world):
     world.stats["data"]["stats"] = {"total": 4, "indexingStatus": {"COMPLETED": 4}}
     assert world.c.get(f"/api/v1/local-repos/{KEY}").json()["indexing"]["excluded"] == {"ignored_folder": 3, "binary": 1, "generated": 2}
     assert world.c.post(f"/api/v1/local-repos/{KEY}/commit", json={"excluded": {"x": 1}, "path": "/etc"}).status_code == 422
+
+
+def _set_graph(monkeypatch, repos, state=None, fail=False):
+    """The code-graph module's own answers, for the route's `_graph_status` (the `world` fixture replaces that function wholesale)."""
+    from app.agents.actions.code_graph import repos as repos_mod
+    from app.modules.code_graph import build_state
+
+    async def listing(graph, org_id, user_id):
+        if fail:
+            raise RuntimeError("graph store down")
+        return repos
+
+    class Store:
+        def __init__(self, graph) -> None:
+            pass
+
+        async def read(self, org_id, group_id):
+            return state
+
+    monkeypatch.setattr(repos_mod, "list_code_repos", listing)
+    monkeypatch.setattr(build_state, "BuildStateStore", Store)
+
+
+async def test_the_graph_status_reads_this_connectors_repository_from_the_code_repo_list(monkeypatch):
+    from app.agents.actions.code_graph.repos import CodeRepo
+    from app.modules.code_graph.build_state import BuildState
+
+    real = local_repos.__dict__["_graph_status"]
+    mine = CodeRepo(name="shop", connector_id="c1", connector_name="Local Repository", group_id="g1")
+    other = CodeRepo(name="other", connector_id="c9", connector_name="Local Repository", group_id="g9")
+    _set_graph(monkeypatch, [other])
+    assert await real(None, "org1", "u1", "c1") == ("no_code", None)  # nothing of this connector holds a readable code file
+    ready = BuildState(last_build=123, pending=False, requested_at=None)
+    _set_graph(monkeypatch, [other, mine], ready)
+    assert await real(None, "org1", "u1", "c1") == ("ready", 123)
+    _set_graph(monkeypatch, [mine], BuildState(last_build=123, pending=True, requested_at=124))
+    assert (await real(None, "org1", "u1", "c1"))[0] == "stale"
+
+
+async def test_a_graph_status_that_cannot_be_read_is_unknown_and_never_reported_as_ready(monkeypatch):
+    real = local_repos.__dict__["_graph_status"]
+    _set_graph(monkeypatch, [], fail=True)
+    assert await real(None, "org1", "u1", "c1") == ("unknown", None)
+
+
+def test_ready_waits_while_the_code_graph_status_is_unknown(world, monkeypatch):
+    world.c.put(f"/api/v1/local-repos/{KEY}", json={"name": "shop"})
+    put_files(world, **{"a.py": "x = 1\n"})
+    commit = world.c.post(f"/api/v1/local-repos/{KEY}/commit").json()
+    world.registry.instances["c1"].update(lastSyncStartedAtTimestamp=commit["lastCommitAt"] + 1, lastSyncFinishedAtTimestamp=commit["lastCommitAt"] + 2, lastSyncOutcome="succeeded")
+    world.stats["data"]["stats"] = {"total": 1, "indexingStatus": {"COMPLETED": 1}}
+    monkeypatch.setattr(local_repos, "_graph_status", AsyncMock(return_value=("unknown", None)))
+    status = world.c.get(f"/api/v1/local-repos/{KEY}").json()
+    assert status["state"] == "indexing" and status["codeGraph"] == "unknown"
