@@ -48,7 +48,10 @@ PENDING_KEY = "scopeProjectionPendingRoots"
 OPEN_WRITES_KEY = "scopeProjectionOpenWrites"
 #: How long a write that has opened a connector may run before the sweep reads it as dead. A write with long steps renews it before each one.
 OPEN_WRITE_SECONDS = 600
-#: Past its deadline a write is still given this long, for the skew between the clock of the writer and the clock of the sweep.
+#: Past its deadline a write is still given this long. The operating assumption the sweep's safety rests on: the skew between the store's
+#: nodes, plus the delay between reading the store's clock and committing the lease written from it, stays within this. A lease write seen to
+#: land later than `STORE_CLOCK_TIMEOUT_SECONDS` is measured again or marked `k` (best effort: a lost race leaves it as written, and the writer
+#: renews before every long step and before the write that matters).
 OPEN_WRITE_GRACE_SECONDS = 120
 # A slower answer from the store's clock is not trusted: the time it gives is already that old when the lease is written or judged.
 STORE_CLOCK_TIMEOUT_SECONDS = 5.0
