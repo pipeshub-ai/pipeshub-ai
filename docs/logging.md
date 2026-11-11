@@ -556,9 +556,10 @@ their own HTTP clients.
 - **Streams.** The chat stream's line is written when the body ends (DEBUG), fails midway (`unavailable`, with the 200), or
   is aborted by us (`cancelled`, INFO). A consumer that destroys the stream without aborting the call does not end it early:
   the line is written when the service ends the body.
-- **Known gaps.** A timed-out `AIServiceCommand` call is retried on its already-aborted signal, so it writes 3 `timeout`
-  lines though only the first reached the wire. A caller that expects a 404 (an existence check) still gets a WARNING
-  `not_found` line: the transport cannot know what the caller expects.
+- **Retries.** An `AIServiceCommand`'s `timeoutMs` is one budget across its attempts and backoff waits: once it, or the
+  caller's signal, is spent, no further attempt starts, so a timed-out call writes one `timeout` line.
+- **Known gaps.** A caller that expects a 404 (an existence check) still gets a WARNING `not_found` line: the transport
+  cannot know what the caller expects.
 - **New calls** use a command or axios, so they get the line; do not log the call again at the call site. A new raw `fetch`
   goes through `upstreamFetch`, and adds `injectRequestHeaders` only when the target is a PipesHub service: it does not
   check the destination, and the request id and MCP relay header must not reach a third party (the axios adapter adds them
