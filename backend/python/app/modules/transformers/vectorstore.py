@@ -116,11 +116,13 @@ from app.utils.aimodels import (
     get_embedding_model,
     is_local_cpu_embedding_provider,
 )
+from app.utils.embedding_gate import GateFailFast
 from app.utils.embedding_retry import (
     is_retriable_embedding_error,
     retry_delay_seconds,
     signal_backpressure_if_rate_limited,
 )
+from app.utils.embedding_server_client import EmbeddingServerEmbeddings
 from app.utils.image_utils import normalize_image_to_base64
 from app.utils.indexing_timing import stage
 from app.utils.llm import load_ai_models
@@ -2123,20 +2125,35 @@ class VectorStore(Transformer):
         total_chars = sum(len(text) for text in texts)
         last_error: BaseException | None = None
         progress = current_progress()
+        # isinstance, not getattr: a duck-typed lookup answers for any Mock embedder.
+        gate = (
+            self.dense_embeddings.bulk_gate()
+            if isinstance(self.dense_embeddings, EmbeddingServerEmbeddings)
+            else None
+        )
 
         for attempt in range(1, _EMBEDDING_BATCH_MAX_ATTEMPTS + 1):
             if progress is not None:
                 progress.call_start()
             try:
                 # The stall timer is off while the call runs: attempt_timeout, which may be longer
-                # than the stall floor on local CPU, is what bounds a hung batch.
-                return await asyncio.wait_for(
-                    self.dense_embeddings.aembed_documents(texts),
-                    timeout=attempt_timeout,
-                )
+                # than the stall floor on local CPU, is what bounds a hung batch. The gate is per
+                # attempt so the backoff sleep below does not hold a permit, and its wait is outside
+                # the timeout so queueing behind other batches is not counted as embedding time.
+                async with (
+                    gate.slot(progress, attempt_timeout=attempt_timeout, service_name=service_name)
+                    if gate is not None
+                    else contextlib.nullcontext()
+                ):
+                    return await asyncio.wait_for(
+                        self.dense_embeddings.aembed_documents(texts),
+                        timeout=attempt_timeout,
+                    )
             except asyncio.TimeoutError as e:
                 last_error = e
-                get_default_downstream_feedback().report_timeout(service_name)
+                # The gate has already reported its own fail-fast, once for all waiters.
+                if not isinstance(e, GateFailFast):
+                    get_default_downstream_feedback().report_timeout(service_name)
             except Exception as e:
                 signal_backpressure_if_rate_limited(
                     e,
