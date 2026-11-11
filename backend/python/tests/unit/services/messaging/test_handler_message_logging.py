@@ -156,7 +156,7 @@ class TestSchemaRejection:
         error = next(Draft7Validator({"type": "object", "properties": {field: rule}}).iter_errors({field: value}))
         with pytest.raises(SchemaValidationError) as raised:
             node_validator._raise("organizations", error)
-        assert value in str(raised.value)  # control: the validator quotes the value
+        assert value in str(raised.value.original_error)  # control: the value still rides on the exception
         graph = AsyncMock()
         graph.batch_upsert_nodes = AsyncMock(side_effect=raised.value)
         assert await _service(graph).process_event("orgUpdated", {"orgId": "org_a", "registeredName": SEEDED_NAME}) is True
