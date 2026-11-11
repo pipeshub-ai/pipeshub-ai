@@ -657,9 +657,10 @@ class CodeGraphMixin(PgBase):
         for org_id in await self._sweep_orgs():
             with self._sweep(org_id, errors):
                 org = current_org_id()
-                if len(set(statuses)) <= 20 and all(0 < len(x) <= 100 for x in statuses) and 1 <= limit <= 1000:      # the vetted read of graph_0010 (bounds of its arguments)
-                    rows = await self._q(lambda tx: tx.fetch("/* pipeshub:graph.stage_states_stale_vetted */ SELECT doc FROM graph.stage_states_stale($1::text[], $2::bigint, $3)",
-                                                              statuses, updated_before_ms, limit), None)
+                wanted = sorted(set(statuses))      # the function bounds the array's items, not its distinct values
+                if len(wanted) <= 20 and all(0 < len(x) <= 100 for x in wanted) and 1 <= limit <= 1000:      # the vetted read of graph_0010 (bounds of its arguments)
+                    rows = await self._q(lambda tx, wanted=wanted: tx.fetch("/* pipeshub:graph.stage_states_stale_vetted */ SELECT doc FROM graph.stage_states_stale($1::text[], $2::bigint, $3)",
+                                                              wanted, updated_before_ms, limit), None)
                 else:
                     rows = await self._q(lambda tx, org=org: tx.fetch("""/* pipeshub:graph.stage_states_stale */ SELECT doc FROM graph.nodes WHERE org_id = $1 AND coll = $2
                         AND doc->>'status' = ANY($3::text[]) AND doc->'updatedAtMs' < to_jsonb($4::bigint) ORDER BY doc->'updatedAtMs' LIMIT $5""",

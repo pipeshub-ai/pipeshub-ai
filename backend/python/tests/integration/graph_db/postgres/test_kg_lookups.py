@@ -108,6 +108,9 @@ async def test_the_stage_sweeps_read_stale_states_and_unheld_revisions_by_the_ve
     assert await b.stage_states_unheld_revisions(["v1", "v3"], updated_before_ms=1000) == [("v1", "1")]
     assert sent == ["stage_states_stale_vetted"] * 2 + ["stage_states_unheld_vetted"] * 2
     sent.clear()
+    assert [d["id"] for d in await a.stage_states_stale(["PENDING"] * 21, 1000, 10)] == ["only-a", "s1"]          # a status repeated past the function's item bound
+    assert sent == ["stage_states_stale_vetted"]
+    sent.clear()
     assert len(await a.stage_states_unheld_revisions(["v1", *(f"x{i}" for i in range(1500))], updated_before_ms=1000)) == 1          # a list over the function's bound is read in chunks
     assert sent == ["stage_states_unheld_vetted"] * 2
     sent.clear()
