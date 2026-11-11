@@ -133,6 +133,33 @@ async def test_every_write_needs_its_org_and_nothing_is_written_without_one(stor
     assert (await sql(store, "SELECT count(*) FROM retrieval.points"))[0][0] == 0
 
 
+async def test_update_payloads_by_ids_keeps_pgvectors_own_fence_and_takes_no_generation_fence(store) -> None:
+    """pgvector fences by `computed_at` on the group row; the interface's `fence` (a scopeFence payload key) is for the other stores."""
+    assert store.generation_fence is False
+    now = datetime.now(UTC)
+    await store.upsert_points("records", [point(A, "p1", conn=["c1"])])
+    members = "SELECT kind, member_id FROM retrieval.group_members WHERE org_id = $1 AND group_key = 'r1' ORDER BY 1, 2"
+    ids = [pid(f"{A}/p1")]
+    await store.update_payloads_by_ids("records", {ids[0]: {"connectorIds": ["c2"]}}, org_id=A, computed_at=now + timedelta(seconds=5))
+    await store.update_payloads_by_ids("records", {ids[0]: {"connectorIds": ["old"]}}, org_id=A, computed_at=now)        # an earlier read loses
+    assert [tuple(r) for r in await sql(store, members, A)] == [(1, "c2")]
+    await store.update_payloads_by_ids("records", {ids[0]: {"connectorIds": ["c3"]}}, org_id=A, computed_at=now + timedelta(seconds=9))
+    assert [tuple(r) for r in await sql(store, members, A)] == [(1, "c3")]                                              # a later one still applies
+    await store.update_payloads_by_ids("records", {ids[0]: {"connectorIds": ["b"]}}, org_id=B, computed_at=now + timedelta(seconds=20))
+    assert [tuple(r) for r in await sql(store, members, A)] == [(1, "c3")]                                              # another org's id: untouched
+
+
+async def test_group_clock_skew_reports_the_group_rows_ahead_of_the_database_clock_for_the_asking_org_only(store) -> None:
+    now = datetime.now(UTC)
+    await store.upsert_points("records", [point(A, "p1", "r1", conn=["c1"])], computed_at=now + timedelta(hours=2))
+    await store.upsert_points("records", [point(A, "p2", "r2", conn=["c1"])], computed_at=now + timedelta(seconds=5))      # a few seconds ahead clears itself
+    await store.upsert_points("records", [point(B, "p1", "r1", conn=["c1"])], computed_at=now + timedelta(days=1))
+    rows, ahead = await store.group_clock_skew(A, min_ahead_seconds=30)
+    assert rows == 1 and 7000 < ahead < 7300
+    assert await store.group_clock_skew(A, min_ahead_seconds=3 * 3600) == (0, 0.0)
+    assert (await store.group_clock_skew(B, min_ahead_seconds=30))[0] == 1
+
+
 async def test_a_shared_vrid_is_deleted_for_one_org_only(store) -> None:
     await store.upsert_points("records", [point(A, "p1", "shared"), point(A, "p2", "shared", terms=(5,))])
     await store.upsert_points("records", [point(B, "p1", "shared")])

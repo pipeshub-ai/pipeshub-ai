@@ -79,6 +79,8 @@ CALLS = [
     ("get_neighbors_for_nodes_by_relationship_types", (["b1"], "blocks", ["CALLS"], "outbound")), ("get_edges_by_target_keys", (["blocks/b2"], "nodeRelations")),
     ("delete_edges_by_source_keys", (["blocks/b1"], "nodeRelations")), ("delete_edges_touching_nodes", (["b1"], "blocks", "nodeRelations")),
     ("get_edge_rollup_by_file_prefix", ("o", "src/", ["CALLS"], "outbound", "c")), ("get_file_paths_for_records", ("o", ["r1"])),
+    ("find_blocks_by_external_ref_prefix", ("o", "c", ["time:"], 10)),
+    ("find_uncalled_blocks", ("o", "c", ["r1"], ["function"], ["CALLS"], 10)),
     ("delete_blocks_for_records", (["r1"],)), ("backfill_block_name_folded", ()), ("compare_and_set_record_fields", (["r1"], "1", {"a": 1})),
     ("stage_state_get", ("s",)), ("stage_states_for_revision", ("v", "1")), ("stage_state_create", ({"id": "s"},)),
     ("stage_state_compare_and_set", ("s", "A", "B", {})), ("get_stage_states_with_records", ("o", "c", "entities", "PENDING")),
@@ -198,8 +200,60 @@ async def test_the_edge_rollup_by_file_prefix_counts_links_between_files_of_one_
         await p.get_edge_rollup_by_file_prefix(org, "src/", ["CALLS"], "up", "c1")
 
 
+async def test_uncalled_blocks_are_found_in_the_database_scoped_paged_and_without_uncounted_callers(pg_db) -> None:
+    p = bound(pg_db)
+    org = p.org
+    fn = {"orgId": org, "connectorId": "c1", "kind": "function"}
+    await p.batch_upsert_nodes([{"_key": r, "orgId": org, "connectorId": "c1"} for r in ("ra", "rb")], "records")
+    await p.batch_upsert_nodes([{"_key": "caller", "recordId": "ra", **fn}, {"_key": "target", "recordId": "rb", **fn},
+                                {"_key": "helper", "recordId": "rb", **fn}, {"_key": "cls", "recordId": "rb", **fn, "kind": "class"},
+                                {"_key": "other", "recordId": "rb", **fn, "connectorId": "c2"}], "blocks")
+    await p.batch_upsert_node_relations([edge("caller", "target", "CALLS"), edge("target", "helper", "CALLS"),
+                                         edge("rb", "caller", "CALLS", fc="records")])
+    kinds, calls = ["function"], ["CALLS"]
+    page, after = await p.find_uncalled_blocks(org, "c1", ["ra", "rb"], kinds, calls, 10)
+    assert page == [] and after is None                                       # caller is called from rb's record
+    page, _ = await p.find_uncalled_blocks(org, "c1", ["ra", "rb"], kinds, calls, 10, uncounted_caller_records=["rb"])
+    assert [b["_key"] for b in page] == ["caller", "helper"]                  # neither the record nor its blocks count
+    page, _ = await p.find_uncalled_blocks(org, "c1", ["rb"], kinds, calls, 10, uncounted_caller_records=["ra"])
+    assert [b["_key"] for b in page] == ["target"]                            # helper's caller is in rb, which counts
+    everything, _ = await p.find_uncalled_blocks(org, "c1", ["ra", "rb"], kinds, ["OVERRIDES"], 10)
+    assert [b["_key"] for b in everything] == ["caller", "helper", "target"]  # key order, the class and c2 left out
+    first, after = await p.find_uncalled_blocks(org, "c1", ["ra", "rb"], kinds, ["OVERRIDES"], 2)
+    rest, end = await p.find_uncalled_blocks(org, "c1", ["ra", "rb"], kinds, ["OVERRIDES"], 2, after)
+    assert [b["_key"] for b in first] == ["caller", "helper"] and after == "helper"
+    assert [b["_key"] for b in rest] == ["target"] and end is None
+    assert await p.find_uncalled_blocks(org, "c1", [], kinds, calls, 10) == ([], None)
+    assert await p.find_uncalled_blocks(_other(org), "c1", ["ra", "rb"], kinds, ["OVERRIDES"], 10) == ([], None)
+
+
 def _other(org: str) -> str:
     return new_org() if org else org
+
+
+async def test_blocks_calling_into_a_library_are_found_by_ref_prefix_in_the_org_connector_and_repo(pg_db) -> None:
+    p = bound(pg_db)
+    org = p.org
+    block = {"orgId": org, "connectorId": "c1", "recordGroupId": "g1"}
+    await p.batch_upsert_nodes([{"_key": "b2", **block}, {"_key": "b1", **block, "recordGroupId": "g2"},
+                                {"_key": "b3", **block, "connectorId": "c2"}, {"_key": "b4", **block},
+                                {"_key": "b5", **block, "externalRefs": "requests:get"}], "blocks")
+    # The edge build's write: a partial update of each block's list.
+    await p.batch_update_nodes([{"id": "b2", "externalRefs": ["requests:get"]},
+                                {"id": "b1", "externalRefs": ["requestsx:get", "yaml:load"]},
+                                {"id": "b3", "externalRefs": ["requests:get"]}], "blocks")
+
+    async def found(prefixes: list[str], **kwargs) -> list[str]:
+        rows = await p.find_blocks_by_external_ref_prefix(org, kwargs.pop("connector", "c1"), prefixes,
+                                                          kwargs.pop("limit", 10), raise_on_error=True, **kwargs)
+        return [r["_key"] for r in rows]
+
+    assert await found(["requests:", "requests."]) == ["b2"]       # not `requestsx`, another connector or a scalar
+    assert await found(["requests:", "yaml:"]) == ["b1", "b2"]
+    assert await found(["requests:", "yaml:"], limit=1) == ["b1"]
+    assert await found(["yaml:"], record_group_ids=["g1"]) == [] and await found(["yaml:"], record_group_ids=["g2"]) == ["b1"]
+    assert await found(["requests:"], connector="c2") == ["b3"] and await found([]) == []
+    assert await p.find_blocks_by_external_ref_prefix(_other(org), "c1", ["requests:"], 10) == []
 
 
 async def test_blocks_go_with_their_edges_and_a_name_is_folded_on_demand(pg_db) -> None:

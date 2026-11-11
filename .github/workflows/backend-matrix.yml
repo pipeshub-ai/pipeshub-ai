@@ -143,8 +143,11 @@ on:
       - 'backend/python/tests/permissions/mutations.py'
       - 'backend/python/tests/permissions/oracle.py'
       - 'backend/python/tests/permissions/scope_corpus.py'
+      - 'backend/python/tests/permissions/serving_corpus.py'
       - 'backend/python/tests/permissions/scope_layer.py'
       - 'backend/python/tests/permissions/stamp_world.py'
+      - 'backend/python/tests/permissions/store_harness.py'
+      - 'backend/python/tests/permissions/rewrite_kit.py'
       - 'backend/python/tests/permissions/scenarios/**'
       - 'backend/python/pyproject.toml'
       - 'deployment/docker-compose/docker-compose.integration.messaging.yml'
@@ -451,7 +454,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version: 24
           cache: 'npm'
           cache-dependency-path: backend/nodejs/apps/package-lock.json
 

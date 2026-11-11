@@ -250,6 +250,11 @@ class BaseDataStore(ABC):
         """A failed read raises only with ``raise_on_error``; otherwise it answers ``[]``."""
         pass
 
+    async def get_app_user_links(self, org_id: str, connector_id: str) -> list[dict]:
+        """``{"id", "sourceUserId"}`` of every user of the org linked to the connector, guests
+        included. A failed read raises."""
+        raise NotImplementedError
+
     @abstractmethod
     async def get_app_user_by_email(self, email: str, connector_id: str) -> Optional[AppUser]:
         pass
@@ -445,7 +450,9 @@ class BaseDataStore(ABC):
         from_id: str,
         from_collection: str,
         collection: str,
-        relationship_types: list[str]
+        relationship_types: list[str],
+        *,
+        raise_on_error: bool = False,
     ) -> int:
         """
         Delete edges from a record by relationship types.
@@ -484,6 +491,15 @@ class BaseDataStore(ABC):
     async def delete_record_entity_relations(self, record_id: str, to_collection: str, origin: str) -> int:
         """Delete the record's ``entityRelations`` edges of ``origin`` to
         ``to_collection``; see ``IGraphDBProvider.delete_record_entity_relations``."""
+        pass
+
+    @abstractmethod
+    async def replace_record_entity_relations(
+        self, record_id: str, to_collections: list[str], origin: str, edges: list[dict],
+    ) -> None:
+        """Replace the record's ``entityRelations`` edges of ``origin`` to
+        ``to_collections`` with ``edges``, atomically; see
+        ``IGraphDBProvider.replace_record_entity_relations``."""
         pass
 
     @abstractmethod

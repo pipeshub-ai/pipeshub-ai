@@ -3,6 +3,7 @@ loop (what the model is told) and the UI (which state and action it shows)."""
 from __future__ import annotations
 
 import asyncio
+import logging
 from enum import Enum
 
 import httpx
@@ -12,6 +13,8 @@ from app.agents.mcp.errors import (
     MCPConnectionError,
     MCPInsufficientScopeError,
     MCPLaunchRefusedError,
+    MCPToolChangedError,
+    MCPToolNotOfferedError,
     MCPUrlBlockedError,
     first_leaf,
     is_http_unauthorized,
@@ -21,7 +24,10 @@ from app.agents.mcp.token_refresh import (
     MCPRefreshLockTimeoutError,
     MCPTokenRefreshError,
 )
+from app.utils import error_class
+from app.utils.logging_fields import log_event
 from app.utils.oauth_errors import is_transient_status
+from mcp.shared.exceptions import MCPError
 
 
 class MCPFailureReason(str, Enum):
@@ -74,3 +80,50 @@ def classify_mcp_failure(exc: BaseException) -> MCPFailureReason:
     if any(isinstance(e, (MCPConnectionError, httpx.HTTPError, httpx2.HTTPError, OSError)) for e in candidates):
         return MCPFailureReason.UNREACHABLE
     return MCPFailureReason.ERROR
+
+
+# For a failure `classify_error` can only call internal: what the MCP reason means.
+_ERROR_CLASS_FALLBACK = {
+    MCPFailureReason.AUTH_EXPIRED: "auth_expired",
+    MCPFailureReason.UNAUTHORIZED: "auth_expired",
+    MCPFailureReason.NEEDS_PERMISSION: "forbidden",
+    MCPFailureReason.BLOCKED: "forbidden",
+    MCPFailureReason.TIMEOUT: "timeout",
+    MCPFailureReason.UNREACHABLE: "unavailable",
+}
+_JSONRPC_REQUEST_ERRORS = frozenset({-32600, -32601, -32602})  # invalid request, method not found, invalid params
+
+
+def mcp_error_class(exc: BaseException, reason: MCPFailureReason | None = None) -> str:
+    """The log `error_class` of an MCP failure (`app.utils.error_class.ERROR_CLASSES`).
+    `reason` is `classify_mcp_failure(exc)` when the caller already has it."""
+    leaf = first_leaf(exc)
+    if isinstance(leaf, MCPToolChangedError):  # before its base class
+        return "conflict"
+    if isinstance(leaf, MCPToolNotOfferedError):  # the turn's cached tool list is stale
+        return "not_found"
+    if isinstance(leaf, MCPError):  # the server's own JSON-RPC error
+        return "bad_request" if leaf.code in _JSONRPC_REQUEST_ERRORS else "upstream_5xx"
+    found = error_class.classify_error(leaf)
+    if found != "internal":
+        return found
+    return _ERROR_CLASS_FALLBACK.get(reason or classify_mcp_failure(exc), "internal")
+
+
+def log_discover_end(
+    log: logging.Logger, mcp_server_id: str, failure: BaseException | None, *, source: str,
+    reason: str = "no_attached_tools", level: int | None = None, **fields: object,
+) -> None:
+    """One `mcp.discover.end` for a server whose tools couldn't be listed (`source`: a chat `turn`, or
+    the server `listing`): its failure at the failure's level unless `level` is given (with the stack
+    only for our own bugs, and never the server's text), or a WARNING `skipped` with `reason`."""
+    if failure is None:
+        log_event(
+            log, "mcp.discover.end", level=logging.WARNING, mcp_server_id=mcp_server_id, outcome="skipped",
+            reason=reason, source=source, **fields,
+        )
+        return
+    error_class.log_failure(
+        log, "mcp.discover.end", failure, level=level, error_class=mcp_error_class(failure),
+        include_error_text=False, mcp_server_id=mcp_server_id, source=source, **fields,
+    )

@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING
 
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.services.model_identity.errors import classify_for_user
-from app.utils.log_redaction import redact_secrets_in_text
+from app.utils.log_redaction import URL_PATTERN
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -173,11 +173,10 @@ _MAX_PROVIDER_MESSAGE_LEN = 240
 # OpenAI-style organization/project ids ("in organization org-abc123 on
 # tokens per min") and the account/billing/docs links providers append.
 _PROVIDER_ACCOUNT_ID_RE = re.compile(r"\b(?:org|proj|acct|account)[-_][A-Za-z0-9_-]{4,}\b")
-_URL_RE = re.compile(r"https?://\S+")
 
 
 def _sanitize_provider_message(message: str) -> str | None:
-    text = _URL_RE.sub("", message)
+    text = URL_PATTERN.sub("", message)
     text = _PROVIDER_ACCOUNT_ID_RE.sub("[redacted]", text)
     text = " ".join(text.split())
     if not text or "traceback" in text.lower():
@@ -281,17 +280,6 @@ def classify_error(error_msg: str) -> tuple[str, str]:
     return error_code, _USER_MESSAGES[error_code]
 
 
-def redact_error_for_log(error_msg: str, max_len: int = 1000) -> str:
-    """The raw error with URLs, account ids and credentials masked, capped at `max_len`.
-
-    A provider's error can echo the request URL, whose query string may carry
-    a credential (Google's REST endpoints accept `?key=`), or a request header.
-    """
-    text = _URL_RE.sub("[url]", error_msg)
-    text = _PROVIDER_ACCOUNT_ID_RE.sub("[redacted]", text)
-    return redact_secrets_in_text(text)[:max_len]
-
-
 def _status_phrase(status_code: int) -> str | None:
     try:
         return HTTPStatus(status_code).phrase
@@ -334,6 +322,5 @@ def classify_exception(exc: BaseException) -> tuple[str, str]:
 __all__ = [
     "classify_error",
     "classify_exception",
-    "redact_error_for_log",
     "register_error_classifier",
 ]

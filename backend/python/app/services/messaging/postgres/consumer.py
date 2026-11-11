@@ -29,6 +29,7 @@ from app.core.envelope import (
 from app.core.org_context import bind_optional, spawn_detached
 from app.core.org_context import pop as pop_org
 from app.core.org_context import push as push_org
+from app.modules.indexing.embed_resume import stamp_delivery_id
 from app.services.messaging.config import (
     IndexingEvent,
     MessageHandler,
@@ -74,6 +75,8 @@ def _handback_limit() -> int:
 
 class RecordHeld(RequeueWithoutAttempt):
     """The record's lease is held by another delivery (a stage rewriting the record, a duplicate): not a reason to pause a consumer."""
+
+    pauses_consumer = False
 
 
 def _retry_base_s() -> float:
@@ -399,7 +402,7 @@ class PgMessagingConsumer(IMessagingConsumer):
             reason = type(e).__name__
             self._handback_log[reason] = self._handback_log.get(reason, 0) + 1
             self.logger.debug("%s handed back without counting an attempt (%d so far, retry in %.1fs): %s", d.message_id, n, delay, e)
-            if self.stage_admission is not None and not isinstance(e, RecordHeld):
+            if self.stage_admission is not None and e.pauses_consumer:
                 self._paused_until = max(self._paused_until, time.monotonic() + delay)     # stop claiming until the stage can run
             if e.counts_toward_backstop and n > _handback_limit():
                 # handed back for ever (a lease that is never freed): charged as a failure, so the delivery limit ends it
@@ -480,6 +483,8 @@ class PgMessagingConsumer(IMessagingConsumer):
                 if parsed is None:
                     return False, True, None, "unparseable message"
                 parsed.is_final_failure = final
+                # A hand-back is a nack of the same row, so the row names the event across its retries.
+                stamp_delivery_id(parsed.payload, f"{d.topic}:{d.message_id}")
                 await self._drive_indexing(parsed, f"message:{d.message_id}")
                 return True, False, parsed, ""
             try:

@@ -12,6 +12,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
+from tests.unit.api.routes.test_toolsets import (
+    assert_oauth_app_save_failed,
+    oauth_app_save_failure,
+)
+
 if TYPE_CHECKING:
     from types import ModuleType
 
@@ -278,14 +283,14 @@ class TestCreateNeverStoresAnOAuthSecretInline:
             await self._create(
                 toolsets,
                 {"instanceName": "Jira", "toolsetType": "jira", "authType": "OAUTH", "baseUrl": "https://app.example.com", **body},
-                config_service, oauth_save=AsyncMock(return_value=None),
+                config_service, oauth_save=AsyncMock(side_effect=oauth_app_save_failure()),
             )
 
-        assert exc.value.status_code == 500
+        assert_oauth_app_save_failed(exc)
         config_service.set_config.assert_not_called()
 
     async def test_unexpected_error_while_saving_the_app_refuses(self, toolsets: ModuleType) -> None:
-        """The real save helper turns an unexpected error (here a non-string tenantId) into None."""
+        """The real save helper turns an unexpected error (here a non-string tenantId) into a 500."""
         config_service = _config_service()
         body = {"instanceName": "Outlook", "toolsetType": "outlook", "authType": "OAUTH", "baseUrl": "https://app.example.com",
                 "authConfig": {"clientId": "cid", "clientSecret": SECRET, "tenantId": 42}}
@@ -343,7 +348,8 @@ class TestUpdateOAuthAppSaveFailure:
         with pytest.raises(HTTPException) as exc:
             with patch.object(toolsets, "_check_user_is_admin", new=AsyncMock(return_value=True)), \
                  patch.object(toolsets, "_load_instances_for_mutation", new=AsyncMock(return_value=instances)), \
-                 patch.object(toolsets, "_create_or_update_toolset_oauth_config", new=AsyncMock(return_value=None)):
+                 patch.object(toolsets, "_create_or_update_toolset_oauth_config",
+                              new=AsyncMock(side_effect=oauth_app_save_failure())):
                 await toolsets.update_toolset_instance(
                     "i1", _request({"baseUrl": "https://app.example.com", "authConfig": {"clientId": "cid", "clientSecret": SECRET}}),
                     config_service=config_service,

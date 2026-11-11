@@ -3496,6 +3496,8 @@ class TestDeleteConnectorInstance:
 
     async def test_success_empty_connector(self, connected_provider):
         connected_provider.get_document = AsyncMock(return_value={"_key": "c1"})
+        # Nothing was written during the delete, so its sweep finds nothing left at once.
+        connected_provider._count_connector_blocks_and_stage_states = AsyncMock(return_value=0)
         connected_provider._collect_connector_entities = AsyncMock(return_value={
             "record_keys": [], "record_ids": [],
             "virtual_record_ids": [], "record_group_keys": [],
@@ -3535,12 +3537,14 @@ class TestDeleteConnectorInstance:
         connected_provider.begin_transaction = AsyncMock(
             side_effect=lambda *a, **k: order.append("txn") or "txn1"
         )
+        connected_provider.commit_transaction = AsyncMock(side_effect=lambda *a, **k: order.append("commit"))
 
         result = await connected_provider.delete_connector_instance("c1", "org1")
 
         assert result["success"] is True
-        assert order == ["blocks", "txn"]
-        connected_provider.delete_blocks_by_connector_id.assert_awaited_once_with("c1")
+        # The second pass, after the commit, sweeps blocks in-flight indexing wrote meanwhile.
+        assert order == ["blocks", "txn", "commit", "blocks"]
+        assert [c.args for c in connected_provider.delete_blocks_by_connector_id.await_args_list] == [("c1",), ("c1",)]
 
     async def test_exception_returns_failure(self, connected_provider):
         connected_provider.get_document = AsyncMock(side_effect=Exception("db err"))

@@ -38,26 +38,26 @@ def _rows(*keys: str) -> list[dict]:
 
 
 def _graph(rows: list[dict], **kwargs: object) -> MagicMock:
-    return entity_graph(lambda refs, org, **_: {(PERSON_ENTITY_TYPE, "u1"): rows}, **kwargs)
+    return entity_graph(lambda refs, org, **_: {(PERSON_ENTITY_TYPE, "users:u1"): rows}, **kwargs)
 
 
 class TestPersonListing:
     async def test_the_ref_is_built_server_side_by_direction(self) -> None:
         graph = _graph(_rows("r1"), permitted=("r1",))
         await list_accessible_person_records(
-            graph, _context(), user_ids=["u1", "u2", "u1"],
+            graph, _context(), nodes=[("users", "u1"), ("users", "u2"), ("users", "u1")],
             edge_types=["MENTIONED_IN", "REPORTED_BY", "RELATED_TO_PERSON", "BELONGS_TO"],
         )
         (ref,) = graph.get_permitted_entity_records.await_args.args[0]
         assert ref == {
-            "id": "u1", "type": PERSON_ENTITY_TYPE, "userIds": ["u1", "u2"],
+            "id": "users:u1", "type": PERSON_ENTITY_TYPE, "userIds": ["u1", "u2"], "personIds": [],
             "outTypes": ["REPORTED_BY"], "inTypes": ["MENTIONED_IN"], "connectorIds": [JIRA],
         }
 
     async def test_only_readable_records_are_listed_and_the_end_is_known(self) -> None:
         graph = _graph(_rows("r1", "r2", "r3"), permitted=("r1", "r3"))
         page = await list_accessible_person_records(
-            graph, _context(), user_ids=["u1"], edge_types=["REPORTED_BY"],
+            graph, _context(), nodes=[("users", "u1")], edge_types=["REPORTED_BY"],
         )
         assert [r["_key"] for r in page.records] == ["r1", "r3"]
         assert page.next_cursor is None and not page.capped
@@ -65,7 +65,7 @@ class TestPersonListing:
     async def test_a_full_page_gives_an_integer_cursor(self) -> None:
         graph = _graph(_rows("r1", "r2", "r3"), permitted=("r1", "r2", "r3"))
         page = await list_accessible_person_records(
-            graph, _context(), user_ids=["u1"], edge_types=["ASSIGNED_TO"], limit=2,
+            graph, _context(), nodes=[("users", "u1")], edge_types=["ASSIGNED_TO"], limit=2,
         )
         assert [r["_key"] for r in page.records] == ["r1", "r2"]
         assert page.next_cursor == "2"
@@ -74,14 +74,22 @@ class TestPersonListing:
         scope = SelectionScope(groups={"proj-a": JIRA})
         graph = _graph(_rows("r1", "r2"), permitted=("r1", "r2"), groups={"r1": ["proj-a"]})
         page = await list_accessible_person_records(
-            graph, _context((scope,)), user_ids=["u1"], edge_types=["REPORTED_BY"],
+            graph, _context((scope,)), nodes=[("users", "u1")], edge_types=["REPORTED_BY"],
         )
         assert graph.fake.within_calls == [[scope.candidate_filter()]]
         assert [r["_key"] for r in page.records] == ["r1"]
 
-    @pytest.mark.parametrize("user_ids, edge_types", [([], ["REPORTED_BY"]), (["u1"], ["BELONGS_TO"])])
-    async def test_no_user_or_no_allowed_relation_is_refused(self, user_ids, edge_types) -> None:
+    async def test_a_person_node_is_walked_from_like_a_user_node(self) -> None:
+        graph = _graph(_rows("r1"), permitted=("r1",))
+        await list_accessible_person_records(
+            graph, _context(), nodes=[("users", "u1"), ("person", "p1")], edge_types=["AUTHORED_BY"],
+        )
+        (ref,) = graph.get_permitted_entity_records.await_args.args[0]
+        assert ref["userIds"] == ["u1"] and ref["personIds"] == ["p1"] and ref["outTypes"] == ["AUTHORED_BY"]
+
+    @pytest.mark.parametrize("nodes, edge_types", [([], ["REPORTED_BY"]), ([("users", "u1")], ["BELONGS_TO"])])
+    async def test_no_node_or_no_allowed_relation_is_refused(self, nodes, edge_types) -> None:
         with pytest.raises(ValueError):
             await list_accessible_person_records(
-                _graph([]), _context(), user_ids=user_ids, edge_types=edge_types,
+                _graph([]), _context(), nodes=nodes, edge_types=edge_types,
             )

@@ -11,6 +11,7 @@ task's status, and startup-resumed syncs become visible.
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import time
@@ -27,9 +28,19 @@ from app.connectors.core.base.connector.connector_service import (
 )
 from app.connectors.core.constants import ConnectorStateKeys, SyncRunOutcome
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage, FullSyncSeen
-from app.connectors.core.sync.run_context import reset_run_sync_id, set_run_sync_id
+from app.connectors.core.sync.run_context import (
+    SyncRunStats,
+    bind_run_stats,
+    reset_run_stats,
+    reset_run_sync_id,
+    set_run_sync_id,
+)
 from app.connectors.core.sync.sync_coordinator import SyncCoordinator, SyncLease, _now_ms
+from app.core.org_context import for_org, spawn_detached
+from app.core.org_jobs import for_each_org
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils import error_class
+from app.utils.logging_fields import bind_log_fields, log_event, reset_log_fields
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -104,8 +115,10 @@ async def write_app_status(
     try:
         await graph_provider.batch_upsert_nodes([payload], CollectionNames.APPS.value)
     except Exception as e:
-        logger.error(
-            f"❌ Failed to write status={status} for connector {connector_id}: {e}"
+        # connector_id passed too: the repair route calls this outside a run.
+        error_class.log_failure(
+            logger, "sync_step.failed", e, level=logging.ERROR,
+            step="status_write", app_status=status, connector_id=connector_id,
         )
         return False
     return True
@@ -181,7 +194,7 @@ async def _deleting_or_gone(
             document_key=connector_id, collection=CollectionNames.APPS.value
         )
     except Exception as e:
-        logger.warning(f"Could not read {connector_id} before its IDLE write: {e}")
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.WARNING, step="deleting_check")
         return False
     return not doc or doc.get("status") == "DELETING"
 
@@ -256,18 +269,18 @@ async def _finalize(
         ended[ConnectorStateKeys.ACTION_ITEMS] = (
             json.dumps([item.model_dump(by_alias=True) for item in action_items]) if action_items else None
         )
-    if full_sync_cut_short:
-        logger.warning(
-            f"Full sync for connector {connector_id} did not finish or skipped part of the source; the next sync "
-            "will run in full"
-        )
     if lease is None or not lease.lost.is_set():
         # Not over a delete: the status is an upsert, so writing it after the
         # delete removed the doc resurrected a ghost App node, and writing it
         # during one let a second DELETE through the "already deleting" guard.
         if await _deleting_or_gone(graph_provider, logger, connector_id):
-            logger.info(f"Not writing IDLE for {connector_id}: it is being deleted")
+            logger.info("Not writing IDLE: the connector is being deleted")
         else:
+            # A served search reads this connector with the stamps once it is IDLE, so what the sync wrote is in the cached viewer scopes first:
+            # the version moves before the status does (the call after dispose stays, for the record caches).
+            from app.services.cache.invalidation_hooks import notify_principals_changed
+
+            await notify_principals_changed(org_id)
             # An update, not the upsert write_app_status does: it cannot create
             # the node if the read above failed or a delete landed since.
             try:
@@ -279,7 +292,7 @@ async def _finalize(
                      **owed, **still_requested, **ended},
                 )
             except Exception as e:
-                logger.error(f"❌ Failed to write status=IDLE for connector {connector_id}: {e}")
+                error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="idle_write")
     elif owed:
         # The new owner's status is not ours to write, but the debt is: whatever
         # it runs next must be a full sync. Only ever set, so it cannot undo
@@ -287,7 +300,7 @@ async def _finalize(
         try:
             await graph_provider.update_node(connector_id, CollectionNames.APPS.value, owed)
         except Exception as e:
-            logger.error(f"❌ Could not record the owed full sync for {connector_id}: {e}")
+            error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="owed_full_sync")
     if lease is not None and coordinator is not None:
         await coordinator.end(lease)
     if connector is not None:
@@ -295,7 +308,7 @@ async def _finalize(
         try:
             await dispose_connector(connector)
         except Exception as e:
-            logger.warning(f"Connector cleanup failed for {connector_id}: {e}")
+            error_class.log_failure(logger, "sync_step.failed", e, level=logging.WARNING, step="dispose")
 
     # The sync may have added or removed records; drop the query service's
     # cached view of this connector so the next search sees them. Every entry
@@ -306,7 +319,7 @@ async def _finalize(
     try:
         await notify_connector_sync_completed(connector_id, org_id)
     except Exception as e:
-        logger.warning(f"Cache invalidation failed for {connector_id}: {e}")
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.WARNING, step="cache_invalidation")
 
     # A slot just freed, so anything parked at the limit can go. Failures here
     # must not escape: this runs in a detached finalizer whose real job is the
@@ -314,7 +327,7 @@ async def _finalize(
     try:
         await drain_queued_syncs(graph_provider, logger)
     except Exception as e:
-        logger.error(f"Could not release queued syncs: {e}")
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="drain")
 
     # Re-issue any resync that was declined while this one held the lease.
     # After the release, so it can take the lease; after the drain, so it
@@ -336,7 +349,7 @@ async def _kh_scope_begin(
     try:
         return await graph_provider.kh_scope_mark_stale(connector_id)
     except Exception as e:
-        logger.error(f"❌ Could not mark knowledge hub scopes stale for {connector_id}: {e}")
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="kh_scope_begin")
         return None
 
 
@@ -352,7 +365,7 @@ async def _kh_scope_end(
         if stamp and await graph_provider.kh_scope_enabled():
             await graph_provider.kh_scope_stamp(connector_id)
     except Exception as e:
-        logger.error(f"❌ Knowledge hub scope stamp failed for {connector_id}: {e}")
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="kh_scope_end")
 
 
 # How long a queued connector may sit with its request already submitted before
@@ -406,7 +419,8 @@ async def drain_queued_syncs(
     # concurrently too (a shutdown fires them all at once), and two passes over
     # the same rows each published every queued connector.
     async with _drain_lock():
-        return await _drain_once(graph_provider, logger, dispatcher)
+        # One pass serves every org, and its runtime callers sit inside one org's context, where binding another raises OrgMismatch.
+        return await spawn_detached(_drain_once(graph_provider, logger, dispatcher), name="drain_queued_syncs")
 
 
 _DRAIN_LOCKS: dict[str, asyncio.Lock] = {}
@@ -419,72 +433,23 @@ def _drain_lock() -> asyncio.Lock:
 async def _drain_once(
     graph_provider: IGraphDBProvider, logger: logging.Logger, dispatcher: "SyncEventDispatcher"
 ) -> list[str]:
+    """Gather every active org's queue, each under its org, then publish oldest first across orgs within one budget."""
     from app.connectors.core.sync.sync_coordinator import get_coordinator
     from app.connectors.core.sync.sync_dispatcher import SubmitResult
 
+    owed: list[tuple[str, dict, dict]] = []     # (org id, queued doc, app doc)
+    owners: dict[str, bool] = {}                # owed connector id -> claimed by an org visited so far
+    failed: list[str] = []                      # orgs whose read or app listing failed this pass
     try:
-        queued = await graph_provider.get_nodes_by_field_in(
-            CollectionNames.APPS.value,
-            "status",
-            [AppStatus.QUEUED.value],
-            [
-                "id", ConnectorStateKeys.PENDING_RESYNC, "updatedAtTimestamp", "queuedAtTimestamp",
-                ConnectorStateKeys.IS_ACTIVE, ConnectorStateKeys.IS_AUTHENTICATED,
-            ],
+        await for_each_org(
+            graph_provider, "drain_queued_syncs",
+            functools.partial(_read_org_queue, graph_provider, logger, owed, owners, failed), logger, active=True,
         )
     except Exception as e:
-        logger.error(f"Could not read the queued syncs: {e}")
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="drain")
         return []
-
-    # A connector disabled or signed out while it waited is owed nothing: the
-    # start path would skip it, so publishing it only repeats on every pass.
-    runnable = []
-    for doc in queued or []:
-        if doc.get(ConnectorStateKeys.IS_ACTIVE) is False or doc.get(
-            ConnectorStateKeys.IS_AUTHENTICATED
-        ) is False:
-            try:
-                await graph_provider.update_node(
-                    doc["id"],
-                    CollectionNames.APPS.value,
-                    {
-                        "status": AppStatus.IDLE.value,
-                        ConnectorStateKeys.PENDING_RESYNC: False,
-                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                    },
-                )
-                logger.info(f"Dropped queued sync of inactive connector {doc['id']}")
-            except Exception as e:
-                logger.error(f"Could not clear queued inactive connector {doc.get('id')}: {e}")
-            continue
-        runnable.append(doc)
-    queued = runnable
-
-    # pendingResync marks not-yet-submitted, so the next drain does not re-issue
-    # a connector whose event is already in flight. Status stays QUEUED until the
-    # sync starts and writes SYNCING, so anything watching still sees work owed.
-    #
-    # A submitted request whose event never arrives would otherwise strand the
-    # connector: QUEUED, unflagged, and invisible to every later drain. After the
-    # grace window it is treated as owed again. A duplicate of an event that did
-    # arrive late is harmless: the start path drops a request older than the sync
-    # already running for it.
-    stale_before = _now_ms() - _QUEUE_GRACE_MS
-    # Oldest first, by when each connector entered the queue. Unordered, whoever
-    # the org traversal met first won every freed slot.
-    def arrived(d: dict) -> int:
-        return int(d.get("queuedAtTimestamp") or d.get("updatedAtTimestamp") or 0)
-
-    ids = [
-        doc["id"]
-        for doc in sorted(queued or [], key=arrived)
-        if doc.get("id")
-        and (
-            doc.get(ConnectorStateKeys.PENDING_RESYNC)
-            or int(doc.get("updatedAtTimestamp") or 0) < stale_before
-        )
-    ]
-    if not ids:
+    lost = sorted(cid for cid, mine in owners.items() if not mine)
+    if not owed and not lost:
         return []
 
     # A coordinator that can count free slots exactly (one process) gets only as
@@ -497,86 +462,157 @@ async def _drain_once(
     budget = budget if isinstance(budget, int) else None
     if budget is not None and budget <= 0:
         return []
+    # A failed org may own them (Arango and Neo4j show its queue to the next org): no ownership claim without every org's answer.
+    if lost and not failed:
+        logger.warning(
+            "Pending resync flagged on connectors that belong to no active org; leaving them alone",
+            extra={"unowned": len(lost), "target_connector_ids": ",".join(lost)},
+        )
 
-    order = {cid: i for i, cid in enumerate(ids)}
-    specs = sorted(
-        await resolve_resync_specs(graph_provider, ids, logger),
-        key=lambda spec: order.get(spec.connector_id, len(order)),
-    )
+    # Oldest first, by when each connector entered the queue, across orgs.
+    # Unordered, whoever the org traversal met first won every freed slot.
+    def arrived(entry: tuple[str, dict, dict]) -> int:
+        doc = entry[1]
+        return int(doc.get("queuedAtTimestamp") or doc.get("updatedAtTimestamp") or 0)
+
     started: list[str] = []
-    for spec in specs:
+    for org_id, doc, app in sorted(owed, key=arrived):
         if budget is not None and len(started) >= budget:
             break
         if len(started) >= _DRAIN_MAX_PER_PASS:
             logger.warning(
-                "Drain hit its %d-per-pass cap with %d still queued; the next "
-                "completion or sweep takes the rest",
-                _DRAIN_MAX_PER_PASS, len(ids) - len(started),
+                "Drain hit its per-pass cap; the next completion or sweep takes the rest",
+                extra={"cap": _DRAIN_MAX_PER_PASS, "still_queued": len(owed) - len(started)},
             )
             break
-        if await dispatcher.submit(spec) is not SubmitResult.ACCEPTED:
-            continue
-        # Restamp as well as clear: the staleness arm above re-issues anything
-        # older than the grace window, and without a fresh timestamp a row whose
-        # event never arrives qualifies again on every later pass, forever.
-        await graph_provider.update_node(
-            spec.connector_id,
-            CollectionNames.APPS.value,
-            {
-                ConnectorStateKeys.PENDING_RESYNC: False,
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
-        started.append(spec.connector_id)
+        # Published under its own org, so the event is signed for the org it names.
+        with for_org(org_id, job="drain_queued_syncs"):
+            if await dispatcher.submit(_resync_spec(org_id, app)) is not SubmitResult.ACCEPTED:
+                continue
+            started.append(doc["id"])
+            # Restamp as well as clear: the staleness arm re-issues anything
+            # older than the grace window, and without a fresh timestamp a row whose
+            # event never arrives qualifies again on every later pass, forever.
+            try:
+                await graph_provider.update_node(
+                    doc["id"],
+                    CollectionNames.APPS.value,
+                    {
+                        ConnectorStateKeys.PENDING_RESYNC: False,
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    },
+                )
+            except Exception as e:
+                # Published already; the flag stays set, so a later pass re-issues it. One connector's write must not stop the pass.
+                error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="drain", target_connector_id=doc["id"])
 
     if started:
-        logger.info("Released %d queued sync(s): %s", len(started), started)
+        logger.info(
+            "Released queued syncs", extra={"released": len(started), "target_connector_ids": ",".join(started)}
+        )
     return started
 
 
-async def resolve_resync_specs(
-    graph_provider: IGraphDBProvider,
-    connector_ids: list[str],
-    logger: logging.Logger,
-) -> list["SyncSpec"]:
-    """App documents do not carry their org, so walk orgs down to their apps.
+def _is_inactive(doc: dict) -> bool:
+    # A connector disabled or signed out while it waited is owed nothing: the
+    # start path would skip it, so publishing it only repeats on every pass.
+    return doc.get(ConnectorStateKeys.IS_ACTIVE) is False or doc.get(ConnectorStateKeys.IS_AUTHENTICATED) is False
 
-    The same traversal `resume_sync_services` uses, and it only runs on a pass
-    that actually found something flagged.
+
+def _is_owed(doc: dict, stale_before: int) -> bool:
+    # pendingResync marks not-yet-submitted, so the next drain does not re-issue
+    # a connector whose event is already in flight. Status stays QUEUED until the
+    # sync starts and writes SYNCING, so anything watching still sees work owed.
+    #
+    # A submitted request whose event never arrives would otherwise strand the
+    # connector: QUEUED, unflagged, and invisible to every later drain. After the
+    # grace window it is treated as owed again. A duplicate of an event that did
+    # arrive late is harmless: the start path drops a request older than the sync
+    # already running for it.
+    return bool(doc.get(ConnectorStateKeys.PENDING_RESYNC)) or int(doc.get("updatedAtTimestamp") or 0) < stale_before
+
+
+async def _read_org_queue(
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    owed: list[tuple[str, dict, dict]],
+    owners: dict[str, bool],
+    failed: list[str],
+    org_id: str,
+) -> None:
+    """One org's part of a drain pass, run under that org: drop its inactive queued connectors, note its owed ones.
+
+    App documents do not carry their org, so a queued connector is this org's only if the org's ``orgAppRelation`` edges list it.
     """
+    try:
+        queued = await graph_provider.get_nodes_by_field_in(
+            CollectionNames.APPS.value,
+            "status",
+            [AppStatus.QUEUED.value],
+            [
+                "id", ConnectorStateKeys.PENDING_RESYNC, "updatedAtTimestamp", "queuedAtTimestamp",
+                ConnectorStateKeys.IS_ACTIVE, ConnectorStateKeys.IS_AUTHENTICATED,
+            ],
+        )
+        stale_before = _now_ms() - _QUEUE_GRACE_MS
+        # Arango and Neo4j answer every org's queue whatever is bound: skip what an earlier org has claimed (first org wins), and list
+        # this org's apps only when something is left to act on.
+        actionable = [
+            doc for doc in queued or []
+            if doc.get("id") and not owners.get(doc["id"]) and (_is_inactive(doc) or _is_owed(doc, stale_before))
+        ]
+        apps = {
+            app.get("_key") or app.get("id"): app
+            for app in await graph_provider.get_org_apps(org_id, active_only=False, raise_on_error=True) or []
+        } if actionable else {}
+    except Exception as e:
+        # Under for_org: the line carries this org's org_id.
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="drain")
+        failed.append(org_id)
+        return
+
+    for doc in actionable:
+        cid = doc["id"]
+        app = apps.get(cid)
+        if app is None:                             # another org's, or linked to none
+            if _is_owed(doc, stale_before):
+                owners.setdefault(cid, False)
+        elif _is_inactive(doc):
+            owners[cid] = True
+            try:
+                await graph_provider.update_node(
+                    cid,
+                    CollectionNames.APPS.value,
+                    {
+                        "status": AppStatus.IDLE.value,
+                        ConnectorStateKeys.PENDING_RESYNC: False,
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    },
+                )
+                logger.info("Dropped the queued sync of an inactive connector", extra={"target_connector_id": cid})
+            except Exception as e:
+                error_class.log_failure(
+                    logger, "sync_step.failed", e, level=logging.ERROR, step="drain", target_connector_id=cid
+                )
+        elif app.get(ConnectorStateKeys.IS_ACTIVE) is not True:
+            # The start path skips an App with isActive unset, and get_org_apps(active_only=True) never resolved one.
+            owners.setdefault(cid, False)
+        else:
+            owners[cid] = True
+            owed.append((org_id, doc, app))
+
+
+def _resync_spec(org_id: str, app: dict) -> "SyncSpec":
     from app.connectors.core.sync.sync_dispatcher import SyncSpec
 
-    wanted = set(connector_ids)
-    specs = []
-    for org in (await graph_provider.get_all_orgs(active=True)) or []:
-        if not wanted:
-            break
-        org_id = org.get("_key") or org.get("id")
-        if not org_id:
-            continue
-        for app in (await graph_provider.get_org_apps(org_id)) or []:
-            cid = app.get("_key") or app.get("id")
-            if cid not in wanted:
-                continue
-            wanted.discard(cid)
-            # full_sync stays False: the start path already merges the
-            # connector's own pendingFullSync flag, and deciding it here too
-            # would put that decision in two places.
-            specs.append(
-                SyncSpec(
-                    connector_id=cid,
-                    connector_name=(app.get("type") or app.get("name") or "")
-                    .replace(" ", "")
-                    .lower(),
-                    org_id=org_id,
-                )
-            )
-    if wanted:
-        logger.warning(
-            "Pending resync flagged on %d connector(s) that belong to no active "
-            "org; leaving them alone: %s", len(wanted), sorted(wanted),
-        )
-    return specs
+    # full_sync stays False: the start path already merges the
+    # connector's own pendingFullSync flag, and deciding it here too
+    # would put that decision in two places.
+    return SyncSpec(
+        connector_id=app.get("_key") or app.get("id"),
+        connector_name=(app.get("type") or app.get("name") or "").replace(" ", "").lower(),
+        org_id=org_id,
+    )
 
 
 async def _reissue_pending_resync(
@@ -607,27 +643,21 @@ async def _reissue_pending_resync(
             return
         dispatcher = get_dispatcher()
         if dispatcher is None:
-            logger.warning(
-                "Pending resync for %s not re-issued here (no dispatcher); left "
-                "flagged for the sweep", connector_id,
-            )
+            logger.warning("Pending resync not re-issued here (no dispatcher); left flagged for the sweep")
             return
         result = await dispatcher.submit(resync_spec)
         if result is not SubmitResult.ACCEPTED:
             # Still pending by definition — leave the flag for the sweep.
-            logger.warning(
-                "Re-issued resync for %s was not accepted (%s); left flagged",
-                connector_id, result,
-            )
+            logger.warning("Re-issued resync was not accepted; left flagged", extra={"submit_result": result.value})
             return
         await graph_provider.update_node(
             connector_id,
             CollectionNames.APPS.value,
             {ConnectorStateKeys.PENDING_RESYNC: False},
         )
-        logger.info("Re-issued declined resync for %s", connector_id)
+        logger.info("Re-issued the declined resync")
     except Exception as e:
-        logger.error(f"Could not re-issue pending resync for {connector_id}: {e}")
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="reissue")
 
 
 def _begin_full_sync_run(
@@ -643,6 +673,28 @@ def _begin_full_sync_run(
 # Connectors whose next full sync is the retry owed by one that skipped part of the source.
 # shortcut: in memory, so a restart or another sync process may owe one more retry; persist it if that matters.
 _INCOMPLETE_FULL_SYNC_RETRYING: set[str] = set()
+
+
+async def _finish_full_sync_memberships(
+    connector: "BaseConnector",
+    connector_id: str,
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    seen: FullSyncSeen,
+) -> bool:
+    """Give groups whose members came one at a time the full list, in one write
+    each; only now is that list known to be complete. False when that failed
+    and another full sync is owed."""
+    finish = getattr(getattr(connector, "data_entities_processor", None), "finish_full_sync_memberships", None)
+    if not callable(finish):
+        return True
+    try:
+        await finish(connector_id, seen)
+    except Exception as e:
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="finish_memberships")
+        await note_structure_change(graph_provider, connector_id, logger)  # part of it may have run
+        return False
+    return True
 
 
 async def _unlink_what_full_sync_missed(
@@ -663,10 +715,15 @@ async def _unlink_what_full_sync_missed(
     coverage = coverage() if callable(coverage) else None
     if not isinstance(coverage, FullSyncCoverage):
         coverage = FullSyncCoverage()
+    if not coverage.lists_everything:
+        logger.debug("Full sync: the source lists only part of itself; nothing is unlinked")
+        if not coverage.complete:
+            return True
+        # The groups' members were still read in full, so a member removed at the source goes.
+        return await _finish_full_sync_memberships(connector, connector_id, graph_provider, logger, seen)
     if not coverage.complete:
         logger.warning(
-            f"Full sync of {connector_id} skipped part of the source after an error; "
-            "nothing it did not see is unlinked this time"
+            "Full sync skipped part of the source after an error; nothing it did not see is unlinked this time"
         )
         # Owe one retry, not one per retry: a source that always fails part of the
         # way (a quota, one unreadable item) would otherwise run in full forever.
@@ -678,14 +735,11 @@ async def _unlink_what_full_sync_missed(
     _INCOMPLETE_FULL_SYNC_RETRYING.discard(connector_id)
     if seen.count() == 0:
         # A sync that wrote nothing at all most likely failed without saying so.
-        logger.warning(f"Full sync of {connector_id} wrote nothing; leaving every link in place")
+        logger.warning("Full sync wrote nothing; leaving every link in place")
         return True
+    if not await _finish_full_sync_memberships(connector, connector_id, graph_provider, logger, seen):
+        return False
     try:
-        # Groups whose members came one at a time get the full list now, in one
-        # write each; only now is that list known to be complete.
-        finish = getattr(getattr(connector, "data_entities_processor", None), "finish_full_sync_memberships", None)
-        if callable(finish):
-            await finish(connector_id, seen)
         deleted, ok = await graph_provider.unlink_nodes_missed_by_full_sync(
             connector_id,
             seen.by_collection,
@@ -693,26 +747,41 @@ async def _unlink_what_full_sync_missed(
             windowed_group_types=coverage.windowed_group_types,
         )
     except Exception as e:
-        logger.error(f"Could not unlink what the full sync of {connector_id} missed: {e}")
+        error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="unlink")
         await note_structure_change(graph_provider, connector_id, logger)  # part of it may have run
         return False
     if deleted or not ok:
         # a structural write made outside the transaction store (it removes hierarchy, group, inherit and grant edges)
         await note_structure_change(graph_provider, connector_id, logger)
     if ok:
-        logger.info(f"Full sync of {connector_id}: removed {deleted} edge(s) of nodes it did not see")
+        logger.info("Full sync removed the edges of nodes it did not see", extra={"removed_edges": deleted})
     return bool(ok)
 
 
-def _run_outcome(*, stopped: bool, failed: bool, skipped: bool, finished: bool) -> SyncRunOutcome:
-    if stopped:
+def _run_outcome(*, stopped: bool, failed: bool, skipped: bool, finished: bool, lost: bool) -> SyncRunOutcome:
+    # A lost lease ends _run_until_aborted without raising, so `finished` is set: the run was still cut short.
+    if stopped or lost:
         return SyncRunOutcome.STOPPED
     if failed:
         return SyncRunOutcome.FAILED
     if skipped:
         return SyncRunOutcome.SKIPPED
-    # Not finished without an error: the lease was lost and the run cut short.
+    # Only a BaseException other than CancelledError (SystemExit) leaves every flag unset.
     return SyncRunOutcome.SUCCEEDED if finished else SyncRunOutcome.STOPPED
+
+
+def _stop_cause(lease: SyncLease | None, coordinator: SyncCoordinator | None, *, lost: bool) -> str:
+    """Why a stopped run stopped, for its sync_run.end line."""
+    if lost:
+        return "lease_lost"
+    if lease is not None and lease.stop_requested.is_set():
+        return "requested"
+    if getattr(coordinator, "shutting_down", False) is True:
+        return "shutdown"
+    return "cancelled"
+
+
+_START_STATUS_TRIES = 3
 
 
 async def run_sync_task(
@@ -740,7 +809,13 @@ async def run_sync_task(
     # downstream processing can be correlated back to the run.
     run_sync_id = str(uuid4())
     run_sync_token = set_run_sync_id(run_sync_id)
-    logger.info(f"▶️ Starting sync run {run_sync_id} for connector {connector_id}")
+    run_stats = SyncRunStats()
+    run_stats_token = bind_run_stats(run_stats)
+    # On every line of the run: the connector's, the processor's and the finalizer task's (it copies the context).
+    fields_token = bind_log_fields(run_id=run_sync_id, connector_id=connector_id)
+    sync_type = "full" if full_sync else "incremental"
+    log_event(logger, "sync_run.start", sync_type=sync_type)
+    error: Exception | None = None
     try:
         # Inside the try: if it raised before it, the finalizer below would never
         # write IDLE or release the lease.
@@ -751,10 +826,18 @@ async def run_sync_task(
         connector.last_action_items = None
         if full_sync:
             processor, seen = _begin_full_sync_run(connector, connector_id)
-        await write_app_status(
-            graph_provider, logger, connector_id, start_status,
-            full_sync_started=full_sync, run_started=True,
-        )
+        # Until this lands the connector is still served from its stamps (`app_is_served`), and the grants this run writes are hidden from it.
+        # Retried, not required: a write that keeps failing (a schema that rejects it) must not stop every sync of the connector.
+        for attempt in range(_START_STATUS_TRIES):
+            if await write_app_status(
+                graph_provider, logger, connector_id, start_status,
+                full_sync_started=full_sync, run_started=True,
+            ):
+                break
+            if attempt + 1 < _START_STATUS_TRIES:
+                await asyncio.sleep(attempt + 1)
+        else:
+            logger.error("the %s status of connector %s could not be written; it is read from its stamps until the run ends", start_status, connector_id)
         # A resync asked for before this run began is served by it. Left set, the
         # flag handed the finalizer a request that was already satisfied, and
         # the connector synced twice back to back. Except a full sync owed to an
@@ -775,7 +858,7 @@ async def run_sync_task(
                     {ConnectorStateKeys.PENDING_RESYNC: False},
                 )
         except Exception as e:
-            logger.warning(f"Could not clear pendingResync for {connector_id}: {e}")
+            error_class.log_failure(logger, "sync_step.failed", e, level=logging.WARNING, step="clear_pending_resync")
         incomplete: IncompleteSyncError | None = None
         try:
             if lease is None:
@@ -804,8 +887,9 @@ async def run_sync_task(
         # Not a crash: the connector declined to run (e.g. Local FS with no
         # desktop connected). Logged only; the UI reads live presence.
         skipped_code = exc.code
-    except Exception:
+    except Exception as exc:
         failed = True
+        error = exc
         raise
     finally:
         if seen is not None:
@@ -813,24 +897,45 @@ async def run_sync_task(
                 processor.end_full_sync_run(connector_id, seen)
             except Exception as e:
                 # Logged, not raised: the finalizer below must still run.
-                logger.error(f"Could not end full-sync tracking for {connector_id}: {e}")
+                error_class.log_failure(logger, "sync_step.failed", e, level=logging.ERROR, step="full_sync_tracking")
         reset_run_sync_id(run_sync_token)
+        # Before the finalizer task copies the context: its writes are not the run's.
+        reset_run_stats(run_stats_token)
         # A stop that arrives through the lease ends _run_until_aborted without
         # raising, so it has to be read here or it would log as a clean finish.
         if lease is not None and lease.stop_requested.is_set():
             stopped = True
-        elapsed = time.monotonic() - start
-        mins, secs = divmod(elapsed, 60)
-        elapsed_str = f"{int(mins)}m {secs:.1f}s" if mins else f"{secs:.1f}s"
-        if stopped:
-            logger.warning(f"⚠️ Sync cancelled for connector {connector_id} after {elapsed_str}")
-        elif failed:
-            logger.error(f"❌ Sync failed for connector {connector_id} after {elapsed_str}")
-        elif skipped_code:
-            logger.info(f"Sync skipped for connector {connector_id} ({skipped_code}, {elapsed_str})")
+        lease_lost = lease is not None and lease.lost.is_set()
+        outcome = _run_outcome(
+            stopped=stopped, failed=failed, skipped=skipped_code is not None, finished=finished, lost=lease_lost
+        )
+        # A stop or a lost lease returns from _run_until_aborted without
+        # raising, so `finished` alone would call that run complete.
+        # A failed unlink owes one too: what the sync did not see is
+        # still linked, revoked access included.
+        full_sync_cut_short = full_sync and (not finished or stopped or unlink_failed or lease_lost)
+        stop_cause = _stop_cause(lease, coordinator, lost=lease_lost) if outcome is SyncRunOutcome.STOPPED else None
+        end_fields: dict[str, Any] = {
+            "sync_type": sync_type,
+            "duration_ms": int((time.monotonic() - start) * 1000),
+            # The next sync of this connector runs in full.
+            "full_sync_cut_short": full_sync_cut_short or None,
+            **run_stats.end_fields(),
+        }
+        # The run's one failure line; the task manager then logs the same exception at DEBUG.
+        if error is not None:
+            error_class.log_failure(logger, "sync_run.end", error, reason=stop_cause, **end_fields)
+        elif outcome is SyncRunOutcome.STOPPED:
+            log_event(
+                logger, "sync_run.end", level=logging.WARNING if lease_lost else logging.INFO,
+                outcome="failure", error_class="cancelled", reason=stop_cause, **end_fields,
+            )
+        elif outcome is SyncRunOutcome.SKIPPED:
+            log_event(logger, "sync_run.end", outcome="skipped", reason=skipped_code, **end_fields)
         else:
-            logger.info(
-                f"✅ Sync finished for connector {connector_id} — total time: {elapsed_str}"
+            log_event(
+                logger, "sync_run.end", level=logging.WARNING if full_sync_cut_short else logging.INFO,
+                outcome="partial" if full_sync_cut_short else "success", **end_fields,
             )
         # Run the finalizer as its own task: a second cancel (another stop
         # request, appDisabled, shutdown) aimed at this task must not be able to
@@ -854,22 +959,10 @@ async def run_sync_task(
                 getattr(
                     getattr(connector, "data_entities_processor", None), "org_id", None
                 ),
-                outcome=_run_outcome(stopped=stopped, failed=failed, skipped=skipped_code is not None, finished=finished),
+                outcome=outcome,
                 summary=getattr(connector, "last_sync_summary", None),
                 action_items=getattr(connector, "last_action_items", None),
-                # A stop or a lost lease returns from _run_until_aborted without
-                # raising, so `finished` alone would call that run complete.
-                # A failed unlink owes one too: what the sync did not see is
-                # still linked, revoked access included.
-                full_sync_cut_short=(
-                    full_sync
-                    and (
-                        not finished
-                        or stopped
-                        or unlink_failed
-                        or (lease is not None and lease.lost.is_set())
-                    )
-                ),
+                full_sync_cut_short=full_sync_cut_short,
                 # Cut short by the shutdown itself. A stop someone asked for
                 # (stop_requested, which also covers one still winding down when
                 # the shutdown arrived) and a run that raised are not: neither
@@ -893,4 +986,8 @@ async def run_sync_task(
         # (Task._fut_waiter), so a bare `await cleanup` would let a second
         # cancel kill the cleanup itself. Shielded, the cancel interrupts
         # only this await and the cleanup runs to completion on the loop.
-        await asyncio.shield(cleanup)
+        try:
+            await asyncio.shield(cleanup)
+        finally:
+            # After the cleanup task copied the context, so its lines keep the run's fields.
+            reset_log_fields(fields_token)

@@ -137,9 +137,13 @@ async def test_a_search_hit_names_its_repo() -> None:
 class _Container:
     def __init__(self, graph) -> None:
         self._graph = graph
+        self.retrievals = 0
 
     async def graph_provider(self) -> Repos:
         return self._graph
+
+    async def retrieval_service(self) -> None:
+        self.retrievals += 1
 
     def logger(self) -> logging.Logger:
         return logging.getLogger("test")
@@ -190,6 +194,67 @@ async def test_outline_and_entry_points_routes_answer_for_one_repo(blobs) -> Non
     assert bad.status_code == 422
 
 
+async def test_the_search_route_takes_the_external_mode_and_a_name(blobs) -> None:
+    res = _client(Repos()).post("/api/v1/code-graph/search", json={
+        "repo": "acme/admin", "pattern": "requests", "mode": "external", "name": "get"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["mode"] == "external" and body["module"] == "requests" and body["name"] == "get"
+    assert body["matches"] == [] and "hint" in body
+
+
+async def test_only_a_path_free_text_search_builds_the_retrieval_service(blobs) -> None:
+    client = _client(Repos())
+    for body in ({"pattern": "create_app"}, {"pattern": "x", "mode": "text", "path": "app/"},
+                 {"pattern": "requests", "mode": "external"}):
+        client.post("/api/v1/code-graph/search", json={"repo": "acme/admin", **body})
+    assert client.app.container.retrievals == 0
+    res = client.post("/api/v1/code-graph/search", json={"repo": "acme/admin", "pattern": "x", "mode": "text"})
+    assert client.app.container.retrievals == 1
+    assert "path" in res.json()["error"]
+
+
+async def test_impact_route_takes_edge_types_and_names_a_bad_one(blobs, monkeypatch) -> None:
+    passed: list[object] = []
+    impact = routes.CodeGraph.impact
+
+    async def spy(self, **kwargs):  # noqa: ANN202
+        passed.append(kwargs.get("edge_types"))
+        return await impact(self, **kwargs)
+
+    monkeypatch.setattr(routes.CodeGraph, "impact", spy)
+    client = _client(Repos())
+    target = {"repo": "acme/admin", "file_path": MAIN, "qualified_name": "function:create_app"}
+    calls = client.post("/api/v1/code-graph/impact", json={**target, "edge_types": ["CALLS"]})
+    assert calls.status_code == 200, calls.text
+    assert "error" not in calls.json()
+    assert passed == [["CALLS"]]  # the route hands the filter on; the tool's tests cover applying it
+    bad = client.post("/api/v1/code-graph/impact", json={**target, "edge_types": ["CALLZ"]})
+    assert "unknown edge_types ['CALLZ']" in bad.json()["error"]
+
+
+async def test_impact_of_diff_route_answers_for_one_repo_and_refuses_an_empty_patch() -> None:
+    client = _client(Repos())
+    patch = f"--- a/{MAIN}\n+++ b/{MAIN}\n@@ -2 +2 @@\n-a\n+b\n"
+    res = client.post("/api/v1/code-graph/impact-of-diff", json={"repo": "acme/admin", "patch": patch})
+    assert res.status_code == 200, res.text
+    assert {c["file_path"] for c in res.json()["changed"]} == {MAIN}
+    assert client.post("/api/v1/code-graph/impact-of-diff",
+                       json={"repo": "acme/admin", "patch": ""}).status_code == 422
+    assert client.post("/api/v1/code-graph/impact-of-diff",
+                       json={"repo": "acme/admin", "patch": "x" * (routes.MAX_PATCH_CHARS + 1)}).status_code == 422
+
+
+async def test_history_route_answers_for_one_repo_and_bounds_its_limit() -> None:
+    client = _client(Repos())
+    res = client.post("/api/v1/code-graph/history", json={"repo": "acme/admin", "file_path": MAIN})
+    assert res.status_code == 200, res.text
+    assert res.json()["pull_requests"] == [] and res.json()["file_path"] == MAIN
+    assert res.json()["untrusted"], "PR and ticket titles are written by whoever opens them"
+    assert client.post("/api/v1/code-graph/history",
+                       json={"repo": "acme/admin", "file_path": MAIN, "limit": 101}).status_code == 422
+
+
 async def test_read_by_search_hit_needs_no_repo(blobs) -> None:
     res = _client(Repos()).post("/api/v1/code-graph/read", json={"record_id": "rec-shop"})
     assert res.status_code == 200, res.text
@@ -224,6 +289,32 @@ async def test_repos_route_lists_readable_repos() -> None:
         {"repo": "acme/admin", "source": "GitHub", "connector_id": CONN, "graph_status": "never_built"},
     ]}
 
+
+async def test_repos_route_says_the_commit_each_repo_was_synced_at() -> None:
+    """Stamped by the git connectors on the code group; a repo not yet stamped says nothing."""
+    graph = Repos()
+    next(g for g in graph.groups if g["_key"] == "g-shop-code")["lastSyncedCommit"] = "9" * 40
+    by_repo = {r["repo"]: r for r in _client(graph).get("/api/v1/code-graph/repos").json()["repos"]}
+    assert by_repo["acme/shop"]["indexed_commit"] == "9" * 40
+    assert "indexed_commit" not in by_repo["acme/admin"]
+
+
+
+@pytest.mark.parametrize(("route", "body"), [
+    ("path", {"file_path_a": "no/such/a.py", "qualified_name_a": "function:a",
+              "file_path_b": "no/such/b.py", "qualified_name_b": "function:b"}),
+    ("search", {"pattern": "no_such_name_anywhere"}),
+])
+async def test_a_result_naming_no_file_says_the_named_repos_commit(route, body, blobs) -> None:
+    """Nothing was found, so no file or block says a commit; the one repo the call named still does."""
+    graph = Repos()
+    next(g for g in graph.groups if g["_key"] == "g-shop-code")["lastSyncedCommit"] = "9" * 40
+    client = _client(graph)
+    shop = client.post(f"/api/v1/code-graph/{route}", json={"repo": "acme/shop", **body})
+    assert shop.status_code == 200, shop.text
+    assert shop.json()["indexed_commit"] == "9" * 40
+    admin = client.post(f"/api/v1/code-graph/{route}", json={"repo": "acme/admin", **body})
+    assert admin.status_code == 200 and "indexed_commit" not in admin.json()  # never stamped
 
 async def test_repos_route_reports_each_repos_graph_status() -> None:
     """Built, pending or failed is visible per repo (O-3)."""

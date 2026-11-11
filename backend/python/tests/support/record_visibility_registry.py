@@ -228,4 +228,5 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "delete_blocks_for_records": (Rule.WRITE, ""),
     "batch_upsert_node_relations": (Rule.WRITE, ""),
     "delete_record_entity_relations": (Rule.WRITE, "one record's own edges, whatever its state"),
+    "replace_record_entity_relations": (Rule.WRITE, "one record's own edges, whatever its state"),
 }

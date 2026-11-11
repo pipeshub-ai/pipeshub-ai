@@ -27,6 +27,7 @@ from app.models.blocks import (
     BlockType,
     GroupType,
     SemanticMetadata,
+    group_caption,
     summary_with_captions,
 )
 from app.models.entities import (
@@ -57,6 +58,7 @@ from app.modules.qna.prompt_templates import (
 )
 from app.modules.reconciliation.service import ReconciliationMetadata
 from app.modules.transformers.blob_storage import BlobStorage
+from app.modules.transformers.code_units import RESIDUE_UNIT_KIND
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.collection_registry import CollectionRegistry  # noqa: TC001
@@ -64,7 +66,7 @@ from app.services.vector_db.filters import org_for_filter
 from app.services.vector_db.strategy import QueryContext
 from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 from app.utils.image_utils import get_extension_from_mimetype
-from app.utils.jinja_templates import compiled_template
+from app.utils.jinja_templates import compiled_template, one_line
 from app.utils.logger import create_logger
 from app.utils.text_fragments import (  # noqa: F401  (re-exported for existing importers)
     FRAGMENT_DIRECTIVE_DELIMITER,
@@ -3275,6 +3277,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
         if (
             (located is None or not located[2])
             and not meta.get("isRecordSummary")
+            and meta.get("unitKind") != RESIDUE_UNIT_KIND
             and meta.get("blockId")
             and vrid
             and vrid not in virtual_record_id_to_recon_metadata
@@ -3299,6 +3302,10 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
         result["virtual_record_id"] = virtual_record_id
 
         meta = result.get("metadata")
+
+        if meta.get("unitKind") == RESIDUE_UNIT_KIND:
+            # A file's short top-level lines, for the keyword index; no block to cite.
+            continue
 
         if meta.get("isRecordSummary"):
             chunk_id = f"{virtual_record_id}-record_summary"
@@ -3488,6 +3495,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                 label, first_child_block_index = group_text_result
                 result["content"] = ("", group_blocks)
                 result["block_type"] = label
+                result["group_caption"] = _caption_of(block_groups[target_index])
                 result["virtual_record_id"] = virtual_record_id
                 result["block_index"] = first_child_block_index
                 result["block_group_index"] = target_index
@@ -3506,7 +3514,13 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
         elif block_type == BlockType.CODE.value and block.get("parent_index") is None:
             # Without this a top-level code hit is dropped here and never reaches
             # build_message_content_array, however well it scored.
-            result["content"] = _safe_stringify_content(block.get("data", ""))
+            if is_block_group:
+                # A class hit is its header unit (code_units.class_header_unit), the bounded text its
+                # point embedded: the group's own text is the whole class, which can be the whole file.
+                meta_dict = block.get("code_metadata") if isinstance(block.get("code_metadata"), dict) else {}
+                result["content"] = result.get("content") or meta_dict.get("signature") or ""
+            else:
+                result["content"] = _safe_stringify_content(block.get("data", ""))
             result["qualified_name"] = block_qualified_name(block)
         elif block_type == BlockType.IMAGE.value:
             data = block.get("data")
@@ -3705,6 +3719,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             label, first_child_block_index = group_text_result
             result["content"] = ("", group_blocks)
             result["block_type"] = label
+            result["group_caption"] = _caption_of(block_groups[target_index])
             result["virtual_record_id"] = virtual_record_id
             result["block_index"] = first_child_block_index
             result["block_group_index"] = target_index
@@ -4971,15 +4986,26 @@ def _without_pixels(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _group_text(
     template: "Template", group_index: object, label: object, entries: list[dict[str, Any]], file_path: str,
+    caption: str = "",
 ) -> str:
     """A group's children in `block_group_prompt`'s form."""
     return template.render(
         block_group_index=group_index,
         block_group_web_url="",
         label=label,
+        caption=caption,
         blocks=entries,
         file_path=file_path,
     )
+
+
+def _group_header(label: object, group_index: object, caption: str) -> str:
+    """The header line of a group rendered block by block (one with images)."""
+    return f"[{label} #{group_index}{f': {one_line(caption)}' if caption else ''}]\n"
+
+
+def _caption_of(block_group: Mapping[str, Any]) -> str:
+    return group_caption(block_group.get("sub_type"), block_group.get("name"), block_group.get("description"))
 
 
 def _mint_refs(
@@ -5567,6 +5593,7 @@ def record_to_message_content(
                 covered_until[block_group_id] = barrier - 1 if barrier is not None else math.inf
                 has_images = any(gb.get("block_type") == BlockType.IMAGE.value for gb in group_blocks)
                 label = block_group.get("type")
+                caption = _caption_of(block_group)
                 # A group renders child by child, like a table: a continuation
                 # resumes at its child, and a selection reads its own children
                 # with the ones between announced inside the group.
@@ -5582,8 +5609,8 @@ def record_to_message_content(
                 if not units:
                     continue
                 widest_ref = f"ref{len(ref_mapper.ref_to_url) + len(group_blocks)}"
-                empty_text = _group_text(template, parent_index, label, [], record_file_path)
-                image_header = f"[{label} #{parent_index}]\n"
+                empty_text = _group_text(template, parent_index, label, [], record_file_path, caption)
+                image_header = _group_header(label, parent_index, caption)
                 spent = len(image_header) if has_images else len(empty_text) + 2
                 kept: list[dict[str, Any]] = []
                 kept_indices: list[int] = []
@@ -5599,7 +5626,7 @@ def record_to_message_content(
                         priced = [gap_entry, *priced]
                     cost = (
                         _images_render_bound(priced) if has_images
-                        else len(_group_text(template, parent_index, label, priced, record_file_path))
+                        else len(_group_text(template, parent_index, label, priced, record_file_path, caption))
                         - len(empty_text)
                     )
                     if not render_budget.can_afford_chars(spent + cost):
@@ -5623,7 +5650,7 @@ def record_to_message_content(
                     # reading resumes at the child after it.
                     _mint_refs(unfit_unit, ref_mapper, rec_frontend_url, rec_record_id)
                     clipped_text = _group_text(
-                        template, parent_index, label, _without_pixels(unfit_unit), record_file_path,
+                        template, parent_index, label, _without_pixels(unfit_unit), record_file_path, caption,
                     )
                     emitted = render_budget.take(f"{clipped_text}\n\n")
                     if not emitted:
@@ -5647,7 +5674,7 @@ def record_to_message_content(
                         image_admission=admission, image_origin=image_origin,
                     ))
                 else:
-                    group_text = _group_text(template, parent_index, label, kept, record_file_path)
+                    group_text = _group_text(template, parent_index, label, kept, record_file_path, caption)
                     printed = [{"type": "text", "text": f"{group_text}\n\n"}]
                 render_budget.charge_chars(sum(len(item.get("text", "")) for item in printed))
                 content.extend(printed)
@@ -5865,6 +5892,7 @@ def record_to_text(record: dict[str, Any]) -> str:
                 rendered_form = template.render(
                     block_group_index=parent_index,
                     label=block_group.get("type"),
+                    caption=_caption_of(block_group),
                     blocks=group_blocks,
                     file_path=record.get("file_path", "") or "",
                 )
@@ -6257,6 +6285,7 @@ def build_message_content_array(
                         block_group_index=block_group_index,
                         block_group_web_url="",
                         label=block_type,
+                        caption=result.get("group_caption", ""),
                         blocks=group_blocks,
                         file_path=current_file_path,
                     )
@@ -6267,7 +6296,7 @@ def build_message_content_array(
                     })
                 else:
                     # Emit blocks in reading order to preserve text/image interleaving.
-                    header = f"[{block_type} #{block_group_index}]\n"
+                    header = _group_header(block_type, block_group_index, result.get("group_caption", ""))
                     current_record_has_blocks = True
                     content.append({
                         "type": "text",

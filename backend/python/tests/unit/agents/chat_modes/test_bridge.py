@@ -11,12 +11,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncIterator, Callable
+import logging
+from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any, Never
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.agent_loop_lib.core.responses import TokenUsage
+from app.agent_loop_lib.core.types import AgentResult, Goal
+from app.agent_loop_lib.events.base import AgentEvent, EventType, RunContext
 from app.agents.actions.knowledge_graph.ops.id_recovery import unresolved_id_hint
 from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_SUMMARIES_ENV_VAR
 from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
@@ -37,6 +41,7 @@ from app.agents.chat_modes.policy import (
 from app.agents.chat_modes.prefetch import PrefetchResult
 from app.config.constants.arangodb import Connectors
 from app.utils.chat_helpers import CitationRefMapper
+from app.utils.logger import log_record_fields
 from tests.unit.agents.chat_modes.test_internal_search_prompt import (
     _BEFORE_THE_SWITCHES,
 )
@@ -703,6 +708,36 @@ class TestRunChatStream:
         check.assert_awaited_once()
         assert events[-1].startswith("event: complete\n")
 
+    async def test_a_scope_check_that_raises_is_one_classed_line_and_the_turn_runs(self, caplog: pytest.LogCaptureFixture) -> None:
+        from app.utils.logger import log_record_fields
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, Any, Any, list[Any]]:
+            return _stream_agent(MagicMock(success=True, error=None, output="ok")), MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        caplog.set_level(logging.DEBUG)
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.unreadable_scope_error", new=AsyncMock(side_effect=TimeoutError("graph slow"))),
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=AsyncMock(return_value=None)),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**{**self._base_kwargs(policy=INTERNAL_SEARCH_POLICY), "log": logging.getLogger("test.bridge")})]
+
+        assert events[-1].startswith("event: complete\n")
+        (failed,) = [r for r in caplog.records if r.getMessage() == "turn_scope.check_failed"]
+        assert (failed.levelno, log_record_fields(failed)["error_class"]) == (logging.WARNING, "timeout")
+
     async def test_internal_search_prefetch_merges_into_goal_and_tool_state(self) -> None:
         """`INTERNAL_SEARCH_POLICY.prefetch_retrieval=True` -- a non-empty
         `PrefetchResult` must be folded into `context.tool_state` and
@@ -1294,6 +1329,38 @@ class TestRunChatStream:
         assert events[-1].startswith("event: complete\n")
         sandbox_manager.destroy_all.assert_awaited_once()
 
+    async def test_a_sandbox_cleanup_that_fails_is_one_classed_line(self, caplog: pytest.LogCaptureFixture) -> None:
+        from app.utils.logger import log_record_fields
+
+        sandbox_manager = MagicMock()
+        sandbox_manager.destroy_all = AsyncMock(side_effect=RuntimeError("container stuck"))
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, Any, Any, list[Any]]:
+            context.sandbox_manager = sandbox_manager
+            return _stream_agent(MagicMock(success=True, error=None, output="ok")), MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
+            await event_sink.write({"event": "complete", "data": {"answer": "ok"}})
+            return {"answer": "ok"}
+
+        caplog.set_level(logging.DEBUG)
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**{**self._base_kwargs(), "log": logging.getLogger("test.bridge")})]
+
+        assert events[-1].startswith("event: complete\n")
+        (failed,) = [r for r in caplog.records if r.getMessage() == "agent_turn.cleanup_failed"]
+        assert (log_record_fields(failed)["step"], log_record_fields(failed)["error_class"]) == ("sandbox", "internal")
+
 
     async def test_client_disconnect_mid_stream_cancels_producer_and_running_agent(self) -> None:
         """Mirrors `run_agent_loop_stream()`'s disconnect-cancellation
@@ -1559,3 +1626,275 @@ class TestConnectorFlagsReachChatState:
         seen = await self._captured_kwargs(has_sql=True, has_slack=True, has_code=True)
         assert (seen["has_sql_connector"], seen["has_slack_connector"],
                 seen["has_code_connector"]) == (True, True, True)
+
+
+_TURN_LOG = logging.getLogger("tests.chat_bridge")
+_RUN_ID = "5d1e2f3a-4b5c-4d6e-8f7a-9b0c1d2e3f4a"
+
+
+def _turn_kwargs(policy: ChatModePolicy = AGENT_POLICY, **overrides: object) -> dict[str, Any]:
+    kwargs = TestRunChatStream._base_kwargs(policy=policy)
+    kwargs["query_info"] = {**kwargs["query_info"], "runId": _RUN_ID, "query": "query-sentinel"}
+    kwargs["log"] = _TURN_LOG
+    return {**kwargs, **overrides}
+
+
+def _turn_ends(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
+    return [
+        {**log_record_fields(r), "level": r.levelno}
+        for r in caplog.records if r.getMessage() == "agent_turn.end"
+    ]
+
+
+async def _finalize(self, *, event_sink, agent_output=None, **kwargs) -> dict[str, Any]:
+    await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+    return {"answer": agent_output}
+
+
+def _event(event_type: EventType, payload: dict[str, Any], *, child: bool = False) -> AgentEvent:
+    root = RunContext(role_name="assistant", model="gpt-4")
+    return AgentEvent(event_type=event_type, run_context=root.child(role_name="sub") if child else root, payload=payload)
+
+
+# Two model turns, one tool call that failed; a sub-agent's turn inside it is not counted.
+_ONE_TOOL_TURN = (
+    _event(EventType.TURN_START, {"turn_index": 0}),
+    _event(EventType.TOOL_CALL, {"tool": "retrieval", "tool_call_id": "c1"}),
+    _event(EventType.TURN_START, {"turn_index": 0}, child=True),
+    _event(EventType.TOOL_RESULT, {"tool": "retrieval", "tool_call_id": "c1", "is_error": True}),
+    _event(EventType.TURN_START, {"turn_index": 1}),
+)
+
+
+def _creating(  # noqa: ANN202
+    result: AgentResult | None, clarifying: list[Any] | None = None, events: tuple[AgentEvent, ...] = (),
+):
+    def _agent() -> MagicMock:
+        agent = MagicMock()
+
+        async def _fake_stream(goal, **kwargs) -> AsyncIterator[AgentEvent]:
+            for event in events:
+                logging.getLogger("tests.chat_bridge.tool").info("tool ran")
+                yield event
+            agent.last_stream_result = result
+
+        agent.stream = _fake_stream
+        return agent
+
+    async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple:
+        context.usage_ledger.add("main", TokenUsage(input_tokens=50, output_tokens=5))
+        return _agent(), MagicMock(), MagicMock(constraints=[], description="g"), clarifying or []
+
+    return _fake_create
+
+
+@contextlib.contextmanager
+def _a_built_turn(create: Any) -> Iterator[None]:  # noqa: ANN401
+    sql_patch, slack_patch = _patch_connectors()
+    with (
+        patch(
+            "app.modules.agents.qna.chat_state.build_initial_state",
+            return_value={"org_id": "org-1", "user_id": "user-1", "query": "query-sentinel"},
+        ),
+        sql_patch,
+        slack_patch,
+        patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=create),
+        patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_finalize),
+        patch("app.agents.chat_modes.bridge.emit_pre_run_clarification", new=AsyncMock()),
+    ):
+        yield
+
+
+@pytest.fixture
+def turn_caplog(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture:
+    caplog.set_level(logging.DEBUG)
+    return caplog
+
+
+class TestTheAssistantTurnEndLine:
+    """`run_chat_stream` ends every turn with one `agent_turn.end`, like the agent route."""
+
+    async def test_a_finished_turn(self, turn_caplog: pytest.LogCaptureFixture) -> None:
+        result = AgentResult(goal=Goal(description="g"), output="42", end_event="agent_complete")
+        with _a_built_turn(_creating(result, events=_ONE_TOOL_TURN)):
+            events = [chunk async for chunk in run_chat_stream(**_turn_kwargs(), model_name="gpt-4")]
+        _TURN_LOG.info("after the stream")
+
+        assert events[-1].startswith("event: complete\n")
+        [end] = _turn_ends(turn_caplog)
+        assert {k: end[k] for k in (
+            "stop_reason", "run_id", "mode", "model", "llm_calls", "tokens_in", "turns", "tool_calls", "tool_errors",
+            "level",
+        )} == {
+            "stop_reason": "done", "run_id": _RUN_ID, "mode": "agent", "model": "gpt-4",
+            "llm_calls": 1, "tokens_in": 50, "turns": 2, "tool_calls": 1, "tool_errors": 1, "level": logging.INFO,
+        }
+        assert "query-sentinel" not in str(end)
+        by_message = {r.getMessage(): log_record_fields(r) for r in turn_caplog.records}
+        assert by_message["tool ran"]["run_id"] == _RUN_ID  # bound inside the run
+        assert "run_id" not in by_message["after the stream"]  # and nowhere else
+
+    async def test_a_frame_that_cannot_be_written_ends_the_turn_as_an_error(
+        self, turn_caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        agent = MagicMock()
+
+        async def _stream(goal, **kwargs) -> AsyncIterator[Any]:
+            await _sink.write({"event": "status", "data": object()})
+            await asyncio.sleep(30)
+            return
+            yield  # pragma: no cover - marks this an async generator
+
+        agent.stream = _stream
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple:
+            nonlocal _sink
+            _sink = context.event_sink
+            return agent, MagicMock(), MagicMock(constraints=[]), []
+
+        _sink: Any = None
+        with _a_built_turn(_fake_create), pytest.raises(TypeError):
+            _ = [chunk async for chunk in run_chat_stream(**_turn_kwargs())]
+
+        assert [(e["stop_reason"], e["error_class"]) for e in _turn_ends(turn_caplog)] == [("error", "internal")]
+
+    async def test_a_clarifying_question_is_awaiting_input(self, turn_caplog: pytest.LogCaptureFixture) -> None:
+        with _a_built_turn(_creating(None, clarifying=[MagicMock()])):
+            _ = [chunk async for chunk in run_chat_stream(**_turn_kwargs())]
+
+        assert [e["stop_reason"] for e in _turn_ends(turn_caplog)] == ["awaiting_input"]
+
+    async def test_a_crash_is_one_failure_line_and_one_end(self, turn_caplog: pytest.LogCaptureFixture) -> None:
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> Never:
+            raise RuntimeError("transport exploded")
+
+        with _a_built_turn(_fake_create):
+            _ = [chunk async for chunk in run_chat_stream(**_turn_kwargs())]
+
+        failed = [r for r in turn_caplog.records if r.getMessage() == "agent_turn.failed"]
+        assert [r.levelno for r in failed] == [logging.ERROR]
+        assert [(e["stop_reason"], e["error_class"], e["run_id"]) for e in _turn_ends(turn_caplog)] == [
+            ("error", "internal", _RUN_ID),
+        ]
+
+    async def test_a_build_failure_before_the_stream(self, turn_caplog: pytest.LogCaptureFixture) -> None:
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch("app.modules.agents.qna.chat_state.build_initial_state", side_effect=RuntimeError("boom")),
+            sql_patch,
+            slack_patch,
+        ):
+            _ = [chunk async for chunk in run_chat_stream(**_turn_kwargs())]
+
+        [end] = _turn_ends(turn_caplog)
+        assert (end["stop_reason"], end["run_id"], end["level"]) == ("error", _RUN_ID, logging.INFO)
+        assert "code" in end
+
+    async def test_a_scope_the_user_cannot_read(self, turn_caplog: pytest.LogCaptureFixture) -> None:
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            sql_patch,
+            slack_patch,
+            patch(
+                "app.agents.chat_modes.bridge.unreadable_scope_error",
+                new=AsyncMock(return_value=("selection_empty", "Nothing in your selection is available.")),
+            ),
+        ):
+            _ = [chunk async for chunk in run_chat_stream(**_turn_kwargs(INTERNAL_SEARCH_POLICY))]
+
+        [end] = _turn_ends(turn_caplog)
+        assert (end["stop_reason"], end["error_class"], end["code"], end["level"]) == (
+            "error", "forbidden", "selection_empty", logging.WARNING,
+        )
+
+    async def test_a_selection_too_large(self, turn_caplog: pytest.LogCaptureFixture) -> None:
+        from app.modules.retrieval.selection_scope import SelectionTooLargeError
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            sql_patch,
+            slack_patch,
+            patch(
+                "app.agents.chat_modes.bridge.prepare_turn_scope",
+                new=AsyncMock(side_effect=SelectionTooLargeError()),
+            ),
+        ):
+            _ = [chunk async for chunk in run_chat_stream(**_turn_kwargs())]
+
+        [end] = _turn_ends(turn_caplog)
+        assert (end["stop_reason"], end["error_class"]) == ("error", "bad_request")
+
+    async def test_a_disconnect_mid_run_is_logged_once(self, turn_caplog: pytest.LogCaptureFixture) -> None:
+        started = asyncio.Event()
+        agent = MagicMock()
+        agent.last_stream_result = None
+
+        async def _hanging_stream(goal, **kwargs) -> AsyncIterator[Any]:
+            started.set()
+            await asyncio.sleep(10)
+            return
+            yield  # pragma: no cover - marks this an async generator
+
+        agent.stream = _hanging_stream
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple:
+            return agent, MagicMock(), MagicMock(constraints=[]), []
+
+        with _a_built_turn(_fake_create):
+            agen = run_chat_stream(**_turn_kwargs())
+            pull = asyncio.ensure_future(agen.__anext__())
+            await asyncio.wait_for(started.wait(), timeout=2)
+            pull.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pull
+            await agen.aclose()
+
+        assert [e["stop_reason"] for e in _turn_ends(turn_caplog)] == ["client_disconnect"]
+
+    async def test_a_disconnect_before_the_stream_starts(self, turn_caplog: pytest.LogCaptureFixture) -> None:
+        started = asyncio.Event()
+
+        async def _slow(*args: object, **kwargs: object) -> list[Any]:
+            started.set()
+            await asyncio.sleep(30)
+            return []
+
+        with (
+            patch("app.agents.chat_modes.bridge.fetch_user_connector_instances", new=_slow),
+            patch("app.agents.chat_modes.bridge._fetch_available_connectors", new=AsyncMock(return_value=[])),
+        ):
+            agen = run_chat_stream(**_turn_kwargs())
+            pull = asyncio.ensure_future(agen.__anext__())
+            await asyncio.wait_for(started.wait(), timeout=2)
+            pull.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pull
+
+        assert [(e["stop_reason"], e["run_id"]) for e in _turn_ends(turn_caplog)] == [("client_disconnect", _RUN_ID)]
+
+    async def test_no_tools_unsupported_mode(self, turn_caplog: pytest.LogCaptureFixture) -> None:
+        _ = [chunk async for chunk in run_chat_stream(**_turn_kwargs(WEB_SEARCH_POLICY, supports_tool_calls=False))]
+
+        [end] = _turn_ends(turn_caplog)
+        assert (end["stop_reason"], end["mode"], end["code"], end["turns"]) == (
+            "error", "no_tools", "unsupported_model_mode", 0,
+        )
+
+    async def test_no_tools_answer_and_failure(self, turn_caplog: pytest.LogCaptureFixture) -> None:
+        async def _answer(**kwargs) -> AsyncIterator[dict[str, Any]]:
+            yield {"event": "complete", "data": {"answer": "Answer"}}
+
+        async def _broken(**kwargs) -> AsyncIterator[dict[str, Any]]:
+            raise RuntimeError("model down")
+            yield  # pragma: no cover - marks this an async generator
+
+        kwargs = _turn_kwargs(INTERNAL_SEARCH_POLICY, supports_tool_calls=False)
+        with patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=AsyncMock(return_value=None)):
+            for simple_mode in (_answer, _broken):
+                with patch("app.agents.chat_modes.bridge.handle_simple_mode", new=simple_mode):
+                    _ = [chunk async for chunk in run_chat_stream(**kwargs)]
+
+        assert [(e["stop_reason"], e["mode"]) for e in _turn_ends(turn_caplog)] == [
+            ("done", "no_tools"), ("error", "no_tools"),
+        ]
+        assert [r.getMessage() for r in turn_caplog.records if r.levelno >= logging.ERROR] == ["agent_turn.failed"]

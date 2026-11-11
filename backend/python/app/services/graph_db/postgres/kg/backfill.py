@@ -94,18 +94,23 @@ async def backfill_scope(db: KernelDB, org: str, app_id: str | None, *, page: in
     with bind(_ctx(org)):
         if restart:                                  # copy again from the start (a verify found a difference the drain could not explain)
             async def reset(tx: Tx) -> None:
-                await lock_apps(tx, org, {app_id} if app_id else set(), org_wide=app_id is None)
+                await lock_apps(tx, org, {app_id} if app_id else set(), org_wide=True)      # an orphan has no record row, so a connector taking it over locks only itself
                 app_sk = await _app_sk(tx, app_id) if app_id else 0
                 w = KgWriter(tx)
                 if app_id:       # rows the copy would never touch again: records of this connector whose node is gone, with their links
                     ghosts = [r["sk"] for r in await tx.fetch("""/* pipeshub:kg.ghosts */ SELECT r.sk FROM kg.records r WHERE r.org_id = $1 AND r.app_sk = $2
                         AND NOT EXISTS (SELECT 1 FROM graph.nodes n WHERE n.org_id = r.org_id AND n.coll = CASE r.coll WHEN 1 THEN 'apps' WHEN 2 THEN 'recordGroups' ELSE 'records' END AND n.id = r.id)""",
                                                          org, app_sk)]
+                    orphans = [r["sk"] for r in await tx.fetch("""/* pipeshub:kg.orphan_scopes */ SELECT s.sk FROM kg.scopes s WHERE s.org_id = $1 AND s.app_sk = $2
+                        AND NOT EXISTS (SELECT 1 FROM kg.records r WHERE r.org_id = s.org_id AND r.sk = s.sk)""", org, app_sk)]
+                    if orphans:      # an access list whose record row is gone (an older process deleted the record alone)
+                        await w.scopes_delete(orphans)
                     if ghosts:
                         links = await tx.fetch("/* pipeshub:kg.ghost_links */ SELECT parent_sk, kind, child_sk FROM kg.links WHERE org_id = $1 AND (child_sk = ANY($2::bigint[]) OR parent_sk = ANY($2::bigint[]))",
                                                org, ghosts)
                         await w.links_delete([(r["parent_sk"], r["kind"], r["child_sk"]) for r in links])
                         await w.records_delete(ghosts)
+                        await w.scopes_delete(ghosts)
                 await modes.demote(tx, org, app_sk)
             await db.run(reset, write=True)
         while max_batches is None or done < max_batches:

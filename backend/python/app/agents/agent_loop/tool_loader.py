@@ -46,6 +46,8 @@ from app.agents.tools.factories.base import ToolsetAuthError
 from app.agents.tools.factories.registry import ClientFactoryRegistry
 from app.services.artifact_registry.models import artifact_owner_id
 from app.services.graph_db.interface.graph_db_provider import CONNECTION_APPS_FILTER_KEY
+from app.utils.error_class import log_failure
+from app.utils.logging_fields import log_event, log_once
 
 if TYPE_CHECKING:
     from langchain_core.tools import StructuredTool
@@ -148,7 +150,14 @@ def _infer_path_prefix(cls: type, *, fallback_name: str) -> str:
     return f"/tools/{fallback_name}"
 
 
-def _sandbox_executor_available(state_logger: logging.Logger | None) -> bool:
+def note_sandbox_unavailable(exc: Exception) -> None:
+    """Code execution is off because of the deployment's sandbox env (`SandboxUnavailableError`): a
+    process fact, warned once per process rather than on every turn."""
+    if log_once("agent_wiring.sandbox_unavailable"):
+        log_event(logger, "code_execution.unavailable", level=logging.WARNING, error_type=type(exc).__name__)
+
+
+def _sandbox_executor_available() -> bool:
     """Whether `SANDBOX_MODE` names a backend the legacy executor can build.
 
     Only resolves the mode; nothing is instantiated. A missing or unknown
@@ -161,8 +170,7 @@ def _sandbox_executor_available(state_logger: logging.Logger | None) -> bool:
     try:
         get_sandbox_mode()
     except SandboxUnavailableError as exc:
-        log = state_logger or logger
-        log.warning("Skipping sandbox toolsets: %s", exc)
+        note_sandbox_unavailable(exc)
         return False
     return True
 
@@ -174,7 +182,6 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
     factory functions, wrapped with ``PipesHubStructuredToolAdapter``.
     """
     state = context.tool_state
-    state_logger = state.get("logger")
     tools: list[Tool] = []
 
     config_service = state.get("config_service")
@@ -206,11 +213,8 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
             setattr(execute_query_tool, "_original_name", "sql.execute_sql_query")
             app_name, tool_name = split_original_tool_name(execute_query_tool)
             tools.append(PipesHubStructuredToolAdapter(execute_query_tool, app_name, tool_name))
-            if state_logger:
-                state_logger.debug("Added execute_sql_query tool")
         except Exception as e:
-            if state_logger:
-                state_logger.warning("Failed to add execute_sql_query tool: %s", e)
+            log_failure(logger, "tool.build_failed", e, tool="execute_sql_query", include_error_text=False)
 
     if config_service and state.get("has_slack_connector") and state.get("has_slack_knowledge"):
         try:
@@ -240,12 +244,8 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
             setattr(slack_nearby_tool, "_original_name", "slack.fetch_slack_nearby_messages")
             a, t = split_original_tool_name(slack_nearby_tool)
             tools.append(PipesHubStructuredToolAdapter(slack_nearby_tool, a, t))
-
-            if state_logger:
-                state_logger.debug("Added Slack context tools (fetch_slack_thread, fetch_slack_nearby_messages)")
         except Exception as e:
-            if state_logger:
-                state_logger.warning("Failed to add Slack context tools: %s", e)
+            log_failure(logger, "tool.build_failed", e, tool="slack_context", include_error_text=False)
 
     web_search_config = state.get("web_search_config")
     if web_search_config:
@@ -273,8 +273,7 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
             ]
         except Exception as e:
             web_tools = []
-            if state_logger:
-                state_logger.warning("Failed to create web tools: %s", e)
+            log_failure(logger, "tool.build_failed", e, tool="web", include_error_text=False)
         for web_tool in web_tools:
             a, t = split_original_tool_name(web_tool)
             tools.append(WebToolAdapter(web_tool, a, t, context))
@@ -305,7 +304,6 @@ class PipesHubToolLoader:
         skip_apps = skip_apps or set()
 
         state = context.tool_state
-        state_logger = state.get("logger")
 
         state.setdefault("tool_results", [])
         state.setdefault("all_tool_results", [])
@@ -343,31 +341,23 @@ class PipesHubToolLoader:
             has_factory = ClientFactoryRegistry.get_factory(ts_name) is not None
 
             if has_factory and not is_internal and not self._is_configured(ts_name, configured_apps):
-                if state_logger:
-                    state_logger.debug("Skipping unconfigured external toolset: %s", ts_name)
+                log_event(logger, "toolset.skipped", level=logging.DEBUG, toolset=ts_name, reason="unconfigured")
                 continue
 
-            if group_name in _SANDBOX_TOOLSETS and not _sandbox_executor_available(state_logger):
+            if group_name in _SANDBOX_TOOLSETS and not _sandbox_executor_available():
                 continue
 
             if ts_name in _KNOWLEDGE_TOOLSETS and not context.has_knowledge:
-                if state_logger:
-                    # `info`, not `debug`: this is the condition behind "the agent
-                    # answered as if it had searched and found nothing" (the prompt
-                    # says so explicitly — see `prompt_builder._NO_KNOWLEDGE_SOURCES`),
-                    # and it needs to be greppable in a running system without
-                    # turning debug logging on for everything else.
-                    state_logger.info(
-                        "Skipping knowledge toolset %s: no knowledge sources attached "
-                        "(conversation=%s)", ts_name, context.conversation_id,
-                    )
+                # The condition behind "the agent answered as if it had searched and found nothing"
+                # (`prompt_builder._NO_KNOWLEDGE_SOURCES`): greppable at INFO as the turn's
+                # `agent.build.end has_knowledge=False`; per toolset at DEBUG.
+                log_event(logger, "toolset.skipped", level=logging.DEBUG, toolset=ts_name, reason="no_knowledge")
                 continue
 
             if ts_name in _CODE_GRAPH_TOOLSETS and not (
                 context.has_code_connector and context.has_code_knowledge
             ):
-                if state_logger:
-                    state_logger.debug("Skipping code graph toolset: no code connector/knowledge: %s", ts_name)
+                log_event(logger, "toolset.skipped", level=logging.DEBUG, toolset=ts_name, reason="no_code_knowledge")
                 continue
 
             try:
@@ -393,11 +383,7 @@ class PipesHubToolLoader:
                     ui_only = [t.name for t in tools if TAG_UI_ONLY in t.tags]
                     if ui_only:
                         tools = [t for t in tools if TAG_UI_ONLY not in t.tags]
-                        if state_logger:
-                            state_logger.info(
-                                "No UI client, withholding %s (conversation=%s)",
-                                ui_only, context.conversation_id,
-                            )
+                        log_event(logger, "toolset.ui_tools_withheld", level=logging.DEBUG, toolset=ts_name, tools=len(ui_only))
                 selected = None if is_internal else self._selected_tool_names(ts_name, context.agent_toolsets)
                 if selected is not None:
                     # Same name the agent builder lists and saves: the last segment of the @tool path.
@@ -405,10 +391,8 @@ class PipesHubToolLoader:
                     # Agents saved before a tool was renamed still pick the old name,
                     # and the builder shows it as picked.
                     stale = selected - {t.path.rsplit("/", 1)[-1] for t in toolset.tools}
-                    if stale and state_logger:
-                        state_logger.warning(
-                            "Tools picked for toolset %s no longer exist: %s", ts_name, sorted(stale),
-                        )
+                    if stale:
+                        log_event(logger, "toolset.tools_missing", level=logging.WARNING, toolset=ts_name, missing=len(stale))
                 # An external toolset's calls pass the approval gate, under its instance's rules.
                 gated = has_factory and not is_internal
                 approval_instance = instance_creator.instance_for_app(ts_name) if gated else None
@@ -418,8 +402,7 @@ class PipesHubToolLoader:
                         registry.register_tool(t)
                         tool_count += 1
                     except (DuplicateToolPathError, DuplicateToolNameError):
-                        if state_logger:
-                            state_logger.warning("Skipping duplicate: %s", t.name)
+                        log_event(logger, "tool.duplicate", level=logging.DEBUG, tool=t.name)
                         continue
                     if gated:
                         _record_for_approvals(context, t, approval_instance, fallback_owner=group_name, personal=personal)
@@ -430,8 +413,9 @@ class PipesHubToolLoader:
                         registry.register_toolset(group_name, ts_description, registered_names)
                         if ts_meta.get("essential", False) and group_name not in context.essential_toolset_names:
                             context.essential_toolset_names.append(group_name)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # The toolset still loads; it just drops out of lazy `fetch_tools`.
+                        log_failure(logger, "toolset.group_failed", e, toolset=ts_name, include_error_text=False)
 
                 loaded_apps.add(ts_name)
             except Exception as e:
@@ -444,12 +428,11 @@ class PipesHubToolLoader:
                 # (see AgentContext.toolset_load_failures's docstring).
                 reason = "not_authenticated" if _is_auth_error(e) else "error"
                 context.toolset_load_failures[ts_name] = reason
-                if state_logger:
-                    log_fn = state_logger.warning if reason == "not_authenticated" else state_logger.error
-                    log_fn(
-                        "Failed to load toolset %s (reason=%s): %s", ts_name, reason, e,
-                        exc_info=reason != "not_authenticated",
-                    )
+                # Once, here (the instance creator raises): no error text, a provider's answer can quote the request.
+                log_failure(
+                    logger, "toolset.load_failed", e, toolset=ts_name, outcome="failure", reason=reason,
+                    error_class="auth_expired" if reason == "not_authenticated" else None, include_error_text=False,
+                )
                 continue
 
         # ── Dynamic tools ─────────────────────────────────────────────────
@@ -460,14 +443,11 @@ class PipesHubToolLoader:
                 registry.register_tool(dt)
                 dynamic_count += 1
             except (DuplicateToolPathError, DuplicateToolNameError):
-                if state_logger:
-                    state_logger.warning("Skipping duplicate dynamic tool: %s", dt.name)
+                log_event(logger, "tool.duplicate", level=logging.DEBUG, tool=dt.name)
 
-        logger.info(
-            "PipesHubToolLoader: %d connector tool(s) from %d toolset(s) + "
-            "%d dynamic tool(s) = %d total (skip_apps=%s)",
-            tool_count, len(loaded_apps), dynamic_count,
-            len(registry.names()), sorted(skip_apps),
+        log_event(
+            logger, "toolset.load.summary", level=logging.DEBUG, tools=tool_count, toolsets=len(loaded_apps),
+            dynamic_tools=dynamic_count, skipped_apps=len(skip_apps),
         )
         return registry
 

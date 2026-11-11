@@ -2,21 +2,31 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import httpx
 import pytest
+from mcp.shared.exceptions import MCPError
 
 from app.agents.mcp.errors import (
     MCPConnectionError,
     MCPHttpStatusError,
     MCPInsufficientScopeError,
     MCPLaunchRefusedError,
+    MCPToolChangedError,
+    MCPToolNotOfferedError,
     MCPUrlBlockedError,
 )
-from app.agents.mcp.failure import MCPFailureReason, classify_mcp_failure
+from app.agents.mcp.failure import (
+    MCPFailureReason,
+    classify_mcp_failure,
+    log_discover_end,
+    mcp_error_class,
+)
 from app.agents.mcp.oauth_client import MCPOAuthError
 from app.agents.mcp.token_refresh import MCPTokenRefreshError
+from app.utils.logger import log_record_fields
 from tests.unit.agents.mcp.refresh_failures import (
     lock_contention_error,
     token_endpoint_error,
@@ -122,3 +132,67 @@ def test_a_refresh_failure_without_a_status_still_asks_for_a_new_sign_in(error: 
 ])
 async def test_a_token_request_that_got_no_answer(raised: Exception, reason: MCPFailureReason) -> None:
     assert classify_mcp_failure(await token_request_error(raised)) is reason
+
+
+class TestTheLogErrorClass:
+    """`mcp_error_class`: `classify_error` first, then what the MCP reason means."""
+
+    @pytest.mark.parametrize(
+        ("exc", "expected"),
+        [
+            (MCPTokenRefreshError("no refresh token"), "auth_expired"),
+            (MCPOAuthError("x", error_code="invalid_grant"), "auth_expired"),
+            # The same rejected client as on the OpenAPI path: ours to fix.
+            (MCPOAuthError("x", error_code="invalid_client"), "misconfigured"),
+            (_http_error(401), "auth_expired"),
+            (MCPHttpStatusError(401), "auth_expired"),
+            (MCPInsufficientScopeError("needs more", scopes=["admin"]), "forbidden"),
+            (MCPUrlBlockedError("private address"), "forbidden"),
+            (MCPLaunchRefusedError("Shells cannot be used"), "forbidden"),
+            (asyncio.TimeoutError(), "timeout"),
+            (httpx.ReadTimeout("slow"), "timeout"),
+            (ExceptionGroup("tg", [asyncio.TimeoutError()]), "timeout"),
+            (MCPHttpStatusError(500), "upstream_5xx"),
+            (MCPHttpStatusError(429), "rate_limited"),
+            (MCPHttpStatusError(404), "not_found"),
+            (MCPConnectionError("Connection refused"), "unavailable"),
+            (ConnectionRefusedError(), "unavailable"),
+            (MCPError(-32602, "bad sentinel"), "bad_request"),
+            (MCPError(-32601, "no such method"), "bad_request"),
+            (MCPError(-32603, "server broke"), "upstream_5xx"),
+            (MCPToolNotOfferedError("gone"), "not_found"),
+            (MCPToolChangedError("changed"), "conflict"),
+            (KeyError("ours"), "internal"),
+            (RuntimeError("?"), "internal"),
+        ],
+    )
+    def test_each_failure(self, exc: BaseException, expected: str) -> None:
+        assert mcp_error_class(exc) == expected
+
+    def test_a_handshake_bug_wrapped_as_a_connection_error_reads_as_unavailable(self) -> None:
+        """Pinned: `_connect_error` wraps whatever the SDK raised, our own bugs included."""
+        error = MCPConnectionError("KeyError")
+        error.__cause__ = KeyError("ours")
+        assert mcp_error_class(error) == "unavailable"
+
+    def test_the_callers_reason_is_used_when_given(self) -> None:
+        assert mcp_error_class(RuntimeError("?"), MCPFailureReason.TIMEOUT) == "timeout"
+
+
+def test_log_discover_end_names_its_source_and_takes_a_level(caplog: pytest.LogCaptureFixture) -> None:
+    log = logging.getLogger("app.test.discover")
+    caplog.set_level(logging.DEBUG, logger=log.name)
+
+    log_discover_end(log, "mcp-1", MCPConnectionError("down"), source="listing", mcp_reason="unreachable")
+    log_discover_end(log, "mcp-2", None, source="listing", reason="listing_deadline")
+    log_discover_end(log, "mcp-3", MCPOAuthError("x", error_code="invalid_grant"), source="listing", level=logging.INFO)
+
+    lines = [(r.levelno, log_record_fields(r)) for r in caplog.records]
+    assert [(level, f["mcp_server_id"], f["source"], f["outcome"], f.get("error_class"), f.get("reason"))
+            for level, f in lines] == [
+        (logging.WARNING, "mcp-1", "listing", "failure", "unavailable", None),
+        (logging.WARNING, "mcp-2", "listing", "skipped", None, "listing_deadline"),
+        (logging.INFO, "mcp-3", "listing", "failure", "auth_expired", None),
+    ]
+    assert all(r.getMessage() == "mcp.discover.end" and "error_message" not in log_record_fields(r)
+               for r in caplog.records)

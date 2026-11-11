@@ -1,4 +1,6 @@
+import json
 from abc import ABC, abstractmethod
+from collections.abc import Mapping, Sequence
 from typing import Dict, List, Optional, Union
 
 from app.services.vector_db.models import (
@@ -268,6 +270,65 @@ class IVectorDBService(ABC):
         use it without losing an update made moments earlier.
         """
         raise NotImplementedError
+
+    #: The store takes ``wait=False`` on ``update_payloads_by_ids`` (the write returns once queued, not once applied). A caller that uses it
+    #: calls ``flush_writes`` and then reads the points back before it relies on the write.
+    deferred_writes: bool = False
+
+    async def flush_writes(self, collection_name: str, point_ids: Sequence[str] = ()) -> None:
+        """Return once the writes queued so far on these points (``wait=False``) have been applied, as far as the store can tell. A
+        best effort: the caller still reads the points back (the store may order queued writes of different shards as it likes)."""
+
+    async def make_searchable(self, collection_name: str) -> None:
+        """Make every write acknowledged so far visible to search (not only to a get by id). A store that searches what it has applied
+        (Qdrant, pgvector, Redis) has nothing to do; OpenSearch refreshes its index, which otherwise happens at the index's refresh interval
+        (30 s here). The scope rewrite calls it before each read of the points it rewrites."""
+
+    async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
+        """Exact number of points the filter matches (it must pin ``metadata.orgId``); ``PartialResult`` if the store cannot answer completely.
+        The scope rewrite checks its scroll against it, so a store without it cannot be rewritten."""
+        raise NotImplementedError
+
+    #: The store makes ``update_payloads_by_ids(..., fence=n)`` conditional, atomically per point: a point whose ``scopeFence`` is above ``n``
+    #: is left as it is (no error), any other takes the payload and ``scopeFence = n``. A store without it is written to unconditionally; the
+    #: caller then relies on checking the connector's generation just before each request (pgvector has its own fence,
+    #: ``computed_at``).
+    generation_fence: bool = False
+
+    async def update_payloads_by_ids(self, collection_name: str, updates: Mapping[str, dict], *, org_id: str, **extra: object) -> None:
+        """``update_payload_by_ids`` with a payload of its own for each point: the points that share a payload are written together here;
+        a store that can take different payloads in one request overrides this (the groups are separate requests: the default is not atomic
+        across them). ``extra`` is passed on (pgvector's ``computed_at``, ``fence`` where ``generation_fence``)."""
+        by_payload: dict[str, list[str]] = {}
+        for point_id, payload in updates.items():
+            by_payload.setdefault(json.dumps(payload, sort_keys=True), []).append(point_id)
+        for payload, ids in by_payload.items():
+            await self.update_payload_by_ids(collection_name, ids, json.loads(payload), org_id=org_id, **extra)  # type: ignore[call-arg]
+
+    async def swap_array_value(
+        self,
+        collection_name: str,
+        field: str,
+        old: str,
+        new: str,
+        points: FilterExpression,
+        *,
+        fence: int | None = None,
+    ) -> int | None:
+        """Replace ``old`` by ``new`` in the array field ``field`` of every point the filter matches, in one request; returns the
+        number of points changed, or None when the store cannot do it (the caller writes the points by id instead). The filter must
+        pin ``metadata.orgId``. Unlike ``update_payload_by_ids`` it finds its points with a search, so a point written moments ago may
+        be missed: the caller verifies what it wrote. With ``fence`` (a store with ``generation_fence``) a point whose ``scopeFence`` is
+        above it is left alone, and a point changed takes it."""
+        return None
+
+    async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
+        """Which of ``ids`` have a point, reading no payload and no vector.
+
+        Like ``retrieve_points`` this sees writes that are not yet searchable. A provider that can
+        answer without transferring payloads overrides it; this default asks for the points.
+        """
+        return {p.id for p in await self.retrieve_points(collection_name, ids)}
 
     @abstractmethod
     async def update_payload_by_ids(

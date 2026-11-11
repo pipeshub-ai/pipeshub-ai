@@ -1,59 +1,9 @@
 import { Response } from 'express';
-import axios from 'axios';
-import { BaseError } from '../errors/base.error';
-import { Logger } from '../services/logger.service';
-import { axiosErrorForLog } from './log-redaction.utils';
+import { classifyError, levelFor } from './error-class';
 
-/**
- * 'warn' for a 4xx of ours: the caller's request answered as intended (a taken
- * name, a wrong password, a refused permission, a 402). 'error' for every 5xx
- * and for any error that is not ours.
- */
-export const logLevelFor = (error: unknown): 'warn' | 'error' =>
-  error instanceof BaseError && error.statusCode < 500 ? 'warn' : 'error';
-
-/**
- * Extract error data without circular references
- * Note: Stack traces are included here for logging purposes only, not for client responses
- */
-export const extractErrorData = (error: any, includeStack = true): any => {
-  if (!error) return null;
-
-  try {
-    // Before toJSON: an AxiosError's toJSON serialises the request it carried.
-    if (axios.isAxiosError(error)) return axiosErrorForLog(error, includeStack);
-
-    // For errors with a toJSON method (like BaseError)
-    // Include stack trace for logging purposes only (not for client responses)
-    if (typeof error.toJSON === 'function') return error.toJSON(includeStack);
-
-    // Another HTTP client's error that carries the upstream answer (e.g. GaxiosError)
-    if (error.response?.data) {
-      const data = error.response.data;
-      return {
-        detail: data.detail || data.reason || data.message || 'Unknown error',
-        status: error.response.status,
-        statusText: error.response.statusText,
-        // Stack traces included for server-side logging only
-        ...(includeStack && { stack: error.stack }),
-      };
-    }
-
-    // Handle other error types
-    return {
-      message: error.message || 'Unknown error',
-      code: error.code,
-      name: error.name,
-      // Stack traces included for server-side logging only
-      ...(includeStack && { stack: error.stack }),
-    };
-  } catch (extractionError) {
-    return {
-      message: 'Error processing error data',
-      originalError: String(error),
-    };
-  }
-};
+/** The level a caught error is logged at, by the shared policy (error-class.ts). */
+export const logLevelFor = (error: unknown): 'error' | 'warn' | 'info' =>
+  levelFor(classifyError(error));
 
 /**
  * JSON response helper with circular reference protection
@@ -79,32 +29,5 @@ export const jsonResponse = (
       // Last resort - send plain text
       res.status(500).send('Internal server error');
     }
-  }
-};
-
-/**
- * Error logging with circular reference protection
- */
-export const logError = (
-  logger: Logger,
-  message: string,
-  error: any,
-  context?: any,
-  level: 'error' | 'warn' = 'error',
-): void => {
-  try {
-    // A warning is an answer that went as intended; where it was thrown is noise.
-    const errorData = extractErrorData(error, level === 'error');
-    logger[level](message, {
-      error: errorData,
-      context,
-    });
-  } catch (logError) {
-    // If logging fails, use console.error as fallback
-    console.error('Error logging failed:', logError);
-    console.error(message, {
-      error: String(error),
-      context,
-    });
   }
 };

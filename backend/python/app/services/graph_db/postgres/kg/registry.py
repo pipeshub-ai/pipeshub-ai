@@ -14,6 +14,7 @@ _CODE = "code graph and block collections (codeFiles, blocks): not part of the a
 _SYNC = "sync points hold a connector's cursor"
 _STATUS = "indexing and extraction status fields: kg.record_state, written by the indexing role"
 _ENTITY = "entity and taxonomy collections and their enrichment edges"
+_NAMED = "entityRelations edges (a record and the people and organizations it names): not part of the access data"
 
 WRITERS: dict[str, tuple[str, str]] = {
     "backfill_block_name_folded": (NO_PROJECTION, _CODE),
@@ -55,6 +56,7 @@ WRITERS: dict[str, tuple[str, str]] = {
     "stage_state_create": (NO_PROJECTION, "stage states of the indexing pipeline"),
     "stage_states_delete_for_virtual_records": (NO_PROJECTION, "stage states of the indexing pipeline"),
     "stage_states_delete_unheld_revisions": (NO_PROJECTION, "stage states of the indexing pipeline"),
+    "sweep_deleted_connector_writes": (NO_PROJECTION, "blocks, stage states and code links, written after a connector's delete"),
     "update_indexing_status_for_record_ids": (NO_PROJECTION, _STATUS),
     "update_knowledge_base": (PROJECTED, ""),
     "update_node": (PROJECTED, ""),
@@ -73,6 +75,9 @@ WRITERS: dict[str, tuple[str, str]] = {
     # kb.py
     "update_kb_permission": (PROJECTED, ""), "remove_kb_permission": (PROJECTED, ""),
     "delete_kb_hub_app": (PROJECTED, ""),
+    # legacy_migrations.py: a knowledge base that was a record group becomes an app, the hierarchy edge moves onto its current collection
+    "migrate_legacy_kb_to_app": (PROJECTED, ""), "migrate_legacy_relation_edge": (PROJECTED, ""),
+    "migrate_agent_hub_knowledge": (NO_PROJECTION, "agent knowledge sources and their edges to the agents: kg holds no agent data"),
     # permissions.py
     "batch_update_team_member_roles": (PROJECTED, ""), "delete_all_team_permissions": (PROJECTED, ""),
     # core.py, lookups.py: an edge's document changes (a grant's role or type is what the projection reads of it), and the sync's edges and the stale external memberships go
@@ -96,6 +101,18 @@ WRITERS: dict[str, tuple[str, str]] = {
     "schedule_named_entity_reextract": (NO_PROJECTION, _ENTITY),
     "schedule_named_entity_reproject": (NO_PROJECTION, _ENTITY),
     "clear_named_entity_persist_retry": (NO_PROJECTION, _ENTITY),
+    # taxonomy.py: taxonomy nodes, their belongsToCategory / belongsToTopic / belongsToLanguage edges and interCategoryRelations
+    "create_taxonomy_node_if_absent": (NO_PROJECTION, _ENTITY),
+    "add_taxonomy_aliases": (NO_PROJECTION, _ENTITY),
+    "ensure_taxonomy_hierarchy_edge": (NO_PROJECTION, _ENTITY),
+    "move_taxonomy_edges": (NO_PROJECTION, _ENTITY),
+    # people.py, organizations.py: a person's grants and memberships become the user's; the edges from records to the people and organisations they name,
+    # and the owning org of an external organisation, are not held
+    "migrate_person_to_user": (PROJECTED, ""),
+    "batch_create_entity_relations": (NO_PROJECTION, _NAMED),
+    "delete_record_entity_relations": (NO_PROJECTION, _NAMED),
+    "replace_record_entity_relations": (NO_PROJECTION, _NAMED),
+    "stamp_external_org_parents": (NO_PROJECTION, "parentOrgId of an external organization: kg holds that an organization exists, no field of its document"),
 }
 
 

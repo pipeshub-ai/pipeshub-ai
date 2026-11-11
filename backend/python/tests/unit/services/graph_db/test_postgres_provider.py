@@ -18,11 +18,15 @@ from app.services.graph_db.postgres.hierarchy import HierarchyMixin, HubMixin
 from app.services.graph_db.postgres.identity import IdentityMixin
 from app.services.graph_db.postgres.kb import KbMixin
 from app.services.graph_db.postgres.kb_listings import KbListingsMixin
+from app.services.graph_db.postgres.legacy_migrations import LegacyMigrationMixin
 from app.services.graph_db.postgres.lookups import LookupsMixin
+from app.services.graph_db.postgres.organizations import OrganizationsMixin
+from app.services.graph_db.postgres.people import PeopleMixin
 from app.services.graph_db.postgres.permissions import PermissionsMixin
 from app.services.graph_db.postgres.provider import PostgresGraphProvider, unimplemented
 from app.services.graph_db.postgres.records import RecordsMixin
 from app.services.graph_db.postgres.sync_state import SyncStateMixin
+from app.services.graph_db.postgres.taxonomy import TaxonomyMixin
 from app.services.graph_db.postgres.trash import TrashMixin
 
 FACTORY = "app.services.graph_db.graph_db_provider_factory.GraphDBProviderFactory"
@@ -110,7 +114,8 @@ def _mismatches(name: str) -> list[str]:
 
 
 IMPLEMENTED = sorted(n for n, _ in inspect.getmembers(IGraphDBProvider, inspect.isfunction)
-                     if not n.startswith("_") and n not in unimplemented() and n in {*vars(core.CoreMixin), *vars(PermissionsMixin), *vars(IdentityMixin), *vars(CodeGraphMixin), *vars(RecordsMixin), *vars(HierarchyMixin), *vars(HubMixin), *vars(TrashMixin), *vars(LookupsMixin), *vars(DeleteMixin), *vars(KbMixin), *vars(KbListingsMixin), *vars(SyncStateMixin)})
+                     if not n.startswith("_") and n not in unimplemented() and n in {*vars(core.CoreMixin), *vars(PermissionsMixin), *vars(IdentityMixin), *vars(CodeGraphMixin), *vars(RecordsMixin), *vars(HierarchyMixin), *vars(HubMixin), *vars(TrashMixin), *vars(LookupsMixin), *vars(DeleteMixin), *vars(KbMixin), *vars(KbListingsMixin), *vars(SyncStateMixin), *vars(TaxonomyMixin), *vars(LegacyMigrationMixin),
+                                                       *vars(PeopleMixin), *vars(OrganizationsMixin)})
 
 
 @pytest.mark.parametrize("name", IMPLEMENTED)
@@ -127,7 +132,8 @@ def test_the_foundation_implements_the_generic_documents_and_edges() -> None:
 
 def test_no_name_is_defined_by_a_mixin_and_the_base_class() -> None:
     """A name defined twice is silently decided by the MRO."""
-    names = {m: {n for n in vars(m) if not (n.startswith("__") and n.endswith("__"))} for m in (core.CoreMixin, PermissionsMixin, IdentityMixin, CodeGraphMixin, RecordsMixin, HierarchyMixin, HubMixin, TrashMixin, LookupsMixin, DeleteMixin, KbMixin, KbListingsMixin, SyncStateMixin)}
+    names = {m: {n for n in vars(m) if not (n.startswith("__") and n.endswith("__"))} for m in (core.CoreMixin, PermissionsMixin, IdentityMixin, CodeGraphMixin, RecordsMixin, HierarchyMixin, HubMixin, TrashMixin, LookupsMixin, DeleteMixin, KbMixin, KbListingsMixin, SyncStateMixin, TaxonomyMixin, LegacyMigrationMixin,
+                                                                                                 PeopleMixin, OrganizationsMixin)}
     mixins = list(names)
     assert not [n for i, a in enumerate(mixins) for b in mixins[i + 1:] for n in names[a] & names[b]], "defined by two mixins"
     assert not [n for ns in names.values() for n in ns if n in vars(PgBase)]
@@ -202,13 +208,60 @@ async def test_get_user_by_email_reads_only_the_ambient_org(org_id: str | None, 
 
     p = object.__new__(IdentityMixin)
     p.logger = logging.getLogger("t")
-    p._one = AsyncMock(return_value={"email": "a@x.io"})
+    p._principals_by_email = AsyncMock(return_value=[{"doc": {"email": "a@x.io"}}])      # the vetted read, which takes the ambient org itself
     user = object()
     with for_org("o1", job="t"), patch.object(identity, "_arango", lambda d, _c: d), \
             patch.object(identity.User, "from_arango_user", return_value=user):
         got = await p.get_user_by_email("A@x.io", org_id=org_id)
     assert got is (user if found else None)
     if found:
-        assert p._one.await_args.args[1:] == ("o1", "A@x.io")
+        assert p._principals_by_email.await_args.args[:2] == (["users"], ["A@x.io"])
     else:
-        p._one.assert_not_awaited()
+        p._principals_by_email.assert_not_awaited()
+
+
+class TestReplaceRecordEntityRelations:
+    """One org-scoped statement: the new edges are written and only that origin's other edges of the record go."""
+
+    @staticmethod
+    async def _run(edges: list[dict], collections: list[str] | None = None, origin: str = "EXTRACTED") -> tuple[str, tuple]:
+        from app.core.org_context import OrgContext, bind
+
+        provider = PostgresGraphProvider.__new__(PostgresGraphProvider)
+        provider.logger = logging.getLogger("t")
+        seen: dict = {}
+
+        async def q(fn, transaction, write=False):  # noqa: ANN202
+            tx = MagicMock()
+            tx.execute = AsyncMock(side_effect=lambda sql, *args: seen.update(sql=sql, args=args))
+            await fn(tx)
+            seen["write"] = write
+
+        provider._q = q
+        with bind(OrgContext("org-1", None, "job", "job:test", "t")):
+            await provider.replace_record_entity_relations("r1", collections or ["organizations"], origin, edges)
+        assert seen["write"] is True
+        return seen["sql"], seen["args"]
+
+    @pytest.mark.asyncio
+    async def test_it_is_one_statement_scoped_by_org_record_origin_and_collections(self) -> None:
+        edge = {"_from": "records/r1", "_to": "organizations/o1", "edgeType": "MENTIONS", "origin": "EXTRACTED", "createdAtTimestamp": 1}
+        sql, args = await self._run([edge], ["organizations", "users"])
+        assert sql.count("INSERT INTO") == 1 and sql.count("DELETE FROM") == 1
+        assert "d.org_id = $1" in sql and "d.from_id = $3" in sql and "d.to_coll = ANY($4::text[])" in sql
+        assert "coalesce(d.doc->>'origin', $5) = $6" in sql and "NOT EXISTS (SELECT 1 FROM ins" in sql
+        assert (args[0], args[2], args[3], args[4], args[5]) == ("org-1", "r1", ["organizations", "users"], "INFERRED", "EXTRACTED")
+
+    @pytest.mark.asyncio
+    async def test_no_edges_still_clears_the_origin(self) -> None:
+        sql, args = await self._run([])
+        assert "DELETE FROM" in sql and args[1] == "[]"
+
+    @pytest.mark.asyncio
+    async def test_a_missing_record_collection_or_origin_raises_before_any_statement(self) -> None:
+        provider = PostgresGraphProvider.__new__(PostgresGraphProvider)
+        provider._q = AsyncMock()
+        for args in (("", ["users"], "INFERRED", []), ("r1", [], "INFERRED", []), ("r1", ["users"], "", [])):
+            with pytest.raises(ValueError, match="needs a record"):
+                await provider.replace_record_entity_relations(*args)
+        provider._q.assert_not_awaited()

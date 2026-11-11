@@ -1,6 +1,7 @@
 """Unit tests for app.modules.retrieval.retrieval_service.RetrievalService."""
 
 import asyncio
+import logging
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1367,6 +1368,28 @@ class TestSearchWithFilters:
         assert (key, org, sorted(ids)) == ("user-key", "o1", ["rec-open", "rec-restricted"])
 
     @pytest.mark.asyncio
+    async def test_a_class_unit_hit_in_a_file_the_user_cannot_read_is_dropped(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        """A class header unit is a group point; it is checked by its record like any other hit,
+        so a hidden class reaches no chat answer and no code-graph tool."""
+        self._two_hits(mock_graph_provider, retrieval_service)
+        class_unit = {"blockGroupIndex": 0, "isBlockGroup": True, "isBlock": False, "unitKind": "class"}
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {"score": 0.9, "content": "class Open:", "metadata": {"virtualRecordId": "vr-open", "orgId": "o1",
+                                                                  **class_unit}},
+            {"score": 0.8, "content": "class Hidden:", "metadata": {"virtualRecordId": "vr-restricted",
+                                                                    "orgId": "o1", **class_unit}},
+        ])
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(node_ids=frozenset({"rec-open"})),
+        )
+
+        result = await retrieval_service.search_with_filters(queries=["q"], user_id="u1", org_id="o1")
+
+        assert [r["content"] for r in result["searchResults"]] == ["class Open:"]
+
+    @pytest.mark.asyncio
     async def test_a_failed_hit_check_says_so_instead_of_answering_empty(
         self, retrieval_service, mock_graph_provider
     ) -> None:
@@ -2678,6 +2701,36 @@ class TestSearchWithFiltersBranches:
         )
         assert result["status"] == "success"
         assert len(result["searchResults"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_point_without_metadata_is_normalised_then_dropped_silently(
+        self, retrieval_service, mock_graph_provider, mock_vector_db_service, caplog
+    ) -> None:
+        """Through the real _run_searches: the point gains metadata ({"point_id"}),
+        so no "no metadata" branch can see it; it has no record and is dropped,
+        and no WARNING reports it; its content is never logged."""
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {"_key": "rec1", "virtualRecordId": "vr1", "origin": "drive", "recordName": "Doc", "mimeType": "text/plain"}
+        ]
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(return_value=[0.1])
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        bare = MagicMock(id="p-bare", score=0.95, payload={"page_content": "content-sentinel"})
+        good = MagicMock(id="p-good", score=0.9, payload={
+            "page_content": "with metadata", "metadata": {"virtualRecordId": "vr1", "orgId": "o1"},
+        })
+        mock_vector_db_service.query_nearest_points.return_value = [[bare, good]]
+        retrieval_service.logger = logging.getLogger("tests.retrieval")
+
+        with caplog.at_level(logging.DEBUG, logger="tests.retrieval"):
+            result = await retrieval_service.search_with_filters(queries=["test"], user_id="u1", org_id="o1")
+
+        assert result["status"] == "success"
+        assert [r["content"] for r in result["searchResults"]] == ["with metadata"]
+        warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert not [r for r in warned if "metadata" in r.getMessage() or "results_skipped" in r.getMessage()]
+        assert not [r for r in caplog.records if "sentinel" in r.getMessage()]
 
     @pytest.mark.asyncio
     async def test_virtual_id_not_in_record_map_goes_to_final(

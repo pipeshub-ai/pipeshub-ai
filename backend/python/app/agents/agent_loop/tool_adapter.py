@@ -743,8 +743,8 @@ class PipesHubStructuredToolAdapter(Tool):
             else:
                 result = self._structured_tool.func(**kwargs)
         except Exception as exc:
-            logger.exception("Dynamic tool %s failed", self.name)
-            return ToolOutput(success=False, error=str(exc))
+            # The executor logs it once, with its stack.
+            return ToolOutput(success=False, error=str(exc), cause=exc, end_fields={"reason": "exception"})
         return _to_tool_output(result)
 
 

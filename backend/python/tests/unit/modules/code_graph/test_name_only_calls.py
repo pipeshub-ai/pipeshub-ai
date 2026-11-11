@@ -15,8 +15,8 @@ CALLS = RecordRelations.CALLS.value
      [("g", False, None), ("H", True, "obj"), ("K", True, "pkg")]),
     ("java", "class A { void f() { g(1); obj.h(2); new B(); } }",
      [("g", False, None), ("h", True, "obj"), ("B", False, None)]),
-    ("rust", "fn f() { g(1); obj.h(2); m::k(3); }",
-     [("g", False, None), ("h", True, "obj"), ("k", True, "m")]),
+    ("rust", "fn f() { g(1); obj.h(2); m::k(3); }",   # `m::k` is module m's function
+     [("g", False, None), ("h", True, "obj"), ("k", False, None)]),
     ("c", "void f() { g(1); obj->h(2); }", [("g", False, None), ("h", True, "obj")]),
     ("cpp", "void f() { g(1); ns::k(3); }", [("g", False, None), ("k", True, "ns")]),
     ("csharp", "class A { void F() { G(1); obj.H(2); new B(); } }",
@@ -66,13 +66,39 @@ async def test_a_name_never_crosses_languages(graph, index_file) -> None:
 
 
 def test_coverage_says_which_languages_are_name_matched() -> None:
-    assert {"rust", "kotlin"} <= NAME_ONLY_LANGUAGES
+    assert {"kotlin", "swift"} <= NAME_ONLY_LANGUAGES
     assert "java" not in NAME_ONLY_LANGUAGES, "Java resolves imports and heritage now"
     assert "go" not in NAME_ONLY_LANGUAGES, "Go resolves package imports now"
-    gap = coverage_for([{"language": "rust"}, {"language": "dart"}])
-    assert gap["name_matched_calls"] == ["rust"]
+    assert "rust" not in NAME_ONLY_LANGUAGES, "Rust resolves `use` paths, impls and traits now"
+    gap = coverage_for([{"language": "kotlin"}, {"language": "dart"}])
+    assert gap["name_matched_calls"] == ["kotlin"]
     assert "INFERRED" in gap["note"] and "dart" in gap["note"]
     assert coverage_for([{"language": "python"}]) is None
+
+
+def test_coverage_says_go_has_no_heritage_edges() -> None:
+    """Go calls and imports resolve, but nothing records which types satisfy an
+    interface, so a caller through one is missing and impact cannot step to it."""
+    gap = coverage_for([{"language": "go"}, {"language": "python"}])
+    assert gap["cross_file_edges"] is True, "Go's calls and imports do cross files"
+    assert gap["languages"] == [], "`languages` means no cross-file edges, which is not Go"
+    assert gap["no_heritage_edges"] == ["go"]
+    assert "INHERITS, IMPLEMENTS or OVERRIDES" in gap["note"] and "interface" in gap["note"]
+    assert gap["note"].startswith("For Go,"), "a language is named the way a person writes it"
+    assert "entry_points may list a method called only through an interface" in gap["note"]
+    assert "name_matched_calls" not in gap
+
+
+def test_coverage_keeps_both_gaps_when_languages_mix() -> None:
+    gap = coverage_for([{"language": "go"}, {"language": "ruby"}])
+    assert gap["cross_file_edges"] is False, "ruby has none"
+    assert gap["languages"] == ["ruby"]
+    assert gap["name_matched_calls"] == ["ruby"] and gap["no_heritage_edges"] == ["go"]
+
+
+def test_a_language_without_methods_has_no_heritage_to_miss() -> None:
+    """C resolves calls and includes and has no types with methods: no caveat to add."""
+    assert coverage_for([{"language": "c"}]) is None
 
 
 def test_a_go_method_is_named_for_its_receiver_and_a_cpp_member_for_its_class() -> None:

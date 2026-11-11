@@ -24,6 +24,7 @@ from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.protocol import AGUIEventType, frame, resolve_protocol
 from app.agents.agent_loop.protocol.stream_collector import collect_stream_outcome
+from app.agents.agent_loop.turn_log import log_turn_end
 from app.agents.chat_modes import resolve_chat_mode_policy, run_chat_stream
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.api.middlewares.auth import (
@@ -76,6 +77,7 @@ from app.services.model_identity.principal import Principal, service_principal
 from app.services.model_identity.runtime import assert_identity_allowed, call_scope
 from app.services.model_identity.workload import Workload
 from app.services.parsing.interface import ParseError
+from app.services.resource_governor.kinds import ParseKind
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.aimodels import get_generator_model_async
@@ -821,6 +823,7 @@ async def _upload_chat_attachments(
                         CHAT_PDF_PAGE_CAP,
                         label=item.fileName,
                         size=len(file_binary),
+                        kind=ParseKind.INSPECT,
                     )
                     if page_count > CHAT_PDF_PAGE_CAP:
                         raise HTTPException(status_code=400, detail=_attachment_too_long(item.fileName, page_count))
@@ -840,6 +843,7 @@ async def _upload_chat_attachments(
                             144,
                             label=item.fileName,
                             size=len(file_binary),
+                            kind=ParseKind.RENDER,
                         )
                         block_containers = _build_pdf_image_blocks(png_pages)
                         ocr_image_pages_used += page_count
@@ -1548,9 +1552,9 @@ async def warm_up_entity_vector_store(container: Any, logger_: Any) -> None:  # 
     if store is None:
         return
     try:
-        logger_.info("🔥 Warming up entity vector store in background")
+        logger_.info("Warming up entity vector store in background")
         await store.embedding_fingerprint()
-        logger_.info("✅ Entity vector store warmup complete")
+        logger_.info("Entity vector store warmup complete")
     except Exception as exc:
         logger_.warning("Entity vector store warmup failed (a later search retries): %s", exc)
 
@@ -1610,18 +1614,24 @@ async def _generate_chat_stream_via_agent_loop(
         container=getattr(request.app, "container", None),
         conversation_id=query_info.conversationId,
     ):
-        async with aclosing(
-            _stream_chat_via_agent_loop(
-                request=request,
-                query_info=query_info,
-                retrieval_service=retrieval_service,
-                graph_provider=graph_provider,
-                config_service=config_service,
-                cancellation_registry=cancellation_registry,
-            )
-        ) as inner:
-            async for event in inner:
-                yield event
+        try:
+            async with aclosing(
+                _stream_chat_via_agent_loop(
+                    request=request,
+                    query_info=query_info,
+                    retrieval_service=retrieval_service,
+                    graph_provider=graph_provider,
+                    config_service=config_service,
+                    cancellation_registry=cancellation_registry,
+                )
+            ) as inner:
+                async for event in inner:
+                    yield event
+        except Exception as exc:
+            # A turn that failed outside the agent loop (attachment check, prompts, the
+            # bridge's own setup) still gets its end line; the error propagates as before.
+            log_turn_end(logger, "error", exc=exc, code=classify_exception(exc)[0], run_id=query_info.runId)
+            raise
 
 
 async def _stream_chat_via_agent_loop(
@@ -1684,7 +1694,7 @@ async def _stream_chat_via_agent_loop(
         for pending in background_tasks:
             pending.cancel()
         await asyncio.gather(*background_tasks, return_exceptions=True)
-        logger_.error(f"Error initializing LLM for chat: {exc}", exc_info=True)
+        log_turn_end(logger_, "error", exc=exc, code="llm_initialization_failed", run_id=query_info.runId)
         error_code, user_message = classify_exception(exc)
         if error_code == "unknown":
             user_message = CHAT_MODEL_START_FAILED

@@ -22,7 +22,7 @@ from .test_kg_backfill import run_in, shadowed
 from .test_kg_derivation import ctx, edge, prov
 from .test_kg_projection import add_edge, delete_node, update_node
 from .test_kg_projection_races import OPS, world2
-from .test_kg_stamps import dry_diffs, held_stamps
+from .test_kg_stamps import dry_diffs, held_scopes, held_stamps
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(180)]
 
@@ -101,6 +101,30 @@ async def test_a_change_that_reaches_more_than_fits_hides_what_it_reaches_until_
     assert "F" not in await hidden_ids(p, org) and "F" not in outdated          # the folder was stamped in the writer's unit
     assert await restamp.run_jobs(pg_db, org, "w1", batch=5) == 1
     assert await marks(p, org) == 0 and await jobs(pg_db, org) == [] and await dry_diffs(p, org, "app1") == []
+
+
+HIDDEN_SCOPE_IDS = ("SELECT k.id FROM kg.scopes s JOIN kg.node_keys k ON k.org_id = s.org_id AND k.sk = s.sk WHERE s.org_id = $1 AND " + restamp.HIDDEN_SCOPE)
+
+
+async def test_the_access_list_of_a_hidden_record_is_hidden_with_it_and_only_then(pg_db) -> None:
+    p, org = prov(pg_db), new_org()
+    await fat(p, org)
+    await add_edge(p, org, ("users", "u1"), ("records", "r00"), "permission", type="USER", role="READER")        # two children get an access list of their own
+    await add_edge(p, org, ("users", "u1"), ("records", "r01"), "permission", type="USER", role="READER")
+    await drain_org(pg_db, org)
+
+    async def hidden_scopes() -> set[str]:
+        async def go(tx) -> set[str]:
+            return {r["id"] for r in await tx.fetch(HIDDEN_SCOPE_IDS, org)}
+        with ctx(org):
+            return await p._q(go, None)
+    assert {"r00", "r01"} <= set(await held_scopes(p, org)) and await hidden_scopes() == set()
+    await narrow(p, org)
+    await drain_org(pg_db, org)
+    assert await marks(p, org) == 12
+    assert await hidden_scopes() == {"r00", "r01"} and await hidden_scopes() == (await hidden_ids(p, org)) & set(await held_scopes(p, org))
+    await restamp.run_jobs(pg_db, org, "w1", batch=5)
+    assert await hidden_scopes() == set() and await dry_diffs(p, org, "app1") == []
 
 
 async def test_a_change_that_fits_is_restamped_in_the_writers_unit_and_hides_nothing(pg_db, monkeypatch) -> None:

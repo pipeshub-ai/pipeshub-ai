@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.context import CancellationToken, RunContext
-from app.agent_loop_lib.core.exceptions import AgentError
+from app.agent_loop_lib.core.exceptions import AgentError, SpawnDepthError
 from app.agent_loop_lib.core.types import AgentResult, Goal
 from app.agent_loop_lib.core.usage_source import llm_usage_source
 from app.agent_loop_lib.events.base import EventEmitter
@@ -18,6 +20,8 @@ from app.agent_loop_lib.modules.stores.hil.base import HILStore
 from app.agent_loop_lib.modules.stores.session.base import SessionStore
 from app.agent_loop_lib.modules.stores.state.base import StateStore
 from app.agent_loop_lib.modules.stores.timeline.base import TimelineStore
+from app.utils.error_class import classify_error
+from app.utils.logging_fields import current_log_fields, log_event, log_fields
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.agent.spec import AgentSpec
@@ -36,6 +40,18 @@ __all__ = ["AgentRuntime", "MAX_SPAWN_DEPTH"]
 # static agent_as_tool composition (see tools/builtin/coordination/agent_tool.py),
 # since both ultimately call `run_child()`.
 MAX_SPAWN_DEPTH = 3
+
+_logger = logging.getLogger(__name__)
+
+
+def _ms_since(started: float) -> int:
+    return round((time.perf_counter() - started) * 1000)
+
+
+def _outcome_of(result: AgentResult) -> str:
+    if not result.success:
+        return "failure"
+    return "partial" if result.needs_input else "success"
 
 
 @dataclass
@@ -179,7 +195,7 @@ class AgentRuntime:
 
         current_depth = getattr(parent_run_ctx, "spawn_depth", 0)
         if current_depth >= MAX_SPAWN_DEPTH:
-            raise AgentError(
+            raise SpawnDepthError(
                 f"Maximum spawn depth ({MAX_SPAWN_DEPTH}) reached — "
                 "cannot spawn further sub-agents from this depth"
             )
@@ -252,13 +268,32 @@ class AgentRuntime:
         # narration shouldn't reach the parent's stream at all.
         child.streaming = mirror_events
 
-        with maybe_start_agent_span(
-            enabled=self.opik_enabled,
-            role_name=spec.name,
-            goal=goal,
-            project_name=self.opik_project_name,
-        ) as span:
-            with llm_usage_source(f"sub_agent:{spec.name}"):
-                result = await child.run(goal)
-            record_agent_span_result(span, result=result)
+        bound = current_log_fields()
+        # The spawner's run: its RunContext when given (ControlPlane binds no run_id), else what this context carries.
+        parent_run_id = parent_run_ctx.run_id if parent_run_ctx is not None else (bound.get("agent_run_id") or bound.get("run_id"))
+        ended = {"role": spec.name, "spawn_depth": child.run_ctx.spawn_depth, "team_id": team_id}
+        started = time.perf_counter()
+        with log_fields(agent_run_id=child.run_ctx.run_id, parent_run_id=parent_run_id):
+            try:
+                with maybe_start_agent_span(
+                    enabled=self.opik_enabled,
+                    role_name=spec.name,
+                    goal=goal,
+                    project_name=self.opik_project_name,
+                ) as span:
+                    with llm_usage_source(f"sub_agent:{spec.name}"):
+                        result = await child.run(goal)
+                    record_agent_span_result(span, result=result)
+            except BaseException as exc:
+                # A record, not the failure line: whoever handles the raise logs that once.
+                log_event(
+                    _logger, "sub_agent.end", outcome="failure", error_class=classify_error(exc),
+                    error_type=type(exc).__name__, duration_ms=_ms_since(started), **ended,
+                )
+                raise
+            log_event(
+                _logger, "sub_agent.end", outcome=_outcome_of(result), end_event=result.end_event or None,
+                error_class=result.error_class or ("cancelled" if result.cancelled else None),
+                turns=len(result.turns), duration_ms=_ms_since(started), **ended,
+            )
             return result

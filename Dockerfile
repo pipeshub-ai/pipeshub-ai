@@ -17,8 +17,11 @@ FROM ${PYTHON_DEPS_IMAGE} AS python-deps
 # compile here when a new dependency needs it.
 WORKDIR /app/python
 COPY backend/python/pyproject.toml ./
+# A base image published before the fork was excluded still carries unclecode-litellm. Removing it
+# deletes litellm/ files the real package also owns, so litellm is reinstalled right after.
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
-    uv pip install --system -e . && \
+    uv pip uninstall --system unclecode-litellm && \
+    uv pip install --system --reinstall-package litellm -e . && \
     crawl4ai-setup && \
     playwright install chromium
 
@@ -38,7 +41,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # -----------------------------------------------------------------------------
 # Stage 1: Node.js Backend Build
 # -----------------------------------------------------------------------------
-FROM node:20-slim AS nodejs-backend
+FROM node:24-slim AS nodejs-backend
 WORKDIR /app/backend
 
 COPY backend/nodejs/apps/package*.json ./
@@ -74,7 +77,7 @@ RUN mkdir -p /app/templates && cd src && find . -name '*.hbs' -exec cp --parents
 # Stage 2: Frontend Build (Next.js in `frontend/`)
 # -----------------------------------------------------------------------------
 # Static export so the Node.js API can serve files from `backend/dist/public`.
-FROM node:20-slim AS frontend-build
+FROM node:24-slim AS frontend-build
 WORKDIR /app/frontend
 
 COPY frontend/package*.json ./

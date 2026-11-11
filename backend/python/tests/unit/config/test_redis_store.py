@@ -8,6 +8,7 @@ close, _build_key, _strip_prefix, _notify_watchers.
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1312,3 +1313,84 @@ class TestPubsubUsesADedicatedProviderConnection:
         await asyncio.wait_for(task, timeout=2)
 
         pubsub_client.aclose.assert_awaited()
+
+
+# ============================================================================
+# Failures are raised, not logged: the caller that handles one logs it once
+# ============================================================================
+
+async def _scan_fails(match: str | None = None) -> AsyncIterator[bytes]:
+    raise OSError("Error 111 connecting")
+    yield b""  # unreachable; makes this an async generator
+
+
+# (store method, its arguments, the client method that fails)
+_FAILING_CALLS = [
+    ("create_key", ("k1", {"a": 1}), "set"),
+    ("update_value", ("k1", {"a": 1}), "set"),
+    ("get_key", ("k1",), "get"),
+    ("delete_key", ("k1",), "delete"),
+    ("get_all_keys", (), "scan_iter"),
+    ("list_keys_in_directory", ("dir",), "scan_iter"),
+]
+
+
+def _warnings_or_worse(records: list[logging.LogRecord]) -> list[str]:
+    return [f"{r.levelname} {r.getMessage()}" for r in records if r.levelno >= logging.WARNING]
+
+
+class TestFailuresRaiseWithoutLogging:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("method", "args", "client_method"), _FAILING_CALLS)
+    async def test_store_failure_raises_with_cause_and_logs_nothing(
+        self, method: str, args: tuple, client_method: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        store = _make_store()
+        if client_method == "scan_iter":
+            store._mock_client.scan_iter = _scan_fails
+        else:
+            setattr(store._mock_client, client_method, AsyncMock(side_effect=OSError("Error 111 connecting")))
+
+        with pytest.raises(ConnectionError, match="Error 111 connecting") as raised:
+            await getattr(store, method)(*args)
+
+        assert isinstance(raised.value.__cause__, OSError)
+        assert _warnings_or_worse(caplog.records) == []
+
+    @pytest.mark.asyncio
+    async def test_unreadable_value_raised_on_request_is_not_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        store = _make_store()
+        store._mock_client.get = AsyncMock(return_value=b"not json {{{")
+
+        with pytest.raises(ConnectionError, match="Failed to get key") as raised:
+            await store.get_key("k1", raise_on_error=True)
+
+        assert isinstance(raised.value.__cause__, json.JSONDecodeError)
+        assert _warnings_or_worse(caplog.records) == []
+
+    @pytest.mark.asyncio
+    async def test_unreadable_value_swallowed_is_logged_once(self, caplog: pytest.LogCaptureFixture) -> None:
+        store = _make_store()
+        store._mock_client.get = AsyncMock(return_value=b"not json {{{")
+
+        assert await store.get_key("k1") is None
+
+        assert [r.getMessage().split(":")[0] for r in caplog.records if r.levelno >= logging.WARNING] == [
+            "Failed to deserialize value"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_config_delete_on_failing_redis_logs_one_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from tests.unit.config.test_configuration_service import _build_service
+
+        store = _make_store()
+        store._mock_client.delete = AsyncMock(side_effect=OSError("Error 111 connecting"))
+        svc = _build_service(store)
+        caplog.set_level(logging.DEBUG, logger="test-config")
+
+        assert await svc.delete_config("/k") is False
+
+        errors = _warnings_or_worse(caplog.records)
+        assert errors == ["ERROR config.delete.failed"]

@@ -47,6 +47,7 @@ PARSE_POOL_ALLOWED = {
     "_Lane._start_worker", "_Lane._new_worker",  # the one-line hook
     "_pool", "submit", "shutdown_parse_pool", "pool_stats",  # mode branches, pinned by the branch tests
     "run_blocking",  # the optional cancel event, pinned by test_run_blocking_cancel_event_is_optional
+    "_Job.kind", "_Job.covered", "_covered",  # the optional kind and covered fields: None and False leave the legacy pool untouched
 }
 TABLE_DETECTOR_ALLOWED = {
     "_session",  # reads _threads()
@@ -165,3 +166,21 @@ def test_run_blocking_cancel_event_is_optional(lanes_off: None) -> None:
     gone.set()
     with pytest.raises(parse_pool.ParseAbandonedError):
         parse_pool.run_blocking(os.getpid, label="x", cancelled=gone)
+
+
+def test_kind_is_ignored_in_off(lanes_off: None) -> None:
+    """A kind passed in off changes nothing: the legacy pool runs the job, the job reads no permit state."""
+    from app.services.resource_governor.kinds import ParseKind
+    from app.services.resource_governor.memory_domain import set_permit_covers
+
+    token = set_permit_covers()
+    try:
+        assert parse_pool._covered(ParseKind.EXCEL_LOAD) is False
+    finally:
+        from app.services.resource_governor.memory_domain import reset_permit_covers
+
+        reset_permit_covers(token)
+    other = parse_pool.run_blocking(os.getpid, label="x", kind=ParseKind.EXCEL_LOAD)
+    assert other != os.getpid()
+    job = parse_pool._Job(os.getpid, (), "x", 0)
+    assert (job.kind, job.covered) == (None, False)

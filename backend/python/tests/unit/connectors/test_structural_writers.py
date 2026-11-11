@@ -229,7 +229,7 @@ async def test_the_transaction_bumps_each_touched_connector_once_before_it_commi
     provider.delete_single_record = AsyncMock()
     provider.is_write_conflict = MagicMock(return_value=False)
 
-    async def bump(tx, connector) -> int:
+    async def bump(tx, connector, roots=None) -> int:
         order.append(f"bump:{connector}")
         return 1
 
@@ -261,7 +261,7 @@ async def test_a_failed_bump_rolls_back_and_a_conflict_is_transient(monkeypatch)
     provider.is_write_conflict = MagicMock(return_value=False)
     provider.is_transient_error = MagicMock(return_value=False)
 
-    async def bump(tx, connector) -> int:
+    async def bump(tx, connector, roots=None) -> int:
         raise ScopeGenerationConflict("x")
 
     from app.services.permissions import structure_generation
@@ -288,7 +288,7 @@ async def test_without_explicit_transactions_a_failed_bump_marks_the_connector_u
     provider.delete_single_record = AsyncMock()
     provider.is_write_conflict = MagicMock(return_value=False)
 
-    async def bump(tx, connector) -> int:
+    async def bump(tx, connector, roots=None) -> int:
         raise RuntimeError("down")
 
     from app.services.permissions import structure_generation
@@ -647,6 +647,7 @@ _OUTSIDE_THE_STORE: dict[tuple[str, str], str] = {
     ("app/connectors/services/event_service.py", "delete_connector_instance"): "deletes the connector itself, and with it the generation",
     # the same for a knowledge base, which is an app
     ("app/connectors/sources/localKB/handlers/kb_service.py", "delete_connector_instance"): "deletes the knowledge base (an app) itself, as above",
+    ("app/connectors/services/storage_release.py", "delete_connector_instance"): "finishes the delete of the connector itself, as above",
     # hard-deletes records that are already in the trash: the soft delete moved the generation and removed their points
     ("app/connectors/services/trash_purge.py", "purge_trashed_records"): "removes records already soft-deleted (that moved the generation)",
     # a push that finds its knowledge base being deleted removes the record it created a moment earlier in the same request;

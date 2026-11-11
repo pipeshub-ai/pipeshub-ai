@@ -19,6 +19,9 @@ if TYPE_CHECKING:
 
 _HIER = ("PARENT_CHILD", "ATTACHMENT")
 _VALIDATOR = NodeSchemaValidator()
+# The bound of the vetted lookups of graph_0007 and graph_0008 (value mentions: one more): a read that returns that many rows may be partial, and the caller reads with its own statement.
+VETTED_BOUND = 100_000
+MENTIONS_BOUND = 100_001
 
 
 class NotImplementedInPostgres(NotImplementedError):
@@ -65,11 +68,14 @@ def _edge(e: dict) -> tuple[str, str, str, str, dict]:
 
 def _ekey(coll: str, props: dict) -> str:
     """What tells parallel edges of one pair apart: a link's relation type, a grant's type (a user's own grant and the organization's grant to
-    the same record are two edges), an authenticated-as link's connector (one link per connector, as on the other stores); empty for the rest, one edge per pair."""
+    the same record are two edges), an authenticated-as link's connector (one link per connector, as on the other stores), an entity relation's type (a record
+    created by and assigned to one user holds two edges, as ``batch_create_entity_relations`` merges on Neo4j); empty for the rest, one edge per pair."""
     if coll == "permission":
         return str(props.get("type") or "")
     if coll == CollectionNames.AUTHENTICATED_AS.value:
         return str(props.get("connectorId") or "")
+    if coll == CollectionNames.ENTITY_RELATIONS.value:
+        return str(props.get("edgeType") or "")
     rt = props.get("relationshipType")
     if coll == CollectionNames.NODE_RELATIONS.value and rt not in (None, *_HIER):
         return f"{rt}\x1f{props['constraintName']}" if props.get("constraintName") else rt     # two foreign keys of one type between one pair are two edges
