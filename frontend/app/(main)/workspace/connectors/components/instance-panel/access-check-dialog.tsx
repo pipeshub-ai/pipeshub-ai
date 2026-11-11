@@ -6,9 +6,9 @@ import { useTranslation } from 'react-i18next';
 import { Button, Dialog, Flex, Heading, Select, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { isProcessedError } from '@/lib/api/api-error';
-import { configuredFetcher } from '@/lib/api/fetcher';
+import { UsersApi } from '@/app/(main)/workspace/users/api';
 import { SWR_NS, SWR_POLICY } from '@/lib/api/swr-cache';
-import type { User, UsersListResponse } from '@/app/(main)/workspace/users/types';
+import type { User } from '@/app/(main)/workspace/users/types';
 import { ConnectorsApi } from '../../api';
 import type { AccessExplanation, AccessExplanationCode } from '../../types';
 
@@ -53,7 +53,8 @@ export function AccessCheckDialog({ connectorId, container }: AccessCheckDialogP
     mutate: retryPeople,
   } = useSWR(
     open ? ([SWR_NS.userDirectory, 'access-check-people'] as const) : null,
-    () => configuredFetcher<UsersListResponse>('/api/v1/users', { params: { limit: MAX_PEOPLE } }),
+    // The dialog words a failed load itself, so the request raises no toast of its own.
+    () => UsersApi.listUsers({ limit: MAX_PEOPLE }, { suppressErrorToast: true }),
     SWR_POLICY.list60s
   );
   const people: User[] | null = peopleData?.users ?? null;

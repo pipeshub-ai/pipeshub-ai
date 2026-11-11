@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from app.api.middlewares.auth import is_request_admin, require_scopes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes
+from app.core.org_context import current_org_id
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider  # noqa: TC001 - FastAPI reads the annotation at runtime
 from app.services.permissions.errors import ViewerScopesUnavailable
@@ -54,14 +55,14 @@ async def explain_permission(
     not_found = HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Not found")
     if not is_request_admin(request):
         raise not_found
-    asker_id, org_id = request.state.user.get("userId"), request.state.user.get("orgId")
-    if not asker_id or not org_id:
+    asker_id, org_id = request.state.user.get("userId"), current_org_id()
+    if not asker_id:
         raise not_found
     asker, viewer = await get_user_or_503(graph_provider, asker_id), await get_user_or_503(graph_provider, user_id)
     asker_key = (asker or {}).get("id") or (asker or {}).get("_key")
     viewer_key = (viewer or {}).get("id") or (viewer or {}).get("_key")
-    # A person of another organisation is not found, whatever the graph holds about them.
-    if not asker_key or not viewer_key or (viewer or {}).get("orgId") != org_id:
+    # A person of another organisation is refused by the service, with the same not-found.
+    if not asker_key or not viewer_key:
         raise not_found
     try:
         result = await _service(request, graph_provider).explain(

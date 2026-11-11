@@ -10,8 +10,8 @@ vi.mock('../../../api', () => ({
   ConnectorsApi: { explainAccess: (...args: unknown[]) => explainAccess(...args) },
 }));
 const listUsers = vi.fn();
-vi.mock('@/lib/api/fetcher', () => ({
-  configuredFetcher: (...args: unknown[]) => listUsers(...args),
+vi.mock('@/app/(main)/workspace/users/api', () => ({
+  UsersApi: { listUsers: (...args: unknown[]) => listUsers(...args) },
 }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 
@@ -65,7 +65,7 @@ async function check(record = 'rec-1') {
 
 beforeEach(() => {
   installDomShims();
-  listUsers.mockReset().mockResolvedValue({ users: [DANA] });
+  listUsers.mockReset().mockResolvedValue({ users: [DANA], totalCount: 1 });
   explainAccess.mockReset();
 });
 afterEach(() => cleanup());
@@ -165,6 +165,7 @@ describe('AccessCheckDialog', () => {
     renderDialog();
     fireEvent.click(trigger());
     expect(await screen.findByText('We could not load the list of people.')).toBeTruthy();
+    expect(listUsers).toHaveBeenCalledWith({ limit: 100 }, { suppressErrorToast: true });
 
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
 

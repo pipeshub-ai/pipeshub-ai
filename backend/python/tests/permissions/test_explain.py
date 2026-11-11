@@ -239,3 +239,22 @@ async def test_a_denial_under_a_pending_root_says_the_subtree_is_being_updated(g
         assert other.code == ex.GRANTED  # a pending root never turns an admit into a denial
         monkeypatch.undo()
         assert view is not None
+
+
+@pytest.mark.integration
+@pytest.mark.timeout(3000)
+async def test_a_person_of_another_organisation_is_not_found_while_one_of_this_organisation_is_explained(graph_layers: list[GraphCheckLayer]) -> None:
+    other = WorldBuilder()
+    other.principal("eve")
+    other.node(Node("B", "app", app_type="DRIVE"))
+    other.gate("eve", "B")
+    for layer in graph_layers:
+        _, ns = await _load(layer)
+        foreign = other.build()
+        await layer.preload([foreign])
+        theirs = await layer._ns(foreign)
+        assert theirs.org != ns.org
+        service = ExplainService(layer._provider)  # type: ignore[arg-type]
+        with pytest.raises(ExplainNotFound):
+            await service.explain(ns.org, theirs.id("eve"), ns.id("openrec"), asker_key=ns.id("boss"))
+        assert (await service.explain(ns.org, ns.id("dana"), ns.id("openrec"), asker_key=ns.id("boss"))).admitted

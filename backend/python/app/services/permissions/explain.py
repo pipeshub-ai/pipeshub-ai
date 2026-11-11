@@ -289,6 +289,8 @@ class ExplainService:
     ) -> Explanation:
         """`viewer_key` and `asker_key` are graph user keys. Raises `ExplainNotFound` for an unknown record, one of another
         connector than `connector_id`, or an unknown person; `ViewerScopesUnavailable` when the graph cannot answer."""
+        if not await self._in_org(org_id, viewer_key):
+            raise ExplainNotFound(viewer_key)
         try:
             facts, target, app_node, who = await self._facts(org_id, record_id, viewer_key)
         except ViewerScopesUnavailable as exc:
@@ -314,6 +316,13 @@ class ExplainService:
         named = await self._names(org_id, asker_key, facts, [*chain, *([container_id] if container_id else [])])
         container = named[container_id] if container_id else None
         return Explanation(graph_admitted, walk.code, container, tuple(named[i] for i in chain), reference)
+
+    async def _in_org(self, org_id: str, viewer_key: str) -> bool:
+        """The person is a user of this organisation (the org-scoped user lookup both stores have); one of another is not found."""
+        doc = await self._provider.get_document(viewer_key, CollectionNames.USERS.value) or {}
+        email = doc.get("email")
+        found = await self._provider.get_users_by_emails([email], org_id=org_id) if email else {}
+        return any(u.id == viewer_key for u in found.values())
 
     def _mismatch(self, m: Mismatch) -> None:
         EXPLAIN_MISMATCH.inc("admit" if m.graph_admitted else "deny")

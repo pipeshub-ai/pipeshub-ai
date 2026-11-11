@@ -1,6 +1,6 @@
 """The admin explanation route: a non-admin gets the 404 of a route that is not there; an admin gets the service's answer."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from unittest.mock import AsyncMock
 
 import pytest
@@ -8,6 +8,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.testclient import TestClient
 
 from app.connectors.api import permission_explain_router as mod
+from app.core import org_context
 from app.services.permissions.errors import ViewerScopesUnavailable
 from app.services.permissions.explain import ContainerRef, ExplainNotFound, Explanation
 
@@ -22,7 +23,7 @@ def role() -> dict[str, str]:
 @pytest.fixture
 def graph() -> AsyncMock:
     g = AsyncMock()
-    users = {"admin-1": {"id": "k-admin", "orgId": "org-1"}, "dana": {"id": "k-dana", "orgId": "org-1"}, "eve": {"id": "k-eve", "orgId": "org-2"}}
+    users = {"admin-1": {"id": "k-admin"}, "dana": {"id": "k-dana"}}
     g.get_user_by_user_id = AsyncMock(side_effect=lambda uid, **_: users.get(uid))
     return g
 
@@ -34,6 +35,12 @@ def service(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
         False, "restricted_container", ContainerRef(None), (ContainerRef("HR", "g1"), ContainerRef(None)), "abcd1234"))
     monkeypatch.setattr(mod, "_service", lambda request, provider: s)
     return s
+
+
+@pytest.fixture(autouse=True)
+def _org() -> Iterator[None]:
+    with org_context.for_org("org-1", job="test"):
+        yield
 
 
 @pytest.fixture
@@ -69,10 +76,14 @@ def test_a_non_admin_gets_a_404_and_the_service_is_never_asked(client: TestClien
     service.explain.assert_not_awaited()
 
 
-def test_a_person_of_another_organisation_or_unknown_is_a_404(client: TestClient, service: AsyncMock) -> None:
-    for who in ("eve", "nobody"):
-        assert client.get(URL, params={"user_id": who, "record_id": "rec-1"}).status_code == 404
+def test_an_unknown_person_is_a_404_and_the_service_is_never_asked(client: TestClient, service: AsyncMock) -> None:
+    assert client.get(URL, params={"user_id": "nobody", "record_id": "rec-1"}).status_code == 404
     service.explain.assert_not_awaited()
+
+
+def test_a_person_the_service_refuses_as_not_of_this_organisation_is_a_404(client: TestClient, service: AsyncMock) -> None:
+    service.explain.side_effect = ExplainNotFound("k-dana")
+    assert client.get(URL, params={"user_id": "dana", "record_id": "rec-1"}).status_code == 404
 
 
 def test_an_unknown_record_is_a_404(client: TestClient, service: AsyncMock) -> None:
