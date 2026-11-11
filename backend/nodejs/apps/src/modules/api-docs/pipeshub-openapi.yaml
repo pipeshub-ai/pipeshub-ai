@@ -54713,11 +54713,12 @@ paths:
         codes and times only; it names no record, container or user.
 
         <b>Who can read it:</b> org admins, for a connector they may open: a personal
-        connector only by the user who created it. A connected app gets it only when its
-        grant names this connector whole, because the counts cover the whole connector.
-        Anyone else, an ID no instance of the caller's organization has, another user's
-        personal connector, and a connected app whose grant does not name this connector
-        whole get <code>404</code>.
+        connector only by the user who created it. A connected app whose grant limits it to
+        part of the knowledge gets it only when that limit names this connector whole,
+        because the counts cover the whole connector; an app with no such limit gets it as
+        any admin does. Anyone else, an ID no instance of the caller's organization has,
+        another user's personal connector, and a connected app whose limit does not name
+        this connector whole get <code>404</code>.
       operationId: getConnectorPermissionStatus
       security:
         - bearerAuth: []
@@ -54851,7 +54852,7 @@ paths:
           description: |
             No connector instance of the caller's organization has this ID, the caller
             is not an org admin, the connector is another user's personal connector, or
-            the caller is a connected app whose grant does not name this connector whole.
+            the caller is a connected app whose knowledge limit does not name this connector whole.
           content:
             application/json:
               schema:
