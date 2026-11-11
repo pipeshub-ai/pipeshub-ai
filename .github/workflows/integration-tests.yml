@@ -613,7 +613,7 @@ jobs:
       # hourly cap. The token is read-only: PR code on the runner can read it.
       - name: Log in to Docker Hub (read-only)
         if: env.DOCKERHUB_PULL_LOGIN == 'true'
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PULL_TOKEN }}
@@ -722,7 +722,7 @@ jobs:
 
       - name: Check out the BookStack simulator
         if: env.NEEDS_BOOKSTACK_SIM == 'true'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: pipeshub-ai/connectors-simulator
           ref: ${{ env.CONNSIM_BOOKSTACK_REF }}
@@ -740,7 +740,7 @@ jobs:
 
       - name: Check out the Salesforce simulator
         if: env.NEEDS_SALESFORCE_SIM == 'true'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: pipeshub-ai/connectors-simulator
           ref: ${{ env.CONNSIM_SALESFORCE_REF }}
@@ -758,7 +758,7 @@ jobs:
 
       - name: Check out the ServiceNow simulator
         if: env.NEEDS_SERVICENOW_SIM == 'true'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: pipeshub-ai/connectors-simulator
           ref: ${{ env.CONNSIM_SERVICENOW_REF }}
@@ -776,7 +776,7 @@ jobs:
 
       - name: Check out the Zammad simulator
         if: env.NEEDS_ZAMMAD_SIM == 'true'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: pipeshub-ai/connectors-simulator
           ref: ${{ env.CONNSIM_ZAMMAD_REF }}

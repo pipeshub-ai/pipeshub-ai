@@ -50,7 +50,7 @@ jobs:
         run: git show "HEAD^1:$SPEC" > base-openapi.yaml
 
       - name: Detect breaking changes with oasdiff
-        uses: oasdiff/oasdiff-action/breaking@9ce3a29eb0e6478dd0140932a678c7fb59d08f22 # v0.1.20
+        uses: oasdiff/oasdiff-action/breaking@8a211b41745fcecdfa4a86531ffbf08934fb14f6 # v0.1.23
         with:
           base: base-openapi.yaml
           revision: ${{ env.SPEC }}
