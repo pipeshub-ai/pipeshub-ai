@@ -31,11 +31,12 @@ FLUSH_FAILED = METRICS_BACKEND.counter("pipeshub_kg_flush_failed_total", "Projec
 FLUSHED = METRICS_BACKEND.counter("pipeshub_kg_flushed_nodes_total", "Nodes projected by a writer's own transaction", ["where"])
 
 
-_CHOICES = {"PG_KG_PROJECT": ("0", "1"), "PG_KG_FLUSH": ("async", "inline"), "PG_KG_STRICT": ("0", "1"), "PG_KG_GUARD": ("strict",)}
+_CHOICES = {"PG_KG_PROJECT": ("0", "1"), "PG_KG_READ": ("0", "1"), "PG_KG_FLUSH": ("async", "inline"), "PG_KG_STRICT": ("0", "1"), "PG_KG_GUARD": ("strict",)}
 
 
 def check_env() -> None:
-    """A setting of the projection that is set to something this code does not know is an error that names it: ``PG_KG_PROJECT=true`` must not mean "off" (which deletes the log)."""
+    """A setting of the projection or the read that is set to something this code does not know is an error that names it: ``PG_KG_PROJECT=false`` must not mean "on". Unset (or empty) and 1
+    are on, 0 is off."""
     for name, allowed in _CHOICES.items():
         value = os.environ.get(name, "")
         if value and value not in allowed:

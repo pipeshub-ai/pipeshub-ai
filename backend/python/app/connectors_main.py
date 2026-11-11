@@ -1234,6 +1234,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         run_flat_storage_migration(app_container, graph_provider), name="flat_storage_migration",
     )
 
+    # PostgreSQL graph: project the change log into the typed graph, restamp, and take each connector to enforce. One service runs it (this one, the owner of graph writes).
+    app.state.kg_worker = None
+    try:
+        from app.services.graph_db.postgres.kg.worker import start_for as start_kg_worker
+
+        app.state.kg_worker = start_kg_worker(graph_provider, logger)
+    except Exception as e:      # the service runs without it: reads stay on the walk, and the change log is drained at the next start
+        logger.error(f"❌ Failed to start the kg worker: {e}", exc_info=True)
+
     # NOTE: ToolsetTokenRefreshService.start() already performs an initial refresh scan.
     # Avoid triggering another startup scan here to prevent duplicate scheduling attempts.
 
@@ -1247,6 +1256,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except (asyncio.CancelledError, Exception):
             pass
     logger.info("🔄 Shut down application started")
+    kg_worker = getattr(app.state, "kg_worker", None)
+    if kg_worker is not None:
+        try:
+            await kg_worker.stop()
+        except Exception as e:
+            logger.warning(f"Error stopping the kg worker at shutdown: {e}")
     # The code-edge reconciler stops before the task managers drain, so its
     # sweep cannot start a build into the unwind.
     for task_name in (

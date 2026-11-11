@@ -13,9 +13,9 @@ def test_the_mode_follows_the_environment(monkeypatch: pytest.MonkeyPatch, proje
         if value is not None:
             monkeypatch.setenv(name, value)
     assert flush.mode() == mode and flush.enabled() is inline
-@pytest.mark.parametrize(("name", "bad"), [("PG_KG_PROJECT", "true"), ("PG_KG_PROJECT", "yes"), ("PG_KG_FLUSH", "inlne"), ("PG_KG_GUARD", "Strict"), ("PG_KG_STRICT", "on")])
+@pytest.mark.parametrize(("name", "bad"), [("PG_KG_PROJECT", "true"), ("PG_KG_PROJECT", "yes"), ("PG_KG_READ", "true"), ("PG_KG_READ", "false"), ("PG_KG_FLUSH", "inlne"), ("PG_KG_GUARD", "Strict"), ("PG_KG_STRICT", "on")])
 def test_a_setting_this_code_does_not_know_is_an_error_that_names_it(monkeypatch: pytest.MonkeyPatch, name: str, bad: str) -> None:
-    for var in ("PG_KG_PROJECT", "PG_KG_FLUSH", "PG_KG_GUARD", "PG_KG_STRICT"):
+    for var in ("PG_KG_PROJECT", "PG_KG_READ", "PG_KG_FLUSH", "PG_KG_GUARD", "PG_KG_STRICT"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv(name, bad)
     with pytest.raises(ValueError, match=name):

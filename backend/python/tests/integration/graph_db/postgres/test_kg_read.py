@@ -1,4 +1,4 @@
-"""The access check answered from the typed graph (``kg.read``, ``PG_KG_READ=1``) equals the walk and the oracle, and takes the walk wherever it may not answer.
+"""The access check answered from the typed graph (``kg.read``, defaults on) equals the walk and the oracle, and takes the walk wherever it may not answer.
 
 Every world of the permission corpus and of the generated worlds is stored in an org of its own, its connectors are copied into kg, verified and promoted to ``enforce``, and then every
 viewer x node pair is asked with the switch on and with it off: 0 over-admits and 0 under-admits against the walk, and against the oracle. The rest of the file breaks one thing at a
@@ -245,8 +245,8 @@ async def _same_as_walk(prov, c: Case) -> None:
     assert await _ask(prov, c.org, c.uid, c.ids, c.access, None) == await _ask(prov, c.org, c.uid, c.ids, c.access, "0")
 
 
-@pytest.mark.parametrize("value", [None, "", "1", "true", "yes", "2"])
-async def test_the_read_is_on_by_default_and_for_any_value_but_zero(layer, pg_provider, pg_db, monkeypatch, value) -> None:
+@pytest.mark.parametrize("value", [None, "", "1"])
+async def test_the_read_is_on_by_default_and_with_one(layer, pg_provider, pg_db, monkeypatch, value) -> None:
     c = await _case(layer, pg_provider, pg_db)
     calls = Counter()
     orig = kg_read.decide

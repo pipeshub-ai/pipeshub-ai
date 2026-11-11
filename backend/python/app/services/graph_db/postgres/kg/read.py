@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.services.graph_db.postgres import access as access_sql
-from app.services.graph_db.postgres.kg import drainer
+from app.services.graph_db.postgres.kg import drainer, flush
 from app.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
@@ -59,8 +59,9 @@ PROFILE = """/* pipeshub:kg.read_profile */ SELECT set_config('enable_bitmapscan
 
 
 def enabled() -> bool:
-    """On unless PG_KG_READ=0 (the off switch; anything else, unset included, is on): with 0 nothing reads kg and every check is the walk's. Whatever this says, a connector that is not
-    served, a node kg cannot decide and a read that is blocked or slow take the walk."""
+    """On unless PG_KG_READ=0 (the off switch): with 0 nothing reads kg and every check is the walk's. Unset and 1 are on; any other value raises (``flush.check_env``). Whatever this
+    says, a connector that is not served, a node kg cannot decide and a read that is blocked or slow take the walk."""
+    flush.check_env()
     return os.environ.get(ENV) != "0"
 
 
@@ -132,12 +133,12 @@ async def decide(tx: Tx, org: str, ids: list[str], access: dict[str, Any]) -> De
             to_walk(i, "not_current")
         elif r["deleted"]:
             verdict[i] = False
+        elif r["kind"] == 1:
+            verdict[i] = app in gated                                  # an app carries no stamps: the gate alone decides it
         elif r["placeholder"] or r["hidden"] or r["r13"] is not False or r["no_path"]:     # r13 NULL is not stamped: never read as false
             to_walk(i, "placeholder" if r["placeholder"] else ("hidden" if r["hidden"] else ("r13" if r["r13"] is not False else "no_path")))
         elif app not in gated:
             verdict[i] = False
-        elif r["kind"] == 1:
-            verdict[i] = True
         elif r["class_id"] is None:
             to_walk(i, "legacy")
         else:
