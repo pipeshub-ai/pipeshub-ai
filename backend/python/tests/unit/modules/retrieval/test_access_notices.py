@@ -188,7 +188,7 @@ async def test_a_successful_search_carries_the_notices_of_the_connectors_it_reac
 
 
 # The record-id path: no containers, so the connectors come from the person's own gate.
-async def _record_id_search(service, mock_graph_provider, gated, apps, *, filters=None, time_range=None, excluded=frozenset()):  # noqa: ANN001, ANN202
+async def _record_id_search(service, mock_graph_provider, gated, apps, *, filters=None, time_range=None, excluded=frozenset()):
     mock_graph_provider.get_knowledge_hub_access_v3 = AsyncMock(return_value={"gated_app_ids": list(gated)})
     mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "t@example.com"}
     read = AsyncMock(return_value=apps)
