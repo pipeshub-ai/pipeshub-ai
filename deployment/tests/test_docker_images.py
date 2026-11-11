@@ -170,8 +170,11 @@ def main() -> None:
         fail(".hadolint.yaml is missing")
 
     nvmrc = ROOT / ".nvmrc"
-    if not nvmrc.is_file() or nvmrc.read_text(encoding="utf-8").strip() != "22":
-        fail(".nvmrc must contain 22")
+    node_major = re.search(r"^ARG NODE_IMAGE=node:(\d+)-", (ROOT / "Dockerfile").read_text(encoding="utf-8"), re.M)
+    if node_major is None:
+        fail("Dockerfile must pin ARG NODE_IMAGE=node:<major>-...")
+    elif not nvmrc.is_file() or nvmrc.read_text(encoding="utf-8").strip() != node_major.group(1):
+        fail(f".nvmrc must contain {node_major.group(1)}, the Node major of the images")
 
     for compose in COMPOSE_FILES:
         text = compose.read_text(encoding="utf-8")
