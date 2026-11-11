@@ -634,4 +634,4 @@ async def test_the_entity_index_rebuild_ticks_with_no_ambient_org(w: World, monk
     finally:
         org_context.pop(token)
     assert outcomes[-1] == "idle" and "connector" in outcomes and "ir1" in store.written
-    assert (await w.p.get_document("idx-app", "apps"))["entityIndexState"] == entity_index_marker("fp", "st")
+    assert (await w.p.get_document("idx-app", "apps"))["entityIndexState"] == entity_index_marker("fp", "st", order=w.p.ENTITY_INDEX_PAGE_ORDER)
