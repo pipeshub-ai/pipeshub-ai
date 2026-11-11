@@ -340,6 +340,10 @@ def _delegated_scopes() -> list[str]:
     )\
     .build_decorator()
 
+class _ItemReadFailed(Exception):
+    """An item's permissions could not be read: it is neither changed nor unchanged."""
+
+
 class GoogleDriveTeamConnector(BaseConnector):
     def __init__(
         self,
@@ -1230,6 +1234,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         individually_shared_emails: set[str] = set()
         page_token: Optional[str] = None
         anyone_with_link_permission_type: Optional[PermissionType] = None
+        source_entries = 0
 
         # Use provided drive_data_source or fall back to service account's data source
         data_source = drive_data_source if drive_data_source else self.drive_data_source
@@ -1259,6 +1264,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 result = await data_source.permissions_list(**params)
 
                 permissions_data = result.get("permissions", [])
+                source_entries += len(permissions_data)
 
                 # Process each permission
                 for perm_data in permissions_data:
@@ -1368,10 +1374,11 @@ class GoogleDriveTeamConnector(BaseConnector):
         # handled above. Record the access they demonstrably have instead of leaving a
         # record nobody can see. is_fallback=True keeps this from replacing a real ACL
         # that another user's sync already learned.
-        # A user who can change the item's sharing can read it, and its list is never empty, so an empty
-        # answer to them is not a list: failing the item keeps the grants stored and reads it again next run.
+        # A user who can change the item's sharing can read it, and its list is never empty, so a list the source
+        # answered with no entries is not a list: failing the item keeps the grants stored and reads it again next
+        # run. Entries the connector left out itself (a suspended owner, a link share) are an answer, not this case.
         # shortcut: a refusal (403) from such a user is still taken as ordinary, upgrade if one is seen to hide a revoke.
-        if not permissions and can_share:
+        if not permissions and not source_entries and can_share:
             raise RuntimeError(f"Empty permission list for {resource_id} from a user who can share it")
         if not permissions and inherited_permissions_disabled and not can_list_children:
             return ([], True, [])
@@ -5313,6 +5320,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             is_shared_with_me = in_shared_drive and record_group_id is None
 
             # Use existing logic to detect changes and transform to FileRecord
+            failures_before = self._sync_ledger.item_failures
             record_update = await self._process_drive_item(
                 file_metadata,
                 user_id,
@@ -5323,6 +5331,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                 force_shared_with_me=is_shared_with_me
             )
 
+            if not record_update and self._sync_ledger.item_failures > failures_before:
+                # An unreadable item is not an unchanged one: it is not re-queued with the grants stored.
+                raise _ItemReadFailed(file_id)
             if not record_update or record_update.is_deleted:
                 return None
 
@@ -5339,6 +5350,8 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             return None
 
+        except _ItemReadFailed:
+            raise
         except Exception as e:
             self.logger.error(f"Error checking Google Drive enterprise record {record.id} at source: {e}")
             return None

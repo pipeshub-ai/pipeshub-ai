@@ -433,6 +433,39 @@ class TestFetchPermissions:
                 "file-1", is_drive=False, user_email="editor@example.com", can_share=True,
             )
 
+    async def test_list_whose_entries_are_all_left_out_by_the_connector_still_gives_the_sharer_a_fallback(self, connector) -> None:
+        # a suspended owner is dropped by the connector: the source did answer with an entry
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            {"id": "p1", "role": "owner", "type": "user", "emailAddress": "gone@example.com", "deleted": True},
+        ]})
+
+        perms, is_fallback, _ = await connector._fetch_permissions(
+            "file-1", is_drive=False, user_email="editor@example.com", can_share=True,
+        )
+        assert is_fallback is True
+        assert [p.email for p in perms] == ["editor@example.com"]
+
+    async def test_reindex_of_an_item_whose_permissions_could_not_be_read_is_not_queued_as_unchanged(self, connector) -> None:
+        record = MagicMock(external_record_id="file-1", external_record_group_id="sd-1", id="rec-1")
+        service = connector.drive_data_source.client
+        connector._get_drive_service_with_fallback = AsyncMock(
+            return_value=(service, "editor@example.com", ("pid", "editor@example.com", {"id": "file-1"}))
+        )
+
+        async def failing_read(*args, **kwargs):
+            connector._sync_ledger.fail_item()
+
+        connector._process_drive_item = AsyncMock(side_effect=failing_read)
+        with patch("app.connectors.sources.google.drive.team.connector.get_impersonation_candidates",
+                   AsyncMock(return_value=["editor@example.com"])):
+            with pytest.raises(Exception, match="file-1"):
+                await connector._check_and_fetch_updated_record("org-1", record)
+
+            connector.data_entities_processor.reindex_existing_records = AsyncMock()
+            connector.data_entities_processor.on_new_records = AsyncMock()
+            await connector.reindex_records([record])
+        connector.data_entities_processor.reindex_existing_records.assert_not_awaited()
+
     async def test_item_whose_list_is_empty_for_a_user_who_can_share_it_is_failed_not_written(self, connector) -> None:
         connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
         metadata = _make_file_metadata(file_id="file-1", name="a.txt", parents=["sd-1"])
