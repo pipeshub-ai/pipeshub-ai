@@ -32,6 +32,7 @@ from app.models.entities import substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.modules.pipeline.first_use import classify_on_first_use_later
 from app.modules.retrieval import degraded_notice
+from app.services.permissions import access_status
 from app.modules.retrieval.entity_filters import (
     TOO_BROAD_MESSAGE,
     EntityFilterResolver,
@@ -277,6 +278,7 @@ class _QueryPlan:
     dense: list | None = None
     sparse: list | None = None
     collections: list[str] | None = None
+    access_notices: list[dict[str, str]] = field(default_factory=list)  # codes for the viewer; the client words them
     # Largest single-query batch of the last attempt, before the cross-query
     # dedupe. Exhaustion is a per-query property: the merged total cannot show
     # it, because overlapping queries shrink it for a reason that has nothing
@@ -895,6 +897,10 @@ class RetrievalService:
                         return self._create_empty_response(ENTITY_FILTER_NO_MATCH_MESSAGE, Status.EMPTY_RESPONSE)
 
             plan = _QueryPlan()
+            if use_containers:
+                # Only connectors this person is gated into: a notice never confirms that a source exists.
+                plan.access_notices = access_status.notices(await access_status.read_apps(self.graph_provider, containers.app_ids))
+                degraded_notice.note_access(plan.access_notices)
 
             def empty(message: str, status: Status) -> dict[str, Any]:
                 if entity_filtered and status in (Status.EMPTY_RESPONSE, Status.ACCESSIBLE_RECORDS_NOT_FOUND):
@@ -908,6 +914,8 @@ class RetrievalService:
                     response["searchIncomplete"] = incomplete
                 if plan.degraded:
                     response["searchDegraded"] = True
+                if plan.access_notices:
+                    response["accessNotices"] = plan.access_notices
                 return response
 
             # Graph key for KH permission_role checks (Location trails).
@@ -1547,6 +1555,8 @@ class RetrievalService:
                     response_data["searchIncomplete"] = incomplete
                 if plan.degraded:
                     response_data["searchDegraded"] = True
+                if plan.access_notices:
+                    response_data["accessNotices"] = plan.access_notices
 
                 # Add KB filtering info to response if KB filtering was applied
                 if kb_ids:
@@ -2934,6 +2944,8 @@ class RetrievalService:
             "status": status.value,
             "status_code": status_code,
             "message": message,
+            # The client words it ("we could not check just now"); the code carries no connector or record.
+            **({"accessNotices": [{"code": "check_unavailable"}]} if status is Status.PERMISSION_CHECK_UNAVAILABLE else {}),
         }
 
     def _create_virtual_to_record_mapping(

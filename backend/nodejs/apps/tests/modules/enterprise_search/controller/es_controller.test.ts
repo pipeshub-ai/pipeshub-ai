@@ -2960,6 +2960,52 @@ describe('Enterprise Search Controller', () => {
       expect(response).to.have.property('searchResponse')
     })
 
+    it('passes the access notice codes of a "nothing to search yet" answer to the client, and nothing else of the answer', async () => {
+      const handler = search(createMockAppConfig())
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 404,
+        data: {
+          status: 'accessible_records_not_found',
+          message: 'No documents are available',
+          accessNotices: [{ code: 'connector_syncing', connectorId: 'c1', connectorName: 'Jira' }],
+          records: [{ hidden: 'x' }],
+        },
+      } as any)
+      const req = createMockRequest({
+        body: { query: 'test search', limit: 10 },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(404)).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal({
+        error: { code: 'NOT_FOUND', message: 'No documents are available' },
+        status: 'accessible_records_not_found',
+        accessNotices: [{ code: 'connector_syncing', connectorId: 'c1', connectorName: 'Jira' }],
+      })
+    })
+
+    it('still fails a 404 that carries no notices through the error path', async () => {
+      const handler = search(createMockAppConfig())
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 404,
+        data: { status: 'accessible_records_not_found', message: 'none' },
+      } as any)
+      const next = createMockNext()
+
+      await handler(
+        createMockRequest({ body: { query: 'q', limit: 10 }, user: { userId: VALID_OID, orgId: VALID_OID2 } }),
+        createMockResponse(),
+        next,
+      )
+
+      expect(next.firstCall.args[0].statusCode).to.equal(404)
+    })
+
     it('logs a 402 refusal as a warning, not an error', async () => {
       const handler = search(createMockAppConfig())
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({

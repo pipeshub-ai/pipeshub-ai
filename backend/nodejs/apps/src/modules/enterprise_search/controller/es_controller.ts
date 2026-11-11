@@ -5323,6 +5323,20 @@ export const search =
       if (!aiResponse?.data) {
         throw new InternalServerError('Failed to get response from AI service');
       }
+      // "Nothing to search yet" names no one: the codes only, so the client can say a source is still syncing.
+      const notFound = aiResponse.data as {
+        accessNotices?: unknown;
+        message?: string;
+        status?: string;
+      };
+      if (aiResponse.statusCode === 404 && Array.isArray(notFound.accessNotices)) {
+        res.status(HTTP_STATUS.NOT_FOUND).json({
+          error: { code: 'NOT_FOUND', message: notFound.message },
+          status: notFound.status,
+          accessNotices: notFound.accessNotices,
+        });
+        return;
+      }
       if (aiResponse.statusCode !== 200) {
         throw handleBackendError(
           {
