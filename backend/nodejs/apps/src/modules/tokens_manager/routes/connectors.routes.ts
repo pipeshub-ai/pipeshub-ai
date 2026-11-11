@@ -485,8 +485,9 @@ const adminOrNotFound = async (
   next: NextFunction,
 ): Promise<void> => {
   try {
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
+    const user = req.user as { userId?: string; orgId?: string } | undefined;
+    const userId = user?.userId;
+    const orgId = user?.orgId;
     if (!userId || !orgId || !(await isUserOrgAdmin(userId, orgId))) {
       throw new NotFoundError('Route not found');
     }

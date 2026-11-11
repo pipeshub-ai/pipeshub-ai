@@ -2241,11 +2241,19 @@ export const stopConnectorSync =
  */
 export const explainPermission =
   (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const { userId, orgId } = req.user || {};
-    const connectorId = String(req.params.connectorId);
-    const targetUserId = String(req.query.userId);
-    const recordId = String(req.query.recordId);
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    const user = req.user as { userId?: string; orgId?: string } | undefined;
+    const { userId, orgId } = user ?? {};
+    const connectorId = req.params.connectorId as string;
+    // The route's schema has already required both as strings.
+    const { userId: targetUserId, recordId } = req.query as {
+      userId: string;
+      recordId: string;
+    };
     let outcome: Record<string, unknown> = { status: 'failed' };
     try {
       if (!userId || !orgId) {
@@ -2262,10 +2270,10 @@ export const explainPermission =
         HttpMethod.GET,
         buildProxyHeaders(req),
       );
-      const data = response?.data as
+      const data = response.data as
         { code?: string; admitted?: boolean } | undefined;
       outcome = {
-        status: response?.statusCode,
+        status: response.statusCode,
         code: data?.code,
         admitted: data?.admitted,
       };
@@ -2275,7 +2283,7 @@ export const explainPermission =
         'Explaining access',
         'Explanation not found',
       );
-    } catch (error: any) {
+    } catch (error: unknown) {
       next(handleBackendError(error, 'explain access'));
     } finally {
       logger.info('Access explanation requested', {
