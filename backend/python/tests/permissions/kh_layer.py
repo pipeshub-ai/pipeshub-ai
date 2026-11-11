@@ -6,9 +6,8 @@ carries them in the cursor) and `KnowledgeHubService.get_nodes` (the browse path
 holds them to the oracle:
 
 * over: a row the oracle does not admit (a leak);
-* under: an admitted node the listing leaves out. Fails, except the one known shape (`declared_gap`: the flatten listing
-  stops at a declared record group, so a node below it that belongs to none of the declared groups is not listed; the
-  folder browse shows it). That one is reported as `gap` and never fails;
+* under: an admitted node the listing leaves out. Fails, except the two shapes the oracle cannot decide (`declared_gap`: an upload, which has its
+  own surface, and a node under a group that hides its children), which are reported as `gap`;
 * total / counts: `total` is the number of rows, `counts_by_type` is the rows by type (one predicate for the rows and the counts);
 * facet: a filtered total equals the oracle's count of visible nodes with that value, and a value no visible node
   holds has total 0 (a bucket with no visible item does not exist). The oracle's count, not the listing's rows;
@@ -41,7 +40,7 @@ MAX_PAGES = 400
 class KhFinding:
     scenario: str
     viewer: str
-    kind: str  # over | under | gap | browse_extra | total | counts | facet | browse | arrow
+    kind: str  # over | under | gap | browse_gap | browse_extra | total | counts | facet | browse | arrow
     detail: str
 
 
@@ -103,25 +102,11 @@ def hidden_by_navigation(world: World, node: Node) -> bool:
 
 
 def declared_gap(world: World, node_id: str) -> bool:
-    """The known shapes the flatten listing leaves out, never a leak: a node a group that hides its children holds or lies above, a record that
-    belongs to no connector (an upload, listed by its own surface), and a node of a connector that declares record groups, below a declared
-    group through the hierarchy, that belongs to none of the declared groups (the folder browse shows it)."""
+    """The shapes the flatten listing leaves out on purpose, which the oracle cannot decide: a record that belongs to no connector (an upload, listed
+    by its own surface), and a node a group that hides its children holds or lies above (`hideChildren` is a display flag the check ignores).
+    Any other admitted node the listing leaves out is an under-admit and fails."""
     node = world.node(node_id)
-    if node.connector is None or node.origin != "CONNECTOR":
-        return True
-    if hidden_by_navigation(world, node):
-        return True
-    declared = {n.id for n in world.nodes if n.kind == "group" and n.model == "RECORD_GROUP_LEVEL" and n.connector == node.connector}
-    if not declared or set(node.belongs) & declared:
-        return False
-    seen, frontier = set(), [p.id for p in node.parents]
-    while frontier:
-        up = frontier.pop()
-        if up in seen:
-            continue
-        seen.add(up)
-        frontier += [p.id for p in world.node(up).parents]
-    return bool(seen & declared)
+    return node.connector is None or node.origin != "CONNECTOR" or hidden_by_navigation(world, node)
 
 
 def _ancestors(world: World, node: Node) -> list[Parent]:
@@ -207,28 +192,37 @@ async def _browse(layer: GraphCheckLayer, world: World, viewer: str, seen: dict[
         raise AssertionError("browse did not end")
 
     on_the_way = {p.id for n in seen.values() for p in _ancestors(world, n)}
+
+    def extras(rows: dict[str, Any], seen: dict[str, Any], on_the_way: set[str]) -> set[str]:
+        """The rows the oracle does not admit. One may be listed on the way to something readable, and only when it is shown as a placeholder (a
+        node a seed it admits hangs under is listed under the nearest folder, and is in `seen`)."""
+        return {i for i, row in rows.items() if i not in seen and not (i in on_the_way and getattr(row, "isPlaceholder", False))}
     folders = [i for i, n in seen.items() if n.kind == "group"][:BROWSE_FOLDERS]
     for folder in folders:
         want = {i for i, n in seen.items() if any(p.id == folder and p.rel in HIERARCHY for p in n.parents)}
         first = await walk(folder)
-        if first is None:      # a folder the browse does not open (a gap, not a leak)
-            add("gap", f"{folder}: the browse does not open it")
+        if first is None:      # a folder the viewer may open and the browse does not: an under-admit
+            add("browse_gap", f"{folder}: the browse does not open it")
             continue
         items, totals, counted = first
         got = {ns.local(item.id): item for item in items}
-        for extra in sorted(set(got) - want):
-            if extra in on_the_way:      # a folder above something the viewer may open is shown, so that it can be reached (by design)
-                continue
-            # shortcut: reported, not failed: the browse lists some nodes the oracle does not let the viewer open (a placeholder, an archive, a
-            # folder of a limited-access chain) and it is not settled whether that is by design; settle it, then make this `browse` again.
+        for extra in sorted(extras(got, seen, on_the_way)):
             add("browse_extra", f"{folder}: lists {extra}, which the oracle does not let the viewer open")
+        # A readable child the browse leaves out is an under-admit. The one exemption is a folder that hides its children (a display flag).
         for missing in sorted(want - set(got)):
-            add("gap", f"{folder}: the browse leaves out {missing}, which the viewer may open")      # not a leak; the flatten listing has it
+            if not hidden_by_navigation(world, world.node(missing)):
+                add("browse_gap", f"{folder}: the browse leaves out {missing}, which the viewer may open")
         if set(totals) != {len(items)} or set(counted) != {len(items)}:
             add("browse", f"{folder}: totalItems per page {sorted(set(totals))}, counts.total {sorted(set(counted))}, rows {len(items)}")
         for item_id, item in got.items():      # the expand arrow is on exactly when opening the row lists something
             opened = await walk(item_id, str(getattr(item.nodeType, "value", item.nodeType)))
             lists = bool(opened and opened[0])
+            below = {ns.local(child.id): child for child in (opened[0] if opened else [])}
+            for extra in sorted(extras(below, seen, on_the_way)):
+                add("browse_extra", f"{item_id}: lists {extra}, which the oracle does not let the viewer open")
+            for missing in sorted({i for i, n in seen.items() if any(p.id == item_id and p.rel in HIERARCHY for p in n.parents)} - set(below)):
+                if not hidden_by_navigation(world, world.node(missing)):
+                    add("browse_gap", f"{item_id}: the browse leaves out {missing}, which the viewer may open")
             if bool(getattr(item, "hasChildren", False)) != lists:
                 add("arrow", f"{folder}: {item_id} hasChildren {item.hasChildren}, opening it lists something: {lists}")
     return found

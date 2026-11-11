@@ -110,3 +110,78 @@ def test_arangodb_arrow_of_a_browse_row_reads_its_own_way_in_and_leaves_the_chai
     assert "HAS(@granted, kh_bm._key)" in _aql_kh_filed("node") and "kh_bm" not in exact
     reached, walked = _aql_row_from_app("node", reached=True), _aql_row_from_app("node", reached=False)
     assert reached == "(@kh_start IN kh_parents[*]._id)" and "INBOUND node" in walked and "@kh_start" not in walked
+
+
+async def test_a_declaration_the_viewer_neither_holds_nor_reaches_declares_no_scope_for_a_browse() -> None:
+    provider = Neo4jProvider.__new__(Neo4jProvider)
+    provider.logger = MagicMock()
+    provider._kh_v3_start_lineage = AsyncMock(return_value=(["up"], ["d1", "d2"]))
+    provider.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"start", "up", "d1", "d2"})))
+    provider._kh_v3_declared_reached = AsyncMock(return_value=["d1"])        # d2 is admitted, but only below a seed
+    provider._kh_v3_declared_groups = AsyncMock(side_effect=lambda declared, _txn: [*declared, "below-d1"])
+    probe = {"connector_id": APP, "grantees": ["u"]}
+    admitted, ancestors, scope = await provider._kh_v3_scoped_start_access(
+        "start", APP, "org", ["u"], [APP], {APP: ["g"]}, None, probe)
+    assert admitted and ancestors == ["up"] and scope == ["d1", "below-d1"]
+    provider._kh_v3_declared_reached.assert_awaited_once_with(["d1", "d2"], APP, ["g"], probe, None)
+    provider._kh_v3_declared_groups.assert_awaited_once_with(["d1"], None)
+    # a declaration the viewer is granted is not asked about
+    provider._kh_v3_declared_reached.reset_mock()
+    provider._kh_v3_declared_reached.return_value = []
+    provider._kh_v3_declared_groups.reset_mock()
+    _, _, scope = await provider._kh_v3_scoped_start_access("start", APP, "org", ["u"], [APP], {APP: ["d1", "x"]}, None)
+    assert scope == ["d1", "below-d1"]
+    provider._kh_v3_declared_reached.assert_awaited_once_with(["d2"], APP, ["d1", "x"], None, None)
+    provider._kh_v3_declared_reached.reset_mock()
+    provider._kh_v3_declared_reached.reset_mock()
+    provider.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"start", "up"})))      # no declaration admitted: nothing to ask
+    assert (await provider._kh_v3_scoped_start_access("start", APP, "org", ["u"], [APP], {APP: []}, None))[2] == []
+    provider._kh_v3_declared_reached.assert_not_awaited()
+
+
+def test_the_browse_rule_reads_a_declaration_as_the_check_does_on_both_backends() -> None:
+    from app.services.graph_db.arango.arango_http_provider import _aql_browse_child
+
+    cypher = Neo4jProvider.__new__(Neo4jProvider)._kh_v3_child_rule("c", "p", from_app="FROM", opens="OPENS", state=False)
+    seed = "(c.id IN $grantedIds AND coalesce(c.accessRule, 'OPEN') = 'OPEN')"
+    assert cypher.count(seed) >= 4                               # a seed is a granted OPEN node, in the walk and the member test of both arms
+    assert "p.id IN $declaredScope" in cypher and cypher.count("p.id IN $grantedIds") == 1      # only the arm that walks from the App lets a granted member list on
+    aql = _aql_browse_child("c", "p", "t", "FROM")
+    assert aql.count('(HAS(@granted, c._key) AND NOT_NULL(c.accessRule, "OPEN") == "OPEN")') >= 4
+    assert "HAS(@kh_scope, p._key)" in aql and aql.count("HAS(@granted, p._key)") == 1
+
+
+def test_the_walk_from_the_app_stops_at_a_declaration_and_a_stub_needs_every_hop_below_it_to_pass() -> None:
+    from app.services.graph_db.arango.arango_http_provider import (
+        _aql_row_from_app,
+        _aql_way_below,
+    )
+
+    assert "RECORD_GROUP_LEVEL" in Neo4jProvider._kh_v3_row_from_app("node", hop="HOP", hierarchy="IN ['PARENT_CHILD']")
+    assert 'kh_obp.permissionModel == "RECORD_GROUP_LEVEL"' in _aql_row_from_app("node", reached=False)
+    way = _aql_way_below("node")
+    assert "kh_pt.edges" in way and "kh_wc" in way and "kh_wp" in way          # every hop of the path is held to the browse rule
+
+
+def test_arangodb_leaves_a_stub_child_to_a_second_pass_that_returns_the_arrow_alone() -> None:
+    from app.services.graph_db.arango.arango_http_provider import (
+        ArangoHTTPProvider,
+        _aql_kh_has_children,
+    )
+
+    page, every = _aql_kh_has_children("node", exact=True), _aql_kh_has_children("node", exact=True, every_hop=True)
+    assert "kh_pt.edges" not in page and "kh_pt.edges" in every and "isPlaceholder != true OR" not in page
+    assert "kh_pt.edges" not in _aql_kh_has_children("node") and "isPlaceholder != true OR" in _aql_kh_has_children("node")      # a flatten keeps its one-hop test
+    queries = ArangoHTTPProvider._kh_v3_listing_aql()
+    for name in ("enrich_exact", "enrich_exact_walk"):
+        assert "khStub: LENGTH(" in queries[name] and "kh_row.hasChildren ? [] : [1]" in queries[name]      # asked only of a row with no other arrow
+        second = queries[name + "_stubs"]
+        assert "kh_pt.edges" in second and "RETURN {i: kh_i, hasChildren:" in second and "parentOptions" not in second
+
+
+def test_an_app_that_opens_everything_does_not_open_what_hangs_below_a_node_the_walk_does_not_reach() -> None:
+    from app.services.graph_db.arango.arango_http_provider import _aql_browse_child
+
+    cypher = Neo4jProvider.__new__(Neo4jProvider)._kh_v3_child_rule("c", "p", from_app="FROM", opens="OPENS", state=False)
+    assert "FROM OR OPENS" not in cypher and "NOT FROM AND NOT OPENS" not in cypher and "(NOT FROM\n" in cypher
+    assert "FROM) OR kh_opens" not in _aql_browse_child("c", "p", "t", "FROM") and "(FROM) ? " in _aql_browse_child("c", "p", "t", "FROM")

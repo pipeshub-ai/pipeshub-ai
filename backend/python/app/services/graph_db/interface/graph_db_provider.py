@@ -8165,7 +8165,14 @@ class IGraphDBProvider(ABC):
         )).node_ids
         if start_id not in admitted:
             return False, [], []
+        # A declaration is a scope only where the check's declared arm reads it: the viewer is granted it or the walk from the App reaches it, not
+        # where it is admitted some other way (below a seed), where what hangs under it is not readable through it.
         declared = [d for d in declared if d in admitted]
+        granted = list(grants_by_connector.get(app_id) or [])
+        unproved = [d for d in declared if d not in granted]        # a declaration the viewer is granted is read as one without asking the walk
+        if unproved:
+            reached = set(await self._kh_v3_declared_reached(unproved, app_id, granted, probe, transaction))
+            declared = [d for d in declared if d in granted or d in reached]
         scope = await self._kh_v3_declared_groups(declared, transaction) if declared else []
         return True, [a for a in ancestors if a in admitted], scope
 
@@ -8275,6 +8282,13 @@ class IGraphDBProvider(ABC):
     ) -> list[str]:
         """The groups under these declared groups, group to group, deleted groups
         cut: the check's declared-scope arm."""
+        raise NotImplementedError
+
+    async def _kh_v3_declared_reached(
+        self, declared: list[str], app_id: str, granted_ids: list[str], probe: dict[str, Any] | None, transaction: str | None,
+    ) -> list[str]:
+        """Of these declared groups, those the viewer is granted or the walk from the App reaches (the check's declared arm). ``probe``: grants are
+        tested from the node, as on the rest of the page."""
         raise NotImplementedError
 
     async def get_knowledge_hub_access_v3(
