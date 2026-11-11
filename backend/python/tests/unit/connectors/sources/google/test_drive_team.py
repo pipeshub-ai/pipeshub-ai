@@ -425,6 +425,41 @@ class TestFetchPermissions:
                 inherited_permissions_disabled=True,
             )
 
+    async def test_empty_list_for_a_user_who_can_share_the_item_is_an_unreadable_answer(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
+
+        with pytest.raises(RuntimeError, match="can share"):
+            await connector._fetch_permissions(
+                "file-1", is_drive=False, user_email="editor@example.com", can_share=True,
+            )
+
+    async def test_item_whose_list_is_empty_for_a_user_who_can_share_it_is_failed_not_written(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
+        metadata = _make_file_metadata(file_id="file-1", name="a.txt", parents=["sd-1"])
+        metadata["capabilities"] = {"canShare": True}
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="editor@example.com",
+            drive_id="sd-1", is_shared_drive=True,
+        )
+
+        assert result is None
+        assert connector._sync_ledger.item_failures == 1
+
+    async def test_item_whose_list_is_empty_for_a_user_who_cannot_share_it_still_gives_them_read(self, connector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
+        metadata = _make_file_metadata(file_id="file-1", name="a.txt", parents=["sd-1"])
+        metadata["capabilities"] = {"canShare": False}
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="viewer@example.com",
+            drive_id="sd-1", is_shared_drive=True,
+        )
+
+        assert result is not None
+        assert [p.email for p in result.new_permissions] == ["viewer@example.com"]
+        assert connector._sync_ledger.item_failures == 0
+
     async def test_empty_list_for_a_member_of_a_limited_folder_gives_their_own_fallback(self, connector) -> None:
         connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
 

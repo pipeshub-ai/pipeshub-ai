@@ -1206,6 +1206,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         inherited_permissions_disabled: bool = False,
         inherits_from_drive: bool = True,
         can_list_children: bool = False,
+        can_share: bool = False,
         item_drive_id: str | None = None,
     ) -> Tuple[List[Permission], bool, List[str]]:
         """
@@ -1367,6 +1368,11 @@ class GoogleDriveTeamConnector(BaseConnector):
         # handled above. Record the access they demonstrably have instead of leaving a
         # record nobody can see. is_fallback=True keeps this from replacing a real ACL
         # that another user's sync already learned.
+        # A user who can change the item's sharing can read it, and its list is never empty, so an empty
+        # answer to them is not a list: failing the item keeps the grants stored and reads it again next run.
+        # shortcut: a refusal (403) from such a user is still taken as ordinary, upgrade if one is seen to hide a revoke.
+        if not permissions and can_share:
+            raise RuntimeError(f"Empty permission list for {resource_id} from a user who can share it")
         if not permissions and inherited_permissions_disabled and not can_list_children:
             return ([], True, [])
         if not permissions and user_email:
@@ -3048,6 +3054,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     inherited_permissions_disabled=limited_access,
                     inherits_from_drive=not item_drive_id or file_record.external_record_group_id == item_drive_id,
                     can_list_children=bool((metadata.get("capabilities") or {}).get("canListChildren")),
+                    can_share=bool((metadata.get("capabilities") or {}).get("canShare")),
                     item_drive_id=item_drive_id,
                 )
 
