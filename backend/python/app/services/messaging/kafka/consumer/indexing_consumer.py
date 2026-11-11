@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import json
+import math
 import threading
 import time
 import uuid
@@ -141,6 +142,15 @@ _FETCH_BACK_TIMEOUT_SECONDS = 15.0
 # this module; canonical definition lives in app.services.messaging.config
 # so the Redis Streams consumer can share the same backoff schedule.
 _compute_retry_backoff_seconds = compute_retry_backoff_seconds
+
+# A partition whose head could not be dispatched is paused for this long before it is read again, doubling per failure
+# of the same offset. Re-reading it at once spins the loop at ~2,000 polls (and ERROR lines) a second.
+_STUCK_RETRY_BASE_S = 1.0
+_STUCK_RETRY_MAX_S = 30.0
+
+
+def _stuck_retry_delay_s(failures: int) -> float:
+    return min(_STUCK_RETRY_BASE_S * 2 ** min(failures - 1, 10), _STUCK_RETRY_MAX_S)
 
 
 
@@ -294,6 +304,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._deferred_partition_offsets: dict[TopicPartition, int] = {}
         # FIFO: partitions a finish rewound since the last poll; the rest of their batch is stale.
         self._rewound_since_poll: set[TopicPartition] = set()
+        # Partitions paused because their head was not dispatched: (head offset, failures of it, monotonic deadline).
+        # Main loop only. Nothing here resumes a held partition before its deadline (a rebalance does: __end_holds_read).
+        self._held: dict[TopicPartition, tuple[int, int, float]] = {}
 
         # Absent config disables fair scheduling and keeps this consumer on
         # the exact pre-existing FIFO code path -- only MessagingFactory
@@ -968,7 +981,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             # Lane pauses outlive a global backpressure clear: the buffer as a
             # whole having room says nothing about whether the key that
             # blocked this particular lane has drained.
-            resumable = paused - in_flight_partitions - set(self._lane_paused)
+            resumable = {
+                tp for tp in paused - in_flight_partitions - set(self._lane_paused) if not self.__is_held(tp)
+            }
             if resumable:
                 self.consumer.resume(*resumable)
             if self._backpressure_logged:
@@ -1039,6 +1054,34 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         current = self._deferred_partition_offsets.get(topic_partition)
         self._deferred_partition_offsets[topic_partition] = offset if current is None else min(current, offset)
 
+    def __hold_partition(self, tp: TopicPartition, offset: int, delay_s: float | None = None) -> None:
+        """Pause ``tp`` for ``delay_s`` (a re-queued head not yet due), or for the backoff of another failure of ``offset``.
+        Only failures count toward the backoff. The seek is the caller's."""
+        if self.consumer is None:
+            return
+        held = self._held.get(tp)
+        failures = held[1] if held is not None and held[0] == offset else 0
+        if delay_s is None:
+            failures += 1
+            delay_s = _stuck_retry_delay_s(failures)
+        try:
+            self.consumer.pause(tp)
+        except Exception as e:  # revoked during the parse: its next owner reads it from the commit
+            self.logger.warning("Failed to pause %s for a retry backoff: %s", tp, e)
+            return
+        self._held[tp] = (offset, failures, time.monotonic() + delay_s)
+
+    def __is_held(self, tp: TopicPartition) -> bool:
+        held = self._held.get(tp)
+        return held is not None and time.monotonic() < held[2]
+
+    def __end_holds_read(self, batch: dict[TopicPartition, list[ConsumerRecord]] | None) -> None:
+        """A partition getmany() returned was not paused: a reassignment or a restart dropped its hold. Keep the count."""
+        for tp in batch or ():
+            held = self._held.get(tp)
+            if held is not None and held[2] > 0:
+                self._held[tp] = (held[0], held[1], 0.0)
+
     def __redeliver_from(self, message: ConsumerRecord) -> None:
         """Re-read this partition from ``message`` on: now if nothing is in flight, else when the in-flight one ends.
 
@@ -1103,6 +1146,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             and not downstream_paused
             and topic_partition not in self._lane_paused
             and not self._dispatch_budget().blocked
+            and not self.__is_held(topic_partition)
         ):
             self.consumer.resume(topic_partition)
 
@@ -1132,6 +1176,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         ),
                     )  # type: ignore
                     self._rewound_since_poll.clear()
+                    self.__end_holds_read(message_batch)
 
                     if not message_batch:
                         continue
@@ -1150,13 +1195,12 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                     await self.__defer_if_retry_not_ready(message)
                                 )
                                 if deferred:
-                                    # Not ready: seeked back already. Kafka's
+                                    # Not ready: seeked back already, and
+                                    # held until it is due. Kafka's
                                     # per-partition ordering means we can't
                                     # skip ahead to later messages in this
                                     # partition anyway, so stop draining this
-                                    # partition's batch and let the next
-                                    # getmany() poll re-check it — without
-                                    # pausing the partition or spending a
+                                    # partition's batch, without spending a
                                     # worker-thread/active-task slot on a
                                     # multi-minute sleep in the meantime.
                                     break
@@ -1169,6 +1213,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                     message, parsed_message
                                 )
                             except Exception as e:
+                                self.__hold_partition(
+                                    TopicPartition(message.topic, message.partition), message.offset
+                                )
                                 if reserved:
                                     self.__finish_partition(message, retry_current=True)
                                 else:
@@ -1260,6 +1307,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._partitions_with_data = {
             tp for tp, messages in (message_batch or {}).items() if messages
         }
+        self.__end_holds_read(message_batch)
         # A rebalance that ran inside getmany() is already reflected in what it
         # returned (aiokafka hands back only the new assignment's records), so
         # only a revocation from here on makes a partition's batch stale.
@@ -1313,6 +1361,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         awaiting_reread=True,
                     )
                     self.__seek_back(tp, message.offset)
+                    self.__hold_partition(tp, message.offset)
                     break
                 if outcome == _ReadOutcome.REMEMBERED:
                     continue
@@ -1864,13 +1913,16 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             )
 
     def __retry_not_before(self, parsed: StreamMessage) -> float | None:
+        """When a re-queued message falls due; None (due now) when it has no time or the time is malformed. NaN and inf
+        parse as floats but are malformed: NaN never compares as due or not due, and inf is never due."""
         not_before = parsed.payload.get("_retry_not_before")
         if not not_before:
             return None
         try:
-            return float(not_before)
+            value = float(not_before)
         except (TypeError, ValueError):
             return None
+        return value if math.isfinite(value) else None
 
     async def __resolve_offset(
         self,
@@ -2097,7 +2149,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         """Return ``(defer, parsed)``: whether to seek back because this
         message's retry backoff (``_retry_not_before``, stamped by
         ``_requeue_message``) hasn't elapsed, and the parse it did to find
-        out. Also defers, without a seek of its own, when the in-flight
+        out. A message that is not due seeks back and holds its partition
+        until it is (``__hold_partition``), so the loop does not re-read it
+        meanwhile. Also defers, without a seek or hold of its own, when the in-flight
         message's finish rewound the partition during the parse: that
         rewind is below this message and must not be overtaken.
 
@@ -2119,19 +2173,16 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             return True, parsed  # a finish rewound below this message during the parse
         if parsed is None:
             return False, None
-        not_before = parsed.payload.get("_retry_not_before")
-        if not not_before:
+        not_before = self.__retry_not_before(parsed)
+        if not_before is None:
             return False, parsed
-        try:
-            remaining = float(not_before) - time.time()
-        except (TypeError, ValueError):
-            return False, parsed
+        remaining = not_before - time.time()
         if remaining <= 0:
             return False, parsed
 
-        self.consumer.seek(
-            TopicPartition(message.topic, message.partition), message.offset
-        )
+        tp = TopicPartition(message.topic, message.partition)
+        self.consumer.seek(tp, message.offset)
+        self.__hold_partition(tp, message.offset, remaining)
         return True, parsed
 
     async def __parse_message(self, message: ConsumerRecord) -> StreamMessage | None:
@@ -2588,13 +2639,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         abandoned early (caller should not process/commit the message —
         its offset stays uncommitted and it will be redelivered on restart).
         """
-        not_before = parsed_message.payload.get("_retry_not_before")
-        if not not_before:
+        not_before = self.__retry_not_before(parsed_message)
+        if not_before is None:
             return True
-        try:
-            remaining = float(not_before) - time.time()
-        except (TypeError, ValueError):
-            return True
+        remaining = not_before - time.time()
         if remaining <= 0:
             return True
 

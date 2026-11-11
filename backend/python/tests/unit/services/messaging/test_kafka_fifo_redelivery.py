@@ -102,6 +102,12 @@ class FlakyKeyStore:
         return await self.real(topic, raw, model)
 
 
+@pytest.fixture(autouse=True)
+def _retry_a_stuck_head_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests are about order and loss, not pacing: the F45 backoff would only make them wait (1 s per failure)."""
+    monkeypatch.setattr(consumer_module, "_STUCK_RETRY_BASE_S", 0.0)
+
+
 @pytest.fixture
 def broker(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeKafkaBroker]:
     monkeypatch.setenv("MESSAGE_TIMEOUT_MS", "10")
