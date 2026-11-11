@@ -454,6 +454,12 @@ class Apps:
         return self.update_ok
 
     async def update_node_fields_if_match(self, key, collection, updates, expected, transaction=None) -> bool:
+        for field in updates:
+            how = self.fail.get((key, field))
+            if how == "raise":
+                raise RuntimeError("write failed")
+            if how == "none":
+                return False
         if any((self.docs[key].get(f) or None) != v for f, v in expected.items()):
             return False
         self.docs[key].update(updates)

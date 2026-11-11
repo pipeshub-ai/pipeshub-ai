@@ -2,10 +2,21 @@
 
     python -m app.scripts.scope_projection run    --org ORG --connector APP [--connector APP ...] [--restart] [--max-pages N] [--close-open-mark]
     python -m app.scripts.scope_projection status --org ORG --connector APP [--connector APP ...]
+    python -m app.scripts.scope_projection sweep  --org ORG [--connector APP ...] [--interval SECONDS]
+    python -m app.scripts.scope_projection view   --org ORG [--connector APP ...]
 
 `run` refuses to start unless the scope fields are on (`ACL_SCOPE_FIELDS=on` in every service, so points written meanwhile carry
 them too). One run handles `--max-pages` pages and prints `running` when there are more: run it again. It resumes at its saved
 position, so it can be stopped and repeated. Exit code 1 when a run failed or any point was left stale.
+
+`sweep` closes the writes whose lease ran out and rewrites the pending roots of every connector of the organisation (or the ones named), one
+pass, or again every ``--interval`` seconds until stopped (a listing that fails is logged and tried again at the next round). A connector that
+needs a full back-fill and was back-filled before gets a few pages of one per pass. Exit code 1 when a connector failed (it is retried after a
+growing wait, and the others go on).
+
+`view` shows, per connector, what keeps its stamps from being used and what will clear it: pending roots, writes that opened the connector and
+never closed it (and whether the sweep will close them), a failing sweep, a connector that needs the back-fill, and, on pgvector, group rows
+computed ahead of the database's clock. Read-only. Exit code 1 when anything needs attention.
 """
 
 from __future__ import annotations
@@ -14,6 +25,7 @@ import argparse
 import asyncio
 import json
 import sys
+from typing import Any
 
 EXIT_FAILED = 1
 
@@ -37,7 +49,58 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--close-open-mark", action="store_true",
                      help="close an open unsafe mark (an unclassified write that never wrote its closing mark); only when no write of the organisation's connectors is still running")
     run.add_argument("--max-pages", type=_pages, default=20)
+    view = sub.add_parser("view")
+    view.add_argument("--org", required=True)
+    view.add_argument("--connector", action="append", help="only these connector instances (default: every connector with scope state)")
+    sweep = sub.add_parser("sweep")
+    sweep.add_argument("--org", required=True)
+    sweep.add_argument("--connector", action="append", help="only these connector instances (default: every connector of the organisation)")
+    sweep.add_argument("--interval", type=_pages, help="seconds between passes; without it one pass is made")
     return parser
+
+
+async def _sweep(args: argparse.Namespace, graph_provider: Any, pipeline: Any, logger: Any) -> int:  # noqa: ANN401
+    from app.services.permissions.mode import scope_fields_enabled
+    from app.services.vector_db.scope_sweep import ScopeSweep, sweep_forever
+
+    if not scope_fields_enabled():
+        sys.stderr.write(json.dumps({"error": "turn the scope fields on (ACL_SCOPE_FIELDS) before sweeping"}) + "\n")
+        return EXIT_FAILED
+    sweep = ScopeSweep(graph_provider, pipeline.vector_db_service, pipeline.collection_locator, logger=logger)
+
+    async def orgs() -> list[str]:
+        return [args.org]
+
+    def report(org: str, rows: list) -> None:
+        for r in rows:
+            if r.action != "idle":
+                sys.stdout.write(f"{org}/{r.connector_id}  {r.action}  {r.detail}\n")
+
+    failed = await sweep_forever(sweep, orgs, args.interval or 0, log=logger, connectors=args.connector, report=report,
+                                 rounds=None if args.interval else 1)
+    return EXIT_FAILED if failed else 0
+
+
+async def _view(args: argparse.Namespace, graph_provider: Any, pipeline: Any, config: Any) -> int:  # noqa: ANN401
+    from app.services.permissions.generation import current_generation
+    from app.services.permissions.scope_fields import (
+        env_scope_generation,
+        set_resolved_generation,
+    )
+    from app.services.vector_db.scope_view import org_view
+
+    # Judged by the deployment's generation. Read only: `register_scope_generation` would write enabled=False when this process's flag is off.
+    try:
+        set_resolved_generation(max(await current_generation(config), env_scope_generation()))
+    except Exception as exc:
+        sys.stderr.write(json.dumps({"error": f"scope generation unavailable: {type(exc).__name__}: {exc}"}) + "\n")
+        return EXIT_FAILED
+    view = await org_view(graph_provider, args.org, pipeline.vector_db_service if pipeline else None, connectors=args.connector)
+    if pipeline is None:
+        view.notes.append("vector_store_not_configured: the group rows of the vector store were not checked")
+    for line in view.lines() or ["no connector of the organisation has scope state"]:
+        sys.stdout.write(line + "\n")
+    return EXIT_FAILED if view.needs_attention else 0
 
 
 async def _main(argv: list[str]) -> int:
@@ -68,11 +131,15 @@ async def _main(argv: list[str]) -> int:
                     code = EXIT_FAILED
             return code
         pipeline = await _resolve_indexing_pipeline(container)
+        if args.command == "view":
+            return await _view(args, graph_provider, pipeline, container.config_service())
         if pipeline is None:
             sys.stderr.write(json.dumps({"error": "no indexing pipeline (vector store not configured)"}) + "\n")
             return EXIT_FAILED
         # The stamps this run writes carry the deployment's generation, which a service resolves at start; so does this process.
         await register_scope_generation(container.config_service(), logger)
+        if args.command == "sweep":
+            return await _sweep(args, graph_provider, pipeline, logger)
         job = ScopeBackfill(graph_provider, pipeline.vector_db_service, pipeline.collection_locator, logger)
         code = 0
         for connector in args.connector:

@@ -291,9 +291,12 @@ async def test_the_stale_marker_of_a_record_whose_membership_cannot_be_resolved_
 
     monkeypatch.setattr(scope_rewrite, "resolve_virtual_record_state", unresolved)
     done = await env.backfill.run_connector(ORG, "w:app", restart=True)
-    assert done.state == DONE and done.stale == 1, done.line()
-    handbook = [p.payload for p in await env.vdb.retrieve_points(env.loaded.collection, env.loaded.points[bad])]
-    assert handbook and all(p["scopeFieldsVersion"] == 0 for p in handbook), "the marker was refused: the old stamp and membership are trusted"
+    # Two records end on the marker: the unresolvable one, and one below it whose fields changed and cannot be written over a fence that far
+    # ahead (the back-fill's write is fenced like a rewrite's, so it no longer lands over it).
+    assert done.state == DONE and done.stale == 2, done.line()
+    for name in ("page:Handbook", "page:Onboarding"):
+        held = [p.payload for p in await env.vdb.retrieve_points(env.loaded.collection, env.loaded.points[env.vrids()[name]])]
+        assert held and all(p["scopeFieldsVersion"] == 0 for p in held), f"{name}: the marker was refused: the old stamp and membership are trusted"
     seen = Log()
     await env.audit(seen)
     assert not seen.leaks, seen.leaks[:4]
