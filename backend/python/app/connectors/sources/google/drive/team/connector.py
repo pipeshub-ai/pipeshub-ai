@@ -740,6 +740,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.info("Fetching all users from Google Workspace Admin API...")
             all_users: List[AppUser] = []
             page_token: Optional[str] = None
+            listing_complete = True
 
             while True:
                 try:
@@ -754,6 +755,9 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                     # Paging follows the token alone: an empty page is not the end of the listing.
                     users_data = result.get("users", [])
+                    if not users_data and result.get("nextPageToken"):
+                        # More follows an empty page: users may be missing, so no one's status is judged from this listing.
+                        listing_complete = False
 
                     # Transform Google user dictionaries to AppUser objects
                     for user in users_data:
@@ -832,7 +836,15 @@ class GoogleDriveTeamConnector(BaseConnector):
             # Store users for use in batch processing
             self.synced_users = all_users
             self.synced_user_emails = {user.email.lower() for user in all_users if user.email}
-            await self._apply_user_status(all_users)
+            if listing_complete:
+                await self._apply_user_status(all_users)
+            else:
+                self.logger.warning(
+                    "The user listing had an empty page before its end; no account's status is changed on this run"
+                )
+                self._sync_ledger.note_incomplete()
+                self._inactive_emails = await self._user_status.inactive_on_partial_listing(all_users)
+                self._returning_emails = set()
 
             self.logger.info(f"✅ Successfully synced {len(all_users)} users")
 

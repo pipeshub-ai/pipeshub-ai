@@ -505,6 +505,42 @@ class TestSyncUsers:
         assert conn.admin_data_source.users_list.call_count == 2
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("empty_page_with_token", [True, False])
+    async def test_sync_users_empty_page_before_the_end_changes_no_account_status(self, empty_page_with_token):
+        from app.connectors.sources.google.drive.team.user_status import UserStatusTracker
+
+        conn = _make_connector()
+        sync_point = MagicMock()
+        sync_point.read_sync_point = AsyncMock(return_value={
+            "inactive": ["gone@x.com"], "known": ["a@x.com", "b@x.com", "gone@x.com", "lost@x.com"],
+        })
+        sync_point.update_sync_point = AsyncMock()
+        conn._user_status = UserStatusTracker(sync_point)
+        conn.data_entities_processor.remove_user_access_to_connector = AsyncMock(return_value=0)
+        returning = _make_google_user("gone@x.com", "u3")  # active in this listing, suspended in the last complete one
+        suspended = _make_google_user("b@x.com", "u2")
+        suspended["suspended"] = True
+        pages = [
+            {"users": [_make_google_user("a@x.com", "u1")], "nextPageToken": "p2"},
+            {"users": [], "nextPageToken": "p3"} if empty_page_with_token else {"users": []},
+            {"users": [returning, suspended]},
+        ]
+        conn.admin_data_source.users_list = AsyncMock(side_effect=pages[:3] if empty_page_with_token else [pages[0], pages[1]])
+
+        await conn._sync_users()
+
+        if empty_page_with_token:
+            # no one is withdrawn or restored, the account that was away stays away, and nothing is saved
+            conn.data_entities_processor.remove_user_access_to_connector.assert_not_awaited()
+            assert conn._returning_emails == set()
+            assert conn._inactive_emails == {"gone@x.com", "b@x.com"}
+            sync_point.update_sync_point.assert_not_awaited()
+            assert conn._sync_ledger.has_gaps
+        else:
+            # a short listing with no token looks complete: lost@x.com is judged gone (the known limit)
+            conn.data_entities_processor.remove_user_access_to_connector.assert_awaited()
+
+    @pytest.mark.asyncio
     async def test_sync_users_empty(self):
         conn = _make_connector()
         conn.admin_data_source.users_list = AsyncMock(return_value={"users": []})

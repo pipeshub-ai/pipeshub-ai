@@ -61,3 +61,11 @@ class UserStatusTracker:
         if self._pending is not None:
             await self._sync_point.update_sync_point(USER_STATUS_SYNC_POINT_KEY, self._pending)
             self._pending = None
+
+    async def inactive_on_partial_listing(self, listed: list[AppUser]) -> set[str]:
+        """The accounts to treat as unable to sign in when `listed` may be missing users: the last complete
+        listing's, plus any listed now. Nobody is withdrawn or restored, and nothing is saved."""
+        stored = await self._sync_point.read_sync_point(USER_STATUS_SYNC_POINT_KEY) or {}
+        was_inactive = {e for e in stored.get("inactive") or [] if isinstance(e, str)}
+        self._pending = None
+        return was_inactive | {u.email.lower() for u in listed if u.email and not is_active_account(u)}
