@@ -430,8 +430,15 @@ def _cypher_read_by_app(v: str) -> str:
     return f"(NOT {v}:Record OR {v}.connectorId = app.id)"
 
 
+def _cypher_kh_held(v: str, stub: Callable[[str], str], container: str) -> str:
+    """Whether group ``v`` holds a record the viewer is granted that a browse might list as a chain-top under it: a cheap test that never says no
+    to a real chain-top. The page settles it with the chain-top walk itself (``_kh_v3_page_result``)."""
+    return (f"(coalesce({container}, false) AND EXISTS {{ (kh_bg:Record)-[:BELONGS_TO]->({v}) WHERE NOT coalesce(kh_bg.isDeleted, false)"
+            f" AND kh_bg.orgId = $org_id AND {_cypher_read_by_app('kh_bg')} {stub('kh_bg')} AND kh_bg.id IN $grantedIds }})")
+
+
 def _cypher_kh_has_children(
-    v: str, rule: str, filed: str, stub: Callable[[str], str], container: str, *, exact: bool = False,
+    v: str, rule: str, filed: str, stub: Callable[[str], str], container: str, *, exact: bool = False, chain_tops: bool = True,
 ) -> str:
     """Whether expanding ``v`` would list a child: a hierarchy child that passes
     the browse's own ``rule`` (``_kh_v3_child_rule``), or, where ``filed`` says
@@ -458,7 +465,7 @@ def _cypher_kh_has_children(
                 f" AND {var}.orgId = $org_id AND {_cypher_read_by_app(var)} {stub(var) if exact else ''}"
                 f" AND ({cond}) }}")
 
-    holds = (f"(coalesce({container}, false) AND {held('kh_bg', 'kh_bg.id IN $grantedIds')})") if exact else "false"
+    holds = _cypher_kh_held(v, stub, container) if exact and chain_tops else "false"
     # A declared group on the page was admitted by the listing, so it is its own scope: the groups below it and
     # the records that belong to it are what the rule reads from the scope an expansion carries.
     in_scope = (f"({declared} AND NOT coalesce(kh_ch.isDeleted, false) AND (kh_ch:RecordGroup"
@@ -21094,6 +21101,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 OR (coalesce({child}.accessRule, 'OPEN') IN ['STRICT', 'OPEN']
                     AND {child}.id IN $grantedIds))"""
 
+    @staticmethod
+    def _kh_v3_row_from_app(v: str, *, hop: str, hierarchy: str) -> str:
+        """Whether ``v`` is reached from the App over hops that pass ``hop`` (written over ``kh_oc`` child and ``kh_op`` parent): the ``fromApp`` a browse
+        of ``v`` itself would start from."""
+        return (f"EXISTS {{ MATCH ({v}) ((kh_oc)<-[kh_ou:NODE_RELATION]-(kh_op) WHERE kh_ou.relationshipType {hierarchy} AND {hop}){{1,50}} (kh_ot) "
+                f"WHERE kh_ot = app }}")
+
     def _kh_v3_child_rule(
         self, c: str, p: str, *, from_app: str, opens: str, state: bool, grant_once: bool = False,
     ) -> str:
@@ -21525,7 +21539,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         app_opens = _CYPHER_APP_OPENS
         grant_once = probe is not None and listing_by_probe
 
-        def has_children(row_from_app: str) -> str:
+        def has_children(row_from_app: str, *, row: bool = False) -> str:
+            if row and scoped_start and not flatten:
+                row_from_app = "kh_row_from_app"
             rule = self._kh_v3_child_rule(
                 "kh_ch", "node", from_app=row_from_app, opens=app_opens, state=state, grant_once=grant_once)
             container = (
@@ -21534,9 +21550,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "OR toUpper(coalesce(node.recordType, '')) = 'FOLDER')"
             )
             expr = _cypher_kh_has_children(
-                "node", rule, app_opens, placeholder_test, container, exact=not flatten)
+                "node", rule, app_opens, placeholder_test, container, exact=not flatten, chain_tops=not row)
             # $grantedIds holds only the App's direct children here: every grant test, the rule's and the
             # cheap reject's alike, is read from the node.
+            return self._kh_grants_by_probe(expr) if probe is not None and not listing_by_probe else expr
+
+        def own_from_app() -> str:
+            """What a browse of the row itself would start from (`fromApp`), the one value the row's arrow and its openable test read: a row below
+            two parents may be reached from the App by one and not the other, so it is the row's own, not that of the folder it is listed under."""
+            expr = self._kh_v3_row_from_app(
+                "node", hop=self._kh_v3_granted_hop("kh_oc", "kh_op", state=state, grant_once=grant_once), hierarchy=hierarchy)
+            return self._kh_grants_by_probe(expr) if probe is not None and not listing_by_probe else expr
+
+        def held_by_row() -> str:
+            container = ("(node:RecordGroup OR node:KhFolder)" if state else
+                         "(node:RecordGroup OR node.mimeType IN $folder_mime_types OR toUpper(coalesce(node.recordType, '')) = 'FOLDER')")
+            expr = _cypher_kh_held("node", placeholder_test, container)
             return self._kh_grants_by_probe(expr) if probe is not None and not listing_by_probe else expr
 
         if scoped_start:
@@ -21894,7 +21923,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 # Only the page is projected, so this expand is one hop per
                 # returned row. Collection items often belong to the folder
                 # instead of hanging off it by NODE_RELATION.
-                "hasChildren": has_children(row_from_app),
+                "hasChildren": has_children(row_from_app, row=True),
             },
             include_comparator=False,
         )
@@ -22106,14 +22135,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                  head([p IN parents WHERE NOT coalesce(p.isInternal, false)]) AS realParent
             WITH node, coalesce(nested, realParent, app) AS parent,
                  item, sentinel, total, nRecord, nFolder, nGroup, app, kh_ext, kh_size,
-                 {parent_options} AS parentOptions
+                 {parent_options} AS parentOptions,
+                 {"CASE WHEN sentinel OR node IS NULL THEN false ELSE " + own_from_app() + " END" if scoped_start and not flatten else "false"} AS kh_row_from_app
             WITH CASE WHEN sentinel OR node IS NULL THEN null ELSE {row} END AS built,
+                 CASE WHEN sentinel OR node IS NULL THEN false ELSE {held_by_row() if not flatten else "false"} END AS khHeld,
+                 {"true" if flatten else ("kh_row_from_app" if scoped_start else "NOT node.id IN $kh_placed")} AS khFromApp,
                  CASE WHEN item IS NULL THEN null ELSE item.sortKey END AS sortKey,
                  CASE WHEN item IS NULL THEN null ELSE item.nullRank END AS nullRank,
                  total, nRecord, nFolder, nGroup, parentOptions
             RETURN [x IN collect(CASE WHEN built IS NULL THEN null
                     ELSE built{{.*, sortKey: sortKey, nullRank: nullRank,
-                                parentOptions: parentOptions}} END)
+                                parentOptions: parentOptions, khHeld: khHeld, khFromApp: khFromApp}} END)
                     WHERE x IS NOT NULL] AS rows,
                    head(collect(total)) AS total,
                    head(collect(nRecord)) AS nRecord,

@@ -7922,6 +7922,7 @@ class IGraphDBProvider(ABC):
         page = page[:limit]
         if direction == "prev":
             page.reverse()
+        await self._kh_v3_settle_held_arrows(page, app_id=app_id, org_id=org_id, access=access, transaction=transaction)
         if name_parents:
             await self._kh_v3_name_parents(
                 page, org_id=org_id, apps={app_id}, access=access, listed_under=listed_under,
@@ -7959,6 +7960,36 @@ class IGraphDBProvider(ABC):
             "counts": counts,
             "scope": scope_out,
         }
+
+    async def _kh_v3_settle_held_arrows(
+        self, page: list[dict[str, Any]], *, app_id: str, org_id: str, access: dict[str, Any] | None, transaction: str | None,
+    ) -> None:
+        """A row's arrow is on only where opening the row lists something, which the queries cannot say alone:
+
+        * a group the viewer holds a granted record in (``khHeld``) lists it only if it is a chain-top: asked of the chain-top walk a browse of the
+          group runs;
+        * a row the walk from the App does not reach (``khFromApp`` false: a seed, a chain-top, a declared member) opens only if the batch check
+          admits it, as the start of its own browse is admitted: asked of the same check.
+        """
+        asked = [row for row in page if row.pop("khHeld", False) and not row.get("hasChildren") and row.get("nodeType") == "recordGroup"]
+        unreached = [row for row in page if not row.pop("khFromApp", True)]
+        if access is None:
+            return
+
+        async def lists_a_chain_top(row: dict[str, Any]) -> bool:
+            probe = access.get("probe")
+            by_groups = await self._kh_v3_chain_top_groups_by_probe(
+                app_id, org_id, row["id"], probe["grantees"], transaction) if probe else None
+            return bool((await self._kh_v3_chain_tops(
+                app_id, org_id, access, transaction, only_group=row["id"], by_groups=by_groups)).get(row["id"]))
+
+        for row, lists in zip(asked, await asyncio.gather(*(lists_a_chain_top(r) for r in asked)), strict=True):
+            row["hasChildren"] = lists
+        unreached = [row for row in unreached if row.get("hasChildren")]
+        if unreached:
+            openable = (await self.check_access("", org_id, node_ids=[row["id"] for row in unreached], access=access, transaction=transaction)).node_ids
+            for row in unreached:
+                row["hasChildren"] = row["id"] in openable
 
     async def name_knowledge_hub_parents(
         self,
