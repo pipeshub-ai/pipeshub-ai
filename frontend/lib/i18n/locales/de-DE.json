@@ -3305,6 +3305,61 @@
         "continueTeam": "Mit Team-Connector fortfahren",
         "goToPersonal": "Persönlichen Connector einrichten"
       },
+      "accessCheck": {
+        "open": "Zugriff einer Person prüfen",
+        "title": "Zugriff einer Person prüfen",
+        "description": "Prüfen Sie, ob eine Person einen Datensatz dieses Konnektors lesen kann und warum nicht.",
+        "personLabel": "Person",
+        "personPlaceholder": "Person auswählen",
+        "peopleLoading": "Personen werden geladen...",
+        "peopleFailed": "Die Personenliste konnte nicht geladen werden.",
+        "recordLabel": "Datensatz-ID",
+        "recordHint": "Öffnen Sie den Datensatz und kopieren Sie seine ID.",
+        "check": "Prüfen",
+        "checking": "Wird geprüft...",
+        "close": "Schließen",
+        "resultHeading": "Ergebnis",
+        "restrictedArea": "ein eingeschränkter Bereich",
+        "theyFallback": "Diese Person",
+        "pathLabel": "Position: {{path}}",
+        "reference": "Referenz: {{ref}} (an den Support weitergeben, falls der Grund falsch erscheint)",
+        "verdict": {
+          "granted": "{{name}} kann diesen Datensatz sehen.",
+          "denied": "{{name}} kann diesen Datensatz nicht sehen."
+        },
+        "reason": {
+          "granted": "Wenn er in der Suche fehlt, ist er vielleicht noch nicht indexiert oder der Konnektor synchronisiert noch.",
+          "not_linked": "{{name}} hat kein mit diesem Konnektor verknüpftes Konto.",
+          "no_grant": "Nichts in {{container}} gibt {{name}} Zugriff.",
+          "restricted_container": "{{container}} ist auf andere Personen beschränkt.",
+          "item_restricted": "Dieser Datensatz hat eine eigene Beschränkung und {{name}} gehört nicht dazu.",
+          "parent_not_readable": "{{name}} kann ein übergeordnetes Element, das dieser Datensatz braucht, nicht öffnen.",
+          "pending_rewrite": "Der Ordner dieses Datensatzes wird gerade aktualisiert.",
+          "syncing": "Der Konnektor hat die Synchronisierung dieses Teils noch nicht abgeschlossen.",
+          "scheme_unreadable": "Der Konnektor kann die Zugriffsregeln für diesen Bereich nicht lesen, deshalb ist er für alle ausgeblendet.",
+          "deleted_at_source": "Dieser Datensatz wurde an der Quelle gelöscht.",
+          "unexplained": "Wir können den Grund nicht anzeigen."
+        },
+        "next": {
+          "not_linked": "Korrigieren Sie das Konto an der Quelle und synchronisieren Sie dann.",
+          "no_grant": "Fügen Sie {{name}} an der Quelle hinzu.",
+          "restricted_container": "Bitten Sie den Eigentümer, {{name}} hinzuzufügen.",
+          "item_restricted": "Bitten Sie den Eigentümer, {{name}} hinzuzufügen.",
+          "parent_not_readable": "Geben Sie das übergeordnete Element für {{name}} frei.",
+          "pending_rewrite": "Warten Sie einige Minuten und prüfen Sie dann erneut.",
+          "syncing": "Warten Sie, bis die Synchronisierung abgeschlossen ist.",
+          "scheme_unreadable": "Korrigieren Sie die Berechtigung des Synchronisierungskontos an der Quelle.",
+          "deleted_at_source": "Nichts zu tun.",
+          "unexplained": "Wenden Sie sich mit der Referenz an den Support."
+        },
+        "errors": {
+          "failed": "Die Prüfung war nicht möglich. Versuchen Sie es erneut.",
+          "notFound": "Diese Person oder dieser Datensatz wurde in diesem Konnektor nicht gefunden.",
+          "rateLimited": "Zu viele Prüfungen. Versuchen Sie es in einer Minute erneut."
+        },
+        "peopleRetry": "Erneut versuchen",
+        "askedAbout": "Zu Datensatz {{record}}"
+      },
       "access": {
         "title": "Zugriff",
         "loading": "Zugriffsdetails werden geladen…",

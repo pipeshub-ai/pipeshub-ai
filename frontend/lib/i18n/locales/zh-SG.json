@@ -3446,6 +3446,61 @@
         "continueTeam": "继续使用团队连接器",
         "goToPersonal": "设置个人连接器"
       },
+      "accessCheck": {
+        "open": "检查某人的访问权限",
+        "title": "检查某人的访问权限",
+        "description": "查看某人能否读取此连接器中的记录，以及无法读取的原因。",
+        "personLabel": "人员",
+        "personPlaceholder": "选择人员",
+        "peopleLoading": "正在加载人员...",
+        "peopleFailed": "无法加载人员列表。",
+        "recordLabel": "记录 ID",
+        "recordHint": "打开记录并复制其 ID。",
+        "check": "检查",
+        "checking": "正在检查...",
+        "close": "关闭",
+        "resultHeading": "结果",
+        "restrictedArea": "受限区域",
+        "theyFallback": "此人",
+        "pathLabel": "位置：{{path}}",
+        "reference": "参考编号：{{ref}}（如果原因看起来不对，请提供给支持人员）",
+        "verdict": {
+          "granted": "{{name}} 可以查看此记录。",
+          "denied": "{{name}} 无法查看此记录。"
+        },
+        "reason": {
+          "granted": "如果它在搜索中缺失，可能是尚未建立索引，或连接器仍在同步。",
+          "not_linked": "{{name}} 没有关联到此连接器的账户。",
+          "no_grant": "{{container}} 中没有任何内容授予 {{name}} 访问权限。",
+          "restricted_container": "{{container}} 仅限其他人访问。",
+          "item_restricted": "此记录有自己的限制，{{name}} 不在其中。",
+          "parent_not_readable": "{{name}} 无法打开此记录所需的上级项目。",
+          "pending_rewrite": "此记录所在的文件夹正在更新。",
+          "syncing": "连接器尚未完成此部分的同步。",
+          "scheme_unreadable": "连接器无法读取此区域的访问规则，因此对所有人隐藏。",
+          "deleted_at_source": "此记录已在源端删除。",
+          "unexplained": "我们无法显示原因。"
+        },
+        "next": {
+          "not_linked": "请在源端修复账户，然后同步。",
+          "no_grant": "请在源端添加 {{name}}。",
+          "restricted_container": "请让所有者添加 {{name}}。",
+          "item_restricted": "请让所有者添加 {{name}}。",
+          "parent_not_readable": "请将上级项目共享给 {{name}}。",
+          "pending_rewrite": "请等待几分钟后再检查。",
+          "syncing": "请等待同步完成。",
+          "scheme_unreadable": "请在源端修复同步账户的权限。",
+          "deleted_at_source": "无需操作。",
+          "unexplained": "请联系支持人员并提供参考编号。"
+        },
+        "errors": {
+          "failed": "无法完成检查。请重试。",
+          "notFound": "在此连接器中找不到该人员或记录。",
+          "rateLimited": "检查次数过多。请一分钟后重试。"
+        },
+        "peopleRetry": "重试",
+        "askedAbout": "关于记录 {{record}}"
+      },
       "access": {
         "title": "访问",
         "loading": "正在加载访问详情…",
