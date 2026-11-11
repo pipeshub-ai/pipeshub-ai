@@ -31,6 +31,7 @@ from app.modules.retrieval.context.targeted import (
 from app.modules.retrieval.context.units import unit_children
 from app.modules.retrieval.selection_scope import connection_sources_of
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, is_base64_image
+from app.utils.error_class import log_failure
 
 if TYPE_CHECKING:
     import logging
@@ -167,7 +168,8 @@ async def prefetch_retrieval(
             filter_groups=filters,
         )
     except Exception as exc:  # noqa: BLE001 - surfaced as a graceful empty prefetch
-        logger.error("prefetch_retrieval: search_with_filters failed: %s", exc, exc_info=True)
+        # The turn carries on without it. No error text: a search error can quote the query.
+        log_failure(logger, "prefetch.failed", exc, include_error_text=False)
         return PrefetchResult(
             formatted_context="",
             final_results=[],

@@ -85,7 +85,8 @@ class ToolErrorTracker:
         if self.is_blocked(ctx.tool_path):
             ctx.deny(
                 f"Tool at {ctx.tool_path!r} has failed {self._threshold}+ times in a row this "
-                "conversation and has been temporarily disabled. Try a different tool or approach."
+                "conversation and has been temporarily disabled. Try a different tool or approach.",
+                code="consecutive_failures",
             )
             return
         await next_fn()

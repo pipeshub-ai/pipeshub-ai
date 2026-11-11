@@ -65,7 +65,7 @@ def test_a_quarantined_record_logs_where_and_which_rule_never_the_value(
     error = next(Draft7Validator({"type": "object", "properties": {field: rule}}).iter_errors({field: value}))
     with pytest.raises(SchemaValidationError) as raised:
         node_validator._raise("users", error)
-    assert value in str(raised.value)  # control: the validator quotes the value
+    assert value in raised.value.original_error.message  # control: the validator quotes the value
     proc = _processor(MagicMock(explicit=False))
     proc.logger = logging.getLogger("schema-rejection-test")
     record = MagicMock()

@@ -495,20 +495,24 @@ class TestSandboxUnavailableFailsClosed:
         else:
             monkeypatch.setenv("SANDBOX_MODE", mode)
         context = make_context(llm=FakeChatModel())
+        from app.utils import logging_fields
+        from app.utils.logger import log_record_fields
 
-        with caplog.at_level(logging.WARNING, logger="app.agents.agent_loop.factory"):
-            _agent, runtime, _goal, _clarifying = await PipesHubAgentFactory().create(
-                context, context.llm, "quick", query="hello",
-            )
+        monkeypatch.setattr(logging_fields, "_log_once_last", {})
+
+        with caplog.at_level(logging.DEBUG):
+            for _turn in range(2):
+                _agent, runtime, _goal, _clarifying = await PipesHubAgentFactory().create(
+                    context, context.llm, "quick", query="hello",
+                )
 
         assert not any(runtime.tool_registry.has(n) for n in self._SANDBOX_TOOLS)
         assert getattr(context, "sandbox_manager", None) is None
-        skipped = [
-            r for r in caplog.records
-            if r.levelno == logging.WARNING and "coding-sandbox tools NOT registered" in r.getMessage()
-        ]
-        assert len(skipped) == 1
-        assert "SANDBOX_MODE" in skipped[0].getMessage()
+        # A deployment fact: warned once per process, not per turn; each turn's build line says it.
+        skipped = [r for r in caplog.records if r.getMessage() == "code_execution.unavailable"]
+        assert [(r.levelno, log_record_fields(r)["error_type"]) for r in skipped] == [(logging.WARNING, "SandboxUnavailableError")]
+        builds = [log_record_fields(r) for r in caplog.records if r.getMessage() == "agent.build.end"]
+        assert [b["code_execution"] for b in builds] == ["unavailable", "unavailable"]
 
 
 class TestRetrievedImagesHaveOneDeliveryPath:
@@ -528,3 +532,47 @@ class TestRetrievedImagesHaveOneDeliveryPath:
 
         assert not any("retrieved_image" in name for name in _pre_model_qualnames(runtime.hooks))
         assert "supports_multipart_tool_result" not in context.tool_state
+
+
+class TestOneBuildLinePerTurn:
+    """P3b: one `agent.build.end` INFO per create, scalars only; the wiring's other lines are DEBUG."""
+
+    _WIRING = (
+        "app.agents.agent_loop.factory", "app.agents.agent_loop.tool_loader", "app.agents.agent_loop.lazy_tools_wiring",
+        "app.agents.agent_loop.domain_agents", "app.agents.agent_loop.intent",
+    )
+
+    @pytest.mark.parametrize("mode", ["quick", "react", "deep"])
+    async def test_one_info_line(self, mode: str, caplog: pytest.LogCaptureFixture) -> None:
+        from app.utils.logger import log_record_fields
+
+        caplog.set_level(logging.DEBUG)
+        context = make_context(llm=FakeChatModel())
+
+        await PipesHubAgentFactory().create(context, context.llm, mode, query="hello")
+
+        info = [r for r in caplog.records if r.name in self._WIRING and r.levelno == logging.INFO]
+        assert [r.getMessage() for r in info] == ["agent.build.end"]
+        fields = log_record_fields(info[0])
+        assert fields["mode"] == mode and fields["tool_disclosure"] in ("lazy", "eager")
+        assert {"loop", "tools", "tools_registered", "code_execution", "duration_ms", "has_knowledge"} <= fields.keys()
+        assert all(isinstance(v, (str, int, float, bool)) for v in fields.values())
+
+    async def test_domain_agents_counts_the_agents_built_not_the_catalogue(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from app.utils.logger import log_record_fields
+
+        # Only the sandbox tools are registered, so of the catalogue only `coding_agent` claims any.
+        monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
+        caplog.set_level(logging.INFO)
+        context = make_context(llm=FakeChatModel())
+
+        agent, _runtime, _goal, _clarifying = await PipesHubAgentFactory().create(
+            context, context.llm, "react", query="hello",
+        )
+
+        assert [n for n in agent.spec.tool_names if n.endswith("_agent")] == ["coding_agent"]
+        builds = [log_record_fields(r) for r in caplog.records if r.getMessage() == "agent.build.end"]
+        assert [b["domain_agents"] for b in builds] == [1]
