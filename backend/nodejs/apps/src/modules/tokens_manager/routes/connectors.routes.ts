@@ -747,7 +747,7 @@ export function createConnectorRouter(
    */
   router.get(
     '/:connectorId/permissions/status',
-    authMiddleware.authenticate,
+    authMiddleware.authenticate.bind(authMiddleware),
     requireScopes(OAuthScopeNames.CONNECTOR_READ),
     ValidationMiddleware.validate(connectorIdParamSchema),
     getPermissionStatus(config),
