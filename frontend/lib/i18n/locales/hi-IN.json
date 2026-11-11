@@ -647,6 +647,8 @@
     "indexingStatus": {
       "completed": "पूर्ण",
       "inProgress": "प्रगति में",
+      "embeddingProgress_one": "एम्बेडिंग {{done, number}} / {{total, number}} चंक",
+      "embeddingProgress_other": "एम्बेडिंग {{done, number}} / {{total, number}} चंक",
       "failed": "विफल",
       "fileTypeNotSupported": "फ़ाइल प्रकार समर्थित नहीं",
       "notStarted": "शुरू नहीं हुआ",
