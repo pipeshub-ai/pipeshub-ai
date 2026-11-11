@@ -1,0 +1,126 @@
+"""Local Repository connector: a repository a client pushed to the server.
+
+Everything is the Folder connector's (walk, .gitignore, manifest reconcile, deletes, records, content read-back) except where the
+root comes from. A Folder root is a host path an administrator allowed; here the root is the server's own mirror of the pushed
+files, derived from the org and user of the connector's owner and the repository key in its config (``store.tree_of``). The key
+can only ever select one of the owner's own mirrors, and the whole root is one repository, so its code files are filed under
+the repository group the code graph lists.
+"""
+import asyncio  # noqa: I001
+import os
+from pathlib import Path
+from typing import Any
+
+from app.config.constants.arangodb import Connectors, PermissionModel, ProgressStatus
+from app.connectors.core.registry.connector_builder import (
+    CommonFields,
+    ConnectorBuilder,
+    ConnectorScope,
+    CustomField,
+    SyncStrategy,
+)
+from app.connectors.sources.local_folder import scan
+from app.connectors.sources.local_folder.connector import FolderConnector, _cfg
+from app.connectors.sources.local_repo import store
+from app.modules.parsers.code_parser.file_role import FileRole, has_generator_header, is_generated_content, is_ignored_path, is_sensitive_path, should_index_code_file
+
+LOCAL_REPO_CONNECTOR_NAME = "Local Repository"
+REPO_KEY = "repo_key"
+
+
+@(
+    ConnectorBuilder(LOCAL_REPO_CONNECTOR_NAME)
+    .in_group("Local Storage")
+    .with_supported_auth_types("NONE")
+    .with_description("A repository pushed from a developer's machine (pipeshub index). Code is indexed with its language.")
+    .with_info("Created by pipeshub index. Only the person who pushed the repository can see it.")
+    .with_categories(["Local", "Code"])
+    .with_scopes([ConnectorScope.PERSONAL.value])
+    .with_permission_model(PermissionModel.APP_LEVEL)
+    .configure(
+        lambda builder: builder.with_icon("/icons/connectors/folder.svg")
+        .with_realtime_support(False)
+        .with_sync_strategies([SyncStrategy.SCHEDULED, SyncStrategy.MANUAL], selected=SyncStrategy.SCHEDULED)
+        .with_scheduled_config(True, 15)
+        .with_sync_support(True)
+        .with_agent_support(False)
+        .with_hide_connector(True)  # not offered in the "add a connector" list: pipeshub index creates it
+        .add_sync_custom_field(
+            CustomField(name=REPO_KEY, display_name="Repository key", field_type="TEXT", required=False,
+                        description="Set by pipeshub index. Do not change.")
+        )
+        .add_sync_custom_field(CommonFields.batch_size_field())
+        .add_filter_field(CommonFields.file_extension_filter())
+    )
+    .build_decorator()
+)
+class LocalRepoConnector(FolderConnector):
+    CONNECTOR = Connectors.LOCAL_REPO
+    FILTER_KEY = "localrepository"
+    DEFAULT_IGNORES = scan.PUSHED_REPO_IGNORES  # the client already applied .gitignore; see scan.PUSHED_REPO_IGNORES
+
+    def _resolve_root(self, sync_cfg: Any) -> Path:  # noqa: ANN401
+        # The refusals of the syncs so far, by path. Not reset here: the indexer's content reads call this too, in the middle of a sync, and a reset
+        # then forgot every file refused before it. A stale entry is harmless: _sync_finished drops paths that are gone or have a record.
+        self.__dict__.setdefault("_excluded", {})
+        key = self._repo_key = str(_cfg(sync_cfg, REPO_KEY, "")).strip()
+        try:
+            root = store.tree_of(self.data_entities_processor.org_id, self.created_by, key)
+        except store.StoreError as exc:
+            raise scan.PathRefused(f"repository is not available ({exc.reason})") from exc
+        if not root.is_dir():
+            raise scan.PathRefused("nothing has been pushed to this repository yet")
+        self.repo_name = store.Repo(self.data_entities_processor.org_id, self.created_by, key).meta().get("name")
+        self.web_base = f"local-repo://{self.connector_id}"  # not the repository key: the key is the client's handle and does not belong in a search result
+        return root.resolve()
+
+    def _may_index_code(self, entry: scan.Entry, name: str) -> tuple[bool, Any]:  # noqa: ANN401, RUF100
+        """The path rules, except that a name or folder that only *looks* generated (``gen/``, ``generated/``, ``*_pb2.py``) is decided by what the
+        file says: a generator's header or a minified body excludes it, hand-written source is kept. A refusal is remembered with its reason."""
+        ok, role = should_index_code_file(entry.rel, name)
+        self._excluded.pop(entry.rel, None)
+        if ok:
+            # A generator's header decides for any name: left to the indexer the file would end "not supported", uncounted by `status`.
+            if self._looks_generated(entry, header_only=True):
+                self._excluded[entry.rel] = "generated"
+                return False, role
+            return True, role
+        if is_sensitive_path(name):
+            self._excluded[entry.rel] = "sensitive"
+        elif is_ignored_path(entry.rel) or role is not FileRole.GENERATED:
+            self._excluded[entry.rel] = "ignored_path"
+        elif self._looks_generated(entry):
+            self._excluded[entry.rel] = "generated"
+        else:
+            return True, FileRole.SOURCE
+        return False, role
+
+    def _looks_generated(self, entry: scan.Entry, header_only: bool = False) -> bool:  # noqa: FBT001, FBT002
+        try:
+            fd = scan.safe_open(self.root, entry.rel)
+        except (scan.PathRefused, OSError):
+            return not header_only  # an unreadable look-alike stays out; any other file fails visibly later
+        try:
+            return (has_generator_header if header_only else is_generated_content)(os.pread(fd, 64 * 1024, 0))
+        finally:
+            os.close(fd)
+
+    async def _sync_finished(self, live: dict[str, int], walked: set[str] | None = None) -> None:
+        # What `status` shows: the files left out altogether, by reason.
+        repo = store.Repo(self.data_entities_processor.org_id, self.created_by, self._repo_key)
+        excluded = {rel: why for rel, why in {**repo.meta().get("excludedFiles", {}), **self._excluded}.items() if walked is None or rel in walked}
+        # a file that has a record now is no longer excluded
+        excluded = {rel: why for rel, why in excluded.items() if rel not in live}
+        await asyncio.to_thread(repo.save_meta, excludedFiles=excluded)
+
+    def _find_repos(self, entries: list[scan.Entry]) -> tuple[str, ...]:
+        return ("",)  # the mirror is one repository, with no .git of its own
+
+    def _file_record(self, entry: scan.Entry, sha: str, manual_only: bool):  # noqa: ANN202, FBT001
+        rec = super()._file_record(entry, sha, manual_only)
+        # An image (SVG included) is described by a vision model; with none set up (a fresh standalone) its record would fail and with it the
+        # repository. It is left unindexed (not published to the indexer) rather than failed.
+        tabular = str(getattr(rec, "extension", "") or "").lower() in ("csv", "tsv")  # read through a model, like an image
+        if rec is not None and (str(getattr(rec, "mime_type", "")).startswith("image/") or tabular) and not manual_only:
+            rec.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        return rec
