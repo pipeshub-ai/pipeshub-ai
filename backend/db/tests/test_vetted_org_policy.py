@@ -19,7 +19,7 @@ from .test_vetted_pins import (  # noqa: F401  (pdb is the module fixture)
 )
 
 KT_PINNED = ("grants", "fences", "keys", "prefs", "changes")
-KG_TABLES = ("node_keys", "records", "links", "scope_members", "principal_closure", "scope_classes", "class_literals", "graph_changes", "projection_state", "restamp_queue")
+KG_TABLES = ("node_keys", "records", "links", "scope_members", "principal_closure", "scope_classes", "class_literals", "graph_changes", "projection_state", "restamp_queue", "scopes")
 
 
 def policy_violations(c) -> list[tuple[str, str]]:

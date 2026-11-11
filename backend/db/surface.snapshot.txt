@@ -465,6 +465,7 @@ column kg.records.own_grant type=boolean notnull=false identity= generated= defa
 column kg.records.parent_sk type=bigint notnull=false identity= generated= default=-
 column kg.records.path type=bytea notnull=false identity= generated= default=-
 column kg.records.placeholder type=boolean notnull=true identity= generated= default=false
+column kg.records.r13 type=boolean notnull=false identity= generated= default=-
 column kg.records.record_type type=text notnull=false identity= generated= default=-
 column kg.records.rule type=text notnull=false identity= generated= default=-
 column kg.records.seed type=boolean notnull=false identity= generated= default=-
@@ -498,6 +499,14 @@ column kg.scope_members.node_sk type=bigint notnull=true identity= generated= de
 column kg.scope_members.org_id type=text notnull=true identity= generated= default=-
 column kg.scope_members.principal_sk type=bigint notnull=true identity= generated= default=-
 column kg.scope_members.role type=text notnull=false identity= generated= default=-
+column kg.scopes.app_sk type=bigint notnull=true identity= generated= default=-
+column kg.scopes.deleted type=boolean notnull=true identity= generated= default=-
+column kg.scopes.kind type=smallint notnull=true identity= generated= default=-
+column kg.scopes.needs_grant type=boolean notnull=true identity= generated= default=-
+column kg.scopes.org_id type=text notnull=true identity= generated= default=-
+column kg.scopes.restricted type=boolean notnull=true identity= generated= default=-
+column kg.scopes.rule_restricted type=boolean notnull=true identity= generated= default=-
+column kg.scopes.sk type=bigint notnull=true identity= generated= default=-
 column oauth.access_tokens.actor_user_id type=oauth.oid24 notnull=false identity= generated= default=-
 column oauth.access_tokens.client_id type=text notnull=true identity= generated= default=-
 column oauth.access_tokens.created_at type=timestamp with time zone notnull=true identity= generated= default=-
@@ -1035,6 +1044,9 @@ constraint kg.scope_classes scope_classes_pkey p def=655795516b9ce4f89b9340bd560
 constraint kg.scope_members org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
 constraint kg.scope_members org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
 constraint kg.scope_members scope_members_pkey p def=01b7ba55368dabc3f2bbde4d3f1444a8
+constraint kg.scopes org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint kg.scopes org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint kg.scopes scopes_pkey p def=5f37bfd1a68d1414ad39784dc68d4066
 constraint oauth.access_tokens access_tokens_org_id_token_hash_key u def=a683321849b78094ef9e07f9a8f118fb
 constraint oauth.access_tokens access_tokens_pkey p def=655795516b9ce4f89b9340bd560bea63
 constraint oauth.access_tokens org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
@@ -1175,8 +1187,13 @@ extension vector schema=ext owner=<bootstrap-superuser>
 func graph.blocks_by_name(text,text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=cb2d61dbf4fa5a83445d28bdda0486bb ext=-
 func graph.blocks_by_record(text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=523eb45c3655082b03631500638ae570 ext=-
 func graph.code_files_by_path(text,text[],jsonb[],boolean,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=7a77f90546ea23c4be106caaf27764e9 ext=-
+func graph.organizations_by_name(text,text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=eca43e268ae674d89a640b7045e320c4 ext=-
+func graph.people_by_name(text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=97899f621fc8f1df2db1839c3377bea8 ext=-
+func graph.person_by_source_key(text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=12840a225084e186be637e399efea078 ext=-
+func graph.principals_by_email(text[],text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=6a33bd7db303fb546e7d022e6e760846 ext=-
 func graph.record_by_external(text,text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=fecf8201da859ec9b8130c4a6c38c607 ext=-
 func graph.records_by_virtual_id(text[]) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=3df6f9c4d84262a8f7f4e7737a445350 ext=-
+func graph.records_page_by_connector(text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=c8e66f78a7a13bd1a9d13be306081920 ext=-
 func graph.system_app(text) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=ef1fbddbd72fc30dec6a4841e6c3691e ext=-
 func graph.system_apps(boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=48011eecd76084ecc02f84468779b9b1 ext=-
 func graph.system_orgs(boolean,boolean,text,text,integer) owner=pipeshub_vetted_graph secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, graph, pg_temp;standard_conforming_strings=on body=e304f1fb996469c629ea8ca32ecee2c6 ext=-
@@ -1244,8 +1261,11 @@ func kg.w_queue_add(bigint,bigint,text,text,boolean) owner=pipeshub_vetted_kg se
 func kg.w_queue_done(bigint) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=467c0f9bfc6703cd72e683e9fc46db19 ext=-
 func kg.w_queue_release(bigint,text) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=f4738c5680101d255c4271ae22f91add ext=-
 func kg.w_queue_touch(bigint,bigint,text,integer,text) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=440883b83254a80bebe6109249c25487 ext=-
+func kg.w_r13_set(bigint[],smallint[],text[],smallint[],boolean[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=f0c2d2ac4cc0c25014eebd361bdf6557 ext=-
 func kg.w_records_delete(bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=ffd03e3d4587772a450530f01b8e3a1d ext=-
 func kg.w_records_upsert(bigint[],smallint[],text[],smallint[],bigint[],bigint[],bigint[],text[],text[],text[],text[],text[],bigint[],bigint[],bigint[],text[],text[],text[],boolean[],boolean[],boolean[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=302660cdf71b21314a58ad2e3c8c3f43 ext=-
+func kg.w_scopes_delete(bigint[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=552aaea95e92c5484d2a129b7229fa93 ext=-
+func kg.w_scopes_set(bigint[],smallint[],bigint[],boolean[],boolean[],boolean[],boolean[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=9737197d1910cc67bc402d68cc422187 ext=-
 func kg.w_stamps_set(bigint[],smallint[],text[],smallint[],bytea[],bigint[],boolean[],boolean[],boolean[],boolean[],smallint[],boolean[]) owner=pipeshub_vetted_kg secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kg, pg_temp;standard_conforming_strings=on;plan_cache_mode=force_custom_plan body=150c9e5325bf9842791427147713828d ext=-
 func platform.docstore_log_change() owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp body=b3deca7d471ac77b2002c7f13ea80663 ext=-
 func platform.job_checkpoint(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=cf7661f94594d8ec819c0366b33552c3 ext=-
@@ -1275,12 +1295,27 @@ funcacl graph.blocks_by_record(text,text[],jsonb[],boolean,text,integer) pipeshu
 funcacl graph.code_files_by_path(text,text[],jsonb[],boolean,text,integer) pipeshub_connectors EXECUTE
 funcacl graph.code_files_by_path(text,text[],jsonb[],boolean,text,integer) pipeshub_indexing EXECUTE
 funcacl graph.code_files_by_path(text,text[],jsonb[],boolean,text,integer) pipeshub_query EXECUTE
+funcacl graph.organizations_by_name(text,text[]) pipeshub_connectors EXECUTE
+funcacl graph.organizations_by_name(text,text[]) pipeshub_indexing EXECUTE
+funcacl graph.organizations_by_name(text,text[]) pipeshub_query EXECUTE
+funcacl graph.people_by_name(text,integer) pipeshub_connectors EXECUTE
+funcacl graph.people_by_name(text,integer) pipeshub_indexing EXECUTE
+funcacl graph.people_by_name(text,integer) pipeshub_query EXECUTE
+funcacl graph.person_by_source_key(text) pipeshub_connectors EXECUTE
+funcacl graph.person_by_source_key(text) pipeshub_indexing EXECUTE
+funcacl graph.person_by_source_key(text) pipeshub_query EXECUTE
+funcacl graph.principals_by_email(text[],text[]) pipeshub_connectors EXECUTE
+funcacl graph.principals_by_email(text[],text[]) pipeshub_indexing EXECUTE
+funcacl graph.principals_by_email(text[],text[]) pipeshub_query EXECUTE
 funcacl graph.record_by_external(text,text) pipeshub_connectors EXECUTE
 funcacl graph.record_by_external(text,text) pipeshub_indexing EXECUTE
 funcacl graph.record_by_external(text,text) pipeshub_query EXECUTE
 funcacl graph.records_by_virtual_id(text[]) pipeshub_connectors EXECUTE
 funcacl graph.records_by_virtual_id(text[]) pipeshub_indexing EXECUTE
 funcacl graph.records_by_virtual_id(text[]) pipeshub_query EXECUTE
+funcacl graph.records_page_by_connector(text,text,integer) pipeshub_connectors EXECUTE
+funcacl graph.records_page_by_connector(text,text,integer) pipeshub_indexing EXECUTE
+funcacl graph.records_page_by_connector(text,text,integer) pipeshub_query EXECUTE
 funcacl graph.system_app(text) pipeshub_connectors EXECUTE
 funcacl graph.system_app(text) pipeshub_indexing EXECUTE
 funcacl graph.system_apps(boolean,text,text,integer) pipeshub_connectors EXECUTE
@@ -1345,8 +1380,11 @@ funcacl kg.w_queue_add(bigint,bigint,text,text,boolean) pipeshub_connectors EXEC
 funcacl kg.w_queue_done(bigint) pipeshub_connectors EXECUTE
 funcacl kg.w_queue_release(bigint,text) pipeshub_connectors EXECUTE
 funcacl kg.w_queue_touch(bigint,bigint,text,integer,text) pipeshub_connectors EXECUTE
+funcacl kg.w_r13_set(bigint[],smallint[],text[],smallint[],boolean[]) pipeshub_connectors EXECUTE
 funcacl kg.w_records_delete(bigint[]) pipeshub_connectors EXECUTE
 funcacl kg.w_records_upsert(bigint[],smallint[],text[],smallint[],bigint[],bigint[],bigint[],text[],text[],text[],text[],text[],bigint[],bigint[],bigint[],text[],text[],text[],boolean[],boolean[],boolean[]) pipeshub_connectors EXECUTE
+funcacl kg.w_scopes_delete(bigint[]) pipeshub_connectors EXECUTE
+funcacl kg.w_scopes_set(bigint[],smallint[],bigint[],boolean[],boolean[],boolean[],boolean[]) pipeshub_connectors EXECUTE
 funcacl kg.w_stamps_set(bigint[],smallint[],text[],smallint[],bytea[],bigint[],boolean[],boolean[],boolean[],boolean[],smallint[],boolean[]) pipeshub_connectors EXECUTE
 funcacl platform.job_checkpoint(bigint,text) pipeshub_import EXECUTE
 funcacl platform.job_checkpoint(bigint,text) pipeshub_jobs EXECUTE
@@ -1404,10 +1442,18 @@ index graph.nodes_block_name on graph.nodes unique=false exclusion=false valid=t
 index graph.nodes_block_record on graph.nodes unique=false exclusion=false valid=true def=49c4a104b5d1bd103fe19163130fe052
 index graph.nodes_codefile_path on graph.nodes unique=false exclusion=false valid=true def=a0ca69de02117c30b4a5b6c5f666ed6e
 index graph.nodes_group_by_external on graph.nodes unique=false exclusion=false valid=true def=b8bd5c14dc0ab6ce8b252f15de2cf812
+index graph.nodes_group_email on graph.nodes unique=false exclusion=false valid=true def=2cb5691aa86567072a8f53cc8229f0fb
 index graph.nodes_group_external on graph.nodes unique=false exclusion=false valid=true def=82c18bdfd57b6cb002b36f3cedcdaca2
 index graph.nodes_ne_kind_key on graph.nodes unique=false exclusion=false valid=true def=47fc150762c94fa2fa36620a7a676ad7
 index graph.nodes_org_by_id on graph.nodes unique=false exclusion=false valid=true def=6385b1241b0a62b5d98a1ca4c43f3c8f
+index graph.nodes_organization_name on graph.nodes unique=false exclusion=false valid=true def=fc91064c31ad533e2a3df905bd1469a1
+index graph.nodes_person_email on graph.nodes unique=false exclusion=false valid=true def=d97e006cb156afd59d89ab95b21bf017
+index graph.nodes_person_name on graph.nodes unique=false exclusion=false valid=true def=8ac1de8fd095bc7e45bc83ed9bb58c09
+index graph.nodes_person_name_trgm on graph.nodes unique=false exclusion=false valid=true def=f9bf7602f344bbc33beb12e2ebc150f8
+index graph.nodes_person_parts on graph.nodes unique=false exclusion=false valid=true def=3426868b8c8675e27958efabae345f13
+index graph.nodes_person_source_key on graph.nodes unique=false exclusion=false valid=true def=d323e5dcb2e3f071a2800438a9566e43
 index graph.nodes_pkey on graph.nodes unique=true exclusion=false valid=true def=de1eb284c514a58aa3faf661f3ec3508
+index graph.nodes_record_connector_c on graph.nodes unique=false exclusion=false valid=true def=4563f2292eb5e031c329251800726514
 index graph.nodes_record_connector_id on graph.nodes unique=false exclusion=false valid=true def=e9822c643d639761d85db36c3c97c7b7
 index graph.nodes_record_external on graph.nodes unique=false exclusion=false valid=true def=722f3304e57357338b93de57feed4e54
 index graph.nodes_record_parent on graph.nodes unique=false exclusion=false valid=true def=355737265fa9f21dc8128c5a660c4f99
@@ -1488,6 +1534,8 @@ index kg.scope_classes_pkey on kg.scope_classes unique=true exclusion=false vali
 index kg.scope_members_by_app on kg.scope_members unique=false exclusion=false valid=true def=3478709a7055d29344ba2740614912e0
 index kg.scope_members_by_node on kg.scope_members unique=false exclusion=false valid=true def=bdceb2383f884502c22edff6bf0e30d7
 index kg.scope_members_pkey on kg.scope_members unique=true exclusion=false valid=true def=4bdea6ca4d0ddcd117fab409da9bd74d
+index kg.scopes_app on kg.scopes unique=false exclusion=false valid=true def=753547d37e42392afe81e6a25977340e
+index kg.scopes_pkey on kg.scopes unique=true exclusion=false valid=true def=92c81946c98bf57da079ba68f85489b7
 index oauth.access_tokens_by_actor on oauth.access_tokens unique=false exclusion=false valid=true def=bc3d7e0515e91dc35794e4be69c871f8
 index oauth.access_tokens_by_expiry on oauth.access_tokens unique=false exclusion=false valid=true def=607a7c7b97647c3b1fce93682b73ea0a
 index oauth.access_tokens_by_user on oauth.access_tokens unique=false exclusion=false valid=true def=62b4e4d4cb94e24ae60ed13a8a12c028
@@ -1678,8 +1726,11 @@ pin kg.w_queue_add(bigint,bigint,text,text,boolean) kg.restamp_queue upsert key=
 pin kg.w_queue_done(bigint) kg.restamp_queue delete key=id set=- txn=- max=5000
 pin kg.w_queue_release(bigint,text) kg.restamp_queue update key=- set=- txn=- max=5000
 pin kg.w_queue_touch(bigint,bigint,text,integer,text) kg.restamp_queue update key=- set=- txn=- max=5000
+pin kg.w_r13_set(bigint[],smallint[],text[],smallint[],boolean[]) kg.records upsert key=- set=r13 txn=- max=5000
 pin kg.w_records_delete(bigint[]) kg.records delete key=sk set=- txn=- max=5000
 pin kg.w_records_upsert(bigint[],smallint[],text[],smallint[],bigint[],bigint[],bigint[],text[],text[],text[],text[],text[],bigint[],bigint[],bigint[],text[],text[],text[],boolean[],boolean[],boolean[]) kg.records upsert key=- set=coll,id,kind,app_sk,group_sk,parent_sk,rule,model,vrid,name,name_key,updated_ms,created_ms,size_bytes,record_type,origin,external_id,deleted,placeholder,granted txn=- max=5000
+pin kg.w_scopes_delete(bigint[]) kg.scopes delete key=sk set=- txn=- max=5000
+pin kg.w_scopes_set(bigint[],smallint[],bigint[],boolean[],boolean[],boolean[],boolean[]) kg.scopes upsert key=- set=kind,app_sk,restricted,rule_restricted,needs_grant,deleted txn=- max=5000
 pin kg.w_stamps_set(bigint[],smallint[],text[],smallint[],bytea[],bigint[],boolean[],boolean[],boolean[],boolean[],smallint[],boolean[]) kg.records upsert key=- set=path,class_id,self_lit,seed,own_grant,under_deleted,legacy_reason,leaf txn=- max=5000
 policy content.documents backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy content.documents import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
@@ -1826,6 +1877,10 @@ policy kg.scope_members backup_read cmd=r permissive=true roles=pipeshub_backup 
 policy kg.scope_members org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy kg.scope_members restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy kg.scope_members vetted_write cmd=* permissive=true roles=pipeshub_vetted_kg using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy kg.scopes backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy kg.scopes org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy kg.scopes restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy kg.scopes vetted_write cmd=* permissive=true roles=pipeshub_vetted_kg using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy oauth.access_tokens backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy oauth.access_tokens import_all cmd=* permissive=true roles=pipeshub_import using=true check=true
 policy oauth.access_tokens jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
@@ -2017,6 +2072,7 @@ rel kg.records kind=r owner=pipeshub_owner rls=true force=true options=autovacuu
 rel kg.restamp_queue kind=r owner=pipeshub_owner rls=true force=true options=autovacuum_analyze_scale_factor=0.02,autovacuum_analyze_threshold=200,autovacuum_vacuum_scale_factor=0.05,autovacuum_vacuum_insert_scale_factor=0.02 ext=-
 rel kg.scope_classes kind=r owner=pipeshub_owner rls=true force=true options=autovacuum_analyze_scale_factor=0.02,autovacuum_analyze_threshold=200,autovacuum_vacuum_scale_factor=0.05,autovacuum_vacuum_insert_scale_factor=0.02 ext=-
 rel kg.scope_members kind=r owner=pipeshub_owner rls=true force=true options=autovacuum_analyze_scale_factor=0.02,autovacuum_analyze_threshold=200,autovacuum_vacuum_scale_factor=0.05,autovacuum_vacuum_insert_scale_factor=0.02 ext=-
+rel kg.scopes kind=r owner=pipeshub_owner rls=true force=true options=autovacuum_analyze_scale_factor=0.02,autovacuum_analyze_threshold=200,autovacuum_vacuum_scale_factor=0.05,autovacuum_vacuum_insert_scale_factor=0.02 ext=-
 rel oauth.access_tokens kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel oauth.agent_registrations kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel oauth.apps kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
@@ -2433,6 +2489,15 @@ relacl kg.scope_members pipeshub_vetted_kg DELETE grantable=false
 relacl kg.scope_members pipeshub_vetted_kg INSERT grantable=false
 relacl kg.scope_members pipeshub_vetted_kg SELECT grantable=false
 relacl kg.scope_members pipeshub_vetted_kg UPDATE grantable=false
+relacl kg.scopes pipeshub_backup SELECT grantable=false
+relacl kg.scopes pipeshub_connectors SELECT grantable=false
+relacl kg.scopes pipeshub_indexing SELECT grantable=false
+relacl kg.scopes pipeshub_query SELECT grantable=false
+relacl kg.scopes pipeshub_restore INSERT grantable=false
+relacl kg.scopes pipeshub_vetted_kg DELETE grantable=false
+relacl kg.scopes pipeshub_vetted_kg INSERT grantable=false
+relacl kg.scopes pipeshub_vetted_kg SELECT grantable=false
+relacl kg.scopes pipeshub_vetted_kg UPDATE grantable=false
 relacl oauth.access_tokens pipeshub_backup SELECT grantable=false
 relacl oauth.access_tokens pipeshub_import DELETE grantable=false
 relacl oauth.access_tokens pipeshub_import INSERT grantable=false

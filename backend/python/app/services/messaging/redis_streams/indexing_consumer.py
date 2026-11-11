@@ -19,6 +19,12 @@ from app.core.envelope import EnvelopeRejected, ctx_of, open_stream_message
 from app.core.org_context import bind_optional, spawn_detached
 from app.core.org_context import pop as pop_org
 from app.core.org_context import push as push_org
+from app.modules.indexing.embed_resume import stamp_delivery_id
+from app.modules.indexing.record_progress import (
+    begin_progress,
+    end_progress,
+    new_progress,
+)
 from app.services.distributed.interface import IDistributedLeaseManager, IRetryTracker
 from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import (
@@ -3132,6 +3138,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
                 parsed_message.payload["_processing_started_at"] = int(time.time() * 1000)
 
+            stamp_delivery_id(parsed_message.payload, stable_message_id)
+
             # Counted only now that the record is ours: a crash while it waited
             # for a permit or for its lease was not its doing.
             unfinished = await concurrency.start_attempt(self, record_lock_id)
@@ -3163,17 +3171,22 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         }
                     )
                 )
+                record_kind = concurrency.record_parse_kind(parsed_message.payload)
                 processing_timeout = messaging_env.record_processing_timeout_for(
                     parsed_message.payload.get("extension"),
                     parsed_message.payload.get("mimeType"),
                 )
                 org_token = push_org(ctx_of(parsed_message))
 
+                progress = new_progress()
+                begin_progress(progress)
+
                 async def consume_handler_events() -> None:
                     nonlocal download_admission, memory_admission, parsing_held, indexing_held, indexing_complete, shutting_down, parsing_admission, parse_lease_pool
                     event_gen = self.message_handler(parsed_message)
                     try:
                         async with asyncio.timeout(processing_timeout) as budget:
+                            progress.attach(budget)
                             async for event in event_gen:
                                 if (
                                     event.event == IndexingEvent.START_DOWNLOAD
@@ -3198,6 +3211,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                             index_tier,
                                             event.data.size_bytes if event.data else None,
                                             timeout=wait.remaining(),
+                                            kind=record_kind,
                                         )
                                 elif (
                                     event.event == IndexingEvent.START_PARSING
@@ -3223,13 +3237,15 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                         memory_admission = await concurrency.reserve_record_memory(
                                             self, parse_tier, size_bytes,
                                             timeout=wait.remaining(), downloaded=True,
-                                            current=memory_admission,
+                                            current=memory_admission, kind=record_kind,
                                         )
                                         parsing_admission = await concurrency.acquire_parsing_slot(
                                             self,
                                             parse_tier,
                                             size_bytes,
                                             timeout=wait.remaining(),
+                                            kind=record_kind,
+                                            reserved_bytes=memory_admission.cost if memory_admission else 0,
                                         )
                                         # Set before the lease attempt so the
                                         # wrapper's finally hands this permit
@@ -3322,6 +3338,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         processing_timeout,
                         message_id,
                     )
+                    await concurrency.requeue_after_productive_cut(
+                        self, progress, lease_handle, message_id
+                    )
                     raise
                 finally:
                     if handler_task is not None and not handler_task.done():
@@ -3334,6 +3353,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         renewal_task.cancel()
                         await asyncio.gather(renewal_task, return_exceptions=True)
                         renewal_task = None
+                    end_progress()
                     pop_org(org_token)
                     reset_context(token)
 

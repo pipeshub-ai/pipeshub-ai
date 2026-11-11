@@ -597,3 +597,81 @@ functions:
         GET DIAGNOSTICS v_n = ROW_COUNT;
         RETURN v_n = 1;
       END;
+
+  - name: kg.w_scopes_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.scopes", "set": ["kind", "app_sk", "restricted", "rule_restricted", "needs_grant", "deleted"]}]
+    args:
+      - {"name": "p_sks", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [2, 3]}
+      - {"name": "p_app_sks", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_restricted", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_rule_restricted", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_needs_grant", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_deleted", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.scopes"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_kinds) <> cardinality(p_sks) OR cardinality(p_app_sks) <> cardinality(p_sks) OR cardinality(p_restricted) <> cardinality(p_sks) OR cardinality(p_rule_restricted) <> cardinality(p_sks) OR cardinality(p_needs_grant) <> cardinality(p_sks) OR cardinality(p_deleted) <> cardinality(p_sks) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        INSERT INTO kg.scopes (org_id, sk, kind, app_sk, restricted, rule_restricted, needs_grant, deleted) SELECT v_org, k.a, k.b, k.c, k.d, k.e, k.f, k.g FROM unnest(p_sks, p_kinds, p_app_sks, p_restricted, p_rule_restricted, p_needs_grant, p_deleted) AS k(a, b, c, d, e, f, g)
+          ON CONFLICT (org_id, sk) DO UPDATE SET kind = excluded.kind, app_sk = excluded.app_sk, restricted = excluded.restricted, rule_restricted = excluded.rule_restricted, needs_grant = excluded.needs_grant, deleted = excluded.deleted;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_scopes_delete
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "delete", "rel": "kg.scopes", "key": ["sk"]}]
+    args:
+      - {"name": "p_sks", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.scopes"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        DELETE FROM kg.scopes t USING unnest(p_sks) AS k(a) WHERE t.org_id = v_org AND t.sk = k.a;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;
+
+  - name: kg.w_r13_set
+    class: write
+    scope: org
+    writer: pipeshub_connectors
+    custom_plan: true
+    callers: ["python/app/services/graph_db/postgres/kg"]
+    pins: [{"op": "upsert", "rel": "kg.records", "set": ["r13"]}]
+    args:
+      - {"name": "p_sks", "type": "bigint[]", "max_items": 5000, "item_not_null": true}
+      - {"name": "p_colls", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
+      - {"name": "p_ids", "type": "text[]", "max_items": 5000, "item_not_null": true, "item_length": [1, 256]}
+      - {"name": "p_kinds", "type": "smallint[]", "max_items": 5000, "item_not_null": true, "item_range": [1, 3]}
+      - {"name": "p_r13", "type": "boolean[]", "max_items": 5000, "item_not_null": true}
+    returns: "int"
+    no_org: "0"
+    reads: ["kg.records"]
+    body: |
+      DECLARE v_n integer;
+      BEGIN
+        IF cardinality(p_colls) <> cardinality(p_sks) OR cardinality(p_ids) <> cardinality(p_sks) OR cardinality(p_kinds) <> cardinality(p_sks) OR cardinality(p_r13) <> cardinality(p_sks) THEN
+          RAISE EXCEPTION 'the arrays differ in length' USING ERRCODE = '22023';
+        END IF;
+        INSERT INTO kg.records (org_id, sk, coll, id, kind, r13) SELECT v_org, k.a, k.b, k.c, k.d, k.e FROM unnest(p_sks, p_colls, p_ids, p_kinds, p_r13) AS k(a, b, c, d, e)
+          ON CONFLICT (org_id, sk) DO UPDATE SET r13 = excluded.r13;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        RETURN v_n;
+      END;

@@ -814,6 +814,13 @@ class QdrantService(IVectorDBService):
             next_offset=str(next_offset) if next_offset is not None else None,
         )
 
+    async def count_points(self, collection_name: str, count_filter: FilterExpression) -> int:
+        self._assert_connected()
+        result = await self.client.count(  # type: ignore
+            collection_name=collection_name, count_filter=QdrantUtils.filter_expression_to_qdrant(count_filter), exact=True,
+        )
+        return int(result.count)
+
     async def retrieve_points(
         self,
         collection_name: str,
@@ -829,6 +836,18 @@ class QdrantService(IVectorDBService):
             with_vectors=False,
         )
         return [VectorPoint(id=str(p.id), payload=p.payload or {}) for p in raw_points]
+
+    async def existing_point_ids(self, collection_name: str, ids: list[str]) -> set[str]:
+        self._assert_connected()
+        if not ids:
+            return set()
+        raw_points = await self.client.retrieve(  # type: ignore
+            collection_name=collection_name,
+            ids=list(ids),
+            with_payload=False,
+            with_vectors=False,
+        )
+        return {str(p.id) for p in raw_points}
 
     async def query_nearest_points(
         self,

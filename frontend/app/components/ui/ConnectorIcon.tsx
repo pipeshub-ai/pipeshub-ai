@@ -100,6 +100,7 @@ export type ConnectorType =
   | 'vercel'
   | 'docusign'
   | 'okta'
+  | 'hubspot'
   | 'zapier'
   | 'trello'
   | 'cloudflare'
@@ -208,6 +209,7 @@ export const CONNECTOR_ICONS: Record<ConnectorType, { svg: string | null; fallba
   'vercel': { svg: svg('vercel'), fallback: 'code' },
   'docusign': { svg: svg('docusign'), fallback: 'draw' },
   'okta': { svg: svg('okta'), fallback: 'badge' },
+  'hubspot': { svg: svg('hubspot'), fallback: 'hub' },
   'zapier': { svg: svg('zapier'), fallback: 'bolt' },
   'trello': { svg: svg('trello'), fallback: 'view_kanban' },
   'cloudflare': { svg: svg('cloudflare'), fallback: 'cloud' },
@@ -279,6 +281,7 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['paypal', 'paypal'],
   ['vercel', 'vercel'],
   ['docusign', 'docusign'], ['okta', 'okta'],
+  ['hubspot', 'hubspot'],
   ['zapier', 'zapier'],
   ['trello', 'trello'],
   ['cloudflare', 'cloudflare'],

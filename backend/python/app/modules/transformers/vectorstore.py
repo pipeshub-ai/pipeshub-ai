@@ -16,6 +16,7 @@ No LangChain QdrantVectorStore is imported or used.
 import asyncio
 import codecs
 import contextlib
+import hashlib
 import inspect
 import json
 import logging
@@ -51,6 +52,24 @@ from app.models.blocks import (
     SemanticMetadata,
 )
 from app.models.entities import Record
+from app.modules.indexing.embed_resume import (
+    EMBED_DELIVERY_ID,
+    EMBED_DIGEST,
+    EMBED_DONE,
+    EMBED_KEY,
+    EMBED_REV,
+    EMBED_SECONDS,
+    EMBED_STARTED_MS,
+    EMBED_TOTAL,
+    EMBED_UNCOUNTED,
+    EMBED_VRID,
+    POINT_KEY,
+    POINT_REV,
+    EmbedAttempt,
+    current_attempt,
+    digest_of,
+)
+from app.modules.indexing.record_progress import carried_counters, current_progress
 from app.modules.parsers.link_text import anchor_text_only
 from app.modules.parsers.table_titles import table_titles
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
@@ -208,6 +227,9 @@ _TOKEN_BATCH_MAX_TOKENS = 25_000
 # deleted inside the window costs at most that much extra embedding; its
 # points are still removed by _cleanup_orphaned_embeddings_if_needed.
 _RECORD_PRESENCE_MAX_AGE_S = 2.0
+
+# Ids per existence request: bounds the request on every backend (one mget, one pipeline, one query).
+_EXISTENCE_CHUNK = 500
 
 # Blocks are already capped at this size by the parsers (text_splitting.MAX_TEXT_BLOCK_CHARS),
 # but connector-authored blocks can bypass that path — guard defensively here too.
@@ -1105,6 +1127,12 @@ class _RecordPresence:
             )
             self._present_since = started if record_doc is not None else None
             return record_doc is not None
+
+
+def _unknown_clock_seconds() -> float:
+    from app.services.messaging.config import messaging_env
+
+    return messaging_env.embed_record_ceiling_seconds
 
 
 class VectorStore(Transformer):
@@ -2094,9 +2122,14 @@ class VectorStore(Transformer):
         service_name = self.embedding_provider or EmbeddingProvider.DEFAULT.value
         total_chars = sum(len(text) for text in texts)
         last_error: BaseException | None = None
+        progress = current_progress()
 
         for attempt in range(1, _EMBEDDING_BATCH_MAX_ATTEMPTS + 1):
+            if progress is not None:
+                progress.call_start()
             try:
+                # The stall timer is off while the call runs: attempt_timeout, which may be longer
+                # than the stall floor on local CPU, is what bounds a hung batch.
                 return await asyncio.wait_for(
                     self.dense_embeddings.aembed_documents(texts),
                     timeout=attempt_timeout,
@@ -2113,6 +2146,9 @@ class VectorStore(Transformer):
                 if not is_retriable_embedding_error(e):
                     raise
                 last_error = e
+            finally:
+                if progress is not None:
+                    progress.call_end()
 
             if attempt >= _EMBEDDING_BATCH_MAX_ATTEMPTS:
                 break
@@ -2126,7 +2162,14 @@ class VectorStore(Transformer):
                 f"(record {record_id}); retrying in {delay:.1f}s: "
                 f"{format_exception_chain(last_error)}"
             )
-            await asyncio.sleep(delay)
+            # A failing provider is not a stalled record: the stall timer waits out the retry.
+            if progress is not None:
+                progress.pause()
+            try:
+                await asyncio.sleep(delay)
+            finally:
+                if progress is not None:
+                    progress.resume()
 
         raise EmbeddingError(
             f"Dense embedding failed after {_EMBEDDING_BATCH_MAX_ATTEMPTS} attempts "
@@ -2174,13 +2217,16 @@ class VectorStore(Transformer):
                 for doc in documents
             ])
 
+        # Added after the id is derived from the metadata, so it never changes an id.
+        attempt = current_attempt()
+        stamp = (attempt.stamp if attempt is not None else None) or {}
         points: List[VectorPoint] = [
             VectorPoint(
                 id=deterministic_point_id(doc.metadata, doc.page_content),
                 dense_vector=dense,
                 sparse_vector=sparse,
                 payload=vector_point_payload(
-                    {k: v for k, v in doc.metadata.items() if k != _SPARSE_EXTRA},
+                    {**{k: v for k, v in doc.metadata.items() if k != _SPARSE_EXTRA}, **stamp},
                     doc.page_content,
                 ),
             )
@@ -2190,6 +2236,10 @@ class VectorStore(Transformer):
             await self.vector_db_service.upsert_points(
                 collection_name=collection_name, points=points
             )
+        progress = current_progress()
+        if progress is not None:
+            progress.beat(len(points))
+            await progress.report()
 
     async def _process_document_chunks(
         self,
@@ -2264,6 +2314,161 @@ class VectorStore(Transformer):
                     ) from result
 
     # ------------------------------------------------------------------
+    # Resumable embedding
+    # ------------------------------------------------------------------
+
+    def _embed_key(self) -> str:
+        """Identity of the embedding setup: points written under another one must not be kept beside these."""
+        parts = (
+            self.embedding_provider or "",
+            self.model_name or "",
+            str(self.embedding_size),
+            str(bool(self.is_multimodal_embedding)),
+            SparseEmbedder.__name__ if self._capabilities.supports_sparse_vectors else "",
+            _point_policy(),
+            str(_rows_per_point()),
+            str(_max_row_points_per_table()),
+        )
+        return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:16]
+
+    async def _existing_ids(self, collection_name: str, ids: list[str]) -> set[str]:
+        found: set[str] = set()
+        for start in range(0, len(ids), _EXISTENCE_CHUNK):
+            found |= await self.vector_db_service.existing_point_ids(
+                collection_name, ids[start:start + _EXISTENCE_CHUNK]
+            )
+        return found
+
+    async def _write_embed_marker(self, record_id: str, fields: dict[str, Any]) -> None:
+        if not await self.graph_provider.update_node(record_id, CollectionNames.RECORDS.value, fields):
+            raise IndexingError(
+                f"Could not record the embedding progress of record {record_id}",
+                details={"record_id": record_id},
+            )
+
+    async def _embed_resumably(
+        self,
+        attempt: EmbedAttempt,
+        documents: list[Document],
+        record_id: str,
+        virtual_record_id: str,
+        collection_name: str,
+        org_id: str | None,
+    ) -> None:
+        """Embed ``documents`` so that a retry of this event embeds only what is missing.
+
+        The marker is written before the first point, and only then are old points removed, so
+        whatever a cut leaves behind is described by a marker. A retry that is the same event,
+        revision and embedding setup, and needs the same points, keeps the points that exist and
+        embeds the rest; anything else is today's full replace. Errors after the first write never
+        remove points: they fail the attempt, and the next one converges.
+        """
+        point_ids = [deterministic_point_id(d.metadata, d.page_content) for d in documents]
+        digest = digest_of(point_ids)
+        key = self._embed_key()
+        prior = attempt.prior
+        resuming = bool(
+            attempt.resume
+            and prior.get(EMBED_DIGEST) == digest
+            and prior.get(EMBED_KEY) == key
+        )
+        if resuming and not self.collection_registry.fence_ready(collection_name):
+            self.logger.warning(
+                "Record %s: the revision and setup fields of collection %s are not indexed; "
+                "embedding everything again", record_id, collection_name,
+            )
+            resuming = False
+        if attempt.resume and not resuming:
+            self.logger.warning(
+                "Record %s: the stored blocks or the embedding setup differ from the interrupted run "
+                "(digest %s -> %s, key %s -> %s); embedding everything again",
+                record_id, prior.get(EMBED_DIGEST), digest, prior.get(EMBED_KEY), key,
+            )
+        attempt.stamp = {POINT_REV: attempt.rev, POINT_KEY: key}
+        # The same event keeps its embedding clock even when its points have to be discarded; a
+        # clock that cannot be read is treated as spent, so an unknown chain is never given a new one.
+        carried_seconds, carried_uncounted = carried_counters(attempt.prior, attempt.delivery_id)
+        restarted = not resuming and bool(attempt.prior) and attempt.prior.get(EMBED_DELIVERY_ID) == attempt.delivery_id
+        progress = current_progress()
+
+        if not resuming:
+            await self._write_embed_marker(record_id, {
+                EMBED_VRID: virtual_record_id,
+                EMBED_REV: attempt.rev,
+                EMBED_KEY: key,
+                EMBED_DIGEST: digest,
+                EMBED_TOTAL: len(set(point_ids)),
+                EMBED_DELIVERY_ID: attempt.delivery_id,
+                EMBED_STARTED_MS: int(time.time() * 1000),
+                EMBED_SECONDS: carried_seconds if carried_seconds is not None else float(_unknown_clock_seconds()),
+                EMBED_UNCOUNTED: carried_uncounted or 0,
+                EMBED_DONE: 0,
+            })
+            with stage("vector.delete"):
+                await self.delete_embeddings(virtual_record_id, collection_name, org_id=org_id)
+            todo = documents
+            present = set()
+        else:
+            with stage("vector.exists"):
+                present = await self._existing_ids(collection_name, list(dict.fromkeys(point_ids)))
+            todo = [d for d, pid in zip(documents, point_ids) if pid not in present]
+            self.logger.info(
+                "Record %s: resuming embedding, %d of %d points exist, %d to embed",
+                record_id, len(present), len(set(point_ids)), len(todo),
+            )
+
+        if progress is not None:
+            progress.plan(len(set(point_ids)), len(present), restarted=restarted)
+            await progress.report(force=True)
+
+        if todo:
+            await self._process_document_chunks(todo, record_id, collection_name)
+        if progress is not None:
+            progress.finish()
+
+        if not resuming:
+            return
+        await self._fence_and_verify(
+            attempt, key, point_ids, record_id, virtual_record_id, collection_name, org_id
+        )
+
+    async def _fence_and_verify(
+        self,
+        attempt: EmbedAttempt,
+        key: str,
+        point_ids: list[str],
+        record_id: str,
+        virtual_record_id: str,
+        collection_name: str,
+        org_id: str | None,
+    ) -> None:
+        """End of a resumed run: drop points of another revision or setup, and require every wanted point.
+
+        A pod that lost its lease can still land a write after this run began, and points written
+        before the revision and setup were recorded on them carry neither field; a missing field
+        counts as different. Both deletes pin the org and the virtual record.
+        """
+        org = org_for_filter(org_id, match_bound=True)
+        with stage("vector.delete"):
+            for field, value in ((POINT_REV, attempt.rev), (POINT_KEY, key)):
+                stale = await self.vector_db_service.filter_collection(
+                    must={"orgId": org, "virtualRecordId": virtual_record_id},
+                    must_not={field: value},
+                )
+                await self.vector_db_service.delete_points(collection_name, stale)
+        wanted = list(dict.fromkeys(point_ids))
+        with stage("vector.exists"):
+            present = await self._existing_ids(collection_name, wanted)
+        if len(present) != len(wanted):
+            if await self._record_is_gone(record_id):
+                return
+            raise IndexingError(
+                f"Embedding of record {record_id} is incomplete: {len(wanted) - len(present)} "
+                f"of {len(wanted)} points are missing",
+                details={"record_id": record_id},
+            )
+
+    # ------------------------------------------------------------------
     # Embedding creation entry point
     # ------------------------------------------------------------------
 
@@ -2286,6 +2491,30 @@ class VectorStore(Transformer):
                 langchain_docs.append(chunk)
             else:
                 image_chunks.append(chunk)
+
+        attempt = current_attempt()
+        if (
+            attempt is not None
+            and attempt.eligible
+            and attempt.vrid == virtual_record_id
+            and langchain_docs
+            and not image_chunks
+        ):
+            try:
+                await self._embed_resumably(
+                    attempt, langchain_docs, record_id, virtual_record_id, collection_name, org_id
+                )
+            except NonRetryableError:
+                raise
+            except (IndexingError, VectorStoreError):
+                raise
+            except Exception as e:
+                raise VectorStoreError(
+                    "Failed to store documents in vector store",
+                    details={"error": str(e)},
+                ) from e
+            self.logger.info(f"Embeddings created and stored for record '{record_id}'")
+            return
 
         # Delete existing embeddings first (full replace, non-reconciliation path)
         with stage("vector.delete"):

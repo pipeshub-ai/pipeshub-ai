@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from unittest.mock import AsyncMock, MagicMock
 
 from app.scripts import scope_projection
@@ -57,3 +58,131 @@ async def test_run_exits_non_zero_when_the_scope_generation_is_unavailable(monke
     finally:
         set_resolved_generation(None)
     graph.permission_stamp_graph.assert_not_called()
+
+
+def _sweep_env(monkeypatch, rows) -> list:
+    container = MagicMock()
+    container.graph_provider = AsyncMock(return_value=MagicMock(disconnect=AsyncMock()))
+    monkeypatch.setattr("app.containers.indexing.IndexingAppContainer.init", lambda name: container)
+    monkeypatch.setattr("app.modules.indexing.vector_membership_backfill._resolve_indexing_pipeline", AsyncMock(return_value=MagicMock()))
+    monkeypatch.setattr("app.services.permissions.wiring.register_scope_generation", AsyncMock())
+    calls: list = []
+
+    class Sweep:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def run_once(self, org: str, connectors: object) -> list:
+            calls.append((org, connectors))
+            return rows
+
+    monkeypatch.setattr("app.services.vector_db.scope_sweep.ScopeSweep", Sweep)
+    return calls
+
+
+async def test_sweep_refuses_while_the_scope_fields_are_off(monkeypatch) -> None:
+    monkeypatch.delenv("ACL_SCOPE_FIELDS", raising=False)
+    monkeypatch.delenv("ACL_FILTER_MODE", raising=False)
+    calls = _sweep_env(monkeypatch, [])
+    assert await scope_projection._main(["sweep", "--org", "o"]) == 1 and not calls
+
+
+async def test_sweep_exits_non_zero_only_when_a_connector_failed(monkeypatch) -> None:
+    from app.services.vector_db.scope_sweep import SweepRow
+
+    monkeypatch.setenv("ACL_SCOPE_FIELDS", "on")
+    calls = _sweep_env(monkeypatch, [SweepRow("a", "done"), SweepRow("b", "idle")])
+    assert await scope_projection._main(["sweep", "--org", "o", "--connector", "a"]) == 0 and calls == [("o", ["a"])]
+    _sweep_env(monkeypatch, [SweepRow("a", "done"), SweepRow("b", "failed", "boom")])
+    assert await scope_projection._main(["sweep", "--org", "o"]) == 1
+
+
+async def test_view_prints_the_lines_and_exits_non_zero_only_when_something_needs_attention(monkeypatch, capsys) -> None:
+    from app.services.vector_db.scope_view import ConnectorView, OrgView
+
+    container = MagicMock()
+    container.graph_provider = AsyncMock(return_value=MagicMock(disconnect=AsyncMock()))
+    monkeypatch.setattr("app.containers.indexing.IndexingAppContainer.init", lambda name: container)
+    monkeypatch.setattr("app.modules.indexing.vector_membership_backfill._resolve_indexing_pipeline", AsyncMock(return_value=None))
+    seen = {}
+
+    async def org_view(graph: object, org: str, vdb: object, **kw: object) -> OrgView:
+        seen.update(vdb=vdb, **kw)
+        return OrgView(org, [ConnectorView("a", current=False, attention=["pending_roots: 1 root(s)"])] if seen.get("bad") else [ConnectorView("a", True)])
+
+    monkeypatch.setattr("app.services.vector_db.scope_view.org_view", org_view)
+    monkeypatch.setattr("app.services.permissions.generation.current_generation", AsyncMock(return_value=0))
+    assert await scope_projection._main(["view", "--org", "o", "--connector", "a"]) == 1      # no vector store: said, and needs attention
+    assert "vector_store_not_configured" in capsys.readouterr().out and seen["vdb"] is None and seen["connectors"] == ["a"]
+    seen["bad"] = True
+    assert await scope_projection._main(["view", "--org", "o"]) == 1 and "pending_roots" in capsys.readouterr().out
+    monkeypatch.setattr("app.modules.indexing.vector_membership_backfill._resolve_indexing_pipeline", AsyncMock(return_value=MagicMock()))
+    seen["bad"] = False
+    assert await scope_projection._main(["view", "--org", "o"]) == 0
+
+
+async def test_view_judges_by_the_deployments_generation_and_writes_none(monkeypatch) -> None:
+    from app.services.permissions.scope_fields import (
+        current_scope_generation,
+        set_resolved_generation,
+    )
+    from app.services.vector_db.scope_view import OrgView
+
+    config = MagicMock(list_keys_in_directory=AsyncMock(return_value=["/services/scopeFields/generation/1"]))
+    container = MagicMock(config_service=lambda: config)
+    container.graph_provider = AsyncMock(return_value=MagicMock(disconnect=AsyncMock()))
+    monkeypatch.setattr("app.containers.indexing.IndexingAppContainer.init", lambda name: container)
+    monkeypatch.setattr("app.modules.indexing.vector_membership_backfill._resolve_indexing_pipeline", AsyncMock(return_value=MagicMock()))
+    monkeypatch.delenv("ACL_SCOPE_FIELDS", raising=False)      # this process's flag is off; the deployment's is on
+    seen: list[int] = []
+
+    async def org_view(*args: object, **kw: object) -> OrgView:
+        seen.append(current_scope_generation())
+        return OrgView("o", [])
+
+    monkeypatch.setattr("app.services.vector_db.scope_view.org_view", org_view)
+    try:
+        assert await scope_projection._main(["view", "--org", "o"]) == 0
+        assert seen == [1]
+        config.list_keys_in_directory.side_effect = ConnectionError("down")      # unreadable: said, not judged against 0
+        assert await scope_projection._main(["view", "--org", "o"]) == 1 and seen == [1]
+    finally:
+        set_resolved_generation(None)
+    config.set_config.assert_not_called()
+    config.create_config_if_absent.assert_not_called()
+
+
+async def test_sweep_with_an_interval_goes_on_after_a_listing_that_fails(monkeypatch) -> None:
+    import asyncio
+
+    from app.services.vector_db.scope_sweep import SweepRow
+
+    monkeypatch.setenv("ACL_SCOPE_FIELDS", "on")
+    _sweep_env(monkeypatch, [])
+    runs: list[int] = []
+
+    class Sweep:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def run_once(self, org: str, connectors: object) -> list:
+            runs.append(1)
+            if len(runs) == 1:
+                raise RuntimeError("connection reset")
+            return [SweepRow("a", "done")]
+
+    class Stop(BaseException):
+        pass
+
+    waits: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        waits.append(seconds)
+        if len(waits) == 2:
+            raise Stop
+
+    monkeypatch.setattr("app.services.vector_db.scope_sweep.ScopeSweep", Sweep)
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    with contextlib.suppress(Stop):
+        await scope_projection._main(["sweep", "--org", "o", "--interval", "5"])
+    assert len(runs) == 2 and waits == [5, 5]      # the first round's error did not end the loop
