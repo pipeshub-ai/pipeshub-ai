@@ -54700,6 +54700,150 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /connectors/{connectorId}/permissions/status:
+    get:
+      tags:
+        - Connector Instances
+      summary: Get how fresh a connector's permissions are
+      description: |
+        What an admin needs to know about one connector's permissions: whether its
+        last permission sync worked, how soon a change at the source reaches
+        PipesHub, whether any rewrite of its permissions is still waiting, and
+        whether search reads its stored permissions now. The answer holds counts,
+        codes and times only; it names no record, container or user.
+
+        <b>Who can read it:</b> org admins. Anyone else, and an ID no instance of
+        the caller's organization has, gets <code>404</code>.
+      operationId: getConnectorPermissionStatus
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID (`_key` of the instance).
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The connector's permission freshness
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [asOf, state, reachWithinMinutes, serving, lastPermissionSync, pending, coverage, attention, warnings]
+                properties:
+                  asOf:
+                    type: string
+                    format: date-time
+                  state:
+                    type: string
+                    description: |
+                      The one state to read first: `running` (a sync is running), `never` (no sync has ended),
+                      `failed` (the last sync failed), `overflow` (a change was too large to list as subtrees, so the whole
+                      connector is rebuilt), `pending` (subtrees are being rewritten and hidden until then) or `healthy`.
+                    enum: [healthy, running, failed, pending, overflow, never]
+                  reachWithinMinutes:
+                    type: integer
+                    nullable: true
+                    description: The connector's sync interval, which is how soon a change at the source reaches PipesHub. `null` when it is not scheduled.
+                  serving:
+                    type: object
+                    required: [current, served]
+                    properties:
+                      current:
+                        type: boolean
+                        description: The connector's stored permissions are complete and up to date.
+                      served:
+                        type: boolean
+                        description: Search reads the stored permissions of this connector now (current, nothing pending, no sync running).
+                  lastPermissionSync:
+                    type: object
+                    required: [finishedAt, outcome]
+                    properties:
+                      finishedAt:
+                        type: string
+                        format: date-time
+                        nullable: true
+                      outcome:
+                        type: string
+                        description: '`running`, `never`, or how the last run ended (`succeeded`, `failed`, `stopped`, `skipped`).'
+                  pending:
+                    type: object
+                    required: [roots, unreadable, oldestChangesAgo]
+                    properties:
+                      roots:
+                        type: integer
+                        description: Subtrees waiting for a rewrite.
+                      unreadable:
+                        type: boolean
+                        description: The list of waiting subtrees could not be read.
+                      oldestChangesAgo:
+                        type: integer
+                        nullable: true
+                        description: How many structural changes ago the oldest waiting subtree was registered.
+                  coverage:
+                    type: object
+                    nullable: true
+                    description: What the last back-fill of the stored permissions covered; `null` when none has run.
+                    properties:
+                      records:
+                        type: integer
+                        nullable: true
+                      stale:
+                        type: integer
+                        description: Virtual records that search reads by the classic check.
+                  attention:
+                    type: array
+                    description: Codes of what needs a person or hides content.
+                    items:
+                      type: string
+                  warnings:
+                    type: array
+                    description: What the connector reported at the end of its last sync (empty when it reports none).
+                    items:
+                      type: object
+                      required: [code]
+                      properties:
+                        code:
+                          type: string
+                        items:
+                          type: integer
+                          nullable: true
+                        container:
+                          type: string
+                          nullable: true
+                        fix:
+                          type: object
+                          nullable: true
+                          additionalProperties: true
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The OAuth client's token lacks the `connector:read` scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            No connector instance of the caller's organization has this ID, or the
+            caller is not an org admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /connectors/record/{recordId}/content:
     get:
       tags:

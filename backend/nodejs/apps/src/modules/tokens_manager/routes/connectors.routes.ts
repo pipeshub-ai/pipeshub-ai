@@ -56,6 +56,7 @@ import {
   getConnectorEgressIps,
   getActiveAgentInstances,
   getConnectorStats,
+  getPermissionStatus,
   getRecordContent,
   navigateKnowledgeGraph,
   lookupRecord,
@@ -737,6 +738,19 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_READ, OAuthScopeNames.KB_READ),
     ValidationMiddleware.validate(getConnectorStatsSchema),
     getConnectorStats(config),
+  );
+
+  /**
+   * GET /:connectorId/permissions/status
+   * How fresh the connector's permissions are. Admin only: the connector service answers
+   * anyone else with the 404 of a missing connector.
+   */
+  router.get(
+    '/:connectorId/permissions/status',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
+    ValidationMiddleware.validate(connectorIdParamSchema),
+    getPermissionStatus(config),
   );
 
   /**
