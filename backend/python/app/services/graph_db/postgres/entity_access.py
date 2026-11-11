@@ -169,7 +169,8 @@ class EntityAccessMixin(PgBase):
                     roles: dict[str, Any] = {}
                     for pos, (rid, doc) in enumerate(found):
                         if doc.get("connectorId") not in apps and rid not in roles:      # the roles of the next candidates, as many as hits are still wanted (at most a batch): none is read past the limit
-                            ahead = [i for i, d in found[pos:] if d.get("connectorId") not in apps and i not in roles][:min(_ROLE_BATCH, limit - len(hits))]
+                            # every candidate may be a hit, an app-level one too: only the next ``limit - len(hits)`` of them can be read before the limit
+                            ahead = [i for i, d in found[pos:pos + min(_ROLE_BATCH, limit - len(hits))] if d.get("connectorId") not in apps and i not in roles]
                             roles.update(await self._roles_on(tx, org, user_key, "records", ahead))
                         if doc.get("connectorId") in apps or roles[rid]:
                             hits.append({"pos": pos, "row": _row(rid, doc)})

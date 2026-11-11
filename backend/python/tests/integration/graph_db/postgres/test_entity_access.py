@@ -196,6 +196,23 @@ async def test_the_limit_and_the_window_are_at_least_one_and_the_walk_stops_at_t
     assert ids(two) == ["new", "mid"] and asked == ["new", "mid"]                                  # no role is read past the limit
 
 
+async def test_no_role_is_read_past_the_limit_when_app_level_candidates_sit_between_gated_ones(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    await entity_world(w, "other-org")
+    found = [("a", {"connectorId": APP}), ("b", {"connectorId": "lvl"}), ("c", {"connectorId": "lvl"}), ("d", {"connectorId": APP})]
+
+    async def scan(*_a: object, **_k: object) -> tuple[list, bool]:
+        return found, False
+    asked: list[str] = []
+
+    async def roles_on(_tx: object, _org: str, _user: str, _coll: str, ids: list[str]) -> dict:
+        asked.extend(ids)
+        return dict.fromkeys(ids)      # no role on any of them
+    monkeypatch.setattr(w.p, "_scan", scan)
+    monkeypatch.setattr(w.p, "_roles_on", roles_on)
+    got = (await w.p.get_permitted_entity_records([ref("named_entity", "E")], w.org, "u", app_level_connector_ids=["lvl"], limit_per_entity=2))[("named_entity", "E")]
+    assert ids(got) == ["b", "c"] and asked == ["a"]          # the app-level pair fills the limit: d's role is never read
+
+
 async def test_within_bounds_the_candidates_before_the_walk_and_an_empty_within_admits_nothing(w: World) -> None:
     await entity_world(w, "other-org")
     await w.nodes("recordGroups", {"_key": "g", "connectorId": APP})
