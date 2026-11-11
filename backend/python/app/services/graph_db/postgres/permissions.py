@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, Connectors, RecordTypes
 from app.config.constants.neo4j import parse_node_id
-from app.core.org_context import current_org_id
+from app.core.org_context import current_or_system, current_org_id
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import AppUserGroup, User, substitute_user_email
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES, RETIRED_ROLES
@@ -23,10 +23,13 @@ from app.services.graph_db.interface.graph_db_provider import (
 from app.services.graph_db.postgres import access as access_sql
 from app.services.graph_db.postgres.base import _VALIDATOR, PgBase, _arango, _doc, _j
 from app.services.graph_db.postgres.identity import _soft
+from app.services.graph_db.postgres.kg import read as kg_read
 from app.services.graph_db.taxonomy import own_record_labels
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from app.core.db import Tx
 
 _NO_ACCESS: dict[str, Any] = {"grantee_ids": [], "gated_app_ids": [], "by_connector": {}}
@@ -183,7 +186,15 @@ class PermissionsMixin(PgBase):
             return []
         if access is None:
             access = await self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction)
-        return await self._q(lambda tx: access_sql.accessible_rows(tx, org, ids, vrids, access), transaction)
+
+        async def walk(i: list[str], v: list[str], acc: dict[str, Any]) -> list[dict[str, Any]]:
+            return await self._q(lambda tx: access_sql.accessible_rows(tx, org, i, v, acc), transaction)
+        # an explicit transaction sees its own writes before kg has been given them; the system role has no read on kg
+        if transaction is None and kg_read.enabled() and current_or_system().kind != "system":
+            def run(fn: Callable[[Tx], Awaitable[Any]]) -> Awaitable[Any]:
+                return self._db.run(fn, isolation="repeatable_read", custom_plan=True)
+            return await kg_read.accessible_rows(run, org, ids, vrids, access, walk)
+        return await walk(ids, vrids, access)
 
     async def get_selection_nodes(self, org_id: str, *, group_ids: list[str], record_ids: list[str],
                                   exact_record_ids: list[str], limit: int) -> dict[str, list[dict[str, Any]]]:
