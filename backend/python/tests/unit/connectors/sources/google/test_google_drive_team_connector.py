@@ -63,7 +63,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 
-from app.connectors.sources.google.drive.team.user_status import UserStatusChange
+from app.connectors.sources.google.drive.team.user_status import UserStatusChange, UserStatusTracker
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -507,8 +507,6 @@ class TestSyncUsers:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("empty_page_with_token", [True, False])
     async def test_sync_users_empty_page_before_the_end_changes_no_account_status(self, empty_page_with_token):
-        from app.connectors.sources.google.drive.team.user_status import UserStatusTracker
-
         conn = _make_connector()
         sync_point = MagicMock()
         sync_point.read_sync_point = AsyncMock(return_value={
