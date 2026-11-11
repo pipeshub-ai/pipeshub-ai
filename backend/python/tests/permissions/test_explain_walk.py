@@ -63,6 +63,31 @@ def test_the_path_runs_through_the_container_the_reason_names() -> None:
     assert ex.ExplainService._chain(f, f.nodes["r"], None) == ["A", "g", "a"]
 
 
+class _Counting(dict):  # type: ignore[type-arg]
+    reads = 0
+
+    def __getitem__(self, key: str) -> StampNode:
+        _Counting.reads += 1
+        return super().__getitem__(key)
+
+
+def test_a_wide_hierarchy_with_shared_ancestors_is_read_once_per_node() -> None:
+    layers, width = 25, 2
+    nodes = [_n("A", "app")]
+    for layer in range(layers):
+        above = ("A",) if layer == 0 else tuple(f"g{layer - 1}_{w}" for w in range(width))
+        nodes += [_n(f"g{layer}_{w}", "group", above, above) for w in range(width)]
+    top = tuple(f"g{layers - 1}_{w}" for w in range(width))
+    nodes.append(_n("r", "record", top, top))
+    f = ex._Facts(_Counting({n.id: n for n in nodes}), frozenset(), frozenset({"A"}), "A", False)
+    _Counting.reads = 0
+
+    chain = ex.ExplainService._chain(f, f.nodes["r"], "g0_1")
+
+    assert "g0_1" in chain and chain[0] == "A"
+    assert _Counting.reads <= 4 * len(nodes), _Counting.reads
+
+
 async def test_nothing_to_name_asks_nothing_about_the_asking_admin() -> None:
     def refuse(*_: object) -> None:
         raise AssertionError("the asking admin was looked up")

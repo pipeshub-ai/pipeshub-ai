@@ -66,6 +66,14 @@ export function AccessCheckDialog({ connectorId, container }: AccessCheckDialogP
   // Each check and each edit of the inputs takes a new number; a response that is not for the latest one is dropped.
   const latest = useRef(0);
 
+  // The instance switcher reuses this component: another connector starts clean, and an answer still on its way for the last one is dropped.
+  useEffect(() => {
+    latest.current += 1;
+    setPhase({ kind: 'idle' });
+    setUserId('');
+    setRecordId('');
+  }, [connectorId]);
+
   useEffect(() => {
     if (phase.kind === 'done' || phase.kind === 'error') resultHeading.current?.focus();
   }, [phase]);

@@ -32,11 +32,11 @@ const answer = (over: Partial<AccessExplanation> = {}): AccessExplanation => ({
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
 /** A fresh cache per render, so one test's people list is never another's. */
-function renderDialog() {
+function renderDialog(connectorId = 'conn-1') {
   return render(
     <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
       <Theme>
-        <AccessCheckDialog connectorId="conn-1" />
+        <AccessCheckDialog connectorId={connectorId} />
       </Theme>
     </SWRConfig>
   );
@@ -213,5 +213,42 @@ describe('AccessCheckDialog', () => {
 
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(document.activeElement).toBe(opener);
+  });
+
+  it('starts clean for another connector: the old result is gone and an answer still on its way is dropped', async () => {
+    explainAccess.mockResolvedValueOnce(answer());
+    const view = renderDialog();
+    fireEvent.click(trigger());
+    await waitFor(() => expect(listUsers).toHaveBeenCalled());
+    await settle();
+    await check('rec-1');
+    await screen.findByRole('heading', { name: 'Dana Reyes cannot see this record.' });
+
+    view.rerender(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <Theme>
+          <AccessCheckDialog connectorId="conn-2" />
+        </Theme>
+      </SWRConfig>
+    );
+
+    await waitFor(() => expect(screen.queryByRole('heading', { name: /Dana Reyes/ })).toBeNull());
+    expect((screen.getByLabelText('Record ID') as HTMLInputElement).value).toBe('');
+
+    let finish: (a: AccessExplanation) => void = () => {};
+    explainAccess.mockReturnValueOnce(new Promise<AccessExplanation>((r) => (finish = r)));
+    await check('rec-9');
+    view.rerender(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <Theme>
+          <AccessCheckDialog connectorId="conn-3" />
+        </Theme>
+      </SWRConfig>
+    );
+    finish(answer());
+    await settle();
+
+    expect(screen.queryByRole('heading', { name: /Dana Reyes/ })).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
   });
 });

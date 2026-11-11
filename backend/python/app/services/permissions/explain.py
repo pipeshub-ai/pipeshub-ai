@@ -347,15 +347,39 @@ class ExplainService:
         return seen
 
     @staticmethod
+    def _reaching(f: _Facts, target: StampNode, through: str) -> set[str]:
+        """The target's ancestors (and the target) from which `through` can be reached upward, each node visited once: the ancestors
+        are collected, then `through` is followed down the reversed edges among them."""
+        ancestors, frontier = {target.id}, [target.id]
+        children: dict[str, list[str]] = {}
+        while frontier:
+            nxt: list[str] = []
+            for i in frontier:
+                for p in f.nodes[i].parents:
+                    if p in f.nodes:
+                        children.setdefault(p, []).append(i)
+                        if p not in ancestors:
+                            ancestors.add(p)
+                            nxt.append(p)
+            frontier = nxt
+        reach, frontier = {through} & ancestors, [through] if through in ancestors else []
+        while frontier:
+            nxt = [c for i in frontier for c in children.get(i, ()) if c not in reach]
+            reach.update(nxt)
+            frontier = nxt
+        return reach
+
+    @staticmethod
     def _chain(f: _Facts, target: StampNode, through: str | None = None) -> list[str]:
         """The target's ancestors, from the app down, following the first parent of each (parents sorted by id), except that a
-        parent above which `through` lies is taken first, so the path shown runs through the container the reason names."""
+        parent from which `through` can be reached is taken first, so the path shown runs through the container the reason names."""
+        reach = ExplainService._reaching(f, target, through) if through is not None else set[str]()
         out: list[str] = []
         node = target
         for _ in range(MAX_DEPTH):
             parents = sorted(p for p in node.parents if p in f.nodes)
-            if through is not None and through not in out:
-                parents.sort(key=lambda p: through not in ExplainService._chain_all(f, p))
+            if reach and through not in out:
+                parents.sort(key=lambda p: p not in reach)
             if not parents or parents[0] in out:
                 break
             out.append(parents[0])
