@@ -15,6 +15,9 @@ import json
 import logging
 import secrets
 import time
+from time import (
+    monotonic,  # (bound here: tests replace this module's `time` to move its wall clock)
+)
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
@@ -271,12 +274,16 @@ async def open_write(graph_provider: Any, connector_id: str, roots: Collection[s
             return None
         token = secrets.token_hex(8)
         # A store clock that cannot be read must not refuse the caller's write: the lease is then marked `k`, not trusted by the sweep.
+        started = monotonic()
         until, by_store = await _lease_deadline(graph_provider, clock)
         entry: dict[str, Any] = {"u": until, **({} if by_store else {"k": 1})}
         if roots is not None and len(roots) <= MAX_PENDING_ROOTS:
             entry["r"] = sorted(roots)
         if await _swap(graph_provider, connector_id, {OPEN_WRITES_KEY: _dump_open_writes({**held, token: entry}), OPENED_KEY: (whole_number(opened) or 0) + 1},
                        {OPEN_WRITES_KEY: raw, OPENED_KEY: opened}):
+            if by_store and monotonic() - started > STORE_CLOCK_TIMEOUT_SECONDS:
+                # the write landed late, so its deadline is that much shorter than a lease: measure it again from now
+                return await renew_write(graph_provider, connector_id, token, roots, clock=clock, again=False)
             return token
         await _backoff(attempt)
     if await graph_provider.increment_node_field(connector_id, CollectionNames.APPS.value, OPENED_KEY) is None:
@@ -313,7 +320,7 @@ async def close_write(graph_provider: Any, connector_id: str, token: str | None,
 
 
 async def renew_write(graph_provider: Any, connector_id: str, token: str | None, roots: Collection[str] | None = None, *,  # noqa: ANN401
-                      attempts: int = 10, clock: Callable[[], float] | None = None) -> str | None:
+                      attempts: int = 10, clock: Callable[[], float] | None = None, again: bool = True) -> str | None:
     """Push the deadline of a write that is still running, right before a long step or the write that matters. When the lease is gone (the sweep
     read the write as dead and closed it) the write is opened again with its roots, so a registration happens again for what lands from here on
     instead of the write going on unfenced; the new token is returned. A renewal that cannot be written leaves the old lease running."""
@@ -328,11 +335,15 @@ async def renew_write(graph_provider: Any, connector_id: str, token: str | None,
             return token
         if token not in held:
             return await open_write(graph_provider, connector_id, roots, clock=clock)
+        started = monotonic()
         until, by_store = await _lease_deadline(graph_provider, clock)
         # (never shortened by a clock that is not the store's: a host far behind it would write a deadline that is already past)
         kept = {f: v for f, v in held[token].items() if f != "k"}
         held[token] = {**kept, "u": until if by_store else max(held[token]["u"], until), **({} if by_store else {"k": 1})}
         if await _swap(graph_provider, connector_id, {OPEN_WRITES_KEY: _dump_open_writes(held)}, {OPEN_WRITES_KEY: raw}):
+            if again and by_store and monotonic() - started > STORE_CLOCK_TIMEOUT_SECONDS:
+                again = False      # landed late: once more from now (once, so a store that stays slow cannot keep the writer here)
+                continue
             return token
         await _backoff(attempt)
     return token

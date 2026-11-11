@@ -74,6 +74,27 @@ async def test_a_dead_write_is_not_recovered_inside_its_grace_by_the_store_clock
     assert await recover_expired_writes(g, "c") == 1
 
 
+@pytest.mark.parametrize("step", ["open", "renew"])
+async def test_a_lease_write_that_lands_late_is_measured_again_from_when_it_landed(monkeypatch: pytest.MonkeyPatch, step: str) -> None:
+    """A deadline read before a write that took minutes is that much shorter than a lease: a live write could be recovered early."""
+    monkeypatch.setattr(sg, "STORE_CLOCK_TIMEOUT_SECONDS", 0.05)
+    store = Clock()
+    g = StoreGraph(store)
+    token = await open_write(g, "c", ["r1"]) if step == "renew" else None
+    real, slow = g.update_node_fields_if_match, {"left": 1}
+
+    async def late(*a: object, **k: object) -> object:
+        done = await real(*a, **k)
+        if slow["left"]:
+            slow["left"] -= 1
+            await asyncio.sleep(0.1)
+            store.now += 180                      # the write committed, and minutes passed before the writer heard
+        return done
+    g.update_node_fields_if_match = late  # type: ignore[method-assign]
+    token = await open_write(g, "c", ["r1"]) if step == "open" else await renew_write(g, "c", token, ["r1"])
+    assert parse_open_writes(g.app[OPEN_WRITES_KEY])[token]["u"] == int(store()) + OPEN_WRITE_SECONDS
+
+
 async def test_a_renewal_pushes_the_deadline_by_the_store_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     store = Clock()
     g = StoreGraph(store)
