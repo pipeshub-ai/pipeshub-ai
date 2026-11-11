@@ -75,9 +75,9 @@ def factories(monkeypatch: pytest.MonkeyPatch) -> dict[str, _RecordingFactory]:
     return {"google": google, "onedrive": onedrive}
 
 
-def _context(toolsets: list[dict]) -> AgentContext:
+def _context(toolsets: list[dict], logger: Any = None) -> AgentContext:  # noqa: ANN401
     return AgentContext(
-        org_id="org-1", user_id="user-1", user_email="u@example.com", logger=MagicMock(),
+        org_id="org-1", user_id="user-1", user_email="u@example.com", logger=logger or MagicMock(),
         retrieval_service=MagicMock(config_service=MagicMock()),
         agent_toolsets=toolsets,
         toolset_configs={"gd-1": _GOOGLE_CREDS, "od-1": _ONEDRIVE_CREDS},
@@ -147,3 +147,85 @@ class TestClientReuseWithinARequest:
         instance = await ToolInstanceCreator(context).create_instance_async(_GoogleDrive, "drive", "drive__list_files")
 
         assert instance.client["config"] == _GOOGLE_CREDS
+
+
+class _Raising:
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+    async def create_client(self, *_args: Any) -> dict:  # noqa: ANN401
+        raise self.exc
+
+
+class TestALoadFailureIsLoggedOnce:
+    """P3b: the instance creator raises, the loader logs `toolset.load_failed` once: classed, no error
+    text, with or without a `logger` in the request's state."""
+
+    @pytest.mark.parametrize("with_state_logger", [True, False])
+    async def test_one_classed_line_without_text(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, with_state_logger: bool,
+    ) -> None:
+        import logging
+
+        from app.utils.logger import log_record_fields
+
+        caplog.set_level(logging.DEBUG)
+        monkeypatch.setattr(ClientFactoryRegistry, "_factories", {"onedrive": _Raising(KeyError("secret-ish-text-551"))})
+        monkeypatch.setattr(ClientFactoryRegistry, "_initialized", True)
+        # A real logger: a second line from the instance creator (it logs through `context.logger`) must show.
+        context = _context([{"name": "onedrive", "instanceId": "od-1"}], logging.getLogger("tests.instance_creator"))
+        if not with_state_logger:
+            context.tool_state.pop("logger", None)
+        with _catalogue():
+            await PipesHubToolLoader().load(context)
+
+        assert context.toolset_load_failures == {"onedrive": "error"}
+        (failed,) = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        fields = log_record_fields(failed)
+        assert (failed.getMessage(), fields["toolset"], fields["reason"], fields["error_class"]) == (
+            "toolset.load_failed", "onedrive", "error", "internal",
+        )
+        assert "error_message" not in fields and "secret-ish-text-551" not in caplog.text
+
+    async def test_not_authenticated_is_a_warning_without_a_stack(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        from app.agents.tools.factories.base import ToolsetAuthError
+        from app.utils.logger import log_record_fields
+
+        caplog.set_level(logging.DEBUG)
+        monkeypatch.setattr(ClientFactoryRegistry, "_factories", {"onedrive": _Raising(ToolsetAuthError("sign in"))})
+        monkeypatch.setattr(ClientFactoryRegistry, "_initialized", True)
+        context = _context([{"name": "onedrive", "instanceId": "od-1"}])
+        with _catalogue():
+            await PipesHubToolLoader().load(context)
+
+        (failed,) = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert (failed.levelno, failed.exc_text) == (logging.WARNING, None)
+        assert (log_record_fields(failed)["reason"], log_record_fields(failed)["error_class"]) == ("not_authenticated", "auth_expired")
+
+    async def test_a_toolset_that_cant_be_grouped_is_logged(
+        self, factories: dict[str, _RecordingFactory], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        from app.agent_loop_lib.tools.registry import ToolRegistry
+        from app.utils.logger import log_record_fields
+
+        caplog.set_level(logging.DEBUG)
+
+        secret = "duplicate group sentinel-781"  # a variable: the logged traceback quotes the raise line
+
+        def _refuse(*_args: Any, **_kwargs: Any) -> None:  # noqa: ANN401
+            raise ValueError(secret)
+
+        monkeypatch.setattr(ToolRegistry, "register_toolset", _refuse)
+        with _catalogue():
+            await PipesHubToolLoader().load(_context([{"name": "onedrive", "instanceId": "od-1"}]))
+
+        (failed,) = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        fields = log_record_fields(failed)
+        assert (failed.getMessage(), fields["toolset"]) == ("toolset.group_failed", "onedrive")
+        assert "error_message" not in fields and "sentinel-781" not in caplog.text

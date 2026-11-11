@@ -202,61 +202,53 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         when the store did not keep the value. Raises when the store fails, so
         "already exists" is never how an outage is reported.
         """
-        try:
-            # Check if key exists
-            existing_value = await self.store.get_key(key)
-            if existing_value is not None and not overwrite:
-                self.logger.debug("Skipping existing key: %s", key)
-                return False  # Key was not created (already exists)
+        # Check if key exists
+        existing_value = await self.store.get_key(key)
+        if existing_value is not None and not overwrite:
+            self.logger.debug("Skipping existing key: %s", key)
+            return False  # Key was not created (already exists)
 
-            # Convert value to JSON string
-            # Use datetime-safe encoder to handle any datetime objects that may have leaked into the config
-            value_json = json.dumps(value, cls=_DatetimeSafeEncoder)
+        # Convert value to JSON string
+        # Use datetime-safe encoder to handle any datetime objects that may have leaked into the config
+        value_json = json.dumps(value, cls=_DatetimeSafeEncoder)
 
-            encrypt_value = not is_unencrypted_key(key)
+        encrypt_value = not is_unencrypted_key(key)
 
-            if encrypt_value:
-                # Encrypt the value
-                store_value = self.encryption_service.encrypt(value_json)
-            else:
-                # Pass the JSON-serialized string so the underlying store
-                # stores valid JSON (not Python repr with single quotes).
-                store_value = value_json
+        if encrypt_value:
+            # Encrypt the value
+            store_value = self.encryption_service.encrypt(value_json)
+        else:
+            # Pass the JSON-serialized string so the underlying store
+            # stores valid JSON (not Python repr with single quotes).
+            store_value = value_json
 
-            self.logger.debug("Encrypted value for key %s", key)
+        self.logger.debug("Encrypted value for key %s", key)
 
-            # Store the value
-            success = await self.store.create_key(key, store_value, overwrite, ttl)
-            if success:
-                self.logger.debug("Successfully stored encrypted key: %s", key)
+        # Store the value
+        success = await self.store.create_key(key, store_value, overwrite, ttl)
+        if success:
+            self.logger.debug("Successfully stored encrypted key: %s", key)
 
-                # Verify the stored value
-                encrypted_stored_value = await self.store.get_key(key)
-                if encrypted_stored_value:
-                    if encrypt_value:
-                        decrypted_value = self.encryption_service.decrypt(
-                            encrypted_stored_value
-                        )
-                        stored_value = json.loads(decrypted_value)
-                    else:
-                        stored_value = encrypted_stored_value
-                        stored_value = json.loads(stored_value) if isinstance(stored_value, str) else stored_value
+            # Verify the stored value
+            encrypted_stored_value = await self.store.get_key(key)
+            if encrypted_stored_value:
+                if encrypt_value:
+                    decrypted_value = self.encryption_service.decrypt(
+                        encrypted_stored_value
+                    )
+                    stored_value = json.loads(decrypted_value)
+                else:
+                    stored_value = encrypted_stored_value
+                    stored_value = json.loads(stored_value) if isinstance(stored_value, str) else stored_value
 
-                    if stored_value != value:
-                        self.logger.warning("Verification failed for key: %s", key)
-                        return False
+                if stored_value != value:
+                    self.logger.warning("Verification failed for key: %s", key)
+                    return False
 
-                return True
-            else:
-                self.logger.error("Failed to store key: %s", key)
-                return False
-
-        except Exception as e:
-            self.logger.error(
-                "Failed to store config value for key %s: %s", key, str(e)
-            )
-            self.logger.exception("Detailed error:")
-            raise
+            return True
+        else:
+            self.logger.error("Failed to store key: %s", key)
+            return False
 
     async def update_value(
         self, key: str, value: T, ttl: Optional[int] = None
@@ -276,22 +268,23 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                 try:
                     return self._decode_value(key, encrypted_value)
                 except Exception as e:
-                    self.logger.error(
-                        "Failed to process value for key %s: %s", key, type(e).__name__
-                    )
                     # A value came back and could not be read: not the same as
                     # no value, so a caller that asked must not see None.
                     if raise_on_error:
                         raise
+                    self.logger.error(
+                        "Failed to process value for key %s: %s", key, type(e).__name__
+                    )
                     return None
             else:
                 self.logger.debug(f"No value found for key: {key}")
                 return None
 
         except Exception as e:
-            self.logger.error("Failed to get config %s: %s", key, type(e).__name__)
+            # Raised for the caller that asked to handle it; logged only when answered as None.
             if raise_on_error:
                 raise
+            self.logger.error("Failed to get config %s: %s", key, type(e).__name__)
             return None
 
     def _decode_value(self, key: str, stored: object) -> T | None:
@@ -361,16 +354,10 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         (ending in "/") is listed by the backend's own prefix scan instead of reading every key.
         The root ("" or "/") lists every key; a prefix without the trailing slash is matched
         as given, so "/a/b" still finds "/a/b-2/..." as it always has."""
-        try:
-            if directory not in ("", "/") and directory.endswith("/"):
-                return await self.store.list_keys_in_directory(directory)
-            keys = await self.store.get_all_keys() or []
-            return keys if directory in ("", "/") else [key for key in keys if key.startswith(directory)]
-        except Exception as e:
-            self.logger.error(
-                "Failed to list keys in directory (%s)", type(e).__name__
-            )
-            raise
+        if directory not in ("", "/") and directory.endswith("/"):
+            return await self.store.list_keys_in_directory(directory)
+        keys = await self.store.get_all_keys() or []
+        return keys if directory in ("", "/") else [key for key in keys if key.startswith(directory)]
 
     async def cancel_watch(self, key: str, watch_id: str) -> None:
         return await self.store.cancel_watch(key, watch_id)

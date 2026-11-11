@@ -67,6 +67,7 @@ import EnterpriseSemanticSearch from '../../../../src/modules/enterprise_search/
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { Logger } from '../../../../src/libs/services/logger.service'
+import { runWithRequestContext } from '../../../../src/libs/context/request-context'
 import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
 import { BadRequestError, ConflictError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../../../../src/libs/errors/http.errors'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
@@ -14215,6 +14216,24 @@ describe('Enterprise Search Controller', () => {
         expect(res.end.calledOnce).to.be.true
 
         fetchStub.restore()
+      })
+
+      it("sends the request's id and writes its call line", async () => {
+        const fetchStub = sinon.stub(globalThis, 'fetch').resolves({ status: 204, ok: true } as Response)
+        const debug = sinon.stub(Logger.prototype, 'debug')
+        const req = createMockRequest({
+          params: { recordId: 'my-record-id' },
+          headers: { authorization: 'Bearer tok', 'x-request-id': 'rq bad!' },
+        })
+
+        await runWithRequestContext({ rootId: 'rqbad' }, () =>
+          deleteChatAttachment(createMockAppConfig())(req, createMockResponse(), createMockNext()),
+        )
+
+        const headers = (fetchStub.firstCall.args[1] as RequestInit).headers as Record<string, string>
+        expect(headers['x-request-id']).to.equal('rqbad')
+        const lines = debug.getCalls().filter((c) => c.args[0] === 'upstream.call.end')
+        expect(lines.map((c) => [c.args[1].method, c.args[1].status])).to.deep.equal([['DELETE', 204]])
       })
     })
   })

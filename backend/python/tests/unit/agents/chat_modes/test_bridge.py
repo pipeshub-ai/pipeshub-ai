@@ -708,6 +708,36 @@ class TestRunChatStream:
         check.assert_awaited_once()
         assert events[-1].startswith("event: complete\n")
 
+    async def test_a_scope_check_that_raises_is_one_classed_line_and_the_turn_runs(self, caplog: pytest.LogCaptureFixture) -> None:
+        from app.utils.logger import log_record_fields
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, Any, Any, list[Any]]:
+            return _stream_agent(MagicMock(success=True, error=None, output="ok")), MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        caplog.set_level(logging.DEBUG)
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.unreadable_scope_error", new=AsyncMock(side_effect=TimeoutError("graph slow"))),
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=AsyncMock(return_value=None)),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**{**self._base_kwargs(policy=INTERNAL_SEARCH_POLICY), "log": logging.getLogger("test.bridge")})]
+
+        assert events[-1].startswith("event: complete\n")
+        (failed,) = [r for r in caplog.records if r.getMessage() == "turn_scope.check_failed"]
+        assert (failed.levelno, log_record_fields(failed)["error_class"]) == (logging.WARNING, "timeout")
+
     async def test_internal_search_prefetch_merges_into_goal_and_tool_state(self) -> None:
         """`INTERNAL_SEARCH_POLICY.prefetch_retrieval=True` -- a non-empty
         `PrefetchResult` must be folded into `context.tool_state` and
@@ -1298,6 +1328,38 @@ class TestRunChatStream:
 
         assert events[-1].startswith("event: complete\n")
         sandbox_manager.destroy_all.assert_awaited_once()
+
+    async def test_a_sandbox_cleanup_that_fails_is_one_classed_line(self, caplog: pytest.LogCaptureFixture) -> None:
+        from app.utils.logger import log_record_fields
+
+        sandbox_manager = MagicMock()
+        sandbox_manager.destroy_all = AsyncMock(side_effect=RuntimeError("container stuck"))
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, Any, Any, list[Any]]:
+            context.sandbox_manager = sandbox_manager
+            return _stream_agent(MagicMock(success=True, error=None, output="ok")), MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
+            await event_sink.write({"event": "complete", "data": {"answer": "ok"}})
+            return {"answer": "ok"}
+
+        caplog.set_level(logging.DEBUG)
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**{**self._base_kwargs(), "log": logging.getLogger("test.bridge")})]
+
+        assert events[-1].startswith("event: complete\n")
+        (failed,) = [r for r in caplog.records if r.getMessage() == "agent_turn.cleanup_failed"]
+        assert (log_record_fields(failed)["step"], log_record_fields(failed)["error_class"]) == ("sandbox", "internal")
 
 
     async def test_client_disconnect_mid_stream_cancels_producer_and_running_agent(self) -> None:
