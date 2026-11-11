@@ -1715,6 +1715,31 @@ async (
   }
 };
 
+/** Admin only, and decided by the connector service, which answers anyone else with the 404 of a missing connector. */
+export const getPermissionStatus =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(req.params.connectorId as string)}/permissions/status`,
+        HttpMethod.GET,
+        buildProxyHeaders(req),
+      );
+      handleConnectorResponse(
+        response,
+        res,
+        'Getting permission status',
+        'Connector not found',
+      );
+    } catch (error) {
+      next(handleBackendError(error, 'get permission status'));
+    }
+  };
+
 export const getConnectorStats =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {

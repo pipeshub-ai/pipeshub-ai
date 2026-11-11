@@ -72,14 +72,14 @@ def app_is_current(app: Mapping[str, object] | None) -> bool:
 
 #: A running sync writes grants and memberships and moves the viewer-scope version only when it ends, so the cached scopes of a viewer who gained access
 #: during it are stale: the connector is read with the legacy check until the sync is over.
-_RUNNING = frozenset({AppStatus.SYNCING.value, AppStatus.FULL_SYNCING.value})
+RUNNING = frozenset({AppStatus.SYNCING.value, AppStatus.FULL_SYNCING.value})
 
 
 def app_is_served(app: Mapping[str, object] | None) -> bool:
     """Whether a search may be decided by the stamps of this connector now: current, no pending root, and no sync running. A pending root hides its subtree
     from the filter and its container points are not read from their stamps, so the stamps alone would under-admit: the connector is read
     with the legacy check until the roots are rewritten. An unreadable list is not current already."""
-    return app_is_current(app) and not parse((app or {}).get(PENDING_KEY)) and (app or {}).get("status") not in _RUNNING
+    return app_is_current(app) and not parse((app or {}).get(PENDING_KEY)) and (app or {}).get("status") not in RUNNING
 
 
 class StampCurrency:

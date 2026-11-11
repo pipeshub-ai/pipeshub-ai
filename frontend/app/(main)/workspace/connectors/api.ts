@@ -13,6 +13,7 @@ import type {
   FilterOptionsResponse,
   ConnectorStatsResponse,
   ConnectionCheckResponse,
+  PermissionStatus,
   ReindexStage,
   CodeGraphRepo,
 } from './types';
@@ -516,6 +517,15 @@ export const ConnectorsApi = {
   ): Promise<ConnectorStatsResponse> {
     const { data } = await apiClient.get<ConnectorStatsResponse>(
       `${BASE_URL}/${connectorId}/stats`
+    );
+    return data;
+  },
+
+  /** Admin only: how fresh a connector's permissions are. */
+  async getPermissionStatus(connectorId: string): Promise<PermissionStatus> {
+    const { data } = await apiClient.get<PermissionStatus>(
+      `${BASE_URL}/${connectorId}/permissions/status`,
+      { suppressErrorToast: true }
     );
     return data;
   },

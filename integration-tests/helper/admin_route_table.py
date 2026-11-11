@@ -264,6 +264,9 @@ PYTHON_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
         member_body={"clientId": "x"}),
     _py("DELETE", f"{_TOOLSETS}/oauth-configs/:toolsetType/:oauthConfigId",
         "api/routes/toolsets.py::delete_toolset_oauth_config"),
+    # A member gets the 404 of a missing connector, so the route does not confirm the connector exists.
+    _py("GET", "/api/v1/connectors/:connectorId/permissions/status",
+        "connectors/api/router.py::get_permission_status", refusal_status=404, refusal_words="removed"),
 )
 
 # The admin body for rows marked ``admin="admin_body"``: past the admin check,
