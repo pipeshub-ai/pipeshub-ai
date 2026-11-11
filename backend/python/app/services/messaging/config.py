@@ -108,6 +108,7 @@ class PipelineEvent(BaseModel):
 # Handler type aliases
 # ---------------------------------------------------------------------------
 
+# True: done or skipped. False: deliver again later. Raise on failure: the consumer classifies it terminal or transient.
 MessageHandler = Callable[[StreamMessage], Awaitable[bool]]
 IndexingMessageHandler = Callable[[StreamMessage], AsyncGenerator[PipelineEvent, None]]
 
