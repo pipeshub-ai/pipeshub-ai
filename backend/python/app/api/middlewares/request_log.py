@@ -19,12 +19,13 @@ from starlette.requests import ClientDisconnect
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.utils import error_class
 from app.utils.logger import create_logger
-from app.utils.logging_fields import log_event
+from app.utils.logging_fields import bind_log_fields, log_event
 from app.utils.route_template import route_template
 
 EVENT = "http.request.end"
 # In the ASGI scope: shared by every layer, unlike a ContextVar set in a BaseHTTPMiddleware's call_next task.
 _FAILURE_KEY = "pipeshub.request_failure"
+_FIELDS_KEY = "pipeshub.request_log_fields"
 # Never routine: a service token naming another org is our bug or a stolen token.
 _REASON_LEVEL = {"org_mismatch": logging.WARNING}
 _CRASH_BODY = {"detail": "Internal server error"}
@@ -56,6 +57,29 @@ def mark_request_failure(
     if exc is None and error_class is None:
         raise TypeError("mark_request_failure needs an exception or an error_class")
     request.scope[_FAILURE_KEY] = _Failure(exc, error_class, reason, include_error_text)
+
+
+def add_request_log_fields(request: Request, **fields: object) -> None:
+    """Event fields for this request's line only (not bound to the route's own lines): a bounded value the route
+    computed, such as ``oauth_error``. Never raw request input. ``None`` values are skipped."""
+    request.scope.setdefault(_FIELDS_KEY, {}).update({k: v for k, v in fields.items() if v is not None})
+
+
+def bind_request_log_fields(request: Request, **ids: object) -> None:
+    """Ids for every line of this request: the route's own (``bind_log_fields``, which checks the names) and this
+    request's line, through the scope (the route runs in a BaseHTTPMiddleware's child task, whose context the line
+    can't see)."""
+    bind_log_fields(**ids)
+    add_request_log_fields(request, **ids)
+
+
+def path_log_fields(**field_by_param: str) -> Callable[[Request], Awaitable[None]]:
+    """A router dependency binding path parameters as log ids: ``path_log_fields(instance_id="toolset_id")``."""
+    async def bind(request: Request) -> None:  # async: a sync dependency runs in a thread, which loses the binding
+        bind_request_log_fields(request, **{field: request.path_params.get(param)
+                                            for param, field in field_by_param.items()})
+
+    return bind
 
 
 def _marked(scope: Scope) -> _Failure | None:
@@ -148,6 +172,7 @@ class _Request:
             "status": status,
             "duration_ms": round(((self.finished or perf_counter()) - self.started) * 1000),
             "client_ip": _client_ip(self.scope),
+            **self.scope.get(_FIELDS_KEY, {}),
         }
         failure = _failure_for(self.scope, escaped, escaped=True) if escaped is not None else _marked(self.scope)
         reason = (failure.reason or _reason(failure.exc)) if failure else None
