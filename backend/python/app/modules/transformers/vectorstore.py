@@ -2601,7 +2601,7 @@ class VectorStore(Transformer):
         tokens = await self._bind_membership(virtual_record_id, record)
         progress = current_progress()
 
-        async def embed_section(docs: List[Document]) -> None:
+        async def embed_section(docs: list[Document]) -> None:
             # Every embed of a reconciliation is planned, so a wait at the embedding server pauses the
             # budget. Planned once (a second plan would restart the attempt's clock) and timed only while
             # embedding: the splitting and deletes between sections have no batches to beat.
