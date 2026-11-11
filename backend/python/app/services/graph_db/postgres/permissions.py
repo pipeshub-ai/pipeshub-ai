@@ -61,6 +61,31 @@ def _ctx_perms(role: str, *, admin: bool | None = None) -> dict[str, Any]:
 _INHERIT_HOPS = 8     # the longest INHERIT_PERMISSIONS chain the walk to a node's grantees follows, as on the other stores
 
 
+def _best_role(rows: Any, coll: str, node_id: str, ranks: dict[str, int]) -> tuple[str, str] | None:  # noqa: ANN401
+    """The highest role of the grant rows of ``_role_on`` (or ``_roles_on``) for the node ``(coll, node_id)``, with its source."""
+    best: tuple[str, str] | None = None
+    for r in rows:
+        role = r["role"]
+        if r["kind"] == "team":
+            role = r["role"] if r["role"] else r["member_role"]
+            role = TEAM_GRANT_ROLE_CAP if role == "OWNER" else role
+        if role in RETIRED_ROLES:
+            role = "READER"
+        if r["kind"] == "direct" and r["app_type"] == _KB_TYPE and role not in TEAM_GRANT_ROLES:
+            continue      # a direct grant on a collection counts only with a collection role
+        if r["kind"] == "team" and role not in TEAM_GRANT_ROLES:
+            continue
+        if role not in ranks:
+            continue
+        source = ("KNOWLEDGE_BASE" if r["app_type"] == _KB_TYPE else "DIRECT") if r["kind"] == "direct" else {
+            "group": "GROUP", "team": "KNOWLEDGE_BASE_TEAM" if r["tcoll"] == "apps" else "GROUP", "org": "ORGANIZATION"}[r["kind"]]
+        if r["kind"] == "direct" and not (r["tcoll"] == "apps" or (r["tcoll"], r["tid"]) == (coll, node_id)):
+            source = "DIRECT_USER_RECORD_GROUP"
+        if best is None or ranks[role] > ranks[best[0]] or (ranks[role] == ranks[best[0]] and source < best[1]):      # a tie goes to the source that sorts first, whatever the row order
+            best = (role, source)
+    return best
+
+
 class PermissionsMixin(PgBase):
     async def get_user_kb_permission(self, kb_id: str, user_id: str, transaction: str | None = None) -> str | None:
         """The user's effective role on a collection: the highest of the direct grant and what each team the collection is shared with gives its members.
@@ -424,27 +449,57 @@ class PermissionsMixin(PgBase):
               JOIN graph.nodes o ON o.org_id = $1 AND o.coll = 'organizations' AND o.id = b.to_id
               JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = o.id AND p.to_coll = t.coll AND p.to_id = t.id
                 AND p.doc->>'type' = 'ORG' AND coalesce(p.doc->>'role', '') <> ''""", org, coll, node_id, user_key)
-        best: tuple[str, str] | None = None
+        return _best_role(rows, coll, node_id, ranks)
+
+    async def _roles_on(self, tx: Tx, org: str, user_key: str, coll: str, node_ids: list[str], ranks: dict[str, int] = _CTX_RANK) -> dict[str, tuple[str, str] | None]:
+        """``_role_on`` for each of ``node_ids`` (the same node set and grant rules, the answer for each as if asked alone) in one statement: ``{id: (role, source) or None}``.
+        The statement is ``_role_on``'s with an ``origin`` column on every row of its walk, so the nodes' hierarchies and source accounts stay apart."""
+        ids = list(dict.fromkeys(node_ids))
+        if not ids:
+            return {}
+        rows = await tx.fetch("""/* pipeshub:graph.node_roles_batch */ WITH RECURSIVE o(origin) AS (SELECT unnest($3::text[])),
+            anc(origin, coll, id, depth) AS (
+              SELECT n.id, n.coll, n.id, 0 FROM graph.nodes n WHERE n.org_id = $1 AND n.coll = $2 AND n.id = ANY($3::text[])
+              UNION
+              SELECT a.origin, i.to_coll, i.to_id, a.depth + 1 FROM anc a JOIN graph.edges i ON i.org_id = $1 AND i.coll = 'inheritPermissions'
+                AND i.from_coll = a.coll AND i.from_id = a.id WHERE a.depth < 20),
+            targets(origin, coll, id, depth) AS (
+              SELECT origin, coll, id, depth FROM anc WHERE depth = 0 OR coll IN ('recordGroups', 'apps')
+              UNION SELECT b.from_id, b.to_coll, b.to_id, 0 FROM graph.edges b JOIN graph.nodes k ON k.org_id = $1 AND k.coll = 'apps' AND k.id = b.to_id AND k.doc->>'type' = 'KB'
+                WHERE b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = $2 AND b.from_id = ANY($3::text[])),
+            principals(origin, id) AS (
+              SELECT o.origin, u.id FROM o JOIN graph.nodes u ON u.org_id = $1 AND u.coll = 'users' AND u.id = $4
+              UNION SELECT o.origin, l.to_id FROM o JOIN graph.edges l ON l.org_id = $1 AND l.coll = 'authenticatedAs' AND l.from_coll = 'users' AND l.from_id = $4 AND l.to_coll = 'users'
+                JOIN graph.nodes s ON s.org_id = $1 AND s.coll = 'users' AND s.id = l.to_id
+                WHERE l.doc->>'connectorId' = (SELECT x.doc->>'connectorId' FROM graph.nodes x WHERE x.org_id = $1 AND x.coll = $2 AND x.id = o.origin))
+            SELECT t.origin, 'direct' AS kind, t.coll AS tcoll, t.id AS tid, p.doc->>'role' AS role, NULL::text AS member_role, k.doc->>'type' AS app_type
+              FROM targets t JOIN principals pr ON pr.origin = t.origin
+              JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'users' AND p.from_id = pr.id AND p.to_coll = t.coll AND p.to_id = t.id
+                AND p.doc->>'type' = 'USER' AND coalesce(p.doc->>'role', '') <> ''
+              LEFT JOIN graph.nodes k ON k.org_id = $1 AND k.coll = 'apps' AND k.id = t.id AND t.coll = 'apps'
+            UNION ALL
+            SELECT t.origin, 'group', t.coll, t.id, p.doc->>'role', NULL, NULL FROM targets t
+              JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll IN ('groups', 'roles') AND p.to_coll = t.coll AND p.to_id = t.id AND coalesce(p.doc->>'role', '') <> ''
+              JOIN graph.nodes g ON g.org_id = $1 AND g.coll = p.from_coll AND g.id = p.from_id
+              WHERE EXISTS (SELECT 1 FROM principals pr JOIN graph.edges m ON m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = pr.id
+                AND m.to_coll = p.from_coll AND m.to_id = p.from_id AND m.doc->>'type' = 'USER' WHERE pr.origin = t.origin)
+            UNION ALL
+            SELECT t.origin, 'team', t.coll, t.id, p.doc->>'role', m.doc->>'role', NULL FROM targets t
+              JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'teams' AND p.to_coll = t.coll AND p.to_id = t.id AND p.doc->>'type' = 'TEAM'
+              JOIN graph.nodes g ON g.org_id = $1 AND g.coll = 'teams' AND g.id = p.from_id
+              JOIN principals pr ON pr.origin = t.origin
+              JOIN graph.edges m ON m.org_id = $1 AND m.coll = 'permission' AND m.from_coll = 'users' AND m.from_id = pr.id AND m.to_coll = 'teams' AND m.to_id = p.from_id
+                AND m.doc->>'type' = 'USER'
+            UNION ALL
+            SELECT t.origin, 'org', t.coll, t.id, p.doc->>'role', NULL, NULL FROM targets t JOIN principals pr ON pr.origin = t.origin
+              JOIN graph.edges b ON b.org_id = $1 AND b.coll = 'belongsTo' AND b.from_coll = 'users' AND b.from_id = pr.id AND b.to_coll = 'organizations' AND b.doc->>'entityType' = 'ORGANIZATION'
+              JOIN graph.nodes o2 ON o2.org_id = $1 AND o2.coll = 'organizations' AND o2.id = b.to_id
+              JOIN graph.edges p ON p.org_id = $1 AND p.coll = 'permission' AND p.from_coll = 'organizations' AND p.from_id = o2.id AND p.to_coll = t.coll AND p.to_id = t.id
+                AND p.doc->>'type' = 'ORG' AND coalesce(p.doc->>'role', '') <> ''""", org, coll, ids, user_key)
+        by_origin: dict[str, list] = {i: [] for i in ids}
         for r in rows:
-            role = r["role"]
-            if r["kind"] == "team":
-                role = r["role"] if r["role"] else r["member_role"]
-                role = TEAM_GRANT_ROLE_CAP if role == "OWNER" else role
-            if role in RETIRED_ROLES:
-                role = "READER"
-            if r["kind"] == "direct" and r["app_type"] == _KB_TYPE and role not in TEAM_GRANT_ROLES:
-                continue      # a direct grant on a collection counts only with a collection role
-            if r["kind"] == "team" and role not in TEAM_GRANT_ROLES:
-                continue
-            if role not in ranks:
-                continue
-            source = ("KNOWLEDGE_BASE" if r["app_type"] == _KB_TYPE else "DIRECT") if r["kind"] == "direct" else {
-                "group": "GROUP", "team": "KNOWLEDGE_BASE_TEAM" if r["tcoll"] == "apps" else "GROUP", "org": "ORGANIZATION"}[r["kind"]]
-            if r["kind"] == "direct" and not (r["tcoll"] == "apps" or (r["tcoll"], r["tid"]) == (coll, node_id)):
-                source = "DIRECT_USER_RECORD_GROUP"
-            if best is None or ranks[role] > ranks[best[0]]:
-                best = (role, source)
-        return best
+            by_origin[r["origin"]].append(r)
+        return {i: _best_role(by_origin[i], coll, i, ranks) for i in ids}
 
     async def _app_role(self, tx: Tx, org: str, user_key: str, app_id: str) -> str | None:
         """The user's role on an app (a connector or a collection); None when nothing relates them."""

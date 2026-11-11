@@ -186,12 +186,12 @@ async def test_the_limit_and_the_window_are_at_least_one_and_the_walk_stops_at_t
     one = (await w.p.get_permitted_entity_records([ref("named_entity", "E")], w.org, "u", app_level_connector_ids=[], limit_per_entity=0, window=0))[("named_entity", "E")]
     assert ids(one) == ["new"] and one.window_size == 1
     asked = []
-    real = w.p._role_on
+    real = w.p._roles_on
 
     async def counting(*a: object, **k: object) -> object:
-        asked.append(a[-1])
+        asked.extend(a[4])          # the node ids of the batch
         return await real(*a, **k)
-    monkeypatch.setattr(w.p, "_role_on", counting)
+    monkeypatch.setattr(w.p, "_roles_on", counting)
     two = (await w.p.get_permitted_entity_records([ref("named_entity", "E")], w.org, "u", app_level_connector_ids=[], limit_per_entity=2))[("named_entity", "E")]
     assert ids(two) == ["new", "mid"] and asked == ["new", "mid"]                                  # no role is read past the limit
 
