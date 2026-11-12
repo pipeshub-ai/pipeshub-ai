@@ -122,6 +122,9 @@ class KhListingMixin(PgBase):
 
         base = kgl.Params([org, app_sk, None])
         where = kgl.filters_sql(filters, base)
+        if app_origin == "COLLECTION" and (groups := filters.get("record_group_ids")):
+            # As the other stores do: the list narrows a collection's record groups only; records and folders pass.
+            where += f" AND (r.kind <> 2 OR r.id = ANY({base.add(list(groups))}::text[]))"
         if hidden:
             where += f" AND r.sk <> ALL({base.add(hidden)}::bigint[])"
 

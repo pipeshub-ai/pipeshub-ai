@@ -249,3 +249,23 @@ async def test_every_listing_statement_reads_the_connector_by_an_index_and_never
             assert not seq, f"{name} ({'after' if analyzed else 'before'} ANALYZE): sequential scan of {[n['Relation Name'] for n in seq]}"
     finally:
         await con.close()
+
+
+@pytest.mark.parametrize(("kind", "kept"), [("KB", ["g1"]), ("DRIVE", ["g1", "g2"])])
+async def test_the_record_group_filter_narrows_a_collections_groups_only(pg_db, kind: str, kept: list[str]) -> None:
+    """As the other stores do: ``record_group_ids`` keeps only the listed record groups of a collection; a connector's groups, and every record, pass."""
+    p, org = prov(pg_db), new_org()
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "A", "type": kind, "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": g, "groupName": g.upper(), "connectorId": "app1", "orgId": org, "accessRule": "OPEN", "permissionModel": "RECORD_LEVEL"}
+                                    for g in ("g1", "g2")], "recordGroups")
+        await p.batch_upsert_nodes([{"_key": f"r{g}", "recordName": f"R{g}", "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR"} for g in ("g1", "g2")], "records")
+        await p.batch_create_edges([edge(f"r{g}", "records", g, "recordGroups") for g in ("g1", "g2")], "belongsTo")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+        await p.batch_create_edges([edge("u1", "users", t, c, type="USER", role="READER") for t, c in (("g1", "recordGroups"), ("g2", "recordGroups"), ("rg1", "records"), ("rg2", "records"))], "permission")
+    await flip(pg_db, org)
+    with ctx(org):
+        page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted_ids=["g1", "g2", "rg1", "rg2"]), limit=20, filters={"record_group_ids": ["g1"]})
+    ids = {r["id"] for r in page["rows"]}
+    assert sorted(i for i in ids if i.startswith("g")) == kept and {"rg1", "rg2"} <= ids

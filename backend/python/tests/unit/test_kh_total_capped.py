@@ -103,3 +103,16 @@ def test_the_models_default_to_exact_and_the_spec_documents_the_new_fields() -> 
     assert pagination["properties"]["totalCapped"]["type"] == "boolean" and "totalCapped" not in pagination["required"]
     counts = schemas["KnowledgeHubNodesResponse"]["properties"]["counts"]["properties"]
     assert counts["capped"]["type"] == "boolean" and set(counts) >= {"items", "total", "capped"}
+
+
+@pytest.mark.asyncio
+async def test_a_connector_page_that_stops_early_with_no_rows_goes_on_and_keeps_its_capped_total(service) -> None:
+    """The browse of one connector carries the provider's resume position and its capped total, as a page over several does."""
+    row1 = {"id": "r1", "name": "One", "nodeType": "record", "sortKey": "one", "nullRank": 0, "origin": "CONNECTOR", "createdAt": 1, "updatedAt": 2, "hasChildren": False}
+    stopped = {"rows": [], "hasMore": True, "total": 10_000, "totalCapped": True, "counts": None, "scope": None,
+               "resume": {"nullRank": 0, "sortKey": "a", "id": "r0"}}
+    rest = {"rows": [row1], "hasMore": False, "total": None, "counts": None, "scope": None}
+    service.graph_provider.get_knowledge_hub_connector_page_v3.side_effect = [stopped, rest]
+    out = await service.get_nodes(user_id="u1", org_id="o1", parent_id="app1", parent_type="app", flattened=True, limit=20)
+    assert [i.id for i in out.items] == ["r1"]                                            # the empty page went on from where the scan stopped
+    assert out.pagination.totalItems == 10_000 and out.pagination.totalCapped is True     # and its total stayed a lower bound

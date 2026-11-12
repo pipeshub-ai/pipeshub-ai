@@ -581,6 +581,9 @@ class KnowledgeHubService:
                         "total": page["total"],
                         "ids": [],
                         "counts": page.get("counts"),
+                        # A scan that stopped early says where it got to, and a capped total says so: both reach the cursor.
+                        "resume": page.get("resume"),
+                        "totalCapped": page.get("totalCapped"),
                     }],
                     "scope": page.get("scope"),
                 }
