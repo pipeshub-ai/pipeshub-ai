@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     PushClaimRefused,
     PushOutcome,
@@ -166,3 +167,23 @@ async def test_a_schema_version_with_non_ascii_digits_is_a_schema_mismatch(versi
 
     assert (raised.value.status, raised.value.reason) == (422, "SCHEMA_MISMATCH")
     svc.schemas.get.assert_not_called()
+
+
+async def test_a_kb_whose_connector_fails_to_initialise_is_not_reported_as_missing() -> None:
+    """A failed lazy init raises out of processor_for_kb (F27); only a missing or foreign KB is KB_NOT_FOUND.
+    The route answers the init failure as 500 INTERNAL_ERROR and logs it once."""
+    service = _service(MagicMock())
+    error = ConnectorInitError("token revoked")
+    service.processor_for_kb = AsyncMock(side_effect=error)
+    with pytest.raises(ConnectorInitError) as caught:
+        await service._processor("kb-1")
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("refusal", [PermissionError("other org"), LookupError("no instance")])
+async def test_a_missing_or_foreign_kb_is_still_kb_not_found(refusal: Exception) -> None:
+    service = _service(MagicMock())
+    service.processor_for_kb = AsyncMock(side_effect=refusal)
+    with pytest.raises(PushRefusal) as caught:
+        await service._processor("kb-1")
+    assert (caught.value.status, caught.value.reason) == (404, "KB_NOT_FOUND")

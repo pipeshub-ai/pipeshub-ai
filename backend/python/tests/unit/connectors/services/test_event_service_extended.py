@@ -741,10 +741,13 @@ class TestStageReruns:
         {"orgId": "o1", "connectorId": "c1", "stages": ["embed"]},
         {"orgId": "o1", "connectorId": "c1", "stages": ["classify", "entities"]},
         {"orgId": "o1", "connectorId": "c1", "stages": "classify"},
+        {"orgId": "o1", "connectorId": "c1", "stages": []},
     ])
     async def test_stage_reruns_are_connector_wide_and_name_known_stages(self, service, payload) -> None:
+        """A payload fault: redelivering the same event cannot make it valid."""
         service._ensure_connector = AsyncMock()
-        assert await service._handle_reindex("gmail", payload) is False
+        with pytest.raises(NonRetryableError):
+            await service._handle_reindex("gmail", payload)
         service._ensure_connector.assert_not_awaited()
 
     @pytest.mark.asyncio

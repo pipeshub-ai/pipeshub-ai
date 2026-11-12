@@ -483,9 +483,10 @@ class EntityEventService(BaseEventService):
         """Handle user update event"""
         try:
             self.logger.debug("Processing user updated event for user %s", payload.get("userId"))
-            # Find existing user by userId
+            # raise_on_error: the providers answer None to a failed read too, and
+            # "not found" would hide the outage from the classifier.
             existing_user = await self.graph_provider.get_user_by_user_id(
-                payload["userId"],
+                payload["userId"], raise_on_error=True
             )
 
             if not existing_user:
@@ -1179,7 +1180,9 @@ class EntityEventService(BaseEventService):
                 self.app_container.connectors_map[kb_key] = connector
                 self.logger.info(f"KB connector instance registered for kb_key={kb_key}")
         except Exception as reg_err:
-            error_class.log_failure(self.logger, "entity_event.step_failed", reg_err, step="register_kb_connector")
+            error_class.log_failure(
+                self.logger, "entity_event.step_failed", reg_err, step="register_kb_connector", connector_id=kb_key
+            )
 
         self.logger.info(f"Created new KB app for user {userId} in organization {orgId} (kb_key={kb_key})")
         return {

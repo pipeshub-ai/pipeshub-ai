@@ -136,9 +136,8 @@ class TestNetworkShareConnectorsBuildOneProcessor:
 
         with patch.object(connector_cls, "init", new=AsyncMock(side_effect=OSError("down"))):
             for _ in range(3):
-                assert await ConnectorFactory.initialize_connector(
-                    **_factory_kwargs("share_under_test")
-                ) is None
+                with pytest.raises(OSError):
+                    await ConnectorFactory.initialize_connector(**_factory_kwargs("share_under_test"))
 
         assert FakeProducer.open_connections == 0
 
