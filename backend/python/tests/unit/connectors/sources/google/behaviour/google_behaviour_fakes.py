@@ -347,17 +347,6 @@ class FakeEntitiesProcessor:
                 self.permissions[record.external_record_id] = []
         return missed
 
-    async def get_record_ids_granted_to_group(self, connector_id: str, external_group_id: str) -> list[str]:
-        if self.fail_group_permission_lookup:
-            raise RuntimeError("graph unavailable while reading the group's grants")
-        if external_group_id not in self.user_groups:
-            return []
-        return [
-            r.id for r in self.records.values()
-            if any(p.entity_type == EntityType.GROUP and p.external_id == external_group_id
-                   for p in self.permissions.get(r.external_record_id, []))
-        ]
-
     def by_id(self, record_id: str) -> Record | None:
         return next((r for r in self.records.values() if r.id == record_id), None)
 

@@ -75,6 +75,12 @@ class FullSyncLedger:
         )
 
 
+def _unknown_unseen(ledger: FullSyncLedger, keep: object) -> None:
+    # Which unseen records ``keep`` would keep is not known, so the run is incomplete: nothing is unlinked after it.
+    if keep is not None:
+        ledger.note_incomplete()
+
+
 async def reconcile_unseen_records(
     processor: DataSourceEntitiesProcessor,
     connector_id: str,
@@ -85,8 +91,9 @@ async def reconcile_unseen_records(
     """Delete non-placeholder records whose external id this full sync did not see.
 
     ``keep`` answers which of the unseen records (by id) may exist although no
-    listing can show them; those stay. When it fails, the run is marked
-    incomplete and nothing is deleted.
+    listing can show them; those stay. When it fails, or the stored records
+    cannot be listed in full to ask it, the run is marked incomplete and
+    nothing is deleted.
 
     Returns the number of records the delete call reported. Returns 0, and
     deletes nothing, when the run was incremental, incomplete, saw nothing, or
@@ -121,9 +128,11 @@ async def reconcile_unseen_records(
                 "Skipping stale-record cleanup; the stored records could not be listed",
                 exc_info=True,
             )
+            _unknown_unseen(ledger, keep)
             return 0
         if not isinstance(page, list):
             logger.warning("Skipping stale-record cleanup; the record listing was not readable")
+            _unknown_unseen(ledger, keep)
             return 0
         if not page:
             break

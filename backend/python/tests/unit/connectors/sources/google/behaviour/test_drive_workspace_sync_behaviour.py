@@ -4408,15 +4408,8 @@ async def test_a_runner_full_sync_keeps_an_audience_file_no_listing_shows_linked
     assert ("workspace-members", "GROUP", "READ") in ws.grants("g1")
 
 
-async def test_a_runner_full_sync_keeps_a_file_on_an_undecided_list_linked(
-    ws: Workspace, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_a_runner_full_sync_keeps_a_file_on_an_undecided_list_linked(ws: Workspace) -> None:
     await _park_undecided_removals(ws, "g1")
-
-    async def no_audience_grants(connector_id: str, external_group_id: str) -> list[str]:
-        return []  # only the undecided list keeps it
-
-    monkeypatch.setattr(ws.records, "get_record_ids_granted_to_group", no_audience_grants)
     unlinked = await _runner_full_sync(ws, delete_sync_points=False)
     assert ws.records.records["g1"].id not in unlinked
     assert ("workspace-members", "GROUP", "READ") in ws.grants("g1")
@@ -4436,3 +4429,41 @@ async def test_a_runner_full_sync_that_deletes_every_sync_point_keeps_an_undecid
     _drop_the_audience_shares(ws, "g1")
     await ws.sync()
     assert "g1" not in ws.records.records, "checked again: nobody can open it"
+
+
+@pytest.mark.parametrize("fails", [False, True])
+async def test_a_runner_full_sync_pages_the_stored_records_and_unlinks_nothing_when_a_page_fails(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch, fails: bool
+) -> None:
+    import app.connectors.sources.google.drive.utils.drive_full_sync_reconciler as reconciler
+
+    monkeypatch.setattr(reconciler, "RECONCILE_PAGE_SIZE", 2)
+    _audience_file_bob_loses(ws)
+    await ws.sync()
+    ws.world.unshare("g1", BOB)
+    await ws.sync()
+    ws.world.delete("e")  # gone with no change reported: a complete cleanup removes it
+    pages: list[str | None] = []
+    real_page = ws.records.get_records_by_status
+
+    async def get_records_by_status(*args: object, **kwargs: object) -> list:
+        if kwargs.get("is_placeholder") is False:
+            pages.append(kwargs.get("after_key"))
+            if fails and len(pages) == 3:
+                raise RuntimeError("graph unavailable while listing records")
+        return await real_page(*args, **kwargs)
+
+    monkeypatch.setattr(ws.records, "get_records_by_status", get_records_by_status)
+    _read_everything_in_full_next_run(ws)
+    ws.records.begin_full_sync_run(CONNECTOR_ID)
+    await ws.sync()
+    assert len(pages) >= 3, "read in pages of two"
+    if fails:
+        assert ws.incomplete, "which unseen records may still exist is not known"
+        ws.records.full_sync_seen = None  # the run failed: the runner unlinks nothing
+        assert "e" in ws.records.records and ("workspace-members", "GROUP", "READ") in ws.grants("g1")
+        return
+    assert not ws.incomplete
+    unlinked = ws.records.unlink_missed_by_full_sync()
+    assert "e" not in ws.records.records
+    assert ws.records.records["g1"].id not in unlinked and ("workspace-members", "GROUP", "READ") in ws.grants("g1")

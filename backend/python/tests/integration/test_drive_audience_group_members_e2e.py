@@ -260,7 +260,7 @@ async def test_a_full_sync_keeps_the_members_and_grants_of_audience_groups_it_do
     assert ALL_MEMBERS_GROUP_ID in {g.source_user_group_id for g in granted}
 
 
-async def test_the_records_an_audience_group_is_granted_are_read_back_and_kept_linked_by_a_full_sync(env: _Env) -> None:
+async def test_a_record_noted_kept_keeps_its_audience_grant_through_a_full_syncs_unlink(env: _Env) -> None:
     connector = _connector(env)
     connector.synced_users = [_app_user(env, n) for n in ("owner", "colleague")]
     connector._inactive_emails, connector._listing_cut = set(), False
@@ -271,17 +271,11 @@ async def test_the_records_an_audience_group_is_granted_are_read_back_and_kept_l
         (other, [Permission(type=PermissionType.READ, entity_type=EntityType.USER, email=env.users["owner"]["email"])]),
     ])
 
-    assert await env.processor.get_record_ids_granted_to_group(env.connector_id, ALL_MEMBERS_GROUP_ID) == [granted.id]
-    assert await env.processor.get_record_ids_granted_to_group(env.connector_id, "not-stored") == []
-
     # A full sync that writes neither file keeps the one it notes kept linked, and unlinks the other.
     run = env.processor.begin_full_sync_run(env.connector_id)
     try:
         await connector._write_audience_groups()
-        env.processor.note_kept_records(
-            env.connector_id,
-            await env.processor.get_record_ids_granted_to_group(env.connector_id, ALL_MEMBERS_GROUP_ID),
-        )
+        env.processor.note_kept_records(env.connector_id, [granted.id])
         _, ok = await env.graph.unlink_nodes_missed_by_full_sync(env.connector_id, run.by_collection)
     finally:
         env.processor.end_full_sync_run(env.connector_id, run)

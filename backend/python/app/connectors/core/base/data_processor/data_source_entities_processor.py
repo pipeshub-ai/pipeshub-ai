@@ -4884,26 +4884,6 @@ class DataSourceEntitiesProcessor:
             self._log_failure(f"Failed to publish reindex events: {str(e)}", e)
             raise e
 
-    async def get_record_ids_granted_to_group(self, connector_id: str, external_group_id: str) -> list[str]:
-        """The ids of the records this connector's user group (by its id at the source) holds a permission edge to.
-        A group the store does not hold is granted nothing. A failed read raises."""
-        records = CollectionNames.RECORDS.value
-        async with self.data_store_provider.transaction() as tx_store:
-            group = await tx_store.get_user_group_by_external_id(connector_id, external_group_id, raise_on_error=True)
-            if group is None:
-                return []
-            edges = await tx_store.get_edges_from_node(
-                f"{CollectionNames.GROUPS.value}/{group.id}", CollectionNames.PERMISSION.value, raise_on_error=True
-            )
-        ids: list[str] = []
-        for edge in edges or []:
-            collection, _, key = str(edge.get("_to") or "").partition("/")
-            if not key:
-                collection, key = edge.get("to_collection", ""), str(edge.get("to_id") or "")
-            if collection == records and key:
-                ids.append(key)
-        return ids
-
     def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
         """Note records a connector keeps as stored without writing them as seen by the full
         sync in progress, if any, so the unlink after that sync leaves them alone."""
