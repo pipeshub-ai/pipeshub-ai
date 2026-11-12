@@ -25,6 +25,9 @@ from .run import MODEL_CREDENTIALS
 from .config import Config
 
 SCHEMA = "qa-agent/v1"
+NOTEBOOK = "qa-notebook/v1"
+# A finding from the previous run, rechecked on the new code.
+SINCE = ("fixed", "still-broken", "changed", "not-rechecked")
 KINDS = ("regression", "existing-bug", "flaky", "environment", "test-bug", "combined-only")
 VERDICTS = ("works", "broken", "unsure")
 RAN = {"pass", "fail", "error", "flaky"}
@@ -194,8 +197,71 @@ def validate_verdict(raw: Any, known: set[str]) -> tuple[dict[str, Any], list[st
     for r in (raw.get("rounds") if isinstance(raw.get("rounds"), list) else [])[:MAX_ITEMS]:
         if isinstance(r, dict):
             rounds.append({"why": _text(r.get("why"))[:500], "tests": ids(r.get("tests"))})
+    rechecked = []
+    for f in (raw.get("since_last") if isinstance(raw.get("since_last"), list) else [])[:MAX_ITEMS]:
+        if isinstance(f, dict) and f.get("now") in SINCE:
+            rechecked.append({"title": _text(f.get("title"))[:200], "now": f["now"], "evidence": _text(f.get("evidence"))[:500]})
+        else:
+            problems.append("a since_last entry without a known `now` dropped")
     return {"schema": SCHEMA, "verdict": verdict, "summary": _text(raw.get("summary")), "findings": findings,
-            "rounds": rounds, "unproven": ids(raw.get("unproven"))}, problems
+            "rounds": rounds, "unproven": ids(raw.get("unproven")), "since_last": rechecked}, problems
+
+
+# --- the notebook: what the agent knows about one PR, for the next run ---------------------------
+
+def build_notebook(verdict: dict[str, Any], merged: dict[str, dict[str, Any]], plan: dict[str, Any],
+                   kept: list[str], pr: int | None, previous: dict[str, Any] | None) -> dict[str, Any]:
+    ran = sorted(i for i, t in merged.items() if t["outcome"] in RAN)
+    return {
+        "schema": NOTEBOOK, "pr": pr, "head": plan.get("head"), "base": plan.get("base"),
+        "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "runs": int((previous or {}).get("runs", 0)) + 1,
+        "verdict": verdict.get("verdict", "none"), "summary": _text(verdict.get("summary"))[:600],
+        "findings": [{"kind": f["kind"], "title": f["title"], "tests": f["tests"][:10], "files": f["files"][:10],
+                      "evidence": f["evidence"][:300]} for f in verdict.get("findings", [])][:20],
+        "failing": sorted(i for i, t in merged.items() if t["outcome"] in ("fail", "error"))[:50],
+        "ran": ran[:200], "tests_added": kept[:20],
+    }
+
+
+def validate_notebook(raw: Any, pr: int | None) -> dict[str, Any] | None:
+    """A notebook read back from a PR comment or a file: its own PR's, well formed and small, or nothing."""
+    if not isinstance(raw, dict) or raw.get("schema") != NOTEBOOK:
+        return None
+    if pr is not None and raw.get("pr") != pr:
+        return None
+    sha = re.compile(r"[0-9a-f]{40}")
+    if not (isinstance(raw.get("head"), str) and sha.fullmatch(raw["head"])):
+        return None
+    out = {k: raw.get(k) for k in ("schema", "pr", "head", "base", "at", "verdict")}
+    out["base"] = raw.get("base") if isinstance(raw.get("base"), str) and sha.fullmatch(raw.get("base") or "") else None
+    out["at"] = str(raw.get("at") or "")[:40]
+    out["verdict"] = raw.get("verdict") if raw.get("verdict") in (*VERDICTS, "none") else "none"
+    out["runs"] = raw.get("runs") if isinstance(raw.get("runs"), int) and 0 < raw["runs"] < 10_000 else 1
+    out["summary"] = _text(raw.get("summary"))[:600]
+    strs = lambda v, n, m: [str(x)[:m] for x in (v if isinstance(v, list) else [])][:n]
+    out["findings"] = [{"kind": f.get("kind") if f.get("kind") in KINDS else "test-bug", "title": _text(f.get("title"))[:200],
+                        "tests": strs(f.get("tests"), 10, 300), "files": strs(f.get("files"), 10, 300),
+                        "evidence": _text(f.get("evidence"))[:300]}
+                       for f in (raw.get("findings") if isinstance(raw.get("findings"), list) else [])[:20] if isinstance(f, dict)]
+    out["failing"] = strs(raw.get("failing"), 50, 300)
+    out["ran"] = strs(raw.get("ran"), 200, 300)
+    out["tests_added"] = strs(raw.get("tests_added"), 20, 300)
+    return out
+
+
+def since(root: Path, previous: dict[str, Any] | None, head: str | None) -> dict[str, Any] | None:
+    """What changed since the previous run tested this PR: a range, or why there is none."""
+    if not previous:
+        return None
+    head = head or "HEAD"
+    last = previous["head"]
+    if subprocess.run(["git", "cat-file", "-e", f"{last}^{{commit}}"], cwd=root, capture_output=True).returncode:
+        return {"from": last, "note": "the commit last tested is gone (history rewritten): treat this as a first run"}
+    if subprocess.run(["git", "merge-base", "--is-ancestor", last, head], cwd=root, capture_output=True).returncode:
+        return {"from": last, "note": "the PR was rebased or force-pushed since: compare by behaviour, not by diff"}
+    files = subprocess.run(["git", "diff", "--name-only", f"{last}..{head}"], cwd=root, capture_output=True, text=True).stdout.split()
+    return {"from": last, "files": files[:200], "unchanged": not files}
 
 
 def _secrets() -> list[str]:
@@ -211,7 +277,8 @@ def holds_secret(*texts: str, extra: tuple[str, ...] = ()) -> bool:
 # --- the loop ------------------------------------------------------------------
 
 def _input(out: Path, plan: dict[str, Any], merged: dict[str, dict[str, Any]], sess: dict[str, Any] | None,
-           engine: str, minutes: float, combined: dict[str, Any] | None, changed: list[str]) -> Path:
+           engine: str, minutes: float, combined: dict[str, Any] | None, changed: list[str],
+           previous: dict[str, Any] | None = None, since_last: dict[str, Any] | None = None) -> Path:
     agent_dir = out / "agent"
     data = {
         "change": {"base": plan.get("base"), "head": plan.get("head"), "mode": plan.get("mode"),
@@ -231,6 +298,9 @@ def _input(out: Path, plan: dict[str, Any], merged: dict[str, dict[str, Any]], s
         "minutes": minutes,
         "verdict_file": str(agent_dir / "verdict.json"),
         "combined": combined,
+        # What the agent found on this PR before, and what changed since: recheck those findings first.
+        "previous": previous,
+        "since_last": since_last,
     }
     path = agent_dir / "input.json"
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -268,7 +338,8 @@ def _claude(root: Path, prompt: str, engine: str, minutes: float, max_turns: int
 
 def run_agent(cfg: Config, out: Path, plan: dict[str, Any], run_round: Callable[[list[str], Path], None], *,
               sess: dict[str, Any] | None, minutes: float, max_turns: int,
-              combined: dict[str, Any] | None = None, creds: dict[str, str] | None = None) -> dict[str, Any]:
+              combined: dict[str, Any] | None = None, creds: dict[str, str] | None = None,
+              previous: dict[str, Any] | None = None, pr: int | None = None) -> dict[str, Any]:
     """run_round(ids, round_dir) runs tests through the engine (round 0 is the floor). Returns agent.json's content."""
     root = cfg.root
     # Before round 0: no test the engine runs may inherit Claude's credential.
@@ -290,7 +361,8 @@ def run_agent(cfg: Config, out: Path, plan: dict[str, Any], run_round: Callable[
         engine = engine_cmd(root)
         changed = subprocess.run(["git", "diff", "--name-only", f"{plan['base']}..{plan.get('head') or 'HEAD'}"], cwd=root,
                                  capture_output=True, text=True).stdout.split()
-        inp = _input(out, plan, merge_rounds(round_dirs(agent_dir)), sess, engine, minutes, combined, changed)
+        inp = _input(out, plan, merge_rounds(round_dirs(agent_dir)), sess, engine, minutes, combined, changed,
+                     previous, since(root, previous, plan.get("head")))
         prompt = (paths.REPO / "scripts/qa/prompts/agent.md").read_text(encoding="utf-8")
         prompt += f"\n\n## This run\n\nRead `{inp}` first. Write the verdict to `{agent_dir / 'verdict.json'}`.\n"
         problem = _claude(root, prompt, engine, minutes, max_turns, agent_dir / "claude.log", creds)
@@ -325,7 +397,13 @@ def run_agent(cfg: Config, out: Path, plan: dict[str, Any], run_round: Callable[
     report.redact_results(results)
     (out / "results-agent.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     doc = {"schema": SCHEMA, "verdict": verdict, "notes": notes, "tests_added": kept, "extra_tests": extra,
-           "rounds": len(round_dirs(agent_dir)), "combined": combined}
+           "rounds": len(round_dirs(agent_dir)), "combined": combined,
+           "previous": {k: previous.get(k) for k in ("head", "at", "verdict", "runs")} if previous else None}
+    if verdict and not combined:
+        notebook = build_notebook(verdict, merged, plan, kept, pr, previous)
+        if not holds_secret(json.dumps(notebook), extra=tuple(creds.values())):
+            doc["notebook"] = notebook
+            (out / "agent-notebook.json").write_text(json.dumps(notebook, indent=2), encoding="utf-8")
     (out / "agent.json").write_text(json.dumps(doc, indent=2), encoding="utf-8")
     return doc
 

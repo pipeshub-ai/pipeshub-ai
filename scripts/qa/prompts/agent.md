@@ -19,6 +19,15 @@ Work the way a careful human QA engineer would, in rounds:
 4. When a behaviour the change introduces or touches has no test, write one in the right suite, following the conventions there (the docstring's `TC-` id, `covers:` and `needs:` lines; `@pytest.mark.live_model` when it reads real model output). Run `catalog build` so the engine knows it, run it, and prove it with the prove command when it is a unit test. A stack test you could not prove goes in `unproven`.
 5. Repeat until you can say whether the change works, or your time is nearly up. Run at least one round of your own before the verdict: reproduce every failure you judge (a fresh run, not round 0's retry), and add the tests closest to the change that the floor did not pick. Then stop as soon as the evidence is clear. Leave about ten minutes for the verdict.
 
+## When you tested this PR before
+
+If the input has `previous`, you already tested this PR: it holds your last verdict, findings, the tests that failed and the tests you added, at the commit `previous.head`. `since_last` says what changed since then (the files, or a note when the history was rewritten). Work like a person coming back to a PR after the author pushed fixes:
+
+1. Recheck every previous finding first, on the new code: rerun its tests and read the change that touched it. Report each in `since_last` as `fixed`, `still-broken`, `changed` (the problem moved or took another form) or `not-rechecked` (with why).
+2. Test the new commits closely: the files in `since_last` and the flows they touch.
+3. Rerun what you added before. Do not redo the rest of the earlier work unless the new commits touch it.
+4. When `since_last.unchanged` is true, nothing changed: rerun the previous failures to check for flakiness and say so.
+
 Judge every non-passing result into one kind:
 
 - `regression`: this change broke it. Name the changed lines that cause it.
@@ -43,7 +52,9 @@ Write one JSON object to the verdict file, and nothing else to it:
   "findings": [{"kind": "regression", "title": "short title", "tests": ["<catalog id>"],
                 "evidence": "the failing assertion and the changed lines that cause it",
                 "files": ["path:line"], "prs": []}],
-  "unproven": ["<catalog id of a test you added but could not prove>"]
+  "unproven": ["<catalog id of a test you added but could not prove>"],
+  "since_last": [{"title": "a previous finding's title", "now": "fixed | still-broken | changed | not-rechecked",
+                  "evidence": "the rerun that shows it"}]
 }
 ```
 

@@ -1856,6 +1856,10 @@ class TestQaAgentWorkflows(unittest.TestCase):
 
     def test_the_agent_job_cannot_write(self) -> None:
         job = self.load("qa-pipeline.yml")["jobs"]["run-stack"]
-        self.assertEqual(job["permissions"], {"contents": "read", "actions": "read"})
+        self.assertEqual(job["permissions"], {"contents": "read", "actions": "read", "pull-requests": "read"})
         agent_step = next(s for s in job["steps"] if "qa agent exited" in str(s.get("run", "")))
         self.assertIn("qa-engine/scripts/qa", agent_step["run"])  # the base branch's engine and prompt
+        # The step that runs PR code gets no GitHub token; only the notebook fetch, which runs the base engine, does.
+        self.assertNotIn("GH_TOKEN", agent_step.get("env", {}))
+        fetch = next(s for s in job["steps"] if s.get("name") == "Fetch the QA agent's notebook for this PR")
+        self.assertIn("qa-engine/scripts/qa notebook", fetch["run"])
