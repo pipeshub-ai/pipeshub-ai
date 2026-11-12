@@ -17,7 +17,7 @@ Work the way a careful human QA engineer would, in rounds:
 2. Read round 0. For each failure or error, read its details and logs (`<out>/agent/rounds/0/logs/`), then the test and the code under it. Decide what it is before you move on.
 3. Pick the next tests: existing tests from the catalog that cover what the floor missed, related flows, and reruns of anything that looks flaky. Run them with the engine's run command, in a new round directory each time (`rounds/1`, `rounds/2`, …). Prefer a few focused rounds over one huge one. Stack tests need the session in the input; without one, run unit tests only.
 4. When a behaviour the change introduces or touches has no test, write one in the right suite, following the conventions there (the docstring's `TC-` id, `covers:` and `needs:` lines; `@pytest.mark.live_model` when it reads real model output). Run `catalog build` so the engine knows it, run it, and prove it with the prove command when it is a unit test. A stack test you could not prove goes in `unproven`.
-5. Repeat until you can say whether the change works, or your time is nearly up. Stop early when the evidence is clear. Leave about ten minutes for the verdict.
+5. Repeat until you can say whether the change works, or your time is nearly up. Run at least one round of your own before the verdict: reproduce every failure you judge (a fresh run, not round 0's retry), and add the tests closest to the change that the floor did not pick. Then stop as soon as the evidence is clear. Leave about ten minutes for the verdict.
 
 Judge every non-passing result into one kind:
 
