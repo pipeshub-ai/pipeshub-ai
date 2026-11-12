@@ -109,7 +109,7 @@ def agent_section(doc: dict[str, Any]) -> list[str]:
                 prs = (" (" + ", ".join(f"#{n}" for n in f.get("prs", [])) + ")") if f.get("prs") else ""
                 lines.append(f"| {f['kind']} | {_model_text(f.get('title'), 120)}{prs} | {tests} | {_model_text(f.get('evidence'), 300)} |")
         if v.get("rounds"):
-            lines += ["", f"Rounds after the rule floor: {len(v['rounds'])}"]
+            lines += ["", f"Rounds: {len(v['rounds'])} (round 0 is the rule floor the engine ran first)"]
             lines += [f"- {_model_text(r.get('why'), 200)} ({len(r.get('tests', []))} tests)" for r in v["rounds"][:10]]
     added = doc.get("tests_added") or []
     if added:
