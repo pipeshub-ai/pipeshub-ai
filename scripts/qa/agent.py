@@ -34,11 +34,11 @@ CATALOG_DIRS = ("integration-tests/catalog/",)
 DENIED = ("Read(//proc/**)", "Read(//sys/**)")
 
 
-def engine_cmd() -> str:
-    """How Claude calls this engine: the checkout it runs from, which in CI is the base branch's."""
-    main = paths.REPO / "scripts" / "qa"
+def engine_cmd(root: Path) -> str:
+    """How Claude, working in root, calls this engine: the checkout it runs from (in CI, the base branch's)."""
+    main = (paths.REPO / "scripts" / "qa").resolve()
     try:
-        main = main.relative_to(Path.cwd())
+        main = main.relative_to(root.resolve())
     except ValueError:
         pass
     return f"python3 {main}"
@@ -260,6 +260,7 @@ def run_agent(cfg: Config, out: Path, plan: dict[str, Any], run_round: Callable[
               combined: dict[str, Any] | None = None) -> dict[str, Any]:
     """run_round(ids, round_dir) runs tests through the engine (round 0 is the floor). Returns agent.json's content."""
     root = cfg.root
+    out = out.resolve()  # Claude works in root; every path it is given must not depend on this process's cwd
     agent_dir = out / "agent"
     (agent_dir / "rounds").mkdir(parents=True, exist_ok=True)
     started = time.time()
@@ -273,7 +274,7 @@ def run_agent(cfg: Config, out: Path, plan: dict[str, Any], run_round: Callable[
     else:
         diff = subprocess.run(["git", "diff", f"{plan['base']}..{plan.get('head') or 'HEAD'}"], cwd=root, capture_output=True, text=True)
         (agent_dir / "changeset.diff").write_text(diff.stdout, encoding="utf-8")
-        engine = engine_cmd()
+        engine = engine_cmd(root)
         changed = subprocess.run(["git", "diff", "--name-only", f"{plan['base']}..{plan.get('head') or 'HEAD'}"], cwd=root,
                                  capture_output=True, text=True).stdout.split()
         inp = _input(out, plan, merge_rounds(round_dirs(agent_dir)), sess, engine, minutes, combined, changed)
