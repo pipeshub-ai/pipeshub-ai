@@ -544,18 +544,32 @@ class TestFetchPermissions:
         connector.drive_delta_sync_point.delete_sync_point.assert_not_awaited()
         connector.drive_delta_sync_point.update_sync_point.assert_not_awaited()
 
-    async def test_a_drive_never_seen_answering_without_restrictions_reads_as_restricted_until_an_answer_has_them(self, connector) -> None:
+    async def test_an_unrestricted_drive_answering_without_restrictions_keeps_its_shares_and_change_tokens(self, connector) -> None:
+        # No restriction keys stored is the steady state of an unrestricted drive: an answer without the object must
+        # not turn it into a restricted one, drop the users' change tokens, or save a guess.
+        connector.drive_delta_sync_point.read_sync_point = AsyncMock(return_value={"hidden_groups": [], "group_hashes": []})
+        connector.drive_delta_sync_point.delete_sync_point = AsyncMock()
+        connector.drive_delta_sync_point.update_sync_point = AsyncMock()
+        connector.drive_data_source.drives_get = AsyncMock(return_value={"id": "sd-1"})
+        connector._drive_restrictions = {}
+        connector.synced_users = [_make_google_user("u@example.com", "u1")]
+
+        assert await connector._drive_restrictions_of("sd-1") == {"driveMembersOnly": False, "domainUsersOnly": False}
+        assert connector._sync_ledger.has_gaps
+        await connector._reconcile_drive_restrictions({"id": "sd-1"})
+
+        connector.drive_delta_sync_point.delete_sync_point.assert_not_awaited()
+        connector.drive_delta_sync_point.update_sync_point.assert_not_awaited()
+
+    async def test_a_drive_with_nothing_stored_answering_without_restrictions_saves_no_guess(self, connector) -> None:
         connector.drive_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.drive_delta_sync_point.update_sync_point = AsyncMock()
         connector.drive_data_source.drives_get = AsyncMock(return_value={"id": "sd-1"})
         connector._drive_restrictions = {}
 
-        assert await connector._drive_restrictions_of("sd-1") == {"driveMembersOnly": True, "domainUsersOnly": True}
-        assert connector._sync_ledger.has_gaps
-
-        # a later run, whose answer has the object, heals it
-        connector.drive_data_source.drives_get = AsyncMock(return_value={"id": "sd-1", "restrictions": {}})
-        connector._drive_restrictions = {}
         assert await connector._drive_restrictions_of("sd-1") == {"driveMembersOnly": False, "domainUsersOnly": False}
+        assert connector._sync_ledger.has_gaps
+        connector.drive_delta_sync_point.update_sync_point.assert_not_awaited()
 
     async def test_empty_list_for_a_member_of_a_limited_folder_gives_their_own_fallback(self, connector) -> None:
         connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})

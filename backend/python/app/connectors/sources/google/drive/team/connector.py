@@ -1429,9 +1429,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         """The restrictions of one of this domain's shared drives. A drive whose listing carried none is asked
         for directly; a failed read raises rather than reading as unrestricted.
 
-        An answer with no restrictions object is neither "restricted" nor "open": the drive keeps the flags its
-        items were last synced under, the run is reported incomplete, and nothing is listed again for it. A drive
-        never seen before is read as restricted until an answer with the object arrives."""
+        An answer with no restrictions object changes nothing: the drive keeps the flags its items were last synced
+        under (none stored is the steady state of an unrestricted drive), the run is reported incomplete, and nothing
+        is listed again for it or saved. A known restriction is never dropped by such an answer."""
         if drive_id not in self._drive_restrictions:
             got = await self.drive_data_source.drives_get(
                 driveId=drive_id, useDomainAdminAccess=True, fields="id,restrictions"
@@ -1445,10 +1445,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 )
                 self.logger.warning(f"Shared drive {drive_id}: no restrictions in the answer; keeping the last known ones")
                 self._sync_ledger.note_incomplete()
-                self._drive_restrictions[drive_id] = (
-                    self._restriction_flags(stored) if any(flag in (stored or {}) for flag in DRIVE_RESTRICTION_FLAGS)
-                    else dict.fromkeys(DRIVE_RESTRICTION_FLAGS, True)
-                )
+                self._drive_restrictions[drive_id] = self._restriction_flags(stored)
         return self._drive_restrictions[drive_id]
 
     @staticmethod
