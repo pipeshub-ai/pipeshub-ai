@@ -118,9 +118,14 @@ import {
   type RunReservation,
 } from '../utils/utils';
 import {
+  historyForModel,
+  newReadable,
+  redactConversationFor,
   redactMessagesFor,
   redactSearchesFor,
   viewerOf,
+  startsTurn,
+  type ViewerMessage,
 } from '../utils/viewer-redaction';
 import {
   attachUpstreamAbort,
@@ -354,6 +359,76 @@ export {
 } from '../utils/scoped-request';
 
 export { handleBackendError };
+
+/** Rows read per step, and steps allowed, when a turn runs past the edge of a page. */
+const TURN_READ_ROWS = 50;
+const TURN_READ_STEPS = 10;
+
+/**
+ * `redactMessagesFor` for one page of a conversation. A turn's rows go with its
+ * hidden answer wherever they sit, and a turn can run past either edge of the
+ * page, so the rows back to the turn's question and forward to the next one are
+ * read through the repository and judged with the page. Each side reads at most
+ * `TURN_READ_STEPS` steps of `TURN_READ_ROWS`; past that the turn's rows on the
+ * page are hidden as unconfirmed, never shown.
+ */
+const redactPageFor = async <M extends ViewerMessage>(
+  appConfig: AppConfig,
+  viewer: ReturnType<typeof viewerOf>,
+  conversation: { _id: string; orgId: string },
+  messages: M[],
+  skip: number,
+  total: number,
+  ownerOf: (message: M) => string | undefined,
+): Promise<M[]> => {
+  const read = async (from: number, limit: number): Promise<M[]> =>
+    (await getMessages(conversation._id, {
+      orgId: conversation.orgId,
+      skip: from,
+      limit,
+    })) as M[];
+  let lead: M[] = [];
+  let leadUnknown = false;
+  if (skip > 0 && messages.length > 0 && !startsTurn(messages[0] as M)) {
+    let end = skip;
+    for (let steps = 0; end > 0; steps += 1) {
+      if (steps >= TURN_READ_STEPS) {
+        leadUnknown = true;
+        break;
+      }
+      const from = Math.max(0, end - TURN_READ_ROWS);
+      const rows = await read(from, end - from);
+      lead = [...rows, ...lead];
+      end = from;
+      if (rows.some(startsTurn)) break;
+    }
+  }
+  const trail: M[] = [];
+  let trailUnknown = false;
+  for (let from = skip + messages.length, steps = 0; from < total; steps += 1) {
+    if (steps >= TURN_READ_STEPS) {
+      trailUnknown = true;
+      break;
+    }
+    const rows = await read(from, Math.min(TURN_READ_ROWS, total - from));
+    if (rows.length === 0) break;
+    const next = rows.findIndex(startsTurn);
+    if (next >= 0) {
+      trail.push(...rows.slice(0, next));
+      break;
+    }
+    trail.push(...rows);
+    from += rows.length;
+  }
+  const out = await redactMessagesFor(
+    appConfig,
+    viewer,
+    [...lead, ...messages, ...trail],
+    ownerOf,
+    { leadUnknown, trailUnknown },
+  );
+  return out.slice(lead.length, lead.length + messages.length);
+};
 
 // Common helper to start AI streams with consistent error mapping and logging
 export const startAIStream = async (
@@ -1611,23 +1686,31 @@ export const addMessageStream =
       );
 
       // Format previous conversations for context (excluding the user message we just added)
-      const allMessagesSoFar = (await getMessages(
-        confirmedConversation._id,
-        { orgId: confirmedConversation.orgId },
-        session,
-      )) as IMessage[];
+      const accessMemo = newReadable();
+      // The history's access check runs while the project loads: both come before the first token.
+      const [allMessagesSoFar, followUpProject] = await Promise.all([
+        historyForModel(
+          appConfig,
+          viewerOf(userId, orgId),
+          (await getMessages(
+            confirmedConversation._id,
+            { orgId: confirmedConversation.orgId },
+            session,
+          )) as IMessage[],
+          accessMemo,
+        ),
+        loadProjectForSession(
+          confirmedConversation.orgId,
+          confirmedConversation.userId,
+          confirmedConversation.projectId,
+          {
+            caller: projectCallerFromRequest(req, appConfig),
+            conversationId: confirmedConversation._id,
+          },
+        ),
+      ]);
       const previousConversations = formatPreviousConversations(
         allMessagesSoFar.slice(0, -1),
-      );
-
-      const followUpProject = await loadProjectForSession(
-        confirmedConversation.orgId,
-        confirmedConversation.userId,
-        confirmedConversation.projectId,
-        {
-          caller: projectCallerFromRequest(req, appConfig),
-          conversationId: confirmedConversation._id,
-        },
       );
       const aiRequest = buildAiChatRequest({ kind: 'assistant' }, req.body, {
         conversationId,
@@ -2019,11 +2102,16 @@ export const addMessageStream =
               const savedCitations = saved.citations;
 
               // Return the updated conversation in the same format as addMessage
-              const responseConversation = await attachPopulatedCitations(
-                saved.conversation,
-                [saved.message],
-                savedCitations,
-                session,
+              const responseConversation = await redactConversationFor(
+                appConfig,
+                viewerOf(userId, orgId),
+                await attachPopulatedCitations(
+                  saved.conversation,
+                  [saved.message],
+                  savedCitations,
+                  session,
+                ),
+                { known: accessMemo, freshIds: [saved.message._id] },
               );
 
               // Send the final conversation data in the same format as addMessage
@@ -2585,12 +2673,6 @@ export const getConversationById =
 
       const conversationWithMessages = attachMessages(session, messages);
 
-      // Sort messages using existing helper
-      const sortedMessages = sortMessages(
-        conversationWithMessages?.messages || [],
-        messageSortOptions as { field: keyof IMessage },
-      );
-
       const conversationResponse = await attachSharedByIfRecipient(
         buildConversationResponse(
           conversationWithMessages as unknown as ChatSessionDto,
@@ -2603,17 +2685,24 @@ export const getConversationById =
             hasNextPage: skip > 0,
             hasPrevPage: skip + effectiveLimit < totalMessages,
           },
-          sortedMessages,
+          conversationWithMessages?.messages || [],
         ),
         orgId,
       );
-      // Another viewer sees only what they may read of each message.
-      conversationResponse.messages = await redactMessagesFor(
-        appConfig,
-        viewerOf(userId, orgId),
-        conversationResponse.messages,
-        () => initiatorId,
-      );
+      // Hidden in stored order, then sorted as the client asked: a turn's tool rows follow their
+      // answer, and `sortBy` must not separate them first.
+      conversationResponse.messages = sortMessages(
+        (await redactPageFor(
+          appConfig,
+          viewerOf(userId, orgId),
+          session,
+          conversationResponse.messages,
+          skip,
+          totalMessages,
+          () => initiatorId,
+        )) as never,
+        messageSortOptions as { field: keyof IMessage },
+      ) as unknown as typeof conversationResponse.messages;
 
       // Build filters metadata using existing helper
       const filtersMetadata = buildFiltersMetadata(
@@ -3676,6 +3765,7 @@ async function regenerateAnswersInternal(
 
     // Format previous conversations up to this message (exclude last bot
     // response and the user query that triggered it)
+    const accessMemo = newReadable();
     const allMessagesForRegen = (await getMessages(
       existingConversation._id,
       { orgId: existingConversation.orgId },
@@ -3700,10 +3790,16 @@ async function regenerateAnswersInternal(
       );
       if (questionIdx >= 0) regenUserIdx = questionIdx;
     }
+    // Only the history that goes to the model is checked, not the turn being redone.
     const previousConversations = formatPreviousConversations(
-      regenUserIdx >= 0
-        ? allMessagesForRegen.slice(0, regenUserIdx)
-        : allMessagesForRegen.slice(0, -2),
+      await historyForModel(
+        appConfig,
+        viewerOf(userId, orgId),
+        regenUserIdx >= 0
+          ? allMessagesForRegen.slice(0, regenUserIdx)
+          : allMessagesForRegen.slice(0, -2),
+        accessMemo,
+      ),
     );
 
     // The title of a chat is its first question, so editing that question moves the title too,
@@ -4014,7 +4110,12 @@ async function regenerateAnswersInternal(
             );
           }
 
-          const responseConversation = regeneratedConversation;
+          const responseConversation = await redactConversationFor(
+            appConfig,
+            viewerOf(userId, orgId),
+            regeneratedConversation,
+            { known: accessMemo, freshIds: [messageId] },
+          );
 
           // Send final response event with the complete conversation data
           sendSSECompleteEvent(
@@ -4058,9 +4159,10 @@ async function regenerateAnswersInternal(
                 { orgId: updatedConversation.orgId },
                 session,
               );
-              const plainConversation = attachMessages(
-                updatedConversation,
-                messages,
+              const plainConversation = await redactConversationFor(
+                appConfig,
+                viewerOf(userId, orgId),
+                attachMessages(updatedConversation, messages),
               );
               await sendSSEErrorEvent(
                 res,
@@ -4123,9 +4225,10 @@ async function regenerateAnswersInternal(
                 { orgId: updatedConversation.orgId },
                 session,
               );
-              const plainConversation = attachMessages(
-                updatedConversation,
-                messages,
+              const plainConversation = await redactConversationFor(
+                appConfig,
+                viewerOf(userId, orgId),
+                attachMessages(updatedConversation, messages),
               );
               await sendSSEErrorEvent(
                 res,
@@ -4200,6 +4303,7 @@ async function regenerateAnswersInternal(
           requestId || '',
           'stream_error',
           protocol,
+          { appConfig, userId, orgId },
         );
       } catch (dbError: any) {
         logger.error('Failed to replace message with error', {
@@ -4245,6 +4349,7 @@ async function regenerateAnswersInternal(
         requestId || '',
         'regeneration_error',
         protocol,
+        { appConfig, userId, orgId },
       );
     } catch (dbError: any) {
       logger.error('Failed to mark conversation as failed in catch block', {
@@ -7358,23 +7463,31 @@ export const addMessageStreamToAgentConversation =
       const confirmedConversation = existingConversation as ChatSessionDto;
 
       // Format previous conversations for context (excluding the user message we just added)
-      const allMessagesSoFar = (await getMessages(
-        confirmedConversation._id,
-        { orgId: confirmedConversation.orgId },
-        session,
-      )) as IMessage[];
+      const accessMemo = newReadable();
+      // The history's access check runs while the project loads: both come before the first token.
+      const [allMessagesSoFar, followUpProject] = await Promise.all([
+        historyForModel(
+          appConfig,
+          viewerOf(userId, orgId),
+          (await getMessages(
+            confirmedConversation._id,
+            { orgId: confirmedConversation.orgId },
+            session,
+          )) as IMessage[],
+          accessMemo,
+        ),
+        loadProjectForSession(
+          confirmedConversation.orgId,
+          confirmedConversation.userId,
+          confirmedConversation.projectId,
+          {
+            caller: projectCallerFromRequest(req, appConfig),
+            conversationId: confirmedConversation._id,
+          },
+        ),
+      ]);
       const previousConversations = formatPreviousConversations(
         allMessagesSoFar.slice(0, -1),
-      );
-
-      const followUpProject = await loadProjectForSession(
-        confirmedConversation.orgId,
-        confirmedConversation.userId,
-        confirmedConversation.projectId,
-        {
-          caller: projectCallerFromRequest(req, appConfig),
-          conversationId: confirmedConversation._id,
-        },
       );
       const aiRequest = buildAiChatRequest(
         { kind: 'agent', agentKey: agentKey as string },
@@ -7769,11 +7882,16 @@ export const addMessageStreamToAgentConversation =
               const savedCitations = saved.citations;
 
               // Return the updated conversation in the same format as addMessage
-              const responseConversation = await attachPopulatedCitations(
-                saved.conversation,
-                [saved.message],
-                savedCitations,
-                session,
+              const responseConversation = await redactConversationFor(
+                appConfig,
+                viewerOf(userId, orgId),
+                await attachPopulatedCitations(
+                  saved.conversation,
+                  [saved.message],
+                  savedCitations,
+                  session,
+                ),
+                { known: accessMemo, freshIds: [saved.message._id] },
               );
 
               // Send the final conversation data in the same format as addMessage
@@ -8319,12 +8437,6 @@ export const getAgentConversationById =
 
       const conversationWithMessages = attachMessages(session, messages);
 
-      // Sort messages using existing helper
-      const sortedMessages = sortMessages(
-        conversationWithMessages?.messages || [],
-        messageSortOptions as { field: keyof IMessage },
-      );
-
       // Build conversation response using existing helper
       const builtResponse = buildConversationResponse(
         conversationWithMessages,
@@ -8337,7 +8449,7 @@ export const getAgentConversationById =
           hasNextPage: skip > 0,
           hasPrevPage: skip + effectiveLimit < totalMessages,
         },
-        sortedMessages,
+        conversationWithMessages?.messages || [],
       );
       // The recipient list is the owner's business: a viewer is told who shared
       // the chat, never who else can read it.
@@ -8347,14 +8459,20 @@ export const getAgentConversationById =
           : { ...builtResponse, sharedWith: undefined },
         orgId as string,
       );
-      // Another viewer (a project member, or a user it is shared with) sees only
-      // what they may read of each message.
-      conversationResponse.messages = await redactMessagesFor(
-        appConfig,
-        viewerOf(userId, orgId),
-        conversationResponse.messages,
-        () => initiatorId,
-      );
+      // Hidden in stored order, then sorted as the client asked: a turn's tool rows follow their
+      // answer, and `sortBy` must not separate them first.
+      conversationResponse.messages = sortMessages(
+        (await redactPageFor(
+          appConfig,
+          viewerOf(userId, orgId),
+          session,
+          conversationResponse.messages,
+          skip,
+          totalMessages,
+          () => initiatorId,
+        )) as never,
+        messageSortOptions as { field: keyof IMessage },
+      ) as unknown as typeof conversationResponse.messages;
 
       // Build filters metadata using existing helper
       const filtersMetadata = buildFiltersMetadata(

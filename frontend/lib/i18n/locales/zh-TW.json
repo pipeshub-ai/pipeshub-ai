@@ -936,6 +936,11 @@
     "fork": "分叉對話",
     "forkFromHere": "從此處分叉",
     "regenerate": "重新產生",
+    "answerHidden": {
+      "lost": "此回答使用了您已無權存取的內容。",
+      "unconfirmed": "無法確認您的存取權限，請重試。",
+      "askAgain": "重新提問"
+    },
     "readAloud": "朗讀",
     "stopReading": "停止朗讀",
     "ttsNotSupported": "此瀏覽器不支援文字轉語音",

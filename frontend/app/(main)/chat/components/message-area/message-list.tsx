@@ -1149,6 +1149,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
                     feedbackInfo={pair.feedbackInfo}
                     status={pair.status}
                     streamError={pair.streamError}
+                    answerHidden={pair.answerHidden}
                     unanswered={pair.unanswered}
                     {...extra}
                   />

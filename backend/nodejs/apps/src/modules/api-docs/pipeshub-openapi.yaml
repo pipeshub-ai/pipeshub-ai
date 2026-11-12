@@ -10512,19 +10512,27 @@ components:
           description: Ordered agent-activity transcript for this turn.
           items:
             $ref: '#/components/schemas/MessagePart'
+        answerHidden:
+          $ref: '#/components/schemas/HiddenAnswer'
         createdAt:
           type: string
           format: date-time
         updatedAt:
           type: string
           format: date-time
-    RedactedSource:
+    HiddenAnswer:
       type: object
       additionalProperties: false
       description: |
-        Stands in for a source the viewer of a shared chat or search cannot read:
-        a citation, reference, filter node or search hit with no id, name, link or
-        text. Only the owner of a conversation or search sees every source.
+        Present on an assistant message whose answer is withheld from the reader,
+        and on the `tool_call` rows of that answer's turn.
+        An answer is shown only while its reader can read every record it used
+        (citations, attachments, reference data, applied filters). If any one is
+        out of reach, the whole answer is replaced: `content` carries a short
+        notice, and citations, attachments, reference data, follow-up questions,
+        reasoning, tools and parts are empty. The user's own question is kept.
+        Ask the question again to get an answer built from what the reader can
+        read now.
       required:
         - redacted
         - reason
@@ -10534,7 +10542,35 @@ components:
           enum: [true]
         reason:
           type: string
-          enum: [no_access]
+          enum: [no_longer_accessible, access_check_unavailable]
+          description: |
+            `no_longer_accessible`: a record the answer used can no longer be read
+            by the reader. `access_check_unavailable`: access could not be
+            confirmed; try again.
+    RedactedSource:
+      type: object
+      additionalProperties: false
+      description: |
+        Stands in for a source the viewer of a shared chat or search cannot read:
+        a citation, reference, filter node or search hit with no id, name, link or
+        text. Only the owner of a conversation or search sees every source. An
+        assistant answer that used a record its reader cannot read is withheld as
+        a whole (`HiddenAnswer`), the owner's included.
+      required:
+        - redacted
+        - reason
+      properties:
+        redacted:
+          type: boolean
+          enum: [true]
+        reason:
+          type: string
+          enum: [no_access, no_longer_accessible, access_check_unavailable]
+          description: |
+            `no_access`: the source is not the viewer's to read (shared chats and
+            searches). `no_longer_accessible`: the viewer's own saved search holds
+            a hit on a record they can no longer read. `access_check_unavailable`:
+            access could not be confirmed; try again.
         name:
           type: string
           description: A neutral label (`Restricted source`).
@@ -16000,6 +16036,8 @@ components:
           description: Ordered agent-activity transcript for this turn.
           items:
             $ref: '#/components/schemas/MessagePart'
+        answerHidden:
+          $ref: '#/components/schemas/HiddenAnswer'
         modelInfo:
           $ref: '#/components/schemas/ConversationModelInfo'
         appliedFilters:

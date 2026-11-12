@@ -1,3 +1,5 @@
+import type { AppConfig } from '../../tokens_manager/config/config';
+import { redactConversationFor, viewerOf } from './viewer-redaction';
 import {
   AIServiceResponse,
   IAIModel,
@@ -2577,8 +2579,10 @@ export const handleRegenerationError = async (
   conversationId: string,
   session: Tx | null,
   requestId: string,
-  errorType: string = 'regeneration_error',
-  protocol?: SSEProtocol,
+  errorType: string,
+  protocol: SSEProtocol | undefined,
+  /** Who the error event goes to: the conversation it carries is hidden for them as in a fetch. */
+  reader: { appConfig: AppConfig; userId: unknown; orgId: unknown },
 ): Promise<void> => {
   const errorMessage = userFacingChatError(error);
 
@@ -2601,7 +2605,11 @@ export const handleRegenerationError = async (
           { orgId: updatedConversation.orgId },
           session,
         );
-        const plainConversation = attachMessages(updatedConversation, messages);
+        const plainConversation = await redactConversationFor(
+          reader.appConfig,
+          viewerOf(reader.userId, reader.orgId),
+          attachMessages(updatedConversation, messages),
+        );
         await sendSSEErrorEvent(
           res,
           errorMessage,

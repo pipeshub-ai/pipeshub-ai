@@ -6,6 +6,7 @@ import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware'
 import {
   BadRequestError,
   UnauthorizedError,
+  WrongCredentialError,
   ForbiddenError,
   NotFoundError,
   InternalServerError,
@@ -183,6 +184,7 @@ describe('ErrorMiddleware', () => {
       const cases: [Error, string][] = [
         [new BadRequestError('x'), 'bad_request'],
         [new UnauthorizedError('x'), 'auth_expired'],
+        [new WrongCredentialError('x'), 'bad_request'],
         [new ForbiddenError('x'), 'forbidden'],
         [new NotFoundError('x'), 'not_found'],
         [new ServiceUnavailableError('x'), 'unavailable'],

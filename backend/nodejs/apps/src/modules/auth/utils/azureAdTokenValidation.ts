@@ -4,7 +4,7 @@ import jwkToPem from 'jwk-to-pem';
 import {
   BadRequestError,
   ServiceUnavailableError,
-  UnauthorizedError,
+  WrongCredentialError,
 } from '../../../libs/errors/http.errors';
 import { Logger } from '../../../libs/services/logger.service';
 import { withCause } from '../../../libs/errors/base.error';
@@ -72,7 +72,7 @@ export const validateAzureAdUser = async (
   const decoded = jwt.decode(idToken, { complete: true });
   if (decoded === null) {
     throw authRefusal(
-      new UnauthorizedError(MICROSOFT_SIGN_IN_FAILED),
+      new WrongCredentialError(MICROSOFT_SIGN_IN_FAILED),
       'sso_token_invalid',
     );
   }
@@ -102,7 +102,7 @@ export const validateAzureAdUser = async (
   );
   if (!signingKey) {
     throw authRefusal(
-      new UnauthorizedError(MICROSOFT_SIGN_IN_FAILED),
+      new WrongCredentialError(MICROSOFT_SIGN_IN_FAILED),
       'sso_token_invalid',
     );
   }
@@ -113,12 +113,13 @@ export const validateAzureAdUser = async (
       algorithms: ['RS256'],
       audience: clientId,
     });
-    if (typeof result === 'string') throw new UnauthorizedError(WRONG_ACCOUNT);
+    if (typeof result === 'string')
+      throw new WrongCredentialError(WRONG_ACCOUNT);
     verified = result;
   } catch (error) {
     if (error instanceof jwt.TokenExpiredError) {
       throw authRefusal(
-        new UnauthorizedError(
+        new WrongCredentialError(
           'Your Microsoft sign-in expired. Please sign in again.',
         ),
         'sso_token_expired',
@@ -126,7 +127,7 @@ export const validateAzureAdUser = async (
     }
     // A bad signature or audience, or a string payload.
     throw withCause(
-      authRefusal(new UnauthorizedError(WRONG_ACCOUNT), 'sso_token_invalid'),
+      authRefusal(new WrongCredentialError(WRONG_ACCOUNT), 'sso_token_invalid'),
       error,
     );
   }
@@ -151,7 +152,10 @@ export const validateAzureAdUser = async (
       tokenTenant: tid,
       configuredTenant: tenant,
     });
-    throw authRefusal(new UnauthorizedError(WRONG_ACCOUNT), 'sso_wrong_tenant');
+    throw authRefusal(
+      new WrongCredentialError(WRONG_ACCOUNT),
+      'sso_wrong_tenant',
+    );
   }
 
   return verified;

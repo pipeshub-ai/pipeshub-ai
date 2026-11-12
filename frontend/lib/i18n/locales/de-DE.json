@@ -847,6 +847,11 @@
     "fork": "Chat abzweigen",
     "forkFromHere": "Ab hier abzweigen",
     "regenerate": "Neu generieren",
+    "answerHidden": {
+      "lost": "Diese Antwort verwendete Inhalte, auf die Sie nicht mehr zugreifen können.",
+      "unconfirmed": "Wir konnten Ihren Zugriff nicht bestätigen. Versuchen Sie es erneut.",
+      "askAgain": "Erneut fragen"
+    },
     "readAloud": "Vorlesen",
     "stopReading": "Vorlesen beenden",
     "ttsNotSupported": "Text-to-Speech wird in diesem Browser nicht unterstützt",

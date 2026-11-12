@@ -6,6 +6,7 @@ Run: KERNEL_TEST_PG_BINS=<pg bin> KERNEL_TEST_PGBOUNCER=<pgbouncer> pytest tests
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -23,6 +24,7 @@ from app.services.permissions.cache import ViewerScopeCache
 from app.services.permissions.currency import StampCurrency
 from app.services.permissions.scope_fields import (
     SCOPE_FIELDS_VERSION,
+    ScopeFields,
     set_resolved_generation,
 )
 from app.services.permissions.scopes import ViewerScopes
@@ -89,6 +91,7 @@ class Rig:
     def __init__(self, store: PgVectorService, viewer: Viewer, docs: dict[str, dict] | None) -> None:
         self.store, self.viewer, self.docs = store, viewer, docs
         self.sent: list[ScopeFilter | None] = []
+        self.limits: list[int] = []
         self.asked: list[set[str]] = []
         self.degraded: list[bool] = []
         client = fakeredis.FakeAsyncRedis(server=fakeredis.FakeServer(), decode_responses=True)
@@ -129,6 +132,7 @@ class Rig:
 
         async def spy(collection_name: str, requests: list[HybridSearchRequest], **k: object) -> list:
             self.sent.extend(r.scope_filter for r in requests)
+            self.limits.extend(r.limit for r in requests)
             out = await orig(collection_name=collection_name, requests=requests, **k)
             self.degraded.extend(bool(h.degraded) for hits in out for h in hits)
             return out
@@ -216,3 +220,39 @@ async def test_a_filter_that_hides_many_rows_does_not_make_the_lexical_leg_repor
         req = HybridSearchRequest(sparse_query=SparseVector([3, 7], [1.0, 1.0]), filter=arms, limit=10, scope_filter=scope)
         [hits] = await store.query_nearest_points("records", [req])
         assert hits and not any(h.degraded for h in hits), scope
+
+
+class StarvedViewer(Viewer):
+    """The viewer reads group ``s-open`` only; 15 of the 20 nearest points of the starved world are in ``g2``, which the request's arms name and the
+    access check refuses."""
+
+    def __init__(self, readable: set[str]) -> None:
+        super().__init__()
+        self.groups, self.readable = {"s-open"}, readable
+
+    def admitted(self) -> set[str]:
+        return {f"s{i}" for i in self.readable}
+
+
+async def test_the_first_fetch_is_the_limit_when_every_connector_is_exact_and_no_search_starves_when_one_is_not(store) -> None:
+    from app.services.vector_db.scope_backfill import BACKFILL_KEYS
+
+    k, org = 10, hashlib.sha1(b"starved-search").hexdigest()[:24]
+    readable = {3, 7, 11, 15, 19} | set(range(20, 80))
+    await store.upsert_points("records", [
+        VectorPoint(id=hashlib.md5(f"starved/{i}".encode()).hexdigest(), dense_vector=[1.0, i / 10000, 0.0, 0.0], payload={
+            "page_content": f"c{i}", "metadata": {"orgId": org, "virtualRecordId": f"s{i}", "blockId": f"b{i}", "embeddingModel": "p:m:4"},
+            "connectorIds": ["c1"], "recordGroupIds": ["s-open" if i in readable else "g2"], "rootRecordGroupIds": [],
+            **ScopeFields.container().to_payload()}) for i in range(80)])
+    exact = {BACKFILL_KEYS["exact"]: True}
+    for docs, first_fetch in (({"c1": doc(**exact), "c9": doc(**exact)}, k),         # every gated connector served and exact: exactly the limit
+                              ({"c1": doc(**exact), "c9": doc()}, None),             # one is not exact: today's over-fetch
+                              (None, None)):                                         # the default mode: today's over-fetch
+        rig = Rig(store, StarvedViewer(readable), docs)
+        await rig.scopes.resolve_now(org, "user-key")
+        out = await rig.svc.search_with_filters(queries=["q"], user_id="u1", org_id=org, limit=k)
+        assert [r["metadata"]["virtualRecordId"] for r in out["searchResults"]] == [f"s{i}" for i in sorted(readable)[:k]], docs      # k answers, in rank order
+        if first_fetch is not None:
+            assert set(rig.limits) == {first_fetch} and len(rig.asked[0]) == k and all(s is not None for s in rig.sent)        # one fetch of k, every hit was readable
+        else:
+            assert max(rig.limits) > k and len(rig.asked[0]) > k

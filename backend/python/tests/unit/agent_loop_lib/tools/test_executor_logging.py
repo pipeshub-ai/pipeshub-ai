@@ -445,6 +445,57 @@ class TestTheEmitter:
         assert log_record_fields(failed)["error_class"] in error_class.ERROR_CLASSES
 
 
+class TestAnEndFieldsLevel:
+    """`ToolOutput.end_fields["level"]` (the MCP adapter's hourly gate) lowers only a `misconfigured` line."""
+
+    async def test_a_misconfigured_repeat_is_debug_and_is_never_a_second_keyword(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        exc = RuntimeError("no OAuth client")
+        output = ToolOutput(success=False, error="x", cause=exc, end_fields={"error_class": "misconfigured", "level": logging.DEBUG})
+
+        result = await _executor(_Tool(_returns(output))).call_tool(_call())
+
+        record, fields = _one_end(caplog)
+        assert (record.levelno, fields["error_class"]) == (logging.DEBUG, "misconfigured")
+        assert "level" not in fields
+        assert result.is_error
+
+    async def test_without_a_level_a_misconfigured_line_is_an_error(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        output = ToolOutput(success=False, error="x", cause=RuntimeError("x"), end_fields={"error_class": "misconfigured", "level": None})
+
+        await _executor(_Tool(_returns(output))).call_tool(_call())
+
+        record, _ = _one_end(caplog)
+        assert record.levelno == logging.ERROR and record.exc_text
+
+    @pytest.mark.parametrize(("cls", "level", "expected"), [
+        ("internal", logging.DEBUG, logging.ERROR),  # our bug is never lowered
+        ("unavailable", logging.DEBUG, logging.WARNING),
+        ("misconfigured", logging.CRITICAL, logging.ERROR),  # only ever lower
+    ])
+    async def test_any_other_use_of_level_is_ignored(
+        self, caplog: pytest.LogCaptureFixture, cls: str, level: int, expected: int,
+    ) -> None:
+        caplog.set_level(logging.DEBUG)
+
+        log_tool_call_end(outcome="failure", reason="exception", error_class=cls, cause=KeyError("k"), level=level, tool="t")
+
+        record, _ = _one_end(caplog)
+        assert record.levelno == expected
+        assert bool(record.exc_text) is (expected >= logging.ERROR)
+
+    async def test_an_already_logged_misconfigured_repeat_is_debug_too(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level(logging.DEBUG)
+        exc = RuntimeError("x")
+        error_class.log_failure(_PROBE, "credential_refresh.end", exc, error_class="misconfigured")
+
+        log_tool_call_end(outcome="failure", reason="exception", error_class="misconfigured", cause=exc, level=logging.DEBUG, tool="t")
+
+        record, _ = _one_end(caplog)
+        assert (record.levelno, record.exc_text) == (logging.DEBUG, None)
+
+
 class TestDenyReasonsAndSpecialRouteCauses:
     """P3b: why a call was denied (`deny_reason`), and a special route's handled failure keeps its class."""
 

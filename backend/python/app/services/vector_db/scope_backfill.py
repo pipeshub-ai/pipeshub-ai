@@ -146,6 +146,15 @@ class Progress:
     #: while the connector still holds both (`permissions.currency`). -1 / None: not recorded.
     structure_generation: int = -1
     unsafe: int | bool | None = None
+    #: Virtual records whose point was written `legacy` (a record the stamper refuses): they stay on the legacy filter, like a stale one.
+    #: -1: not recorded (a checkpoint older than the count): its pass says nothing about exactness, so the connector is not exact and a pass starts over.
+    legacy: int = 0
+
+    @property
+    def exact(self) -> bool:
+        """Every point of the connector carries an exact stamp as of this pass: it ended and left none stale or legacy. Points written after the pass
+        are not counted (shortcut: a later refused record is not seen until the pass is run again; it costs a short answer, never access)."""
+        return self.state == DONE and self.stale == 0 and self.legacy == 0
 
     def line(self) -> str:
         return f"{self.state}  version={self.version} generation={self.generation} records={self.records} stale={self.stale} structure={self.structure_generation} unsafe={self.unsafe} after={self.after or '-'}" + (
@@ -155,7 +164,8 @@ class Progress:
 #: The names the checkpoint is kept under on the app document (also read by `permissions.currency`).
 BACKFILL_KEYS = {"state": "scopeBackfillState", "after": "scopeBackfillAfter", "version": "scopeBackfillVersion",
          "generation": "scopeBackfillGeneration", "records": "scopeBackfillRecords", "stale": "scopeBackfillStale", "error": "scopeBackfillError",
-         "structure_generation": "scopeBackfillStructureGeneration", "unsafe": "scopeBackfillUnsafe"}
+         "structure_generation": "scopeBackfillStructureGeneration", "unsafe": "scopeBackfillUnsafe",
+         "legacy": "scopeBackfillLegacy", "exact": "scopeBackfillExact"}
 
 
 def _mark_or_unreadable(value: object) -> int | bool | None:
@@ -163,6 +173,11 @@ def _mark_or_unreadable(value: object) -> int | bool | None:
         return unsafe_mark(value)
     except ValueError:
         return -1      # equals no mark that was ever read: the pass starts over
+
+
+def _count_or_unrecorded(value: object) -> int:
+    """A saved count, or -1 when the checkpoint has none (or one that is not a whole non-negative number): never 0, which would say "none left"."""
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else -1
 
 
 class AppDocCheckpoints:
@@ -181,7 +196,7 @@ class AppDocCheckpoints:
             int(doc.get(BACKFILL_KEYS["generation"]) if doc.get(BACKFILL_KEYS["generation"]) is not None else -1),
             int(doc.get(BACKFILL_KEYS["records"]) or 0), int(doc.get(BACKFILL_KEYS["stale"]) or 0), doc.get(BACKFILL_KEYS["error"]),
             structure_generation=-1 if structure is None else structure,        # a value that is not a number starts the pass over
-            unsafe=_mark_or_unreadable(doc.get(BACKFILL_KEYS["unsafe"])))
+            unsafe=_mark_or_unreadable(doc.get(BACKFILL_KEYS["unsafe"])), legacy=_count_or_unrecorded(doc.get(BACKFILL_KEYS["legacy"])))
 
     async def save(self, app_id: str, p: Progress, lease: RewriteLease | None = None) -> None:
         """With a lease the write is conditional on it (`LeaseLost`): a pass that lost the connector writes no checkpoint."""
@@ -271,7 +286,7 @@ class ScopeBackfill:
         # the same (a mark written during the pass is a different value, and nothing the pass does can erase it).
         generation = current_scope_generation()
         if (p is None or restart or p.version != SCOPE_FIELDS_VERSION or p.generation != generation or p.structure_generation != structure
-                or not same_mark(p.unsafe, mark)):
+                or not same_mark(p.unsafe, mark) or p.legacy < 0):
             p = Progress(generation=generation, structure_generation=structure, unsafe=mark)
             try:
                 await self._checkpoints.save(app_id, p, lease)
@@ -294,11 +309,13 @@ class ScopeBackfill:
                 vrids = sorted({n.vrid for n in nodes.values() if n.vrid and not n.deleted})
                 # one scan for the page, taken before the records are locked: a point indexed after it was stamped by its indexer from the graph then
                 scanned = await self._membership.scan_page(org_id, vrids) if vrids else {}
-                stale_vrids = {vrid for vrid in vrids if await self._stamp(org_id, app_id, vrid, scanned) == "stale"}
+                outcomes = {vrid: await self._stamp(org_id, app_id, vrid, scanned) for vrid in vrids}
+                stale_vrids = {vrid for vrid, outcome in outcomes.items() if outcome == "stale"}
+                page_legacy = sum(1 for outcome in outcomes.values() if outcome == "legacy")
                 # a virtual record is counted once, whichever step left it on the stale marker; this raises only for a write the store did not apply
                 page_stale = len(stale_vrids | await self._membership.refresh_membership(org_id, app_id, vrids))
                 # counted with the page, so a page written again after a failure is not counted twice
-                moved = replace(p, after=ids[-1], records=p.records + len(ids), stale=p.stale + page_stale)
+                moved = replace(p, after=ids[-1], records=p.records + len(ids), stale=p.stale + page_stale, legacy=p.legacy + page_legacy)
                 await self._checkpoints.save(app_id, moved, lease)  # only after the page is written
                 p = moved
         except LeaseLost:
@@ -316,7 +333,7 @@ class ScopeBackfill:
         return p
 
     async def _stamp(self, org_id: str, app_id: str, vrid: str, scanned: Mapping[str, Mapping[str, dict[str, Any]]]) -> str:
-        """`done`, `skipped` (no point to write) or `stale` (the stale marker was written and read back; one that did not land raises, so the
+        """`done`, `legacy` (written, but as a stamp that decides nothing), `skipped` (no point to write) or `stale` (the stale marker was written and read back; one that did not land raises, so the
         pass fails: see `_mark`)."""
         collections: list[str] | tuple[str, ...] = ()
         floor, rounds, moves = 0, 0, 0      # (floor: a plausible fence a point carried above this pass's time: the next round writes above it)
@@ -344,7 +361,7 @@ class ScopeBackfill:
                     # the graph may have changed between the read and the write: write again if it says something else now
                     again = await scope_fields_for_state(self._graph, await resolve_virtual_record_state(self._graph, vrid), org_id, self._log)
                     if taken and again == fields:
-                        return "done"
+                        return "done" if fields.exact else "legacy"
                 await self._mark(org_id, app_id, vrid)
                 return "stale"
         except (StaleMarkerNotWritten, LeaseLost):

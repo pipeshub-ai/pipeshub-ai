@@ -2186,6 +2186,7 @@ describe('Enterprise Search Utils', () => {
   // handleRegenerationError
   // -----------------------------------------------------------------------
   describe('handleRegenerationError', () => {
+    const reader = { appConfig: {} as any, userId: 'author-1', orgId: 'o' }
 
     before(() => {
     })
@@ -2195,7 +2196,7 @@ describe('Enterprise Search Utils', () => {
       const error = new Error('Stream broke')
 
       await handleRegenerationError(
-        res, error, null, null, 'conv-1', null, 'req-1', 'stream_error'
+        res, error, null, null, 'conv-1', null, 'req-1', 'stream_error', undefined, reader
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -2216,7 +2217,7 @@ describe('Enterprise Search Utils', () => {
       }
 
       await handleRegenerationError(
-        res, error, mockConv, null, VALID_OID, null, 'req-1', 'regen_error'
+        res, error, mockConv, null, VALID_OID, null, 'req-1', 'regen_error', undefined, reader
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -2243,7 +2244,7 @@ describe('Enterprise Search Utils', () => {
       ])
 
       await handleRegenerationError(
-        res, error, mockConv, messageId, sessionId.toString(), null, 'req-1', 'regen_error', undefined, 'author-1'
+        res, error, mockConv, messageId, sessionId.toString(), null, 'req-1', 'regen_error', undefined, reader
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -2270,7 +2271,7 @@ describe('Enterprise Search Utils', () => {
       stubGetMessagesChain([])
 
       await handleRegenerationError(
-        res, error, mockConv, messageId, sessionId.toString(), null, 'req-1', 'stream_error'
+        res, error, mockConv, messageId, sessionId.toString(), null, 'req-1', 'stream_error', undefined, reader
       )
 
       const saved = JSON.stringify(findOneAndReplaceStub.firstCall.args)

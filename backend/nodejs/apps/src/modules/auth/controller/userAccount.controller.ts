@@ -66,6 +66,7 @@ import {
   NotFoundError,
   ServiceUnavailableError,
   UnauthorizedError,
+  WrongCredentialError,
 } from '../../../libs/errors/http.errors';
 import { BaseError, withCause } from '../../../libs/errors/base.error';
 import { audit, refusalReason } from '../../../libs/services/audit';
@@ -268,7 +269,7 @@ export class UserAccountController {
     const userId = idOf(user?._id) ?? '';
     if (Number(sessionInfo.currentStep) > 0 && userId !== sessionInfo.userId) {
       throw authRefusal(
-        new UnauthorizedError(SIGN_IN_ACCOUNT_CHANGED),
+        new WrongCredentialError(SIGN_IN_ACCOUNT_CHANGED),
         'account_changed',
       );
     }
@@ -376,7 +377,7 @@ export class UserAccountController {
     const userCredentials = await getCredentialRepository().find(userId, orgId);
     if (!userCredentials) {
       await compareWithDecoyHash(inputOTP);
-      throw authRefusal(new UnauthorizedError(WRONG_SIGN_IN_CODE), 'no_otp');
+      throw authRefusal(new WrongCredentialError(WRONG_SIGN_IN_CODE), 'no_otp');
     }
     // A locked account, a missing code and an expired code are all answered
     // like a wrong code, since an unknown email can only ever get that answer.
@@ -390,7 +391,7 @@ export class UserAccountController {
     ) {
       await compareWithDecoyHash(inputOTP);
       throw authRefusal(
-        new UnauthorizedError(WRONG_SIGN_IN_CODE),
+        new WrongCredentialError(WRONG_SIGN_IN_CODE),
         locked
           ? 'locked'
           : userCredentials.otpValidity && userCredentials.hashedOTP
@@ -405,7 +406,7 @@ export class UserAccountController {
     const attempt = await this.reserveCredentialAttempt(userId, orgId);
     if (!attempt?.hashedOTP) {
       await compareWithDecoyHash(inputOTP);
-      throw authRefusal(new UnauthorizedError(WRONG_SIGN_IN_CODE), 'locked');
+      throw authRefusal(new WrongCredentialError(WRONG_SIGN_IN_CODE), 'locked');
     }
 
     // Ensure OTP is a string for bcrypt.compare (bcrypt requires both arguments to be strings)
@@ -446,7 +447,10 @@ export class UserAccountController {
 
         this.notifyAccountLocked(email, userId, orgId);
       }
-      throw authRefusal(new UnauthorizedError(WRONG_SIGN_IN_CODE), 'bad_otp');
+      throw authRefusal(
+        new WrongCredentialError(WRONG_SIGN_IN_CODE),
+        'bad_otp',
+      );
     }
 
     // Clearing the code in the same write that matches it makes it single-use,
@@ -458,7 +462,7 @@ export class UserAccountController {
     );
     if (!claimed) {
       throw authRefusal(
-        new UnauthorizedError(OTP_ALREADY_USED),
+        new WrongCredentialError(OTP_ALREADY_USED),
         'otp_already_used',
       );
     }
@@ -842,7 +846,7 @@ export class UserAccountController {
         );
         if (!isValid) {
           throw authRefusal(
-            new UnauthorizedError(
+            new WrongCredentialError(
               'Invalid CAPTCHA verification. Please try again.',
             ),
             'captcha_failed',
@@ -1174,7 +1178,7 @@ export class UserAccountController {
         );
         if (!isTurnstileValid) {
           throw authRefusal(
-            new UnauthorizedError(
+            new WrongCredentialError(
               'Invalid CAPTCHA verification. Please try again.',
             ),
             'captcha_failed',
@@ -1200,7 +1204,7 @@ export class UserAccountController {
       );
       if (!isPasswordCorrect) {
         throw authRefusal(
-          new UnauthorizedError('Current password is incorrect.'),
+          new WrongCredentialError('Current password is incorrect.'),
           'bad_current_password',
         );
       }
@@ -1714,7 +1718,7 @@ export class UserAccountController {
     const payload = ticket.getPayload();
     if (!payload) {
       throw authRefusal(
-        new UnauthorizedError(
+        new WrongCredentialError(
           "Sign-in with Google didn't complete. Try again, or use another sign-in method.",
         ),
         'sso_token_invalid',
@@ -1763,7 +1767,7 @@ export class UserAccountController {
     );
     if (identity.email !== String(user.email ?? '').toLowerCase()) {
       throw authRefusal(
-        new UnauthorizedError(
+        new WrongCredentialError(
           "This Microsoft account doesn't match the account you're signing in to. Sign in with the Microsoft account linked to your PipesHub email.",
         ),
         'sso_email_mismatch',
@@ -1961,7 +1965,7 @@ export class UserAccountController {
           );
           if (!isValid)
             throw authRefusal(
-              new UnauthorizedError(
+              new WrongCredentialError(
                 'Invalid CAPTCHA verification. Please try again.',
               ),
               'captcha_failed',
@@ -2001,7 +2005,7 @@ export class UserAccountController {
             const payload = ticket.getPayload();
             if (!payload?.email)
               throw authRefusal(
-                new UnauthorizedError(PROVIDER_SHARED_NO_EMAIL),
+                new WrongCredentialError(PROVIDER_SHARED_NO_EMAIL),
                 'sso_no_email',
               );
             providerEmail = payload.email;
@@ -2030,7 +2034,7 @@ export class UserAccountController {
             providerEmail = identity.email;
             if (!providerEmail) {
               throw authRefusal(
-                new UnauthorizedError(PROVIDER_SHARED_NO_EMAIL),
+                new WrongCredentialError(PROVIDER_SHARED_NO_EMAIL),
                 'sso_no_email',
               );
             }
@@ -2115,7 +2119,7 @@ export class UserAccountController {
           if (method === AuthMethodType.OTP) {
             await compareWithDecoyHash(submitted.otp);
             throw authRefusal(
-              new UnauthorizedError(WRONG_SIGN_IN_CODE),
+              new WrongCredentialError(WRONG_SIGN_IN_CODE),
               'unknown_user',
             );
           }
