@@ -23,6 +23,7 @@ from .kh_worlds import (
     OPENSTUB,
     SCOPEDTWO,
     TWOWAY,
+    XDECL,
 )
 from .runner import OracleLayer
 from .scenario import Scenario, load_all
@@ -159,6 +160,20 @@ async def test_the_declared_group_arm_lists_only_its_own_connectors_records(grap
             bad += _bad(await check_world(layer, world, f"declared-{i}"))
         await layer.release(worlds)
         assert not bad, f"{layer.name}\n{_describe(bad)}"
+
+
+async def test_a_group_of_another_connector_under_a_declared_group_is_not_listed_there(graph_layers) -> None:
+    """The check decides a group in its own App, so a group of App B filed under a declared group of App A is neither listed under it nor gives
+    it an arrow: the declared group opens to nothing, and shows no arrow."""
+    for layer in graph_layers:
+        await layer.preload([XDECL])
+        try:
+            assert (await children_of(layer, XDECL, "u", "A", "app") or {}).get("d") is False, layer.name
+            assert await children_of(layer, XDECL, "u", "d", "recordGroup") == {}, layer.name
+            bad = _bad(await check_world(layer, XDECL, "xdecl"))
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([XDECL])
 
 
 @pytest.mark.parametrize("kind", sorted(gen.GENERATORS))

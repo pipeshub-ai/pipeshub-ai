@@ -424,10 +424,11 @@ _CYPHER_APP_OPENS = "(coalesce(app.permissionModel, '') = 'APP_LEVEL' OR app.typ
 
 
 def _cypher_read_by_app(v: str) -> str:
-    """Whether ``v`` is read by this App's rules; ``app`` must be in scope. A record of another connector
-    that a group edge, a hierarchy edge or an app-level filing joins to this App is read by its own
-    connector's rules, so every listing arm ends in this test, once."""
-    return f"(NOT {v}:Record OR {v}.connectorId = app.id)"
+    """Whether ``v`` is read by this App's rules; ``app`` must be in scope. A record or group of another
+    connector that a group edge, a hierarchy edge or an app-level filing joins to this App is read by its
+    own connector's rules (the batch check decides a node in its own App), so every listing arm ends in
+    this test, once."""
+    return f"({v}.connectorId = app.id)"
 
 
 def _cypher_kh_held(v: str, stub: Callable[[str], str], container: str) -> str:
@@ -471,7 +472,7 @@ def _cypher_kh_has_children(
     holds = _cypher_kh_held(v, stub_filed or stub, container) if exact and chain_tops else "false"
     # A declared group on the page was admitted by the listing, so it is its own scope: the groups below it and
     # the records that belong to it are what the rule reads from the scope an expansion carries.
-    in_scope = (f"({declared} AND NOT coalesce(kh_ch.isDeleted, false) AND (kh_ch:RecordGroup"
+    in_scope = (f"({declared} AND NOT coalesce(kh_ch.isDeleted, false) AND {_cypher_read_by_app('kh_ch')} AND (kh_ch:RecordGroup"
                 f" OR EXISTS {{ (kh_ch)-[:BELONGS_TO]->({v}) }}))")
     stub_arm = f" OR ({reached_stub('kh_ch')})" if exact and reached_stub else ""
     stub_kept = " OR coalesce(kh_ch.isPlaceholder, false)" if stub_arm else ""

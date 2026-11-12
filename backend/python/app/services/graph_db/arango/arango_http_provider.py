@@ -503,10 +503,10 @@ def _aql_open_hop(c: str, p: str, tag: str) -> str:
 
 
 def _aql_read_by_app(v: str) -> str:
-    """Whether ``v`` is read by this App's rules (``@app_id``). A record of another connector that a group
-    edge, a hierarchy edge or an app-level filing joins to this App is read by its own connector's rules,
-    so every listing arm ends in this test, once."""
-    return f'(NOT IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", {v}) OR {v}.connectorId == @app_id)'
+    """Whether ``v`` is read by this App's rules (``@app_id``). A record or group of another connector that a
+    group edge, a hierarchy edge or an app-level filing joins to this App is read by its own connector's
+    rules (the batch check decides a node in its own App), so every listing arm ends in this test, once."""
+    return f"({v}.connectorId == @app_id)"
 
 
 def _aql_in_scope(c: str, p: str) -> str:
@@ -779,7 +779,7 @@ def _aql_kh_has_children(v: str, *, exact: bool = False, every_hop: bool = False
     # A declared group on the page was admitted by the listing, so it is its own scope: the groups below it and
     # the records that belong to it are what the rule reads from the scope an expansion carries.
     in_scope = children_of(
-        f'({rule} OR (kh_ch.isDeleted != true AND (IS_SAME_COLLECTION("{groups}", kh_ch) OR LENGTH('
+        f'({rule} OR (kh_ch.isDeleted != true AND {_aql_read_by_app("kh_ch")} AND (IS_SAME_COLLECTION("{groups}", kh_ch) OR LENGTH('
         f"FOR kh_sg IN 1..1 OUTBOUND kh_ch {CollectionNames.BELONGS_TO.value} FILTER kh_sg._id == {v}._id"
         f" LIMIT 1 RETURN 1) > 0)))")
     if not exact:
