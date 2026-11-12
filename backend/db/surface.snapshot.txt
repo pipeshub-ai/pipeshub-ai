@@ -1570,8 +1570,13 @@ index kg.principal_closure_by_principal on kg.principal_closure unique=false exc
 index kg.principal_closure_pkey on kg.principal_closure unique=true exclusion=false valid=true def=36e6794459f60325d29802e5fbe2bafd
 index kg.projection_state_pkey on kg.projection_state unique=true exclusion=false valid=true def=6c3a596dbc76e1bea0f0f52ea51235ae
 index kg.records_app on kg.records unique=false exclusion=false valid=true def=4fb41a24de7b34a871580791308043fc
+index kg.records_children_name_asc on kg.records unique=false exclusion=false valid=true def=114b71c955bb5c6d516653165bcf7cd3
+index kg.records_children_name_desc on kg.records unique=false exclusion=false valid=true def=c37087f423123857cb53f5e0e15fb761
+index kg.records_children_updated_asc on kg.records unique=false exclusion=false valid=true def=84cf4379c58cd3c42b788447233e2769
+index kg.records_children_updated_desc on kg.records unique=false exclusion=false valid=true def=fc59ac81553df71071705201bc0ddbbb
 index kg.records_fence on kg.records unique=false exclusion=false valid=true def=acd966d0d85df5042518c2d4790ed800
 index kg.records_group on kg.records unique=false exclusion=false valid=true def=f09dd2a84fcfd376871782231a60ea03
+index kg.records_hiders on kg.records unique=false exclusion=false valid=true def=01992b7650c083b1b083b168d9d1c2e5
 index kg.records_id on kg.records unique=true exclusion=false valid=true def=693cdabcd4f36aa85a094de23e6731e5
 index kg.records_legacy on kg.records unique=false exclusion=false valid=true def=f91fb6a2de384b64d3702199f91f5e80
 index kg.records_list_class on kg.records unique=false exclusion=false valid=true def=8088cbfc93fea30cd83c10df3971ff3a

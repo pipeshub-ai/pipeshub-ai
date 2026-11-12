@@ -33,6 +33,27 @@ if TYPE_CHECKING:
     from app.core.db import Tx
 
 _NO_ACCESS: dict[str, Any] = {"grantee_ids": [], "gated_app_ids": [], "by_connector": {}}
+_LINKS_SQL = """/* pipeshub:graph.access_links */ SELECT e.to_id, e.doc->>'connectorId' AS cid FROM graph.edges e
+            WHERE e.org_id = $1 AND e.coll = 'authenticatedAs' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'users'"""
+
+
+async def _linked_grants(tx: Tx, org: str, account: str, connector_id: str) -> list[str]:
+    """What a source account the user authenticated as is granted inside its connector: its own grants and its badges' (not an organization's)."""
+    badges = [r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.access_linked_groups */ SELECT b.to_id FROM graph.edges b WHERE b.org_id = $1
+        AND b.coll = 'permission' AND b.from_coll = 'users' AND b.from_id = $2 AND b.to_coll IN ('groups', 'roles', 'teams') AND b.doc->>'type' = 'USER'""", org, account)]
+    return list((await access_sql.granted_targets(tx, org, [account, *badges], [])).get(connector_id, []))
+
+
+async def connector_grants(tx: Tx, org: str, user_key: str, grantees: list[str], connector_id: str) -> list[str]:
+    """One connector's bucket of ``get_knowledge_hub_access_v3`` (``by_connector[connector_id]``) for the grantees that call resolved: the grants of the grantees, then those of
+    the live source accounts the user authenticated as inside this connector."""
+    out = list((await access_sql.granted_targets(tx, org, grantees, list(ORG_SHARE_PERMISSION_TYPES))).get(connector_id, []))
+    links = [r["to_id"] for r in await tx.fetch(_LINKS_SQL, org, user_key) if r["cid"] == connector_id]
+    if links:
+        live = {r["id"] for r in await tx.fetch("/* pipeshub:graph.access_exist */ SELECT id FROM graph.nodes WHERE org_id = $1 AND coll = $2 AND id = ANY($3::text[])", org, "users", links)}
+        for account in (a for a in links if a in live):
+            out.extend(await _linked_grants(tx, org, account, connector_id))
+    return list(dict.fromkeys(out))
 
 
 _ROLE_RANK = {"OWNER": 4, "WRITER": 3, "READER": 2}
@@ -130,8 +151,7 @@ class PermissionsMixin(PgBase):
         grantees += sorted(await exist("organizations", [r["to_id"] for r in via if r["coll"] == "belongsTo" and r["to_coll"] == "organizations"]))
         if user_key not in grantees:
             return None
-        links = await tx.fetch("""/* pipeshub:graph.access_links */ SELECT e.to_id, e.doc->>'connectorId' AS cid FROM graph.edges e
-            WHERE e.org_id = $1 AND e.coll = 'authenticatedAs' AND e.from_coll = 'users' AND e.from_id = $2 AND e.to_coll = 'users'""", org, user_key)
+        links = await tx.fetch(_LINKS_SQL, org, user_key)
         live = await exist("users", [r["to_id"] for r in links])
         links = [r for r in links if r["to_id"] in live]          # the source account must exist
         # A grant on a collection (an app of type KB) counts only with a role it recognises, as ``get_user_kb_permission`` reads it: a retired role is
@@ -168,11 +188,7 @@ class PermissionsMixin(PgBase):
             for lk in links:  # a source account the user authenticated as adds its own grants, and its badges', inside that connector
                 if not lk["cid"] or lk["cid"] not in by_conn:
                     continue
-                badges = [r["to_id"] for r in await tx.fetch("""/* pipeshub:graph.access_linked_groups */ SELECT b.to_id FROM graph.edges b WHERE b.org_id = $1
-                    AND b.coll = 'permission' AND b.from_coll = 'users' AND b.from_id = $2 AND b.to_coll IN ('groups', 'roles', 'teams') AND b.doc->>'type' = 'USER'""", org, lk["to_id"])]
-                # not from an organization here: the edges are read for the account and its groups only
-                by_conn[lk["cid"]].extend((await access_sql.granted_targets(tx, org, [lk["to_id"], *badges], []))
-                                          .get(lk["cid"], []))
+                by_conn[lk["cid"]].extend(await _linked_grants(tx, org, lk["to_id"], lk["cid"]))
             return {"grantee_ids": grantees, "gated_app_ids": gated, "by_connector": {k: list(dict.fromkeys(v)) for k, v in by_conn.items()}}
         return await self._q(go, transaction)
 

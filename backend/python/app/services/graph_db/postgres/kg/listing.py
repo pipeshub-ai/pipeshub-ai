@@ -15,18 +15,21 @@ from app.services.graph_db.common.name_match import _REPLACEMENTS, name_query_ke
 # sort field -> (column, whether it is text compared as bytes: the order of the code points)
 SORTS: dict[str, tuple[str, str]] = {"name": ("name_key", "name_sort"), "updatedAt": ("updated_ms", "updated_ms"), "createdAt": ("created_ms", "created_ms"), "sizeInBytes": ("size_bytes", "size_bytes")}
 LIVE = "r.kind IN (2, 3) AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien"        # as the partial indexes spell it
-COLS = "r.sk, r.coll, r.id, r.kind, r.folder, r.hide_children, r.parent_sk, r.group_sk, r.name_key, r.name_sort, r.updated_ms, r.created_ms, r.size_bytes, r.r13, r.path IS NOT NULL AS has_path, r.class_id, r.fence_job IS NOT NULL AS fenced"
+COLS = "r.sk, r.coll, r.id, r.kind, r.folder, r.placeholder, r.hide_children, r.parent_sk, r.group_sk, r.name_key, r.name_sort, r.updated_ms, r.created_ms, r.size_bytes, r.r13, r.path IS NOT NULL AS has_path, r.class_id, r.fence_job IS NOT NULL AS fenced, r.app_sk, r.deleted, r.alien"
 
 # The copy state of a connector: its node key and the mode of its projection ('legacy' is a connector kg has never copied).
-STATE = """/* pipeshub:kg.listing_state */ SELECT k.sk, coalesce(s.mode, 'legacy') AS mode, s.code_epoch, s.verified_at FROM kg.node_keys k
-    LEFT JOIN kg.projection_state s ON s.org_id = k.org_id AND s.app_sk = k.sk WHERE k.org_id = $1 AND k.coll = 1 AND k.id = $2"""
+# One row, with the connector's document (``app_doc``) beside it; ``sk`` is NULL when kg holds no key for the connector.
+STATE = """/* pipeshub:kg.listing_state */ SELECT k.sk, coalesce(s.mode, 'legacy') AS mode, s.code_epoch, s.verified_at, n.doc AS app_doc FROM (SELECT $1::text AS org_id, $2::text AS id) q
+    LEFT JOIN kg.node_keys k ON k.org_id = q.org_id AND k.coll = 1 AND k.id = q.id LEFT JOIN kg.projection_state s ON s.org_id = k.org_id AND s.app_sk = k.sk
+    LEFT JOIN graph.nodes n ON n.org_id = q.org_id AND n.coll = 'apps' AND n.id = q.id"""
 
 # Rows a group that hides its children hides from a listing: what lies below it by the hierarchy (the primary parent and the non-primary links), and the members of it or of a group below it.
 # The hider itself is listed. Empty when no group of the connector hides.
+# Every step reads by a key (a lateral read per node, kept one by OFFSET 0), so the plan never joins against the whole organisation's rows or links.
 HIDDEN = """/* pipeshub:kg.listing_hidden */ WITH RECURSIVE hid AS (SELECT sk FROM kg.records WHERE org_id = $1 AND app_sk = $2 AND hide_children),
   seed(sk) AS (
-    SELECT c.sk FROM hid h JOIN kg.records c ON c.org_id = $1 AND c.parent_sk = h.sk
-    UNION SELECT l.child_sk FROM hid h JOIN kg.links l ON l.org_id = $1 AND l.parent_sk = h.sk AND l.kind = 1),
+    SELECT c.sk FROM hid h CROSS JOIN LATERAL (SELECT c.sk FROM kg.records c WHERE c.org_id = $1 AND c.parent_sk = h.sk OFFSET 0) c
+    UNION SELECT l.child_sk FROM hid h CROSS JOIN LATERAL (SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = h.sk AND l.kind = 1 OFFSET 0) l),
   below(sk) AS (
     SELECT sk FROM seed
     UNION SELECT x.sk FROM below b CROSS JOIN LATERAL (
@@ -35,8 +38,8 @@ HIDDEN = """/* pipeshub:kg.listing_hidden */ WITH RECURSIVE hid AS (SELECT sk FR
   scope AS (SELECT sk FROM hid UNION SELECT sk FROM below)
 SELECT coalesce(array_agg(x.sk), '{}') AS sks FROM (
   SELECT sk FROM below
-  UNION SELECT r.sk FROM kg.records r WHERE r.org_id = $1 AND r.group_sk IN (SELECT sk FROM scope)
-  UNION SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.kind = 2 AND l.parent_sk IN (SELECT sk FROM scope)) x"""
+  UNION SELECT r.sk FROM scope s CROSS JOIN LATERAL (SELECT r.sk FROM kg.records r WHERE r.org_id = $1 AND r.group_sk = s.sk OFFSET 0) r
+  UNION SELECT l.child_sk FROM scope s CROSS JOIN LATERAL (SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = s.sk AND l.kind = 2 OFFSET 0) l) x"""
 HAS_HIDER = "/* pipeshub:kg.listing_hiders */ SELECT EXISTS (SELECT 1 FROM kg.records WHERE org_id = $1 AND app_sk = $2 AND hide_children)"
 
 
@@ -118,11 +121,13 @@ def filters_sql(filters: dict[str, Any], p: Params) -> str:
     return "".join(f" AND {c}" for c in out)
 
 
-def page_sql(field_: str, sort_dir: str, direction: str, where: str, branches: list[str] | None, admit: str | None = None) -> str:
+def page_sql(field_: str, sort_dir: str, direction: str, where: str, branches: list[str] | None, admit: str | None = None, scopes: list[str] | None = None) -> str:
     """The window of the sort order past the boundary, ``$3`` rows; ``where`` is the connector's conditions and the filters (``$1`` the org, ``$2`` the connector). ``admit``, when given, is a condition
-    on the rows of the window (alias ``w``: what the viewer's classes open), answered as the column ``ok`` of every row of the window, in the window's order."""
+    on the rows of the window (alias ``w``: what the viewer's classes open), answered as the column ``ok`` of every row of the window, in the window's order. ``scopes`` replaces the connector's live
+    rows with other row sets (each a condition on ``r``, read in its own range of the sort index): a browse's children."""
     o = order(field_, sort_dir, direction)
-    reads = [f"(SELECT {COLS} FROM kg.records r WHERE r.org_id = $1 AND r.app_sk = $2 AND {LIVE}{where}{f' AND ({b})' if b else ''} ORDER BY {o} LIMIT $3)" for b in (branches or [None])]
+    base = [f"r.app_sk = $2 AND {LIVE}"] if scopes is None else scopes
+    reads = [f"(SELECT {COLS} FROM kg.records r WHERE r.org_id = $1 AND {sc}{where}{f' AND ({b})' if b else ''} ORDER BY {o} LIMIT $3)" for sc in base for b in (branches or [None])]
     if len(reads) == 1 and admit is None:
         return "/* pipeshub:kg.listing_page */ " + reads[0][1:-1]
     inner = reads[0] if len(reads) == 1 else f"SELECT * FROM ({' UNION ALL '.join(reads)}) r ORDER BY {o} LIMIT $3"
@@ -161,13 +166,89 @@ def class_admit(alias: str, p: Params, viewer: dict[str, Any]) -> str:
             f"OR {a}.id = ANY({p.add(sorted(viewer['walked']))}::text[]))")
 
 
-def arrows_sql(admit: str) -> str:
-    """The containers among ``$2`` (sks) that list something when opened: some child (by the hierarchy parent, the group, or a link) that is live, not hidden (``$3``) and open to the viewer
-    (``admit``, a condition on a row ``c`` with the columns of the listing's window). Exact: no sample of the children."""
-    live = "c.org_id = $1 AND c.kind IN (2, 3) AND NOT c.deleted AND NOT c.placeholder AND NOT c.alien AND c.sk <> ALL($3::bigint[])"
-    cols = "SELECT c.sk, c.id, c.r13, c.path IS NOT NULL AS has_path, c.class_id, c.fence_job IS NOT NULL AS fenced FROM kg.records c"
-    def one(where: str) -> str:
-        return f"EXISTS (SELECT 1 FROM ({cols} WHERE {live} AND {where}) c WHERE {admit})"
-    return ("/* pipeshub:kg.listing_arrows */ SELECT p.sk FROM unnest($2::bigint[]) AS p(sk) WHERE "
-            + one("c.parent_sk = p.sk") + " OR " + one("c.group_sk = p.sk")
-            + " OR " + one("c.sk IN (SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = p.sk)"))
+# The children are read by the node's own ranges and the conditions on what the viewer may see apply on top of them: OFFSET 0 keeps the planner from pushing a class test into the
+# read (it would then read every row of the class across the organisation and keep the node's children last).
+_FENCE = " OFFSET 0"
+
+
+def undecided_child(p: Params, unvouched: list[int], app_sk: int) -> str:
+    """A child (a row ``c`` of :func:`arrows_sql`) that the classes do not decide: no stamp, a pending restamp, a placeholder, a class kg cannot vouch for, or another connector's."""
+    return (f"NOT (c.r13 IS FALSE AND c.has_path AND c.class_id IS NOT NULL AND NOT c.fenced AND NOT c.placeholder AND NOT c.class_id = ANY({p.add(unvouched)}::bigint[]) "
+            f"AND c.app_sk = {p.add(app_sk)})")
+
+
+def arrows_sql(admit: str, undecided: str = "false", sample: int = 200) -> str:
+    """For each container among ``$2`` (sks): whether it lists something when opened (``lists``): some child by a hierarchy edge (the primary parent or a hierarchy link: what a browse
+    of the row lists; a record that only belongs to a group is not listed under it) that is live, not hidden (``$3``) and open to the viewer (``admit``, a condition on a row ``c`` with
+    the columns of the listing's window), exactly, with no sample of the children; and whether it has a child, a placeholder included, that ``undecided`` (a condition on ``c``) says
+    the classes do not decide among its first ``sample`` children (``undecided``: the rows whose sample the access check has to be asked about)."""
+    live = "c.org_id = $1 AND c.kind IN (2, 3) AND NOT c.deleted AND NOT c.alien AND c.sk <> ALL($3::bigint[])"
+    cols = "SELECT c.sk, c.id, c.placeholder, c.app_sk, c.r13, c.path IS NOT NULL AS has_path, c.class_id, c.fence_job IS NOT NULL AS fenced FROM kg.records c"
+    # the linked children by their keys, read from the row's links first (an array, so the planner cannot turn it into a pass over every row the classes open)
+    linked = f"c.sk = ANY (ARRAY(SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = p.sk AND l.kind = 1 LIMIT {LINKS_MAX}))"
+
+    def some(cond: str, limit: str = _FENCE) -> str:      # the row's children first, the condition on them after (never a class read of the organisation)
+        return (f"EXISTS (SELECT 1 FROM ({cols} WHERE {live} AND c.parent_sk = p.sk{limit}) c WHERE {cond}) "
+                f"OR EXISTS (SELECT 1 FROM ({cols} WHERE {live} AND {linked}{limit}) c WHERE {cond})")
+    return (f"/* pipeshub:kg.listing_arrows */ SELECT p.sk, {some(f'NOT c.placeholder AND {admit}')} AS lists, {some(undecided, f' LIMIT {int(sample)}')} AS undecided "
+            "FROM unnest($2::bigint[]) AS p(sk)")
+
+
+# The start of a browse by its id, with the connector it belongs to.
+BROWSE_START = f"""/* pipeshub:kg.browse_start */ SELECT {COLS}, a.id AS app_id FROM kg.records r
+    LEFT JOIN kg.node_keys a ON a.org_id = r.org_id AND a.sk = r.app_sk WHERE r.org_id = $1 AND r.coll = ANY('{{2,3}}'::smallint[]) AND r.id = $2 LIMIT 3"""
+BROWSE_UP = f"/* pipeshub:kg.browse_up */ SELECT {COLS} FROM kg.records r WHERE r.org_id = $1 AND r.sk = ANY($2::bigint[])"
+BROWSE_LIVE = "r.kind IN (2, 3) AND NOT r.deleted AND NOT r.alien"        # what a browse reads: placeholders too, for the way they hold to something readable
+LINKS_MAX = 5_000       # the linked children of one node a request reads (kg.links rows: a node's non-primary children); past it a browse is refused as too large
+# The linked children of the start ``$2`` (by the key of kg.links), read once per request and handed to its statements: ``LINKS_MAX + 1`` at most (``$3``).
+LINKED_CHILDREN = "/* pipeshub:kg.browse_linked */ SELECT child_sk FROM kg.links WHERE org_id = $1 AND parent_sk = $2 AND kind = 1 LIMIT $3"
+
+
+def browse_scopes(links: str | None) -> list[str]:
+    """The children of the start ``$2`` as ranges of the children indexes: by the primary parent, and, when it has linked children (``links``: the parameter that carries their
+    keys), those by their keys (never the primary parent again, so no child is read twice)."""
+    scopes = [f"r.parent_sk = $2 AND {BROWSE_LIVE}"]
+    if links:
+        scopes.append(f"r.sk = ANY({links}::bigint[]) AND r.parent_sk IS DISTINCT FROM $2 AND {BROWSE_LIVE}")
+    return scopes
+
+
+def _children(cols: str, where: str, links: str | None, tail: str = " LIMIT $3") -> str:
+    return " UNION ALL ".join(f"(SELECT {cols} FROM kg.records r WHERE r.org_id = $1 AND {sc}{where}{tail})" for sc in browse_scopes(links))
+
+
+def children_sql(where: str, links: str | None) -> str:
+    """The children of the start ``$2`` by a hierarchy edge, ``$3`` rows at most, in no order (a browse sorts what it holds)."""
+    return f"/* pipeshub:kg.browse_children */ SELECT * FROM ({_children(COLS, where, links)}) r LIMIT $3"
+
+
+def children_held_sql(where: str, links: str | None) -> str:
+    """How many children the start ``$2`` has by a hierarchy edge, counted up to ``$3`` (``n``), and the children themselves when there are fewer than ``$3`` (one row of NULLs
+    beside ``n`` when there are none or too many)."""
+    return (f"/* pipeshub:kg.browse_children_held */ SELECT n.n, c.* FROM (SELECT count(*) AS n FROM ({_children('1', where, links)}) x) n "
+            f"LEFT JOIN LATERAL (SELECT * FROM ({_children(COLS, where, links)}) r LIMIT $3) c ON n.n < $3")
+
+
+def browse_undecided_sql(where: str, classes_param: str, app_param: str, links: str | None) -> str:
+    """The children of the start that kg does not decide (as :func:`undecided_sql`, or of another connector, whose classes are not this one's) or that are placeholders (listed only on
+    the way to something readable): ``$3`` of them at most."""
+    undecided = f"r.placeholder OR NOT r.r13 IS FALSE OR NOT r.has_path OR r.class_id IS NULL OR r.fenced OR r.class_id = ANY({classes_param}::bigint[]) OR r.app_sk IS DISTINCT FROM {app_param}::bigint"
+    return f"/* pipeshub:kg.browse_undecided */ SELECT * FROM ({_children(COLS, where, links, _FENCE)}) r WHERE {undecided} LIMIT $3"
+
+
+def browse_count_sql(where: str, plain: str, own: str, granted: str, unvouched: str, links: str | None) -> str:
+    """:func:`count_sql` over the children of the start: the ones kg admits by class, by type, ``$3`` at most."""
+    admitted = (f"NOT c.placeholder AND c.r13 IS FALSE AND c.has_path AND c.class_id IS NOT NULL AND NOT c.fenced AND NOT c.class_id = ANY({unvouched}::bigint[]) "
+                f"AND (c.class_id = ANY({plain}::bigint[]) OR (c.class_id = ANY({own}::bigint[]) AND c.id = ANY({granted}::text[])))")
+    cols = "r.kind, r.folder, r.id, r.placeholder, r.r13, r.path IS NOT NULL AS has_path, r.class_id, r.fence_job IS NOT NULL AS fenced"
+    return (f"/* pipeshub:kg.browse_count */ SELECT t.kind, t.folder, count(*) AS n FROM (SELECT c.kind, c.folder FROM ({_children(cols, where, links, _FENCE)}) c "
+            f"WHERE {admitted} LIMIT $3) t GROUP BY t.kind, t.folder")
+
+
+def children_of_sql(only: str = "") -> str:
+    """The children of each of the sks ``$2`` by a hierarchy edge, at most ``$3`` of each, outside the hidden rows ``$4`` (``only``: a further condition on ``r``)."""
+    live = f"r.org_id = $1 AND {BROWSE_LIVE} AND r.sk <> ALL($4::bigint[]){only}"
+    return ("/* pipeshub:kg.browse_children_of */ SELECT p.sk AS parent, c.* FROM unnest($2::bigint[]) AS p(sk) CROSS JOIN LATERAL ("
+            f"SELECT * FROM (SELECT {COLS} FROM kg.records r WHERE {live} AND r.parent_sk = p.sk LIMIT $3) a "
+            f"UNION (SELECT {COLS} FROM kg.records r WHERE {live} AND r.sk = ANY (ARRAY(SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = p.sk AND l.kind = 1 LIMIT $3)) "
+            "LIMIT $3)) c")

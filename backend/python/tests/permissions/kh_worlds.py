@@ -301,5 +301,18 @@ grants: [[u, h], [u, r]]
 gates: [[u, A]]
 """))
 
+# STUBREACH: a granted OPEN stub inside a declaration, above a strict node that inherits from it. Whether the stub is listed under the declaration must be read with the reach a browse of
+# the stub itself starts with, never the declaration's: the stub is listed (with an arrow) exactly when opening it lists something
+STUBREACH = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: s, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [d], inherits: [d], belongs: [d]}
+  - {id: t, kind: record, connector: A, rule: STRICT, parents: [s], inherits: [s]}
+grants: [[u, d], [u, s]]
+gates: [[u, A]]
+"""))
+
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN]

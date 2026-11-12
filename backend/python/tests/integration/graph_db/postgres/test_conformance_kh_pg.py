@@ -16,8 +16,8 @@ from app.core.org_context import OrgContext, bind
 from app.exceptions.graph_db_exceptions import KnowledgeHubListingNotReady
 from tests.permissions import gen
 from tests.permissions.graph import Namespace
-from tests.permissions.kh_layer import KhFinding, check_world, listing
-from tests.permissions.kh_worlds import KH_WORLDS
+from tests.permissions.kh_layer import KhFinding, check_world, children_of, listing
+from tests.permissions.kh_worlds import KH_WORLDS, STUBREACH
 from tests.permissions.scenario import load_all
 
 from .test_conformance import PgLayer
@@ -106,7 +106,7 @@ async def check(layer: KhPgLayer, world, scenario: str) -> list[KhFinding]:
     """``check_world`` as the product runs a request: under the world's own org."""
     with bind(OrgContext((await layer._ns(world)).org, None, "job", "job:test", "t")):
         try:
-            found = await check_world(layer, world, scenario)
+            found = await check_world(layer, world, scenario, browse_apps=True)
             for viewer in world.users():      # the order of the whole listing is the merge's (a string by UTF-16 code unit): what pages and cursors are cut by
                 keys = [key_for(r, descending=False) for r in (await listing(layer, world, viewer)).rows]
                 if keys != sorted(keys):
@@ -157,6 +157,19 @@ async def test_generated_worlds_list_what_the_viewer_may_read(kh_layer, kind: st
         print(f"{kh_layer.name} {kind} seed {seed}: {len(worlds)} worlds, {kh_layer.not_ready} refused as not copied so far")
         assert not bad, f"{kh_layer.name} {kind} seed {seed}\n{_describe(bad)}"
         assert kh_layer.not_ready * 10 <= len(worlds), f"{kh_layer.not_ready} of {len(worlds)} {kind} worlds were refused as not copied"
+
+
+async def test_a_stub_is_listed_under_a_declaration_exactly_when_opening_it_lists_something(kh_layer) -> None:
+    """STUBREACH: the stub's listing and arrow read the reach a browse of the stub starts with, never the declaration's (what opening the declaration and then the stub shows must agree)."""
+    await kh_layer.preload([STUBREACH])
+    with bind(OrgContext((await kh_layer._ns(STUBREACH)).org, None, "job", "job:test", "t")):
+        bad = _bad(await check_world(kh_layer, STUBREACH, "stubreach", browse_apps=True))
+        under_d = await children_of(kh_layer, STUBREACH, "u", "d", "recordGroup")
+        under_s = await children_of(kh_layer, STUBREACH, "u", "s", "record")
+    assert not bad, _describe(bad)
+    assert under_d is not None and ("s" in under_d) == bool(under_s), (under_d, under_s)
+    assert under_d.get("s", False) == bool(under_s), (under_d, under_s)
+    print(f"{kh_layer.name} STUBREACH: d lists {under_d}, s lists {under_s}")
 
 
 async def test_a_connector_with_no_copy_is_refused_not_listed_as_empty(pg_provider, pg_db) -> None:

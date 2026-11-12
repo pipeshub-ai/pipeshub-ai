@@ -121,7 +121,8 @@ def _ancestors(world: World, node: Node) -> list[Parent]:
     return out
 
 
-async def check_world(layer: GraphCheckLayer, world: World, scenario_id: str = "") -> list[KhFinding]:
+async def check_world(layer: GraphCheckLayer, world: World, scenario_id: str = "", *, browse_apps: bool = False) -> list[KhFinding]:
+    """``browse_apps``: also browse each App the viewer is gated to directly, as the folders are (its children are the nodes that hang from it)."""
     reference = OracleLayer(layer.shape)
     found: list[KhFinding] = []
     for viewer in world.users():
@@ -148,7 +149,7 @@ async def check_world(layer: GraphCheckLayer, world: World, scenario_id: str = "
             have = (await listing(layer, world, viewer, flt)).total
             if have != want:
                 add("facet", f"{name}: total {have}, oracle count {want}")
-        found.extend(await _browse(layer, world, viewer, seen, scenario_id))
+        found.extend(await _browse(layer, world, viewer, seen, scenario_id, browse_apps=browse_apps))
     return found
 
 
@@ -169,7 +170,7 @@ async def children_of(layer: GraphCheckLayer, world: World, viewer: str, node: s
     return {ns.local(i.id): bool(i.hasChildren) for i in page.items} if page.success else None
 
 
-async def _browse(layer: GraphCheckLayer, world: World, viewer: str, seen: dict[str, Any], scenario_id: str) -> list[KhFinding]:
+async def _browse(layer: GraphCheckLayer, world: World, viewer: str, seen: dict[str, Any], scenario_id: str, *, browse_apps: bool = False) -> list[KhFinding]:
     """The service path: browse a few folders the viewer may open, page by page, against the oracle's children of each."""
     from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
         KnowledgeHubService,
@@ -209,10 +210,12 @@ async def _browse(layer: GraphCheckLayer, world: World, viewer: str, seen: dict[
         """The rows the oracle does not admit. One may be listed on the way to something readable, and only when it is shown as a placeholder (a
         node a seed it admits hangs under is listed under the nearest folder, and is in `seen`)."""
         return {i for i, row in rows.items() if i not in seen and not (i in on_the_way and getattr(row, "isPlaceholder", False))}
-    folders = [i for i, n in seen.items() if n.kind == "group"][:BROWSE_FOLDERS]
-    for folder in folders:
+    folders = [(i, "recordGroup") for i, n in seen.items() if n.kind == "group"][:BROWSE_FOLDERS]
+    if browse_apps:      # an App of the world's org the viewer is gated to by a relation of their own (a gate through a group is not followed here)
+        folders = [(g.app, "app") for g in world.gates if g.who == viewer and g.via == "USER_APP_RELATION" and world.node(g.app).kind == "app" and world.node(g.app).org is None] + folders
+    for folder, folder_type in folders:
         want = {i for i, n in seen.items() if any(p.id == folder and p.rel in HIERARCHY for p in n.parents)}
-        first = await walk(folder)
+        first = await walk(folder, folder_type)
         if first is None:      # a folder the viewer may open and the browse does not: an under-admit
             add("browse_gap", f"{folder}: the browse does not open it")
             continue
