@@ -21546,14 +21546,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if transaction is None else self._kh_v3_name_matches(org_id, search, state=state, transaction=transaction)
             )
 
-        def placeholder_test(v: str, reached: str = "false") -> str:
-            """``reached``: whether the stub ``v`` is reached from the App; below it an App that opens everything passes every hop, as an expansion of it does."""
+        def placeholder_test(v: str) -> str:
             if not lists_placeholders:
                 return f"AND NOT {self._kh_placeholder(v, state=state)}"
             # A browse shows a stub only as the way to something readable below it: a path of hierarchy hops, each of which passes the
             # browse rule, ending at a node that is no stub.
             below = self._kh_v3_child_rule(
-                "kh_xs", "kh_xp", from_app=reached, opens=app_opens, state=state, grant_once=grant_once)
+                "kh_xs", "kh_xp", from_app="false", opens=app_opens, state=state, grant_once=grant_once)
             return (f"AND (NOT {self._kh_placeholder(v, state=state)} OR EXISTS {{ ({v}) "
                     f"((kh_xp)-[kh_xr:NODE_RELATION]->(kh_xs) WHERE kh_xr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
                     f"AND ({below})){{1,50}} (kh_xz) WHERE NOT {self._kh_placeholder('kh_xz', state=state)} }})")
@@ -21583,7 +21582,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "OR toUpper(coalesce(node.recordType, '')) = 'FOLDER')"
             )
             expr = _cypher_kh_has_children(
-                "node", rule, app_opens, lambda v: placeholder_test(v, "false"), container, exact=not flatten, chain_tops=not row,
+                "node", rule, app_opens, placeholder_test, container, exact=not flatten, chain_tops=not row,
                 reached=row_from_app if row and scoped_start and not flatten else "true")
             # $grantedIds holds only the App's direct children here: every grant test, the rule's and the
             # cheap reject's alike, is read from the node.
@@ -21599,7 +21598,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         def held_by_row() -> str:
             container = ("(node:RecordGroup OR node:KhFolder)" if state else
                          "(node:RecordGroup OR node.mimeType IN $folder_mime_types OR toUpper(coalesce(node.recordType, '')) = 'FOLDER')")
-            expr = _cypher_kh_held("node", lambda v: placeholder_test(v, "false"), container)
+            expr = _cypher_kh_held("node", placeholder_test, container)
             return self._kh_grants_by_probe(expr) if probe is not None and not listing_by_probe else expr
 
         if scoped_start:
@@ -22086,7 +22085,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         WHERE (node:Record OR node:RecordGroup)
           AND node.id IS NOT NULL
           AND node.orgId = $org_id
-          {placeholder_test("node", "false" if flatten else "true")}
+          {placeholder_test("node")}
         WITH {slim} AS node
         {tail}
         {enrich}
@@ -22124,7 +22123,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                          AND n <> start
                          AND n.orgId = $org_id
                          AND n.id IS NOT NULL
-                         {placeholder_test("n", "fromApp")}] AS rawNodes
+                         {placeholder_test("n")}] AS rawNodes
             UNWIND rawNodes + [null] AS node
             WITH app, fromApp, CASE WHEN node IS NULL THEN true ELSE false END AS sentinel,
                  CASE WHEN node IS NULL THEN {{
