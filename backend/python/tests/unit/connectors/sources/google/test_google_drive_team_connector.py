@@ -504,14 +504,17 @@ class TestSyncUsers:
         assert len(conn.synced_users) == 2
         assert conn.admin_data_source.users_list.call_count == 2
 
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("empty_page_has_a_token", [True, False])
-    async def test_sync_users_empty_page_before_the_end_changes_no_account_status(self, empty_page_has_a_token: bool) -> None:
+    @staticmethod
+    def _cut_listing_connector(stored: dict | None = None) -> tuple:
         conn = _make_connector()
+        state = {
+            "workspace_user_status": {
+                "inactive": ["gone@x.com"], "known": ["a@x.com", "b@x.com", "gone@x.com", "lost@x.com"], "domains": ["x.com", "alias.org"],
+            },
+            **(stored or {}),
+        }
         sync_point = MagicMock()
-        sync_point.read_sync_point = AsyncMock(return_value={
-            "inactive": ["gone@x.com"], "known": ["a@x.com", "b@x.com", "gone@x.com", "lost@x.com"],
-        })
+        sync_point.read_sync_point = AsyncMock(side_effect=lambda key: state.get(key))
         sync_point.update_sync_point = AsyncMock()
         conn._user_status = UserStatusTracker(sync_point)
         conn.data_entities_processor.remove_user_access_to_connector = AsyncMock(return_value=0)
@@ -519,33 +522,75 @@ class TestSyncUsers:
         conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[
             MagicMock(email="Linked@x.com"), MagicMock(email="a@x.com")
         ])
-        returning = _make_google_user("gone@x.com", "u3")  # active in this listing, suspended in the last complete one
+        return conn, sync_point
+
+    @pytest.mark.asyncio
+    async def test_sync_users_empty_page_with_a_token_changes_no_status_but_still_narrows(self) -> None:
+        conn, sync_point = self._cut_listing_connector()
         suspended = _make_google_user("b@x.com", "u2")
         suspended["suspended"] = True
-        pages = [
+        conn.admin_data_source.users_list = AsyncMock(side_effect=[
             {"users": [_make_google_user("a@x.com", "u1")], "nextPageToken": "p2"},
-            {"users": [], "nextPageToken": "p3"} if empty_page_has_a_token else {"users": []},
-            {"users": [returning, suspended]},
-        ]
-        conn.admin_data_source.users_list = AsyncMock(side_effect=pages[:3] if empty_page_has_a_token else [pages[0], pages[1]])
+            {"users": [], "nextPageToken": "p3"},
+            {"users": [_make_google_user("gone@x.com", "u3"), suspended]},
+        ])
 
         await conn._sync_users()
 
-        # no one is withdrawn or restored, the account that was away stays away, and nothing is saved
-        conn.data_entities_processor.remove_user_access_to_connector.assert_not_awaited()
+        # the account the cut listing itself shows suspended loses access, and is not linked again
+        conn.data_entities_processor.remove_user_access_to_connector.assert_awaited_once_with(conn.connector_id, "b@x.com")
+        saved = conn.data_entities_processor.on_new_app_users.await_args.args[0]
+        assert [u.email for u in saved] == ["a@x.com", "gone@x.com"]
+        # nobody is restored, the account that was away stays away, and the held-back set is the narrowest safe one
         assert conn._returning_emails == set()
-        # the last complete listing's away set, and every account known or linked before that this listing does not show
         assert conn._inactive_emails == {"gone@x.com", "b@x.com", "lost@x.com", "linked@x.com"}
         sync_point.update_sync_point.assert_not_awaited()
+        assert conn._sync_ledger.has_gaps and conn._listing_cut is True
+
+    @pytest.mark.asyncio
+    async def test_sync_users_an_empty_last_page_is_cut_once_and_accepted_when_the_same_listing_comes_again(self) -> None:
+        conn, sync_point = self._cut_listing_connector()
+
+        def pages() -> list:
+            return [{"users": [_make_google_user("a@x.com", "u1")], "nextPageToken": "p2"}, {"users": []}]
+
+        conn.admin_data_source.users_list = AsyncMock(side_effect=pages())
+
+        await conn._sync_users()  # first sight of this listing: treated as cut, and remembered
+
+        assert conn._listing_cut is True and conn._sync_ledger.has_gaps
+        (key, data), _ = sync_point.update_sync_point.await_args
+        assert key == "workspace_user_listing_fingerprint" and data["fingerprint"]
+
+        conn2, _ = self._cut_listing_connector({"workspace_user_listing_fingerprint": data})
+        conn2.admin_data_source.users_list = AsyncMock(side_effect=pages())
+
+        await conn2._sync_users()  # the same listing again: the directory's own size, a complete listing
+
+        assert conn2._listing_cut is False
+        assert not conn2._sync_ledger.has_gaps
+        conn2.data_entities_processor.remove_user_access_to_connector.assert_awaited()  # complete: lost@x.com is gone
+
+    @pytest.mark.asyncio
+    async def test_sync_users_a_cut_listing_with_no_users_is_held_back_and_incomplete(self) -> None:
+        conn, _ = self._cut_listing_connector()
+        conn.admin_data_source.users_list = AsyncMock(side_effect=[{"users": [], "nextPageToken": "p2"}, {"users": []}])
+
+        await conn._sync_users()
+
+        assert conn.synced_users == [] and conn._listing_cut is True
         assert conn._sync_ledger.has_gaps
-        assert conn._listing_cut is True
+        assert conn._inactive_emails == {"gone@x.com", "a@x.com", "b@x.com", "lost@x.com", "linked@x.com"}
+        conn.data_entities_processor.on_new_app_users.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_cut_user_listing_holds_back_external_membership_of_the_workspaces_own_domains(self) -> None:
-        conn = _make_connector()
+        conn, _ = self._cut_listing_connector()
         conn.data_entities_processor.on_external_app_users = AsyncMock()
         conn.synced_user_emails = {"a@x.com"}
-        conn._external_emails = {"lost@x.com", "partner@other.org"}  # a person on the missing page looks external
+        # lost@alias.org is on the missing page and its domain is none of the listed people's: the last complete
+        # listing's domains still hold it back
+        conn._external_emails = {"lost@x.com", "lost@alias.org", "partner@other.org"}
         conn._listing_cut = True
 
         await conn._flush_external_app_users()
@@ -555,7 +600,9 @@ class TestSyncUsers:
         conn.data_entities_processor.on_external_app_users.reset_mock()
         conn._listing_cut = False
         await conn._flush_external_app_users()
-        assert sorted(conn.data_entities_processor.on_external_app_users.await_args.args[0]) == ["lost@x.com", "partner@other.org"]
+        assert sorted(conn.data_entities_processor.on_external_app_users.await_args.args[0]) == [
+            "lost@alias.org", "lost@x.com", "partner@other.org"
+        ]
 
     @pytest.mark.asyncio
     async def test_sync_users_empty(self):

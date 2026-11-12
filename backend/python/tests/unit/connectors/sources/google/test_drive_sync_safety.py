@@ -409,6 +409,20 @@ class TestUserStatus:
         third = await tracker.compare([_user("a@x")])
         assert third.restore == {"a@x"} and not third.withdraw
 
+    async def test_the_domains_of_the_last_complete_listing_are_kept_and_the_fingerprint_follows_the_listing(self) -> None:
+        sync_point = _SyncPoint()
+        tracker = UserStatusTracker(sync_point)
+        await tracker.compare([_user("a@x.com"), _user("b@alias.org")])
+        await tracker.save()
+        assert await tracker.known_domains() == {"x.com", "alias.org"}
+
+        same = tracker.fingerprint([_user("a@x.com"), _user("b@alias.org")])
+        assert same == tracker.fingerprint([_user("b@alias.org"), _user("a@x.com")])
+        assert same != tracker.fingerprint([_user("a@x.com")])
+        assert not await tracker.fingerprint_is_remembered(same)
+        await tracker.remember_fingerprint(same)
+        assert await tracker.fingerprint_is_remembered(same)
+
     async def test_nothing_is_saved_until_asked(self) -> None:
         sync_point = _SyncPoint()
         tracker = UserStatusTracker(sync_point)

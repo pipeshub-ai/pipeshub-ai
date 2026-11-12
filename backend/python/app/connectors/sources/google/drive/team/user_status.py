@@ -11,6 +11,7 @@ fails part-way repeats them next time.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -19,6 +20,7 @@ if TYPE_CHECKING:
     from app.models.entities import AppUser
 
 USER_STATUS_SYNC_POINT_KEY = "workspace_user_status"
+USER_LISTING_FINGERPRINT_KEY = "workspace_user_listing_fingerprint"
 
 
 @dataclass
@@ -54,7 +56,12 @@ class UserStatusTracker:
         )
         # A deleted account stays inactive until it is listed again, so undeleting it restores its grants.
         still_away = (was_inactive - known) | gone
-        self._pending = {"inactive": sorted(inactive | still_away), "known": sorted(known)}
+        self._pending = {
+            "inactive": sorted(inactive | still_away),
+            "known": sorted(known),
+            # The domains of the last complete listing: a person missing from a later cut one still has one of them.
+            "domains": sorted({e.rpartition("@")[2] for e in known}),
+        }
         return change
 
     async def save(self) -> None:
@@ -77,3 +84,21 @@ class UserStatusTracker:
             | {u.email.lower() for u in listed if u.email and not is_active_account(u)}
             | ((was_known | linked) - known)
         )
+
+    async def known_domains(self) -> set[str]:
+        """The domains of the last complete listing's accounts."""
+        stored = await self._sync_point.read_sync_point(USER_STATUS_SYNC_POINT_KEY) or {}
+        return {d for d in stored.get("domains") or [] if isinstance(d, str)}
+
+    @staticmethod
+    def fingerprint(listed: list[AppUser]) -> str:
+        """How many accounts a listing has and which: the same directory read the same way gives the same one."""
+        ids = sorted(u.source_user_id or u.email or "" for u in listed)
+        return f"{len(ids)}:{hashlib.sha256(chr(10).join(ids).encode()).hexdigest()[:16]}"
+
+    async def fingerprint_is_remembered(self, fingerprint: str) -> bool:
+        stored = await self._sync_point.read_sync_point(USER_LISTING_FINGERPRINT_KEY) or {}
+        return stored.get("fingerprint") == fingerprint
+
+    async def remember_fingerprint(self, fingerprint: str) -> None:
+        await self._sync_point.update_sync_point(USER_LISTING_FINGERPRINT_KEY, {"fingerprint": fingerprint})
