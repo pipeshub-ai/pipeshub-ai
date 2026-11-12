@@ -826,6 +826,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self.connector_id,
                 self._sync_ledger,
                 self.logger,
+                keep=self._unseen_records_an_audience_may_open,
             )
 
             # Step 6: Remove what changed sync filters now leave out
@@ -3161,6 +3162,27 @@ class GoogleDriveTeamConnector(BaseConnector):
             return
         if spared:
             self.logger.info(f"{spared} undecided removal(s) are kept out of the stale-record cleanup")
+
+    async def _unseen_records_an_audience_may_open(self, unseen: list[Record]) -> set[str]:
+        """The records a complete full sync did not see that may still exist: those granted to an audience group
+        whose people are not shown unable to open them. A file in a shared drive no synced user is in, shared with an
+        audience alone, is in no listing (My Drive's leaves out shared drive files, and "shared with me" only user and
+        group grants), yet its audience opens it. Each is checked as for any removal: someone who can open it, or an
+        answer nobody gives, keeps it; a clean "nobody can" lets the cleanup remove it. Any other failure raises."""
+        kept: set[str] = set()
+        for record in unseen:
+            groups = await self.data_entities_processor.get_groups_with_permission_to_node(
+                record.id, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            if not any(_is_audience_group(g.source_user_group_id) for g in groups):
+                continue
+            try:
+                if not await self._another_synced_user_can_open(record, None, {}):
+                    continue
+            except _RemovalUndecided:
+                pass
+            kept.add(record.id)
+        return kept
 
     async def _recheck_unvisited_undecided_removals(self) -> None:
         """Check again the undecided lists no user's run reached: their user left the shared drive, so nobody walks

@@ -181,3 +181,25 @@ async def test_a_shared_drive_with_an_unreadable_record_page_keeps_its_group() -
     assert removed is False
     assert processor.deleted == []
     assert processor.groups_deleted == []
+
+
+async def test_unseen_records_that_may_still_exist_are_kept() -> None:
+    processor = _Processor([_record("keep"), _record("audience"), _record("gone"), _record("seen")])
+
+    async def keep(unseen: list) -> set[str]:
+        return {r.id for r in unseen if r.external_record_id == "audience"}
+
+    deleted = await reconcile_unseen_records(processor, "drive-1", _ready({"keep", "seen"}), LOGGER, keep=keep)
+
+    assert deleted == 1 and processor.deleted == [["id-gone"]]
+
+
+async def test_a_failed_keep_check_marks_the_run_incomplete_and_deletes_nothing() -> None:
+    processor = _Processor([_record("keep"), _record("gone")])
+    ledger = _ready({"keep"})
+
+    async def keep(unseen: list) -> set[str]:
+        raise RuntimeError("graph unavailable")
+
+    assert await reconcile_unseen_records(processor, "drive-1", ledger, LOGGER, keep=keep) == 0
+    assert processor.deleted == [] and ledger.has_gaps

@@ -4310,3 +4310,69 @@ async def test_a_parked_removal_of_a_user_who_left_the_directory_is_settled_by_e
     _drop_the_audience_shares(ws, "g1")
     await ws.sync()
     assert "g1" not in ws.records.records, "settled by the people who may still open it: none can"
+
+
+def _audience_file_bob_loses(ws: Workspace) -> None:
+    """g1, shared with Bob and "anyone" in a drive no synced user is in, so no listing finds it, beside files a
+    listing finds, so a full sync's cleanup runs."""
+    for name in ("a", "b", "c", "d", "e"):
+        ws.world.add_item(name, f"{name}.txt", parent="root-alice", owner=ALICE)
+    _audience_file_in_an_unwalked_drive(ws, discoverable("anyone"))
+
+
+async def test_a_parked_audience_file_its_user_opens_again_survives_a_full_sync(ws: Workspace) -> None:
+    from app.connectors.sources.google.drive.utils.folder_filter_utils import (
+        MAX_UNRECOGNISED_403_RUNS,
+    )
+
+    _audience_file_bob_loses(ws)
+    await ws.sync()
+    ws.world.unshare("g1", BOB)
+    ws.http.fail("GET", "/drive/v3/files/g1", 403, "insufficientFilePermissions", when=lambda r: r.identity != BOB)
+    for _ in range(MAX_UNRECOGNISED_403_RUNS):
+        await ws.sync()
+    assert _undecided_parts(ws) == [["g1"]]
+    await ws.sync()  # Bob opens it again through the "anyone" share: the entry leaves the list
+    assert _undecided_parts(ws) == [[]]
+
+    ws.http.clear_faults()
+    _read_everything_in_full_next_run(ws)
+    await ws.sync()
+    assert "g1" in ws.records.records, "its audience still opens it"
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("g1")
+
+
+async def test_an_audience_file_kept_without_being_parked_survives_a_full_sync(ws: Workspace) -> None:
+    _audience_file_bob_loses(ws)
+    await ws.sync()
+    ws.world.unshare("g1", BOB)
+    await ws.sync()
+    assert "g1" in ws.records.records and _undecided_parts(ws) == [[]], "kept at once: its audience opens it"
+
+    _read_everything_in_full_next_run(ws)
+    await ws.sync()
+    assert "g1" in ws.records.records
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("g1")
+
+
+async def test_an_audience_file_whose_share_is_gone_is_still_removed(ws: Workspace) -> None:
+    _audience_file_bob_loses(ws)
+    await ws.sync()
+    ws.world.unshare("g1", BOB)
+    ws.world.files["g1"].perms = [p for p in ws.world.files["g1"].perms if p.get("type") != "anyone"]
+    await ws.sync()
+    assert "g1" not in ws.records.records, "every person of its audience asked: not found"
+
+
+async def test_a_full_sync_removes_an_unseen_audience_file_its_audience_can_no_longer_open(ws: Workspace) -> None:
+    _audience_file_bob_loses(ws)
+    await ws.sync()
+    ws.world.unshare("g1", BOB)
+    await ws.sync()
+    assert "g1" in ws.records.records, "kept: its audience opens it"
+
+    # The share goes without a change anyone's feed reports, and no listing finds the file.
+    ws.world.files["g1"].perms = [p for p in ws.world.files["g1"].perms if p.get("type") != "anyone"]
+    _read_everything_in_full_next_run(ws)
+    await ws.sync()
+    assert "g1" not in ws.records.records, "the people of its audience asked: not found"

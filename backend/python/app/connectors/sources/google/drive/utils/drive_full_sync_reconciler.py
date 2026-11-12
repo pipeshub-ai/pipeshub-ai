@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from logging import Logger
 
     from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -79,8 +80,13 @@ async def reconcile_unseen_records(
     connector_id: str,
     ledger: FullSyncLedger,
     logger: Logger,
+    keep: Callable[[list], Awaitable[set[str]]] | None = None,
 ) -> int:
     """Delete non-placeholder records whose external id this full sync did not see.
+
+    ``keep`` answers which of the unseen records (by id) may exist although no
+    listing can show them; those stay. When it fails, the run is marked
+    incomplete and nothing is deleted.
 
     Returns the number of records the delete call reported. Returns 0, and
     deletes nothing, when the run was incremental, incomplete, saw nothing, or
@@ -136,6 +142,21 @@ async def reconcile_unseen_records(
     ]
     if not existing or not stale:
         return 0
+    if keep is not None:
+        try:
+            kept = await keep(stale)
+        except Exception:
+            ledger.note_incomplete()
+            logger.warning(
+                "Skipping stale-record cleanup; whether the unseen records may still exist could not be read",
+                exc_info=True,
+            )
+            return 0
+        if kept:
+            logger.info("Keeping %s unseen Drive record(s) that no listing can show", len(kept))
+            stale = [record for record in stale if getattr(record, "id", None) not in kept]
+        if not stale:
+            return 0
     if len(stale) > len(existing) * _MAX_DELETE_FRACTION:
         logger.warning(
             "Skipping stale-record cleanup: %s of %s Drive records were not in the listing",
