@@ -1,8 +1,9 @@
 """Server-side mirror of a repository a client pushes (standard library only).
 
-Layout: ``<base>/<org>/<user>/<sha256(repoKey)[:32]>/{tree/, staging/, repo.json, files.json}``. ``tree/`` holds the committed files and is
-what the Local Repository connector walks; an upload (and a deletion) is staged and reaches ``tree/`` only when ``commit()`` runs, so the sync
-never sees a half-sent push and a committed file keeps its content until the next commit; the two JSON files (repo identity and generation; path -> sha256/size) live beside it
+Layout: ``<base>/<org>/<user>/<sha256(repoKey)[:32]>/{generations/gNNNNNN/, current, readers/, staging/, repo.json, files.json}``. A generation is
+a complete, immutable tree of the committed files; ``current`` names the one the Local Repository connector walks. An upload (and a deletion) is
+staged, and ``commit()`` builds the next generation beside the current one and switches ``current`` to it with one atomic rename, so a sync
+(which reads one generation from start to end) sees the old tree or the new one and never a mix, and a commit that fails leaves the old one; the two JSON files (repo identity and generation; path -> sha256/size) live beside it
 so the walk never sees them. Org and user come from the caller's token, never from the request; the client names a repository
 only by an opaque key, so it cannot choose a path on the server.
 """
@@ -19,6 +20,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -153,8 +155,10 @@ def find_by_connector(org_id: str, connector_id: str, base: Path | None = None) 
     return found
 
 
-def tree_of(org_id: str, user_id: str, repo_key: str, base: Path | None = None) -> Path:
-    return repo_dir(org_id, user_id, repo_key, base) / "tree"
+GENERATION_RE = re.compile(r"g\d{6,12}")
+# A sync marks the generation it reads; a mark older than this is a sync that died, and no longer keeps its generation.
+# shortcut: a sync that really runs longer than this loses its generation to the next commit; upgrade by refreshing the mark while it runs.
+READER_TTL_SECONDS = 6 * 3600
 
 
 @dataclass
@@ -170,12 +174,13 @@ class Repo:
 
     def __init__(self, org_id: str, user_id: str, key: str, base: Path | None = None) -> None:
         self.key, self.dir = key, repo_dir(org_id, user_id, key, base)
-        self.tree = self.dir / "tree"
+        self.generations = self.dir / "generations"
         self.staging = self.dir / "staging"
         self._lock = _lock_for(str(self.dir))
         # One lock per (org, user), taken BEFORE a repository's own lock wherever both are needed (so no pair of threads can wait on each other):
         # the per-user quota is read and then spent across several of the user's repositories.
         self._user_lock = _lock_for(f"user:{self.dir.parent}")
+        self._code_dirty = False
         self.limits = limits()
 
     # ------------------------------------------------------------ state
@@ -187,6 +192,91 @@ class Repo:
 
     def manifest(self) -> dict[str, list[Any]]:
         return read_json_object(self.dir / "files.json")
+
+    # ------------------------------------------------------------ generations
+    def current_tree(self) -> Path | None:
+        """The directory of the current generation, resolved to a real folder under this repository's ``generations/``; None before the first.
+
+        The pointer is read as a name and checked against the generation pattern and against the resolved location, so neither a damaged
+        pointer nor a link planted in place of a generation can lead anywhere else."""
+        try:
+            name = (self.dir / "current").read_text("utf-8").strip()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise StoreError("state_unreadable") from exc
+        if not GENERATION_RE.fullmatch(name):
+            raise StoreError("state_unreadable")
+        path = self.generations / name
+        real = path.resolve()
+        if path.is_symlink() or not real.is_dir() or real.parent != self.generations.resolve():
+            raise StoreError("state_unreadable")
+        return real
+
+    @property
+    def tree(self) -> Path:
+        """The current generation (a path that does not exist before the first commit)."""
+        return self.current_tree() or self.generations / "none"
+
+    def _ensure_generation(self) -> None:
+        """A new repository starts with an empty generation, so its first sync has a root to walk."""
+        if (self.dir / "current").exists():
+            return
+        self.generations.mkdir(parents=True, exist_ok=True)
+        first = self.generations / "g000000"
+        first.mkdir(exist_ok=True)
+        self._point_at(first.name)
+
+    def _point_at(self, name: str) -> None:
+        """Switch ``current`` with one atomic rename: a reader sees the old name or the new one."""
+        fd, tmp = tempfile.mkstemp(dir=self.dir, prefix=".current.")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(name)
+            os.replace(tmp, self.dir / "current")
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+
+    def pin(self) -> tuple[Path, Any]:
+        """The current generation and a ``release`` function: while the mark is held, a commit does not remove that generation.
+
+        The connector pins one generation at the start of a sync and reads only that one until it is done. The pointer is read and the mark
+        made under the repository lock, so a commit cannot remove the generation between the two."""
+        with self._lock:
+            tree = self.current_tree()
+            if tree is None:
+                raise StoreError("not_pushed")
+            readers = self.dir / "readers"
+            readers.mkdir(exist_ok=True)
+            mark = readers / f"{tree.name}.{uuid.uuid4().hex}"
+            mark.touch()
+        return tree, lambda: mark.unlink(missing_ok=True)
+
+    def _read_generations(self) -> set[str]:
+        """Names of the generations a live sync is reading; marks of syncs that died are cleaned away."""
+        live: set[str] = set()
+        readers = self.dir / "readers"
+        for mark in readers.glob("*.*") if readers.is_dir() else ():
+            try:
+                if time.time() - mark.stat().st_mtime > READER_TTL_SECONDS:
+                    mark.unlink(missing_ok=True)
+                else:
+                    live.add(mark.name.split(".", 1)[0])
+            except OSError:
+                live.add(mark.name.split(".", 1)[0])  # cannot tell: keep it
+        return live
+
+    def _retire_old_generations(self, keep: str) -> None:
+        """Remove every generation but ``keep`` that no sync is reading. Best effort (logged): the commit has already succeeded."""
+        in_use = self._read_generations() | {keep}
+        for old in self.generations.iterdir():
+            if old.name in in_use or old.is_symlink():
+                continue
+            try:
+                shutil.rmtree(old)
+            except OSError as exc:
+                logger.warning("local repo: could not remove the old generation %s: %s", old, exc)
 
     def _write_json(self, name: str, data: Any) -> None:  # noqa: ANN401
         fd, tmp = tempfile.mkstemp(dir=self.dir, prefix=f".{name}.")
@@ -200,68 +290,74 @@ class Repo:
 
     def save_meta(self, **updates: Any) -> dict[str, Any]:  # noqa: ANN401
         with self._lock:
-            self.tree.mkdir(parents=True, exist_ok=True)
+            self._ensure_generation()
             meta = {**{"repoKey": self.key, "generation": 0, "committedAt": 0}, **self.meta(), **updates}
             self._write_json("repo.json", meta)
             return meta
 
     def commit(self) -> dict[str, Any]:
-        """Publish what is staged: the tree becomes exactly the files the manifest lists.
+        """Publish what is staged as one new generation: the tree the sync walks becomes exactly the files the manifest lists.
 
-        Files the manifest no longer lists (deleted, or left by an upload that stopped half way) are removed from the tree, and each staged file
-        replaces its committed version in one rename. Nothing of this is visible to the sync before this call, and a call that is interrupted
-        can simply be repeated. The sync therefore indexes only committed files, and a committed file keeps its content (and its indexed record)
-        until the next commit.
+        The next generation is built beside the current one (a hard link of each unchanged file, a hard link of each staged one, so it costs no
+        bytes the quota does not already count) and ``current`` is switched to it with one atomic rename. A sync reads one generation from start
+        to end: it sees the old tree or the new one, never a mix; and a commit that fails before the switch leaves the old generation serving and
+        the staged files in place, so it can simply be repeated. Whether the commit changes code is kept with the staged state
+        (``pendingCodeChange``) and cleared only by the metadata write that follows the switch, so a repeated commit still asks for the graph build.
         """
         with self._lock:
             meta = self.meta()
             manifest = self.manifest()
-            self.tree.mkdir(parents=True, exist_ok=True)
-            code_changed = self._sweep(manifest)
-            code_changed = self._promote(manifest) or code_changed
+            self._ensure_generation()
+            new_name, code_in_build = self._build_generation(manifest)
+            self._point_at(new_name)
             updates: dict[str, Any] = {"generation": int(meta.get("generation", 0)) + 1, "committedAt": int(time.time() * 1000)}
-            if code_changed:
+            if code_in_build or meta.get("pendingCodeChange"):
                 updates["codeChangedAt"] = updates["committedAt"]  # the code graph owes a build after this commit
-            return self.save_meta(**updates)
+            updates["pendingCodeChange"] = False
+            saved = self.save_meta(**updates)
+            self._clear_staging()
+            self._retire_old_generations(new_name)
+            return saved
 
-    def _promote(self, manifest: dict[str, list[Any]]) -> bool:
-        """Move every staged file into the tree; True when one of them is code."""
+    def _build_generation(self, manifest: dict[str, list[Any]]) -> tuple[str, bool]:
+        """Build ``generations/gNNNNNN`` from the manifest: the staged file where there is one, else the current generation's. Returns its name and
+        whether a staged code file went into it."""
+        self.generations.mkdir(parents=True, exist_ok=True)
+        for stale in self.generations.glob(".build-*"):  # left by a commit that died
+            shutil.rmtree(stale, ignore_errors=True)
+        numbers = [int(p.name[1:]) for p in self.generations.iterdir() if GENERATION_RE.fullmatch(p.name)]
+        number = max(numbers, default=-1) + 1
+        build = self.generations / f".build-{number:06d}"
+        build.mkdir()
+        current = self.current_tree()
         code = False
-        tree = self.tree.resolve()
-        for path in manifest:
-            src, dest = self.staging / path, self.tree / path
-            if not src.is_file():
-                continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            if not dest.parent.resolve().is_relative_to(tree):
-                raise StoreError("invalid_path")
-            os.replace(src, dest)
-            code = code or bool(detect_language(path))
-        for dirpath, _dirs, _files in os.walk(self.staging, topdown=False):
-            if Path(dirpath) != self.staging:
-                with contextlib.suppress(OSError):
-                    Path(dirpath).rmdir()
-        return code
+        try:
+            for path in manifest:
+                staged, committed = self.staging / path, (current / path) if current else None
+                if staged.is_file() and not staged.is_symlink():
+                    src, code = staged, code or bool(detect_language(path))
+                elif committed is not None and committed.is_file() and not committed.is_symlink():
+                    src = committed
+                else:
+                    continue  # the manifest lists it but no content is held (the diff asks for it again)
+                dest = build / path
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if not dest.parent.resolve().is_relative_to(build.resolve()):
+                    raise StoreError("invalid_path")
+                try:
+                    os.link(src, dest)
+                except OSError:  # no hard links here: a copy costs time and transient space, not quota
+                    shutil.copy2(src, dest)
+            name = f"g{number:06d}"
+            os.rename(build, self.generations / name)
+        except BaseException:
+            shutil.rmtree(build, ignore_errors=True)
+            raise
+        return name, code
 
-    def _sweep(self, manifest: dict[str, list[Any]]) -> bool:
-        """Remove every file (and any link, which is never written here) in the tree that the manifest does not list, then the emptied folders.
-
-        True when one of the removed files is code."""
-        code = False
-        for dirpath, dirnames, filenames in os.walk(self.tree, topdown=False, followlinks=False):
-            rel_dir = os.path.relpath(dirpath, self.tree).replace(os.sep, "/")
-            for name in filenames:
-                rel = name if rel_dir == "." else f"{rel_dir}/{name}"
-                if rel not in manifest:
-                    Path(dirpath, name).unlink(missing_ok=True)
-                    code = code or bool(detect_language(rel))
-            for name in dirnames:
-                if Path(dirpath, name).is_symlink():
-                    Path(dirpath, name).unlink(missing_ok=True)
-            if rel_dir != ".":
-                with contextlib.suppress(OSError):  # a folder that still holds files stays
-                    Path(dirpath).rmdir()
-        return code
+    def _clear_staging(self) -> None:
+        """Remove the staged files once they are published (they are linked into the new generation); best effort, nothing depends on it."""
+        shutil.rmtree(self.staging, ignore_errors=True)
 
     # ------------------------------------------------------------ what this user holds
     def _user_dir(self) -> Path:
@@ -284,6 +380,8 @@ class Repo:
     def _remove(self, manifest: dict[str, list[Any]], path: str) -> None:
         """Drop ``path`` from the manifest and its staged file; the committed copy in the tree goes at the next commit."""
         manifest.pop(path, None)
+        if detect_language(path):
+            self._code_dirty = True  # a deleted code file is a change to the code, published with the next commit
         target = self.staging / path
         try:
             target.unlink()
@@ -349,6 +447,7 @@ class Repo:
                         out.deleted.append(path)
             if out.deleted:
                 self._write_json("files.json", manifest)
+                self._remember_code_change()
         return out
 
     def store(self, files: list[dict[str, Any]]) -> tuple[list[str], list[dict[str, str]]]:
@@ -396,9 +495,17 @@ class Repo:
                 user_total += len(data) - (manifest.get(path) or [0, 0])[1]
                 manifest[path] = [hashlib.sha256(data).hexdigest(), len(data)]
                 stored.append(path)
-            self.tree.mkdir(parents=True, exist_ok=True)
             self._write_json("files.json", manifest)
+            if any(detect_language(p) for p in stored):
+                self._code_dirty = True
+            self._remember_code_change()
         return stored, rejected
+
+    def _remember_code_change(self) -> None:
+        """Keep, with the staged state, that the next commit changes code; cleared only by the commit's own metadata write."""
+        if self._code_dirty:
+            self._code_dirty = False
+            self.save_meta(pendingCodeChange=True)
 
     def _write_file(self, staging: Path, manifest: dict[str, list[Any]], path: str, data: bytes) -> None:
         dest = staging / path

@@ -118,10 +118,10 @@ async def test_unreadable_file_is_not_deleted_and_sync_continues(env):
     (env.root / "b.py").write_text("changed = 1\n")
     real = scan.safe_open
 
-    def flaky(root, rel):
+    def flaky(root, rel, max_links=1):
         if rel == "b.py":
             raise scan.PathRefused("boom")
-        return real(root, rel)
+        return real(root, rel, max_links)
 
     with patch.object(scan, "safe_open", flaky):
         await env.c.run_sync()
@@ -243,10 +243,10 @@ async def test_old_root_records_are_pruned_even_if_a_file_was_unreadable(env, tm
     env.sync["root"] = str(other)
     real = scan.safe_open
 
-    def flaky(root, rel):
+    def flaky(root, rel, max_links=1):
         if rel == "locked.py":
             raise scan.PathRefused("denied")
-        return real(root, rel)
+        return real(root, rel, max_links)
 
     with patch.object(scan, "safe_open", flaky):
         await env.c.run_sync()

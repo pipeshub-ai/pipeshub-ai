@@ -105,7 +105,7 @@ def _decode_name(rel: str) -> str:
     return os.fsdecode(unquote_to_bytes(rel))
 
 
-def safe_open(root: Path, rel: str) -> int:
+def safe_open(root: Path, rel: str, max_links: int = 1) -> int:
     """Open ``root/rel`` read-only and return the fd, or raise ``PathRefused``.
 
     Refuses ``..``, absolute paths, anything whose real path leaves the root
@@ -130,7 +130,7 @@ def safe_open(root: Path, rel: str) -> int:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             raise PathRefused("not a regular file")
-        if st.st_nlink > 1:
+        if st.st_nlink > max_links:  # a root the server fills itself may hold a few links of its own (see ``max_links`` of ``walk``)
             raise PathRefused("file has other hard links")
         where = _fd_path(fd)  # None on platforms without a way to ask
         if where is not None and not Path(where).is_relative_to(root):
@@ -344,6 +344,7 @@ def walk(
     max_bytes: int = DEFAULT_MAX_FILE_BYTES,
     use_gitignore: bool = True,  # noqa: FBT001, FBT002
     defaults: list[str] | None = None,
+    max_links: int = 1,
 ) -> Iterator[Entry]:
     """Yield regular files under ``root`` that survive the ignore rules.
 
@@ -393,7 +394,7 @@ def walk(
                 continue
             if is_dir:
                 stack.append((rel, rules))
-            elif stat.S_ISREG(st.st_mode) and st.st_size <= max_bytes and st.st_nlink <= 1:
+            elif stat.S_ISREG(st.st_mode) and st.st_size <= max_bytes and st.st_nlink <= max_links:
                 yield Entry(safe_name(rel), st.st_size, st.st_mtime_ns)
 
 

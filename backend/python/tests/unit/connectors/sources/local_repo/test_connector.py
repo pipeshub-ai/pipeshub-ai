@@ -98,7 +98,7 @@ async def test_a_root_or_key_in_the_config_cannot_point_at_another_directory(env
     push(env.repo, **{"a.py": "a = 1\n"})
     c, graph = connector(extra_sync={"root": "/etc"})
     await c.run_sync()
-    assert sorted(graph.records) == ["a.py"] and c.root == (env.base / "org-1" / "u1" / store.repo_dir("org-1", "u1", KEY).name / "tree").resolve()
+    assert sorted(graph.records) == ["a.py"] and c.root == env.repo.current_tree() and c.root.parent == (store.repo_dir("org-1", "u1", KEY) / "generations").resolve()
     traversal, _ = connector(key="../../u2/anything-0001")
     with pytest.raises(ValueError):
         await traversal.run_sync()
@@ -282,3 +282,45 @@ async def test_a_content_read_returns_the_committed_bytes_while_a_replacement_wa
     body = b"".join([chunk async for chunk in response.body_iterator])
     assert body == b"v = 1\n"  # what the record was indexed from, not the upload
     assert (env.repo.staging / "a.py").read_text() == "v = 2\n"
+
+
+async def test_a_sync_that_runs_while_a_commit_lands_reads_one_generation_from_start_to_end(env):
+    push(env.repo, **{"a.py": "v = 1\n", "b.py": "w = 1\n", "c.py": "z = 1\n"})
+    env.repo.commit()
+    old_name = env.repo.current_tree().name
+    push_uncommitted(env.repo, **{"a.py": "v = 2\n", "d.py": "n = 1\n"})
+    real_walk = scan.walk
+    committed_during = []
+
+    def walk(*a, **k):  # the commit lands after the walk has listed the first file
+        for i, entry in enumerate(real_walk(*a, **k)):
+            yield entry
+            if i == 0:
+                committed_during.append(env.repo.commit())
+
+    with patch.object(scan, "walk", walk):
+        await env.c.run_sync()
+    assert committed_during and env.repo.current_tree().name != old_name  # the commit did land mid-sync
+    # the sync saw the old tree whole: old content, and none of the new commit's files
+    assert sorted(r for r in env.graph.records if r.endswith(".py")) == ["a.py", "b.py", "c.py"]
+    assert env.graph.records["a.py"].external_revision_id == sha("v = 1\n")
+    assert (env.repo.generations / old_name).exists()  # marked by the sync that read it, so the commit left it
+    # the next sync reads the new generation whole
+    await env.c.run_sync()
+    assert env.graph.records["a.py"].external_revision_id == sha("v = 2\n") and "d.py" in env.graph.records
+
+
+async def test_a_failed_commit_indexes_nothing_of_it(env, monkeypatch):
+    push(env.repo, **{"a.py": "v = 1\n"})
+    await env.c.run_sync()
+    push_uncommitted(env.repo, **{"a.py": "v = 2\n", "new.py": "n = 1\n"})
+    real_link, real_copy = store.os.link, store.shutil.copy2
+    monkeypatch.setattr(store.os, "link", lambda *a, **k: (_ for _ in ()).throw(OSError("disk went away")))
+    monkeypatch.setattr(store.shutil, "copy2", lambda *a, **k: (_ for _ in ()).throw(OSError("disk went away")))
+    with pytest.raises(OSError):
+        env.repo.commit()
+    monkeypatch.setattr(store.os, "link", real_link)
+    monkeypatch.setattr(store.shutil, "copy2", real_copy)
+    await env.c.run_sync()
+    assert sorted(r for r in env.graph.records if r.endswith(".py")) == ["a.py"]
+    assert env.graph.records["a.py"].external_revision_id == sha("v = 1\n")

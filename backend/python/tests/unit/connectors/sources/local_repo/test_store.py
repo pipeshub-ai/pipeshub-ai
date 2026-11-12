@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import time
 
 import pytest
 
@@ -156,19 +157,19 @@ def test_a_write_is_all_or_nothing_per_file_and_leaves_no_temporary_in_the_tree(
 
 
 def test_identity_comes_from_org_user_and_key_only(tmp_path):
-    a = store.tree_of("org1", "user1", KEY, base=tmp_path)
-    assert a == store.tree_of("org1", "user1", KEY, base=tmp_path)
-    assert len({a, store.tree_of("org1", "user2", KEY, base=tmp_path), store.tree_of("org2", "user1", KEY, base=tmp_path),
-                store.tree_of("org1", "user1", "other-key-0002", base=tmp_path)}) == 4
+    a = store.repo_dir("org1", "user1", KEY, base=tmp_path)
+    assert a == store.repo_dir("org1", "user1", KEY, base=tmp_path)
+    assert len({a, store.repo_dir("org1", "user2", KEY, base=tmp_path), store.repo_dir("org2", "user1", KEY, base=tmp_path),
+                store.repo_dir("org1", "user1", "other-key-0002", base=tmp_path)}) == 4
     assert tmp_path in a.parents
     for bad in ("short", "../../etc/passwd-aaaa", "a/b/c/d/e/f/g/h", "x" * 65, "with space aaaa", ""):
         with pytest.raises(store.StoreError):
-            store.tree_of("org1", "user1", bad, base=tmp_path)
+            store.repo_dir("org1", "user1", bad, base=tmp_path)
     for bad_id in ("..", "a/b", "", "x" * 200):
         with pytest.raises(store.StoreError):
-            store.tree_of(bad_id, "user1", KEY, base=tmp_path)
+            store.repo_dir(bad_id, "user1", KEY, base=tmp_path)
         with pytest.raises(store.StoreError):
-            store.tree_of("org1", bad_id, KEY, base=tmp_path)
+            store.repo_dir("org1", bad_id, KEY, base=tmp_path)
 
 
 def test_commit_counts_generations_and_keeps_the_name(repo):
@@ -236,23 +237,125 @@ def test_a_replacement_or_deletion_changes_the_committed_tree_only_at_the_commit
     assert (repo.tree / "a.py").read_text() == "v = 2\n" and not (repo.tree / "b.py").exists()
 
 
-def test_a_commit_that_was_interrupted_can_be_repeated(repo, monkeypatch):
-    push(repo, **{"a.py": "a\n", "b.py": "b\n"})
-    real = os.replace
-    calls = []
+def _fail_link_on(monkeypatch, name):
+    """Make linking of the file called ``name`` into a new generation fail, once the others have been linked."""
+    real, real_copy = os.link, store.shutil.copy2
 
-    def flaky(src, dst):  # noqa: ANN202 - the second rename fails: the first file is already published
-        calls.append(dst)
-        if len(calls) == 2:
+    def link(src, dst, *a, **k):  # noqa: ANN202
+        if str(dst).endswith("/" + name):
             raise OSError("disk went away")
-        return real(src, dst)
+        return real(src, dst, *a, **k)
 
-    monkeypatch.setattr(store.os, "replace", flaky)
+    def copy(src, dst, *a, **k):  # noqa: ANN202 - the copy that stands in for a link must fail too
+        if str(dst).endswith("/" + name):
+            raise OSError("disk went away")
+        return real_copy(src, dst, *a, **k)
+
+    monkeypatch.setattr(store.os, "link", link)
+    monkeypatch.setattr(store.shutil, "copy2", copy)
+
+    def restore() -> None:
+        monkeypatch.setattr(store.os, "link", real)
+        monkeypatch.setattr(store.shutil, "copy2", real_copy)
+
+    return restore
+
+
+def test_a_commit_that_fails_midway_leaves_the_old_generation_serving_and_can_be_repeated(repo, monkeypatch):
+    push(repo, **{"a.py": "v = 1\n", "b.py": "w = 1\n"})
+    repo.commit()
+    old = repo.current_tree()
+    push(repo, **{"a.py": "v = 2\n", "c.py": "n = 1\n", "README.md": "# x\n"})
+    restore = _fail_link_on(monkeypatch, "README.md")  # a.py and c.py are already linked into the new generation when this one fails
     with pytest.raises(OSError):
         repo.commit()
-    monkeypatch.setattr(store.os, "replace", real)
+    assert repo.current_tree() == old  # the old generation still serves, untouched
+    assert sorted(p.name for p in old.iterdir()) == ["a.py", "b.py"] and (old / "a.py").read_text() == "v = 1\n"
+    assert not any(p.name.startswith(".build") for p in repo.generations.iterdir())  # nothing of the failed build is left to be read
+    assert (repo.staging / "a.py").is_file()  # the staged files wait for the repeat
+    restore()
     repo.commit()
-    assert sorted(p.name for p in repo.tree.iterdir()) == ["a.py", "b.py"] and not any(repo.staging.rglob("*.py"))
+    new = repo.current_tree()
+    assert new != old and sorted(p.name for p in new.iterdir()) == ["README.md", "a.py", "b.py", "c.py"] and (new / "a.py").read_text() == "v = 2\n"
+
+
+def test_a_retried_commit_after_a_failed_move_still_asks_for_a_graph_build(repo, monkeypatch):
+    push(repo, **{"a.py": "v = 1\n", "README.md": "# one\n"})
+    repo.commit()
+    before = repo.meta()["codeChangedAt"]
+    repo.diff([], False, ["a.py"])  # a deleted code file...
+    push(repo, **{"README.md": "# two\n"})  # ...and a replaced document
+    assert repo.meta()["pendingCodeChange"] is True  # kept with the staged state
+    restore = _fail_link_on(monkeypatch, "README.md")
+    with pytest.raises(OSError):
+        repo.commit()
+    assert repo.meta()["codeChangedAt"] == before and repo.meta()["pendingCodeChange"] is True
+    restore()
+    meta = repo.commit()  # the repeat moves only the document, and must still know the code changed
+    assert meta["codeChangedAt"] == meta["committedAt"] > before and meta["pendingCodeChange"] is False
+
+
+def test_a_commit_whose_metadata_write_fails_after_the_switch_still_asks_for_a_graph_build_when_repeated(repo, monkeypatch):
+    push(repo, **{"a.py": "v = 1\n"})
+    real = repo._write_json
+    calls = []
+
+    def write(name, data):  # noqa: ANN202
+        if name == "repo.json" and repo.current_tree().name != "g000000" and not calls:
+            calls.append(1)
+            raise OSError("no space")  # the generation has been switched; the metadata write is what fails
+        return real(name, data)
+
+    monkeypatch.setattr(repo, "_write_json", write)
+    with pytest.raises(OSError):
+        repo.commit()
+    assert repo.meta()["pendingCodeChange"] is True and not repo.meta().get("codeChangedAt")
+    meta = repo.commit()
+    assert meta["codeChangedAt"] == meta["committedAt"] and meta["pendingCodeChange"] is False
+
+
+def test_a_generation_that_a_sync_is_reading_is_kept_and_the_others_go(repo):
+    push(repo, **{"a.py": "v = 1\n"})
+    repo.commit()
+    pinned, release = repo.pin()  # a sync starts reading this generation
+    push(repo, **{"a.py": "v = 2\n"})
+    repo.commit()
+    push(repo, **{"a.py": "v = 3\n"})
+    repo.commit()
+    names = sorted(p.name for p in repo.generations.iterdir())
+    assert pinned.name in names and (pinned / "a.py").read_text() == "v = 1\n"  # still readable after two newer commits
+    assert names == [pinned.name, repo.current_tree().name] or len(names) == 2
+    release()
+    push(repo, **{"a.py": "v = 4\n"})
+    repo.commit()
+    assert [p.name for p in repo.generations.iterdir()] == [repo.current_tree().name]
+
+
+def test_a_mark_left_by_a_sync_that_died_does_not_keep_a_generation(repo, monkeypatch):
+    push(repo, **{"a.py": "v = 1\n"})
+    repo.commit()
+    pinned, _ = repo.pin()  # never released
+    mark = next((repo.dir / "readers").iterdir())
+    old = time.time() - store.READER_TTL_SECONDS - 10
+    os.utime(mark, (old, old))
+    push(repo, **{"a.py": "v = 2\n"})
+    repo.commit()
+    assert not pinned.exists() and not mark.exists()
+
+
+def test_the_pointer_cannot_lead_out_of_the_generations_folder(repo, tmp_path):
+    push(repo, **{"a.py": "v = 1\n"})
+    repo.commit()
+    for text in ("../../x", "g000001/../../x", "/etc", "", "gabc"):
+        (repo.dir / "current").write_text(text)
+        with pytest.raises(store.StoreError):
+            repo.current_tree()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (repo.generations / "g000099").symlink_to(outside, target_is_directory=True)  # a link planted in place of a generation
+    (repo.dir / "current").write_text("g000099")
+    with pytest.raises(store.StoreError):
+        repo.current_tree()
 
 
 def test_a_commit_that_changes_code_asks_for_a_graph_build_and_one_that_does_not_does_not(repo):

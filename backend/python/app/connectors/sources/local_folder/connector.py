@@ -160,6 +160,7 @@ class FolderConnector(BaseConnector):
     Not registered as a connector of its own: a root must be chosen by the server (``_resolve_root``), never by a client, and the only
     subclass is the Local Repository connector, whose root is the server's mirror of the files a person pushed.
     """
+    MAX_LINKS = 1  # hard links a file may have: one, unless the root is the server's own
     CONNECTOR = Connectors.LOCAL_REPO
     FILTER_KEY = "localrepository"
     DEFAULT_IGNORES = scan.DEFAULT_IGNORES
@@ -363,7 +364,7 @@ class FolderConnector(BaseConnector):
 
     def _inspect(self, entry: scan.Entry) -> tuple[str, bool]:
         """sha256 of the file and whether it looks binary (blocking; run in a thread)."""
-        fd = scan.safe_open(self.root, entry.rel)
+        fd = scan.safe_open(self.root, entry.rel, self.MAX_LINKS)
         try:
             binary = scan.looks_binary(fd)
         except BaseException:
@@ -387,7 +388,7 @@ class FolderConnector(BaseConnector):
         # Rows, not a dict: a sync point update merges nested objects and would never drop a key.
         prev = {r[0]: (r[1], r[2], r[3]) for r in _decode_rows(point.get("files"))}
         prev_dirs = set(point.get("dirs") or [])
-        if point.get("root") != str(self.root):
+        if point.get("root") != self._root_identity():
             # A different root (or a sync point from before roots were recorded): the manifest is not about this tree.
             prev, prev_dirs = {}, set()
         stored = await self._stored_ids()
@@ -398,7 +399,7 @@ class FolderConnector(BaseConnector):
         started = get_epoch_timestamp_in_ms()
 
         entries = await asyncio.to_thread(
-            lambda: [e for e in scan.walk(self.root, self.user_patterns, self.max_bytes, self.use_gitignore, self.DEFAULT_IGNORES)
+            lambda: [e for e in scan.walk(self.root, self.user_patterns, self.max_bytes, self.use_gitignore, self.DEFAULT_IGNORES, self.MAX_LINKS)
                      if _ext_allowed(e.rel, sync_filters)]
         )
         self._repos = await asyncio.to_thread(self._find_repos, entries)
@@ -486,9 +487,13 @@ class FolderConnector(BaseConnector):
             # A JSON string: the Neo4j store refuses a list of lists as a property.
             "files": json.dumps([[r, *v] for r, v in manifest.items()]),
             "dirs": sorted(dirs | {d for d in prev_dirs if d in undeleted}),
-            "root": str(self.root),
+            "root": self._root_identity(),
             "last_sync_time": started,
         })
+
+    def _root_identity(self) -> str:
+        """What the sync point records as 'the tree these files belong to'; a different one resets the file list."""
+        return str(self.root)
 
     def _may_index_code(self, entry: scan.Entry, name: str) -> tuple[bool, Any]:  # noqa: ANN401, RUF100
         """Whether a code file gets a record, and its role; a connector with more to go on than the path overrides it."""
@@ -559,7 +564,7 @@ class FolderConnector(BaseConnector):
         # The id is NFC; the disk name may be NFD (macOS-created files on Linux).
         for cand in (rel, unicodedata.normalize("NFD", rel)):
             try:
-                fd = scan.safe_open(self.root, cand)
+                fd = scan.safe_open(self.root, cand, self.MAX_LINKS)
                 break
             except scan.PathRefused as exc:
                 last = exc
