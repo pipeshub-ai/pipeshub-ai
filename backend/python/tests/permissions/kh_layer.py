@@ -157,6 +157,18 @@ class _Config:
         return {"scopedJwtSecret": "kh-layer-secret"}
 
 
+async def children_of(layer: GraphCheckLayer, world: World, viewer: str, node: str, parent_type: str) -> dict[str, bool] | None:
+    """What opening ``node`` lists for the viewer, as {id: expand arrow}; None when the browse does not open it."""
+    from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+        KnowledgeHubService,
+    )
+
+    ns = await layer._ns(world)
+    page = await KnowledgeHubService(logging.getLogger("kh-layer"), layer._provider, _Config()).get_nodes(
+        user_id=ns.id(viewer), org_id=ns.org, parent_id=ns.id(node), parent_type=parent_type, limit=PAGE, sort_by="name", sort_order="asc")
+    return {ns.local(i.id): bool(i.hasChildren) for i in page.items} if page.success else None
+
+
 async def _browse(layer: GraphCheckLayer, world: World, viewer: str, seen: dict[str, Any], scenario_id: str) -> list[KhFinding]:
     """The service path: browse a few folders the viewer may open, page by page, against the oracle's children of each."""
     from app.connectors.sources.localKB.handlers.knowledge_hub_service import (

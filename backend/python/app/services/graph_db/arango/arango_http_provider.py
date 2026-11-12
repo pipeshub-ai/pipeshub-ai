@@ -524,10 +524,12 @@ def _aql_is_member(p: str, after: str = "true") -> str:
             f" {CollectionNames.BELONGS_TO.value} FILTER {after} != null AND HAS(@kh_scope, kh_mg._key) LIMIT 1 RETURN 1) > 0)")
 
 
-def _aql_way_below(v: str, *, every_hop: bool = True) -> str:
+def _aql_way_below(v: str, *, every_hop: bool = True, from_app: str = "false") -> str:
     """Whether a readable node lies below the stub ``v``: a browse shows a stub only as the way to one, a path of hierarchy hops that end at a node
     that is no stub and each pass the browse rule. ``every_hop=False`` tests the last hop alone, which costs a plan with one level less of subquery
-    and is what an arrow reads (it is asked of every child of every row of a page; the listing itself, which decides the rows, tests every hop)."""
+    and is what an arrow reads (it is asked of every child of every row of a page; the listing itself, which decides the rows, tests every hop).
+    ``from_app``: whether the browse reaches the stub from the App; below it the hops read as an expansion of it reads them. A stub only filed in a
+    node is not reached (``false``)."""
     # Only a stub starts the walk (the loop over an empty list reads nothing for any other node), and it follows
     # hierarchy edges only: PRUNE stops it at any other. shortcut: PRUNE cannot hold the browse rule (AQL refuses a subquery in it), so a way cut at
     # the first hop is still enumerated to its end before the post-filter; bounded by 50 hops, and only for a stub row, upgrade if a stub holds a huge subtree.
@@ -537,7 +539,7 @@ def _aql_way_below(v: str, *, every_hop: bool = True) -> str:
                 f" PRUNE kh_pe != null AND kh_pe.relationshipType NOT IN {_HIERARCHY_AQL}"
                 f" FILTER kh_pe.relationshipType IN {_HIERARCHY_AQL} AND kh_pd.isPlaceholder != true"
                 f" LET kh_pp = DOCUMENT(kh_pe._from)"
-                f" FILTER {_aql_browse_child('kh_pd', 'kh_pp', 'pb', 'false')}"
+                f" FILTER {_aql_browse_child('kh_pd', 'kh_pp', 'pb', from_app)}"
                 f" LIMIT 1 RETURN 1) > 0")
     return (f"LENGTH(FOR kh_gp IN ({v}.isPlaceholder == true ? [1] : [])"
             f" FOR kh_pd, kh_pe, kh_pt IN 1..50 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
@@ -545,7 +547,7 @@ def _aql_way_below(v: str, *, every_hop: bool = True) -> str:
             f" FILTER kh_pt.edges[*].relationshipType ALL IN {_HIERARCHY_AQL} AND kh_pd.isPlaceholder != true"
             f" FILTER LENGTH(FOR kh_wi IN 0..LENGTH(kh_pt.edges) - 1"
             f" LET kh_wc = kh_pt.vertices[kh_wi + 1] LET kh_wp = kh_pt.vertices[kh_wi]"
-            f" FILTER NOT {_aql_browse_child('kh_wc', 'kh_wp', 'pb', 'false')} LIMIT 1 RETURN 1) == 0"
+            f" FILTER NOT {_aql_browse_child('kh_wc', 'kh_wp', 'pb', from_app)} LIMIT 1 RETURN 1) == 0"
             f" LIMIT 1 RETURN 1) > 0")
 
 
@@ -760,7 +762,7 @@ def _aql_kh_has_children(v: str, *, exact: bool = False, every_hop: bool = False
             f" FILTER {passes}"
             # A page's arrow leaves the stubs to `every_hop` (a second pass over the rows that have one), so its own plan holds no stub test.
             + (" FILTER kh_ch.isPlaceholder != true" if exact and not every_hop else
-               f" FILTER kh_ch.isPlaceholder != true OR (@kh_placeholders AND {_aql_way_below('kh_ch', every_hop=every_hop)})")
+               f" FILTER kh_ch.isPlaceholder != true OR (@kh_placeholders AND {_aql_way_below('kh_ch', every_hop=every_hop, from_app='kh_row_from_app' if exact else 'false')})")
         )
 
     children = children_of(rule)
@@ -20737,7 +20739,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     # The stub pass reads these; the rest only when the sidebar filter reads hasChildren
                     # (an unused bind fails the statement).
                     **({"kh_placeholders": lists_placeholders, "granted": row_ctx["granted"],
-                        "kh_scope": row_ctx["kh_scope"]} if lists_placeholders or sidebar else {}),
+                        "kh_scope": row_ctx["kh_scope"], "kh_from_app": row_ctx["kh_from_app"]} if lists_placeholders or sidebar else {}),
                     **(row_ctx if sidebar else {}),
                     **({"kh_only": visible.only} if restricted else {}),
                 },
@@ -20973,7 +20975,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
 
         # The rows the listing decides (a stub is listed only as the way to something readable), so every hop of the way is tested, unlike an arrow's.
-        below = _aql_way_below("kh_n", every_hop=True)
+        below = _aql_way_below("kh_n", every_hop=True, from_app="@kh_from_app")
 
         def rows(collection: str, *, stubs: bool = False) -> str:
             # Stubs are read apart so that the way-below test, a subquery, runs for them alone.
