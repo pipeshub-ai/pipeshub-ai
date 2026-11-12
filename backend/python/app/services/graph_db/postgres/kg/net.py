@@ -173,6 +173,7 @@ async def _ask(db: KernelDB, org: str, app: str, *, force: bool = False) -> None
         with bind(drainer._ctx(org)):
             await db.run(go, write=True)
     except Exception:
+        _ASKED.pop((org, app), None)                        # nothing was asked: the next detection asks at once
         logger.warning("kg could not ask for the demotion of %s", app, exc_info=True)
 
 

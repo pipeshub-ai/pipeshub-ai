@@ -643,7 +643,7 @@ async def test_the_first_page_that_shows_a_difference_demotes_at_once(pg_db, no_
         await net.verify_due(pg_db, org, states)
         if await _mode(p, org) == "legacy":
             break
-    assert await _mode(p, org) == "legacy" and (org, "drv") not in states or states[(org, "drv")].cursor is None
+    assert await _mode(p, org) == "legacy" and ((org, "drv") not in states or states[(org, "drv")].cursor is None)
 
 
 async def test_a_scan_in_progress_is_dropped_when_the_connector_leaves_enforce_and_the_next_one_is_fresh(pg_db, no_jitter, monkeypatch) -> None:
@@ -692,3 +692,21 @@ async def test_the_asking_stops_once_the_connector_is_no_longer_enforced(pg_db, 
     await asyncio.sleep(1.5)
     assert await _marks(org) == 1                                               # no further request
     await net.shutdown()
+
+
+async def test_a_request_that_failed_is_asked_again_at_the_next_detection_not_a_hold_window_later(pg_db, query_db, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org)
+    net._ASKED.clear()
+    fail = {"n": 1}
+
+    class Flaky:
+        async def run(self, fn, **k) -> object:
+            if fail["n"]:
+                fail["n"] -= 1
+                raise RuntimeError("the database went away")
+            return await query_db.run(fn, **k)
+    await net._ask(Flaky(), org, "drv")
+    assert await _marks(org) == 0
+    await net._ask(Flaky(), org, "drv")                                         # the next detection, at once
+    assert await _marks(org) == 1
