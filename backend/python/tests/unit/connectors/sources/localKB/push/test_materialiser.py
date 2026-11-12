@@ -29,6 +29,8 @@ JPEG = b"\xff\xd8\xff\xe0" + b"j" * 100
 NONCE = "ab" * 16
 CHILD_SRC = Path(C.__file__)
 
+needs_proc = pytest.mark.skipif(not os.path.exists("/proc/self/limits"), reason="not applicable on this platform: no /proc")
+
 
 def doc_id(n: int) -> str:
     return f"{n:024x}"
@@ -391,6 +393,7 @@ class TestLimits:
     def test_magic_table_equals_the_parents(self) -> None:
         assert C.MAGIC == I._MAGIC
 
+    @needs_proc
     async def test_limits_are_set_in_the_child(self, tmp_path) -> None:
         pool = M.Materialiser(pool_size=1)
         slot = await pool._acquire()

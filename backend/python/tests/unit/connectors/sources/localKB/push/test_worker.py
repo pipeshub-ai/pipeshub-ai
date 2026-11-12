@@ -23,6 +23,9 @@ from .bodies import TEXT, cells_body, envelope, raw
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
 
+#: Tests marked with this read a process's counters, limits or memory from /proc (Linux only).
+needs_proc = pytest.mark.skipif(not os.path.exists("/proc/self/io"), reason="not applicable on this platform: no /proc")
+
 SCHEMA_ID = "org1:kb1:2"
 SCHEMA = MetadataSchema(
     schema_id=SCHEMA_ID,
@@ -252,6 +255,7 @@ async def test_worker_refusal_crosses_the_process_boundary(spool) -> None:
         await w.close()
 
 
+@needs_proc
 @pytest.mark.parametrize("sig", [signal.SIGABRT, signal.SIGSEGV, signal.SIGBUS])
 async def test_worker_death_by_abort_is_413_complexity_and_the_next_push_works(spool, sig) -> None:
     w = W.PushWorker()
@@ -267,6 +271,7 @@ async def test_worker_death_by_abort_is_413_complexity_and_the_next_push_works(s
         await w.close()
 
 
+@needs_proc
 async def test_external_sigkill_is_503_not_413(spool) -> None:
     w = W.PushWorker()
     try:
@@ -293,6 +298,7 @@ async def test_a_worker_over_its_budget_is_killed_and_replaced(spool) -> None:
         await w.close()
 
 
+@needs_proc
 async def test_a_second_push_waits_for_the_lease_then_gets_busy(spool) -> None:
     w = W.PushWorker(lease_wait_s=0.2)
     try:
@@ -305,6 +311,7 @@ async def test_a_second_push_waits_for_the_lease_then_gets_busy(spool) -> None:
         await w.close()
 
 
+@needs_proc
 async def test_a_queued_push_is_not_charged_for_the_first_ones_time(spool) -> None:
     w = W.PushWorker(lease_wait_s=30, kill_after_s=30)
     try:
@@ -329,6 +336,7 @@ async def test_worker_is_replaced_after_its_task_limit_outside_any_budget(spool,
         await w.close()
 
 
+@needs_proc
 async def test_worker_has_no_core_files_and_an_address_space_limit(spool) -> None:
     import resource
 
@@ -389,6 +397,7 @@ def rss_of(pid: int) -> int:
         return 0
 
 
+@needs_proc
 @pytest.mark.timeout(240)
 async def test_a_sparse_cells_body_at_the_cap_is_accepted_inside_the_worker_bound(spool) -> None:
     """16 MiB of table rows of 512 mostly empty cells (5.1 M list elements). Before the lexer was made
@@ -437,6 +446,7 @@ def test_a_spool_whose_directory_disappeared_while_idle_still_takes_a_body(tmp_p
         idle.close()
 
 
+@needs_proc
 async def test_a_cancelled_validation_does_not_leave_its_result_for_the_next_push(spool) -> None:
     w = W.PushWorker(lease_wait_s=30, kill_after_s=30)
     try:
@@ -481,6 +491,7 @@ async def push_small(w: W.PushWorker, spool: Spool, events: Events | None = None
     return await w.validate(spool.write(raw(envelope())), spool.new_path("out"), schema_id=None, schema=None, account=events)
 
 
+@needs_proc
 @pytest.mark.parametrize("sig", [signal.SIGABRT, signal.SIGSEGV, signal.SIGBUS])
 async def test_a_real_signal_death_on_a_fresh_worker_is_a_strike(spool, sig) -> None:
     events, w = Events(), W.PushWorker()
@@ -496,6 +507,7 @@ async def test_a_real_signal_death_on_a_fresh_worker_is_a_strike(spool, sig) -> 
         await w.close()
 
 
+@needs_proc
 async def test_an_external_sigkill_is_no_strike(spool) -> None:
     events, w = Events(), W.PushWorker()
     try:
@@ -508,6 +520,7 @@ async def test_an_external_sigkill_is_no_strike(spool) -> None:
         await w.close()
 
 
+@needs_proc
 async def test_a_reused_worker_death_is_replayed_once_and_a_surviving_replay_is_only_suspect(spool) -> None:
     """The earlier push may have left the shared worker in a state that kills the next, harmless one."""
     events, w = Events(), W.PushWorker()
@@ -521,6 +534,7 @@ async def test_a_reused_worker_death_is_replayed_once_and_a_surviving_replay_is_
         await w.close()
 
 
+@needs_proc
 async def test_a_replay_that_dies_too_is_a_strike(spool, monkeypatch) -> None:
     ready: dict[int, int] = {}
     real_start = W.PushWorker._start
@@ -549,6 +563,7 @@ async def test_a_replay_that_dies_too_is_a_strike(spool, monkeypatch) -> None:
         await w.close()
 
 
+@needs_proc
 async def test_a_reused_worker_death_after_a_long_run_is_the_bodys_own_and_is_not_replayed(spool, monkeypatch) -> None:
     monkeypatch.setattr(W, "REPLAY_ONLY_BELOW_S", 0.0)
     events, w = Events(), W.PushWorker()
@@ -563,6 +578,7 @@ async def test_a_reused_worker_death_after_a_long_run_is_the_bodys_own_and_is_no
         await w.close()
 
 
+@needs_proc
 async def test_a_replay_runs_inside_the_remaining_budget_not_a_fresh_one(spool) -> None:
     events, w = Events(), W.PushWorker(kill_after_s=0.6)
     try:
@@ -588,6 +604,7 @@ async def test_a_cpu_bound_overrun_is_a_strike(spool) -> None:
         await w.close()
 
 
+@needs_proc
 async def test_an_idle_overrun_is_a_refusal_not_a_strike(spool) -> None:
     """A worker that is stopped uses no CPU while it holds the lease: a slow host or dependency, not a hostile body."""
     events, w = Events(), W.PushWorker(kill_after_s=0.6)
@@ -641,6 +658,7 @@ async def test_a_run_under_the_kill_is_still_charged_its_seconds(spool) -> None:
         await w.close()
 
 
+@needs_proc
 async def test_a_cancelled_task_is_charged_no_strike_and_no_overrun(spool) -> None:
     events, w = Events(), W.PushWorker()
     try:
