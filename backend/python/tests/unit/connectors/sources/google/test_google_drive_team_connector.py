@@ -640,6 +640,7 @@ class TestSyncUsers:
     async def test_a_cut_user_listing_holds_back_external_membership_of_the_workspaces_own_domains(self) -> None:
         conn, _ = self._cut_listing_connector()
         conn.data_entities_processor.on_external_app_users = AsyncMock()
+        conn._account_domains = {"x.com"}
         conn.synced_user_emails = {"a@x.com"}
         # lost@alias.org is on the missing page and its domain is none of the listed people's: the last complete
         # listing's domains still hold it back
@@ -656,6 +657,34 @@ class TestSyncUsers:
         assert sorted(conn.data_entities_processor.on_external_app_users.await_args.args[0]) == [
             "lost@alias.org", "lost@x.com", "partner@other.org"
         ]
+
+    @pytest.mark.asyncio
+    async def test_a_cut_user_listing_holds_back_a_verified_domain_no_listed_account_is_on(self) -> None:
+        conn, _ = self._cut_listing_connector()
+        conn.data_entities_processor.on_external_app_users = AsyncMock()
+        conn._user_status.known_domains = AsyncMock(return_value=set())
+        conn._account_domains = {"x.com", "alias-only.org"}
+        conn.synced_user_emails = {"a@x.com"}
+        conn._external_emails = {"lost@alias-only.org", "partner@other.org"}
+        conn._listing_cut = True
+
+        await conn._flush_external_app_users()
+
+        conn.data_entities_processor.on_external_app_users.assert_awaited_once_with(["partner@other.org"], conn.connector_id)
+
+    @pytest.mark.asyncio
+    async def test_a_cut_user_listing_adds_no_external_membership_when_the_workspace_domains_cannot_be_read(self) -> None:
+        conn, _ = self._cut_listing_connector()
+        conn.data_entities_processor.on_external_app_users = AsyncMock()
+        conn._account_domains = None
+        conn.admin_data_source = MagicMock(domains_list=AsyncMock(side_effect=RuntimeError("down")))
+        conn.synced_user_emails = {"a@x.com"}
+        conn._external_emails = {"partner@other.org"}
+        conn._listing_cut = True
+
+        await conn._flush_external_app_users()
+
+        conn.data_entities_processor.on_external_app_users.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_sync_users_empty(self):
