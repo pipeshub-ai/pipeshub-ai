@@ -11,7 +11,9 @@ holds them to the oracle:
 * total / counts: `total` is the number of rows, `counts_by_type` is the rows by type (one predicate for the rows and the counts);
 * facet: a filtered total equals the oracle's count of visible nodes with that value, and a value no visible node
   holds has total 0 (a bucket with no visible item does not exist). The oracle's count, not the listing's rows;
-* beyond the cap: a browse finding about a node every route to which is longer than the access walk reads (`beyond_cap`) is a `gap`;
+* beyond the cap: a row the browse lists that the oracle refuses only because its walk from the App passes the hop cap (`refused_by_cap`, the
+  verdict `R7:depth-cap`) is a `gap`: a browse reads one hop from the node it opens. An admitted node a browse leaves out is a `browse_gap` however
+  deep it lies (a seed or an open App's member is admitted with no hop cap);
 * browse: the service path (`totalItems`, `counts`, the rows of a folder) against the oracle, every row it lists opened in turn and held to the
   same (one row per node over every page, a total that counts each once), and each row's expand arrow against opening that row: it is on exactly when the browse of the row lists something, and a stub is listed exactly where opening it lists something.
 """
@@ -25,7 +27,6 @@ from typing import TYPE_CHECKING, Any
 
 from app.connectors.sources.localKB.handlers.kh_search import search_page
 
-from .oracle import MAX_HOPS
 from .runner import OracleLayer
 
 if TYPE_CHECKING:
@@ -103,18 +104,11 @@ def hidden_by_navigation(world: World, node: Node) -> bool:
     return any(hides(g) for g in node.belongs if world.node(g).kind == "group") or any(world.node(a.id).hide_children for a in _ancestors(world, node))
 
 
-def beyond_cap(world: World, node_id: str) -> bool:
-    """Whether every hierarchy route from an App to the node is longer than the access walk reads (`oracle.MAX_HOPS`): the check refuses such a
-    node whatever its grants, while a browse reads one hop from the node it opens, so the two part there by design (a world of a chain deeper
-    than the cap)."""
-    depth, frontier, met = 0, {node_id}, {node_id}
-    while frontier and depth <= MAX_HOPS:
-        if any(world.node(n).kind == "app" for n in frontier):
-            return False
-        frontier = {p.id for n in frontier for p in world.node(n).parents if p.rel in HIERARCHY} - met
-        met |= frontier
-        depth += 1
-    return bool(frontier)
+def refused_by_cap(reference: OracleLayer, world: World, viewer: str, node_id: str) -> bool:
+    """Whether the oracle refuses the node only because its walk from the App is longer than the cap (`oracle.MAX_HOPS`): the verdict says so
+    (`R7:depth-cap`, every hop up to the cap passed). No other refusal and no admission is excused."""
+    found = reference.explain(world, viewer, [node_id])[node_id]
+    return not found.admitted and found.reason == "R7:depth-cap"
 
 
 def declared_gap(world: World, node_id: str) -> bool:
@@ -164,7 +158,7 @@ async def check_world(layer: GraphCheckLayer, world: World, scenario_id: str = "
             have = (await listing(layer, world, viewer, flt)).total
             if have != want:
                 add("facet", f"{name}: total {have}, oracle count {want}")
-        found.extend(await _browse(layer, world, viewer, seen, scenario_id))
+        found.extend(await _browse(layer, reference, world, viewer, seen, scenario_id))
     return found
 
 
@@ -215,7 +209,9 @@ async def browse_pages(layer: GraphCheckLayer, world: World, viewer: str, node: 
     raise AssertionError("browse did not end")
 
 
-async def _browse(layer: GraphCheckLayer, world: World, viewer: str, seen: dict[str, Any], scenario_id: str) -> list[KhFinding]:
+async def _browse(
+    layer: GraphCheckLayer, reference: OracleLayer, world: World, viewer: str, seen: dict[str, Any], scenario_id: str,
+) -> list[KhFinding]:
     """The service path: browse a few folders the viewer may open, page by page, against the oracle's children of each, and open every row they
     list (a group, a folder, a record, a stub), held to one row per node over its pages and to its arrow."""
     ns = await layer._ns(world)
@@ -247,11 +243,11 @@ async def _browse(layer: GraphCheckLayer, world: World, viewer: str, seen: dict[
         if set(totals) != {len(got)} or set(counted) != {len(got)}:
             add("browse", f"{node}: totalItems per page {sorted(set(totals))}, counts.total {sorted(set(counted))}, rows {len(got)}")
         for extra in sorted(extras(got)):
-            add("gap" if beyond_cap(world, extra) else "browse_extra", f"{node}: lists {extra}, which the oracle does not let the viewer open")
+            add("gap" if refused_by_cap(reference, world, viewer, extra) else "browse_extra", f"{node}: lists {extra}, which the oracle does not let the viewer open")
         # A readable child the browse leaves out is an under-admit. The one exemption is a folder that hides its children (a display flag).
         for missing in sorted(n.id for n in children(node) if n.id in seen and n.id not in got):
             if not hidden_by_navigation(world, world.node(missing)):
-                add("gap" if beyond_cap(world, missing) else "browse_gap", f"{node}: the browse leaves out {missing}, which the viewer may open")
+                add("browse_gap", f"{node}: the browse leaves out {missing}, which the viewer may open")
         return got
 
     folders = [i for i, n in seen.items() if n.kind == "group"][:BROWSE_FOLDERS]

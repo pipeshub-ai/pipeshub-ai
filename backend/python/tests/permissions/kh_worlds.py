@@ -7,9 +7,14 @@ is neither listed nor counted. Written in the same shape as the golden worlds; i
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import yaml
 
 from .scenario import world_from_data
+
+if TYPE_CHECKING:
+    from .model import World
 
 # more cross-connector shapes: BELONGS_TO the app, hierarchy-only, a KB, an app-level connector, a shared record group name
 CROSS2 = world_from_data(yaml.safe_load("""
@@ -357,6 +362,29 @@ nodes:
 grants: [[u, g]]
 gates: [[u, A]]
 """))
+
+
+def _deep_chain(app: str, grants: bool) -> World:
+    """56 OPEN records in a chain below a group of the App: past 50 hops the walk from the App stops, and each is read as a seed (``grants``) or as
+    a member of an App that opens everything."""
+    nodes = "".join(f"  - {{id: c{i}, kind: record, connector: A, rule: OPEN, parents: [{'g' if i == 0 else f'c{i - 1}'}], "
+                    f"inherits: [{'g' if i == 0 else f'c{i - 1}'}], belongs: [A]}}\n" for i in range(DEEP_CHAIN))
+    granted = "".join(f", [u, c{i}]" for i in range(DEEP_CHAIN)) if grants else ""
+    return world_from_data(yaml.safe_load(f"""
+principals: [{{id: u}}]
+nodes:
+  - {app}
+  - {{id: g, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A], inherits: [A]}}
+{nodes}grants: [[u, g]{granted}]
+gates: [[u, A]]
+"""))
+
+
+# DEEPSEED / DEEPOPEN: a chain deeper than the walk's cap; the oracle admits every link with no hop cap (a seed, a member of an App that opens
+# everything), so each is listed under its parent and opens on the next, past depth 50 as above it
+DEEP_CHAIN = 56
+DEEPSEED = _deep_chain("{id: A, kind: app, app_type: DRIVE}", grants=True)
+DEEPOPEN = _deep_chain("{id: A, kind: app, app_type: DRIVE, model: APP_LEVEL}", grants=False)
 
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
              RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB]

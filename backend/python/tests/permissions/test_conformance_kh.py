@@ -12,8 +12,19 @@ import logging
 import pytest
 
 from . import gen
-from .kh_layer import KhFinding, browse_pages, check_world, children_of
-from .kh_worlds import DECLSTUB, FOLDERSTUB, KH_WORLDS, OPENSTUB, SCOPEDTWO, TWOWAY
+from .kh_layer import KhFinding, browse_pages, check_world, children_of, refused_by_cap
+from .kh_worlds import (
+    DECLSTUB,
+    DEEP_CHAIN,
+    DEEPOPEN,
+    DEEPSEED,
+    FOLDERSTUB,
+    KH_WORLDS,
+    OPENSTUB,
+    SCOPEDTWO,
+    TWOWAY,
+)
+from .runner import OracleLayer
 from .scenario import Scenario, load_all
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(0)]  # sized by the scenario set and PERM_GEN_WORLDS
@@ -23,7 +34,8 @@ CHUNK = 25
 # run out of memory on them.
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 # `gap` is reported, never failed: the shapes the oracle cannot decide (an upload, which has its own surface, and a node under a group that hides its
-# children). A readable node the flatten listing or a browse leaves out is `under` or `browse_gap` and fails.
+# children), and a row a browse lists that the oracle refuses only for its hop cap (`refused_by_cap`). A readable node the flatten listing or a browse
+# leaves out is `under` or `browse_gap` and fails, however deep it lies.
 GAPS = {"gap"}
 # shortcut: ten under-admits (`browse_gap`: a node the oracle admits by another arm, as a second parent's walk, an App member or below a seed, that the
 # browse of a folder under a declaration or a seed does not list) are known in the generated worlds (seed 7, 50 worlds); the golden worlds fail on any.
@@ -120,6 +132,20 @@ async def test_a_folder_lists_each_stub_once_over_its_pages(graph_layers) -> Non
             assert not bad, f"{layer.name}\n{_describe(bad)}"
         finally:
             await layer.release([FOLDERSTUB])
+
+
+async def test_a_node_the_oracle_admits_past_the_cap_is_listed_under_its_parent(graph_layers) -> None:
+    """A seed, and a member of an App that opens everything, are admitted with no hop cap: below depth 50 each link is listed under its parent,
+    with an arrow, and the layer never excuses one as the cap's (`refused_by_cap` reads the verdict, not the depth)."""
+    for world in (DEEPSEED, DEEPOPEN):
+        assert not any(refused_by_cap(OracleLayer(graph_layers[0].shape), world, "u", f"c{i}") for i in range(DEEP_CHAIN))
+        for layer in graph_layers:
+            await layer.preload([world])
+            try:
+                for i in range(46, DEEP_CHAIN - 1):
+                    assert await children_of(layer, world, "u", f"c{i}", "record") == {f"c{i + 1}": i + 2 < DEEP_CHAIN}, (layer.name, i)
+            finally:
+                await layer.release([world])
 
 
 async def test_the_declared_group_arm_lists_only_its_own_connectors_records(graph_layers) -> None:
