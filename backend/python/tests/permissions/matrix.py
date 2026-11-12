@@ -104,7 +104,7 @@ CONNECTORS: tuple[Connector, ...] = (
               "same writer shape as Cloud: project OPEN + Browse grants; an issue inherits where it is filed; a leveled one keeps a copy of the holders"),
     Connector("atlassian/jira_cloud_personal", "container", CONTAINER, "atlassian/jira_cloud_personal/connector.py:97"),
     Connector("atlassian/jira_data_center_personal", "container", CONTAINER, "atlassian/jira_data_center_personal/connector.py:66"),
-    Connector("microsoft/sharepoint_online", "sharepoint", OVERRIDE, "microsoft/sharepoint_online/connector.py:1685",
+    Connector("microsoft/sharepoint_online", "sharepoint", OVERRIDE, "microsoft/sharepoint_online/connector.py:1690",
               "unique item inherit=False + own role assignments"),
     Connector("microsoft/onedrive", "onedrive", OVERRIDE, "microsoft/onedrive/connector.py:1060",
               "every item inherit=False with the full effective list"),
