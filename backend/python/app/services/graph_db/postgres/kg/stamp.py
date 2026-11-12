@@ -238,7 +238,7 @@ async def stamp(tx: Tx, org: str, seeds: set[Key], *, also: set[Key] | None = No
     lost a child, whose ``leaf`` flips); returns what it did. Runs in the projection's unit, under the connector's lock, after the structural rows. ``locked``: the connectors the
     unit holds (with ``org_wide``, any): a stamp that reaches another raises :class:`NeedLocks` before anything is written."""
     from app.services.graph_db.postgres.kg import restamp  # restamp imports this module
-    bump(org, set(locked or ()), wide=org_wide)
+    bump(tx, org, set(locked or ()), wide=org_wide)
 
     recs = {k for k in seeds if k[0] in RECORD_COLLS}
     st = StampStats(seeds=len(recs))
@@ -408,7 +408,7 @@ async def stamp_app(tx: Tx, org: str, app_id: str, after: str | None, limit: int
     The first page also stores what the stamps are compiled with. ``locked``: the connectors the unit holds; a page whose stamps reach another raises :class:`locks.NeedLocks` before it writes
     (a ``dry`` page writes nothing and reads under the connector's lock in a unit that stays open, so it passes none)."""
     if not dry:
-        bump(org, {app_id})
+        bump(tx, org, {app_id})
     w = KgWriter(tx)
     app_sks, facts = await _facts(tx, org, w, {app_id})
     if app_id not in facts:
@@ -432,7 +432,7 @@ async def stamp_app(tx: Tx, org: str, app_id: str, after: str | None, limit: int
             below |= frontier
         keys |= below
     if not dry:      # every connector whose rows this page rewrites, not only its own
-        bump(org, {a for a in (await held_apps(tx, org, keys)).values() if a})
+        bump(tx, org, {a for a in (await held_apps(tx, org, keys)).values() if a})
     await stamp_keys(tx, org, keys, st, app_sks=app_sks, facts=facts, dry=dry, locked=locked)
     return stampgraph.nk(rows[-1]["coll"], rows[-1]["id"])
 

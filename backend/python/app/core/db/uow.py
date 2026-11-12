@@ -143,6 +143,7 @@ class Tx:
         self.failed = False  # a statement failed and no savepoint rollback has undone it since
         self.org_id = ""  # the org the unit is bound to
         self.role = ""  # the database role the unit runs as
+        self.after_commit: list[Callable[[], None]] = []  # run, without waiting, once the unit has committed (a failing one is logged, never fails the unit)
         self.kg_dirty = False  # a statement of this unit that the guard recognised writes graph.nodes or graph.edges (the capture trigger's mark is the authority)
         self._open = True
 
@@ -530,6 +531,11 @@ class KernelDB:
                 mapped = self.map_error(e, tx)
                 raise (CommitOutcomeUnknown("connection lost after COMMIT was sent") if isinstance(mapped, ConnectionLost) else mapped) from e
             outcome = "commit"
+            for done in tx.after_commit:
+                try:
+                    done()
+                except Exception:
+                    logger.exception("after-commit step failed")
             if write and self.post_commit_hook is not None:
                 try:
                     self.post_commit_hook(tx)  # the unit is committed: a hook that fails must not fail it

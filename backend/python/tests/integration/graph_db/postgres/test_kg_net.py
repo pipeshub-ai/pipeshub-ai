@@ -746,7 +746,7 @@ async def test_a_change_drained_during_the_principals_check_restarts_the_scan(pg
     real = net._principals
 
     async def drain_meanwhile(db, o) -> bool:
-        net.locks.bump(o, {"drv"})                                              # what a drain of the connector does while the principals are read
+        net.locks.WRITTEN[(o, "drv")] = net.locks.written(o, "drv") + 1          # what a drain of the connector does while the principals are read
         return await real(db, o)
     monkeypatch.setattr(net, "_principals", drain_meanwhile)
     states: dict = {}
@@ -757,3 +757,29 @@ async def test_a_change_drained_during_the_principals_check_restarts_the_scan(pg
     for _ in range(3):
         await net.verify_due(pg_db, org, states)
     assert sets and sets[0] == (org, "drv")                                     # a scan nothing moved under completes
+
+
+async def test_a_unit_that_commits_between_two_pages_restarts_a_scan_that_began_after_it_counted(pg_db, no_jitter, monkeypatch) -> None:
+    p, org = prov(pg_db), new_org()
+    await _enforce(p, pg_db, org, extra=10)
+    monkeypatch.setattr(verify_mod, "PAGE", 2)
+    monkeypatch.setattr(net, "VERIFY_BUDGET_S", 0.0)
+    states: dict = {}
+
+    counted, go_on = asyncio.Event(), asyncio.Event()
+
+    async def unit(tx) -> None:
+        net.locks.bump(tx, org, {"drv"})                                        # the unit has written and counted, and has not committed
+        counted.set()
+        await go_on.wait()
+    with ctx(org):
+        writer = asyncio.create_task(pg_db.run(unit, write=True))
+        await counted.wait()
+        await net.verify_due(pg_db, org, states)                                # the scan begins here and reads its first page
+        go_on.set()
+        await writer                                                            # now it commits
+    first = states[(org, "drv")]
+    assert first.cursor is not None and first.mark == net.locks.written(org, "drv") - 1
+    await net.verify_due(pg_db, org, states)
+    cur = states[(org, "drv")].cursor
+    assert cur is not None and cur.pages == 1 and states[(org, "drv")].mark == net.locks.written(org, "drv")      # begun again: the commit moved the count

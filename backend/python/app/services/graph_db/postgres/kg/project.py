@@ -173,7 +173,7 @@ async def project(tx: Tx, org: str, focus: set[Key], *, lock_for: set[str] | Non
         try:
             async with tx.savepoint("kg_project"):
                 st = await _project(tx, org, focus, lock_for=lock_for, expand_neighbours=expand_neighbours, stamps=stamps, extra=extra, wide=wide)
-            bump(org, st.apps, wide=st.wide)
+            bump(tx, org, st.apps, wide=st.wide)
             return st
         except NeedLocks as e:
             extra |= e.apps
