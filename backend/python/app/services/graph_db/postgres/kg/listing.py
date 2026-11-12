@@ -201,7 +201,8 @@ BROWSE_UP = f"/* pipeshub:kg.browse_up */ SELECT {COLS} FROM kg.records r WHERE 
 BROWSE_LIVE = "r.kind IN (2, 3) AND NOT r.deleted AND NOT r.alien"        # what a browse reads: placeholders too, for the way they hold to something readable
 LINKS_MAX = 5_000       # the linked children of one node a request reads (kg.links rows: a node's non-primary children); past it a browse is refused as too large
 # The linked children of the start ``$2`` (by the key of kg.links), read once per request and handed to its statements: ``LINKS_MAX + 1`` at most (``$3``).
-LINKED_CHILDREN = "/* pipeshub:kg.browse_linked */ SELECT child_sk FROM kg.links WHERE org_id = $1 AND parent_sk = $2 AND kind = 1 LIMIT $3"
+# (OFFSET 0: planned as the parent's links, the LIMIT only stops the read; with it inside, the planner may walk the organisation's links hoping to meet the parent's early)
+LINKED_CHILDREN = "/* pipeshub:kg.browse_linked */ SELECT child_sk FROM (SELECT child_sk FROM kg.links WHERE org_id = $1 AND parent_sk = $2 AND kind = 1 OFFSET 0) l LIMIT $3"
 
 
 def browse_scopes(links: str | None) -> list[str]:
