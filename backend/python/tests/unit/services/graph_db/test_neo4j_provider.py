@@ -5263,7 +5263,7 @@ class TestExternalCollaboratorBrowse:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("start", [None, "f1"])
-    async def test_the_stubs_are_read_once_after_the_children_are_collected(self, provider, start):
+    async def test_the_stubs_are_read_once_after_the_children_are_collected(self, provider, start) -> None:
         """Joined to the collect in one WITH, the planner read the start's children for the stubs once per child: 25M rows and a timeout
         on a 5k-record folder. In a WITH of its own it runs once per page."""
         provider._kh_v3_connector_and_size = AsyncMock(return_value=("app1", 1))
