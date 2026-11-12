@@ -425,10 +425,10 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
     async def delete_key(self, key: str) -> bool:
         try:
-            result = await self._run(lambda c: c.delete(key))
-            return result is not None
+            # The client answers deleted >= 1: False for a key that was not there.
+            return bool(await self._run(lambda c: c.delete(key)))
         except Exception as e:
-            raise ConnectionError(f"Failed to delete key: {str(e)}")
+            raise ConnectionError(f"Failed to delete key: {e}") from e
 
     async def get_all_keys(self) -> List[str]:
         """Get all keys from etcd."""
