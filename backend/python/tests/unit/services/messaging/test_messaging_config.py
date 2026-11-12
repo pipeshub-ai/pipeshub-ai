@@ -378,7 +378,20 @@ class TestRecordProcessingTimeoutFor:
 
     def test_stale_recovery_waits_out_the_longest_budget(self) -> None:
         """A cutoff under the PDF budget would republish a PDF still parsing."""
-        assert messaging_env.stale_recovery_after_seconds == 5400.0 + 1800.0 + 120.0
+        assert messaging_env.stale_recovery_after_seconds == 5400.0 + 2 * 1800.0 + 1800.0 + 120.0
+
+    def test_stale_recovery_covers_two_parse_waits_and_the_embedding_gate_pause(self) -> None:
+        """A record queues for a parse slot at download and again at parse, and its
+        batches may pause the budget at the embedding gate; each of those moves
+        the record's age past its budget."""
+        assert messaging_env.embedding_gate_wait_cap_seconds == 1800.0
+        assert (
+            messaging_env.stale_recovery_after_seconds
+            == messaging_env.max_record_processing_timeout
+            + 2 * messaging_env.parse_admission_wait_seconds
+            + messaging_env.embedding_gate_wait_cap_seconds
+            + messaging_env.concurrency_lease_seconds
+        )
 
     def test_stale_recovery_also_waits_out_the_parse_admission_queue(self) -> None:
         """`parse_admission_wait` pauses the processing budget while a record

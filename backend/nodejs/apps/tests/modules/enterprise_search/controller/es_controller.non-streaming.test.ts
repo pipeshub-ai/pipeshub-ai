@@ -4,6 +4,7 @@ import sinon from 'sinon'
 import mongoose from 'mongoose'
 import jwt from 'jsonwebtoken'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
+import { MongoConversationRepository } from '../../../../src/libs/repositories/conversation/mongo'
 import { HttpError } from '../../../../src/libs/errors/http.errors'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { logLevelFor } from '../../../../src/libs/utils/error.middleware.utils'
@@ -200,6 +201,25 @@ describe('es_controller non-streaming chat routes', () => {
           expect(r.next.called, String(r.error()?.message)).to.be.false
           expect(r.ai.calls).to.have.length(1)
           expect(r.ai.calls[0]!.body.previousConversations).to.deep.equal([])
+        })
+      }
+
+      if (!flow.create) {
+        it('hides an earlier answer the reader lost access to, in the history and in the response', async () => {
+          sinon.stub(MongoConversationRepository.prototype, 'isConnected').returns(true)
+          const r = await run(flow, (ai, store) => {
+            store.messages.find((m) => m.get('messageType') === 'bot_response')?.set('attachments', [{ recordId: 'rec-lost', recordName: 'lost.pdf' }])
+            ai.reply(/\/chat\/records\/access$/, 200, { accessible: [], accessibleUrls: [] })
+            ai.reply(exactPath(flow.aiPath), 200, answer('A fresh answer.'))
+          })
+
+          expect(r.next.called, String(r.error()?.message)).to.be.false
+          const sent = r.ai.calls.find((c) => c.url.endsWith(flow.aiPath))!.body.previousConversations as Array<{ content: string }>
+          expect(JSON.stringify(sent)).to.not.contain('An older answer.')
+          const stored = (r.res.jsonBody as { conversation: { messages: Array<Record<string, unknown>> } }).conversation.messages
+          expect(JSON.stringify(stored)).to.not.contain('An older answer.')
+          expect(stored.some((m) => m.answerHidden !== undefined)).to.equal(true)
+          expect(stored.some((m) => m.content === 'A fresh answer.' && m.answerHidden === undefined)).to.equal(true)
         })
       }
 

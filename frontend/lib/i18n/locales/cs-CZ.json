@@ -982,6 +982,11 @@
     "fork": "Rozvětvit chat",
     "forkFromHere": "Rozvětvit odtud",
     "regenerate": "Vygenerovat znovu",
+    "answerHidden": {
+      "lost": "Tato odpověď použila obsah, ke kterému již nemáte přístup.",
+      "unconfirmed": "Nepodařilo se ověřit váš přístup. Zkuste to znovu.",
+      "askAgain": "Zeptat se znovu"
+    },
     "readAloud": "Přečíst nahlas",
     "stopReading": "Zastavit čtení",
     "ttsNotSupported": "Převod textu na řeč není v tomto prohlížeči podporován",

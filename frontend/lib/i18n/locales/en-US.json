@@ -936,6 +936,11 @@
     "fork": "Fork chat",
     "forkFromHere": "Fork from here",
     "regenerate": "Regenerate",
+    "answerHidden": {
+      "lost": "This answer used content you can no longer access.",
+      "unconfirmed": "We couldn't confirm your access. Try again.",
+      "askAgain": "Ask again"
+    },
     "readAloud": "Read aloud",
     "stopReading": "Stop reading",
     "ttsNotSupported": "Text-to-speech is not supported in this browser",

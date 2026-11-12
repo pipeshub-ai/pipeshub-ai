@@ -936,6 +936,11 @@
     "fork": "채팅 분기",
     "forkFromHere": "여기서 분기",
     "regenerate": "다시 생성",
+    "answerHidden": {
+      "lost": "이 답변은 더 이상 접근할 수 없는 콘텐츠를 사용했습니다.",
+      "unconfirmed": "접근 권한을 확인하지 못했습니다. 다시 시도하세요.",
+      "askAgain": "다시 질문하기"
+    },
     "readAloud": "소리 내어 읽기",
     "stopReading": "읽기 중지",
     "ttsNotSupported": "이 브라우저에서는 텍스트 음성 변환이 지원되지 않습니다",

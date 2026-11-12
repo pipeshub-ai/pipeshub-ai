@@ -1332,7 +1332,13 @@ async def check_viewer_record_access(
     by_url: dict[str, list[str]] = {}
     if urls:
         try:
-            rows = await graph_provider.get_records_by_weburls(urls, org_id, per_address=_RECORDS_PER_URL_LIMIT)
+            # Deleted records too: a deleted record's address is that record's, as its id is.
+            # Known limit: a record removed outright leaves no row, so its address reads as unmatched
+            # (a web page). Answers that cite it by record id are still hidden; only one that names it
+            # by address alone is not.
+            rows = await graph_provider.get_records_by_weburls(
+                urls, org_id, per_address=_RECORDS_PER_URL_LIMIT, include_deleted=True,
+            )
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Access check unavailable") from exc
         for row in rows:
@@ -1352,6 +1358,8 @@ async def check_viewer_record_access(
             and len(by_url[u]) < _RECORDS_PER_URL_LIMIT
             and all(r in readable for r in by_url[u])
         ],
+        # An address no record is stored at (a public web page): not a record to lose.
+        "unmatchedUrls": [u for u in urls if not by_url.get(u)],
     }
 
 
