@@ -249,6 +249,9 @@ UNDECIDED_PARTS = "parts"
 UNDECIDED_NEXT_PART = "next_part"
 # Every undecided list's first key, so a full sync's cleanup spares their files whoever is synced (`keys`).
 UNDECIDED_REMOVAL_KEYS_SYNC_POINT_KEY = "undecided_removal_keys"
+# The list of the unseen audience files a full sync's cleanup could not decide, tied to no user (no source user id is
+# "kept"): every run checks them again, as those of a user no longer in the directory.
+UNDECIDED_KEPT_KEY = f"{UNDECIDED_REMOVALS_SYNC_POINT_PREFIX}kept"
 # The ids of the items that failed in the listing this task is reading (each user's sync runs in its own task).
 _failed_items: ContextVar[set[str] | None] = ContextVar("drive_failed_items", default=None)
 FILTER_CLEANUP_PAGE_SIZE = 500
@@ -470,6 +473,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._undecided_keys_lock = asyncio.Lock()
         # The undecided lists this run checked again; the rest are checked after every user's run.
         self._undecided_visited: set[str] = set()
+        # The files on an undecided list, as read before this run's stale-record cleanup.
+        self._undecided_file_ids: set[str] = set()
         self._run_report: DriveRunReport | None = None
         # Keyed by impersonated user: a target one user can read says nothing about another.
         self._shortcut_cache: dict[str, dict[str, dict]] = {}
@@ -776,6 +781,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._deployment_emails = None
             self._external_emails = set()
             self._undecided_visited = set()
+            self._undecided_file_ids = set()
             if self._folder_seed_ids:
                 self.logger.info(
                     f"📁 Folder filter active with {len(self._folder_seed_ids)} seed folder(s)"
@@ -820,7 +826,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 # Files under a selected folder nobody could list fail the folder
                 # filter without being seen, so cleanup would read them as deleted.
                 self._sync_ledger.note_incomplete()
-            await self._spare_undecided_removals()
+            await self._keep_records_no_listing_may_show()
             await reconcile_unseen_records(
                 self.data_entities_processor,
                 self.connector_id,
@@ -3140,28 +3146,55 @@ class GoogleDriveTeamConnector(BaseConnector):
             self._undecided_part_key(undecided_key, part), {UNDECIDED_REMOVALS: sorted([*parts[part], entry])}
         )
 
-    async def _spare_undecided_removals(self) -> None:
-        """Count every file on an undecided list as seen by this run, so a full sync's cleanup never deletes one. A
-        file shared with an audience in a drive no synced user is in is in no listing, yet its audience may still
-        open it; it is settled only by its recheck. When the lists cannot be read, the cleanup is skipped."""
-        if not self._sync_ledger.can_reconcile:
+    async def _keep_records_no_listing_may_show(self) -> None:
+        """Keep the files no listing may show from a full sync's removals. A file in a shared drive no synced user is
+        in, shared with an audience alone, is in no listing while its audience opens it.
+
+        Every file on an undecided list counts as seen, so the stale-record cleanup never deletes one: only its
+        recheck settles it. In a full sync the runner started, which then unlinks every record the run did not write,
+        the files on an undecided list and the records granted to an audience group are noted kept; the removal
+        check, or the cleanup's (`_unseen_records_an_audience_may_open`), settles those. A failed read marks the run
+        incomplete, so neither the cleanup nor the unlink removes anything."""
+        reconcile = self._sync_ledger.can_reconcile
+        full_sync = self.data_entities_processor.full_sync_running(self.connector_id) is True
+        if not (reconcile or full_sync):
             return
-        spared = 0
+        kept: set[str] = set()
         try:
             index = await self.drive_delta_sync_point.read_sync_point(UNDECIDED_REMOVAL_KEYS_SYNC_POINT_KEY) or {}
             for key in index.get("keys") or []:
                 for part in (await self._read_undecided(str(key)))[1]:
-                    for entry in part:
-                        self._sync_ledger.see(entry.partition(":")[0])
-                        spared += 1
+                    self._undecided_file_ids.update(entry.partition(":")[0] for entry in part)
+            if reconcile:
+                for file_id in self._undecided_file_ids:
+                    self._sync_ledger.see(file_id)
+            if full_sync:
+                for file_id in sorted(self._undecided_file_ids):
+                    record = await self.data_entities_processor.get_record_by_external_id(
+                        connector_id=self.connector_id, external_record_id=file_id
+                    )
+                    if record is not None:
+                        kept.add(record.id)
+                for group in await self.data_entities_processor.get_all_user_groups(
+                    self.connector_id, raise_on_error=True
+                ):
+                    if _is_audience_group(group.source_user_group_id):
+                        kept.update(await self.data_entities_processor.get_record_ids_granted_to_group(
+                            self.connector_id, group.source_user_group_id
+                        ))
         except Exception as e:
             self.logger.warning(
-                f"The undecided removals could not be read ({type(e).__name__}); no stale record is removed"
+                f"The undecided removals or audience grants could not be read ({type(e).__name__}); "
+                "nothing unseen is removed or unlinked"
             )
             self._sync_ledger.note_incomplete()
             return
-        if spared:
-            self.logger.info(f"{spared} undecided removal(s) are kept out of the stale-record cleanup")
+        if kept:
+            self.data_entities_processor.note_kept_records(self.connector_id, sorted(kept))
+        self.logger.info(
+            f"{len(self._undecided_file_ids)} undecided removal(s) kept out of the stale-record cleanup; "
+            f"{len(kept)} record(s) kept linked through the full sync"
+        )
 
     async def _unseen_records_an_audience_may_open(self, unseen: list[Record]) -> set[str]:
         """The records a complete full sync did not see that may still exist: those granted to an audience group
@@ -3180,7 +3213,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                 if not await self._another_synced_user_can_open(record, None, {}):
                     continue
             except _RemovalUndecided:
-                pass
+                if record.external_record_id not in self._undecided_file_ids:
+                    # Checked again on every run until a clean answer, whatever later deletes the user lists.
+                    drive_id = record.external_record_group_id if record.external_record_group_id in self._synced_drive_ids else ""
+                    await self._park_undecided_removal(UNDECIDED_KEPT_KEY, f"{record.external_record_id}:{drive_id}")
             kept.add(record.id)
         return kept
 

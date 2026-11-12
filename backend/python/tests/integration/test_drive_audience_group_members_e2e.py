@@ -258,3 +258,36 @@ async def test_a_full_sync_keeps_the_members_and_grants_of_audience_groups_it_do
     assert await _members(env, ALL_MEMBERS_GROUP_ID) == _emails(env, "owner", "colleague")
     granted = await env.processor.get_groups_with_permission_to_node(file.id, CollectionNames.RECORDS.value, raise_on_error=True)
     assert ALL_MEMBERS_GROUP_ID in {g.source_user_group_id for g in granted}
+
+
+async def test_the_records_an_audience_group_is_granted_are_read_back_and_kept_linked_by_a_full_sync(env: _Env) -> None:
+    connector = _connector(env)
+    connector.synced_users = [_app_user(env, n) for n in ("owner", "colleague")]
+    connector._inactive_emails, connector._listing_cut = set(), False
+    await connector._write_audience_groups()
+    granted, other = _file(env, "granted.txt"), _file(env, "other.txt")
+    await env.processor.on_new_records([
+        (granted, [Permission(type=PermissionType.READ, entity_type=EntityType.GROUP, external_id=ALL_MEMBERS_GROUP_ID)]),
+        (other, [Permission(type=PermissionType.READ, entity_type=EntityType.USER, email=env.users["owner"]["email"])]),
+    ])
+
+    assert await env.processor.get_record_ids_granted_to_group(env.connector_id, ALL_MEMBERS_GROUP_ID) == [granted.id]
+    assert await env.processor.get_record_ids_granted_to_group(env.connector_id, "not-stored") == []
+
+    # A full sync that writes neither file keeps the one it notes kept linked, and unlinks the other.
+    run = env.processor.begin_full_sync_run(env.connector_id)
+    try:
+        await connector._write_audience_groups()
+        env.processor.note_kept_records(
+            env.connector_id,
+            await env.processor.get_record_ids_granted_to_group(env.connector_id, ALL_MEMBERS_GROUP_ID),
+        )
+        _, ok = await env.graph.unlink_nodes_missed_by_full_sync(env.connector_id, run.by_collection)
+    finally:
+        env.processor.end_full_sync_run(env.connector_id, run)
+
+    assert ok
+    kept = await env.processor.get_groups_with_permission_to_node(granted.id, CollectionNames.RECORDS.value, raise_on_error=True)
+    assert ALL_MEMBERS_GROUP_ID in {g.source_user_group_id for g in kept}
+    unlinked = await env.processor.get_users_with_permission_to_node(other.id, CollectionNames.RECORDS.value, raise_on_error=True)
+    assert not unlinked, "control: a record the full sync neither wrote nor kept is unlinked"

@@ -314,10 +314,49 @@ class FakeEntitiesProcessor:
         self.fail_group_permission_lookup = False
         self.linked_authenticators: list[tuple[str, str, str, str]] = []
         self.deleted_groups: list[str] = []
+        # The record ids the running full sync wrote or noted kept; None when no full sync runs.
+        self.full_sync_seen: set[str] | None = None
 
     def _check_write(self, external_id: str | None) -> None:
         if external_id in self.fail_writes_for:
             raise RuntimeError(f"database unavailable while writing {external_id}")
+
+    # A full sync the runner started: what it writes is noted, and once it has run to the end the runner removes
+    # the grants of every record it did not write nor note kept (`unlink_missed_by_full_sync`).
+    def begin_full_sync_run(self, connector_id: str) -> set[str]:
+        self.full_sync_seen = set()
+        return self.full_sync_seen
+
+    def full_sync_running(self, connector_id: str) -> bool:
+        return self.full_sync_seen is not None
+
+    def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
+        if self.full_sync_seen is not None:
+            self.full_sync_seen.update(record_ids)
+
+    def _note_written(self, record: Record) -> None:
+        if self.full_sync_seen is not None and record.id:
+            self.full_sync_seen.add(record.id)
+
+    def unlink_missed_by_full_sync(self) -> set[str]:
+        """End the full sync as the runner does: the records it missed lose their grants. Returns their ids."""
+        seen, self.full_sync_seen = self.full_sync_seen or set(), None
+        missed = {r.id for r in self.records.values() if r.id not in seen}
+        for record in self.records.values():
+            if record.id in missed:
+                self.permissions[record.external_record_id] = []
+        return missed
+
+    async def get_record_ids_granted_to_group(self, connector_id: str, external_group_id: str) -> list[str]:
+        if self.fail_group_permission_lookup:
+            raise RuntimeError("graph unavailable while reading the group's grants")
+        if external_group_id not in self.user_groups:
+            return []
+        return [
+            r.id for r in self.records.values()
+            if any(p.entity_type == EntityType.GROUP and p.external_id == external_group_id
+                   for p in self.permissions.get(r.external_record_id, []))
+        ]
 
     def by_id(self, record_id: str) -> Record | None:
         return next((r for r in self.records.values() if r.id == record_id), None)
@@ -486,6 +525,7 @@ class FakeEntitiesProcessor:
             self.records[record.external_record_id] = record
             self._upsert_permissions(record.external_record_id, permissions)
             self._ensure_parent(record)
+            self._note_written(record)
 
     def _upsert_permissions(self, external_id: str, permissions: list[Any]) -> None:
         existing = self.permissions.setdefault(external_id, [])
@@ -516,6 +556,7 @@ class FakeEntitiesProcessor:
         self._check_write(record.external_record_id)
         self.metadata_updates.append(record)
         self.records[record.external_record_id] = record
+        self._note_written(record)
         # The real processor routes this through _process_record -> _handle_parent_record.
         self._ensure_parent(record)
 
@@ -523,10 +564,12 @@ class FakeEntitiesProcessor:
         self._check_write(record.external_record_id)
         self.content_updates.append(record)
         self.records[record.external_record_id] = record
+        self._note_written(record)
 
     async def on_updated_record_permissions(self, record: Record, permissions: list[Any]) -> None:
         self._check_write(record.external_record_id)
         self.permissions[record.external_record_id] = list(permissions)
+        self._note_written(record)
 
     async def add_permission_to_record(self, record: Record, permissions: list[Any]) -> None:
         self._check_write(record.external_record_id)

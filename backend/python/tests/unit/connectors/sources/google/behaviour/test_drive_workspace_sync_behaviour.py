@@ -4129,12 +4129,8 @@ async def _park_undecided_removals(ws: Workspace, *file_ids: str) -> None:
     await ws.sync()
     for file_id in file_ids:
         ws.world.unshare(file_id, BOB)
-        # Bob opens it no more ("anyone" would let him in the fake), and everyone else asked is refused.
-        ws.http.fail("GET", f"/drive/v3/files/{file_id}", 404, "notFound", when=lambda r: r.identity == BOB)
-        ws.http.fail(
-            "GET", f"/drive/v3/files/{file_id}", 403, "insufficientFilePermissions",
-            when=lambda r: r.identity != BOB,
-        )
+        # Everyone asked is refused (Drive off for them, say), Bob too, so the "anyone" share answers for nobody.
+        ws.http.fail("GET", f"/drive/v3/files/{file_id}", 403, "insufficientFilePermissions")
         for _ in range(MAX_UNRECOGNISED_403_RUNS):
             await ws.sync()
     assert set(file_ids) <= set(ws.records.records)
@@ -4376,3 +4372,67 @@ async def test_a_full_sync_removes_an_unseen_audience_file_its_audience_can_no_l
     _read_everything_in_full_next_run(ws)
     await ws.sync()
     assert "g1" not in ws.records.records, "the people of its audience asked: not found"
+
+
+def _undecided_file_ids(ws: Workspace) -> set[str]:
+    """Every file on any undecided list, whoever's."""
+    return {
+        entry.partition(":")[0]
+        for key, value in ws.sync_points.sync_points.items() if "/undecided_removals_" in key
+        for entry in value.get("entries") or []
+    }
+
+
+async def _runner_full_sync(ws: Workspace, *, delete_sync_points: bool) -> set[str]:
+    """A full sync the runner starts: it may delete every sync point first, and once the run ends unlinks the
+    records it neither wrote nor noted kept. Returns those it unlinked."""
+    if delete_sync_points:
+        ws.sync_points.sync_points.clear()
+    else:
+        _read_everything_in_full_next_run(ws)
+    ws.records.begin_full_sync_run(CONNECTOR_ID)
+    await ws.sync()
+    assert not ws.incomplete
+    return ws.records.unlink_missed_by_full_sync()
+
+
+async def test_a_runner_full_sync_keeps_an_audience_file_no_listing_shows_linked(ws: Workspace) -> None:
+    _audience_file_bob_loses(ws)
+    await ws.sync()
+    ws.world.unshare("g1", BOB)
+    await ws.sync()
+    assert "g1" in ws.records.records, "kept: its audience opens it"
+
+    unlinked = await _runner_full_sync(ws, delete_sync_points=True)
+    assert ws.records.records["g1"].id not in unlinked
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("g1")
+
+
+async def test_a_runner_full_sync_keeps_a_file_on_an_undecided_list_linked(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _park_undecided_removals(ws, "g1")
+
+    async def no_audience_grants(connector_id: str, external_group_id: str) -> list[str]:
+        return []  # only the undecided list keeps it
+
+    monkeypatch.setattr(ws.records, "get_record_ids_granted_to_group", no_audience_grants)
+    unlinked = await _runner_full_sync(ws, delete_sync_points=False)
+    assert ws.records.records["g1"].id not in unlinked
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("g1")
+
+
+async def test_a_runner_full_sync_that_deletes_every_sync_point_keeps_an_undecided_file_checked(
+    ws: Workspace,
+) -> None:
+    await _park_undecided_removals(ws, "g1")
+    assert _undecided_file_ids(ws) == {"g1"}
+
+    unlinked = await _runner_full_sync(ws, delete_sync_points=True)
+    assert "g1" in ws.records.records and ws.records.records["g1"].id not in unlinked
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("g1")
+    assert _undecided_file_ids(ws) == {"g1"}, "listed again: no one answered for it"
+
+    _drop_the_audience_shares(ws, "g1")
+    await ws.sync()
+    assert "g1" not in ws.records.records, "checked again: nobody can open it"
