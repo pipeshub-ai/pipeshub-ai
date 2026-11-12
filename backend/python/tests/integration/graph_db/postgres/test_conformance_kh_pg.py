@@ -97,9 +97,9 @@ async def kh_layer(request, pg_provider, pg_db) -> AsyncIterator[KhPgLayer]:
     await lay.release(list(lay._prefix))
 
 
-# `browse_gap`: the layer fails a folder the browse does not open or leaves nodes out of. This provider lists a whole connector only (browsing a node is the next step of the series), so every browse is a
-# gap here; the flat listing is held to the oracle in full (over, under, total, counts, facets, order). Take `browse_gap` out of this set when the browse is served.
-GAPS = {"gap", "browse_gap"}
+# `gap`: the shapes the flatten listing leaves out on purpose (kh_layer.declared_gap). The browse is held to the oracle in full: a folder it does not open or leaves nodes out of (`browse_gap`),
+# a row it lists that the oracle does not admit (`browse_extra`) and an arrow that is not on exactly when opening the row lists something (`arrow`) fail, as on Neo4j and ArangoDB.
+GAPS = {"gap"}
 
 
 async def check(layer: KhPgLayer, world, scenario: str) -> list[KhFinding]:
