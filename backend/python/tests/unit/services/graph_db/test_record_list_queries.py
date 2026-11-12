@@ -87,6 +87,9 @@ class _Hub:
             "enrich": [{"i": 0, "row": row}],
             "enrich_exact": [{"i": 0, "row": {**row, "khStub": True}}],
             "enrich_exact_stubs": [{"i": 0, "hasChildren": False}],
+            # one hop of a browse's rules and the children they leave undecided, in one statement
+            "step_app_undecided": [{"walked": ["records/r1"], "undecided": ["records/u1"]}],
+            "step_browse_undecided": [{"walked": ["records/r3"], "undecided": ["records/u1"]}],
             "check:targets": [target],
             "check:seeds": [{"node": "p1", "seed": "s2"}],
             "slim": [["records/r1", "record", "a"]],

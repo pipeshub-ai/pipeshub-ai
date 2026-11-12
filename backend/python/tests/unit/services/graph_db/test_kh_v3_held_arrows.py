@@ -10,8 +10,9 @@ APP = "app-1"
 ACCESS = {"grantee_ids": ["u"], "gated_app_ids": [APP], "by_connector": {APP: ["g"]}}
 
 
-def _row(row_id: str, *, held: bool, arrow: bool, node_type: str = "recordGroup", reached: bool | None = None) -> dict:
-    return {"id": row_id, "nodeType": node_type, "hasChildren": arrow, "khHeld": held, **({} if reached is None else {"khFromApp": reached})}
+def _row(row_id: str, *, held: bool, arrow: bool, node_type: str = "recordGroup", reached: bool | None = None, kids: list[str] | None = None) -> dict:
+    return {"id": row_id, "nodeType": node_type, "hasChildren": arrow, "khHeld": held, **({} if reached is None else {"khFromApp": reached}),
+            **({} if kids is None else {"khKids": kids})}
 
 
 def _provider(placed: dict[str, list[dict]]) -> Neo4jProvider:
@@ -76,6 +77,60 @@ async def test_a_row_the_walk_from_the_app_does_not_reach_has_an_arrow_only_if_t
     assert provider.check_access.await_count == 1
 
 
+async def test_a_row_the_check_refuses_keeps_its_arrow_when_the_check_admits_a_child_of_it() -> None:
+    provider = _provider({})
+    rows = await _settle(provider, [_row("closed-kids", held=False, arrow=True, reached=False, kids=["open-kid"]),
+                                    _row("closed", held=False, arrow=True, reached=False, kids=["shut-kid"])])
+    assert [r["hasChildren"] for r in rows] == [True, False] and all("khKids" not in r for r in rows)
+    assert set(provider.check_access.await_args.kwargs["node_ids"]) == {"closed-kids", "closed", "open-kid", "shut-kid"}
+    assert provider.check_access.await_count == 1      # one check for the rows and their children
+
+
+async def test_a_row_with_no_child_the_rules_select_has_an_arrow_when_the_check_admits_a_child() -> None:
+    provider = _provider({})
+    rows = [_row("a", held=False, arrow=False, kids=["open-a1", "a2"]), _row("b", held=False, arrow=False, kids=["b1"]),
+            _row("c", held=False, arrow=False), _row("x", held=False, arrow=False, node_type="app", kids=["open-x"]),
+            _row("r", held=False, arrow=True, reached=False, kids=["r1"])]
+    await provider._kh_v3_settle_held_arrows(rows, app_id=APP, org_id="org", access=ACCESS, transaction=None, listed_under="p")
+    assert [r["hasChildren"] for r in rows] == [True, False, False, False, False]
+    assert set(provider.check_access.await_args.kwargs["node_ids"]) == {"open-a1", "a2", "b1", "r", "r1"}
+    assert provider.check_access.await_count == 1
+
+
+async def test_a_page_whose_arrows_the_rules_settle_asks_no_check() -> None:
+    provider = _provider({})
+    await provider._kh_v3_settle_held_arrows([_row("a", held=False, arrow=True, kids=[]), _row("b", held=False, arrow=False, kids=[])],
+                                             app_id=APP, org_id="org", access=ACCESS, transaction=None, listed_under="p")
+    provider.check_access.assert_not_awaited()
+
+
+async def test_the_check_of_undecided_children_reads_the_probe_grantees_and_every_other_grantee_the_viewer_holds() -> None:
+    provider = _provider({})
+    provider.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"c"})))
+    access = {**ACCESS, "grantee_ids": ["role"], "probe": {"connector_id": APP, "grantees": ["grp"]}}
+    assert await provider._kh_v3_admitted(["c", "d"], org_id="org", access=access, transaction=None) == {"c"}
+    assert provider.check_access.await_args.kwargs["access"]["probe"]["grantees"] == ["grp", "role"]
+    assert await provider._kh_v3_admitted([], org_id="org", access=access, transaction=None) == frozenset()
+    assert provider.check_access.await_count == 1
+
+
+def test_a_browse_and_a_row_s_arrow_ask_about_the_same_children() -> None:
+    """The undecided children of a node, read by its browse (beside what its rules select) and by its arrow (when its rules select none):
+    one expression on each backend, the first ones by id, so the arrow is on exactly when the browse of the row lists one."""
+    from app.services.graph_db.arango.arango_http_provider import (
+        ArangoHTTPProvider,
+        _aql_undecided,
+    )
+
+    neo = Neo4jProvider.__new__(Neo4jProvider)
+    kids = neo._kh_v3_undecided("node")
+    assert "ORDER BY kh_uid LIMIT 200" in kids and "isPlaceholder" in kids and "kh_hidku" in kids
+    assert neo._kh_v3_undecided("start", decided="RULE").replace("start", "node").replace(" AND NOT coalesce((RULE), false)", "") == kids
+    aql = _aql_undecided("node")
+    assert "SORT kh_uk" in aql and "LIMIT 200" in aql and _aql_undecided("node", decided="@d").replace(" AND kh_uc._id NOT IN @d", "") == aql
+    assert aql in ArangoHTTPProvider._kh_v3_listing_aql()["enrich_exact"] and "khKids: []" in ArangoHTTPProvider._kh_v3_listing_aql()["enrich"]
+
+
 async def test_no_check_is_made_when_every_row_is_reached() -> None:
     provider = _provider({})
     await _settle(provider, [_row("a", held=False, arrow=True, reached=True)])
@@ -115,28 +170,37 @@ def test_arangodb_arrow_of_a_browse_row_reads_its_own_way_in_and_leaves_the_chai
 async def test_a_declaration_the_viewer_neither_holds_nor_reaches_declares_no_scope_for_a_browse() -> None:
     provider = Neo4jProvider.__new__(Neo4jProvider)
     provider.logger = MagicMock()
-    provider._kh_v3_start_lineage = AsyncMock(return_value=(["up"], ["d1", "d2"]))
+    provider._kh_v3_start_lineage = AsyncMock(return_value=(["up"], ["d1", "d2", "d3"]))
     provider.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"start", "up", "d1", "d2"})))
-    provider._kh_v3_declared_reached = AsyncMock(return_value=["d1"])        # d2 is admitted, but only below a seed
-    provider._kh_v3_declared_groups = AsyncMock(side_effect=lambda declared, _txn: [*declared, "below-d1"])
+    provider._kh_v3_declared_scope = AsyncMock(return_value=["d1", "below-d1"])      # d2 is admitted, but only below a seed
     probe = {"connector_id": APP, "grantees": ["u"]}
     admitted, ancestors, scope = await provider._kh_v3_scoped_start_access(
         "start", APP, "org", ["u"], [APP], {APP: ["g"]}, None, probe)
     assert admitted and ancestors == ["up"] and scope == ["d1", "below-d1"]
-    provider._kh_v3_declared_reached.assert_awaited_once_with(["d1", "d2"], APP, ["g"], probe, None)
-    provider._kh_v3_declared_groups.assert_awaited_once_with(["d1"], None)
-    # a declaration the viewer is granted is not asked about
-    provider._kh_v3_declared_reached.reset_mock()
-    provider._kh_v3_declared_reached.return_value = []
-    provider._kh_v3_declared_groups.reset_mock()
-    _, _, scope = await provider._kh_v3_scoped_start_access("start", APP, "org", ["u"], [APP], {APP: ["d1", "x"]}, None)
-    assert scope == ["d1", "below-d1"]
-    provider._kh_v3_declared_reached.assert_awaited_once_with(["d2"], APP, ["d1", "x"], None, None)
-    provider._kh_v3_declared_reached.reset_mock()
-    provider._kh_v3_declared_reached.reset_mock()
+    # only the declarations the check admits are asked, with the grants and the probe the page reads (d3 is not admitted)
+    provider._kh_v3_declared_scope.assert_awaited_once_with(["d1", "d2"], APP, ["g"], probe, None)
+    provider._kh_v3_declared_scope.reset_mock()
     provider.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"start", "up"})))      # no declaration admitted: nothing to ask
     assert (await provider._kh_v3_scoped_start_access("start", APP, "org", ["u"], [APP], {APP: []}, None))[2] == []
-    provider._kh_v3_declared_reached.assert_not_awaited()
+    provider._kh_v3_declared_scope.assert_not_awaited()
+
+
+async def test_a_declaration_is_a_scope_where_the_viewer_holds_it_or_the_walk_from_the_app_reaches_it_on_both_backends() -> None:
+    """One statement each: the declarations that hold (granted, or reached from the App), then the groups under them, deleted groups cut."""
+    from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+
+    neo = Neo4jProvider.__new__(Neo4jProvider)
+    neo._kh_query = AsyncMock(return_value=[{"scope": ["d1", "below-d1"]}])
+    neo._kh_listing_state_ready = AsyncMock(return_value=False)
+    assert await neo._kh_v3_declared_scope(["d1", "d2"], APP, ["d1"], None, None) == ["d1", "below-d1"]
+    query, kwargs = neo._kh_query.await_args.args[0], neo._kh_query.await_args.kwargs
+    assert neo._kh_query.await_count == 1 and kwargs["parameters"]["proved"] == ["d1"]
+    assert "kh_dg.id IN $proved OR kh_dg.id IN $grantedIds OR" in query and "(kh_ot) WHERE kh_ot = app" in query and "{0,50}" in query
+    arango = ArangoHTTPProvider.__new__(ArangoHTTPProvider)
+    arango.http_client = MagicMock(execute_aql=AsyncMock(return_value=["d1", "below-d1"]))
+    assert await arango._kh_v3_declared_scope(["d1", "d2"], APP, ["d1"], None, None) == ["d1", "below-d1"]
+    aql = arango.http_client.execute_aql.await_args.args[0]
+    assert arango.http_client.execute_aql.await_count == 1 and "HAS(@granted, kh_dg._key) OR" in aql and "0..50 OUTBOUND kh_dg" in aql
 
 
 def test_the_browse_rule_reads_a_declaration_as_the_check_does_on_both_backends() -> None:
@@ -173,7 +237,7 @@ def test_arangodb_leaves_a_stub_child_to_a_second_pass_that_returns_the_arrow_al
     assert "kh_pt.edges" not in page and "kh_pt.edges" in every and "isPlaceholder != true OR" not in page
     assert "kh_pt.edges" not in _aql_kh_has_children("node") and "isPlaceholder != true OR" in _aql_kh_has_children("node")      # a flatten keeps its one-hop test
     queries = ArangoHTTPProvider._kh_v3_listing_aql()
-    assert "khStub: LENGTH(" in queries["enrich_exact"] and "kh_row.hasChildren ? [] : [1]" in queries["enrich_exact"]      # asked only of a row with no other arrow
+    assert "LET kh_stub = LENGTH(" in queries["enrich_exact"] and "kh_row.hasChildren ? [] : [1]" in queries["enrich_exact"]      # asked only of a row with no other arrow
     second = queries["enrich_exact_stubs"]
     assert "kh_pt.edges" in second and "RETURN {i: kh_i, hasChildren:" in second and "parentOptions" not in second
 

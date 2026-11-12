@@ -612,6 +612,23 @@ def _aql_in_hidden_group(v: str, tag: str) -> str:
             RETURN 1) > 0)"""
 
 
+def _aql_undecided(v: str, *, decided: str | None = None) -> str:
+    """The handles of the children of ``v`` a browse of it asks the batch check about, as Neo4j's ``_kh_v3_undecided``: hierarchy children of
+    this App, live, of the organisation, no stub, in no group that hides its children, none when one lies above ``v``, and not ``decided`` (a
+    list of handles the browse's rules already select); the first ``_KH_UNDECIDED_MAX`` by key."""
+    records, groups = CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value
+    return f"""({_aql_hidden_above(v, "ku", from_depth=0)} ? [] : (
+        FOR kh_uc, kh_ue IN 1..1 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}
+            FILTER kh_ue.relationshipType IN {_HIERARCHY_AQL}
+            FILTER IS_SAME_COLLECTION("{records}", kh_uc) OR IS_SAME_COLLECTION("{groups}", kh_uc)
+            FILTER kh_uc.orgId == @org_id AND kh_uc.connectorId == @app_id AND kh_uc.isDeleted != true AND kh_uc.isPlaceholder != true
+            FILTER NOT {_aql_in_hidden_group("kh_uc", "kv")}{f" AND kh_uc._id NOT IN {decided}" if decided else ""}
+            COLLECT kh_uk = kh_uc._key, kh_uh = kh_uc._id
+            SORT kh_uk
+            LIMIT {IGraphDBProvider._KH_UNDECIDED_MAX}
+            RETURN kh_uh))"""
+
+
 @dataclass(frozen=True)
 class _Visible:
     """What a v3 page lists before its filters: node handles, the groups whose
@@ -20097,6 +20114,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """The arms that walk, cheapest first, each run only for the nodes the
         ones before it left undecided: from the App, the declared scope, then
         below a seed."""
+        if 0 < len(ids) <= self._KH_CHECK_CONCURRENT_MAX:
+            return await self._kh_v3_admitted_by_walks_at_once(ids, bind, transaction)
         admitted: set[str] = set()
         pending = ids
         for arm in ("from_app", "declared"):
@@ -20122,6 +20141,27 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             taken |= set(await self._kh_v3_check_stage(
                 "seed_declared", {**seed_bind, "kh_ids": rest}, transaction,
             ))
+        return admitted | {pair["node"] for pair in pairs if pair["seed"] not in taken}
+
+    # A check of this many nodes or fewer (a page's arrows, a browse's undecided children) runs its walking arms side by side: it waits on the
+    # database, not on the work, and an arm that runs for a node another one admits costs little at this size.
+    _KH_CHECK_CONCURRENT_MAX = 50
+
+    async def _kh_v3_admitted_by_walks_at_once(
+        self, ids: list[str], bind: dict[str, Any], transaction: str | None,
+    ) -> set[str]:
+        """``_kh_v3_admitted_by_walks`` in two rounds instead of up to five: the same arms and the same answer."""
+        passed_app, passed_declared, pairs = await asyncio.gather(*(
+            self._kh_v3_check_stage(arm, {**bind, "kh_ids": ids}, transaction) for arm in ("from_app", "declared", "seeds")))
+        admitted = set(passed_app) | set(passed_declared)
+        pairs = [pair for pair in pairs if pair["node"] not in admitted]
+        seeds = sorted({pair["seed"] for pair in pairs})
+        if not seeds:
+            return admitted
+        seed_bind = {k: v for k, v in bind.items() if k != "org_id"}
+        taken_app, taken_declared = await asyncio.gather(*(
+            self._kh_v3_check_stage(arm, {**seed_bind, "kh_ids": seeds}, transaction) for arm in ("seed_from_app", "seed_declared")))
+        taken = set(taken_app) | set(taken_declared)
         return admitted | {pair["node"] for pair in pairs if pair["seed"] not in taken}
 
     async def _kh_v3_check_stage(
@@ -20430,12 +20470,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             row_ctx.update(kh_scope={**app_scope, **dict.fromkeys(declared_scope, True)},
                            kh_from_app=bool(starts[0]["fromApp"]))
             start_handle = starts[0]["handle"]
-            walked = await self._kh_v3_walk(
-                [starts[0]["handle"]], "step_browse",
-                {"kh_opens": bind["kh_opens"], "app_id": app_id, **{k: v for k, v in row_ctx.items() if k != "kh_seeded"}},
-                max_depth if flatten else 1, transaction,
-            )
-            visible = _Visible(nodes=list(dict.fromkeys([*walked, *placed])))
+            step_bind = {"kh_opens": bind["kh_opens"], "app_id": app_id, **{k: v for k, v in row_ctx.items() if k != "kh_seeded"}}
+            if flatten:
+                visible = _Visible(nodes=list(dict.fromkeys([
+                    *await self._kh_v3_walk([start_handle], "step_browse", step_bind, max_depth, transaction), *placed])))
+            else:
+                visible = _Visible(nodes=await self._kh_v3_with_admitted(
+                    "step_browse", step_bind, start_handle, placed, app_id, org_id, access, transaction))
         elif flatten:
             matches = None
             # The name-restricted walks find a match's ancestors at most 50 hops up, so a
@@ -20453,10 +20494,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 app, bind, granted_ids, transaction, matches=matches, max_depth=max_depth,
             )
         else:
-            walked = await self._kh_v3_walk(
-                [app["handle"]], "step_app", {**bind, "kh_declared_stop": False}, 1, transaction,
-            )
-            visible = _Visible(nodes=list(dict.fromkeys([*walked, *placed])))
+            visible = _Visible(nodes=await self._kh_v3_with_admitted(
+                "step_app", {**bind, "kh_declared_stop": False}, app["handle"], placed, app_id, org_id, access, transaction))
         payload.update(await self._kh_v3_page_rows(
             visible, app_id, org_id, limit=limit, sort_field=sort_field, sort_dir=sort_dir,
             after=after, direction=direction, filters=filters or {},
@@ -20475,6 +20514,18 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             org_id=org_id, listed_under=None if flatten else start_id,
             access=access, name_parents=name_parents,
         )
+
+    async def _kh_v3_with_admitted(
+        self, step: str, bind: dict[str, Any], start: str, placed: list[str], app_id: str, org_id: str, access: dict[str, Any], transaction: str | None,
+    ) -> list[str]:
+        """The children of ``start`` a browse lists: those its rules select (``step``, one hop), the chain-tops ``placed`` under it, and, beside
+        them, every child they leave undecided that the batch check admits, so a browse lists every child the viewer may open, by whatever arm of
+        the check. The rules and the undecided children are read in one statement."""
+        found = (await self._kh_v3_run(f"{step}_undecided", {**bind, "kh_frontier": [start], "kh_placed": placed, "org_id": org_id}, transaction)
+                 or [{"walked": [], "undecided": []}])[0]
+        undecided = found["undecided"]
+        admitted = await self._kh_v3_admitted([h.split("/", 1)[1] for h in undecided], org_id=org_id, access=access, transaction=transaction)
+        return list(dict.fromkeys([*(h for h in found["walked"] if h != start), *placed, *(h for h in undecided if h.split("/", 1)[1] in admitted)]))
 
     async def _kh_v3_name_matches(self, org_id: str, search: str, transaction: str | None) -> list[str] | None:
         """The org's live records and groups whose name holds ``search``, read as
@@ -20800,16 +20851,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return ([a for a in row.get("ancestors") or [] if a],
                 [d for d in row.get("declared") or [] if d])
 
-    async def _kh_v3_declared_groups(self, declared: list[str], transaction: str | None) -> list[str]:
-        groups = CollectionNames.RECORD_GROUPS.value
-        found = await self._kh_v3_run("group_scope", {
-            "kh_frontier": [f"{groups}/{d}" for d in declared], "kh_hide": False,
-        }, transaction)
-        return [handle.split("/", 1)[1] for handle, _ in found]
-
-    async def _kh_v3_declared_reached(
-        self, declared: list[str], app_id: str, granted_ids: list[str], probe: dict[str, Any] | None, transaction: str | None,
+    async def _kh_v3_declared_scope(
+        self, declared: list[str], app_id: str, granted: list[str], probe: dict[str, Any] | None, transaction: str | None,
     ) -> list[str]:
+        # The two questions of the default in one statement: which declarations hold, and the groups under them (as "group_scope").
+        relations, hierarchy = CollectionNames.NODE_RELATIONS.value, _HIERARCHY_AQL
         found = await self.http_client.execute_aql(
             f"""
             LET kh_app = DOCUMENT("{CollectionNames.APPS.value}", @app_id)
@@ -20817,9 +20863,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FOR kh_dg IN {CollectionNames.RECORD_GROUPS.value}
                 FILTER kh_dg._key IN @declared
                 FILTER HAS(@granted, kh_dg._key) OR {_aql_row_from_app("kh_dg")}
-                RETURN kh_dg._key
+                FOR kh_g, kh_e, kh_gp IN 0..50 OUTBOUND kh_dg {relations}
+                    PRUNE kh_e != null AND (kh_e.relationshipType NOT IN {hierarchy} OR kh_g.isDeleted == true)
+                    OPTIONS {{uniqueVertices: "path", vertexCollections: ["{CollectionNames.RECORD_GROUPS.value}"]}}
+                    FILTER kh_gp.edges[*].relationshipType ALL IN {hierarchy}
+                    FILTER kh_gp.vertices[*].isDeleted NONE == true
+                    RETURN DISTINCT kh_g._key
             """,
-            bind_vars={"app_id": app_id, "declared": declared, "granted": dict.fromkeys(granted_ids, True)}, txn_id=transaction,
+            bind_vars={"app_id": app_id, "declared": declared, "granted": dict.fromkeys(granted, True)}, txn_id=transaction,
         )
         return list(found or [])
 
@@ -21421,15 +21472,25 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 LET kh_row_from_app = KH_OWN_PATH
                 LET kh_filed = KH_FILED
                 LET kh_row = KH_ROW_FIELDS
-                RETURN {{i: kh_i, row: MERGE(kh_row, {{parentOptions: kh_options, khHeld: KH_HELD, khFromApp: KH_FROM_APP, khStub: KH_STUB}})}}
+                LET kh_opened = KH_FROM_APP
+                LET kh_stub = KH_STUB
+                RETURN {{i: kh_i, row: MERGE(kh_row, {{parentOptions: kh_options, khHeld: KH_HELD, khFromApp: kh_opened, khStub: kh_stub, khKids: KH_KIDS}})}}
             """,
         }
+        for step in ("step_browse", "step_app"):
+            # One hop of the rules from a browse's start, and the children they leave undecided (`_kh_v3_with_admitted`).
+            queries[f"{step}_undecided"] = (f"LET kh_walked = ({queries[step]})\n"
+                                            f"RETURN {{walked: kh_walked, undecided: {_aql_undecided('DOCUMENT(@kh_frontier[0])', decided='APPEND(kh_walked, @kh_placed)')}}}")
         # A browse answers a declared group's arrow exactly; a flatten reads arrows by the stricter rule.
         template = queries["enrich"]
         exact_row = template.replace("KH_ROW_FIELDS", ArangoHTTPProvider._kh_v3_row_aql(exact=True)).replace("KH_FILED", _aql_kh_filed("node"))
         # The chain-top question: a group that is not already listed as having children, and holds a granted record.
         held = f'(kh_filed AND IS_SAME_COLLECTION("{groups}", node) AND node.hideChildren != true AND NOT kh_row.hasChildren)'
-        exact_row = exact_row.replace("KH_HELD", held).replace("KH_FROM_APP", "kh_row_from_app")
+        # A row needs no check to open where the walk from the App reaches it, or it is in the declared scope the page reads (a group of it, or a
+        # record that belongs to one), which the check's declared arm admits whatever its depth. A stub is never proved so.
+        opened = (f'(kh_row_from_app OR (node.isPlaceholder != true AND ((IS_SAME_COLLECTION("{groups}", node) AND HAS(@kh_scope, node._key))'
+                  f' OR {_aql_is_member("node")})))')
+        exact_row = exact_row.replace("KH_HELD", held).replace("KH_FROM_APP", opened)
         # A row with a stub child and no other child the rule passes is asked again (`_kh_v3_page_rows`) with the every-hop test of the stub's way:
         # the page's own arrow holds no stub test, which keeps its plan small.
         stub_child = (f'LENGTH(FOR kh_g IN (kh_row.hasChildren ? [] : [1]) FOR kh_sc, kh_se IN 1..1 OUTBOUND node {relations}'
@@ -21437,6 +21498,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                       f' OR LENGTH(FOR kh_sf IN 1..1 INBOUND node {belongs}'
                       f' FILTER kh_sf.isPlaceholder == true LIMIT 1 RETURN 1) > 0')
         exact_row = exact_row.replace("KH_STUB", stub_child)
+        # A row's children the check is asked about where its arrow is not settled by the rules alone (`_kh_v3_settle_held_arrows`).
+        exact_row = exact_row.replace(
+            "KH_KIDS", f"(kh_row.hasChildren AND kh_opened AND NOT kh_stub) ? [] : {_aql_undecided('node')}[* RETURN PARSE_IDENTIFIER(CURRENT).key]")
         # The second pass returns the arrow alone.
         stubs_pass = f"""
             LET kh_app = DOCUMENT("{apps}", @app_id)
@@ -21452,7 +21516,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         queries["enrich_exact"] = exact_row.replace("KH_OWN_PATH", _aql_row_from_app("node"))
         queries["enrich_exact_stubs"] = stubs_pass.replace("KH_OWN_PATH", _aql_row_from_app("node"))
         queries["enrich"] = (queries["enrich"].replace("KH_ROW_FIELDS", ArangoHTTPProvider._kh_v3_row_aql(exact=False)).replace("KH_HELD", "false")
-                             .replace("KH_OWN_PATH", "false").replace("KH_FROM_APP", "true").replace("KH_FILED", "false").replace("KH_STUB", "false"))
+                             .replace("KH_OWN_PATH", "false").replace("KH_FROM_APP", "true").replace("KH_FILED", "false").replace("KH_STUB", "false")
+                             .replace("KH_KIDS", "[]"))
         return queries
 
     @staticmethod

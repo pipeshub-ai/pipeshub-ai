@@ -53,7 +53,8 @@ async def test_neo4j_main_list_does_not_compute_children_before_the_page_is_cut(
     statement = await _browse_statement(None)
 
     assert NEO4J_CONTAINER_FILTER not in statement
-    assert statement.count("hasChildren: (CASE WHEN") == 1
+    # the page row's own arrow, read with the row's declared scope (`has_children(row=True)`)
+    assert statement.count("hasChildren: any(kh_rowscope IN") == 1
 
 
 def _arango() -> ArangoHTTPProvider:

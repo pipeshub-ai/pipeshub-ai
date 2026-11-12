@@ -400,5 +400,29 @@ grants: [[u, d]]
 gates: [[u, A], [u, B]]
 """))
 
+# What the check admits by an arm the browse's own rules do not read is listed too: a node below two parents is read through the one the walk from the
+# App reaches (SECOND); a member of an App that opens everything is read as one wherever it hangs (APPMEMBER).
+SECOND = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: h, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: c, kind: record, connector: A, rule: OPEN, parents: [d, h], inherits: [h]}
+grants: [[u, h], [u, d]]
+gates: [[u, A]]
+"""))
+
+APPMEMBER = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE, model: APP_LEVEL}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: m, kind: record, connector: A, rule: STRICT, parents: [d], belongs: [A]}
+grants: []
+gates: [[u, A]]
+"""))
+
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
-             RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL]
+             RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO, FOLDERSTUB, XDECL,
+             SECOND, APPMEMBER]
