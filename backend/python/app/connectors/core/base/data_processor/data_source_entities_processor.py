@@ -7124,6 +7124,23 @@ class DataSourceEntitiesProcessor:
             await self._access_changed([connector_id])
 
     @retry_on_deadlock()
+    async def delete_group_permission_from_record(self, record_id: str, group_external_id: str, connector_id: str) -> None:
+        """Delete a group's (by its id at the source) permission edge to a record. A group the store does not hold
+        has no edge; a failed read of it raises, so nothing is left unremoved."""
+        async with self.data_store_provider.transaction() as tx_store:
+            group = await tx_store.get_user_group_by_external_id(connector_id, group_external_id, raise_on_error=True)
+            if group is None:
+                return
+            deleted = await tx_store.batch_delete_edges([{
+                "from_id": group.id,
+                "from_collection": CollectionNames.GROUPS.value,
+                "to_id": record_id,
+                "to_collection": CollectionNames.RECORDS.value,
+            }], collection=CollectionNames.PERMISSION.value)
+        if deleted:
+            await self._access_changed([connector_id])
+
+    @retry_on_deadlock()
     async def delete_permission_from_record(
         self, record_id: str, user_email: str, connector_id: str | None = None
     ) -> None:

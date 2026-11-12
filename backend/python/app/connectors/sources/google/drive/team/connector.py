@@ -3248,7 +3248,12 @@ class GoogleDriveTeamConnector(BaseConnector):
         """An item that is limited-access, whose permissions could not be read, inherits nothing: that is known from
         its own metadata, not from the unreadable list. What a folder above it shares (a discoverable share's audience
         included) must stop reaching it now. Its own stored grants stay, and the next successful read rewrites
-        everything."""
+        everything.
+
+        A My Drive item's permission list also names what it inherits, so its stored audience grant may have come
+        from above. When a record above it holds the audience grant too (or that cannot be read), the item's goes
+        until the next successful read. When none does, the grant is the item's own share and stays, so an item
+        that is never read again does not lose it for good."""
         file_id = metadata.get("id")
         if not (file_id and metadata.get("inheritedPermissionsDisabled")):
             return
@@ -3256,8 +3261,22 @@ class GoogleDriveTeamConnector(BaseConnector):
             existing = await self.data_entities_processor.get_record_by_external_id(
                 connector_id=self.connector_id, external_record_id=file_id
             )
-            if existing is not None:
-                await self.data_entities_processor.stop_inheriting_permissions(existing.id, self.connector_id)
+            if existing is None:
+                return
+            await self.data_entities_processor.stop_inheriting_permissions(existing.id, self.connector_id)
+            try:
+                parent = existing.parent_external_record_id and await self.data_entities_processor.get_record_by_external_id(
+                    connector_id=self.connector_id, external_record_id=existing.parent_external_record_id
+                )
+                above = await self.data_entities_processor.get_groups_with_access_to_record(parent) if parent else []
+                from_above = any(_is_audience_group(g.source_user_group_id) for g in above)
+            except Exception as e:
+                self.logger.warning(f"Could not read the grants above unreadable limited item {file_id}: {e}")
+                from_above = True
+            if from_above:
+                await self.data_entities_processor.delete_group_permission_from_record(
+                    existing.id, ALL_MEMBERS_GROUP_ID, self.connector_id
+                )
         except Exception as e:
             self.logger.error(f"Could not stop the inheritance of unreadable limited item {file_id}: {e}")
 

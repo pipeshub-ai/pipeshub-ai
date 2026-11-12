@@ -23,6 +23,7 @@ import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -541,6 +542,26 @@ class FakeEntitiesProcessor:
         record = self.by_id(record_id)
         if record is not None:
             self.stopped_inheriting.add(record.external_record_id)
+
+    async def delete_group_permission_from_record(self, record_id: str, group_external_id: str, connector_id: str) -> None:
+        record = self.by_id(record_id)
+        if record is not None:
+            self.permissions[record.external_record_id] = [
+                p for p in self.permissions.get(record.external_record_id, [])
+                if not (p.entity_type == EntityType.GROUP and p.external_id == group_external_id)
+            ]
+
+    async def get_groups_with_access_to_record(self, record: Record) -> list[Any]:
+        """The groups granted on the record and the records above it, by parent."""
+        out: list[Any] = []
+        node: Record | None = record
+        while node is not None:
+            out += [
+                SimpleNamespace(source_user_group_id=p.external_id)
+                for p in self.permissions.get(node.external_record_id, []) if p.entity_type == EntityType.GROUP
+            ]
+            node = self.records.get(node.parent_external_record_id) if node.parent_external_record_id else None
+        return out
 
     async def on_record_deleted(self, record_id: str, **_: object) -> None:
         record = self.by_id(record_id)

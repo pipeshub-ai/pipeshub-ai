@@ -171,6 +171,28 @@ class TestRemovalsDropTheConnector:
         tx.batch_delete_edges.assert_not_called()
         notify.assert_not_called()
 
+    async def test_record_unshared_from_a_group_deletes_that_groups_edge(self, notify, events) -> None:
+        tx = AsyncMock()
+        tx.get_user_group_by_external_id = AsyncMock(return_value=MagicMock(id="g-1"))
+        tx.batch_delete_edges = AsyncMock(return_value=1)
+        proc = _processor(tx, events)
+
+        await proc.delete_group_permission_from_record("rec-1", "workspace-members", CONNECTOR)
+
+        edges = tx.batch_delete_edges.await_args.args[0]
+        assert [(e["from_id"], e["to_id"]) for e in edges] == [("g-1", "rec-1")]
+        _dropped_after_commit(events)
+
+    async def test_record_unshared_from_a_group_the_store_does_not_hold_deletes_nothing(self, notify, events) -> None:
+        tx = AsyncMock()
+        tx.get_user_group_by_external_id = AsyncMock(return_value=None)
+        proc = _processor(tx, events)
+
+        await proc.delete_group_permission_from_record("rec-1", "workspace-members", CONNECTOR)
+
+        tx.batch_delete_edges.assert_not_called()
+        notify.assert_not_called()
+
     async def test_record_that_stops_inheriting_loses_its_edges_to_the_records_it_inherited_from(self, notify, events) -> None:
         tx = AsyncMock()
         tx.get_edges_from_node = AsyncMock(return_value=[{"_from": "records/rec-1", "_to": "records/parent-1"}])
