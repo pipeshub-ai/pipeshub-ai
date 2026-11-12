@@ -49,6 +49,12 @@ python3 scripts/qa go --commit <sha> --scope stack --graph-db neo4j
 
 # Ask Claude for additions (needs the claude CLI and a key)
 python3 scripts/qa go --adapter claude_code --plan-only
+
+# The QA agent: Claude Code picks the tests, the engine runs them, Claude judges and adds tests
+# (your terminal's claude login is used; --stack none runs the unit suites only)
+python3 scripts/qa agent --stack managed --graph-db neo4j --gate
+# Stack pull requests on main first, then test the result
+python3 scripts/qa agent --combine 12:<sha> --combine 15:<sha> --combine-base origin/main
 ```
 
 `--commit` installs nothing into its worktree: Python suites use `QA_PYTHON` / `QA_IT_PYTHON`, and Node suites report `not_run` (kind `toolchain`), which blocks the gate. Use it with `--scope stack`.
@@ -76,6 +82,8 @@ directory.
 | `generate --module ID [--from-plan]` (alias `tests ID`) | Ask a model for planned scenarios and write each as a stub test in a `planned = true` suite; writes `scenarios-llm.json`, `generate.md`, `generate.json` (the written and dropped stubs). Never overwrites a file |
 | `generate --implement ID[,ID...] --pr N` (alias `tests --implement ...`) | Replace committed, clean stubs with model-written tests and keep only the proven ones, uncommitted. Needs the label `qa-scenarios-ok` on PR N. Takes `--base`, `--repeat`, `--max-mutants`, `--stack`, `--base-url` for `prove`. A stack row is refused unless `--stack` gives a stack. `--draft` asks the model and checks the replies but writes and runs nothing; `--from-drafts` then proves those replies with no model call and no label call. CI uses the pair so the job that runs the generated code holds no model key |
 | `improve` (or `go --improve`) | After a run, for the unit tests that cover a changed Python file (at most `--max-checked`, default 20): run each against the reverted change and up to `--check-mutants` (default 3) mutants of its changed lines. A test that passes every variant is weak. Then ask the model for a stronger companion of each weak test and up to `--max-new` (default 10) tests for missing scenarios of the changed files, each a new file next to the existing tests (`test_<name>_qa.py`), never an edit of one. Each reply passes the same checks as `generate --implement`, and only proven files stay, uncommitted. `--check`, `--draft` and `--from-drafts` run one phase each (CI runs them in separate jobs); `--minutes` (default 10) stops each phase from starting new work. The flags read `QA_IMPROVE_MAX_CHECKED`, `QA_IMPROVE_MUTANTS`, `QA_IMPROVE_MAX_NEW` and `QA_IMPROVE_MINUTES`. A model failure or timeout is reported as skipped. Writes `improve-check.json`, `improve.json` and `improve.md` |
+| `agent` | The QA agent (see [QA agent](#qa-agent)): round 0 runs the floor, then Claude Code picks, runs (through the engine) and judges further rounds and writes tests. `--stack managed\|none`, `--minutes` (default 120), `--max-turns` (default 150), `--combine NUMBER:SHA` (repeat, in order) with `--combine-base REF`, `--gate`, `--comment --pr N` |
+| `stack up \| down \| status` | One managed stack for several runs: `up [--plan F] [--graph-db G] [--no-build]` starts and seeds it and writes `stack/session.json` (owner-only; it holds the stack's admin password); `run --session FILE` runs any tests against it; `down` collects its logs and removes it with its image |
 | `prove ID` | Run one test on head `--repeat` times (default 3, 1 for stack tests), then with the change reverted (`--base REF`) or up to `--max-mutants` mutants (default 5, 1 for stack tests). A failing variant counts only if it fails again on a rerun; writes `prove/<id>.json` |
 | `bisect --range A..B --tests FILE` | Flake check, narrow, bisect to the breaking commit |
 | `history record \| failing \| flaky` | Run history in a directory (`--store DIR`, default `$QA_HISTORY` or `qa-out/history`): `runs.jsonl` holds one compact entry per run (outcome counts and the failed, errored and flaky ids; the newest 1,000 from the last 90 days) and `tests.json` the last 10 outcomes per test. `record` adds the run in `--out`, with `--trigger` (default from `GITHUB_EVENT_NAME`) and `--wall-seconds`. `go` and `run` with `--history DIR` add their run too. `publish`, `pull` and `fetch-quarantine` work on the `qa-history` branch; see [History, quarantine and metrics](#history-quarantine-and-metrics) |
@@ -92,6 +100,7 @@ directory.
 | `qa-pipeline.yml` | called by the callers above | plan → run-unit → run-stack → report → gate |
 | `qa-command.yml` | `/qa` PR comments | permission check, then dispatch at the PR head |
 | `qa-tests.yml` | `/qa tests` dispatches, and qa.yml's improve job for `/qa` | `check` (improve only: no secrets, no token, runs the PR's tests against mutants), `draft` (model key, runs no generated code), `prove` (no secrets, no token), `publish` (the only job with `contents: write`): pushes one signed-off commit to a same-repo PR branch and comments |
+| `qa-agent-publish.yml` | called by `qa.yml` after a QA agent run | no secrets: pushes the agent's test files to a same-repo PR as one signed-off commit, or for `/qa combine --open-pr` the combined branch and a draft PR |
 | `main.yml` | every PR | engine unit tests, catalog freshness, spec lint |
 
 **Engine version.** The plan, report and gate jobs run the base branch's engine
@@ -191,7 +200,9 @@ a warning. Only comments by `github-actions[bot]` are ever edited or collapsed.
 **PR comment commands** (write access; `--trusted` and `full --profile conservative` need admin):
 
 ```text
-/qa                      run the plan for this PR, then improve its tests (same-repo PRs; see below)
+/qa                      run the plan for this PR, then improve its tests (same-repo PRs; see below); the QA agent when QA_AGENT is true
+/qa agent                the QA agent: Claude Code picks and judges the tests, the engine runs them (see QA agent)
+/qa combine #12 #15 [--open-pr]  stack these PRs on the default branch, resolve conflicts, run the QA agent on the result
 /qa plan                 plan and report, run nothing
 /qa missing              plan with missing-test analysis, runs nothing
 /qa since <sha>          <sha> and every commit after it, as one batch (mode `since`)
@@ -456,6 +467,27 @@ A model failure or timeout is reported as skipped and fails nothing. Budgets: 20
 
 **Threat model note.** `check` and `prove` run the PR's code in a dispatched run on the default branch. Code there can reach the job's Actions runtime token and write cache entries scoped to the default branch, as the run jobs of qa-pipeline.yml already can. Workflows that release or deploy from the default branch should not restore caches.
 
+## QA agent
+
+The QA agent works like a QA engineer, with the engine as its test runner. Claude Code reads the change and the code around it, decides which tests to run and what they should show, has the engine run them, reads the results and logs, and repeats: it reruns what looks flaky, runs related tests the rules did not pick, and writes and proves tests for behaviour nothing covers. It ends with a verdict. Claude never runs a test runner itself, and its verdict never gates: the gate reads the engine's results only.
+
+**How a run goes** (`qa agent`, or `/qa agent` in CI):
+
+1. The engine computes the rule floor, starts one managed stack (`qa stack up`), and runs the floor as round 0.
+2. `claude -p` starts with `scripts/qa/prompts/agent.md` and an input file: the change and its diff, the floor and round 0's results, the catalog, the stack, the exact commands it may use and its time budget. Its tools: read and search anything; edit and write files; Bash only for `python3 <engine> run --session ...`, `catalog`, `prove` and `stack status`, and read-only git. Project settings, hooks and MCP servers of the tree are not loaded.
+3. Each further round runs through the engine into `agent/rounds/<n>/`. The results of every round merge into `results-agent.json`: the latest result counts, a test that failed and then passed is `flaky`, and a later `not_run` hides nothing. Tests outside the floor join the plan with `source: agent`.
+4. Claude writes `agent/verdict.json` (`qa-agent/v1`): `works`, `broken` or `unsure`, a summary, the rounds and their reasons, and findings, each a `regression`, `existing-bug`, `flaky`, `environment`, `test-bug` or `combined-only` with its tests and evidence. Unknown test ids and malformed fields are dropped and listed.
+5. Changes outside test files are reverted and listed; test changes go to `agent-tests.patch` (locally they stay in your checkout, uncommitted). Output holding a secret value drops the verdict and the tests.
+6. The stack is removed, also on an error or a cancel, and the report gains a **QA agent** section.
+
+Without the `claude` CLI, or in CI without `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`, the floor alone runs and the report says so.
+
+**In CI.** `/qa agent` runs it. Set the repository variable `QA_AGENT` to `true` and plain `/qa` runs it too. Claude Code signs in with the secret `CLAUDE_CODE_OAUTH_TOKEN` (a Claude subscription login, made with `claude setup-token`) or `ANTHROPIC_API_KEY`; only the agent step gets it. The pipeline skips `run-unit` and runs one stack job (`QA_STACK_RUNNER`, or the default stack runner) that installs the unit-test toolchains and the Claude Code CLI, takes the engine and the prompt from the default branch, and runs `qa agent`. `QA_AGENT_MINUTES` sets its budget. After the report, `qa-agent-publish.yml`, which holds no secrets, pushes the agent's test files to a same-repo PR with the same checks as the improve stage: the PR is open, unmoved, not approved or set to auto-merge, its branch not protected; only test files the default branch's engine recognises; no secret; one signed-off commit, never forced. It comments what it did.
+
+**Combined runs.** `/qa combine #12 #15 #18` (2 to 8 open pull requests from this repository, in stacking order) tests several PRs together. Each PR's head is pinned when the command runs, and the run stops if one moved. `qa agent --combine` stacks them on the default branch, one commit per PR, so there are no merge commits. When a PR conflicts with the ones before it, its commit keeps the combined side, and Claude Code (`scripts/qa/prompts/combine.md`) resolves the conflicting hunks in a commit of its own, `combine: resolve #15 against #12 in <files>`. The build stops and says why when markers remain, when the resolver touched any other file, or when a conflict is a delete against a change or a binary file. The agent then runs on the combined tree, and a failure that only two PRs together cause is `combined-only`, naming both. The report lists the PRs and each resolved conflict. With `--open-pr`, the publish job pushes the combined commits (and the agent's tests) to a new branch `qa-combined/<run id>`, refusing files none of the PRs touches, opens a draft PR, and comments on every combined PR. Nothing is pushed to the PRs themselves, and nothing is merged.
+
+**Warning.** The agent job runs the PR's code while it holds Claude's credential and the stack's test settings, like the stack job holds the test secrets. A PR author with write access could make a test print or send them. Run it on PRs from this repository only; on a fork PR only through an admin's `--trusted <sha>`.
+
 ## Claude Code skills
 
 `.claude/skills/qa-pr`, `qa-commit`, `qa-review` and `qa-generate` walk an agent through
@@ -488,6 +520,7 @@ A local `--stack managed` run needs the same non-secret settings the CI `run-sta
 | `QA_PLAYWRIGHT_ARGS` | none | Extra Playwright arguments, split on spaces. The nightly passes `--update-snapshots=missing` |
 | `QA_PLANNER`, `QA_PLANNER_MODEL`, `QA_PLANNER_CMD`, `QA_PLANNER_MAX_TURNS` | `claude_code` | Model adapter and settings |
 | `QA_DEADLINE_SECONDS`, `QA_TIMEOUT_IT_PYTEST` | `16200`, `5400` | Run-level deadline; timeout of one integration-test group |
+| `QA_AGENT_MINUTES`, `QA_AGENT_MAX_TURNS` | `120`, `150` | The QA agent's time and turn budget |
 | `QA_IMPROVE_MAX_CHECKED`, `QA_IMPROVE_MUTANTS`, `QA_IMPROVE_MAX_NEW`, `QA_IMPROVE_MINUTES` | `20`, `3`, `10`, `10` | `improve` budgets: tests checked, mutants per test, new tests, minutes per phase |
 | `TEST_USER_EMAIL`, `TEST_USER_PASSWORD`, `BASE_URL`, `NEXT_PUBLIC_API_BASE_URL` | the stack's `PIPESHUB_TEST_USER_EMAIL`, `PIPESHUB_TEST_USER_PASSWORD` and `PIPESHUB_BASE_URL` | What the Playwright specs read; set only for Playwright and only when unset. When a setup or provisioning spec (`*.setup.ts`, `*.provision.ts`) fails, the specs of that run that Playwright skipped are reported `error` ("setup failed: ..."), not `skip` |
 | `QA_STACK`, `PIPESHUB_BASE_URL`, `QA_COMPOSE_PROJECT` | `none`, `http://localhost:3000`, `qa-<sha12>-<run>` | Integration stack. Each managed project is `<prefix>-<graph>`, and the image is `pipeshub-ai:qa-<sha12>` |
