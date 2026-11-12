@@ -31,6 +31,8 @@ from app.services.graph_db.postgres.base import (
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
 
+    from app.core.db import Tx
+
 _LINKS = CollectionNames.NODE_RELATIONS.value
 _STAGES = CollectionNames.STAGE_STATES.value
 _BLOCKS = CollectionNames.BLOCKS.value
@@ -76,6 +78,73 @@ def _neighbour(r: Any, key: str, coll: str) -> dict[str, Any]:  # noqa: ANN401
             "sourceColumnNumber": d.get("sourceColumnNumber"), "provenance": d.get("provenance"), "line": d.get("line"),
             "confidence": d.get("confidence")}
 
+
+
+# One page of a hop read, in the order the cursor names: (anchor, direction, neighbour collection, neighbour id, relationship type, edge collection, edge key), each byte-wise ("C").
+# The cursor is that tuple joined by chr(1), which orders as the tuple does while no part holds a byte below chr(1) (none can: it is the lowest a text holds besides NUL, which a text
+# cannot). Every branch reads one anchor range of one partial index in that order (``edges_by_neighbour_in`` / ``_out``: the anchor, then the neighbour's collection and id), so a
+# page of a node of any degree reads about a page of rows and not all its edges: the branches of the anchor the cursor is in carry its position as an index bound, those of the
+# anchors after it start from their first edge. Each returns at most a page, and the page is the first ``limit`` of what they return together.
+_NEIGHBOUR_ORDER = ('anchor COLLATE "C", dir COLLATE "C", coll COLLATE "C", key COLLATE "C", rel COLLATE "C", edge_coll COLLATE "C", ekey COLLATE "C"')
+_HOP_PAGE_SQL = """/* pipeshub:graph.get_neighbors_for_nodes_by_relationship_types */ SELECT x.anchor, x.coll, x.key, x.dir, x.rel, x.doc,
+    concat_ws(chr(1), x.anchor, x.dir, x.coll, x.key, x.rel, x.edge_coll, x.ekey) COLLATE "C" AS page_key FROM (
+  (SELECT e.from_id AS anchor, 'outbound' AS dir, e.to_coll AS coll, e.to_id AS key, coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) AS rel, e.coll AS edge_coll, e.ekey, e.doc
+     FROM graph.edges e WHERE $8::bool AND e.org_id = $1 AND e.coll IN ('nodeRelations', 'recordLinks') AND e.from_coll = $2 AND e.from_id COLLATE "C" = $9::text
+       AND (e.to_coll COLLATE "C", e.to_id COLLATE "C") >= ($10::text, $11::text)
+       AND (e.to_coll COLLATE "C", e.to_id COLLATE "C", coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) COLLATE "C", e.coll COLLATE "C", e.ekey COLLATE "C")
+           > ($10::text, $11::text, $12::text, $13::text, $14::text)
+       AND coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) = ANY($3::text[])
+     ORDER BY e.to_coll COLLATE "C", e.to_id COLLATE "C", coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) COLLATE "C", e.coll COLLATE "C", e.ekey COLLATE "C" LIMIT $4)
+  UNION ALL
+  (SELECT e.from_id, 'outbound', e.to_coll, e.to_id, coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')), e.coll, e.ekey, e.doc
+     FROM graph.edges e WHERE $5::bool AND e.org_id = $1 AND e.coll IN ('nodeRelations', 'recordLinks') AND e.from_coll = $2 AND e.from_id COLLATE "C" = ANY($15::text[])
+       AND coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) = ANY($3::text[])
+     ORDER BY e.from_id COLLATE "C", e.to_coll COLLATE "C", e.to_id COLLATE "C", coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) COLLATE "C", e.coll COLLATE "C", e.ekey COLLATE "C" LIMIT $4)
+  UNION ALL
+  (SELECT e.to_id, 'inbound', e.from_coll, e.from_id, coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')), e.coll, e.ekey, e.doc
+     FROM graph.edges e WHERE $16::bool AND e.org_id = $1 AND e.coll IN ('nodeRelations', 'recordLinks') AND e.to_coll = $2 AND e.to_id COLLATE "C" = $17::text
+       AND NOT ($7::bool AND e.from_coll = e.to_coll AND e.from_id = e.to_id)
+       AND (e.from_coll COLLATE "C", e.from_id COLLATE "C") >= ($18::text, $19::text)
+       AND (e.from_coll COLLATE "C", e.from_id COLLATE "C", coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) COLLATE "C", e.coll COLLATE "C", e.ekey COLLATE "C")
+           > ($18::text, $19::text, $20::text, $21::text, $22::text)
+       AND coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) = ANY($3::text[])
+     ORDER BY e.from_coll COLLATE "C", e.from_id COLLATE "C", coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) COLLATE "C", e.coll COLLATE "C", e.ekey COLLATE "C" LIMIT $4)
+  UNION ALL
+  (SELECT e.to_id, 'inbound', e.from_coll, e.from_id, coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')), e.coll, e.ekey, e.doc
+     FROM graph.edges e WHERE $6::bool AND e.org_id = $1 AND e.coll IN ('nodeRelations', 'recordLinks') AND e.to_coll = $2 AND e.to_id COLLATE "C" = ANY($23::text[])
+       AND NOT ($7::bool AND e.from_coll = e.to_coll AND e.from_id = e.to_id)
+       AND coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) = ANY($3::text[])
+     ORDER BY e.to_id COLLATE "C", e.from_coll COLLATE "C", e.from_id COLLATE "C", coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) COLLATE "C", e.coll COLLATE "C", e.ekey COLLATE "C" LIMIT $4)
+) x(anchor, dir, coll, key, rel, edge_coll, ekey, doc) ORDER BY x.anchor COLLATE "C", x.dir COLLATE "C", x.coll COLLATE "C", x.key COLLATE "C", x.rel COLLATE "C", x.edge_coll COLLATE "C", x.ekey COLLATE "C" LIMIT $4"""
+_NO_AFTER = ("", "", "", "", "")
+
+
+# With few statistics, or a cursor whose range the planner cannot size, a scan of the edges (or a bitmap of them) and a sort can look cheaper than the ordered index and a page: both are off for
+# this unit, and so is a parallel scan (a page is a few rows). The sort left is the incremental one over the index's order (an expression of the document cannot be an index column under row-level security).
+_HOP_PROFILE = "/* pipeshub:graph.hop_page_profile */ SELECT set_config('enable_bitmapscan', 'off', true), set_config('enable_seqscan', 'off', true), set_config('max_parallel_workers_per_gather', '0', true)"
+
+
+def _hop_args(org: str, node_collection: str, node_keys: list[str], types: list[str], limit: int, out: bool, inn: bool, both: bool, after: str) -> list[Any]:
+    """The parameters of ``_HOP_PAGE_SQL`` for the page after cursor ``after`` (empty: the first page). A cursor is what a page returned, so a malformed one is an error."""
+    anchors = sorted(set(node_keys))
+    if after == "":
+        eq_out = eq_in = False
+        a, o_after, i_after, gt = "", _NO_AFTER, _NO_AFTER, anchors
+    else:
+        parts = after.split("\x01")
+        if len(parts) != 7:
+            raise ValueError("invalid cursor for a neighbour page")
+        a, d, *rest = parts
+        o_after = tuple(rest) if d == "outbound" else _NO_AFTER       # the anchor's own outbound edges all follow a cursor that is in its inbound edges
+        i_after = tuple(rest)
+        eq_out, eq_in = a in anchors and d in ("inbound", "outbound"), a in anchors and d == "inbound"      # an anchor's inbound edges all precede a cursor in its outbound edges
+        gt = [x for x in anchors if x > a]
+    return [org, node_collection, types, limit, out, inn, both, out and eq_out, a, *o_after, gt, inn and eq_in, a, *i_after, gt]
+
+
+async def _hop_page(tx: Tx, org: str, node_collection: str, node_keys: list[str], types: list[str], limit: int, out: bool, inn: bool, both: bool, after: str) -> list[Any]:
+    await tx.fetchval(_HOP_PROFILE)
+    return list(await tx.fetch(_HOP_PAGE_SQL, *_hop_args(org, node_collection, node_keys, types, limit, out, inn, both, after)))
 
 
 def _page_whole_ids(pointers: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
@@ -334,20 +403,7 @@ class CodeGraphMixin(PgBase):
         paged = after is not None
         try:
             if paged:
-                # cursor = the row's sort key, ending in the edge's own key so parallel edges never tie; ORDER BY before LIMIT makes a page the next slice of the ordered edges.
-                rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_neighbors_for_nodes_by_relationship_types */ SELECT e.anchor, e.coll, e.key, e.dir,
-                    coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) AS rel, e.doc,
-                    concat_ws(chr(1), e.anchor, e.dir, e.coll, e.key, coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')), e.edge_coll, e.ekey) COLLATE "C" AS page_key FROM (
-                    SELECT e.from_id AS anchor, e.to_coll AS coll, e.to_id AS key, 'outbound' AS dir, e.ekey, e.doc, e.coll AS edge_coll FROM graph.edges e
-                      WHERE $7::bool AND e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = ANY($4::text[])
-                    UNION ALL
-                    SELECT e.to_id, e.from_coll, e.from_id, 'inbound', e.ekey, e.doc, e.coll FROM graph.edges e
-                      WHERE $8::bool AND e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = ANY($4::text[])
-                        AND NOT ($9::bool AND e.from_coll = e.to_coll AND e.from_id = e.to_id)) e
-                    WHERE coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) = ANY($5::text[])
-                      AND concat_ws(chr(1), e.anchor, e.dir, e.coll, e.key, coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')), e.edge_coll, e.ekey) COLLATE "C" > $10::text
-                    ORDER BY page_key LIMIT $6""",
-                                                          org, _LINK_COLLS, node_collection, node_keys, relationship_types, limit, out, inn, both, after), transaction)
+                rows = await self._q(lambda tx: _hop_page(tx, org, node_collection, node_keys, relationship_types, limit, out, inn, both, after), transaction)
             else:
                 rows = await self._q(lambda tx: tx.fetch("""/* pipeshub:graph.get_neighbors_for_nodes_by_relationship_types */ SELECT e.anchor, e.coll, e.key, e.dir,
                     coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) AS rel, e.doc FROM (
