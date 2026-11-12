@@ -162,9 +162,6 @@ def class_admit(alias: str, p: Params, viewer: dict[str, Any]) -> str:
             f"OR {a}.id = ANY({p.add(sorted(viewer['walked']))}::text[]))")
 
 
-LINKS_MAX = 5_000      # shortcut: the links of one row an arrow reads (a row with more shows its arrow only for the first ones); upgrade to a paged read if a connector links more
-
-
 def arrows_sql(admit: str) -> str:
     """The containers among ``$2`` (sks) that list something when opened: some child (by the hierarchy parent, the group, or a link) that is live, not hidden (``$3``) and open to the viewer
     (``admit``, a condition on a row ``c`` with the columns of the listing's window). Exact: no sample of the children."""
@@ -172,7 +169,9 @@ def arrows_sql(admit: str) -> str:
     cols = "SELECT c.sk, c.id, c.r13, c.path IS NOT NULL AS has_path, c.class_id, c.fence_job IS NOT NULL AS fenced FROM kg.records c"
     def one(where: str) -> str:
         return f"EXISTS (SELECT 1 FROM ({cols} WHERE {live} AND {where}) c WHERE {admit})"
-    # the linked children by their keys, from the row's links first (an array, so the planner cannot turn it into a pass over the organisation's rows)
+    # The linked children: the row's links by the key of kg.links, each child by its own key, up to the first that is live, not hidden and open (no budget of links that could stop
+    # short of it). OFFSET 0 keeps each read on its node: the links are the row's, the child is the link's, and the test runs on what they return.
+    linked = (f"EXISTS (SELECT 1 FROM (SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = p.sk OFFSET 0) l "
+              f"CROSS JOIN LATERAL ({cols} WHERE {live} AND c.sk = l.child_sk OFFSET 0) c WHERE {admit} OFFSET 0)")
     return ("/* pipeshub:kg.listing_arrows */ SELECT p.sk FROM unnest($2::bigint[]) AS p(sk) WHERE "
-            + one("c.parent_sk = p.sk") + " OR " + one("c.group_sk = p.sk")
-            + " OR " + one(f"c.sk = ANY (ARRAY(SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = p.sk LIMIT {LINKS_MAX}))"))
+            + one("c.parent_sk = p.sk") + " OR " + one("c.group_sk = p.sk") + " OR " + linked)

@@ -327,3 +327,36 @@ async def test_the_hidden_rows_the_arrows_and_their_sample_read_by_key_and_never
                     assert {n.get("Index Name") for n in _nodes(plan)} & {"records_hiders"}, f"{at}: {plan}"
     finally:
         await con.close()
+
+
+async def _folder_with_a_linked_child_after(p, db, org: str, dead: int) -> None:
+    """A granted folder ``fold`` and a granted record ``far`` beside it (both under ``g1``); ``far`` also hangs under ``fold`` by a hierarchy link, after ``dead`` links of ``fold`` to
+    deleted rows (in the order of the links' key)."""
+    with ctx(org):
+        await p.batch_upsert_nodes([{"_key": "app1", "name": "Drive", "type": "DRIVE", "orgId": org}], "apps")
+        await p.batch_upsert_nodes([{"_key": "g1", "groupName": "G", "connectorId": "app1", "orgId": org, "accessRule": "OPEN", "permissionModel": "RECORD_LEVEL"}], "recordGroups")
+        await p.batch_upsert_nodes([{"_key": k, "recordName": k.upper(), "connectorId": "app1", "orgId": org, "recordType": "FILE", "origin": "CONNECTOR", **extra}
+                                    for k, extra in (("fold", {"mimeType": "application/vnd.folder"}), ("far", {}))], "records")
+        await p.batch_create_edges([edge("g1", "recordGroups", k, "records", relationshipType="PARENT_CHILD") for k in ("fold", "far")], "nodeRelations")
+        await p.batch_create_edges([edge(k, "records", "g1", "recordGroups") for k in ("fold", "far")], "belongsTo")
+        await p.batch_upsert_nodes([{"_key": "u1", "orgId": org, "email": "u@example.com"}], "users")
+        await p.batch_create_edges([edge("u1", "users", "app1", "apps")], "userAppRelation")
+        await p.batch_create_edges([edge("u1", "users", k, "records", type="USER", role="READER") for k in ("fold", "far")], "permission")
+    await flip(db, org)
+    # the deleted rows come first in the links' key order (negative keys), then far
+    await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, deleted) SELECT $1, -g, 3, 'gone' || g, 3, a.sk, true FROM generate_series(1, $2::int) g "
+                 "JOIN kg.node_keys a ON a.org_id = $1 AND a.coll = 1 AND a.id = 'app1'", org, dead)
+    await _admin("INSERT INTO kg.links (org_id, parent_sk, kind, child_sk) SELECT $1, f.sk, 1, c.sk FROM kg.node_keys f, kg.records c WHERE f.org_id = $1 AND f.coll = 3 AND f.id = 'fold' "
+                 "AND c.org_id = $1 AND (c.sk < 0 OR c.id = 'far') AND c.coll = 3", org)
+
+
+@pytest.mark.parametrize("served", [True, False], ids=["served", "not_served"])
+@pytest.mark.parametrize("dead", [200, 5_001])
+async def test_a_folder_whose_only_readable_child_is_linked_after_deleted_links_shows_its_arrow(pg_db, served, dead) -> None:
+    """An arrow reads a row's linked children up to the first that is live, not hidden and open, however many links come before it: no budget of raw links cuts it off (the exact
+    statement of a connector kg serves, and the sample of one it does not)."""
+    p, org = prov(pg_db), new_org()
+    await _folder_with_a_linked_child_after(p, pg_db, org, dead)
+    if not served:
+        await _admin("UPDATE kg.projection_state SET mode = 'shadow' WHERE org_id = $1 AND app_sk <> 0", org)
+    assert await folder_arrow(p, org, ["fold", "far"]) is True
