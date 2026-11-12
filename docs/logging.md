@@ -10,6 +10,7 @@ follows. The Python side is `backend/python/app/utils/logger.py`; Node mirrors t
 | `LOG_LEVEL` | `debug`, `info`, `warn`/`warning`, `error`, `critical` (any case) | `info` | Level of the `app` logger, of every `create_logger` logger, and of the root logger. Root never goes below `info`, so third-party libraries never log at debug by accident (some log whole requests, prompts and bodies there). Use `debug`, `info`, `warn` or `error`: Node reads the same variable. |
 | `LOG_LEVELS` | `name=LEVEL,name=LEVEL` | empty | Per-logger levels, applied last. Any logger can be named, `root` included. `LOG_LEVELS=app.services.graph_db=DEBUG,aiokafka=WARNING`. `LOG_LEVELS=root=DEBUG` opens third-party debug output on purpose. |
 | `LOG_FORMAT` | `text`, `json` | `text` | Both runtimes: Node reads it at start-up (`Logger.applyEnv`) with the same line shape. |
+| `DB_SLOW_QUERY_MS` | milliseconds, `0` = off | `500` | A database client call (ArangoDB, Neo4j) or Postgres statement that succeeds after at least this long writes `db.query.slow` at WARNING. An unusable value means `500`. |
 
 A bad value never stops a service: an unknown `LOG_LEVEL` (or `notset`) means `info`, a malformed `LOG_LEVELS` entry is skipped,
 an unknown `LOG_FORMAT` means `text`; each logs one warning. Values are read at import and again whenever they change before a
@@ -487,6 +488,43 @@ Nothing a token endpoint answered is logged as text: its body, and the token URL
 quote the refresh token in prose no redactor recognises. When the exception chain holds such an answer, every failure line of
 a refresh service (`log_refresh_failure`) leaves the text out of `error_message` and the stack (each exception shows as
 `Type: <message omitted>`) and logs `http_status` and `oauth_error` instead.
+
+## Database queries (Python)
+
+The ArangoDB and Neo4j clients (`arango_http_client.py`, `neo4j_client.py`) and the Postgres runtime (`app/core/db/uow.py`,
+which every Postgres graph provider runs through) write one record per call that failed or was slow, through
+`app/utils/db_query_log.py`. A call that succeeds in time writes nothing.
+
+| Event | Level | Fields |
+| --- | --- | --- |
+| `db.query.failed` | `level_for(error_class)`: WARNING, except `internal` and `misconfigured` (ERROR) | `backend` (`arango`, `neo4j`, `postgres`), `op` (the client method, or `fetch`/`execute`/... and `begin`, `prologue`, `check_alive`, `commit`, `copy`, `rollback_to` on Postgres), `site` (Postgres `/* pipeshub:<site> */` tag), `caller`, `code` (ArangoDB errorNum, Neo4j code, SQLSTATE), `status` (ArangoDB HTTP status), `error_class`, `error_type`, `duration_ms`, `outcome`; Neo4j memory limit adds `bulk`, `size`; Postgres adds `db_request_id` |
+| `db.query.slow` | WARNING | `backend`, `op`, `site`, `caller`, `duration_ms`, `threshold_ms`; Postgres `db_request_id` |
+| `db.query.retry` | WARNING | `backend=neo4j`, `op`, `reason=connection_lost`, `error_type` |
+| `db.connect.failed`, `db.disconnect.failed`, `db.schema.failed`, `db.edge.failed` | `log_failure` | `backend`, `op` (schema or edge) |
+
+- **One record per call, outside the client's own retries.** A write conflict the ArangoDB or Neo4j client retries and wins
+  writes nothing; one it gives up on writes one record. Retries above the client (`KernelDB.run`, the KB push, a provider
+  transaction its owner re-runs) write one record per lost attempt. `duration_ms` is the whole client call, including the
+  client's own back-off and every cursor page; a Postgres record is one statement.
+- **An operation record that uses its class's level.** Unlike `mcp.connect.end` and `llm_call.end`, which stay below ERROR and
+  leave the severity to the layer that gives up, `db.query.failed` is ERROR for our own bug (an AQL, Cypher or SQL error) or our
+  configuration: many provider methods still swallow database errors, and the record can be the only ERROR line. It does not mark
+  the exception as logged, so the handler's `log_failure` keeps its level and prints the one stack.
+- **No driver text, ever.** Driver messages can quote bound values (a Neo4j constraint names the clashing value; a Postgres data
+  error or asyncpg's encoding error quotes the input). The record carries `code` and `error_class` instead, and the client stamps
+  the exception (`error_class.mark_error(exc, error_class, hide_text=True)`; without a class, `mark_error(exc, hide_text=True)` only
+  hides the text and leaves the class to `classify_error`), so `classify_error` returns its class and `log_failure` leaves `error_message` out and
+  prints the stack as `Type: <message omitted>` for any chain, or exception group member, that holds it. This also hides the
+  server's own text for our bugs (an ArangoDB 1501 "syntax error … near …" reads `code=1501 caller=…`): diagnose from `code`,
+  `caller` and `site`, and never add a database error's `{e}` or `str(e)` back to a log line. Our own texts stay visible (the
+  Neo4j memory-limit hint).
+- **Classes.** Only our bugs and our configuration are ERROR classes. Conflicts and lost races (ArangoDB 1200, 1210, 29, 1654,
+  1655; Neo4j constraint, deadlock, entity lost to a delete; Postgres 23xxx, 40001, 40P01) are `conflict`; ArangoDB 18 and 1500,
+  Neo4j transaction timeouts and Postgres 57014/55P03 are `timeout`; Postgres 22xxx, 54xxx, 23502 and 23514, and Neo4j data
+  exceptions (GQL status 22xxx), are `bad_request` (a value or a size a caller handles), even when our own parameter caused them.
+- **`caller` and `[file:line]`** are the first frame outside the client: the provider line that called it. In a Postgres provider
+  transaction the statement runs in another task, so `_Txn.run` finds the caller while its stack is live and hands it over; the
+  unit's own `begin` and `prologue` there have `caller=unknown`.
 
 ## Auth audit events (Node)
 
