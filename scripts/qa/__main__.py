@@ -34,6 +34,7 @@ from qa import (
     review,
     run,
     score,
+    session,
     shadow,
     shard,
     validate,
@@ -228,9 +229,17 @@ def cmd_run(args) -> int:
         return 2
     if args.graph_db:
         plan["stack"]["graph_db"] = [args.graph_db] if args.graph_db != "both" else ["neo4j", "arango"]
+    base_url = args.base_url
+    if getattr(args, "session", None):
+        sess = session.load(Path(args.session))
+        base_url = session.use(Path(args.session))
+        args.stack = "external"
+        missing = sorted(set(plan["stack"].get("compose_profiles", [])) - set(sess["compose_profiles"]))
+        if missing:
+            print(f"note: these tests need compose profiles the session did not start: {', '.join(missing)}", file=sys.stderr)
     try:
         stack_mode = args.stack or os.environ.get("QA_STACK", "none")
-        result = run.run(cfg, plan, rows, out, stack_mode=stack_mode, base_url=args.base_url,
+        result = run.run(cfg, plan, rows, out, stack_mode=stack_mode, base_url=base_url,
                          build=args.build, dry_run=args.dry_run, retry=not args.no_retry, scope=args.scope,
                          shard=args.shard, variant=args.stack_variant)
     finally:
@@ -283,6 +292,27 @@ def cmd_report(args) -> int:
         verdict, blocking = report.verdict(cfg, results, allowed)
         print(f"gate: {verdict}" + (f" ({len(blocking)} blocking)" if blocking else ""))
         return 1 if verdict == "fail" else 0
+    return 0
+
+
+def cmd_stack(args) -> int:
+    cfg = config.load()
+    out = _out(args)
+    if args.action == "up":
+        plan = _load(Path(args.plan)) if args.plan else {}
+        head = plan.get("head") or collect.rev(paths.tree_root(), "HEAD")
+        data = session.up(cfg, out, plan.get("stack"), args.graph_db, build=not args.no_build, head=head)
+        print(f"stack up: {data['base_url']} ({data['graph_db']}; profiles: {', '.join(data['compose_profiles']) or 'none'}); session {session.path(out)}")
+        return 0
+    if args.action == "down":
+        print("stack down: " + "; ".join(session.down(cfg, out)))
+        return 0
+    p = session.path(out)
+    if not p.is_file():
+        print("no stack session")
+        return 1
+    data = session.load(p)
+    print(f"stack session: {data['base_url']} ({data['graph_db']}; profiles: {', '.join(data['compose_profiles']) or 'none'})")
     return 0
 
 
@@ -840,9 +870,18 @@ def parser() -> argparse.ArgumentParser:
     g.add_argument("--tests", help="file with one catalog id per line")
     g.add_argument("--ids", nargs="+")
     run_args(s)
+    s.add_argument("--session", metavar="FILE", help="run against the stack a `qa stack up` left running (its session.json)")
     s.add_argument("--history", default=os.environ.get("QA_HISTORY"), metavar="DIR",
                    help="history directory to add this run to")
     s.set_defaults(fn=cmd_run)
+
+    s = sub.add_parser("stack", help="keep one managed stack up across several runs (qa run --session)")
+    s.add_argument("action", choices=["up", "down", "status"])
+    s.add_argument("--out", default=None)
+    s.add_argument("--plan", help="start the broker and compose profiles this plan needs")
+    s.add_argument("--graph-db", default="neo4j", choices=["neo4j", "arango"])
+    s.add_argument("--no-build", action="store_true", help="use an image that is already built")
+    s.set_defaults(fn=cmd_stack)
 
     s = sub.add_parser("report", help="render the report and gate")
     s.add_argument("--comment", action="store_true")
