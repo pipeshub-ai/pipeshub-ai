@@ -294,6 +294,9 @@ class _QueryPlan:
     # The viewer's deferring scope filter (``ServingPlanner``): set only for the main container search, and cleared by the record-id path,
     # whose own filter is the enumerated ids.
     scope_filter: Any = None
+    # Every connector the viewer is gated into is served and exact (``ServingPlanner.plan_exact``): the filter decides every point, so the first fetch is
+    # exactly the limit asked. Meaningless without ``scope_filter``.
+    served_exact: bool = False
 
     def incomplete_notice(self) -> str | None:
         if not self.failed_collections:
@@ -928,7 +931,7 @@ class RetrievalService:
                 return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
             filter, scope_virtual_ids = permission_filter
             if use_containers and self._planner is not None and self.vector_db_service.supports_scope_filter:
-                plan.scope_filter = await self._planner.plan(org_id, user_key)
+                plan.scope_filter, plan.served_exact = await self._planner.plan_exact(org_id, user_key)
 
             record_cut = _record_cut_for(scope_virtual_ids)
             # The search API's first page, varied across sources: the plain
@@ -2108,7 +2111,7 @@ class RetrievalService:
         """
         plan = plan if plan is not None else _QueryPlan()
         plan.narrow_shortfall = False
-        fetch_limit = self._overfetch_limit(limit, containers)
+        fetch_limit = limit if plan.scope_filter is not None and plan.served_exact else self._overfetch_limit(limit, containers)
         # `limit` is per query — `_run_searches` issues one request per expanded
         # query and concatenates the deduped batches — so every comparison below
         # is against the whole fan-out, not one query's share.
