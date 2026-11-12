@@ -22,7 +22,7 @@ async def remove_mirror(config_service: Any, logger: Logger, org_id: str, owner_
         if not key or not owner_id:
             logger.warning("local repo: connector %s has no repository key or owner; no mirror to remove", connector_id)
             return True
-        await asyncio.to_thread(store.Repo(org_id, owner_id, key).destroy)
+        await asyncio.to_thread(store.Repo(org_id, owner_id, key).destroy, connector_id)
         return True
     except (store.StoreError, OSError, ValueError):
         logger.error("local repo: the mirror of connector %s could not be removed; its files stay on the server", connector_id, exc_info=True)

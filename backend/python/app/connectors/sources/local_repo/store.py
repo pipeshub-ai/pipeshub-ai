@@ -1,7 +1,8 @@
 """Server-side mirror of a repository a client pushes (standard library only).
 
-Layout: ``<base>/<org>/<user>/<sha256(repoKey)[:32]>/{tree/, repo.json, files.json}``. ``tree/`` holds the pushed files and is
-what the Local Repository connector walks; the two JSON files (repo identity and generation; path -> sha256/size) live beside it
+Layout: ``<base>/<org>/<user>/<sha256(repoKey)[:32]>/{tree/, staging/, repo.json, files.json}``. ``tree/`` holds the committed files and is
+what the Local Repository connector walks; an upload (and a deletion) is staged and reaches ``tree/`` only when ``commit()`` runs, so the sync
+never sees a half-sent push and a committed file keeps its content until the next commit; the two JSON files (repo identity and generation; path -> sha256/size) live beside it
 so the walk never sees them. Org and user come from the caller's token, never from the request; the client names a repository
 only by an opaque key, so it cannot choose a path on the server.
 """
@@ -57,6 +58,22 @@ class StoreError(ValueError):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+def read_json_object(path: Path) -> dict[str, Any]:
+    """The JSON object in ``path``; ``{}`` only when the file does not exist. A file that cannot be read or decoded is ``StoreError('state_unreadable')``:
+    an unreadable manifest is not an empty repository (an upload would replace it, a commit would sweep the files, a sync would retire the records)."""
+    try:
+        data = json.loads(path.read_text("utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        logger.error("local repo: cannot read %s: %s", path, exc)
+        raise StoreError("state_unreadable") from exc
+    if not isinstance(data, dict):
+        logger.error("local repo: %s does not hold an object", path)
+        raise StoreError("state_unreadable")
+    return data
 
 
 def limits() -> dict[str, int]:
@@ -137,6 +154,7 @@ class Repo:
     def __init__(self, org_id: str, user_id: str, key: str, base: Path | None = None) -> None:
         self.key, self.dir = key, repo_dir(org_id, user_id, key, base)
         self.tree = self.dir / "tree"
+        self.staging = self.dir / "staging"
         self._lock = _lock_for(str(self.dir))
         # One lock per (org, user), taken BEFORE a repository's own lock wherever both are needed (so no pair of threads can wait on each other):
         # the per-user quota is read and then spent across several of the user's repositories.
@@ -148,17 +166,10 @@ class Repo:
         return (self.dir / "repo.json").is_file()
 
     def meta(self) -> dict[str, Any]:
-        try:
-            return json.loads((self.dir / "repo.json").read_text("utf-8"))
-        except (OSError, ValueError):
-            return {}
+        return read_json_object(self.dir / "repo.json")
 
     def manifest(self) -> dict[str, list[Any]]:
-        try:
-            data = json.loads((self.dir / "files.json").read_text("utf-8"))
-            return data if isinstance(data, dict) else {}
-        except (OSError, ValueError):
-            return {}
+        return read_json_object(self.dir / "files.json")
 
     def _write_json(self, name: str, data: Any) -> None:  # noqa: ANN401
         fd, tmp = tempfile.mkstemp(dir=self.dir, prefix=f".{name}.")
@@ -178,42 +189,62 @@ class Repo:
             return meta
 
     def commit(self) -> dict[str, Any]:
-        """Publish what is stored: the files the sync may index are the ones listed here, so an upload that never got its commit is not searchable.
+        """Publish what is staged: the tree becomes exactly the files the manifest lists.
 
-        When the last manifest was complete (the whole repository), files in the tree that it does not list (left by an upload that stopped
-        half way) are removed first. A file replaced after the commit is held back by the sync until the next commit publishes it.
+        Files the manifest no longer lists (deleted, or left by an upload that stopped half way) are removed from the tree, and each staged file
+        replaces its committed version in one rename. Nothing of this is visible to the sync before this call, and a call that is interrupted
+        can simply be repeated. The sync therefore indexes only committed files, and a committed file keeps its content (and its indexed record)
+        until the next commit.
         """
         with self._lock:
             meta = self.meta()
             manifest = self.manifest()
-            if meta.get("completeManifest"):
-                self._sweep(manifest)
             self.tree.mkdir(parents=True, exist_ok=True)
-            self._write_json("committed.json", {path: row[0] for path, row in manifest.items()})
-            return self.save_meta(generation=int(meta.get("generation", 0)) + 1, committedAt=int(time.time() * 1000))
+            code_changed = self._sweep(manifest)
+            code_changed = self._promote(manifest) or code_changed
+            updates: dict[str, Any] = {"generation": int(meta.get("generation", 0)) + 1, "committedAt": int(time.time() * 1000)}
+            if code_changed:
+                updates["codeChangedAt"] = updates["committedAt"]  # the code graph owes a build after this commit
+            return self.save_meta(**updates)
 
-    def committed(self) -> dict[str, str]:
-        """path -> sha256 of the files published by the last commit (none before the first)."""
-        try:
-            data = json.loads((self.dir / "committed.json").read_text("utf-8"))
-            return data if isinstance(data, dict) else {}
-        except (OSError, ValueError):
-            return {}
+    def _promote(self, manifest: dict[str, list[Any]]) -> bool:
+        """Move every staged file into the tree; True when one of them is code."""
+        code = False
+        tree = self.tree.resolve()
+        for path in manifest:
+            src, dest = self.staging / path, self.tree / path
+            if not src.is_file():
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if not dest.parent.resolve().is_relative_to(tree):
+                raise StoreError("invalid_path")
+            os.replace(src, dest)
+            code = code or bool(detect_language(path))
+        for dirpath, _dirs, _files in os.walk(self.staging, topdown=False):
+            if Path(dirpath) != self.staging:
+                with contextlib.suppress(OSError):
+                    Path(dirpath).rmdir()
+        return code
 
-    def _sweep(self, manifest: dict[str, list[Any]]) -> None:
-        """Remove every file (and any link, which is never written here) in the tree that the manifest does not list, then the emptied folders."""
+    def _sweep(self, manifest: dict[str, list[Any]]) -> bool:
+        """Remove every file (and any link, which is never written here) in the tree that the manifest does not list, then the emptied folders.
+
+        True when one of the removed files is code."""
+        code = False
         for dirpath, dirnames, filenames in os.walk(self.tree, topdown=False, followlinks=False):
             rel_dir = os.path.relpath(dirpath, self.tree).replace(os.sep, "/")
             for name in filenames:
                 rel = name if rel_dir == "." else f"{rel_dir}/{name}"
                 if rel not in manifest:
                     Path(dirpath, name).unlink(missing_ok=True)
+                    code = code or bool(detect_language(rel))
             for name in dirnames:
                 if Path(dirpath, name).is_symlink():
                     Path(dirpath, name).unlink(missing_ok=True)
             if rel_dir != ".":
                 with contextlib.suppress(OSError):  # a folder that still holds files stays
                     Path(dirpath).rmdir()
+        return code
 
     # ------------------------------------------------------------ what this user holds
     def _user_dir(self) -> Path:
@@ -227,15 +258,16 @@ class Repo:
         total = 0
         for f in self._user_dir().glob("*/files.json") if self._user_dir().is_dir() else ():
             try:
-                total += sum(int(v[1]) for v in json.loads(f.read_text("utf-8")).values())
-            except (OSError, ValueError, TypeError, IndexError):
-                continue
+                total += sum(int(v[1]) for v in read_json_object(f).values())
+            except (TypeError, ValueError, IndexError) as exc:
+                raise StoreError("state_unreadable") from exc
         return total
 
     # ------------------------------------------------------------ changes
     def _remove(self, manifest: dict[str, list[Any]], path: str) -> None:
+        """Drop ``path`` from the manifest and its staged file; the committed copy in the tree goes at the next commit."""
         manifest.pop(path, None)
-        target = self.tree / path
+        target = self.staging / path
         try:
             target.unlink()
         except FileNotFoundError:
@@ -243,7 +275,7 @@ class Repo:
         except IsADirectoryError:
             return
         parent = target.parent
-        while parent != self.tree:  # drop directories this removal emptied
+        while parent != self.staging:  # drop directories this removal emptied
             try:
                 parent.rmdir()
             except OSError:
@@ -284,7 +316,7 @@ class Repo:
                     continue
                 listed.add(path)
                 cur = manifest.get(path)
-                if cur and cur[0] == sha and (self.tree / path).is_file():
+                if cur and cur[0] == sha and ((self.staging / path).is_file() or (self.tree / path).is_file()):
                     out.unchanged += 1
                     continue
                 if not cur:
@@ -300,8 +332,6 @@ class Repo:
                         out.deleted.append(path)
             if out.deleted:
                 self._write_json("files.json", manifest)
-            if bool(self.meta().get("completeManifest")) != complete:
-                self.save_meta(completeManifest=complete)
         return out
 
     def store(self, files: list[dict[str, Any]]) -> tuple[list[str], list[dict[str, str]]]:
@@ -310,7 +340,8 @@ class Repo:
         lim = self.limits
         with self._user_lock, self._lock:
             manifest = self.manifest()
-            tree = self.tree.resolve()
+            self.staging.mkdir(parents=True, exist_ok=True)
+            tree = self.staging.resolve()
             total = sum(int(v[1]) for v in manifest.values())
             user_total = self.user_bytes()
             for entry in files:
@@ -350,12 +381,10 @@ class Repo:
                 stored.append(path)
             self.tree.mkdir(parents=True, exist_ok=True)
             self._write_json("files.json", manifest)
-            if any(detect_language(p) for p in stored):  # the code graph owes a build after these
-                self.save_meta(codeChangedAt=int(time.time() * 1000))
         return stored, rejected
 
-    def _write_file(self, tree: Path, manifest: dict[str, list[Any]], path: str, data: bytes) -> None:
-        dest = tree / path
+    def _write_file(self, staging: Path, manifest: dict[str, list[Any]], path: str, data: bytes) -> None:
+        dest = staging / path
         parts = path.split("/")
         for i in range(1, len(parts)):  # a file where a directory is now needed goes away
             anc = "/".join(parts[:i])
@@ -364,7 +393,7 @@ class Repo:
         if dest.is_dir():
             raise StoreError("invalid_path")  # a directory with files in it; the client sends those deletions first
         dest.parent.mkdir(parents=True, exist_ok=True)
-        if not dest.parent.resolve().is_relative_to(tree):
+        if not dest.parent.resolve().is_relative_to(staging):
             raise StoreError("invalid_path")
         tmpdir = self.dir / "tmp"  # outside tree/, so the walk never sees a half-written file
         tmpdir.mkdir(exist_ok=True)
@@ -377,13 +406,20 @@ class Repo:
             Path(tmp).unlink(missing_ok=True)
             raise
 
-    def destroy(self) -> None:
-        """Remove the mirror. A removal that fails is logged and raised as ``StoreError('remove_failed')``, never silent."""
+    def destroy(self, only_connector_id: str | None = None) -> bool:
+        """Remove the mirror; False when it was left alone. A removal that fails is logged and raised as ``StoreError('remove_failed')``, never silent.
+
+        ``only_connector_id``: remove it only while it still belongs to that connector. A delete that runs later (the connector's deletion is an
+        event) must not take the files of a repository that was registered again under the same key in the meantime."""
         with self._lock:
+            if only_connector_id is not None and self.meta().get("connectorId") != only_connector_id:
+                logger.info("local repo: %s now belongs to another connector; its files are left", self.dir)
+                return False
             try:
                 shutil.rmtree(self.dir)
             except FileNotFoundError:
-                return
+                return True
             except OSError as exc:
                 logger.error("local repo: could not remove %s: %s", self.dir, exc)
                 raise StoreError("remove_failed") from exc
+            return True

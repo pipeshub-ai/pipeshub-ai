@@ -399,7 +399,7 @@ class FolderConnector(BaseConnector):
 
         entries = await asyncio.to_thread(
             lambda: [e for e in scan.walk(self.root, self.user_patterns, self.max_bytes, self.use_gitignore, self.DEFAULT_IGNORES)
-                     if _ext_allowed(e.rel, sync_filters) and self._is_published(e.rel)]
+                     if _ext_allowed(e.rel, sync_filters)]
         )
         self._repos = await asyncio.to_thread(self._find_repos, entries)
         await self._repo_groups(self._repos)
@@ -421,10 +421,6 @@ class FolderConnector(BaseConnector):
         pending: list[tuple[scan.Entry, str]] = []
         for e in entries:
             old = prev.get(e.rel)
-            if self._held_back(e.rel):
-                if old:
-                    manifest[e.rel] = old  # the version already indexed stays until the new one is published; it is not retired as "gone"
-                continue
             if old and old[0] == e.mtime_ns and old[1] == e.size:
                 manifest[e.rel] = old
                 continue
@@ -456,7 +452,7 @@ class FolderConnector(BaseConnector):
                 await flush()
         await flush()
         for e, sha in self._in_index_order(pending):
-            rec = self._file_record(e, sha, manual_only)
+            rec = await asyncio.to_thread(self._file_record, e, sha, manual_only)  # it may read the file (is it generated?): not on the shared loop
             if rec is None:
                 manifest[e.rel] = (e.mtime_ns, e.size, "")
                 live.discard(e.rel)
@@ -493,14 +489,6 @@ class FolderConnector(BaseConnector):
             "root": str(self.root),
             "last_sync_time": started,
         })
-
-    def _held_back(self, rel: str) -> bool:
-        """Whether a file the walk sees is not to be indexed in its current form yet (its previous version, if any, is kept as it is)."""
-        return False
-
-    def _is_published(self, rel: str) -> bool:
-        """Whether the sync may index this file. Every file of the root, unless a subclass publishes only part of it."""
-        return True
 
     def _may_index_code(self, entry: scan.Entry, name: str) -> tuple[bool, Any]:  # noqa: ANN401, RUF100
         """Whether a code file gets a record, and its role; a connector with more to go on than the path overrides it."""

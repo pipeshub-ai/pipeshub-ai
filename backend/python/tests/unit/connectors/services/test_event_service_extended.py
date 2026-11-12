@@ -436,7 +436,7 @@ class TestHandleDelete:
         monkeypatch.setenv(store.BASE_ENV, str(tmp_path))
         key = "repo-key-0001"
         repo = store.Repo("org1", "u1", key)
-        repo.save_meta(name="shop")
+        repo.save_meta(name="shop", connectorId="c1")
         repo.store([{"path": "a.py", "sha256": __import__("hashlib").sha256(b"x").hexdigest(), "content": "x"}])
         other = store.Repo("org1", "u1", "repo-key-0002")
         other.save_meta(name="other")
@@ -455,12 +455,29 @@ class TestHandleDelete:
         service.graph_provider.delete_connector_instance.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_a_delete_that_runs_late_does_not_remove_the_files_of_a_repository_registered_again(self, service, tmp_path, monkeypatch) -> None:
+        from app.connectors.sources.local_repo import store
+
+        monkeypatch.setenv(store.BASE_ENV, str(tmp_path))
+        key = "repo-key-0001"
+        repo = store.Repo("org1", "u1", key)
+        repo.save_meta(name="shop", connectorId="c-new")  # the same key, registered again after c1 was deleted through the API
+        service.graph_provider.get_document = AsyncMock(return_value={"createdBy": "u1"})
+        service.app_container.config_service.return_value.get_config = AsyncMock(
+            return_value={"sync": {"customValues": {store.REPO_KEY: key}}})
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True})
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
+            mock_rtm.cancel_by_prefix = AsyncMock()
+            assert await service._handle_delete("localrepository", {"orgId": "org1", "connectorId": "c1", "connectorType": "Local Repository"}) is True
+        assert repo.exists()
+
+    @pytest.mark.asyncio
     async def test_a_connector_of_another_type_never_touches_a_mirror(self, service, tmp_path, monkeypatch) -> None:
         from app.connectors.sources.local_repo import store
 
         monkeypatch.setenv(store.BASE_ENV, str(tmp_path))
         repo = store.Repo("org1", "u1", "repo-key-0001")
-        repo.save_meta(name="shop")
+        repo.save_meta(name="shop", connectorId="c1")
         service.graph_provider.get_document = AsyncMock(return_value={"createdBy": "u1"})
         service.app_container.config_service.return_value.get_config = AsyncMock(
             return_value={"sync": {"customValues": {store.REPO_KEY: "repo-key-0001"}}})
@@ -475,7 +492,7 @@ class TestHandleDelete:
         from app.connectors.sources.local_repo import store
 
         monkeypatch.setenv(store.BASE_ENV, str(tmp_path))
-        store.Repo("org1", "u1", "repo-key-0001").save_meta(name="shop")
+        store.Repo("org1", "u1", "repo-key-0001").save_meta(name="shop", connectorId="c1")
         service.graph_provider.get_document = AsyncMock(return_value={"createdBy": "u1"})
         service.app_container.config_service.return_value.get_config = AsyncMock(
             return_value={"sync": {"customValues": {store.REPO_KEY: "repo-key-0001"}}})

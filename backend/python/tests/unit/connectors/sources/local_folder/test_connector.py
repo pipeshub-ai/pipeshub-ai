@@ -291,3 +291,28 @@ async def test_a_sync_point_written_as_a_list_of_rows_by_an_earlier_version_is_s
     await env.c.run_sync()
     assert "b.py" not in env.graph.records and "a.py" in env.graph.records  # b.py was known only from the old rows
     assert isinstance(env.c.record_sync_point.doc["files"], str)
+
+
+async def test_a_sync_whose_walk_could_not_read_a_folder_fails_and_keeps_every_record(env):
+    put(env.root, "ok/a.py")
+    put(env.root, "locked/b.py")
+    await env.c.run_sync()
+    assert set(env.graph.records) >= {"ok/a.py", "locked/b.py"}
+    real = os.scandir
+
+    def scandir(path):
+        if str(path).endswith("locked"):
+            raise PermissionError(13, "denied")
+        return real(path)
+
+    with patch.object(os, "scandir", scandir), pytest.raises(scan.WalkFailed):
+        await env.c.run_sync()
+    assert "locked/b.py" in env.graph.records and env.graph.deleted == []  # unreadable is not "deleted"
+
+
+def test_loading_the_harness_leaves_the_real_application_container_in_place():
+    import sys
+
+    from app.containers import connector as container
+
+    assert sys.modules["app.containers.connector"] is container and hasattr(container, "initialize_container")

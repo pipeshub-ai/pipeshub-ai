@@ -1,8 +1,7 @@
 """Shims and an in-memory graph for driving the Folder connector.
 
-``connector.py`` registers via ``ConnectorBuilder.build_decorator``, so the
-container shims below must be installed before the import. Import this module
-first.
+The connector's module imports the real application container, which loads without a stub; no module of the process is replaced, so a test
+collected later in the same run sees the real ``app.containers.connector``.
 """
 
 # ruff: noqa: ANN201, ANN202, ANN204
@@ -14,19 +13,6 @@ import types
 from pathlib import Path
 
 # --- Import shims (must run before ``from app.connectors...connector import``) ---
-if "app.containers.connector" not in sys.modules:
-    _stub_container = types.ModuleType("app.containers.connector")
-
-    class _ContainerMeta(type):
-        def __getattr__(cls, name):
-            return None
-
-    class _ConnectorAppContainer(metaclass=_ContainerMeta):
-        pass
-
-    _stub_container.ConnectorAppContainer = _ConnectorAppContainer
-    sys.modules["app.containers.connector"] = _stub_container
-
 try:
     # redis is a pinned dependency (pyproject: redis==5.2.1) and provides every
     # name stubbed below. Stub only when it is genuinely absent: installing the

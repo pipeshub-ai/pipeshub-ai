@@ -153,3 +153,63 @@ def test_malformed_ignore_line_is_skipped_not_fatal(tmp_path):
     (tmp_path / "a.py").write_text("x")
     (tmp_path / "b.log").write_text("x")
     assert [e.rel for e in scan.walk(tmp_path.resolve())] == [".gitignore", "a.py"]
+
+
+def test_a_folder_that_cannot_be_read_fails_the_walk_instead_of_vanishing_from_it(tmp_path):
+    root = (tmp_path / "root").resolve()
+    write(root, "ok/a.py")
+    write(root, "locked/b.py")
+    real = os.scandir
+
+    def scandir(path):
+        if str(path).endswith("locked"):
+            raise PermissionError(13, "denied")
+        return real(path)
+
+    with patch.object(os, "scandir", scandir), pytest.raises(scan.WalkFailed):
+        list(scan.walk(root))
+
+
+def test_a_folder_that_vanishes_during_the_walk_is_just_gone(tmp_path):
+    root = (tmp_path / "root").resolve()
+    write(root, "ok/a.py")
+    write(root, "gone/b.py")
+    real = os.scandir
+
+    def scandir(path):
+        if str(path).endswith("gone"):
+            raise FileNotFoundError(2, "no such file")
+        return real(path)
+
+    with patch.object(os, "scandir", scandir):
+        assert [e.rel for e in scan.walk(root)] == ["ok/a.py"]
+
+
+def test_a_pattern_that_repeats_stars_does_not_stall_the_walk(tmp_path):
+    import time
+
+    hostile = "*a" * 40 + "b"
+    rules = scan.parse_ignore([hostile, "**/" + "*a" * 40 + "b", "x/" + "*a" * 40 + "b"])
+    started = time.monotonic()
+    for name in ("a" * 200, "dir/" + "a" * 200, "x/" + "a" * 200):
+        assert not scan.IgnoreStack([("", rules)]).ignored(name, False)
+    assert time.monotonic() - started < 1.0  # the expression it was before takes minutes
+    assert scan.IgnoreStack([("", rules)]).ignored("a" * 40 + "b", False)  # and it still matches what it should
+
+
+def test_the_matcher_agrees_with_the_expression_it_replaces_on_every_pattern_shape():
+    import itertools
+    import random
+    import re
+
+    patterns = ["*.py", "a*b", "?x", "[abc]z", "[!abc]z", "**/t", "t/**", "a/**/b", "*/x", "\\*lit", "a[", "[]x", "*", "**", "x/*/y", "*a*a*b", "**/*.min.js", "d?r/*"]
+    names = ["a.py", "ab", "axb", "bx", "az", "dz", "t", "a/t", "a/b/t", "t/x/y", "a/b", "a/x/b", "a/y/b", "q/x", "x/q/y", "*lit", "a[", "[]x", "aab", "aaaab", "d/r/z", "dir/z", "m/a.min.js", "n.min.js", ""]
+    random.Random(7).shuffle(names)
+    for pat, name, anchored in itertools.product(patterns, names, (True, False)):
+        line = ("/" + pat) if anchored and "/" not in pat else pat
+        rules = scan.parse_ignore([line])
+        if not rules:
+            continue
+        body = scan._glob_to_regex(line.rstrip("/").lstrip("/"))
+        rx = f"^{body}$" if "/" in line.rstrip("/") else f"^(?:.*/)?{body}$"
+        assert rules[0].regex.match(name) == bool(re.compile(rx).match(name)), (line, name)

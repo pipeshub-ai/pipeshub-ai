@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 
 import pytest
 
@@ -50,12 +51,15 @@ def test_only_a_changed_file_is_asked_for_again(repo):
 
 def test_a_complete_manifest_deletes_what_it_leaves_out_and_an_incomplete_one_does_not(repo):
     push(repo, **{"keep.py": "k\n", "gone.py": "g\n", "dir/x.py": "x\n"})
+    repo.commit()
     d = repo.diff([entry("keep.py", "k\n")], False, [])
     assert d.deleted == [] and (repo.tree / "gone.py").is_file()
     d = repo.diff([entry("keep.py", "k\n")], True, [])
     assert sorted(d.deleted) == ["dir/x.py", "gone.py"]
-    assert not (repo.tree / "gone.py").exists() and not (repo.tree / "dir").exists()  # the emptied directory goes too
     assert list(repo.manifest()) == ["keep.py"]
+    assert (repo.tree / "gone.py").is_file()  # the committed copy stays, and stays indexed, until the commit publishes the deletion
+    repo.commit()
+    assert not (repo.tree / "gone.py").exists() and not (repo.tree / "dir").exists()  # the emptied directory goes too
 
 
 def test_explicit_deletes_and_a_rename_leave_no_old_path(repo):
@@ -68,6 +72,7 @@ def test_explicit_deletes_and_a_rename_leave_no_old_path(repo):
 
 def test_a_file_that_goes_missing_on_disk_is_asked_for_again(repo):
     push(repo, **{"a.py": "a\n"})
+    repo.commit()
     (repo.tree / "a.py").unlink()
     assert repo.diff([entry("a.py", "a\n")], True, []).upload == ["a.py"]
 
@@ -78,12 +83,13 @@ def test_unsafe_paths_are_refused_everywhere(repo, path):
     assert d.upload == [] and d.deleted == [] and d.rejected and {r["reason"] for r in d.rejected} == {"invalid_path"}
     stored, rejected = repo.store([{"path": path, "sha256": sha("x"), "content": "x"}])
     assert stored == [] and rejected[0]["reason"] == "invalid_path"
-    assert not any(p for p in repo.tree.rglob("*") if p.is_file())
+    assert not any(p for d in (repo.tree, repo.staging) for p in d.rglob("*") if p.is_file())
 
 
 def test_a_path_is_stored_in_nfc_form(repo):
     nfd = "café.py"
     stored, _ = push(repo, **{nfd: "x\n"})
+    repo.commit()
     assert stored == ["café.py"] and (repo.tree / "café.py").is_file()
 
 
@@ -126,13 +132,16 @@ def test_a_file_and_a_directory_can_swap_places(repo):
     stored, _ = push(repo, **{"a/b.py": "x\n"})  # the file `a` makes way for the directory
     assert stored == ["a/b.py"] and list(repo.manifest()) == ["a/b.py"]
     _, rejected = push(repo, **{"a": "file again\n"})  # a directory with files in it is not overwritten
-    assert rejected == [{"path": "a", "reason": "invalid_path"}] and (repo.tree / "a" / "b.py").is_file()
+    assert rejected == [{"path": "a", "reason": "invalid_path"}] and (repo.staging / "a" / "b.py").is_file()
+    repo.commit()
+    assert (repo.tree / "a" / "b.py").is_file()  # the committed file `a` made way for the directory
 
 
 def test_a_symlink_in_the_tree_cannot_redirect_a_write(repo, tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
-    (repo.tree / "link").symlink_to(outside, target_is_directory=True)
+    repo.staging.mkdir(exist_ok=True)
+    (repo.staging / "link").symlink_to(outside, target_is_directory=True)
     _, rejected = push(repo, **{"link/x.py": "x\n"})
     assert rejected == [{"path": "link/x.py", "reason": "invalid_path"}] and not (outside / "x.py").exists()
 
@@ -140,8 +149,10 @@ def test_a_symlink_in_the_tree_cannot_redirect_a_write(repo, tmp_path):
 def test_a_write_is_all_or_nothing_per_file_and_leaves_no_temporary_in_the_tree(repo):
     push(repo, **{"a.py": "one\n"})
     push(repo, **{"a.py": "two\n"})
-    assert (repo.tree / "a.py").read_text() == "two\n"
-    assert [p.name for p in repo.tree.iterdir()] == ["a.py"]
+    assert (repo.staging / "a.py").read_text() == "two\n"
+    assert [p.name for p in repo.staging.iterdir()] == ["a.py"]
+    repo.commit()
+    assert (repo.tree / "a.py").read_text() == "two\n" and [p.name for p in repo.tree.iterdir()] == ["a.py"]
 
 
 def test_identity_comes_from_org_user_and_key_only(tmp_path):
@@ -201,26 +212,55 @@ def test_a_hash_with_a_trailing_newline_is_not_a_hash(repo):
     assert d.upload == [] and d.rejected == [{"path": "a.py", "reason": "invalid_path"}]
 
 
-def test_a_complete_manifest_commit_removes_files_an_interrupted_upload_left_and_publishes_only_what_it_lists(repo):
-    push(repo, **{"keep.py": "k = 1\n", "half1.py": "h = 1\n", "half2.py": "h = 2\n", "deep/dir/half3.py": "h = 3\n"})  # an upload that "crashed" before its commit
-    (repo.tree / "link").symlink_to("/etc")  # a link can only have come from outside this API
-    assert repo.committed() == {}
+def test_nothing_reaches_the_tree_before_a_commit_and_an_interrupted_upload_leaves_nothing_in_it(repo):
+    push(repo, **{"keep.py": "k = 1\n", "half1.py": "h = 1\n", "deep/dir/half3.py": "h = 3\n"})  # an upload that "crashed" before its commit
+    assert not any(p.is_file() for p in repo.tree.rglob("*"))  # the sync walks the tree: it sees none of it
     # the client starts over: its manifest, complete, lists only what the repository holds now
     d = repo.diff([entry("keep.py", "k = 1\n")], True, [])
-    assert sorted(d.deleted) == ["deep/dir/half3.py", "half1.py", "half2.py"]
-    # a stray the manifest never knew (written, but its row was lost): only the commit's sweep can find it
+    assert sorted(d.deleted) == ["deep/dir/half3.py", "half1.py"]
+    # a link and a stray the manifest never knew (written, but its row was lost) are in the tree: the commit makes the tree what the manifest lists
+    (repo.tree / "link").symlink_to("/etc")
     (repo.tree / "stray.py").write_text("s = 1\n")
     repo.commit()
     assert sorted(str(p.relative_to(repo.tree)) for p in repo.tree.rglob("*")) == ["keep.py"]
-    assert repo.committed() == {"keep.py": sha("k = 1\n")}
+    assert not any(repo.staging.rglob("*.py"))
 
 
-def test_an_incomplete_manifest_commit_keeps_what_it_does_not_list(repo):
-    push(repo, **{"a.py": "a\n"})
-    repo.diff([entry("b.py", "b\n")], False, [])  # watch mode: one batch of changes, not the whole repository
-    push_files = repo.store([{"path": "b.py", "sha256": sha("b\n"), "content": "b\n"}])
+def test_a_replacement_or_deletion_changes_the_committed_tree_only_at_the_commit(repo):
+    push(repo, **{"a.py": "v = 1\n", "b.py": "w = 1\n"})
     repo.commit()
-    assert sorted(repo.committed()) == ["a.py", "b.py"] and push_files[0] == ["b.py"]
+    push(repo, **{"a.py": "v = 2\n"})
+    repo.diff([], False, ["b.py"])
+    assert (repo.tree / "a.py").read_text() == "v = 1\n" and (repo.tree / "b.py").is_file()
+    repo.commit()
+    assert (repo.tree / "a.py").read_text() == "v = 2\n" and not (repo.tree / "b.py").exists()
+
+
+def test_a_commit_that_was_interrupted_can_be_repeated(repo, monkeypatch):
+    push(repo, **{"a.py": "a\n", "b.py": "b\n"})
+    real = os.replace
+    calls = []
+
+    def flaky(src, dst):  # the second rename fails: the first file is already published
+        calls.append(dst)
+        if len(calls) == 2:
+            raise OSError("disk went away")
+        return real(src, dst)
+
+    monkeypatch.setattr(store.os, "replace", flaky)
+    with pytest.raises(OSError):
+        repo.commit()
+    monkeypatch.setattr(store.os, "replace", real)
+    repo.commit()
+    assert sorted(p.name for p in repo.tree.iterdir()) == ["a.py", "b.py"] and not any(repo.staging.rglob("*.py"))
+
+
+def test_a_commit_that_changes_code_asks_for_a_graph_build_and_one_that_does_not_does_not(repo):
+    push(repo, **{"a.py": "a\n"})
+    assert "codeChangedAt" not in repo.meta()  # staged, not published
+    first = repo.commit()["codeChangedAt"]
+    push(repo, **{"README.md": "# x\n"})
+    assert repo.commit()["codeChangedAt"] == first  # only a document changed
 
 
 def test_a_user_cannot_hold_more_than_the_byte_limit_across_repositories(tmp_path, monkeypatch):
@@ -294,3 +334,32 @@ def test_concurrent_uploads_into_two_repositories_cannot_both_spend_the_last_of_
         results = list(pool.map(lambda a: up(*a), [(first, "a.py"), (second, "b.py")]))
     assert sorted(len(stored) for stored, _ in results) == [0, 1]
     assert first.user_bytes() == 6
+
+
+@pytest.mark.parametrize("name", ["files.json", "repo.json"])
+def test_an_unreadable_state_file_is_an_error_not_an_empty_repository(repo, name):
+    push(repo, **{"a.py": "a\n", "b.py": "b\n"})
+    repo.commit()
+    (repo.dir / name).write_text("{not json")
+    with pytest.raises(store.StoreError) as exc:
+        {"files.json": repo.manifest, "repo.json": repo.meta}[name]()
+    assert exc.value.reason == "state_unreadable"
+    # nothing is replaced or swept on top of the damaged file
+    if name == "files.json":
+        with pytest.raises(store.StoreError):
+            push(repo, **{"c.py": "c\n"})
+        with pytest.raises(store.StoreError):
+            repo.commit()
+        assert (repo.dir / name).read_text() == "{not json"
+        assert sorted(p.name for p in repo.tree.iterdir()) == ["a.py", "b.py"]
+
+
+def test_a_state_file_that_does_not_exist_yet_is_an_empty_one(tmp_path):
+    fresh = store.Repo("org1", "user1", KEY, base=tmp_path)
+    assert fresh.manifest() == {} and fresh.meta() == {}
+
+
+def test_a_delayed_delete_leaves_a_repository_that_was_registered_again_under_the_same_key(repo):
+    repo.save_meta(connectorId="new-connector")  # the key now belongs to a connector made after the old one was deleted
+    assert repo.destroy("old-connector") is False and repo.exists()
+    assert repo.destroy("new-connector") is True and not repo.dir.exists()

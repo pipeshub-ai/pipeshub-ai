@@ -8,6 +8,7 @@ code indexing, symbols, edges and permissions are the connector framework's. See
 from __future__ import annotations  # noqa: I001
 
 import asyncio
+import hashlib
 import json
 import logging
 import unicodedata
@@ -30,6 +31,7 @@ from app.connectors.core.constants import ConnectorRequestKeys as K
 from app.config.constants.arangodb import CollectionNames, ProgressStatus  # noqa: F401
 from app.modules.code_graph.enabled import CODE_GRAPH_ENABLED
 from app.connectors.core.sync.sync_dispatcher import SyncSpec, get_dispatcher
+from app.connectors.sources.local_folder import scan
 from app.connectors.sources.local_repo import store
 from app.connectors.sources.local_repo.connector import (
     LOCAL_REPO_CONNECTOR_NAME,
@@ -39,24 +41,60 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = logging.getLogger(__name__)
 
-# The same ceiling as the Node API's JSON body limit. shortcut: it trusts the declared Content-Length (the server stops reading at it) and refuses a
-# body with none (chunked); upgrade to counting streamed bytes if a client without a length is ever needed.
+# The same ceiling as the Node API's JSON body limit. Enforced on the bytes that actually arrive, before FastAPI buffers or parses the body
+# (a dependency runs after that), so a client that talks to this service directly cannot make it hold more than this per request.
 MAX_BODY_BYTES = 10 * 1024 * 1024
 
 
-async def _bounded_body(request: Request) -> None:
-    if request.method not in ("POST", "PUT"):
-        return
-    declared = request.headers.get("content-length")
-    if declared is None:
-        if request.headers.get("transfer-encoding"):
-            raise HTTPException(status_code=411, detail="Send a Content-Length")
-        return
-    if not declared.isdigit() or int(declared) > MAX_BODY_BYTES:
-        raise HTTPException(status_code=413, detail=f"A request body is at most {MAX_BODY_BYTES} bytes")
+class BodyLimit:
+    """ASGI middleware: a request to /api/v1/local-repos whose body is over ``MAX_BODY_BYTES`` (declared, or counted as it streams) is a 413.
+
+    The body is read here, at most ``MAX_BODY_BYTES`` of it, and handed on whole: the limit holds before the framework buffers or parses anything,
+    with or without a Content-Length, and the most one request can make this service hold is the limit itself."""
+
+    def __init__(self, app: Any) -> None:  # noqa: ANN401
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:  # noqa: ANN401
+        if scope["type"] != "http" or not scope["path"].startswith("/api/v1/local-repos") or scope["method"] not in ("POST", "PUT"):
+            await self.app(scope, receive, send)
+            return
+        declared = dict(scope["headers"]).get(b"content-length")
+        if declared is not None and (not declared.isdigit() or int(declared) > MAX_BODY_BYTES):
+            await self._refuse(send)
+            return
+        chunks: list[bytes] = []
+        seen = 0
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            seen += len(message.get("body", b""))
+            if seen > MAX_BODY_BYTES:
+                await self._refuse(send)
+                return
+            chunks.append(message.get("body", b""))
+            if not message.get("more_body", False):
+                break
+        replayed = False
+
+        async def replay() -> dict[str, Any]:
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": b"".join(chunks), "more_body": False}
+            return await receive()  # after the body: what the server says next (a disconnect)
+
+        await self.app(scope, replay, send)
+
+    @staticmethod
+    async def _refuse(send: Any) -> None:  # noqa: ANN401
+        body = json.dumps({"detail": f"A request body is at most {MAX_BODY_BYTES} bytes"}).encode()
+        await send({"type": "http.response.start", "status": 413, "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
 
 
-router = APIRouter(prefix="/api/v1/local-repos", tags=["Local repositories"], dependencies=[Depends(_bounded_body)])
+router = APIRouter(prefix="/api/v1/local-repos", tags=["Local repositories"])
 WRITE = Depends(require_scopes(OAuthScopes.CODE_WRITE))
 READ = Depends(require_scopes(OAuthScopes.CODE_READ, OAuthScopes.CODE_WRITE))
 
@@ -152,15 +190,28 @@ def _as_json_request(request: Request, payload: dict[str, Any]) -> Request:
 
 
 async def _instance(request: Request, connector_id: str | None) -> dict[str, Any] | None:
+    """The caller's connector instance, or None when it is confirmed not to exist (never made, or already deleted).
+
+    The registry answers None for a read error as well as for a missing connector, and acting on that would re-create or skip deleting a
+    connector that is there. So a None is checked against the graph: a lookup that fails, or a connector that exists but was not returned, is a
+    503, never "absent"."""
     if not connector_id:
         return None
     org_id, user_id = _caller(request)
+    unavailable = HTTPException(status_code=503, detail="The connector of this repository could not be read; try again in a moment")
     try:
-        return await request.app.state.connector_registry.get_connector_instance(
+        found = await request.app.state.connector_registry.get_connector_instance(
             connector_id=connector_id, user_id=user_id, org_id=org_id, is_admin=False)
-    except Exception:
+        if found is not None:
+            return found
+        stored = await request.app.state.graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
+    except Exception as exc:
         logger.warning("local repo: could not read connector %s", connector_id, exc_info=True)
+        raise unavailable from exc
+    if stored is None:
         return None
+    logger.warning("local repo: connector %s exists but the registry did not return it", connector_id)
+    raise unavailable
 
 
 async def _kick(request: Request, repo: store.Repo, connector_id: str) -> None:
@@ -210,7 +261,10 @@ async def _status(request: Request, repo: store.Repo, *, with_limits: bool = Fal
             out["state"] = "stuck"
             out["error"] = "the sync of this repository did not start; the files are stored. Check that the connectors service is running, then commit again."
     else:
-        out.update(await _indexing(request, org_id, user_id, meta["connectorId"], int(meta.get("codeChangedAt", 0)), len(manifest)))
+        # Files the sync left out on purpose (a generator's header, say) never get a record: they are not "pushed and not yet visible".
+        left_out = meta.get("excludedFiles") or {}
+        awaiting = sum(1 for path in manifest if scan.safe_name(path) not in left_out)
+        out.update(await _indexing(request, org_id, user_id, meta["connectorId"], int(meta.get("codeChangedAt", 0)), awaiting))
         excluded: dict[str, int] = dict(meta.get("clientExcluded") or {})
         for why in (meta.get("excludedFiles") or {}).values():
             excluded[why] = excluded.get(why, 0) + 1
@@ -276,7 +330,7 @@ async def register(request: Request, repo_key: str, body: RegisterBody | None = 
     org_id, user_id = _caller(request)
     name = (body.name if body and body.name else None) or "local-repository"
     # Connector names are unique per user; two clones with one folder name must both register.
-    instance_name = f"{name} [{repo_key[:8]}]"
+    instance_name = f"{name} [{hashlib.sha256(repo_key.encode()).hexdigest()[:10]}]"  # of the whole key: keys may share a prefix
     async with _user_register_locks.setdefault((org_id, user_id), asyncio.Lock()), _register_locks.setdefault(str(repo.dir), asyncio.Lock()):
         meta = await asyncio.to_thread(repo.meta)
         graph = await get_graph_provider(request)

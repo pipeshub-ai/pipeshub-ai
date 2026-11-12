@@ -24802,7 +24802,7 @@ components:
             type: string
           reason:
             type: string
-            enum: [ignored, too_large, invalid_path, too_many_files, hash_mismatch, binary]
+            enum: [ignored, too_large, invalid_path, too_many_files, hash_mismatch, binary, user_quota]
     LocalRepoStatus:
       type: object
       properties:
@@ -63243,7 +63243,24 @@ paths:
         '404':
           description: No such repository for this user
         '413':
-          description: Batch over the file or byte limit, or the upload would take the user's repositories past the most one person may keep (`limits.maxUserBytes`); the files that fit are stored and listed in `stored`
+          description: |
+            Two different refusals. A batch over `limits.maxBatchFiles` or `limits.maxBatchBytes`, or a body over the size limit, stores nothing and
+            answers `{ "detail": "..." }`. An upload that would take the user's repositories past `limits.maxUserBytes` stores the files that fit
+            and answers with the body below: send the files in `rejected` again only after removing something, and do not commit a repository
+            believing that every file arrived.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                  stored:
+                    type: array
+                    items:
+                      type: string
+                  rejected:
+                    $ref: '#/components/schemas/LocalRepoRejected'
   /local-repos/{repoKey}/commit:
     parameters:
       - $ref: '#/components/parameters/LocalRepoKey'

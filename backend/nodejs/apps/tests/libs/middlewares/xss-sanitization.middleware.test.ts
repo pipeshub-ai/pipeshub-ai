@@ -347,6 +347,9 @@ describe('XSS Sanitization Middleware', () => {
         ['/api/v1/local-repos/key12345/manifest', 'POST', true],
         ['/api/v1/local-repos/key12345', 'PUT', false],
         ['/api/v1/local-repos/key12345/commit', 'POST', false],
+        ['/api/v1/local-repos/key12345/files/', 'PUT', true],
+        ['/api/v1/Local-Repos/key12345/FILES', 'PUT', true],
+        ['/api/v1/local-repos/key12345/manifest/', 'POST', true],
         ['/api/v1/local-repos/key12345/files/extra', 'PUT', false],
         ['/api/v1/local-repos/key12345/files', 'GET', false],
       ] as const) {

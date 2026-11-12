@@ -230,7 +230,44 @@ async def test_a_file_replaced_after_the_commit_is_not_indexed_and_its_old_recor
     push_uncommitted(env.repo, **{"a.py": "v = 2\n"})  # replaced on the server; the scheduled sync runs before the client's commit
     await env.c.run_sync()
     assert "a.py" in env.graph.records and env.graph.records["a.py"].external_revision_id == old_rev  # kept, not retired as gone, not re-indexed
-    assert env.graph.deleted == []
+    assert env.graph.deleted == [] and (env.repo.tree / "a.py").read_text() == "v = 1\n"  # what the indexer reads is still the indexed version
+    env.repo.diff([], False, ["b.py"])  # a deletion is staged the same way
+    await env.c.run_sync()
+    assert "b.py" in env.graph.records and env.graph.deleted == []
     env.repo.commit()
     await env.c.run_sync()
     assert env.graph.records["a.py"].external_revision_id == sha("v = 2\n")
+    assert "b.py" not in env.graph.records
+
+
+async def test_a_damaged_state_file_fails_the_sync_instead_of_retiring_every_record(env):
+    push(env.repo, **{"a.py": "a = 1\n"})
+    await env.c.run_sync()
+    assert "a.py" in env.graph.records
+    (env.repo.dir / "repo.json").write_text("{not json")
+    with pytest.raises(store.StoreError):
+        await env.c.run_sync()
+    assert "a.py" in env.graph.records and env.graph.deleted == []
+
+
+async def test_a_committed_file_whose_name_holds_a_percent_sign_is_indexed(env):
+    push(env.repo, **{"a%b.py": "x = 1\n", "ok.py": "y = 1\n"})
+    await env.c.run_sync()
+    assert sorted(r for r in env.graph.records if r.endswith(".py")) == ["a%25b.py", "ok.py"]  # the stored form of a literal "%"
+
+
+async def test_classifying_a_file_reads_it_off_the_event_loop(env):
+    import threading
+
+    main = threading.get_ident()
+    seen = []
+    real = env.c._file_record
+
+    def spy(*a, **k):  # noqa: ANN202
+        seen.append(threading.get_ident())
+        return real(*a, **k)
+
+    env.c._file_record = spy
+    push(env.repo, **{"a.py": "a = 1\n", "gen.py": "# @generated\nx = 1\n"})
+    await env.c.run_sync()
+    assert seen and all(t != main for t in seen)

@@ -54,8 +54,9 @@ function sanitizeString(value: string): string {
   }
 }
 
+// As the router matches: a trailing slash and any letter case reach the same handler.
 const LOCAL_REPO_PUSH_PATH =
-  /^\/api\/v1\/local-repos\/[^/]+\/(files|manifest)$/;
+  /^\/api\/v1\/local-repos\/[^/]+\/(files|manifest)\/?$/i;
 
 // Field paths are built from the request's own keys, so only plain names are
 // repeated back; anything else (a key that is itself markup) is not echoed.

@@ -93,6 +93,31 @@ describe('Local repositories gateway', () => {
     expect(curl).to.equal('http://connector:8088/api/v1/local-repos/repo-key-0001/commit')
   })
 
+  it('passes a refusal of the connectors service on with its status and body, so a quota 413 keeps the list of stored files', async () => {
+    const run = async (answer: { statusCode: number; data: unknown }) => {
+      execute.resolves(answer as never)
+      const json = sinon.stub()
+      const status = sinon.stub().returns({ json })
+      const next = sinon.stub()
+      await uploadLocalRepoFiles({ connectorBackend: 'x' } as never)(
+        { user: { userId: 'u1' }, headers: {}, params: { repoKey: 'repo-key-0001' }, body: {} } as never,
+        { status } as never,
+        next,
+      )
+      return { status, json, next }
+    }
+    const quota = { detail: 'past 8 bytes', stored: ['a.py'], rejected: [{ path: 'b.py', reason: 'user_quota' }] }
+    const q = await run({ statusCode: 413, data: quota })
+    expect(q.status.calledWith(413)).to.equal(true)
+    expect(q.json.firstCall.args[0]).to.deep.equal(quota)
+    const c = await run({ statusCode: 409, data: { detail: 'You already have 20 repositories' } })
+    expect(c.status.calledWith(409)).to.equal(true)
+    expect(c.json.firstCall.args[0]).to.deep.equal({ detail: 'You already have 20 repositories' })
+    // a success and a server error still take the usual path
+    const ok = await run({ statusCode: 200, data: { stored: [] } })
+    expect(ok.status.called).to.equal(false)
+  })
+
   it('refuses a request with no signed-in user', async () => {
     const next = sinon.stub()
     await uploadLocalRepoFiles({ connectorBackend: 'x' } as never)({ user: {}, headers: {}, params: { repoKey: 'repo-key-0001' }, body: {} } as never, {} as never, next)

@@ -45,7 +45,8 @@ def world(tmp_path, monkeypatch):
         return {"connector": {"connectorId": cid}}
 
     stats = {"data": {"stats": {"total": 0, "indexingStatus": {}}}}
-    graph = SimpleNamespace(get_connector_stats=AsyncMock(side_effect=lambda org, cid: stats))
+    graph = SimpleNamespace(get_connector_stats=AsyncMock(side_effect=lambda org, cid: stats),
+                            get_document=AsyncMock(side_effect=lambda cid, coll, **kw: registry.instances.get(cid)))
     submitted = []
     dispatcher = SimpleNamespace(submit=AsyncMock(side_effect=lambda spec: submitted.append(spec)), is_running=AsyncMock(return_value=False))
     monkeypatch.setattr(local_repos, "create_connector_instance", fake_create)
@@ -69,6 +70,7 @@ def world(tmp_path, monkeypatch):
         request.state.user = {"userId": who, "orgId": "org1", "isOAuth": scopes is not None, "oauthScopes": (scopes or "").split(",")}
         return await call_next(request)
 
+    app.add_middleware(local_repos.BodyLimit)
     app.include_router(local_repos.router)
     return SimpleNamespace(c=TestClient(app), app=app, graph_module=local_repos, built=built, toggle=toggle, registry=registry, created=created, stats=stats, submitted=submitted, graph=graph)
 
@@ -84,7 +86,7 @@ def test_register_is_idempotent_and_returns_the_limits(world):
     again = world.c.put(f"/api/v1/local-repos/{KEY}", json={"name": "shop"})
     assert again.status_code == 200 and again.json()["created"] is False and again.json()["connectorId"] == r.json()["connectorId"]
     assert world.toggle.await_count == 1                              # turned on once, not again by the second register
-    assert world.created[0]["instanceName"] == f"shop [{KEY[:8]}]"
+    assert world.created[0]["instanceName"] == f"shop [{hashlib.sha256(KEY.encode()).hexdigest()[:10]}]"
     assert len(world.created) == 1 and world.created[0]["scope"] == "personal" and world.created[0]["connectorType"] == "Local Repository"
     assert world.created[0]["config"]["sync"]["customValues"] == {"repo_key": KEY}
 
@@ -384,11 +386,15 @@ def test_an_upload_past_the_per_user_byte_limit_is_a_413_that_still_stores_what_
     assert r.json()["stored"] == ["a.py"] and r.json()["rejected"] == [{"path": "b.py", "reason": "user_quota"}]
 
 
-def test_a_body_over_the_limit_or_without_a_length_is_refused_before_it_is_read(world):
-    big = world.c.put(f"/api/v1/local-repos/{KEY}", content=b"{}", headers={"content-length": str(local_repos.MAX_BODY_BYTES + 1), "content-type": "application/json"})
-    assert big.status_code == 413
-    chunked = world.c.put(f"/api/v1/local-repos/{KEY}", content=iter([b'{"name":', b'"x"}']), headers={"content-type": "application/json"})
-    assert chunked.status_code == 411
+def test_a_body_over_the_limit_is_refused_whether_declared_or_streamed_and_a_small_chunked_one_is_fine(world):
+    declared = world.c.put(f"/api/v1/local-repos/{KEY}", content=b"{}", headers={"content-length": str(local_repos.MAX_BODY_BYTES + 1), "content-type": "application/json"})
+    assert declared.status_code == 413
+    streamed = world.c.put(f"/api/v1/local-repos/{KEY}", content=iter([b'{"name":"' + b"x" * 1024, b"x" * 1024 + b'"}']), headers={"content-type": "application/json"})
+    assert streamed.status_code == 422  # a small chunked body is read as usual (this one's name is over its own limit)
+    assert world.created == []
+    chunk = b"x" * (1024 * 1024)
+    big = world.c.put(f"/api/v1/local-repos/{KEY}", content=iter([b'{"name":"' + chunk * 11]), headers={"content-type": "application/json"})
+    assert big.status_code == 413  # no Content-Length to go by: the bytes that arrive are counted
     assert world.created == []
 
 
@@ -438,3 +444,43 @@ async def test_two_concurrent_registrations_cannot_both_take_the_last_repository
         )
     assert sorted(r.status_code for r in results) == [201, 409]
     assert len(world.created) == 1
+
+
+def test_a_connector_lookup_that_fails_or_misses_what_exists_is_a_503_that_changes_nothing(world, monkeypatch):
+    world.c.put(f"/api/v1/local-repos/{KEY}", json={"name": "shop"})
+    put_files(world, **{"a.py": "x = 1\n"})
+    before = store.Repo("org1", "u1", KEY).meta()
+    created = len(world.created)
+    # the registry says "none" although the connector exists (what it does on a read error)
+    monkeypatch.setattr(world.registry, "get_connector_instance", AsyncMock(return_value=None))
+    assert world.c.put(f"/api/v1/local-repos/{KEY}", json={"name": "shop"}).status_code == 503
+    assert world.c.delete(f"/api/v1/local-repos/{KEY}").status_code == 503
+    assert store.Repo("org1", "u1", KEY).meta()["connectorId"] == before["connectorId"] and len(world.created) == created
+    assert store.Repo("org1", "u1", KEY).exists() and (store.Repo("org1", "u1", KEY).staging / "a.py").is_file()  # nothing was removed
+    # and when the graph cannot be read either
+    monkeypatch.setattr(world.graph, "get_document", AsyncMock(side_effect=RuntimeError("graph down")))
+    assert world.c.get(f"/api/v1/local-repos/{KEY}").status_code == 503
+
+
+def test_a_connector_that_is_really_gone_is_registered_again(world):
+    world.c.put(f"/api/v1/local-repos/{KEY}", json={"name": "shop"})
+    world.registry.instances.clear()  # deleted: the registry and the graph both say none
+    again = world.c.put(f"/api/v1/local-repos/{KEY}", json={"name": "shop"})
+    assert again.status_code == 201 and again.json()["created"] is True
+
+
+def test_two_keys_that_share_a_prefix_get_two_connectors_even_under_one_folder_name(world):
+    names = []
+    for key in ("repo-key-0001", "repo-key-0002"):
+        assert world.c.put(f"/api/v1/local-repos/{key}", json={"name": "shop"}).status_code == 201
+    names = [c["instanceName"] for c in world.created]
+    assert len(set(names)) == 2 and all(n.startswith("shop [") for n in names)
+
+
+def test_a_repository_whose_every_file_was_left_out_on_purpose_is_ready_not_waiting_for_records_that_will_never_exist(world):
+    _synced(world, total=0)
+    store.Repo("org1", "u1", KEY).save_meta(excludedFiles={"a.py": "generated"})
+    assert world.c.get(f"/api/v1/local-repos/{KEY}").json()["state"] == "ready"
+    # a file that was NOT left out and has no record yet still holds it back (the stale entry for another path does not hide it)
+    store.Repo("org1", "u1", KEY).save_meta(excludedFiles={"other.py": "generated"})
+    assert world.c.get(f"/api/v1/local-repos/{KEY}").json()["state"] == "indexing"

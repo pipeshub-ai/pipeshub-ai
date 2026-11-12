@@ -17,6 +17,7 @@ from urllib.parse import unquote_to_bytes
 from collections.abc import Iterator  # noqa: TC003
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,10 @@ PUSHED_REPO_IGNORES = [
     "/dist/", "/build/", "/target/", "/out/", "/coverage/", "/vendor/",
     *[p for p in DEFAULT_IGNORES if p.startswith("*.") or p in ("package-lock.json",)],
 ]
+
+
+class WalkFailed(OSError):
+    """A folder or file could not be read during the walk. Raised, never skipped: the sync would take what the walk did not see for deleted."""
 
 
 class PathRefused(Exception):
@@ -179,9 +184,100 @@ def _glob_to_regex(pat: str) -> str:
     return "".join(out)
 
 
+def _glob_tokens(pat: str) -> list[tuple[str, Any]]:
+    """The same pattern language as ``_glob_to_regex``, as tokens: ("lit", c), ("one", None) for ``?``, ("cls", compiled one-character regex),
+    ("star", None) for ``*`` (any run but "/"), ("dstar", None) for ``**`` (any run), ("opt", None) for ``**/`` (optionally anything and a "/")."""
+    out: list[tuple[str, Any]] = []
+    i = 0
+    while i < len(pat):
+        c = pat[i]
+        if c == "*":
+            if pat[i : i + 3] == "**/":
+                out.append(("opt", None))
+                i += 3
+                continue
+            if pat[i : i + 2] == "**":
+                out.append(("dstar", None))
+                i += 2
+                continue
+            out.append(("star", None))
+        elif c == "?":
+            out.append(("one", None))
+        elif c == "[" and pat.find("]", i + 2) != -1:
+            j = pat.find("]", i + 2)
+            body = pat[i + 1 : j]
+            if body.startswith("!"):
+                body = "^" + body[1:]
+            out.append(("cls", re.compile("[" + body.replace("\\", "\\\\") + "]")))
+            i = j
+        elif c == "\\" and i + 1 < len(pat):
+            i += 1
+            out.append(("lit", pat[i]))
+        else:
+            out.append(("lit", c))
+        i += 1
+    return out
+
+
+class _Glob:
+    """Matches a whole name against a gitignore pattern in time linear in the name (times the pattern), however many ``*`` it holds.
+
+    A regular expression that repeats ``[^/]*`` backtracks over every way to split a run of characters between the stars, so one hostile line
+    in a .gitignore could stall the walk; this walks all the ways at once instead. ``anywhere`` is the unanchored form (any folders first)."""
+
+    def __init__(self, tokens: list[tuple[str, Any]], *, anywhere: bool) -> None:
+        self.tokens = [("opt", None), *tokens] if anywhere else tokens
+
+    def _close(self, states: set[tuple[int, bool]]) -> set[tuple[int, bool]]:
+        """Add the states reachable without reading a character: a star or an optional group may match nothing."""
+        todo, seen = list(states), set(states)
+        while todo:
+            i, inside = todo.pop()
+            if inside or i >= len(self.tokens) or self.tokens[i][0] not in ("star", "dstar", "opt"):
+                continue
+            nxt = (i + 1, False)
+            if nxt not in seen:
+                seen.add(nxt)
+                todo.append(nxt)
+        return seen
+
+    def match(self, name: str) -> bool:
+        toks = self.tokens
+        states = self._close({(0, False)})
+        for ch in name:
+            nxt: set[tuple[int, bool]] = set()
+            for i, inside in states:
+                if i >= len(toks):
+                    continue
+                kind, arg = toks[i]
+                if kind == "lit":
+                    if ch == arg:
+                        nxt.add((i + 1, False))
+                elif kind == "one":
+                    if ch != "/":
+                        nxt.add((i + 1, False))
+                elif kind == "cls":
+                    if arg.fullmatch(ch):
+                        nxt.add((i + 1, False))
+                elif kind == "star":
+                    if ch != "/":
+                        nxt.add((i, False))
+                elif kind == "dstar":
+                    if ch != "\n":
+                        nxt.add((i, False))
+                elif kind == "opt" and ch != "\n":
+                    nxt.add((i, True))  # inside the group: ".*" runs on
+                    if ch == "/":
+                        nxt.add((i + 1, False))  # and a "/" may end it
+            states = self._close(nxt)
+            if not states:
+                return False
+        return any(i == len(toks) for i, _ in states)
+
+
 @dataclass
 class _Rule:
-    regex: re.Pattern[str]
+    regex: _Glob
     negate: bool
     dir_only: bool
 
@@ -205,7 +301,8 @@ def parse_ignore(lines: list[str]) -> list[_Rule]:
         body = _glob_to_regex(line)
         rx = f"^{body}$" if anchored else f"^(?:.*/)?{body}$"
         try:
-            rules.append(_Rule(re.compile(rx), negate, dir_only))
+            re.compile(rx)  # a line that is not a valid pattern is ignored, as git does; matching itself does not use the expression
+            rules.append(_Rule(_Glob(_glob_tokens(line), anywhere=not anchored), negate, dir_only))
         except re.error as exc:  # git ignores a bad line too
             logger.warning("Folder: ignoring malformed ignore pattern %r: %s", line, exc)
     return rules
@@ -263,8 +360,10 @@ def walk(
         try:
             with os.scandir(here) as it:
                 entries = sorted(it, key=lambda e: e.name)
-        except OSError:
-            continue
+        except FileNotFoundError:
+            continue  # the folder went away while the walk ran: its files are gone
+        except OSError as exc:
+            raise WalkFailed(f"cannot read the folder {rel_dir or '.'}: {exc}") from exc
         if use_gitignore:
             gi = here / ".gitignore"
             try:
@@ -286,8 +385,10 @@ def walk(
                     st = os.stat(e.path)
                 else:
                     st = e.stat(follow_symlinks=False)
-            except OSError:
-                continue
+            except FileNotFoundError:
+                continue  # removed while the walk ran
+            except OSError as exc:
+                raise WalkFailed(f"cannot read {rel}: {exc}") from exc
             if eff.ignored(rel, is_dir):
                 continue
             if is_dir:
