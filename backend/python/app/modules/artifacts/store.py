@@ -156,11 +156,17 @@ class NodeArtifactStore:
         virtual_record_id: str,
         rev: str,
         files: Sequence[tuple[str, str]],
+        *,
+        write_id: str | None = None,
     ) -> RevisionUploadPlan:
         """Upload URLs for ``(path, content_type)`` files of one revision.
 
+        ``write_id`` names the stored write the set is of (``stored_write.write_id``): each write
+        of a revision then has a document and file root of its own, so no write can overwrite
+        another's files. Without it the files go to the revision's one shared set (an older
+        storage service ignores it and does the same).
         More files than one call takes are asked for in several calls; the
-        storage service files them all under the revision's one document.
+        storage service files them all under the one document.
         Raises ``ArtifactRoutesUnavailable`` (and stops asking for the rest of
         the process) when the storage service has no artifact routes.
         """
@@ -179,6 +185,7 @@ class NodeArtifactStore:
                     {
                         "virtualRecordId": virtual_record_id,
                         "rev": rev,
+                        **({"writeId": write_id} if write_id else {}),
                         "files": [{"path": p, "contentType": ct} for p, ct in chunk],
                     },
                     missing_route=True,

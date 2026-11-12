@@ -104,6 +104,11 @@ export const PresignArtifactsSchema = z.object({
     orgId: z.string().optional(),
     virtualRecordId: virtualRecordIdSchema,
     rev: artifactRevSchema,
+    // The stored write the set is of; without it, the revision's one shared set.
+    writeId: z
+      .string()
+      .regex(/^[0-9a-f]{32}$/, 'writeId must be 32 lowercase hex characters')
+      .optional(),
     files: z
       .array(
         z.object({

@@ -60,6 +60,8 @@ const matches = (row: Row, filter: Filter): boolean =>
       return (have !== undefined) === (want as { $exists: boolean }).$exists
     }
     if (want !== null && typeof want === 'object' && '$eq' in want) {
+      // As in Mongo, null also matches a missing field.
+      if ((want as { $eq: unknown }).$eq === null) return have === undefined || have === null
       return String(have) === String((want as { $eq: unknown }).$eq)
     }
     if (want !== null && typeof want === 'object' && '$ne' in want) {

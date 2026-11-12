@@ -751,6 +751,8 @@ export class MongoDocumentRepository implements DocumentRepository {
         $eq: input.artifactSet?.virtualRecordId,
       },
       'artifactSet.rev': { $eq: input.artifactSet?.rev },
+      // null also matches a set without a write id: the revision's one shared set.
+      'artifactSet.writeId': { $eq: input.artifactSet?.writeId ?? null },
     };
     const existing = await touchArtifactSet(filter, fence);
     if (existing) return existing;

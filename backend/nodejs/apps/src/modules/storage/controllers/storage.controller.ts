@@ -176,11 +176,16 @@ const flatRecordPath = (orgId: string, virtualRecordId: string): string =>
 // damaged row can never point a tree delete anywhere else.
 function artifactSetRootOf(document: {
   orgId: unknown;
-  artifactSet?: { virtualRecordId: string; rev: string };
+  artifactSet?: { virtualRecordId: string; rev: string; writeId?: string };
 }): string | null {
   const set = document.artifactSet;
   return set
-    ? getArtifactSetRoot(String(document.orgId), set.virtualRecordId, set.rev)
+    ? getArtifactSetRoot(
+        String(document.orgId),
+        set.virtualRecordId,
+        set.rev,
+        set.writeId,
+      )
     : null;
 }
 
@@ -845,9 +850,10 @@ export class StorageController {
     try {
       const orgId = extractOrgId(req);
       this.assertBodyOrgMatchesToken(req, orgId);
-      const { virtualRecordId, rev, files } = req.body as {
+      const { virtualRecordId, rev, writeId, files } = req.body as {
         virtualRecordId: string;
         rev: string;
+        writeId?: string;
         files: ArtifactFileRequest[];
       };
       const storageType = await this.getConfiguredStorageType(req);
@@ -862,6 +868,7 @@ export class StorageController {
         orgId,
         virtualRecordId,
         rev,
+        writeId,
         getStorageVendor(storageType),
       );
       if (document.isDeleted) {
@@ -881,6 +888,7 @@ export class StorageController {
         documentId: String(document._id),
         virtualRecordId,
         rev,
+        ...(writeId !== undefined && { writeId }),
         root: artifactSetRootOf(document),
         expiresInSeconds: ARTIFACT_URL_TTL_SECONDS,
         files: urls,
@@ -1144,6 +1152,9 @@ export class StorageController {
           documentId: d._id,
           virtualRecordId,
           rev: d.artifactSet?.rev,
+          ...(d.artifactSet?.writeId !== undefined && {
+            writeId: d.artifactSet.writeId,
+          }),
           storageVendor: d.storageVendor,
           createdAt: d.createdAt,
           updatedAt: d.updatedAt,
@@ -1216,15 +1227,19 @@ export class StorageController {
     orgId: string,
     virtualRecordId: string,
     rev: string,
+    writeId: string | undefined,
     storageVendor: StorageVendor,
   ): Promise<Document> {
     const userId = extractUserId(req);
-    // A rev is a hash of the source bytes, so a record whose source went back to earlier bytes
-    // writes an old revision again; the write stamp the repository moves is how a delete that
-    // listed the revision earlier sees that write.
+    // One set per stored write of the revision (`writeId`), so no write can overwrite another's
+    // files; without one, the revision's one shared set. A sidecar written later for the same
+    // write lands in the same set, and the write stamp the repository moves is how a delete that
+    // listed the set earlier sees that write.
     return getDocumentRepository().createArtifactSetOnce(
       {
-        documentName: `revision_${rev}`,
+        documentName: writeId
+          ? `revision_${rev}_${writeId}`
+          : `revision_${rev}`,
         documentPath: getArtifactSetFolder(orgId, virtualRecordId),
         orgId: requireId(orgId, 'organization'),
         isVersionedFile: false,
@@ -1234,7 +1249,8 @@ export class StorageController {
         artifactSet: {
           virtualRecordId,
           rev,
-          root: getArtifactSetRoot(orgId, virtualRecordId, rev),
+          ...(writeId !== undefined && { writeId }),
+          root: getArtifactSetRoot(orgId, virtualRecordId, rev, writeId),
         },
       },
       { now: Date.now(), staleMs: ARTIFACT_RETIRING_STALE_MS },

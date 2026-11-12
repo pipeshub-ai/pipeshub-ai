@@ -17,6 +17,7 @@ import { AdminRoleMigration } from './migrations/admin_role.migration';
 import { DocumentOrgIdBackfillMigration } from './migrations/document_orgid_backfill.migration';
 import { ChatSessionsMigration } from './migrations/chat_sessions.migration';
 import { UserGroupNameIndexMigration } from './migrations/user_group_name_index.migration';
+import { ArtifactSetIndexMigration } from './migrations/artifact_set_index.migration';
 import { getOrgRepository } from '../../../libs/repositories/org';
 import { SignInMethodsRemovalMigration } from './migrations/sign_in_methods_removal.migration';
 import { DelegationLogRetentionMigration } from './migrations/delegation_log_retention.migration';
@@ -53,6 +54,8 @@ export class MigrationService {
     // after a wait that the connector service itself has to finish would
     // always miss the boot that introduced it.
     await this.serviceAccountKindBackfillMigration();
+    // Also before the waits: until it runs, a second stored write of a revision keeps no artifact set.
+    await this.artifactSetIndexMigration();
     // Until it runs, a policy may still name a removed sign-in method.
     await this.signInMethodsRemovalMigration();
     await this.connectorSyncScheduleMigration(deps.scheduler, deps.appConfig);
@@ -142,6 +145,13 @@ export class MigrationService {
     if (docStore() === 'postgres') return;
     // run() logs its own outcome and never throws.
     await new UserGroupNameIndexMigration(this.logger).run();
+  }
+
+  async artifactSetIndexMigration(): Promise<void> {
+    // PostgreSQL moves its index in the content_0004 revision.
+    if (docStore() === 'postgres') return;
+    // run() logs its own outcome and never throws.
+    await new ArtifactSetIndexMigration(this.logger).run();
   }
 
   async delegationLogRetentionMigration(): Promise<void> {

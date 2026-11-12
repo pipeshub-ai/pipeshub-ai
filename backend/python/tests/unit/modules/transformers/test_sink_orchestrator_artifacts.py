@@ -29,7 +29,7 @@ from app.modules.artifacts.writer import ArtifactWriter
 from app.modules.transformers import sink_orchestrator as sink_module
 from app.modules.transformers.blob_storage import STORED_RECORD_FIELDS, STORED_REV
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
-from app.modules.transformers.stored_write import STORED_WRITE
+from app.modules.transformers.stored_write import STORED_WRITE, write_id
 from app.modules.transformers.transformer import ReconciliationContext, TransformContext
 from app.services.featureflag.platform_settings import ArtifactSettings
 from tests.unit.modules.artifacts.fake_storage import SIGNATURE, FakeStorage
@@ -572,9 +572,9 @@ async def test_end_to_end_the_stored_record_keeps_images_inline(storage: FakeSto
     await _index(orch, TransformContext(record=_record([image])))
 
     assert stored_blocks[0]["data"] == {"uri": PNG_URI}
-    root = FakeStorage.root("vr-1", REV)
+    root = FakeStorage.root("vr-1", REV, write_id(graph.mapping["currentRun"]))
     artifact_block = storage.puts[f"{root}/blocks/part-0000.jsonl"].data
     assert b'"asset":"images/' in artifact_block and PNG_URI.encode() not in artifact_block
     assert storage.put_order[-1] == "manifest.json"
     assert graph.mapping["currentRev"] == REV
-    assert graph.mapping["manifestDocId"] == FakeStorage.document_id("vr-1", REV)
+    assert graph.mapping["manifestDocId"] == FakeStorage.document_id("vr-1", REV, write_id(graph.mapping["currentRun"]))

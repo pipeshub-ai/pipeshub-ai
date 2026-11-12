@@ -18,12 +18,14 @@ from app.modules.artifacts.sidecars import (
 )
 from app.modules.artifacts.store import NodeArtifactStore
 from app.modules.artifacts.writer import canonical_json
+from app.modules.transformers.stored_write import write_id
 from tests.unit.modules.artifacts.fake_storage import SIGNATURE, FakeStorage
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator
 
 REV = "0123456789abcdef"
+RUN = "gen:run-1"
 PAYLOAD = {"summary": "s", "topics": ["VPN", "Ünïcode"], "categories": ["Security"]}
 
 
@@ -60,7 +62,7 @@ def _sidecars(storage: FakeStorage) -> ArtifactSidecars:
 class TestNoOp:
     async def test_flag_off_writes_nothing(self, storage: FakeStorage, outcomes: list[str]) -> None:
         with _flag(False):
-            assert await _sidecars(storage).write("org-1", "vr-1", REV, "classification", 1, PAYLOAD) is False
+            assert await _sidecars(storage).write("org-1", "vr-1", REV, "classification", 1, PAYLOAD, stored_run=RUN) is False
         assert storage.presign_calls == [] and outcomes == []
 
     @pytest.mark.parametrize(("vrid", "rev"), [("vr-1", None), ("vr-1", ""), ("", REV)])
@@ -69,20 +71,29 @@ class TestNoOp:
     ) -> None:
         flag = AsyncMock(return_value=True)
         with patch.object(sidecars_module, "is_artifact_write_enabled", flag):
-            assert await _sidecars(storage).write("org-1", vrid, rev, "classification", 1, PAYLOAD) is False
+            assert await _sidecars(storage).write("org-1", vrid, rev, "classification", 1, PAYLOAD, stored_run=RUN) is False
+        assert storage.presign_calls == [] and outcomes == []
+
+
+    @pytest.mark.parametrize("run", [None, "", "none:abc"])
+    async def test_a_run_that_keeps_no_set_writes_nothing(
+        self, storage: FakeStorage, outcomes: list[str], run: str | None,
+    ) -> None:
+        with _flag(True):
+            assert await _sidecars(storage).write("org-1", "vr-1", REV, "classification", 1, PAYLOAD, stored_run=run) is False
         assert storage.presign_calls == [] and outcomes == []
 
 
 class TestWrite:
     async def test_one_path_and_canonical_bytes(self, storage: FakeStorage, outcomes: list[str]) -> None:
         with _flag(True):
-            assert await _sidecars(storage).write("org-1", "vr-1", REV, "classification", 3, PAYLOAD) is True
+            assert await _sidecars(storage).write("org-1", "vr-1", REV, "classification", 3, PAYLOAD, stored_run=RUN) is True
 
         assert storage.presign_calls == [{
-            "virtualRecordId": "vr-1", "rev": REV,
+            "virtualRecordId": "vr-1", "rev": REV, "writeId": write_id(RUN),
             "files": [{"path": "enrich/classification@3.json", "contentType": "application/json"}],
         }]
-        put = storage.puts[f"{storage.root('vr-1', REV)}/enrich/classification@3.json"]
+        put = storage.puts[f"{storage.root('vr-1', REV, write_id(RUN))}/enrich/classification@3.json"]
         assert put.data == canonical_json(PAYLOAD)
         assert put.data == '{"categories":["Security"],"summary":"s","topics":["VPN","Ünïcode"]}'.encode()
         assert put.headers["content-type"] == "application/json"
@@ -102,7 +113,7 @@ class TestNeverRaises:
     ) -> None:
         storage.fail_paths.add("enrich/classification@1.json")
         with _flag(True), caplog.at_level(logging.WARNING, logger="sidecars"):
-            assert await _sidecars(storage).write("org-1", "vr-1", REV, "classification", 1, PAYLOAD) is False
+            assert await _sidecars(storage).write("org-1", "vr-1", REV, "classification", 1, PAYLOAD, stored_run=RUN) is False
         assert outcomes == ["sidecar_failed"]
         assert "enrich/classification@1.json" in caplog.text
         assert SIGNATURE not in caplog.text and "http" not in caplog.text
@@ -110,7 +121,7 @@ class TestNeverRaises:
     async def test_a_refused_presign_is_a_failure(self, storage: FakeStorage, outcomes: list[str]) -> None:
         storage.presign_status = 409
         with _flag(True):
-            assert await _sidecars(storage).write("org-1", "vr-1", REV, "classification", 1, PAYLOAD) is False
+            assert await _sidecars(storage).write("org-1", "vr-1", REV, "classification", 1, PAYLOAD, stored_run=RUN) is False
         assert outcomes == ["sidecar_failed"]
 
     @pytest.mark.parametrize(("rev", "name"), [("rev-a", "classification"), (REV, "Not/A/Name")])
@@ -118,7 +129,7 @@ class TestNeverRaises:
         self, storage: FakeStorage, outcomes: list[str], rev: str, name: str,
     ) -> None:
         with _flag(True):
-            assert await _sidecars(storage).write("org-1", "vr-1", rev, name, 1, PAYLOAD) is False
+            assert await _sidecars(storage).write("org-1", "vr-1", rev, name, 1, PAYLOAD, stored_run=RUN) is False
         assert storage.presign_calls == [] and outcomes == ["sidecar_failed"]
 
     async def test_storage_without_the_routes_turns_sidecars_off(
@@ -127,8 +138,8 @@ class TestNeverRaises:
         storage.presign_status = 404
         sidecars = _sidecars(storage)
         with _flag(True):
-            assert await sidecars.write("org-1", "vr-1", REV, "classification", 1, PAYLOAD) is False
-            assert await sidecars.write("org-1", "vr-1", REV, "entities", 1, PAYLOAD) is False
+            assert await sidecars.write("org-1", "vr-1", REV, "classification", 1, PAYLOAD, stored_run=RUN) is False
+            assert await sidecars.write("org-1", "vr-1", REV, "entities", 1, PAYLOAD, stored_run=RUN) is False
         # The latch: the second write never asks.
         assert len(storage.presign_calls) == 1
         assert outcomes == ["sidecar_unavailable", "sidecar_unavailable"]
@@ -138,5 +149,5 @@ class TestNeverRaises:
         store.presign_revision = AsyncMock(side_effect=RuntimeError("boom"))
         sidecars = ArtifactSidecars(store, MagicMock())
         with _flag(True):
-            assert await sidecars.write("org-1", "vr-1", REV, "classification", 1, PAYLOAD) is False
+            assert await sidecars.write("org-1", "vr-1", REV, "classification", 1, PAYLOAD, stored_run=RUN) is False
         assert outcomes == ["sidecar_failed"]

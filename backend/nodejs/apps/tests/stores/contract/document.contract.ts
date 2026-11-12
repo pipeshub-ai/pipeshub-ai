@@ -385,6 +385,32 @@ export function describeDocumentContract(fx: DocumentFixture): void {
       expect((await repo.listArtifactSets(org, 'v1')).map((r) => r._id)).to.deep.equal([a._id]);
     });
 
+    it('createArtifactSetOnce gives each stored write of a revision a row of its own, beside the revision\'s shared row', async () => {
+      const org = fx.newId();
+      const W1 = 'a'.repeat(32);
+      const W2 = 'b'.repeat(32);
+      const set = (writeId?: string): NewDocument =>
+        mk(org, {
+          documentName: writeId ? `revision_r1_${writeId}` : 'revision_r1',
+          artifactSet: {
+            virtualRecordId: 'v1',
+            rev: 'r1',
+            ...(writeId && { writeId }),
+            root: `${org}/PipesHub/record-revisions/v1/r1${writeId ? `-${writeId}` : ''}`,
+          },
+        });
+      const shared = await repo.createArtifactSetOnce(set(), fence(Date.now()));
+      // Racing presigns of one write settle on one row; another write of the same revision gets its own.
+      const [a, b] = await Promise.all([repo.createArtifactSetOnce(set(W1), fence(Date.now())), repo.createArtifactSetOnce(set(W1), fence(Date.now()))]);
+      const second = await repo.createArtifactSetOnce(set(W2), fence(Date.now()));
+      expect(b._id).to.equal(a._id);
+      expect(new Set([shared._id, a._id, second._id]).size).to.equal(3);
+      expect(a.artifactSet).to.deep.equal({ virtualRecordId: 'v1', rev: 'r1', writeId: W1, root: `${org}/PipesHub/record-revisions/v1/r1-${W1}` });
+      expect(shared.artifactSet).to.not.have.property('writeId');
+      expect((await repo.createArtifactSetOnce(set(), fence(Date.now())))._id).to.equal(shared._id);
+      expect((await repo.listArtifactSets(org, 'v1')).map((r) => r.artifactSet?.writeId)).to.deep.equal([undefined, W1, W2]);
+    });
+
     describe('the delete fence of a content revision', () => {
       const T0 = 1_000_000_000_000;
       const revision = async (org: string, rev = 'r1', at = T0): Promise<string> => {

@@ -44,6 +44,7 @@ from app.modules.transformers.blob_storage import (
     close_shared_session,
     get_shared_session,
 )
+from app.modules.transformers.stored_write import write_id
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -124,7 +125,8 @@ async def test_a_revision_round_trips_through_the_storage_service(blob: BlobStor
     )
 
     assert written is not None
-    assert written.manifest_ref.root == f"{ORG_ID}/PipesHub/record-revisions/{vrid}/{rev}"
+    # The set of this stored write, beside the revision's folder.
+    assert written.manifest_ref.root == f"{ORG_ID}/PipesHub/record-revisions/{vrid}/{rev}-{write_id('gen-it:run')}"
     document_id = written.manifest_ref.document_id
     listed = _files_in(written.manifest.model_dump(mode="json", exclude_none=True))
     assert len([p for p in listed if p.startswith("blocks/")]) > 1
@@ -139,9 +141,17 @@ async def test_a_revision_round_trips_through_the_storage_service(blob: BlobStor
     part = urls["blocks/part-0000.jsonl"]
     assert await store.get(part, byte_range=(0, 9)) == (await store.get(part))[:10]
 
-    again = await store.presign_revision(ORG_ID, vrid, rev, [(MANIFEST_PATH, "application/json")])
+    again = await store.presign_revision(
+        ORG_ID, vrid, rev, [(MANIFEST_PATH, "application/json")], write_id=write_id("gen-it:run"),
+    )
     assert again.document_id == document_id
-    assert [r["rev"] for r in await store.list_revisions(ORG_ID, vrid)] == [rev]
+    assert [(r["rev"], r.get("writeId")) for r in await store.list_revisions(ORG_ID, vrid)] == [(rev, write_id("gen-it:run"))]
+    # Another stored write of the revision gets a document and root of its own.
+    other = await store.presign_revision(
+        ORG_ID, vrid, rev, [(MANIFEST_PATH, "application/json")], write_id=write_id("gen-it:other"),
+    )
+    assert other.document_id != document_id and other.root != written.manifest_ref.root
+    assert await store.delete_revision(ORG_ID, other.document_id) == 1
 
     assert await store.delete_revision(ORG_ID, document_id) == 1
     assert await store.list_revisions(ORG_ID, vrid) == []
@@ -210,7 +220,7 @@ async def test_a_sidecar_lands_in_its_revisions_document(blob: BlobStorage) -> N
 
     with patch.object(sidecars_module, "is_artifact_write_enabled", AsyncMock(return_value=True)):
         assert await ArtifactSidecars(store, MagicMock(), logger).write(
-            ORG_ID, vrid, rev, "classification", 1, payload,
+            ORG_ID, vrid, rev, "classification", 1, payload, stored_run="gen-it:run",
         ) is True
 
     path = sidecar_path("classification", 1)

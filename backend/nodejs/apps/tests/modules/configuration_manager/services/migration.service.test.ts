@@ -74,6 +74,7 @@ describe('MigrationService', () => {
       const groupNameIndexStub = sinon.stub(service, 'userGroupNameIndexMigration' as any).resolves()
       const delegationTtlStub = sinon.stub(service, 'delegationLogRetentionMigration' as any).resolves()
       const serviceAccountKindStub = sinon.stub(service, 'serviceAccountKindBackfillMigration' as any).resolves()
+      const artifactSetIndexStub = sinon.stub(service, 'artifactSetIndexMigration' as any).resolves()
 
       await service.runMigration({ scheduler: mockScheduler as any, appConfig: mockAppConfig as any })
 
@@ -90,6 +91,9 @@ describe('MigrationService', () => {
       expect(groupNameIndexStub.calledOnce).to.be.true
       expect(delegationTtlStub.calledOnce).to.be.true
       expect(serviceAccountKindStub.calledOnce).to.be.true
+      // Before the waits: until it runs, a second stored write of a revision keeps no artifact set.
+      expect(artifactSetIndexStub.calledOnce).to.be.true
+      expect(artifactSetIndexStub.calledBefore(connectorStub)).to.be.true
       expect(mockLogger.info.calledWith('✅ Migration completed')).to.be.true
     })
   })

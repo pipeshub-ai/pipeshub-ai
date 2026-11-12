@@ -198,6 +198,11 @@ export interface FingerprintState {
 export interface ArtifactSet {
   virtualRecordId: string;
   rev: string;
+  /**
+   * The stored write the set is of: every write of a revision has a set of its own, so none can
+   * overwrite another's files. Absent on a set written before writes had their own (one per revision).
+   */
+  writeId?: string;
   /** Storage key prefix holding the revision's files. */
   root: string;
   /** Epoch ms a delete claimed the revision; absent while it is writable. */

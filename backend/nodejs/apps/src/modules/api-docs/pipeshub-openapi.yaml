@@ -37257,13 +37257,17 @@ paths:
         - Internal Storage
       summary: Get upload URLs for every file of one content revision (service-to-service)
       description: |
-        Finds or creates the one document that stands for this content revision
-        of the virtual record, and returns an upload URL for each file. Its files
-        live under `record-revisions/{virtualRecordId}/{rev}/` in the organisation, which
-        comes from the storage token only. Calling again for the same revision
-        returns the same document, so the call is safe to repeat. Every call
-        moves the revision's `updatedAt`, so a delete that listed it earlier
-        sees the new write. URLs expire after 15 minutes.
+        Finds or creates the document that stands for this stored write of this
+        content revision of the virtual record, and returns an upload URL for
+        each file. With `writeId`, every stored write of a revision has a document
+        of its own and its files live under
+        `record-revisions/{virtualRecordId}/{rev}-{writeId}/`, so no write can
+        overwrite another's files; without it, the revision's one shared document,
+        with its files under `record-revisions/{virtualRecordId}/{rev}/`. The
+        organisation comes from the storage token only. Calling again with the
+        same revision and `writeId` returns the same document, so the call is safe
+        to repeat. Every call moves the document's `updatedAt`, so a delete that
+        listed it earlier sees the new write. URLs expire after 15 minutes.
       operationId: internalPresignArtifactSet
       security:
         - scopedToken: []
@@ -37289,6 +37293,13 @@ paths:
                   type: string
                   pattern: '^[0-9a-f]{8,64}$'
                   description: The content revision, as lowercase hex.
+                writeId:
+                  type: string
+                  pattern: '^[0-9a-f]{32}$'
+                  description: |
+                    Optional. The stored write the set is of, as 32 lowercase hex
+                    characters (otherwise `writeId must be 32 lowercase hex
+                    characters`). Without it, the revision's one shared set.
                 files:
                   type: array
                   minItems: 1
@@ -37328,9 +37339,12 @@ paths:
                     type: string
                   rev:
                     type: string
+                  writeId:
+                    type: string
+                    description: The `writeId` sent, when one was.
                   root:
                     type: string
-                    description: The storage key prefix holding the revision's files.
+                    description: The storage key prefix holding the set's files.
                   expiresInSeconds:
                     type: integer
                   files:
@@ -37340,8 +37354,9 @@ paths:
         '400':
           description: |
             The body is not valid (`VALIDATION_ERROR`): `Not a virtual record id`, `rev must be 8 to 64
-            lowercase hex characters`, `Not a file an artifact set can hold`, `Not a media type`, `Each
-            path may appear only once`, or no files or more than 1000.
+            lowercase hex characters`, `writeId must be 32 lowercase hex characters`, `Not a file an
+            artifact set can hold`, `Not a media type`, `Each path may appear only once`, or no files or
+            more than 1000.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -37380,7 +37395,10 @@ paths:
       tags:
         - Internal Storage
       summary: List the stored content revisions of a virtual record (service-to-service)
-      description: Lists the artifact-set documents of one virtual record in the caller's organisation, oldest first.
+      description: |
+        Lists the artifact-set documents of one virtual record in the caller's
+        organisation, oldest first: one per stored write of a revision, and one
+        per revision for a set written without a `writeId`.
       operationId: internalListArtifactSets
       security:
         - scopedToken: []
@@ -37416,6 +37434,9 @@ paths:
                           type: string
                         rev:
                           type: string
+                        writeId:
+                          type: string
+                          description: The stored write the set is of; absent on a set written without one.
                         storageVendor:
                           type: string
                         createdAt:

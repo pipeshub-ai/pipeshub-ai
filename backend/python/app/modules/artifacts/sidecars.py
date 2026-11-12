@@ -1,7 +1,8 @@
 """Enrichment sidecars: one stage's output for one content revision, beside its artifact set.
 
-A sidecar is ``enrich/{name}@{version}.json`` under the revision's root, written by the
-stage that produced it, after the revision's own files and not listed in its manifest.
+A sidecar is ``enrich/{name}@{version}.json`` under the root of the set of the stored write
+it belongs to (each stored write of a revision has a set of its own), written by the stage
+that produced it, after the revision's own files and not listed in its manifest.
 The version is the stage's, so a reader can tell an output of an older stage from one it
 understands, and two versions of a stage never overwrite each other's file.
 """
@@ -18,6 +19,7 @@ from app.modules.artifacts.store import (
     artifact_writes_available,
 )
 from app.modules.artifacts.writer import REV_PATTERN, canonical_json
+from app.modules.transformers.stored_write import write_id
 from app.services.featureflag.platform_settings import is_artifact_write_enabled
 from app.telemetry.modules.record_storage_metrics import record_artifact_write
 
@@ -65,19 +67,26 @@ class ArtifactSidecars:
 
     async def write(
         self, org_id: str, virtual_record_id: str, rev: str | None, name: str, version: int, payload: dict[str, Any],
+        *, stored_run: str | None,
     ) -> bool:
-        """Store ``payload`` as revision ``rev``'s ``name`` sidecar. True when it was stored.
+        """Store ``payload`` as revision ``rev``'s ``name`` sidecar, in the set of the stored write
+        ``stored_run``. True when it was stored.
 
         Never raises: the stage's own outputs are written already, and a missing sidecar
         only means a reader of the revision falls back to them.
         """
-        return await self.write_at(org_id, virtual_record_id, rev, sidecar_path(name, version), payload)
+        return await self.write_at(
+            org_id, virtual_record_id, rev, sidecar_path(name, version), payload, stored_run=stored_run,
+        )
 
     async def write_at(
         self, org_id: str, virtual_record_id: str, rev: str | None, path: str, payload: dict[str, Any],
+        *, stored_run: str | None,
     ) -> bool:
-        """Store ``payload`` at *path* in revision ``rev``'s set (``enrich/<name>.json``). Never raises."""
-        if not virtual_record_id or not rev or not await is_artifact_write_enabled(self.config_service):
+        """Store ``payload`` at *path* (``enrich/<name>.json``) in the set of the stored write ``stored_run``
+        of revision ``rev``. Nothing is stored for a run that keeps no set (``none``, or no run). Never raises."""
+        set_id = write_id(stored_run)
+        if not virtual_record_id or not rev or set_id is None or not await is_artifact_write_enabled(self.config_service):
             return False
         if not artifact_writes_available():
             record_artifact_write("sidecar_unavailable")
@@ -85,7 +94,7 @@ class ArtifactSidecars:
         try:
             if not REV_PATTERN.match(rev) or not _PATH.match(path):
                 raise ValueError("revision or sidecar name the storage service would refuse")
-            plan = await self.store.presign_revision(org_id, virtual_record_id, rev, [(path, _JSON)])
+            plan = await self.store.presign_revision(org_id, virtual_record_id, rev, [(path, _JSON)], write_id=set_id)
             await self.store.put(plan.files[path], canonical_json(payload), _JSON)
         except ArtifactRoutesUnavailable:
             record_artifact_write("sidecar_unavailable")

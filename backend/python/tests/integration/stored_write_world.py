@@ -233,6 +233,10 @@ class World:
             body = await resp.json()
         return [d for d in body.get("documents") or [] if d.get("documentName") == f"record_{vrid}"]
 
+    async def artifact_sets(self, vrid: str) -> list[dict[str, Any]]:
+        """The artifact sets storage lists for *vrid*: one per stored write of a revision."""
+        return await NodeArtifactStore(self.blob, logger).list_revisions(self.org, vrid)
+
     def stage_job(self, record: Record, rev: str, version: int = 4) -> StageJob:
         return StageJob.model_validate({
             "stage": "classify", "stage_version": version, "org_id": record.org_id,

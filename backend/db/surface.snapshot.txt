@@ -1449,7 +1449,7 @@ funcacl retrieval.org_space_named_by() pipeshub_app EXECUTE
 funcacl retrieval.org_space_replace_empty(text,integer,text) pipeshub_indexing EXECUTE
 funcacl retrieval.search_sparse(smallint,bigint[],real[],text[],text[],text[],text[],text[],integer) pipeshub_app EXECUTE
 funcacl retrieval.vrid_orgs(text[]) pipeshub_indexing EXECUTE
-index content.documents_artifact_set on content.documents unique=true exclusion=false valid=true def=66b66cb22ee4b83b8ce15ce05c5b6ef2
+index content.documents_artifact_set_write on content.documents unique=true exclusion=false valid=true def=fe5796cc1e3803c2346c2ea52da54160
 index content.documents_by_connector on content.documents unique=false exclusion=false valid=true def=758d149d5d885f2d089e87f7a5cb02f0
 index content.documents_by_name on content.documents unique=false exclusion=false valid=true def=989ea889f3b9334e327fa9cca1444de7
 index content.documents_by_path on content.documents unique=false exclusion=false valid=true def=c282fe75c791fc00a59902406add2764
