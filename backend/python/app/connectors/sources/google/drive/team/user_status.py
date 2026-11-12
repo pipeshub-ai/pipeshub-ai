@@ -72,11 +72,18 @@ class UserStatusTracker:
     async def inactive_on_partial_listing(self, listed: list[AppUser]) -> set[str]:
         """The accounts to treat as unable to sign in when `listed` may be missing users: the last complete
         listing's, plus any listed now. An account that is merely not listed is unknown, not inactive: it keeps its
-        groups and grants. Nobody is restored and nothing is saved, so a complete listing sets it all right."""
+        groups and grants. Nobody is restored. An account this listing shows unable to sign in is saved as inactive
+        at once (the caller has already removed its access): narrowing is safe, a later cut listing must not forget
+        it, and a complete listing that shows it active again restores it."""
         stored = await self._sync_point.read_sync_point(USER_STATUS_SYNC_POINT_KEY) or {}
         was_inactive = {e for e in stored.get("inactive") or [] if isinstance(e, str)}
         self._pending = None
-        return was_inactive | {u.email.lower() for u in listed if u.email and not is_active_account(u)}
+        listed_inactive = {u.email.lower() for u in listed if u.email and not is_active_account(u)}
+        if listed_inactive - was_inactive:
+            await self._sync_point.update_sync_point(
+                USER_STATUS_SYNC_POINT_KEY, {**stored, "inactive": sorted(was_inactive | listed_inactive)}
+            )
+        return was_inactive | listed_inactive
 
     async def known_domains(self) -> set[str]:
         """The domains of the last complete listing's accounts."""

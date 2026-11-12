@@ -955,13 +955,13 @@ class GoogleDriveTeamConnector(BaseConnector):
         if self._listing_cut:
             # A person missing from a cut listing looks external: those on a domain of the listed people, of the last
             # complete listing, or verified for the Workspace (an alias domain with no listed account) are held back
-            # (their membership waits for a complete listing). If the verified domains cannot be read, nobody is
-            # added this run.
+            # (their membership waits for a complete listing). If the verified domains cannot be read, the listed and
+            # last complete listing's domains still hold people back, and this run's collaborators are not dropped.
             try:
                 verified = await self._workspace_domains()
             except Exception as e:
-                self.logger.warning(f"Workspace domains could not be read; no external membership is added this run: {e}")
-                return
+                self.logger.warning(f"Workspace domains could not be read; holding back by the listed domains only: {e}")
+                verified = set()
             domains = {e.rpartition("@")[2] for e in self.synced_user_emails} | await self._user_status.known_domains() | verified
             emails = [e for e in emails if e.rpartition("@")[2] not in domains]
             if not emails:

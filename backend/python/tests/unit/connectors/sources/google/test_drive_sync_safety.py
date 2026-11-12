@@ -386,6 +386,21 @@ class TestRunReport:
 
 
 class TestUserStatus:
+    @pytest.mark.asyncio
+    async def test_a_suspension_a_cut_listing_shows_is_kept_by_a_later_cut_listing_and_undone_by_a_complete_one(self) -> None:
+        sync_point = _SyncPoint()
+        tracker = UserStatusTracker(sync_point)
+        await tracker.compare([_user("a@x.com"), _user("b@x.com")])
+        await tracker.save()
+
+        # a cut listing shows b unable to sign in: b is saved as inactive at once
+        assert await tracker.inactive_on_partial_listing([_user("b@x.com", active=False)]) == {"b@x.com"}
+        # a later cut listing that does not show b at all still treats b as unable to sign in
+        assert await UserStatusTracker(sync_point).inactive_on_partial_listing([_user("a@x.com")]) == {"b@x.com"}
+        # a complete listing that shows b active again restores b
+        change = await UserStatusTracker(sync_point).compare([_user("a@x.com"), _user("b@x.com")])
+        assert change.restore == {"b@x.com"} and not change.inactive
+
     async def test_suspended_and_deleted_accounts_are_withdrawn_once(self) -> None:
         sync_point = _SyncPoint()
         tracker = UserStatusTracker(sync_point)
