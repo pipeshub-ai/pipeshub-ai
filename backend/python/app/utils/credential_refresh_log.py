@@ -68,7 +68,35 @@ class Trigger(StrEnum):
 
 # The `refresh_reason` tag our exceptions carry → error_class. classify_error's "misconfigured"
 # (the provider rejected our OAuth client) is never overridden: it needs a human either way.
-ERROR_CLASS_BY_REASON = {"invalid_grant": "auth_expired", "config_missing": "misconfigured"}
+ERROR_CLASS_BY_REASON = {
+    "invalid_grant": "auth_expired", "config_missing": "misconfigured",
+    # MCP (app/agents/mcp/token_refresh.py, oauth_client.py)
+    "no_refresh_token": "auth_expired", "invalid_token_record": "auth_expired", "no_token_url": "auth_expired",
+    "no_credential": "not_found", "credential_removed": "conflict", "lock_contention": "unavailable",
+    "url_blocked": "misconfigured", "host_unresolved": "unavailable",
+}
+
+
+# The keywords the end lines pass themselves: an Attempt.fields key with one of these names would collide with them.
+_END_LINE_KEYS = frozenset({
+    "outcome", "reason", "duration_ms", "error_class", "error_type", "error_message", "http_status", "oauth_error",
+    "level", "include_error_text",
+})
+
+
+class _EndFields(dict[str, object]):
+    """Rejects a key the end line writes itself where it is set: in ``refresh_attempt``'s ``except`` the
+    collision would raise instead, replacing the attempt's real error and writing no ``end``."""
+
+    def __setitem__(self, key: str, value: object) -> None:
+        if key in _END_LINE_KEYS:
+            raise ValueError(f"Attempt.fields cannot set {key!r}: the credential_refresh.end line writes it")
+        super().__setitem__(key, value)
+
+    def update(self, *args: object, **kwargs: object) -> None:  # type: ignore[override]
+        # shortcut: setdefault and |= skip the check; route them here if a caller starts using them.
+        for key, value in dict(*args, **kwargs).items():
+            self[key] = value
 
 
 # The keywords the end lines pass themselves: an Attempt.fields key with one of these names would collide with them.
@@ -245,6 +273,11 @@ def _logged_level(exc: BaseException) -> int | None:
     return max(levels) if levels else None
 
 
+def refresh_error_class(exc: BaseException) -> str | None:
+    """The error_class a refresh ``end`` gives ``exc`` when its chain carries a refresh tag; None otherwise."""
+    return _classified(exc)[0] if _reason(exc) else None
+
+
 def _classified(exc: BaseException) -> tuple[str, str | None]:
     """(error_class, reason): the tag refines classify_error, except that our rejected client stays misconfigured."""
     reason = _reason(exc)
@@ -294,7 +327,8 @@ def _from_token_endpoint(link: BaseException) -> bool | None:
 
 def _status(link: BaseException) -> int | None:
     status = extract_status_code(link)  # type: ignore[arg-type]
-    return status if isinstance(status, int) and not isinstance(status, bool) else None
+    # An HTTP status only: our own errors default theirs to 0 (FetchError) when no answer came.
+    return status if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599 else None
 
 
 def _ms_since(start: float) -> int:

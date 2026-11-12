@@ -558,3 +558,29 @@ def test_on_chain_follows_cause_and_unsuppressed_context_like_the_text() -> None
     assert EC.on_chain(explicit, target)
     assert not EC.on_chain(suppressed, target)
     assert not EC.on_chain(RuntimeError("unrelated"), target)
+
+
+class TestAlreadyLogged:
+    def test_never_logged(self) -> None:
+        assert EC.already_logged(_raised(KeyError("k")), logging.DEBUG) is False
+
+    def test_at_or_below_the_level_it_was_logged_at(self, capture) -> None:
+        logger, _ = capture
+        exc = _raised(_http_status_error(429))
+        EC.log_failure(logger, "x.end", exc)  # WARNING
+        assert (EC.already_logged(exc, logging.INFO), EC.already_logged(exc, logging.WARNING)) == (True, True)
+        assert EC.already_logged(exc, logging.ERROR) is False
+
+    def test_through_the_cause(self, capture) -> None:
+        logger, _ = capture
+        inner = _raised(_http_status_error(429))
+        EC.log_failure(logger, "inner.end", inner)
+        assert EC.already_logged(_chained(RuntimeError("outer"), inner), logging.WARNING) is True
+
+
+class TestChainHas:
+    def test_a_type_anywhere_in_the_chain(self) -> None:
+        outer = _chained(RuntimeError("outer"), _chained(ValueError("middle"), OSError("inner")))
+        assert EC.chain_has(outer, OSError) is True
+        assert EC.chain_has(outer, KeyError, ValueError) is True
+        assert EC.chain_has(outer, KeyError) is False

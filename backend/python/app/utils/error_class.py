@@ -89,6 +89,11 @@ def on_chain(exc: BaseException, target: BaseException) -> bool:
     return any(link is target for link in _chain(exc))
 
 
+def chain_has(exc: BaseException, *types: type[BaseException]) -> bool:
+    """Whether ``exc`` or a link of its chain (see ``_chain``) is one of ``types``."""
+    return any(isinstance(link, types) for link in _chain(exc))
+
+
 def first_leaf(exc: BaseException) -> BaseException:
     """The first exception in ``exc`` that isn't a group: what a task group's failure was."""
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
@@ -218,6 +223,14 @@ def logged_level(exc: BaseException) -> int | None:
     ``from``, at; None if never. For a per-unit line that must not be demoted when several units
     fail with one shared exception."""
     return _prior_level(exc)
+
+
+def already_logged(exc: BaseException, level: int) -> bool:
+    """Whether :func:`log_failure` already wrote ``exc`` (or one it was raised ``from``) at ``level`` or above.
+    A per-unit line (one tool call, one request, one server's listing) then logs with ``log_event`` at its own
+    level: no second stack, no text, never demoted."""
+    prior = _prior_level(exc)
+    return prior is not None and prior >= level
 
 
 _CAUSE_SEPARATOR = "\nThe above exception was the direct cause of the following exception:\n\n"

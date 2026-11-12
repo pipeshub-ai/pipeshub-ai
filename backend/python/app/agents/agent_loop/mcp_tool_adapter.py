@@ -54,6 +54,7 @@ from app.agents.mcp.failure import (
     MCPFailureReason,
     classify_mcp_failure,
     mcp_error_class,
+    misconfigured_level,
 )
 from app.agents.mcp.oauth_client import MCPOAuthError
 from app.agents.mcp.token_refresh import MCPTokenRefreshError
@@ -259,9 +260,11 @@ class MCPToolAdapter(SchemaShallowValidationMixin, Tool):
                 error = f"{error} {BUTTON_HINT}"
             # The executor logs it once, by class: no stack for a timeout, a dead server or an
             # expired sign-in, and never the error's text (a URL with an API key, the arguments).
+            cls = mcp_error_class(exc, reason)
             return ToolOutput(success=False, error=error, cause=exc, end_fields={
-                "error_class": mcp_error_class(exc, reason), "mcp_reason": reason.value,
+                "error_class": cls, "mcp_reason": reason.value,
                 "status": getattr(first_leaf(exc), "status_code", None),
+                "level": misconfigured_level(self._server.instance_id, cls),
             })
         return await mcp_result_to_tool_output(raw_result, self._context)
 
