@@ -289,11 +289,10 @@ def test_a_retried_commit_after_a_failed_move_still_asks_for_a_graph_build(repo,
     before = repo.meta()["codeChangedAt"]
     repo.diff([], False, ["a.py"])  # a deleted code file...
     push(repo, **{"README.md": "# two\n"})  # ...and a replaced document
-    assert repo.meta()["pendingCodeChange"] is True  # kept with the staged state
     restore = _fail_link_on(monkeypatch, "README.md")
     with pytest.raises(OSError):
         repo.commit()
-    assert repo.meta()["codeChangedAt"] == before and repo.meta()["pendingCodeChange"] is True
+    assert repo.meta()["codeChangedAt"] == before  # nothing was published
     restore()
     meta = repo.commit()  # the repeat moves only the document, and must still know the code changed
     assert meta["codeChangedAt"] == meta["committedAt"] > before and meta["pendingCodeChange"] is False
@@ -313,7 +312,7 @@ def test_a_commit_whose_metadata_write_fails_after_the_switch_still_asks_for_a_g
     monkeypatch.setattr(repo, "_write_json", write)
     with pytest.raises(OSError):
         repo.commit()
-    assert repo.meta()["pendingCodeChange"] is True and not repo.meta().get("codeChangedAt")
+    assert repo.meta()["pendingCodeChange"] == repo.current_tree().name and not repo.meta().get("codeChangedAt")  # switched, not finished
     meta = repo.commit()
     assert meta["codeChangedAt"] == meta["committedAt"] and meta["pendingCodeChange"] is False
 
@@ -470,3 +469,50 @@ def test_a_delayed_delete_leaves_a_repository_that_was_registered_again_under_th
     repo.save_meta(connectorId="new-connector")  # the key now belongs to a connector made after the old one was deleted
     assert repo.destroy("old-connector") is False and repo.exists()
     assert repo.destroy("new-connector") is True and not repo.dir.exists()
+
+
+def _clock(monkeypatch):
+    import types
+
+    ticks = iter(range(2_000_000_000, 3_000_000_000, 5))
+    monkeypatch.setattr(store, "time", types.SimpleNamespace(time=lambda: next(ticks)))
+
+
+def test_staging_a_code_file_and_dropping_it_before_the_commit_changes_nothing(repo, monkeypatch):
+    _clock(monkeypatch)
+    push(repo, **{"a.py": "a = 1\n"})
+    first = repo.commit()["codeChangedAt"]
+    push(repo, **{"b.py": "b = 1\n"})  # staged...
+    repo.diff([entry("a.py", "a = 1\n")], True, [])  # ...and the client's next manifest does not list it
+    assert repo.commit()["codeChangedAt"] == first  # the published code is what it was: no build is owed, so none is waited for
+    assert sorted(p.name for p in repo.current_tree().iterdir()) == ["a.py"]
+
+
+def test_sending_the_bytes_that_are_already_published_changes_nothing_but_other_bytes_do(repo, monkeypatch):
+    _clock(monkeypatch)
+    push(repo, **{"a.py": "a = 1\n"})
+    first = repo.commit()["codeChangedAt"]
+    (repo.staging).mkdir(exist_ok=True)
+    (repo.staging / "a.py").write_text("a = 1\n")  # staged again with identical bytes (a client that re-sent the file)
+    assert repo.commit()["codeChangedAt"] == first
+    push(repo, **{"a.py": "a = 2\n"})
+    assert repo.commit()["codeChangedAt"] > first
+
+
+def test_a_code_file_removed_by_the_manifest_changes_the_code_even_with_no_other_note_of_it(repo, monkeypatch):
+    _clock(monkeypatch)
+    push(repo, **{"a.py": "a = 1\n", "README.md": "# x\n"})
+    first = repo.commit()["codeChangedAt"]
+    repo.diff([entry("README.md", "# x\n")], True, [])  # a.py is gone from the manifest; nothing else was written about it
+    assert repo.commit()["codeChangedAt"] > first
+    assert not (repo.current_tree() / "a.py").exists()
+
+
+def test_a_commit_that_changes_only_documents_leaves_code_changed_at_alone_and_a_stale_pending_mark_is_ignored(repo, monkeypatch):
+    _clock(monkeypatch)
+    push(repo, **{"a.py": "a = 1\n"})
+    first = repo.commit()["codeChangedAt"]
+    repo.save_meta(pendingCodeChange="g000099")  # left by an attempt whose generation never became current
+    push(repo, **{"README.md": "# x\n"})
+    meta = repo.commit()
+    assert meta["codeChangedAt"] == first and meta["pendingCodeChange"] is False

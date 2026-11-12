@@ -61,6 +61,23 @@ class StoreError(ValueError):
         self.reason = reason
 
 
+def _same_bytes(a: Path, b: Path) -> bool:
+    """Whether two files hold the same bytes (size first, then a hash read in chunks)."""
+    try:
+        if a.stat().st_size != b.stat().st_size:
+            return False
+        digests = []
+        for path in (a, b):
+            h = hashlib.sha256()
+            with path.open("rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    h.update(chunk)
+            digests.append(h.digest())
+        return digests[0] == digests[1]
+    except OSError:
+        return False  # cannot tell: treat as different, so the graph is rebuilt rather than left stale
+
+
 def read_json_object(path: Path) -> dict[str, Any]:
     """The JSON object in ``path``; ``{}`` only when the file does not exist. A file that cannot be read or decoded is ``StoreError('state_unreadable')``:
     an unreadable manifest is not an empty repository (an upload would replace it, a commit would sweep the files, a sync would retire the records)."""
@@ -179,7 +196,6 @@ class Repo:
         # One lock per (org, user), taken BEFORE a repository's own lock wherever both are needed (so no pair of threads can wait on each other):
         # the per-user quota is read and then spent across several of the user's repositories.
         self._user_lock = _lock_for(f"user:{self.dir.parent}")
-        self._code_dirty = False
         self.limits = limits()
 
     # ------------------------------------------------------------ state
@@ -300,17 +316,27 @@ class Repo:
         The next generation is built beside the current one (a hard link of each unchanged file, a hard link of each staged one, so it costs no
         bytes the quota does not already count) and ``current`` is switched to it with one atomic rename. A sync reads one generation from start
         to end: it sees the old tree or the new one, never a mix; and a commit that fails before the switch leaves the old generation serving and
-        the staged files in place, so it can simply be repeated. Whether the commit changes code is kept with the staged state
-        (``pendingCodeChange``) and cleared only by the metadata write that follows the switch, so a repeated commit still asks for the graph build.
+        the staged files in place, so it can simply be repeated.
+
+        Whether the commit changes code is decided by comparing what it publishes with the generation it replaces (a code path added, removed or
+        with other bytes): staging and dropping a file, or sending the bytes already published, changes nothing. A commit that changes code
+        records ``pendingCodeChange`` (the name of the generation it is about to switch to) before the switch, and the metadata write that follows
+        the switch clears it, so a repeat after a failure between the two (when the old generation is no longer there to compare with) still
+        asks for the graph build. A leftover that names a generation which never became current is ignored.
         """
         with self._lock:
             meta = self.meta()
             manifest = self.manifest()
             self._ensure_generation()
-            new_name, code_in_build = self._build_generation(manifest)
+            current = self.current_tree()
+            carried = current is not None and meta.get("pendingCodeChange") == current.name  # a commit that switched but did not finish
+            changed = self._changes_code(manifest, current)
+            new_name = self._build_generation(manifest)
+            if changed and meta.get("pendingCodeChange") != new_name:
+                self.save_meta(pendingCodeChange=new_name)
             self._point_at(new_name)
             updates: dict[str, Any] = {"generation": int(meta.get("generation", 0)) + 1, "committedAt": int(time.time() * 1000)}
-            if code_in_build or meta.get("pendingCodeChange"):
+            if changed or carried:
                 updates["codeChangedAt"] = updates["committedAt"]  # the code graph owes a build after this commit
             updates["pendingCodeChange"] = False
             saved = self.save_meta(**updates)
@@ -318,9 +344,25 @@ class Repo:
             self._retire_old_generations(new_name)
             return saved
 
-    def _build_generation(self, manifest: dict[str, list[Any]]) -> tuple[str, bool]:
-        """Build ``generations/gNNNNNN`` from the manifest: the staged file where there is one, else the current generation's. Returns its name and
-        whether a staged code file went into it."""
+    def _changes_code(self, manifest: dict[str, list[Any]], current: Path | None) -> bool:
+        """Whether publishing ``manifest`` changes the code of ``current``: a code path added or removed, or one whose bytes differ."""
+        for path in manifest:
+            staged = self.staging / path
+            if not detect_language(path) or not staged.is_file() or staged.is_symlink():
+                continue  # not code, or not staged: it carries over from the current generation as it is
+            old = (current / path) if current else None
+            if old is None or not old.is_file() or not _same_bytes(staged, old):
+                return True
+        for _dirpath, _dirs, files in os.walk(current, followlinks=False) if current else ():
+            rel_dir = os.path.relpath(_dirpath, current).replace(os.sep, "/")
+            for name in files:
+                rel = name if rel_dir == "." else f"{rel_dir}/{name}"
+                if rel not in manifest and detect_language(rel):
+                    return True
+        return False
+
+    def _build_generation(self, manifest: dict[str, list[Any]]) -> str:
+        """Build ``generations/gNNNNNN`` from the manifest: the staged file where there is one, else the current generation's. Returns its name."""
         self.generations.mkdir(parents=True, exist_ok=True)
         for stale in self.generations.glob(".build-*"):  # left by a commit that died
             shutil.rmtree(stale, ignore_errors=True)
@@ -329,12 +371,11 @@ class Repo:
         build = self.generations / f".build-{number:06d}"
         build.mkdir()
         current = self.current_tree()
-        code = False
         try:
             for path in manifest:
                 staged, committed = self.staging / path, (current / path) if current else None
                 if staged.is_file() and not staged.is_symlink():
-                    src, code = staged, code or bool(detect_language(path))
+                    src = staged
                 elif committed is not None and committed.is_file() and not committed.is_symlink():
                     src = committed
                 else:
@@ -352,7 +393,7 @@ class Repo:
         except BaseException:
             shutil.rmtree(build, ignore_errors=True)
             raise
-        return name, code
+        return name
 
     def _clear_staging(self) -> None:
         """Remove the staged files once they are published (they are linked into the new generation); best effort, nothing depends on it."""
@@ -379,8 +420,6 @@ class Repo:
     def _remove(self, manifest: dict[str, list[Any]], path: str) -> None:
         """Drop ``path`` from the manifest and its staged file; the committed copy in the tree goes at the next commit."""
         manifest.pop(path, None)
-        if detect_language(path):
-            self._code_dirty = True  # a deleted code file is a change to the code, published with the next commit
         target = self.staging / path
         try:
             target.unlink()
@@ -446,7 +485,6 @@ class Repo:
                         out.deleted.append(path)
             if out.deleted:
                 self._write_json("files.json", manifest)
-                self._remember_code_change()
         return out
 
     def store(self, files: list[dict[str, Any]]) -> tuple[list[str], list[dict[str, str]]]:
@@ -495,16 +533,7 @@ class Repo:
                 manifest[path] = [hashlib.sha256(data).hexdigest(), len(data)]
                 stored.append(path)
             self._write_json("files.json", manifest)
-            if any(detect_language(p) for p in stored):
-                self._code_dirty = True
-            self._remember_code_change()
         return stored, rejected
-
-    def _remember_code_change(self) -> None:
-        """Keep, with the staged state, that the next commit changes code; cleared only by the commit's own metadata write."""
-        if self._code_dirty:
-            self._code_dirty = False
-            self.save_meta(pendingCodeChange=True)
 
     def _write_file(self, staging: Path, manifest: dict[str, list[Any]], path: str, data: bytes) -> None:
         dest = staging / path
