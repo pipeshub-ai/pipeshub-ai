@@ -12,6 +12,7 @@ import { Logger } from './libs/services/logger.service';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
 import { ConfigService } from './modules/tokens_manager/services/cm.service';
 import { createCodeGraphRouter } from './modules/enterprise_search/routes/code-graph.routes';
+import { createLocalReposRouter } from './modules/local_repos/routes/local_repos.routes';
 import { createGraphViewRouter } from './modules/enterprise_search/routes/graph-view.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
@@ -687,6 +688,12 @@ export class Application {
     this.app.use(
       '/api/v1/code-graph',
       createCodeGraphRouter(this.esAgentContainer),
+    );
+
+    // push a local repository to be indexed into the code graph (proxy to the connectors service)
+    this.app.use(
+      '/api/v1/local-repos',
+      createLocalReposRouter(this.tokenManagerContainer),
     );
 
     // the graph explorer's reads: expand and revalidate (permission-aware, never cached)
