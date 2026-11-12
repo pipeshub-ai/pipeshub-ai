@@ -108,8 +108,8 @@ def test_arangodb_arrow_of_a_browse_row_reads_its_own_way_in_and_leaves_the_chai
     assert "NOT IS_SAME_COLLECTION" in exact.replace("(NOT IS_SAME", "NOT IS_SAME") and "kh_filed" in exact    # a group's granted record is not its arrow
     assert "@kh_from_app" in flat and "kh_row_from_app" not in flat         # a flatten reads the stricter rule it always did
     assert "HAS(@granted, kh_bm._key)" in _aql_kh_filed("node") and "kh_bm" not in exact
-    reached, walked = _aql_row_from_app("node", reached=True), _aql_row_from_app("node", reached=False)
-    assert reached.startswith("(@kh_start IN kh_parents[*]._id AND ") and "kh_sp._id == @kh_start" in reached and "INBOUND node" in walked and "@kh_start" not in walked
+    own = _aql_row_from_app("node")
+    assert "INBOUND node" in own and "@kh_start" not in own          # every route up from the row, not a hop from the browsed node
 
 
 async def test_a_declaration_the_viewer_neither_holds_nor_reaches_declares_no_scope_for_a_browse() -> None:
@@ -158,7 +158,7 @@ def test_the_walk_from_the_app_stops_at_a_declaration_and_a_stub_needs_every_hop
     )
 
     assert "RECORD_GROUP_LEVEL" in Neo4jProvider._kh_v3_row_from_app("node", hop="HOP", hierarchy="IN ['PARENT_CHILD']")
-    assert 'kh_obp.permissionModel == "RECORD_GROUP_LEVEL"' in _aql_row_from_app("node", reached=False)
+    assert 'kh_oq.permissionModel == "RECORD_GROUP_LEVEL"' in _aql_row_from_app("node")
     way = _aql_way_below("node")
     assert "kh_pt.edges" in way and "kh_wc" in way and "kh_wp" in way          # every hop of the path is held to the browse rule
 
@@ -173,10 +173,9 @@ def test_arangodb_leaves_a_stub_child_to_a_second_pass_that_returns_the_arrow_al
     assert "kh_pt.edges" not in page and "kh_pt.edges" in every and "isPlaceholder != true OR" not in page
     assert "kh_pt.edges" not in _aql_kh_has_children("node") and "isPlaceholder != true OR" in _aql_kh_has_children("node")      # a flatten keeps its one-hop test
     queries = ArangoHTTPProvider._kh_v3_listing_aql()
-    for name in ("enrich_exact", "enrich_exact_walk"):
-        assert "khStub: LENGTH(" in queries[name] and "kh_row.hasChildren ? [] : [1]" in queries[name]      # asked only of a row with no other arrow
-        second = queries[name + "_stubs"]
-        assert "kh_pt.edges" in second and "RETURN {i: kh_i, hasChildren:" in second and "parentOptions" not in second
+    assert "khStub: LENGTH(" in queries["enrich_exact"] and "kh_row.hasChildren ? [] : [1]" in queries["enrich_exact"]      # asked only of a row with no other arrow
+    second = queries["enrich_exact_stubs"]
+    assert "kh_pt.edges" in second and "RETURN {i: kh_i, hasChildren:" in second and "parentOptions" not in second
 
 
 def test_an_app_that_opens_everything_opens_only_its_own_members_below_a_node_the_walk_does_not_reach() -> None:
@@ -189,19 +188,24 @@ def test_an_app_that_opens_everything_opens_only_its_own_members_below_a_node_th
     assert "(FROM OR (kh_opens AND LENGTH(" in aql and "kh_mb._key == @app_id" in aql and "FROM) OR kh_opens" not in aql
 
 
-def test_arangodb_stub_recheck_reads_hierarchy_parents_only() -> None:
-    """The recheck feeds the same parent list as the page query to the reached shortcut: a link edge from the browsed node is no way in."""
-    from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+def test_every_listing_reads_the_reach_browse_start_reads() -> None:
+    """One definition of the reach a browse of a node starts with, on each backend: the browse's start, the row data and its arrows, and the stub
+    listing all read it, so a listing lists what opening the node lists."""
+    from app.services.graph_db.arango.arango_http_provider import (
+        ArangoHTTPProvider,
+        _aql_kh_has_children,
+        _aql_reach_walk,
+    )
 
     queries = ArangoHTTPProvider._kh_v3_listing_aql()
-    for name in ("enrich_exact_stubs", "enrich_exact_walk_stubs"):
-        assert "kh_pe.relationshipType IN" in queries[name].split("kh_row_from_app")[0]
-
-
-def test_arangodb_reached_shortcut_needs_the_browse_hop_from_the_start() -> None:
-    from app.services.graph_db.arango.arango_http_provider import _aql_row_from_app
-
-    assert "kh_sp._id == @kh_start" in _aql_row_from_app("node", reached=True)
+    assert _aql_reach_walk("kh_start", "kh_b") in queries["browse_start"]
+    walk = _aql_reach_walk("node", "kh_o")
+    assert walk in queries["enrich_exact"] and walk in queries["enrich_exact_stubs"] and "@kh_start" not in queries["enrich_exact"]
+    assert _aql_reach_walk("kh_ch", "kh_o") in _aql_kh_has_children("node", exact=True, every_hop=True)
+    slim = ArangoHTTPProvider._kh_v3_slim_aql((), "name", stubs=True)
+    assert _aql_reach_walk("kh_n", "kh_o") in slim and _aql_reach_walk("kh_sc", "kh_o") in slim and "OUTBOUND @kh_start" in slim
+    pattern = Neo4jProvider._kh_v3_reach_pattern("node", hop="HOP", hierarchy="IN ['PARENT_CHILD']")
+    assert pattern in Neo4jProvider._kh_v3_row_from_app("node", hop="HOP", hierarchy="IN ['PARENT_CHILD']")
 
 
 def test_arangodb_stub_way_below_reads_the_reach_of_the_browse_and_a_filed_stub_stays_strict() -> None:

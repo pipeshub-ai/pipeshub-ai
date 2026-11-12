@@ -23,6 +23,7 @@ from app.connectors.sources.localKB.push.contract import PushRefusal
 from app.connectors.sources.localKB.push.image_admission import ImageAdmission
 from app.services.graph_db.interface.graph_db_provider import REF_LINKS_PER_DOC
 from tests.integration.graph_db import test_kb_push_real_backends as base
+from tests.integration.graph_db.test_kb_delete_real_backends import Deleting
 from tests.integration.graph_db.test_kb_push_real_backends import Env, record_keys
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(600)]
@@ -122,7 +123,8 @@ async def test_upload_records_without_a_connector_name_cannot_hide_the_kb_upload
         pytest.skip("ArangoDB's record schema requires connectorName, and its == on a missing field is false")
     _record_id, own_doc = await pushed_document(env)
     rows = [{"id": f"noname-{i}-{uuid.uuid4().hex[:6]}", "orgId": env.org_id, "externalRecordId": own_doc, "origin": "UPLOAD",
-             "recordName": "noname", "recordType": "FILE", "createdAtTimestamp": 1} for i in range(REF_LINKS_PER_DOC)]
+             "recordName": "noname", "recordType": "FILE", "createdAtTimestamp": 1,
+             "connectorId": f"other-{env.kb_id}"} for i in range(REF_LINKS_PER_DOC)]
     env.seeded[CollectionNames.RECORDS.value].extend(r["id"] for r in rows)
     assert await env.graph.batch_upsert_nodes(rows, CollectionNames.RECORDS.value)
     got = await env.graph.get_ref_access(env.user_id, env.org_id, [own_doc])
@@ -310,3 +312,176 @@ async def test_access_revoked_during_materialisation_is_uniform_422_and_cleaned(
     assert (e.value.status, e.value.reason) == (422, "IMAGE_REF_INVALID")
     assert await env.record("img-1") is None
     assert (set(env.storage.docs) - before) <= env.cleaned()
+
+
+# ---- heal, retry reuse and races with image pushes (both engines) ------------------------------------------------
+
+async def test_retry_reuses_the_materialised_document(env: Env) -> None:
+    """A lost claim on the first attempt: the retry keeps the storage document it made and the spliced bytes, and fetches nothing again."""
+    from tests.integration.graph_db import test_kb_push_retry_real_backends as RT
+
+    _, doc = await pushed_document(env)
+    mat = SplicingMaterialiser()
+    image_capable(env, doc, mat)
+    record_keys(env, "img-1")
+    creates = env.storage.creates
+    state = RT._inject_claim(env, RT._errors(env, "lost"), times=1)
+    try:
+        r = await env.push(image_push_body(env, doc))
+    finally:
+        state["restore"]()
+    assert r.status == "created" and state["calls"] == 2
+    assert env.storage.creates == creates + 1, "one storage document for both attempts"
+    assert mat.runs == 1, "the images were fetched once"
+
+
+async def test_a_leaked_document_is_cleaned_by_the_next_content_change(env: Env) -> None:
+    """The cleanup after one content change is lost (a crash after the commit); the next content change removes both."""
+    record_keys(env, "rec-1")
+    await env.push(env.body(version=1, text="a"))
+    e1 = (await env.record())["externalRecordId"]
+    await env.push(env.body(version=2, text="b"))
+    e2 = (await env.record())["externalRecordId"]
+    assert env.storage.tags[e2]["previousDocumentId"] == e1
+    env.cleanups.clear()  # the event for E1 never reached the consumer
+    await env.push(env.body(version=3, text="c"))
+    e3 = (await env.record())["externalRecordId"]
+    assert env.cleaned() == {e1, e2} and env.live_docs() == {e3}
+
+
+async def test_a_heal_that_cannot_read_storage_still_answers_2xx(env: Env) -> None:
+    record_keys(env, "rec-1")
+    await env.push(env.body(version=1, text="a"))
+    await env.push(env.body(version=2, text="b"))
+
+    async def down(*a, **kw) -> None:
+        raise RuntimeError("storage unreachable")
+
+    env.storage.info = down
+    r = await env.push(env.body(version=3, text="c"))
+    assert (r.http_status, r.status) == (200, "updated")
+    assert (await env.record())["version"] == 3
+
+
+async def test_a_forged_tag_on_a_document_of_another_record_is_never_cleaned(env: Env) -> None:
+    record_keys(env, "rec-1", "rec-2")
+    await env.push(env.body(ext="rec-2", version=1, text="victim", name="Victim"))
+    victim = (await env.record("rec-2"))["externalRecordId"]
+    await env.push(env.body(ext="rec-1", version=1, text="a"))
+    await env.push(env.body(ext="rec-1", version=2, text="b"))
+    e2 = (await env.record("rec-1"))["externalRecordId"]
+    env.storage.tags[e2]["previousDocumentId"] = victim  # what a user with an upload route could write
+    await env.push(env.body(ext="rec-1", version=3, text="c"))
+    assert victim not in env.cleaned() and victim in env.live_docs()
+
+
+async def test_heal_and_race_cleanup_cover_exactly_the_superseded_documents(env: Env) -> None:
+    """Two content changes race on one record: every document the record does not name ends up cleaned, and the named one never."""
+    record_keys(env, "rec-1")
+    await env.push(env.body(version=1, text="0"))
+    results = await asyncio.gather(
+        *(env.push(env.body(version=v, text=f"v{v}")) for v in (2, 3)), return_exceptions=True)
+    assert all(not isinstance(r, Exception) or (isinstance(r, PushRefusal) and r.status in (409, 503)) for r in results), results
+    rec = await env.record()
+    named = rec["externalRecordId"]
+    assert named not in env.cleaned() and env.live_docs() == {named}
+
+
+async def _image_race_env(env: Env) -> str:
+    _, doc = await pushed_document(env)
+    image_capable(env, doc, SplicingMaterialiser())
+    from app.connectors.sources.localKB.push.image_admission import ImageAdmission
+
+    env.service.image_admission = ImageAdmission(slots=32, running=8, wait_s=30.0)
+    return doc
+
+
+async def test_r1_sixteen_racing_pushes_half_with_images(env: Env) -> None:
+    import random
+
+    doc = await _image_race_env(env)
+    record_keys(env, "img-1")
+    versions = list(range(1, 17))
+    random.Random(7).shuffle(versions)
+
+    def body(v: int) -> bytes:
+        if v % 2:
+            return image_push_body(env, doc, ext="img-1").replace(b'"version": 1', f'"version": {v}'.encode())
+        return env.body(ext="img-1", version=v, text=f"t{v}")
+
+    results = await asyncio.gather(*(env.push(body(v)) for v in versions), return_exceptions=True)
+    ok = [(v, r) for v, r in zip(versions, results, strict=True) if not isinstance(r, Exception)]
+    assert all(isinstance(r, PushRefusal) and r.status in (409, 503) for r in results if isinstance(r, Exception)), results
+    rec = await env.record("img-1")
+    assert rec is not None and rec["version"] == max(v for v, _ in ok)
+    stored = env.storage.docs[rec["externalRecordId"]]
+    from app.connectors.sources.localKB.push import contract as C
+
+    assert C.content_rev(stored) == C.parse_revision_id(rec["externalRevisionId"])[2], "the invariant on the spliced bytes"
+    assert b"storage://" not in stored
+    assert env.live_docs() - {doc} == {rec["externalRecordId"]}, "one referenced live document for the key (the other is the linked source document)"
+
+
+@pytest.mark.parametrize("point", ["before_claim", "during_materialisation", "after_commit"])
+async def test_r3_image_push_vs_trash_at_each_step(env: Env, point: str) -> None:
+    from tests.integration.graph_db import test_kb_push_concurrency_real_backends as CC
+
+    CC.soft_delete_on(env)
+    record_id, doc = await pushed_document(env)
+    trashed: dict = {}
+
+    async def trash_it() -> None:
+        trashed.setdefault("t", await CC.trash(env, "img-1"))
+
+    mat = SplicingMaterialiser(during=trash_it if point == "during_materialisation" else None)
+    image_capable(env, doc, mat)
+    record_keys(env, "img-1")
+    await env.push(image_push_body(env, doc))
+    old = (await env.record("img-1"))["externalRecordId"]
+    body2 = image_push_body(env, doc).replace(b'"version": 1', b'"version": 2').replace(b'"data": "t"', b'"data": "changed"')
+    real_send = env.processor.messaging_producer.send_message
+
+    async def send(topic: str, message: dict, key: str | None = None) -> None:
+        if point == "after_commit" and "t" not in trashed and message.get("eventType") == "updateRecord":
+            trashed["t"] = await CC.trash(env, "img-1")
+        return await real_send(topic, message, key=key)
+
+    env.processor.messaging_producer.send_message = send
+    if point == "before_claim":
+        trashed["t"] = await CC.trash(env, "img-1")
+    try:
+        try:
+            await env.push(body2)
+            outcome = "ok"
+        except PushRefusal as e:
+            outcome = (e.status, e.reason)
+    finally:
+        env.processor.messaging_producer.send_message = real_send
+    rec = await env.record("img-1")
+    assert rec is not None and rec.get("isDeleted") is True, "no resurrected or missing record"
+    assert outcome == "ok" or outcome == (409, "RECORD_IN_TRASH"), outcome
+    named = rec["externalRecordId"]
+    assert env.live_docs() - {doc} == {named}, "no orphan document"
+    assert named == old or outcome == "ok"
+
+
+async def test_r2_image_push_vs_kb_delete(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The KB is deleted while an image push materialises: the delete succeeds and nothing of the push survives."""
+    record_id, doc = await pushed_document(env)
+    deleting = Deleting(env, monkeypatch)  # a KV store and a broker, as the real delete needs
+
+    async def delete_kb() -> None:
+        deleted = await deleting.delete()
+        assert deleted and deleted.get("success") is not False, deleted
+
+    image_capable(env, doc, SplicingMaterialiser(during=delete_kb))
+    record_keys(env, "img-1")
+    try:
+        await env.push(image_push_body(env, doc))
+        outcome = "ok"
+    except PushRefusal as e:
+        outcome = (e.status, e.reason)
+    assert outcome in ("ok", (404, "KB_NOT_FOUND"), (409, "KB_BEING_DELETED"), (422, "IMAGE_REF_INVALID")), outcome
+    assert await env.record("img-1") is None, "no record survives the KB"
+    # Whether the documents of the deleted KB are reported through this service's cleanup events or the cascade's own
+    # depends on the store; only the record is asserted here.

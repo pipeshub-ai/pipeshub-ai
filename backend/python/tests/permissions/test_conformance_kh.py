@@ -12,8 +12,19 @@ import logging
 import pytest
 
 from . import gen
-from .kh_layer import KhFinding, check_world, children_of
-from .kh_worlds import KH_WORLDS, OPENSTUB
+from .kh_layer import KhFinding, browse_pages, check_world, children_of, refused_by_cap
+from .kh_worlds import (
+    DECLSTUB,
+    DEEP_CHAIN,
+    DEEPOPEN,
+    DEEPSEED,
+    FOLDERSTUB,
+    KH_WORLDS,
+    OPENSTUB,
+    SCOPEDTWO,
+    TWOWAY,
+)
+from .runner import OracleLayer
 from .scenario import Scenario, load_all
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(0)]  # sized by the scenario set and PERM_GEN_WORLDS
@@ -23,7 +34,8 @@ CHUNK = 25
 # run out of memory on them.
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 # `gap` is reported, never failed: the shapes the oracle cannot decide (an upload, which has its own surface, and a node under a group that hides its
-# children). A readable node the flatten listing or a browse leaves out is `under` or `browse_gap` and fails.
+# children), and a row a browse lists that the oracle refuses only for its hop cap (`refused_by_cap`). A readable node the flatten listing or a browse
+# leaves out is `under` or `browse_gap` and fails, however deep it lies.
 GAPS = {"gap"}
 # shortcut: ten under-admits (`browse_gap`: a node the oracle admits by another arm, as a second parent's walk, an App member or below a seed, that the
 # browse of a folder under a declaration or a seed does not list) are known in the generated worlds (seed 7, 50 worlds); the golden worlds fail on any.
@@ -72,6 +84,68 @@ async def test_a_stub_on_the_way_to_a_node_the_open_app_reads_is_listed_and_open
         assert await children_of(layer, OPENSTUB, "u", "g", "recordGroup") == {"p": True}, layer.name
         assert await children_of(layer, OPENSTUB, "u", "p", "record") == {"s": True}, layer.name
         await layer.release([OPENSTUB])
+
+
+async def test_a_stub_is_listed_only_where_a_browse_of_the_stub_itself_lists_something(graph_layers) -> None:
+    """A stub's way below it is read as a browse of the stub starts, not as the folder it is listed under: in a declared group that walk starts
+    below a seed, so a stub that leads only to a strict node is not listed, and the group shows no arrow."""
+    for layer in graph_layers:
+        await layer.preload([DECLSTUB])
+        try:
+            assert await children_of(layer, DECLSTUB, "u", "s", "record") == {}, layer.name
+            assert await children_of(layer, DECLSTUB, "u", "d", "recordGroup") == {}, layer.name
+            assert await children_of(layer, DECLSTUB, "u", "g", "recordGroup") == {"d": False}, layer.name
+            bad = _bad(await check_world(layer, DECLSTUB, "declstub"))
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([DECLSTUB])
+
+
+async def test_a_stub_is_listed_where_a_browse_of_the_stub_itself_lists_something(graph_layers) -> None:
+    """A stub's reach is every route a browse of it starts from, not the hop from the folder it is listed under: below a folder that does not pass it
+    on, a stub the App reaches through another folder is listed, with an arrow, as the way to the strict node a browse of it lists; so is its
+    folder's arrow. Whether the folder's rule passes the stub (SCOPEDTWO, by the declared scope) or not (TWOWAY)."""
+    for world in (TWOWAY, SCOPEDTWO):
+        for layer in graph_layers:
+            await layer.preload([world])
+            try:
+                assert await children_of(layer, world, "u", "s", "record") == {"t": False}, layer.name
+                assert await children_of(layer, world, "u", "p", "recordGroup") == {"s": True}, layer.name
+                assert (await children_of(layer, world, "u", "A", "app") or {}).get("p") is True, layer.name
+                bad = _bad(await check_world(layer, world, "twoway"))
+                assert not bad, f"{layer.name}\n{_describe(bad)}"
+            finally:
+                await layer.release([world])
+
+
+async def test_a_folder_lists_each_stub_once_over_its_pages(graph_layers) -> None:
+    """A stub the folder's rule lists and its reach reaches is one row: once over every page, and counted once in the total."""
+    for layer in graph_layers:
+        await layer.preload([FOLDERSTUB])
+        try:
+            items, totals, counted = await browse_pages(layer, FOLDERSTUB, "u", "f", "folder")
+            ns = await layer._ns(FOLDERSTUB)
+            ids = [ns.local(item.id) for item in items]
+            assert sorted(ids) == sorted(["s", *(f"f{i}" for i in range(8))]), layer.name
+            assert set(totals) == set(counted) == {9}, (layer.name, totals, counted)
+            bad = _bad(await check_world(layer, FOLDERSTUB, "folderstub"))
+            assert not bad, f"{layer.name}\n{_describe(bad)}"
+        finally:
+            await layer.release([FOLDERSTUB])
+
+
+async def test_a_node_the_oracle_admits_past_the_cap_is_listed_under_its_parent(graph_layers) -> None:
+    """A seed, and a member of an App that opens everything, are admitted with no hop cap: below depth 50 each link is listed under its parent,
+    with an arrow, and the layer never excuses one as the cap's (`refused_by_cap` reads the verdict, not the depth)."""
+    for world in (DEEPSEED, DEEPOPEN):
+        assert not any(refused_by_cap(OracleLayer(graph_layers[0].shape), world, "u", f"c{i}") for i in range(DEEP_CHAIN))
+        for layer in graph_layers:
+            await layer.preload([world])
+            try:
+                for i in range(46, DEEP_CHAIN - 1):
+                    assert await children_of(layer, world, "u", f"c{i}", "record") == {f"c{i + 1}": i + 2 < DEEP_CHAIN}, (layer.name, i)
+            finally:
+                await layer.release([world])
 
 
 async def test_the_declared_group_arm_lists_only_its_own_connectors_records(graph_layers) -> None:

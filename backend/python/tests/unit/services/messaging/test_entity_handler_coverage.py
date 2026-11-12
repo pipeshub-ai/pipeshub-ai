@@ -107,11 +107,11 @@ class TestHandleUserUpdatedExtended:
         svc.graph_provider.get_user_by_user_id = AsyncMock(
             side_effect=Exception("DB error")
         )
-        result = await svc.process_event(
-            "userUpdated",
-            {"userId": "u1", "orgId": "org-1", "email": "user@test.com"},
-        )
-        assert result is False
+        with pytest.raises(Exception, match="DB error"):
+            await svc.process_event(
+                "userUpdated",
+                {"userId": "u1", "orgId": "org-1", "email": "user@test.com"},
+            )
 
 
 # ===================================================================
@@ -126,10 +126,10 @@ class TestHandleUserDeletedExtended:
         svc.graph_provider.get_entity_id_by_email = AsyncMock(
             side_effect=Exception("DB error")
         )
-        result = await svc.process_event(
-            "userDeleted", {"email": "user@test.com", "orgId": "org-1"}
-        )
-        assert result is False
+        with pytest.raises(Exception, match="DB error"):
+            await svc.process_event(
+                "userDeleted", {"email": "user@test.com", "orgId": "org-1"}
+            )
 
 
 # ===================================================================
@@ -144,11 +144,11 @@ class TestHandleAppEnabledExtended:
         svc.graph_provider.get_document = AsyncMock(
             side_effect=Exception("DB error")
         )
-        result = await svc.process_event(
-            "appEnabled",
-            {"orgId": "org-1", "apps": ["Gmail"], "syncAction": "immediate"},
-        )
-        assert result is False
+        with pytest.raises(Exception, match="DB error"):
+            await svc.process_event(
+                "appEnabled",
+                {"orgId": "org-1", "apps": ["Gmail"], "syncAction": "immediate"},
+            )
 
     @pytest.mark.asyncio
     async def test_app_enabled_multiple_apps(self):

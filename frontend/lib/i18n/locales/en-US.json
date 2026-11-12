@@ -937,6 +937,11 @@
     "fork": "Fork chat",
     "forkFromHere": "Fork from here",
     "regenerate": "Regenerate",
+    "answerHidden": {
+      "lost": "This answer used content you can no longer access.",
+      "unconfirmed": "We couldn't confirm your access. Try again.",
+      "askAgain": "Ask again"
+    },
     "readAloud": "Read aloud",
     "stopReading": "Stop reading",
     "ttsNotSupported": "Text-to-speech is not supported in this browser",
@@ -5959,5 +5964,20 @@
     },
     "nothingNew": "Nothing more to show for this node.",
     "tableOnly": "Showing the table only, to keep things responsive."
+  },
+  "accessNotice": {
+    "permissions_updating": "Some sources are updating permissions, so a few results may be missing for a few minutes.",
+    "connector_syncing": "{{name}} is still syncing, so results from it may be incomplete.",
+    "connector_syncing_unnamed": "A source is still syncing, so results from it may be incomplete.",
+    "check_unavailable": "We couldn't check which documents you have access to just now, so no results are shown. Please try again in a minute.",
+    "emptySyncing": "Nothing to search yet. {{name}} is still syncing.",
+    "emptySyncing_unnamed": "Nothing to search yet. A source is still syncing.",
+    "noAccess": {
+      "title": "You don't have access to this item",
+      "body": "It may have been moved, deleted or restricted. Ask the owner, or open it where it came from if you have the link.",
+      "justGotAccess": "Just got access at the source? New access appears after the next sync.",
+      "copyDetails": "Copy details for an admin",
+      "copied": "Details copied"
+    }
   }
 }

@@ -111,6 +111,8 @@ RUN groupadd --gid 1000 pipeshub && \
     install -d -o 1000 -g 1000 /root/.cache /root/.local && \
     chown 1000:1000 /root
 ENV HOME=/root
+# Repositories pushed by `pipeshub index` are mirrored on the data volume, so they survive the container being replaced.
+ENV PIPESHUB_LOCAL_REPO_STORE=/data/pipeshub/local-repos
 # Pinned so the baked models are still found when HOME is overridden (the
 # Helm chart sets HOME=/home/user).
 ENV HF_HOME=/root/.cache/huggingface \

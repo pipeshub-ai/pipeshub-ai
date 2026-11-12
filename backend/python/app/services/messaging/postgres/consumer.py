@@ -23,6 +23,7 @@ from app.core.envelope import (
     DuplicateEnvelope,
     EnvelopeRejected,
     ctx_of,
+    decode_message,
     open_configured,
     open_stream_message,
 )
@@ -48,6 +49,7 @@ from app.services.messaging.error_classifier import (
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.postgres.queue import Delivery, PgQueue
 from app.services.pg_runtime import QUEUE_CHANNEL, PgListener, listen_dsn
+from app.utils import error_class
 from app.utils.request_context import bind_context, context_from_envelope, reset_context
 
 if TYPE_CHECKING:
@@ -81,13 +83,6 @@ class RecordHeld(RequeueWithoutAttempt):
 
 def _retry_base_s() -> float:
     return float(os.getenv("PG_QUEUE_RETRY_BASE_S", "5"))
-
-
-def _loads(value: str) -> Any:  # noqa: ANN401
-    raw = json.loads(value)
-    return (
-        json.loads(raw) if isinstance(raw, str) else raw
-    )  # a double-encoded body, as the Redis consumers accept
 
 
 class _ExpectedOutcome(str):
@@ -437,7 +432,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         if not self.indexing:
             return None
         try:
-            raw = _loads(d.value)
+            raw = decode_message(d.value)
             return await open_stream_message(d.topic, raw, StreamMessage) if isinstance(raw, dict) else None
         except Exception as e:
             self.logger.warning("Could not read the exhausted message %s for its record: %s", d.message_id, e)
@@ -465,7 +460,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         if self.message_handler is None:
             return False, True, None, "no message handler"
         try:
-            raw = _loads(d.value)
+            raw = decode_message(d.value)
         except json.JSONDecodeError as e:
             return False, True, None, f"JSON parsing failed: {e}"
         if not isinstance(raw, dict):
@@ -509,8 +504,9 @@ class PgMessagingConsumer(IMessagingConsumer):
                     "Message %s ended as expected: %s: %s", d.message_id, type(e).__name__, e
                 )
             else:
-                self.logger.error(
-                    "Error in message handler for %s: %s", d.message_id, e, exc_info=True
+                # No error text: a pydantic ValidationError quotes the payload, and the handler's own line names the failure.
+                error_class.log_failure(
+                    self.logger, "message.handler_failed", e, include_error_text=False, message_id=d.message_id
                 )
             terminal = (
                 MessageErrorClassifier.classify_by_exception(e)
@@ -518,7 +514,7 @@ class PgMessagingConsumer(IMessagingConsumer):
             )
             if terminal and parsed is not None:
                 parsed.is_final_failure = True
-            reason = f"{type(e).__name__}: {e}"
+            reason = f"{error_class.classify_error(e)}: {type(e).__name__}"  # kept in last_error: no text, as above
             return False, terminal, parsed, _ExpectedOutcome(reason) if expected else reason
         finally:
             reset_context(token)

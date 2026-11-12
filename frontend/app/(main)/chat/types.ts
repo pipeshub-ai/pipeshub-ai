@@ -879,6 +879,8 @@ export interface ConversationMessage {
   parts?: MessagePart[];
   /** Set when this bot response was cut short by a user-initiated Stop (see Node's `IMessage.status`). */
   status?: 'stopped';
+  /** The server withheld this answer: it used a record the reader can no longer access, or access could not be confirmed. */
+  answerHidden?: { redacted: true; reason: 'no_longer_accessible' | 'access_check_unavailable' };
 }
 
 export interface ConversationCompleteData {
@@ -910,6 +912,7 @@ export interface SSECompleteEvent {
     timestamp: string;
     duration: number;
     searchDegraded?: boolean;
+    accessNotices?: unknown;
     /** Name-only hits for records whose content is not indexed yet. */
     unindexedMatches?: UnindexedMatch[];
   };
@@ -1327,5 +1330,6 @@ export interface SearchResponse {
     searchResults: SearchResultItem[];
     /** The search store answered with less than its full search (e.g. it was busy). */
     searchDegraded?: boolean;
+    accessNotices?: unknown;
   };
 }

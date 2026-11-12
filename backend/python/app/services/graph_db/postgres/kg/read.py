@@ -21,13 +21,13 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.services.graph_db.postgres import access as access_sql
-from app.services.graph_db.postgres.kg import drainer, flush
+from app.services.graph_db.postgres.kg import drainer, flush, net
 from app.telemetry.backend import METRICS_BACKEND
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from app.core.db import Tx
+    from app.core.db import KernelDB, Tx
 
 logger = logging.getLogger(__name__)
 ENV = "PG_KG_READ"
@@ -70,6 +70,8 @@ class Decision:
     admit: set[str] = field(default_factory=set)               # answered from kg: admitted (still to be shaped from the documents)
     walk: list[str] = field(default_factory=list)              # node ids the walk decides
     denied: int = 0                                            # answered from kg: not admitted
+    deny: set[str] = field(default_factory=set)                # the same, by id
+    apps: dict[str, str] = field(default_factory=dict)         # connector of each node kg decided
 
 
 async def class_verdicts(tx: Tx, org: str, classes: dict[int, list[list[Any]]], granted: set[str]) -> dict[int, tuple[bool, bool] | None]:
@@ -128,7 +130,7 @@ async def decide(tx: Tx, org: str, ids: list[str], access: dict[str, Any]) -> De
             to_walk(i, "no_app")
             continue
         if app not in served:
-            served[app] = await drainer.serves(tx, org, app)
+            served[app] = not (net.DISTRUSTED and await net.distrusted(tx, org, app)) and await drainer.serves(tx, org, app)
         if not served[app]:
             to_walk(i, "not_current")
         elif r["deleted"]:
@@ -153,10 +155,12 @@ async def decide(tx: Tx, org: str, ids: list[str], access: dict[str, Any]) -> De
             plain, own = by_class[c]  # type: ignore[misc]
             verdict[i] = plain or (own and i in granted)
     for i, ok in verdict.items():
+        d.apps[i] = by_id[i][0]["app_id"]
         if ok:
             d.admit.add(i)
         else:
             d.denied += 1
+            d.deny.add(i)
     return d
 
 
@@ -167,8 +171,9 @@ async def _read(tx: Tx, org: str, ids: list[str], access: dict[str, Any]) -> tup
 
 
 async def accessible_rows(run: Callable[[Callable[[Tx], Awaitable[Any]]], Awaitable[Any]], org: str, ids: list[str], vrids: list[str], access: dict[str, Any],
-                          walk: Callable[[list[str], list[str], dict[str, Any]], Awaitable[list[dict[str, Any]]]]) -> list[dict[str, Any]]:
-    """``access.accessible_rows`` with kg answering for the nodes it may. ``run`` opens a read unit (one snapshot, the kg planner profile); ``walk(ids, vrids, access)`` is the walk."""
+                          walk: Callable[[list[str], list[str], dict[str, Any]], Awaitable[list[dict[str, Any]]]], db: KernelDB | None = None) -> list[dict[str, Any]]:
+    """``access.accessible_rows`` with kg answering for the nodes it may. ``run`` opens a read unit (one snapshot, the kg planner profile); ``walk(ids, vrids, access)`` is the walk.
+    With ``db``, a share of the answers kg gave is repeated by the walk off this call's path (:mod:`net`), and a difference takes the connector back to the walk."""
     if access.get("probe"):                                            # the walk refuses a grant probe; kg does not guess
         return await walk(ids, vrids, access)
     try:
@@ -183,4 +188,6 @@ async def accessible_rows(run: Callable[[Callable[[Tx], Awaitable[Any]]], Awaita
             rows.setdefault(r["id"], r)
     ANSWERS.inc("kg", value=len(d.admit) + d.denied)
     ANSWERS.inc("walk", value=len(d.walk))
+    if db is not None and (d.admit or d.denied):
+        net.maybe_sample(run, db, org, d.admit | d.deny, access)
     return list(rows.values())

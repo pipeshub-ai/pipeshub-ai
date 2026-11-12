@@ -77,7 +77,10 @@ from app.api.middlewares.request_log import (
     mark_request_failure,
     path_log_fields,
 )
-from app.config.configuration_service import ConfigurationService
+from app.config.configuration_service import (
+    ConfigurationService,
+    delete_config_confirmed,
+)
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, OAuthScopes
 from app.core.org_context import current_org_id
@@ -93,11 +96,16 @@ from app.edition_config import (
 )
 from app.utils import error_class
 from app.utils.concurrency import gather_with_concurrency
+from app.utils.credential_refresh_log import (
+    EVENT_DEAUTHENTICATE_FAILED,
+    log_deauthenticated,
+)
 from app.utils.desktop_state import (
     mark_desktop_state,
     strip_desktop_state,
 )
 from app.utils.env_utils import env_int
+from app.utils.logging_fields import log_event
 from app.utils.oauth_errors import authorization_error_class, authorization_error_code
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
@@ -789,7 +797,7 @@ async def delete_instance(request: Request, instance_id: str) -> dict[str, Any]:
 
     # The record goes first and must go: if it stays, the server is still listed and usable.
     # What hangs off it is removed best-effort.
-    if not await config_service.delete_config(mcp_service.instance_record_path(instance)):
+    if not await delete_config_confirmed(config_service, mcp_service.instance_record_path(instance)):
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete MCP server instance.")
     await mcp_lifecycle.delete_instance_data(config_service, instance)
 
@@ -1801,6 +1809,7 @@ async def refresh_oauth_token(request: Request, instance_id: str) -> dict[str, A
     if not await _get_org_instance(instance_id, config_service, user_context["org_id"], user_context["user_id"]):
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="MCP server instance not found.")
 
+    rejected: oauth_client_module.MCPRefreshTokenInvalidError | None = None
     try:
         await mcp_token_refresh.refresh_credential_record(instance_id, user_id, config_service)
     except mcp_token_refresh.MCPTokenRefreshError as e:
@@ -1809,19 +1818,7 @@ async def refresh_oauth_token(request: Request, instance_id: str) -> dict[str, A
         # must configure OAuth, not that the token endpoint itself rejected anything.
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e
     except oauth_client_module.MCPRefreshTokenInvalidError as e:
-        cred_path = get_mcp_credentials_path(instance_id, user_id)
-        record = await config_service.get_config(cred_path, default=None, use_cache=False)
-        if isinstance(record, dict):
-            record["isAuthenticated"] = False
-            await config_service.set_config(cred_path, record)
-        # Both `MCPRefreshTokenInvalidError` and `MCPOAuthError` embed the token endpoint's
-        # raw response body (see `oauth_client._post_token_request`): kept off the line.
-        # Not 401: that means the caller's own PipesHub session ended, and the app signs them out.
-        raise _hand_over_mcp_failure(
-            request, e, status=HttpStatusCode.CONFLICT.value,
-            detail="The refresh token was rejected by the OAuth provider. Please reconnect this MCP server.",
-            reason=classify_mcp_failure(e).value,
-        ) from e
+        rejected = e
     except oauth_client_module.MCPOAuthError as e:
         raise _hand_over_mcp_failure(
             request, e, status=HttpStatusCode.BAD_GATEWAY.value,
@@ -1829,7 +1826,35 @@ async def refresh_oauth_token(request: Request, instance_id: str) -> dict[str, A
             reason=classify_mcp_failure(e).value,
         ) from e
 
+    if rejected is not None:
+        # After the except: a store error in the write must not carry the provider's answer as its context.
+        await _deauthenticate_rejected(config_service, instance_id, user_id)
+        # Both `MCPRefreshTokenInvalidError` and `MCPOAuthError` embed the token endpoint's
+        # raw response body (see `oauth_client._post_token_request`): kept off the line.
+        # Not 401: that means the caller's own PipesHub session ended, and the app signs them out.
+        raise _hand_over_mcp_failure(
+            request, rejected, status=HttpStatusCode.CONFLICT.value,
+            detail="The refresh token was rejected by the OAuth provider. Please reconnect this MCP server.",
+            reason=classify_mcp_failure(rejected).value,
+        ) from rejected
+
     return {"success": True}
+
+
+async def _deauthenticate_rejected(config_service: ConfigurationService, instance_id: str, user_id: str) -> None:
+    """The provider rejected the refresh token: sign the credential out, and say whether that was saved."""
+    cred_path = get_mcp_credentials_path(instance_id, user_id)
+    record = await config_service.get_config(cred_path, default=None, use_cache=False)
+    updated = False
+    if isinstance(record, dict):
+        record["isAuthenticated"] = False
+        updated = await config_service.set_config(cred_path, record)
+    with mcp_token_refresh.credential_scope(instance_id, user_id):
+        if updated:
+            log_deauthenticated(logger, reason="refresh_token_invalid", strikes=1, path="route")
+        else:
+            log_event(logger, EVENT_DEAUTHENTICATE_FAILED, level=logging.ERROR, outcome="failure",
+                      reason="not_updated" if isinstance(record, dict) else "not_found")
 
 
 @router.get(

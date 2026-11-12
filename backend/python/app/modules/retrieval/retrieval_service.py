@@ -5,7 +5,7 @@ import math
 import os
 import time
 import traceback
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -32,6 +32,7 @@ from app.models.entities import substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.modules.pipeline.first_use import classify_on_first_use_later
 from app.modules.retrieval import degraded_notice
+from app.services.permissions import access_status
 from app.modules.retrieval.entity_filters import (
     TOO_BROAD_MESSAGE,
     EntityFilterResolver,
@@ -79,6 +80,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
     SELECTION_APPS_FILTER_KEY,
     SELECTION_FILTER_KEYS,
+    STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
     IGraphDBProvider,
     _unsupported_container_filters,
@@ -277,6 +279,8 @@ class _QueryPlan:
     dense: list | None = None
     sparse: list | None = None
     collections: list[str] | None = None
+    access_notices: list[dict[str, str]] = field(default_factory=list)  # codes for the viewer; the client words them
+    access_apps: list[dict[str, Any]] = field(default_factory=list)  # the connectors those codes came from, for the empty-result variant
     # Largest single-query batch of the last attempt, before the cross-query
     # dedupe. Exhaustion is a per-query property: the merged total cannot show
     # it, because overlapping queries shrink it for a reason that has nothing
@@ -294,6 +298,9 @@ class _QueryPlan:
     # The viewer's deferring scope filter (``ServingPlanner``): set only for the main container search, and cleared by the record-id path,
     # whose own filter is the enumerated ids.
     scope_filter: Any = None
+    # Every connector the viewer is gated into is served and exact (``ServingPlanner.plan_exact``): the filter decides every point, so the first fetch is
+    # exactly the limit asked. Meaningless without ``scope_filter``.
+    served_exact: bool = False
 
     def incomplete_notice(self) -> str | None:
         if not self.failed_collections:
@@ -862,6 +869,17 @@ class RetrievalService:
                     PERMISSION_CHECK_UNAVAILABLE_MESSAGE, Status.PERMISSION_CHECK_UNAVAILABLE
                 )
             use_containers = containers is not None
+            # The connectors this search reached, on either path: what a notice may be about.
+            notice_apps = await self._notice_apps(
+                await self._notice_app_ids(containers, user, org_id, filters), user_id, org_id
+            )
+
+            def nothing_found(message: str, status: Status = Status.ACCESSIBLE_RECORDS_NOT_FOUND) -> dict[str, Any]:
+                response = self._create_empty_response(message, status)
+                if notices := access_status.notices(notice_apps, empty=True):
+                    degraded_notice.note_access(notices)
+                    response["accessNotices"] = notices
+                return response
 
             # Under container scoping the accessible map is not built up front —
             # it is the *output* of adjudicating what the search returned. So
@@ -873,10 +891,10 @@ class RetrievalService:
             if use_containers:
                 if containers.is_empty:
                     self.logger.warning(f"No accessible containers for user {user_id} and org {org_id}")
-                    return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                    return nothing_found(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE)
             elif not accessible_virtual_id_to_record_id:
                 self.logger.warning(f"No accessible documents found for user {user_id} and org {org_id}")
-                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return nothing_found(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE)
 
             # The entity filter runs inside the permission scope: what it matches in
             # records this user cannot read must change neither the answer nor "too broad".
@@ -892,9 +910,12 @@ class RetrievalService:
                     entity_filtered = True
                     virtual_record_ids_from_tool = _narrow_virtual_ids(virtual_record_ids_from_tool, entity_vids)
                     if not virtual_record_ids_from_tool:
-                        return self._create_empty_response(ENTITY_FILTER_NO_MATCH_MESSAGE, Status.EMPTY_RESPONSE)
+                        return nothing_found(ENTITY_FILTER_NO_MATCH_MESSAGE, Status.EMPTY_RESPONSE)
 
             plan = _QueryPlan()
+            plan.access_apps = notice_apps
+            plan.access_notices = access_status.notices(notice_apps)
+            degraded_notice.note_access(plan.access_notices)
 
             def empty(message: str, status: Status) -> dict[str, Any]:
                 if entity_filtered and status in (Status.EMPTY_RESPONSE, Status.ACCESSIBLE_RECORDS_NOT_FOUND):
@@ -908,6 +929,11 @@ class RetrievalService:
                     response["searchIncomplete"] = incomplete
                 if plan.degraded:
                     response["searchDegraded"] = True
+                # Nothing found: a syncing connector is now worth saying, whatever its history.
+                notices = access_status.notices(plan.access_apps, empty=True)
+                if notices:
+                    degraded_notice.note_access(notices)
+                    response["accessNotices"] = notices
                 return response
 
             # Graph key for KH permission_role checks (Location trails).
@@ -928,7 +954,7 @@ class RetrievalService:
                 return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
             filter, scope_virtual_ids = permission_filter
             if use_containers and self._planner is not None and self.vector_db_service.supports_scope_filter:
-                plan.scope_filter = await self._planner.plan(org_id, user_key)
+                plan.scope_filter, plan.served_exact = await self._planner.plan_exact(org_id, user_key)
 
             record_cut = _record_cut_for(scope_virtual_ids)
             # The search API's first page, varied across sources: the plain
@@ -1547,6 +1573,8 @@ class RetrievalService:
                     response_data["searchIncomplete"] = incomplete
                 if plan.degraded:
                     response_data["searchDegraded"] = True
+                if plan.access_notices:
+                    response_data["accessNotices"] = plan.access_notices
 
                 # Add KB filtering info to response if KB filtering was applied
                 if kb_ids:
@@ -2108,7 +2136,7 @@ class RetrievalService:
         """
         plan = plan if plan is not None else _QueryPlan()
         plan.narrow_shortfall = False
-        fetch_limit = self._overfetch_limit(limit, containers)
+        fetch_limit = limit if plan.scope_filter is not None and plan.served_exact else self._overfetch_limit(limit, containers)
         # `limit` is per query — `_run_searches` issues one request per expanded
         # query and concatenates the deduped batches — so every comparison below
         # is against the whole fan-out, not one query's share.
@@ -2554,6 +2582,40 @@ class RetrievalService:
         except Exception as exc:
             raise PermissionVerificationUnavailableError(str(exc)) from exc
 
+    async def _notice_app_ids(
+        self, containers: "AccessibleContainers | None", user: dict[str, Any] | None, org_id: str, filters: dict[str, Any] | None,
+    ) -> frozenset[str]:
+        """The connectors a notice may be about: those the containers reach, or, on the record-id path, those this person is gated into
+        (the one connector gate), narrowed to the connectors the request is scoped to. Never a connector outside their reach."""
+        if filters and filters.get(STRICT_SCOPE_FILTER_KEY) and requested_scope_ids(filters) is None:
+            # A project chat with nothing selected searches nothing, so no connector was reached: say nothing about any.
+            return frozenset()
+        if containers is not None:
+            return frozenset(containers.app_ids)
+        user_key = (user.get("_key") or user.get("id")) if user else None
+        if not user_key:
+            return frozenset()
+        try:
+            gated = frozenset((await self.graph_provider.get_knowledge_hub_access_v3(user_key, org_id)).get("gated_app_ids") or ())
+        except Exception as exc:
+            self.logger.warning("connector gate unreadable for access notices (user=%s): %s", user_key, exc)
+            return frozenset()
+        scoped = requested_scope_ids(filters)
+        return gated if scoped is None else gated & frozenset(scoped)
+
+    async def _notice_apps(self, app_ids: Iterable[str], user_id: str, org_id: str) -> list[dict[str, Any]]:
+        """The documents of the connectors a notice may be about: the ones this person is gated into, minus the demo apps they switched off. A run
+        that searches several times reads each connector once (`degraded_notice.app_memo`)."""
+        ids = frozenset(app_ids) - await self._excluded_demo_apps(user_id, org_id)
+        memo = degraded_notice.app_memo()
+        need = sorted(i for i in ids if memo is None or i not in memo)
+        fetched = await access_status.read_apps(self.graph_provider, need) if need else []
+        if memo is None:
+            return fetched
+        memo.update(dict.fromkeys(need))
+        memo.update({str(a.get("id") or a.get("_key")): a for a in fetched})
+        return [a for i in sorted(ids) if (a := memo.get(i)) is not None]
+
     async def _excluded_demo_apps(self, user_id: str, org_id: str) -> frozenset[str]:
         """The Acme Corp demo connectors this person has switched off, if any."""
         try:
@@ -2927,6 +2989,9 @@ class RetrievalService:
         }
 
         status_code = status_code_mapping.get(status, 500)  # Default to 500 for unknown status
+        if status is Status.PERMISSION_CHECK_UNAVAILABLE:
+            # A chat run that hit this says so on its final answer too, like the other notices.
+            degraded_notice.note_access([{"code": "check_unavailable"}])
 
         return {
             "searchResults": [],
@@ -2934,6 +2999,8 @@ class RetrievalService:
             "status": status.value,
             "status_code": status_code,
             "message": message,
+            # The client words it ("we could not check just now"); the code carries no connector or record.
+            **({"accessNotices": [{"code": "check_unavailable"}]} if status is Status.PERMISSION_CHECK_UNAVAILABLE else {}),
         }
 
     def _create_virtual_to_record_mapping(

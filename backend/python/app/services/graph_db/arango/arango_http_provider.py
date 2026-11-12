@@ -306,6 +306,7 @@ from app.services.graph_db.vector_membership_queries import (
     can_use_membership_cleanup,
 )
 from app.utils.user_messages import action_failed
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import folder_in_trash
 
@@ -524,30 +525,33 @@ def _aql_is_member(p: str, after: str = "true") -> str:
             f" {CollectionNames.BELONGS_TO.value} FILTER {after} != null AND HAS(@kh_scope, kh_mg._key) LIMIT 1 RETURN 1) > 0)")
 
 
-def _aql_way_below(v: str, *, every_hop: bool = True, from_app: str = "false") -> str:
+def _aql_way_below(v: str, *, every_hop: bool = True, from_app: str = "false", admit: str | None = None) -> str:
     """Whether a readable node lies below the stub ``v``: a browse shows a stub only as the way to one, a path of hierarchy hops that end at a node
     that is no stub and each pass the browse rule. ``every_hop=False`` tests the last hop alone, which costs a plan with one level less of subquery
     and is what an arrow reads (it is asked of every child of every row of a page; the listing itself, which decides the rows, tests every hop).
-    ``from_app``: whether the browse reaches the stub from the App; below it the hops read as an expansion of it reads them. A stub only filed in a
-    node is not reached (``false``)."""
+    ``from_app``: whether a browse of the stub itself starts from the App (``_aql_row_from_app``); below it the hops read as that browse reads them.
+    It is read once per stub, where ``kh_gp`` is in scope, as ``kh_wfa``. ``admit``: the stub is asked about only where it holds or the stub is
+    reached. A stub only filed in a node is not reached (``false``)."""
+    gate = (f"LENGTH(FOR kh_gp IN ({v}.isPlaceholder == true ? [1] : []) LET kh_wfa = {from_app}"
+            + (f" FILTER kh_wfa OR ({admit})" if admit else ""))
     # Only a stub starts the walk (the loop over an empty list reads nothing for any other node), and it follows
     # hierarchy edges only: PRUNE stops it at any other. shortcut: PRUNE cannot hold the browse rule (AQL refuses a subquery in it), so a way cut at
     # the first hop is still enumerated to its end before the post-filter; bounded by 50 hops, and only for a stub row, upgrade if a stub holds a huge subtree.
     if not every_hop:
-        return (f"LENGTH(FOR kh_gp IN ({v}.isPlaceholder == true ? [1] : [])"
-                f" FOR kh_pd, kh_pe IN 1..50 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
+        return (gate
+                + f" FOR kh_pd, kh_pe IN 1..50 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
                 f" PRUNE kh_pe != null AND kh_pe.relationshipType NOT IN {_HIERARCHY_AQL}"
                 f" FILTER kh_pe.relationshipType IN {_HIERARCHY_AQL} AND kh_pd.isPlaceholder != true"
                 f" LET kh_pp = DOCUMENT(kh_pe._from)"
-                f" FILTER {_aql_browse_child('kh_pd', 'kh_pp', 'pb', from_app)}"
+                f" FILTER {_aql_browse_child('kh_pd', 'kh_pp', 'pb', 'kh_wfa')}"
                 f" LIMIT 1 RETURN 1) > 0")
-    return (f"LENGTH(FOR kh_gp IN ({v}.isPlaceholder == true ? [1] : [])"
-            f" FOR kh_pd, kh_pe, kh_pt IN 1..50 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
+    return (gate
+            + f" FOR kh_pd, kh_pe, kh_pt IN 1..50 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
             f" PRUNE kh_pe != null AND kh_pe.relationshipType NOT IN {_HIERARCHY_AQL}"
             f" FILTER kh_pt.edges[*].relationshipType ALL IN {_HIERARCHY_AQL} AND kh_pd.isPlaceholder != true"
             f" FILTER LENGTH(FOR kh_wi IN 0..LENGTH(kh_pt.edges) - 1"
             f" LET kh_wc = kh_pt.vertices[kh_wi + 1] LET kh_wp = kh_pt.vertices[kh_wi]"
-            f" FILTER NOT {_aql_browse_child('kh_wc', 'kh_wp', 'pb', from_app)} LIMIT 1 RETURN 1) == 0"
+            f" FILTER NOT {_aql_browse_child('kh_wc', 'kh_wp', 'pb', 'kh_wfa')} LIMIT 1 RETURN 1) == 0"
             f" LIMIT 1 RETURN 1) > 0")
 
 
@@ -691,35 +695,36 @@ def _aql_kh_date(v: str, source: str, ingest: str) -> str:
             f" : NOT_NULL({v}.{source}, {v}.{ingest}, 0))")
 
 
-def _aql_row_from_app(v: str, *, reached: bool) -> str:
-    """Whether ``v`` is reached from the App over hops that pass the browse's hop test: the ``fromApp`` a browse of ``v`` itself would start from
-    (``browse_start``). ``reached``: the browsed node (``@kh_start``) is itself reached, so a row that hangs from it (among its hierarchy parents
-    ``kh_parents``) is reached through it; a row that does not (a chain-top, a declared member) is not asked about, and is left to the batch check
-    (`_kh_v3_page_result`). Below a seed every row makes the walk up. ``kh_app``, ``kh_opens`` and ``kh_parents`` must be in scope."""
-    if reached:
-        return (f"(@kh_start IN kh_parents[*]._id AND LENGTH(FOR kh_sp IN kh_parents FILTER kh_sp._id == @kh_start"
-                f" AND {_aql_granted_hop(v, 'kh_sp', 'os', navigation=True)} LIMIT 1 RETURN 1) > 0)")
+def _aql_reach_walk(v: str, t: str) -> str:
+    """The one definition of the reach a browse of ``v`` starts with (``browse_start``'s ``fromApp``): the routes up the hierarchy from ``v`` to the
+    App, each hop of which passes the browse's hop test and none of which crosses a declared group of this App. A ``FOR`` over those routes; the
+    caller adds the ``LIMIT`` and the ``RETURN``. ``t`` prefixes its variables. ``kh_app``, ``kh_opens`` and ``@granted`` must be in scope."""
     records, groups, apps = CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value, CollectionNames.APPS.value
-    return f"""(LENGTH(
-        FOR kh_ov, kh_oe, kh_op IN 1..50 INBOUND {v} {CollectionNames.NODE_RELATIONS.value}
-            PRUNE kh_oe != null AND (IS_SAME_COLLECTION("{apps}", kh_ov)
-                OR kh_oe.relationshipType NOT IN {_HIERARCHY_AQL}
-                OR kh_ov.isDeleted == true
-                OR kh_ov.hideChildren == true
-                OR NOT (kh_opens OR {_aql_passes_vertex("kh_ov")}))
-            OPTIONS {{uniqueVertices: "path", vertexCollections: ["{records}", "{groups}", "{apps}"]}}
-            FILTER kh_ov._id == kh_app._id
-            FILTER kh_op.edges[*].relationshipType ALL IN {_HIERARCHY_AQL}
-            FILTER LENGTH(
-                FOR kh_oi IN 0..LENGTH(kh_op.edges) - 1
-                    LET kh_obc = kh_op.vertices[kh_oi]
-                    LET kh_obp = kh_op.vertices[kh_oi + 1]
-                    FILTER NOT {_aql_granted_hop("kh_obc", "kh_obp", "ob", navigation=True)}
-                        OR (kh_obp.permissionModel == "RECORD_GROUP_LEVEL" AND kh_obp.connectorId == @app_id)
-                    LIMIT 1
-                    RETURN 1) == 0
-            LIMIT 1
-            RETURN 1) > 0)"""
+    return f"""FOR {t}v, {t}e, {t}p IN 1..50 INBOUND {v} {CollectionNames.NODE_RELATIONS.value}
+                PRUNE {t}e != null AND (IS_SAME_COLLECTION("{apps}", {t}v)
+                    OR {t}e.relationshipType NOT IN {_HIERARCHY_AQL}
+                    OR {t}v.isDeleted == true
+                    OR {t}v.hideChildren == true
+                    OR NOT (kh_opens OR {_aql_passes_vertex(f"{t}v")}))
+                OPTIONS {{uniqueVertices: "path", vertexCollections: ["{records}", "{groups}", "{apps}"]}}
+                FILTER {t}v._id == kh_app._id
+                FILTER {t}p.edges[*].relationshipType ALL IN {_HIERARCHY_AQL}
+                FILTER LENGTH(
+                    FOR {t}i IN 0..LENGTH({t}p.edges) - 1
+                        LET {t}c = {t}p.vertices[{t}i]
+                        LET {t}q = {t}p.vertices[{t}i + 1]
+                        FILTER NOT {_aql_granted_hop(f"{t}c", f"{t}q", t, navigation=True)}
+                            OR ({t}q.permissionModel == "RECORD_GROUP_LEVEL" AND {t}q.connectorId == @app_id)
+                        LIMIT 1
+                        RETURN 1) == 0"""
+
+
+def _aql_row_from_app(v: str, *, gate: str | None = None) -> str:
+    """Whether a browse of ``v`` starts from the App (``_aql_reach_walk``): what a row's arrow, a stub's way below it and the listing of a stub read,
+    so that each lists what opening the node lists. ``gate``: the walk runs only where it holds (a subquery runs for every row, so the loop over an
+    empty list is what keeps it from walking)."""
+    gated = f"FOR kh_og IN ({gate} ? [1] : []) " if gate else ""
+    return f"(LENGTH({gated}{_aql_reach_walk(v, 'kh_o')} LIMIT 1 RETURN 1) > 0)"
 
 
 def _aql_kh_has_children(v: str, *, exact: bool = False, every_hop: bool = False) -> str:
@@ -735,6 +740,8 @@ def _aql_kh_has_children(v: str, *, exact: bool = False, every_hop: bool = False
     # A browse row decides its own children's way in from the row itself (below two parents it may be reached from the App by one and not the
     # other), not from the folder it is listed under: `kh_row_from_app`, set in the page's `enrich_exact` query (`_aql_row_from_app`).
     rule = _aql_browse_child("kh_ch", v, "hc", "kh_row_from_app" if exact else f"@kh_from_app AND {v}._id NOT IN @kh_seeded", "kh_pm")
+    # A stub child is read as opening it reads it, from its own reach; the walk waits on the way-below loop (`kh_gp`), so only a stub child walks.
+    stub_reach = _aql_row_from_app("kh_ch", gate="kh_gp != null") if exact else "false"
     records, groups = CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value
     # A declaration is its own scope only where the check reads it: the viewer is granted it or the walk from the App reaches it.
     declared = (f'(IS_SAME_COLLECTION("{groups}", {v}) AND {v}.permissionModel == "RECORD_GROUP_LEVEL" AND {v}.connectorId == @app_id'
@@ -759,10 +766,13 @@ def _aql_kh_has_children(v: str, *, exact: bool = False, every_hop: bool = False
             f" LET kh_pm = {_aql_is_member(v, 'kh_ce')}"
             f' FILTER (IS_SAME_COLLECTION("{records}", kh_ch) OR IS_SAME_COLLECTION("{groups}", kh_ch))'
             f" AND kh_ch.orgId == @org_id"
-            f" FILTER {passes}"
-            # A page's arrow leaves the stubs to `every_hop` (a second pass over the rows that have one), so its own plan holds no stub test.
-            + (" FILTER kh_ch.isPlaceholder != true" if exact and not every_hop else
-               f" FILTER kh_ch.isPlaceholder != true OR (@kh_placeholders AND {_aql_way_below('kh_ch', every_hop=every_hop, from_app='kh_row_from_app' if exact else 'false')})")
+            # A page's arrow leaves the stubs to `every_hop` (a second pass over the rows that have one), so its own plan holds no stub test. There a
+            # stub child the rule does not pass is listed where a browse of it is reached (`browse_start`), as the folder listing lists it.
+            + (f" FILTER {passes} FILTER kh_ch.isPlaceholder != true" if exact and not every_hop else
+               f" FILTER kh_ch.isPlaceholder == true OR ({passes})"
+               f" FILTER kh_ch.isPlaceholder != true OR (@kh_placeholders AND {_aql_way_below('kh_ch', every_hop=True, from_app=stub_reach, admit=passes)})"
+               if exact else
+               f" FILTER {passes} FILTER kh_ch.isPlaceholder != true OR (@kh_placeholders AND {_aql_way_below('kh_ch', every_hop=every_hop)})")
         )
 
     children = children_of(rule)
@@ -7677,6 +7687,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         per_address: int = 2,
         transaction: str | None = None,
+        *,
+        include_deleted: bool = False,
     ) -> list[dict[str, Any]]:
         if not weburls or not org_id:
             return []
@@ -7690,7 +7702,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         AND record.orgId == @org_id
                         AND record.recordType != "LINK"
                         AND record.isPlaceholder != true
-                        AND {aql_live_record("record")}
+                        AND ({"true" if include_deleted else aql_live_record("record")})
                     SORT record.isDependentNode == true, record._key
                     LIMIT @per_address
                     RETURN {{
@@ -8502,9 +8514,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             AppUser object if found, None otherwise
         """
         try:
-            self.logger.debug(
-                f"🚀 Retrieving user for email {email} and app {connector_id}"
-            )
+            self.logger.debug("Retrieving the app user by email for connector %s", connector_id)
 
             query = f"""
                 // First find the app
@@ -8545,15 +8555,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
 
             if results and results[0]:
-                self.logger.debug(f"✅ Successfully retrieved user for email {email} and app {connector_id}")
+                self.logger.debug("Retrieved the app user by email for connector %s", connector_id)
                 user_data = self._translate_node_from_arango(results[0])
                 return AppUser.from_arango_user(user_data)
             else:
-                self.logger.warning(f"⚠️ No user found for email {email} and app {connector_id}")
+                self.logger.warning("No app user found by email for connector %s", connector_id)
                 return None
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to retrieve user for email {email} and app {connector_id}: {str(e)}")
+            error_class.log_failure(self.logger, "graph.get_app_user_by_email.failed", e, include_error_text=False,  # the lookup is by email
+                                    connector_id=connector_id)
             return None
 
     async def get_app_users(
@@ -14192,13 +14203,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             Optional[Dict]: Updated relation document if successful, None otherwise
         """
         try:
-            self.logger.debug(
-                f"🚀 Updating {service_type} sync state for user {user_email} to {state}"
-            )
+            self.logger.debug("Updating a user's %s sync state to %s", service_type, state)
 
             user_key = await self.get_entity_id_by_email(user_email)
             if not user_key:
-                self.logger.warning(f"⚠️ User not found for email {user_email}")
+                self.logger.warning("No user found by email for the %s sync state update", service_type)
                 return None
 
             # Get user key and app key based on service type and update the sync state
@@ -14233,20 +14242,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             result = results[0] if results else None
             if result:
-                self.logger.debug(
-                    f"✅ Successfully updated {service_type} sync state for user {user_email} to {state}"
-                )
+                self.logger.debug("Updated a user's %s sync state to %s", service_type, state)
                 return result
 
-            self.logger.warning(
-                f"⚠️ UPDATE:No user-app relation found for email {user_email} and service {service_type}"
-            )
+            self.logger.warning("No user-app relation found for the %s sync state update", service_type)
             return None
 
         except Exception as e:
-            self.logger.error(
-                f"❌ Failed to update user {service_type} sync state: {str(e)}"
-            )
+            error_class.log_failure(self.logger, "graph.update_user_sync_state.failed", e, include_error_text=False,  # the lookup is by email
+                                    service_type=service_type)
             return None
 
     async def get_drive_sync_state(
@@ -14314,22 +14318,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> dict | None:
         """Store page token with user channel information."""
         try:
-            self.logger.debug(
-                """
-            🚀 Storing page token:
-
-            - Channel: %s
-            - Resource: %s
-            - User Email: %s
-            - Token: %s
-            - Expiration: %s
-            """,
-                channel_id,
-                resource_id,
-                user_email,
-                token,
-                expiration,
-            )
+            self.logger.debug("Storing a page token for channel %s, resource %s, expiring %s", channel_id, resource_id, expiration)
 
             token_doc = {
                 "channelId": channel_id,
@@ -14372,17 +14361,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> dict | None:
         """Get page token for specific channel."""
         try:
-            self.logger.debug(
-                """
-            🔍 Getting page token for:
-            - Channel: %s
-            - Resource: %s
-            - User Email: %s
-            """,
-                channel_id,
-                resource_id,
-                user_email,
-            )
+            self.logger.debug("Getting the page token for channel %s, resource %s", channel_id, resource_id)
 
             filters = []
             bind_vars = {}
@@ -20418,7 +20397,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # Browse lists the user's chain-tops beside the start's own children: under
         # their own record group, else under the App.
         start_handle = app["handle"]      # a browse of the App itself; a scoped browse sets its own start below
-        start_reached = True
         placed: list[str] = []
         if not flatten and (start_is_app or start_type == "recordGroup"):
             placed = [c["handle"] for c in (await self._kh_v3_chain_tops(
@@ -20452,8 +20430,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             row_ctx.update(kh_scope={**app_scope, **dict.fromkeys(declared_scope, True)},
                            kh_from_app=bool(starts[0]["fromApp"]))
             start_handle = starts[0]["handle"]
-            # a row below a declaration is not reached through it
-            start_reached = bool(starts[0]["fromApp"]) and not starts[0].get("declared")
             walked = await self._kh_v3_walk(
                 [starts[0]["handle"]], "step_browse",
                 {"kh_opens": bind["kh_opens"], "app_id": app_id, **{k: v for k, v in row_ctx.items() if k != "kh_seeded"}},
@@ -20486,7 +20462,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             after=after, direction=direction, filters=filters or {},
             lists_placeholders=self._kh_lists_placeholders(flatten=flatten, filters=filters),
             exact_arrows=not flatten,
-            row_ctx=row_ctx, start_handle=start_handle, start_reached=start_reached, transaction=transaction,
+            row_ctx=row_ctx, start_handle=start_handle, transaction=transaction,
         ))
         self.logger.debug(
             "kh v3 page app=%s start=%s flatten=%s: %s visible (granted=%d)",
@@ -20703,7 +20679,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         row_ctx: dict[str, Any],
         transaction: str | None,
         start_handle: str | None = None,
-        start_reached: bool = False,
     ) -> dict[str, Any]:
         """Filter the visible nodes, order them in the merge comparator's order,
         resume after ``after`` and project the page (``limit + 1`` rows, nearest
@@ -20728,7 +20703,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         slim: list[list[Any]] = []
         restricted = visible.only is not None
         sidebar = any("node.hasChildren" in c for c in conditions)
-        if (visible.nodes or visible.member_groups or visible.collection) and visible.only != []:
+        # a browse with no child the rule selects may still list a stub its reach reaches (`_kh_v3_slim_aql`)
+        if (visible.nodes or visible.member_groups or visible.collection or lists_placeholders) and visible.only != []:
             slim = await self.http_client.execute_aql(
                 self._kh_v3_slim_aql(tuple(conditions), sort_field, restricted=restricted, stubs=lists_placeholders),
                 bind_vars={
@@ -20739,7 +20715,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     # The stub pass reads these; the rest only when the sidebar filter reads hasChildren
                     # (an unused bind fails the statement).
                     **({"kh_placeholders": lists_placeholders, "granted": row_ctx["granted"],
-                        "kh_scope": row_ctx["kh_scope"], "kh_from_app": row_ctx["kh_from_app"]} if lists_placeholders or sidebar else {}),
+                        "kh_scope": row_ctx["kh_scope"]} if lists_placeholders or sidebar else {}),
+                    **({"kh_start": start_handle} if lists_placeholders else {}),
                     **(row_ctx if sidebar else {}),
                     **({"kh_only": visible.only} if restricted else {}),
                 },
@@ -20765,24 +20742,21 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         rows: list[dict[str, Any]] = []
         if window:
             built = await self._kh_v3_run(
-                ("enrich_exact" if start_reached else "enrich_exact_walk") if exact_arrows else "enrich",
+                "enrich_exact" if exact_arrows else "enrich",
                 {"kh_page": [r[1] for r in window], "app_id": app_id, "org_id": org_id,
                  "kh_placeholders": lists_placeholders,
-                 # an exact arrow reads the row's own way in from the App (through the browsed node where that is reached), so the folder's flag
-                 # and the seeds are not bound (an unused bind is refused)
-                 **{k: v for k, v in row_ctx.items() if not (exact_arrows and k in ("kh_from_app", "kh_seeded"))},
-                 **({"kh_start": start_handle} if exact_arrows and start_reached else {})}, transaction,
+                 # an exact arrow reads the row's own reach (`_aql_row_from_app`), so the folder's flag and the seeds are not bound (an unused bind
+                 # is refused)
+                 **{k: v for k, v in row_ctx.items() if not (exact_arrows and k in ("kh_from_app", "kh_seeded"))}}, transaction,
             )
             by_index = {b["i"]: b["row"] for b in built}
             if exact_arrows:
                 # A row whose arrow rests on a stub child is asked again with the every-hop test of the stub's way (see `_kh_v3_listing_aql`).
                 again = [i for i, r in by_index.items() if r.pop("khStub", False)]
                 if again:
-                    name = ("enrich_exact" if start_reached else "enrich_exact_walk") + "_stubs"
                     binds = {"kh_page": [window[i][1] for i in again], "app_id": app_id, "org_id": org_id, "kh_placeholders": lists_placeholders,
-                             **{k: v for k, v in row_ctx.items() if k not in ("kh_from_app", "kh_seeded")},
-                             **({"kh_start": start_handle} if start_reached else {})}
-                    for settled in await self._kh_v3_run(name, binds, transaction):
+                             **{k: v for k, v in row_ctx.items() if k not in ("kh_from_app", "kh_seeded")}}
+                    for settled in await self._kh_v3_run("enrich_exact_stubs", binds, transaction):
                         by_index[again[settled["i"]]]["hasChildren"] = settled["hasChildren"]
             for index, (_, _, _, sort_key) in enumerate(window):
                 if index in by_index:
@@ -20842,7 +20816,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET kh_opens = {_AQL_APP_OPENS}
             FOR kh_dg IN {CollectionNames.RECORD_GROUPS.value}
                 FILTER kh_dg._key IN @declared
-                FILTER HAS(@granted, kh_dg._key) OR {_aql_row_from_app("kh_dg", reached=False)}
+                FILTER HAS(@granted, kh_dg._key) OR {_aql_row_from_app("kh_dg")}
                 RETURN kh_dg._key
             """,
             bind_vars={"app_id": app_id, "declared": declared, "granted": dict.fromkeys(granted_ids, True)}, txn_id=transaction,
@@ -20975,14 +20949,21 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
 
         # The rows the listing decides (a stub is listed only as the way to something readable), so every hop of the way is tested, unlike an arrow's.
-        below = _aql_way_below("kh_n", every_hop=True, from_app="@kh_from_app")
+        # A stub's way is read as a browse of the stub reads it, from the stub's own reach (`_aql_row_from_app`), so a stub is listed exactly where
+        # opening it lists something.
+        below = _aql_way_below("kh_n", every_hop=True, from_app=_aql_row_from_app("kh_n"))
+        # Beside the stubs the rule selects, a stub child of the browsed node `@kh_start` that a browse of it reaches from the App: opening it lists
+        # what its own reach reads, whatever the hop from `@kh_start` says.
+        reached_stubs = (f"(FOR kh_sc, kh_sce IN 1..1 OUTBOUND @kh_start {CollectionNames.NODE_RELATIONS.value}"
+                         f" FILTER kh_sce.relationshipType IN {_HIERARCHY_AQL} AND kh_sc.isPlaceholder == true AND DOCUMENT(@kh_start).hideChildren != true"
+                         f" FILTER {_aql_row_from_app('kh_sc')} RETURN kh_sc._id)")
 
         def rows(collection: str, *, stubs: bool = False) -> str:
             # Stubs are read apart so that the way-below test, a subquery, runs for them alone.
             stub_filter = ("kh_n.isPlaceholder == true AND @kh_placeholders" if stubs else "kh_n.isPlaceholder != true")
             way = f"\n                    FILTER {below}" if stubs else ""
             return f"""(
-                FOR kh_h IN kh_handles
+                FOR kh_h IN {f"UNION_DISTINCT(kh_handles, {reached_stubs})" if stubs else "kh_handles"}
                     FILTER STARTS_WITH(kh_h, "{collection}/")
                     FOR kh_n IN {collection}
                         FILTER kh_n._id == kh_h AND kh_n.orgId == @org_id
@@ -21326,26 +21307,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             // Every route that passes, not the first: the trail picks one by
             // via_parent_id or placement, and a route left out
             // here cannot be picked.
+            // The reach every listing reads of a node (`_aql_reach_walk`).
             LET kh_paths = (
-                FOR v, e, p IN 1..50 INBOUND kh_start {relations}
-                    PRUNE e != null AND (IS_SAME_COLLECTION("{apps}", v)
-                        OR e.relationshipType NOT IN {hierarchy}
-                        OR v.isDeleted == true
-                        OR v.hideChildren == true
-                        OR NOT (kh_opens OR {_aql_passes_vertex("v")}))
-                    OPTIONS {{uniqueVertices: "path", vertexCollections: ["{records}", "{groups}", "{apps}"]}}
-                    FILTER v._id == kh_app._id
-                    FILTER p.edges[*].relationshipType ALL IN {hierarchy}
-                    FILTER LENGTH(
-                        FOR kh_i IN 0..LENGTH(p.edges) - 1
-                            LET kh_bc = p.vertices[kh_i]
-                            LET kh_bp = p.vertices[kh_i + 1]
-                            FILTER NOT {_aql_granted_hop("kh_bc", "kh_bp", "b", navigation=True)}
-                                OR (kh_bp.permissionModel == "RECORD_GROUP_LEVEL" AND kh_bp.connectorId == @app_id)
-                            LIMIT 1
-                            RETURN 1) == 0
+                {_aql_reach_walk("kh_start", "kh_b")}
                     LIMIT 16
-                    RETURN p.vertices[*]._key
+                    RETURN kh_bp.vertices[*]._key
             )
             LET kh_from_app = LENGTH(kh_paths) > 0
             LET kh_path_ids = UNIQUE(FLATTEN(kh_paths))
@@ -21374,7 +21340,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             RETURN {{
                 handle: kh_start._id,
                 fromApp: kh_from_app,
-                declared: kh_start.permissionModel == "RECORD_GROUP_LEVEL" AND kh_start.connectorId == @app_id,
                 crumbNodes: (
                     FOR a IN kh_members
                         LET is_app = IS_SAME_COLLECTION("{apps}", a)
@@ -21484,10 +21449,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 LET kh_filed = {_aql_kh_filed("node", every_hop=True)}
                 RETURN {{i: kh_i, hasChildren: {_aql_kh_has_children("node", exact=True, every_hop=True)}}}
             """
-        queries["enrich_exact"] = exact_row.replace("KH_OWN_PATH", _aql_row_from_app("node", reached=True))
-        queries["enrich_exact_walk"] = exact_row.replace("KH_OWN_PATH", _aql_row_from_app("node", reached=False))
-        queries["enrich_exact_stubs"] = stubs_pass.replace("KH_OWN_PATH", _aql_row_from_app("node", reached=True))
-        queries["enrich_exact_walk_stubs"] = stubs_pass.replace("KH_OWN_PATH", _aql_row_from_app("node", reached=False))
+        queries["enrich_exact"] = exact_row.replace("KH_OWN_PATH", _aql_row_from_app("node"))
+        queries["enrich_exact_stubs"] = stubs_pass.replace("KH_OWN_PATH", _aql_row_from_app("node"))
         queries["enrich"] = (queries["enrich"].replace("KH_ROW_FIELDS", ArangoHTTPProvider._kh_v3_row_aql(exact=False)).replace("KH_HELD", "false")
                              .replace("KH_OWN_PATH", "false").replace("KH_FROM_APP", "true").replace("KH_FILED", "false").replace("KH_STUB", "false"))
         return queries

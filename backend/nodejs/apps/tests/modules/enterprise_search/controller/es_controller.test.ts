@@ -67,6 +67,7 @@ import EnterpriseSemanticSearch from '../../../../src/modules/enterprise_search/
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { Logger } from '../../../../src/libs/services/logger.service'
+import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware'
 import { runWithRequestContext } from '../../../../src/libs/context/request-context'
 import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
 import { BadRequestError, ConflictError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../../../../src/libs/errors/http.errors'
@@ -2958,6 +2959,69 @@ describe('Enterprise Search Controller', () => {
       const response = res.json.firstCall.args[0]
       expect(response).to.have.property('searchId')
       expect(response).to.have.property('searchResponse')
+    })
+
+    // The error goes through the real error middleware, so the body is what a client gets.
+    const bodyOf = (error: any, requestId?: string): { status: number; body: any } => {
+      const res: any = { status: sinon.stub(), json: sinon.stub(), setHeader: sinon.stub(), headersSent: false }
+      res.status.returns(res)
+      res.json.returns(res)
+      ErrorMiddleware.handleError()(error, { method: 'POST', params: {}, context: { requestId } } as any, res, sinon.stub())
+      return { status: res.status.firstCall.args[0], body: res.json.firstCall.args[0] }
+    }
+    const NOTICES = [{ code: 'connector_syncing', connectorId: 'c1', connectorName: 'Jira' }]
+
+    for (const [status, notices] of [
+      [404, NOTICES],
+      [503, [{ code: 'check_unavailable' }]],
+    ] as const) {
+      it(`keeps the error envelope of a ${status} and adds only the access notice codes`, async () => {
+        const handler = search(createMockAppConfig())
+        sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+          statusCode: status,
+          data: {
+            status: 'accessible_records_not_found',
+            message: 'No documents are available',
+            accessNotices: notices,
+            records: [{ hidden: 'x' }],
+          },
+        } as any)
+        const next = createMockNext()
+
+        await handler(
+          createMockRequest({ body: { query: 'q', limit: 10 }, user: { userId: VALID_OID, orgId: VALID_OID2 } }),
+          createMockResponse(),
+          next,
+        )
+
+        const { status: sent, body } = bodyOf(next.firstCall.args[0], 'req-7')
+        expect(sent).to.equal(status)
+        expect(body.accessNotices).to.deep.equal(notices)
+        expect(Object.keys(body).sort()).to.deep.equal(['accessNotices', 'error'])
+        expect(body.error.requestId).to.equal('req-7')
+        expect(body.error).to.have.property('code')
+        expect(body.error).to.have.property('message')
+        expect(body).to.not.have.property('status')
+        expect(JSON.stringify(body)).to.not.contain('hidden')
+      })
+    }
+
+    it('adds nothing to the envelope of a 404 or 503 that carries no notices', async () => {
+      const handler = search(createMockAppConfig())
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 404,
+        data: { status: 'accessible_records_not_found', message: 'none' },
+      } as any)
+      const next = createMockNext()
+
+      await handler(
+        createMockRequest({ body: { query: 'q', limit: 10 }, user: { userId: VALID_OID, orgId: VALID_OID2 } }),
+        createMockResponse(),
+        next,
+      )
+
+      const { body } = bodyOf(next.firstCall.args[0])
+      expect(Object.keys(body)).to.deep.equal(['error'])
     })
 
     it('logs a 402 refusal as a warning, not an error', async () => {
