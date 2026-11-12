@@ -12,7 +12,7 @@ holds them to the oracle:
 * facet: a filtered total equals the oracle's count of visible nodes with that value, and a value no visible node
   holds has total 0 (a bucket with no visible item does not exist). The oracle's count, not the listing's rows;
 * browse: the service path (`totalItems`, `counts`, the rows of a folder) against the oracle, and each row's expand arrow against opening that
-  row: it is on exactly when the browse of the row lists something, and a stub is listed only where opening it lists something.
+  row: it is on exactly when the browse of the row lists something, and a stub is listed exactly where opening it lists something.
 """
 
 from __future__ import annotations
@@ -224,6 +224,12 @@ async def _browse(layer: GraphCheckLayer, world: World, viewer: str, seen: dict[
         for missing in sorted(want - set(got)):
             if not hidden_by_navigation(world, world.node(missing)):
                 add("browse_gap", f"{folder}: the browse leaves out {missing}, which the viewer may open")
+        # A stub is no content the oracle judges: it is listed exactly where opening it lists something.
+        for stub in sorted(n.id for n in world.nodes if n.placeholder and not n.deleted and n.id not in got
+                           and any(p.id == folder and p.rel in HIERARCHY for p in n.parents)):
+            opened = await walk(stub, "record")
+            if opened and opened[0]:
+                add("browse_gap", f"{folder}: the browse leaves out the stub {stub}, and opening it lists something")
         if set(totals) != {len(items)} or set(counted) != {len(items)}:
             add("browse", f"{folder}: totalItems per page {sorted(set(totals))}, counts.total {sorted(set(counted))}, rows {len(items)}")
         for item_id, item in got.items():      # the expand arrow is on exactly when opening the row lists something

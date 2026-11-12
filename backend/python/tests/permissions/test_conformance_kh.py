@@ -13,7 +13,7 @@ import pytest
 
 from . import gen
 from .kh_layer import KhFinding, check_world, children_of
-from .kh_worlds import DECLSTUB, KH_WORLDS, OPENSTUB
+from .kh_worlds import DECLSTUB, KH_WORLDS, OPENSTUB, SCOPEDTWO, TWOWAY
 from .scenario import Scenario, load_all
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(0)]  # sized by the scenario set and PERM_GEN_WORLDS
@@ -87,6 +87,23 @@ async def test_a_stub_is_listed_only_where_a_browse_of_the_stub_itself_lists_som
             assert not bad, f"{layer.name}\n{_describe(bad)}"
         finally:
             await layer.release([DECLSTUB])
+
+
+async def test_a_stub_is_listed_where_a_browse_of_the_stub_itself_lists_something(graph_layers) -> None:
+    """A stub's reach is every route a browse of it starts from, not the hop from the folder it is listed under: below a folder that does not pass it
+    on, a stub the App reaches through another folder is listed, with an arrow, as the way to the strict node a browse of it lists; so is its
+    folder's arrow. Whether the folder's rule passes the stub (SCOPEDTWO, by the declared scope) or not (TWOWAY)."""
+    for world in (TWOWAY, SCOPEDTWO):
+        for layer in graph_layers:
+            await layer.preload([world])
+            try:
+                assert await children_of(layer, world, "u", "s", "record") == {"t": False}, layer.name
+                assert await children_of(layer, world, "u", "p", "recordGroup") == {"s": True}, layer.name
+                assert (await children_of(layer, world, "u", "A", "app") or {}).get("p") is True, layer.name
+                bad = _bad(await check_world(layer, world, "twoway"))
+                assert not bad, f"{layer.name}\n{_describe(bad)}"
+            finally:
+                await layer.release([world])
 
 
 async def test_the_declared_group_arm_lists_only_its_own_connectors_records(graph_layers) -> None:

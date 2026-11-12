@@ -315,5 +315,34 @@ grants: [[u, g], [u, s]]
 gates: [[u, A]]
 """))
 
+# TWOWAY: a stub below two folders, which the App reaches through q and not through p (p does not pass it on): a browse of the stub starts from
+# the App and lists the strict node below it, so the browse of p lists the stub as the way to it, with an arrow
+TWOWAY = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: p, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: s, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [p, q], inherits: [q]}
+  - {id: t, kind: record, connector: A, rule: STRICT, parents: [s], inherits: [s]}
+grants: [[u, p], [u, q]]
+gates: [[u, A]]
+"""))
+
+# SCOPEDTWO: the same through the declared-scope arm: p lists the stub as a member of a declared group the viewer is granted, though p does not pass
+# it on, and the App reaches it through q
+SCOPEDTWO = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: p, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: q, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: s, kind: record, connector: A, rule: RESTRICTED, placeholder: true, parents: [p, q], inherits: [q], belongs: [d]}
+  - {id: t, kind: record, connector: A, rule: STRICT, parents: [s], inherits: [s]}
+grants: [[u, d], [u, p], [u, q], [u, s]]
+gates: [[u, A]]
+"""))
+
 KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
-             RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB]
+             RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN, DECLSTUB, TWOWAY, SCOPEDTWO]
