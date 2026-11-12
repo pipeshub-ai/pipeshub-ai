@@ -538,6 +538,24 @@ class TestSyncUsers:
         assert conn._inactive_emails == {"gone@x.com", "b@x.com", "lost@x.com", "linked@x.com"}
         sync_point.update_sync_point.assert_not_awaited()
         assert conn._sync_ledger.has_gaps
+        assert conn._listing_cut is True
+
+    @pytest.mark.asyncio
+    async def test_a_cut_user_listing_holds_back_external_membership_of_the_workspaces_own_domains(self) -> None:
+        conn = _make_connector()
+        conn.data_entities_processor.on_external_app_users = AsyncMock()
+        conn.synced_user_emails = {"a@x.com"}
+        conn._external_emails = {"lost@x.com", "partner@other.org"}  # a person on the missing page looks external
+        conn._listing_cut = True
+
+        await conn._flush_external_app_users()
+
+        conn.data_entities_processor.on_external_app_users.assert_awaited_once_with(["partner@other.org"], conn.connector_id)
+
+        conn.data_entities_processor.on_external_app_users.reset_mock()
+        conn._listing_cut = False
+        await conn._flush_external_app_users()
+        assert sorted(conn.data_entities_processor.on_external_app_users.await_args.args[0]) == ["lost@x.com", "partner@other.org"]
 
     @pytest.mark.asyncio
     async def test_sync_users_empty(self):

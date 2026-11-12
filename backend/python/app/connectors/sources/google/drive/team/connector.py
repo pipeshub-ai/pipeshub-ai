@@ -450,6 +450,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Accounts that cannot sign in (suspended, archived, deleted), and those active again this run.
         self._inactive_emails: set[str] = set()
         self._returning_emails: set[str] = set()
+        # Whether this run's user listing was cut (an empty page before its end); see _sync_users.
+        self._listing_cut = False
 
         # Store synced users for use in batch processing
         self.synced_users: List[AppUser] = []
@@ -741,6 +743,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             all_users: List[AppUser] = []
             page_token: Optional[str] = None
             listing_complete = True
+            self._listing_cut = False
             pages_read = 0
 
             while True:
@@ -846,6 +849,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     "The user listing had an empty page before its end; no account's status is changed on this run"
                 )
                 self._sync_ledger.note_incomplete()
+                self._listing_cut = True
                 try:
                     linked = {u.email.lower() for u in await self.data_entities_processor.get_all_app_users(
                         self.connector_id, raise_on_error=True) if u.email}
@@ -922,8 +926,15 @@ class GoogleDriveTeamConnector(BaseConnector):
         """
         if not self._external_emails:
             return
-
         emails = list(self._external_emails)
+        if self._listing_cut:
+            # A person missing from a cut listing looks external: one of the workspace's own domains is held back
+            # (their membership waits for a complete listing). shortcut: a collaborator on a domain of the
+            # workspace's people is held back too; upgrade by reading the account's domains.
+            domains = {e.rpartition("@")[2] for e in self.synced_user_emails}
+            emails = [e for e in emails if e.rpartition("@")[2] not in domains]
+            if not emails:
+                return
         try:
             await self.data_entities_processor.on_external_app_users(
                 emails, self.connector_id
