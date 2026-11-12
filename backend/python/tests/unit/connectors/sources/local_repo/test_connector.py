@@ -220,3 +220,17 @@ async def test_files_that_no_commit_published_are_not_indexed_and_the_stray_ones
     await env.c.run_sync()
     assert sorted(r for r in env.graph.records if r.endswith(".py")) == ["keep.py"]
     assert not (env.repo.tree / "half.py").exists()
+
+
+async def test_a_file_replaced_after_the_commit_is_not_indexed_and_its_old_record_stays_until_the_next_commit(env):
+    push(env.repo, **{"a.py": "v = 1\n", "b.py": "w = 1\n"})
+    await env.c.run_sync()
+    old_rev = env.graph.records["a.py"].external_revision_id
+    assert old_rev == sha("v = 1\n")
+    push_uncommitted(env.repo, **{"a.py": "v = 2\n"})  # replaced on the server; the scheduled sync runs before the client's commit
+    await env.c.run_sync()
+    assert "a.py" in env.graph.records and env.graph.records["a.py"].external_revision_id == old_rev  # kept, not retired as gone, not re-indexed
+    assert env.graph.deleted == []
+    env.repo.commit()
+    await env.c.run_sync()
+    assert env.graph.records["a.py"].external_revision_id == sha("v = 2\n")

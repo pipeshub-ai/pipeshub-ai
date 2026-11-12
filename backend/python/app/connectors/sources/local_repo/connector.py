@@ -59,14 +59,26 @@ class LocalRepoConnector(FolderConnector):
     DEFAULT_IGNORES = scan.PUSHED_REPO_IGNORES  # the client already applied .gitignore; see scan.PUSHED_REPO_IGNORES
 
     async def run_sync(self) -> None:
-        self._committed: frozenset[str] | None = None  # read from the store once per sync, in the walk
+        self._committed: dict[str, str] | None = None  # read from the store once per sync, in the walk
+        self._stored: dict[str, Any] = {}
         await super().run_sync()
+
+    def _published(self) -> dict[str, str]:
+        if getattr(self, "_committed", None) is None:
+            repo = store.Repo(self.data_entities_processor.org_id, self.created_by, self._repo_key)
+            self._committed, self._stored = repo.committed(), repo.manifest()
+        return self._committed
 
     def _is_published(self, rel: str) -> bool:
         # Only what a commit published: an upload that never got its commit (the client stopped half way) is not indexed or searchable.
-        if getattr(self, "_committed", None) is None:
-            self._committed = frozenset(store.Repo(self.data_entities_processor.org_id, self.created_by, self._repo_key).committed())
-        return rel in self._committed
+        return rel in self._published()
+
+    def _held_back(self, rel: str) -> bool:
+        # A published path whose stored content is no longer the committed one (replaced by an upload that has no commit yet): its old record
+        # stays as it is, and the new content is indexed once a commit publishes it.
+        committed = self._published()
+        stored = self._stored.get(rel)
+        return rel in committed and (not stored or stored[0] != committed[rel])
 
     def _resolve_root(self, sync_cfg: Any) -> Path:  # noqa: ANN401
         # The refusals of the syncs so far, by path. Not reset here: the indexer's content reads call this too, in the middle of a sync, and a reset

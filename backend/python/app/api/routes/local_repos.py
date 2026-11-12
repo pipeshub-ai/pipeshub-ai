@@ -68,6 +68,7 @@ STUCK_AFTER_MS = 120_000
 # worker (app.edition_services.max_connector_workers() == 1); with more, two processes could write one mirror at once, so move the locks
 # to the database (or a file lock on the repository directory) before raising that number.
 _register_locks: dict[str, asyncio.Lock] = {}
+_user_register_locks: dict[tuple[str, str], asyncio.Lock] = {}  # taken before the repository's own lock: the repository count is checked, then spent
 
 
 class _Body(BaseModel):
@@ -276,7 +277,7 @@ async def register(request: Request, repo_key: str, body: RegisterBody | None = 
     name = (body.name if body and body.name else None) or "local-repository"
     # Connector names are unique per user; two clones with one folder name must both register.
     instance_name = f"{name} [{repo_key[:8]}]"
-    async with _register_locks.setdefault(str(repo.dir), asyncio.Lock()):
+    async with _user_register_locks.setdefault((org_id, user_id), asyncio.Lock()), _register_locks.setdefault(str(repo.dir), asyncio.Lock()):
         meta = await asyncio.to_thread(repo.meta)
         graph = await get_graph_provider(request)
         instance = await _instance(request, meta.get("connectorId"))

@@ -429,7 +429,7 @@ class TestHandleDelete:
         assert service.app_container.messaging_producer.send_message.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_deleting_a_local_repository_connector_removes_its_mirror_and_only_then(self, service, tmp_path, monkeypatch) -> None:
+    async def test_deleting_a_local_repository_connector_removes_its_mirror_and_then_the_connector(self, service, tmp_path, monkeypatch) -> None:
         """The pushed files go with the connector: they are found from the owner and the repository key in its config."""
         from app.connectors.sources.local_repo import store
 
@@ -443,19 +443,16 @@ class TestHandleDelete:
         service.graph_provider.get_document = AsyncMock(return_value={"createdBy": "u1"})
         service.app_container.config_service.return_value.get_config = AsyncMock(
             return_value={"sync": {"customValues": {store.REPO_KEY: key}}})
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True})
         payload = {"orgId": "org1", "connectorId": "c1", "connectorType": "Local Repository"}
 
         with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
             mock_rtm.cancel_by_prefix = AsyncMock()
-            # a delete the graph refused leaves the files alone
-            service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": False, "error": "boom"})
-            await service._handle_delete("localrepository", payload)
-            assert repo.exists()
-            service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True})
             assert await service._handle_delete("localrepository", payload) is True
 
         assert not repo.dir.exists()
         assert other.exists()  # another repository of the same user is not touched
+        service.graph_provider.delete_connector_instance.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_a_connector_of_another_type_never_touches_a_mirror(self, service, tmp_path, monkeypatch) -> None:
@@ -473,7 +470,8 @@ class TestHandleDelete:
         assert repo.exists()
 
     @pytest.mark.asyncio
-    async def test_a_mirror_that_cannot_be_removed_is_logged_and_does_not_fail_the_connector_delete(self, service, tmp_path, monkeypatch, mock_logger) -> None:
+    async def test_a_mirror_that_cannot_be_removed_fails_the_delete_before_the_connector_goes_and_puts_it_back(self, service, tmp_path, monkeypatch, mock_logger) -> None:
+        """Failing here keeps the connector (back from DELETING) so the delete can be asked for again; after the graph rows are gone nothing could."""
         from app.connectors.sources.local_repo import store
 
         monkeypatch.setenv(store.BASE_ENV, str(tmp_path))
@@ -481,11 +479,14 @@ class TestHandleDelete:
         service.graph_provider.get_document = AsyncMock(return_value={"createdBy": "u1"})
         service.app_container.config_service.return_value.get_config = AsyncMock(
             return_value={"sync": {"customValues": {store.REPO_KEY: "repo-key-0001"}}})
+        service.graph_provider.batch_upsert_nodes = AsyncMock()
         with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \
              patch.object(store.shutil, "rmtree", side_effect=PermissionError("denied")):
             mock_rtm.cancel_by_prefix = AsyncMock()
             result = await service._handle_delete("localrepository", {"orgId": "org1", "connectorId": "c1", "connectorType": "Local Repository"})
-        assert result is True
+        assert result is False
+        service.graph_provider.delete_connector_instance.assert_not_awaited()  # the connector is still there
+        service.graph_provider.batch_upsert_nodes.assert_awaited()  # its status is reverted from DELETING
         assert any("could not be removed" in str(c) for c in mock_logger.error.call_args_list)
 
     @pytest.mark.asyncio

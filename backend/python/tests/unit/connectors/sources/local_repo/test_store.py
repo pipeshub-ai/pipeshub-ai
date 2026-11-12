@@ -265,3 +265,32 @@ def test_names_with_bidi_and_other_format_characters_are_refused(repo, path):
     d = repo.diff([{"path": path, "sha256": sha("x"), "size": 1}], False, [])
     assert d.upload == [] and d.rejected == [{"path": path, "reason": "invalid_path"}]
     assert repo.store([{"path": path, "sha256": sha("x"), "content": "x"}])[1][0]["reason"] == "invalid_path"
+
+
+def test_concurrent_uploads_into_two_repositories_cannot_both_spend_the_last_of_the_user_quota(tmp_path, monkeypatch):
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setenv("PIPESHUB_LOCAL_REPO_MAX_USER_BYTES", "10")
+    first = store.Repo("org1", "user1", KEY, base=tmp_path)
+    second = store.Repo("org1", "user1", "other-key-0002", base=tmp_path)
+    for r in (first, second):
+        r.save_meta(name="x")
+    real_write = store.Repo._write_file
+
+    def slow_write(self, *a, **k):  # the quota was read before this write lands: without the user lock both uploads pass it
+        time.sleep(0.2)
+        return real_write(self, *a, **k)
+
+    monkeypatch.setattr(store.Repo, "_write_file", slow_write)
+    go = threading.Barrier(2)
+
+    def up(repo, path):
+        go.wait()
+        return push(repo, **{path: "x" * 6})
+
+    with ThreadPoolExecutor(2) as pool:
+        results = list(pool.map(lambda a: up(*a), [(first, "a.py"), (second, "b.py")]))
+    assert sorted(len(stored) for stored, _ in results) == [0, 1]
+    assert first.user_bytes() == 6

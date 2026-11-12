@@ -3,6 +3,7 @@
 # ruff: noqa: ANN201, ANN202
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -69,7 +70,7 @@ def world(tmp_path, monkeypatch):
         return await call_next(request)
 
     app.include_router(local_repos.router)
-    return SimpleNamespace(c=TestClient(app), graph_module=local_repos, built=built, toggle=toggle, registry=registry, created=created, stats=stats, submitted=submitted, graph=graph)
+    return SimpleNamespace(c=TestClient(app), app=app, graph_module=local_repos, built=built, toggle=toggle, registry=registry, created=created, stats=stats, submitted=submitted, graph=graph)
 
 
 def put_files(world, **files: str):
@@ -413,3 +414,27 @@ def test_a_delete_whose_files_cannot_be_removed_says_so(world, monkeypatch):
     monkeypatch.setattr(store.shutil, "rmtree", lambda *a, **k: (_ for _ in ()).throw(PermissionError("denied")))
     r = world.c.delete(f"/api/v1/local-repos/{KEY}")
     assert r.status_code == 500 and "could not be removed" in r.json()["detail"]
+
+
+async def test_two_concurrent_registrations_cannot_both_take_the_last_repository_slot(world, monkeypatch):
+    import httpx
+
+    monkeypatch.setenv("PIPESHUB_LOCAL_REPO_MAX_REPOS_PER_USER", "1")
+    real_save = store.Repo.save_meta
+
+    def slow_save(self, **updates):  # widens the window between the count and the repository showing up in it
+        import time
+
+        time.sleep(0.15)
+        return real_save(self, **updates)
+
+    monkeypatch.setattr(store.Repo, "save_meta", slow_save)
+    local_repos._user_register_locks.clear()
+    local_repos._register_locks.clear()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=world.app), base_url="http://t") as client:
+        results = await asyncio.gather(
+            client.put("/api/v1/local-repos/repo-key-aaaa", json={"name": "a"}),
+            client.put("/api/v1/local-repos/repo-key-bbbb", json={"name": "b"}),
+        )
+    assert sorted(r.status_code for r in results) == [201, 409]
+    assert len(world.created) == 1

@@ -421,6 +421,10 @@ class FolderConnector(BaseConnector):
         pending: list[tuple[scan.Entry, str]] = []
         for e in entries:
             old = prev.get(e.rel)
+            if self._held_back(e.rel):
+                if old:
+                    manifest[e.rel] = old  # the version already indexed stays until the new one is published; it is not retired as "gone"
+                continue
             if old and old[0] == e.mtime_ns and old[1] == e.size:
                 manifest[e.rel] = old
                 continue
@@ -489,6 +493,10 @@ class FolderConnector(BaseConnector):
             "root": str(self.root),
             "last_sync_time": started,
         })
+
+    def _held_back(self, rel: str) -> bool:
+        """Whether a file the walk sees is not to be indexed in its current form yet (its previous version, if any, is kept as it is)."""
+        return False
 
     def _is_published(self, rel: str) -> bool:
         """Whether the sync may index this file. Every file of the root, unless a subclass publishes only part of it."""

@@ -138,6 +138,9 @@ class Repo:
         self.key, self.dir = key, repo_dir(org_id, user_id, key, base)
         self.tree = self.dir / "tree"
         self._lock = _lock_for(str(self.dir))
+        # One lock per (org, user), taken BEFORE a repository's own lock wherever both are needed (so no pair of threads can wait on each other):
+        # the per-user quota is read and then spent across several of the user's repositories.
+        self._user_lock = _lock_for(f"user:{self.dir.parent}")
         self.limits = limits()
 
     # ------------------------------------------------------------ state
@@ -178,9 +181,7 @@ class Repo:
         """Publish what is stored: the files the sync may index are the ones listed here, so an upload that never got its commit is not searchable.
 
         When the last manifest was complete (the whole repository), files in the tree that it does not list (left by an upload that stopped
-        half way) are removed first.
-        shortcut: a path that is committed and then overwritten by an upload that is not yet committed is indexed with the new content at
-        the next sync, because the file is replaced whole (a write is atomic); upgrade by committing the hash and skipping files that differ.
+        half way) are removed first. A file replaced after the commit is held back by the sync until the next commit publishes it.
         """
         with self._lock:
             meta = self.meta()
@@ -307,7 +308,7 @@ class Repo:
         stored: list[str] = []
         rejected: list[dict[str, str]] = []
         lim = self.limits
-        with self._lock:
+        with self._user_lock, self._lock:
             manifest = self.manifest()
             tree = self.tree.resolve()
             total = sum(int(v[1]) for v in manifest.values())
