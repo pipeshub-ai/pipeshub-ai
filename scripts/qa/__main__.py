@@ -313,14 +313,14 @@ def cmd_agent(args) -> int:
     # Out of the environment before any test runs; only the claude processes get it.
     creds = agent.take_credentials()
     # What the agent knew about this PR: --previous, or a local run's last notebook in this run directory.
-    previous = None
+    notebook = None
     source = Path(args.previous) if args.previous else out / "agent-notebook.json"
     if source.is_file() and not args.combine:
         try:
-            previous = agent.validate_notebook(json.loads(source.read_text(encoding="utf-8")), args.pr)
+            notebook = agent.validate_notebook(json.loads(source.read_text(encoding="utf-8")), args.pr)
         except (OSError, json.JSONDecodeError):
-            previous = None
-        if previous is None:
+            notebook = None
+        if notebook is None:
             print(f"qa agent: {source} is not a notebook for this PR; starting fresh", file=sys.stderr)
     combined = None
     if args.combine:
@@ -368,7 +368,7 @@ def cmd_agent(args) -> int:
             _dump(where / "results.json", result)
 
         doc = agent.run_agent(cfg, out, plan, run_round, sess=sess, minutes=args.minutes, max_turns=args.max_turns,
-                              combined=_combined_summary(combined), creds=creds, previous=previous, pr=args.pr)
+                              combined=_combined_summary(combined), creds=creds, previous=notebook, pr=args.pr)
     except run._Cancelled:
         print("qa agent: cancelled", file=sys.stderr)
         return 130

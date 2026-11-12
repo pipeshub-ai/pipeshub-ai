@@ -379,6 +379,23 @@ class TestNotebook(AgentCase):
         self.assertEqual(json.loads(target.read_text())["verdict"], "broken")
 
 
+class TestNotebookCommand(AgentCase):
+    def test_qa_agent_hands_the_last_notebook_in_the_run_directory_to_the_next_run(self) -> None:
+        from qa import __main__ as qa_main
+        nb = agent.build_notebook(verdict(), {}, self.plan, [], None, None)
+        (self.out / "agent-notebook.json").write_text(json.dumps(nb))
+        seen = {}
+
+        def fake_run_agent(cfg, out, plan, run_round, **kw):
+            seen.update(kw)
+            return {"notes": [], "verdict": {}, "rounds": 1, "tests_added": []}
+        with mock.patch.object(agent, "run_agent", side_effect=fake_run_agent), \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            qa_main.main(["--out", str(self.out), "agent", "--base", self.base, "--stack", "none"])
+        self.assertEqual(seen["previous"]["head"], self.head)
+        self.assertEqual(seen["previous"]["runs"], 1)
+
+
 class TestNestedArtifact(unittest.TestCase):
     def test_the_report_finds_the_agent_files_one_level_down(self) -> None:
         from qa import __main__ as qa_main
