@@ -582,6 +582,23 @@ class TestFetchPermissions:
             },
         }
 
+    def test_a_shared_read_keeps_its_mark_and_the_failed_ids_until_none_remain(self, connector, caplog) -> None:
+        assert connector._reseed_fields(set(), asked=False) == {}
+        assert connector._reseed_fields(set(), asked=True) == {"reseed_shared_with_me": False, "failed_items": []}
+        assert connector._reseed_fields({"f2", "f1"}, asked=False) == {"reseed_shared_with_me": True, "failed_items": ["f1", "f2"]}
+        # Past the cap the ids are not kept: the whole listing is read again. The log names a count only.
+        many = {f"secret-{i}" for i in range(501)}
+        assert connector._reseed_fields(many, asked=True) == {"reseed_shared_with_me": True, "failed_items": []}
+        assert "secret-" not in caplog.text and "501" in caplog.text
+
+    async def test_too_many_failed_items_drop_the_checkpoint_so_the_listing_is_read_again(self, connector) -> None:
+        connector.drive_delta_sync_point.delete_sync_point = AsyncMock()
+
+        assert await connector._keep_failed_items("k", {"f1"}) is True
+        connector.drive_delta_sync_point.delete_sync_point.assert_not_awaited()
+        assert await connector._keep_failed_items("k", {f"f{i}" for i in range(501)}) is False
+        connector.drive_delta_sync_point.delete_sync_point.assert_awaited_once_with("k")
+
     async def test_empty_list_for_a_member_of_a_limited_folder_gives_their_own_fallback(self, connector) -> None:
         connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": []})
 

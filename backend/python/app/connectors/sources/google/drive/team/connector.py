@@ -5,6 +5,7 @@ import logging
 import shutil
 import tempfile
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from logging import Logger
 from typing import TYPE_CHECKING, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -207,6 +208,12 @@ DRIVE_RESTRICTION_FLAGS = ("driveMembersOnly", "domainUsersOnly")
 DRIVE_RESTRICTIONS_ASSUMED = "assumed"
 # On a user's checkpoint: read the files shared with them again before the token moves on (a drive's limits changed).
 RESEED_SHARED_WITH_ME = "reseed_shared_with_me"
+# On a checkpoint: items its listing failed to read, read again by id on later runs until each one succeeds, so a
+# checkpoint that moves on past a failure gives nothing up. Past the cap the listing itself is read again instead.
+FAILED_ITEMS = "failed_items"
+MAX_FAILED_ITEMS = 500
+# The ids of the items that failed in the listing this task is reading (each user's sync runs in its own task).
+_failed_items: ContextVar[set[str] | None] = ContextVar("drive_failed_items", default=None)
 FILTER_CLEANUP_PAGE_SIZE = 500
 
 
@@ -1694,6 +1701,54 @@ class GoogleDriveTeamConnector(BaseConnector):
         )
         self._hidden_groups[drive_id] = set()
         self._group_digests[drive_id] = {}
+
+    @staticmethod
+    def _track_failed_items() -> set[str]:
+        """Start collecting the ids of the items that fail in the listing this task reads next."""
+        failed: set[str] = set()
+        _failed_items.set(failed)
+        return failed
+
+    async def _fetch_failed_items(self, ids: list[str], source: GoogleDriveDataSource) -> list[dict]:
+        """The items a listing failed on, fetched again by id as the same user. One that is gone or out of their
+        reach is dropped, since their change feed reports that; one that fails again is kept to retry."""
+        found: list[dict] = []
+        for file_id in ids:
+            try:
+                found.append(await source.files_get(
+                    fileId=file_id, supportsAllDrives=True, fields=DRIVE_WORKSPACE_FILE_GET_FIELDS
+                ))
+            except HttpError as e:
+                if e.resp.status == HttpStatusCode.NOT_FOUND.value:
+                    continue
+                self._sync_ledger.fail_item()
+                if (failed := _failed_items.get()) is not None:
+                    failed.add(file_id)
+        return found
+
+    def _too_many_failed(self, failed: set[str]) -> bool:
+        if failed:
+            self.logger.warning(f"{len(failed)} item(s) could not be read; they are read again on the next runs")
+        return len(failed) > MAX_FAILED_ITEMS
+
+    async def _keep_failed_items(self, key: str, failed: set[str]) -> bool:
+        """False when too many items failed to keep by id: the checkpoint is then dropped, and its listing is read
+        again in full next run."""
+        if not self._too_many_failed(failed):
+            return True
+        await self.drive_delta_sync_point.delete_sync_point(key)
+        return False
+
+    def _reseed_fields(self, failed: set[str], *, asked: bool) -> dict[str, object]:
+        """What a complete shared-with-me read saves on the user's checkpoint. While an item failed the mark is set:
+        the next runs read those items again by id, or the whole listing past the cap."""
+        if not (asked or failed):
+            return {}
+        if self._too_many_failed(failed):
+            return {RESEED_SHARED_WITH_ME: True, FAILED_ITEMS: []}
+        if failed:
+            return {RESEED_SHARED_WITH_ME: True, FAILED_ITEMS: sorted(failed)}
+        return {RESEED_SHARED_WITH_ME: False, FAILED_ITEMS: []}
 
     async def _read_drive_again(self, drive_id: str, *, reseed: bool) -> None:
         """Every synced user lists the drive from the start. With reseed, each also reads the files shared with them
@@ -3191,6 +3246,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                     if existing_record is not None:
                         if new_permissions:
                             await self.data_entities_processor.add_permission_to_record(existing_record, new_permissions)
+                        elif user_email and not (await self._restriction_filter(item_drive_id, is_drive=False))[1](user_email):
+                            # The drive's limits leave this reader out: their stored grant goes, everyone else's stays.
+                            await self.data_entities_processor.delete_permission_from_record(
+                                existing_record.id, user_email, self.connector_id
+                            )
                         # Written as a metadata update, never as a new record: in a full sync the first write of
                         # a new record replaces its stored grants with the list given, and this user's single
                         # grant is not the file's list. A reader reaching the file first removed everyone else.
@@ -3253,6 +3313,8 @@ class GoogleDriveTeamConnector(BaseConnector):
         except Exception as ex:
             self.logger.error(f"Error processing Google Drive file {metadata.get('id', 'unknown')}: {ex}", exc_info=True)
             self._sync_ledger.fail_item()
+            if (failed := _failed_items.get()) is not None and metadata.get("id"):
+                failed.add(str(metadata["id"]))
             if raise_on_failure:
                 raise _ItemReadFailed(str(metadata.get('id', 'unknown'))) from ex
             return None
@@ -3891,6 +3953,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             # page token is stored so a failure here replays on the next run instead of
             # being skipped for good; afterwards changes_list carries the deltas.
             holds = SharedFolderWalkHolds(sync_point)
+            shared_failed = self._track_failed_items()
             try:
                 await self.sync_shared_with_me(
                     user=user,
@@ -3926,7 +3989,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             # Save start page token to sync point after initial sync. A fresh feed
             # starts every removed change's count over.
             stale_removals = {HELD_REMOVED_CHANGES: []} if (sync_point or {}).get(HELD_REMOVED_CHANGES) else {}
-            reseeded = {RESEED_SHARED_WITH_ME: False} if (sync_point or {}).get(RESEED_SHARED_WITH_ME) else {}
+            reseeded = self._reseed_fields(shared_failed, asked=bool((sync_point or {}).get(RESEED_SHARED_WITH_ME)))
             await self.drive_delta_sync_point.update_sync_point(
                 sync_point_key,
                 {"pageToken": start_page_token, **holds.checkpoint_changes(), **stale_removals,
@@ -4080,30 +4143,54 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             reseeded: dict[str, object] = {}
             if sync_point.get(RESEED_SHARED_WITH_ME):
+                shared_failed = self._track_failed_items()
+                retry = [str(i) for i in sync_point.get(FAILED_ITEMS) or []]
                 holds = SharedFolderWalkHolds(sync_point)
                 walk = DrivePageWalk()
                 try:
-                    await self.sync_shared_with_me(
-                        user=user,
-                        user_drive_data_source=user_drive_data_source,
-                        user_permission_id=user_permission_id,
-                        drive_id=drive_id,
-                        tracked_folder_ids=tracked_folder_ids,
-                        member_drive_ids=member_drive_ids,
-                        holds=holds,
-                        walk=walk,
-                    )
+                    if retry:
+                        items = [
+                            m for m in await self._fetch_failed_items(retry, user_drive_data_source)
+                            if m.get("driveId") and m["driveId"] not in (member_drive_ids or set())
+                        ]
+                        batch_records, _, _ = await self._process_shared_with_me_items(
+                            items=items,
+                            user=user,
+                            user_permission_id=user_permission_id,
+                            personal_drive_id=drive_id,
+                            context_name=f"shared with me for user {user.email}",
+                            batch_records=[],
+                            batch_count=0,
+                            total_counter=0,
+                            drive_data_source=user_drive_data_source,
+                            tracked_folder_ids=tracked_folder_ids,
+                        )
+                        await self._process_remaining_batch_records(batch_records, f"user {user.email}")
+                    else:
+                        await self.sync_shared_with_me(
+                            user=user,
+                            user_drive_data_source=user_drive_data_source,
+                            user_permission_id=user_permission_id,
+                            drive_id=drive_id,
+                            tracked_folder_ids=tracked_folder_ids,
+                            member_drive_ids=member_drive_ids,
+                            holds=holds,
+                            walk=walk,
+                        )
                 except Exception:
                     if holds.changes():
                         await self.drive_delta_sync_point.update_sync_point(sync_point_key, holds.changes())
                     raise
-                # A partial listing keeps the mark, so the next run reads it again.
-                reseeded = holds.changes() if walk.incomplete else {**holds.checkpoint_changes(), RESEED_SHARED_WITH_ME: False}
+                # A partial listing keeps the mark and is read again in full; items that failed are kept to retry.
+                if walk.incomplete:
+                    reseeded = holds.changes()
+                else:
+                    reseeded = {**({} if retry else holds.checkpoint_changes()), **self._reseed_fields(shared_failed, asked=True)}
 
             if self._sync_ledger.item_failures > failures_before:
                 hold = hold_again(sync_point)
                 if hold is not None:
-                    await self.drive_delta_sync_point.update_sync_point(sync_point_key, hold)
+                    await self.drive_delta_sync_point.update_sync_point(sync_point_key, {**hold, **reseeded})
                     self.logger.warning(
                         f"Some changes for {user.email} could not be stored; they are read again next run"
                     )
@@ -4498,6 +4585,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                         batch_records = []
                         batch_count = 0
                         drive_failures_before = self._sync_ledger.item_failures
+                        drive_failed = self._track_failed_items()
 
                         # If pageToken doesn't exist (full sync)
                         if not page_token:
@@ -4608,6 +4696,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                             )
                             if hold:
                                 await self.drive_delta_sync_point.update_sync_point(sync_point_key, hold)
+                            if hold is None and not await self._keep_failed_items(sync_point_key, drive_failed):
+                                hold = {}  # too many to keep by id: the drive is listed in full again
                             if not listing_finished or search_incomplete or hold is not None:
                                 self._sync_ledger.note_skipped_drive()
                                 self.logger.warning(
@@ -4619,7 +4709,8 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                             await self.drive_delta_sync_point.update_sync_point(
                                 sync_point_key,
-                                {"pageToken": start_page_token, **released(sync_point)}
+                                {"pageToken": start_page_token, **released(sync_point),
+                                 FAILED_ITEMS: sorted(drive_failed)}
                             )
 
                             self.logger.info(
@@ -4634,6 +4725,26 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                             current_page_token = page_token
                             total_changes = 0
+
+                            if retry := [str(i) for i in sync_point.get(FAILED_ITEMS) or []]:
+                                again = [
+                                    m for m in await self._fetch_failed_items(retry, user_drive_data_source)
+                                    if m.get("driveId") == drive_id  # moved away: its new place lists it
+                                ]
+                                if again:
+                                    batch_records, batch_count, total_changes = await self._process_drive_files_batch(
+                                        files=again,
+                                        user_id=user_permission_id,
+                                        user_email=user.email,
+                                        drive_id=drive_id,
+                                        is_shared_drive=True,
+                                        context_name=f"drive '{drive_name}' for user {user.email}",
+                                        batch_records=batch_records,
+                                        batch_count=batch_count,
+                                        total_counter=total_changes,
+                                        drive_data_source=user_drive_data_source,
+                                        tracked_folder_ids=tracked_folder_ids
+                                    )
 
                             while True:
                                 try:
@@ -4761,6 +4872,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                                     f"Some changes in drive '{drive_name}' could not be stored; they are "
                                     "read again next run"
                                 )
+                            elif not await self._keep_failed_items(sync_point_key, drive_failed):
+                                pass  # too many to keep by id: the drive is listed in full again
                             elif current_page_token and current_page_token != page_token:
                                 self.logger.info(
                                     f"💾 Updating sync point for drive '{drive_name}' "
@@ -4768,13 +4881,18 @@ class GoogleDriveTeamConnector(BaseConnector):
                                 )
                                 await self.drive_delta_sync_point.update_sync_point(
                                     sync_point_key,
-                                    {"pageToken": current_page_token, **released(sync_point)}
+                                    {"pageToken": current_page_token, **released(sync_point),
+                                     FAILED_ITEMS: sorted(drive_failed)}
                                 )
                                 self.logger.info(
                                     f"✅ Incremental sync completed for shared drive '{drive_name}' for user {user.email}. "
                                     f"Processed {total_changes} changes."
                                 )
                             else:
+                                if retry or drive_failed:
+                                    await self.drive_delta_sync_point.update_sync_point(
+                                        sync_point_key, {FAILED_ITEMS: sorted(drive_failed)}
+                                    )
                                 self.logger.info(f"Sync point not updated for drive '{drive_name}'")
 
                         synced_drive_ids.add(drive_id)
