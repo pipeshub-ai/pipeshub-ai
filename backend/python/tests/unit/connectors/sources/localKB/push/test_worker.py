@@ -594,6 +594,7 @@ async def test_a_replay_runs_inside_the_remaining_budget_not_a_fresh_one(spool) 
         await w.close()
 
 
+@needs_proc
 async def test_a_cpu_bound_overrun_is_a_strike(spool) -> None:
     events, w = Events(), W.PushWorker(kill_after_s=0.5)
     try:

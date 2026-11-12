@@ -724,6 +724,7 @@ class TestAccounting:
         await site.start()
         return runner, site._server.sockets[0].getsockname()[1]
 
+    @needs_proc
     async def test_a_stalled_storage_overrun_is_not_a_strike_and_the_cpu_is_the_childs_own(self, tmp_path, store) -> None:
         ends, heard = [], Heard()
         runner, port = await self._slow_server(5)
