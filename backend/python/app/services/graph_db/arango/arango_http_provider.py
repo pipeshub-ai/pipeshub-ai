@@ -568,7 +568,10 @@ def _aql_browse_child(c: str, p: str, tag: str, from_app: str, p_member: str | N
     # inside a declaration or a member of one is admitted by it, is no seed, and what hangs under it is not read through it.
     walk_seeded = f'(NOT ({declared_p} OR (IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", {p}) AND HAS(@kh_scope, {p}._key))) OR {seed})'
     below_member_seeded = f"(NOT {member_p} OR {seed})"
-    return (f"({_aql_read_by_app(c)} AND (({from_app}) ? (({_aql_granted_hop(c, p, tag + 'h', navigation=True)}"
+    # An App that opens everything reads a record that belongs to it as a member, wherever it hangs (the loop over an empty list reads nothing otherwise).
+    member_of_open_app = (f"(kh_opens AND LENGTH(FOR kh_ma IN (kh_opens ? [1] : []) FOR kh_mb IN 1..1 OUTBOUND {c} {CollectionNames.BELONGS_TO.value}"
+                          f" FILTER kh_mb._key == @app_id LIMIT 1 RETURN 1) > 0)")
+    return (f"({_aql_read_by_app(c)} AND (({from_app} OR {member_of_open_app}) ? (({_aql_granted_hop(c, p, tag + 'h', navigation=True)}"
             f" AND {walk} AND {below_member}) ? true : ({_aql_in_scope(c, p)})) : ({p}.hideChildren != true AND (({_aql_open_hop(c, p, tag + 'o')}"
             f" AND {walk_seeded} AND {below_member_seeded}) ? true : ({_aql_in_scope(c, p)})))))")
 
@@ -692,7 +695,8 @@ def _aql_row_from_app(v: str, *, reached: bool) -> str:
     ``kh_parents``) is reached through it; a row that does not (a chain-top, a declared member) is not asked about, and is left to the batch check
     (`_kh_v3_page_result`). Below a seed every row makes the walk up. ``kh_app``, ``kh_opens`` and ``kh_parents`` must be in scope."""
     if reached:
-        return "(@kh_start IN kh_parents[*]._id)"
+        return (f"(@kh_start IN kh_parents[*]._id AND LENGTH(FOR kh_sp IN kh_parents FILTER kh_sp._id == @kh_start"
+                f" AND {_aql_granted_hop(v, 'kh_sp', 'os', navigation=True)} LIMIT 1 RETURN 1) > 0)")
     records, groups, apps = CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value, CollectionNames.APPS.value
     return f"""(LENGTH(
         FOR kh_ov, kh_oe, kh_op IN 1..50 INBOUND {v} {CollectionNames.NODE_RELATIONS.value}
@@ -782,7 +786,7 @@ def _aql_kh_has_children(v: str, *, exact: bool = False, every_hop: bool = False
             f" OR {gated(f'NOT {declared}', children)} OR {gated(declared, in_scope)}))")
 
 
-def _aql_kh_filed(v: str) -> str:
+def _aql_kh_filed(v: str, *, every_hop: bool = False) -> str:
     """What belongs to ``v``: where the App opens everything a record filed in a record, for a declared group its members, for a group a
     granted record (`_aql_kh_has_children`, exact). One subquery for all of them, as every row pays for each."""
     records, groups = CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value
@@ -792,8 +796,9 @@ def _aql_kh_filed(v: str) -> str:
             f" FOR kh_bm IN 1..1 INBOUND {v} {CollectionNames.BELONGS_TO.value}"
             f' FILTER IS_SAME_COLLECTION("{records}", kh_bm) AND kh_bm.isDeleted != true AND kh_bm.orgId == @org_id'
             f" AND {_aql_read_by_app('kh_bm')} AND ({record} OR HAS(@granted, kh_bm._key))"
-            f" FILTER kh_bm.isPlaceholder != true OR (@kh_placeholders AND {_aql_way_below('kh_bm', every_hop=False)})"
-            f" LIMIT 1 RETURN 1) > 0")
+            # A page's first pass tests the way below a filed stub at its last hop only; a row with a stub filed in it is asked again (`khStub`).
+            f" FILTER kh_bm.isPlaceholder != true OR (@kh_placeholders AND {_aql_way_below('kh_bm', every_hop=every_hop)})"
+            " LIMIT 1 RETURN 1) > 0")
 
 
 # Edges one statement moves; a hub node's millions go in batches.
@@ -21461,7 +21466,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # A row with a stub child and no other child the rule passes is asked again (`_kh_v3_page_rows`) with the every-hop test of the stub's way:
         # the page's own arrow holds no stub test, which keeps its plan small.
         stub_child = (f'LENGTH(FOR kh_g IN (kh_row.hasChildren ? [] : [1]) FOR kh_sc, kh_se IN 1..1 OUTBOUND node {relations}'
-                      f' FILTER kh_se.relationshipType IN {hierarchy} AND kh_sc.isPlaceholder == true LIMIT 1 RETURN 1) > 0')
+                      f' FILTER kh_se.relationshipType IN {hierarchy} AND kh_sc.isPlaceholder == true LIMIT 1 RETURN 1) > 0'
+                      f' OR LENGTH(FOR kh_sf IN 1..1 INBOUND node {belongs}'
+                      f' FILTER kh_sf.isPlaceholder == true LIMIT 1 RETURN 1) > 0')
         exact_row = exact_row.replace("KH_STUB", stub_child)
         # The second pass returns the arrow alone.
         stubs_pass = f"""
@@ -21470,9 +21477,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FOR kh_i IN 0..LENGTH(@kh_page) - 1
                 LET node = DOCUMENT(@kh_page[kh_i])
                 FILTER node != null
-                LET kh_parents = (FOR kh_p IN 1..1 INBOUND node {relations} FILTER kh_p != null RETURN kh_p)
+                LET kh_parents = (FOR kh_p, kh_pe IN 1..1 INBOUND node {relations} FILTER kh_pe.relationshipType IN {hierarchy} RETURN kh_p)
                 LET kh_row_from_app = KH_OWN_PATH
-                LET kh_filed = {_aql_kh_filed("node")}
+                LET kh_filed = {_aql_kh_filed("node", every_hop=True)}
                 RETURN {{i: kh_i, hasChildren: {_aql_kh_has_children("node", exact=True, every_hop=True)}}}
             """
         queries["enrich_exact"] = exact_row.replace("KH_OWN_PATH", _aql_row_from_app("node", reached=True))

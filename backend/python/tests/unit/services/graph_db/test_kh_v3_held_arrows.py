@@ -109,7 +109,7 @@ def test_arangodb_arrow_of_a_browse_row_reads_its_own_way_in_and_leaves_the_chai
     assert "@kh_from_app" in flat and "kh_row_from_app" not in flat         # a flatten reads the stricter rule it always did
     assert "HAS(@granted, kh_bm._key)" in _aql_kh_filed("node") and "kh_bm" not in exact
     reached, walked = _aql_row_from_app("node", reached=True), _aql_row_from_app("node", reached=False)
-    assert reached == "(@kh_start IN kh_parents[*]._id)" and "INBOUND node" in walked and "@kh_start" not in walked
+    assert reached.startswith("(@kh_start IN kh_parents[*]._id AND ") and "kh_sp._id == @kh_start" in reached and "INBOUND node" in walked and "@kh_start" not in walked
 
 
 async def test_a_declaration_the_viewer_neither_holds_nor_reaches_declares_no_scope_for_a_browse() -> None:
@@ -179,9 +179,26 @@ def test_arangodb_leaves_a_stub_child_to_a_second_pass_that_returns_the_arrow_al
         assert "kh_pt.edges" in second and "RETURN {i: kh_i, hasChildren:" in second and "parentOptions" not in second
 
 
-def test_an_app_that_opens_everything_does_not_open_what_hangs_below_a_node_the_walk_does_not_reach() -> None:
+def test_an_app_that_opens_everything_opens_only_its_own_members_below_a_node_the_walk_does_not_reach() -> None:
     from app.services.graph_db.arango.arango_http_provider import _aql_browse_child
 
     cypher = Neo4jProvider.__new__(Neo4jProvider)._kh_v3_child_rule("c", "p", from_app="FROM", opens="OPENS", state=False)
-    assert "FROM OR OPENS" not in cypher and "NOT FROM AND NOT OPENS" not in cypher and "(NOT FROM\n" in cypher
-    assert "FROM) OR kh_opens" not in _aql_browse_child("c", "p", "t", "FROM") and "(FROM) ? " in _aql_browse_child("c", "p", "t", "FROM")
+    member = "(OPENS AND EXISTS { (c)-[:BELONGS_TO]->(app) })"
+    assert f"(FROM OR {member})" in cypher and f"NOT FROM AND NOT {member}" in cypher and "FROM OR OPENS" not in cypher
+    aql = _aql_browse_child("c", "p", "t", "FROM")
+    assert "(FROM OR (kh_opens AND LENGTH(" in aql and "kh_mb._key == @app_id" in aql and "FROM) OR kh_opens" not in aql
+
+
+def test_arangodb_stub_recheck_reads_hierarchy_parents_only() -> None:
+    """The recheck feeds the same parent list as the page query to the reached shortcut: a link edge from the browsed node is no way in."""
+    from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+
+    queries = ArangoHTTPProvider._kh_v3_listing_aql()
+    for name in ("enrich_exact_stubs", "enrich_exact_walk_stubs"):
+        assert "kh_pe.relationshipType IN" in queries[name].split("kh_row_from_app")[0]
+
+
+def test_arangodb_reached_shortcut_needs_the_browse_hop_from_the_start() -> None:
+    from app.services.graph_db.arango.arango_http_provider import _aql_row_from_app
+
+    assert "kh_sp._id == @kh_start" in _aql_row_from_app("node", reached=True)

@@ -222,4 +222,84 @@ grants: [[u, k]]
 gates: [[u, A]]
 """))
 
-KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT]
+# OPENKEPT: but a record that belongs to such an App is read as a member wherever it hangs, so the same shape with a member is listed
+OPENKEPT = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE, model: APP_LEVEL}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: k, kind: record, connector: A, rule: OPEN, parents: [d]}
+  - {id: m, kind: record, connector: A, rule: STRICT, parents: [k], inherits: [k], belongs: [A]}
+grants: [[u, k]]
+gates: [[u, A]]
+"""))
+
+# RESTRICTEDMEMBER: a member of a granted declaration that hangs under a reached folder without inheriting from it is listed there (as the member), but
+# the walk from the App does not reach it, so what hangs under it is read as below a seed: a strict child is not listed, and its parent shows no arrow
+RESTRICTEDMEMBER = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: d, kind: group, connector: A, rule: OPEN, model: RECORD_GROUP_LEVEL, parents: [A], belongs: [A]}
+  - {id: f, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: m, kind: record, connector: A, rule: RESTRICTED, parents: [f], belongs: [d]}
+  - {id: c, kind: record, connector: A, rule: STRICT, parents: [m], inherits: [m]}
+grants: [[u, d], [u, f], [u, m]]
+gates: [[u, A]]
+"""))
+
+# CHAINLINK: a granted chain-top that the group only links to (no hierarchy edge) is listed under the group as a chain-top; the stub below it is
+# read as below a seed (a strict stub is not listed), so the chain-top shows no arrow
+CHAINLINK = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: h, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: r, kind: record, connector: A, rule: OPEN, parents: [{id: h, rel: LINKED_TO}], belongs: [h]}
+  - {id: s, kind: record, connector: A, rule: STRICT, placeholder: true, parents: [r]}
+  - {id: z, kind: record, connector: A, rule: OPEN, parents: [s]}
+grants: [[u, h], [u, r], [u, z]]
+gates: [[u, A]]
+"""))
+
+# FILEDSTUB: in an App that opens everything a stub filed in a record is listed only when the way below it is open at every hop
+FILEDSTUB = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE, model: APP_LEVEL}
+  - {id: g, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: fr, kind: record, connector: A, rule: OPEN, parents: [g], belongs: [A]}
+  - {id: s, kind: record, connector: A, rule: OPEN, placeholder: true, belongs: [fr]}
+  - {id: q, kind: record, connector: A, rule: RESTRICTED, parents: [s]}
+  - {id: z, kind: record, connector: A, rule: OPEN, parents: [q]}
+grants: [[u, z]]
+gates: [[u, A]]
+"""))
+
+# OPENSTUB: in an App that opens everything a stub the walk from the App reaches is listed as the way to a strict node and what hangs below it
+OPENSTUB = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE, model: APP_LEVEL}
+  - {id: g, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: p, kind: record, connector: A, rule: OPEN, placeholder: true, parents: [g], belongs: [A]}
+  - {id: s, kind: record, connector: A, rule: STRICT, parents: [p]}
+  - {id: r, kind: record, connector: A, rule: OPEN, parents: [s]}
+grants: []
+gates: [[u, A]]
+"""))
+
+# APPCHAIN: a group listed under the App that holds a granted record with no hierarchy edge: opening the group lists the record as a chain-top, so its
+# arrow is on
+APPCHAIN = world_from_data(yaml.safe_load("""
+principals: [{id: u}]
+nodes:
+  - {id: A, kind: app, app_type: DRIVE}
+  - {id: h, kind: group, connector: A, rule: OPEN, parents: [A], belongs: [A]}
+  - {id: r, kind: record, connector: A, rule: OPEN, belongs: [h]}
+grants: [[u, h], [u, r]]
+gates: [[u, A]]
+"""))
+
+KH_WORLDS = [CROSS2, ARROW, WALK, HELD, CHAIN, DECL_STRICT, DECL_SEEDED, DECL_BELOW, DECL_MEMBER, STUB, STUBHELD, DEEP, MIXED, CUT, OPENCUT, OPENKEPT,
+             RESTRICTEDMEMBER, CHAINLINK, FILEDSTUB, OPENSTUB, APPCHAIN]

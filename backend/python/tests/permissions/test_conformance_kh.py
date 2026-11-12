@@ -25,18 +25,29 @@ logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 # `gap` is reported, never failed: the shapes the oracle cannot decide (an upload, which has its own surface, and a node under a group that hides its
 # children). A readable node the flatten listing or a browse leaves out is `under` or `browse_gap` and fails.
 GAPS = {"gap"}
-# shortcut: the generated worlds still report, and do not fail, an under-admit (`browse_gap`: a node the oracle admits by another arm, as a second parent's
-# walk, an App member or below a seed, that the browse of a folder under a declaration or a seed does not list) in 8 worlds of adversarial and proptest
-# (seed 7, 50 worlds). The golden worlds fail on it. Remove it when the browse admits by the same arms as the oracle.
-GENERATED_GAPS = {*GAPS, "browse_gap"}
+# shortcut: ten under-admits (`browse_gap`: a node the oracle admits by another arm, as a second parent's walk, an App member or below a seed, that the
+# browse of a folder under a declaration or a seed does not list) are known in the generated worlds (seed 7, 50 worlds); the golden worlds fail on any.
+# Only these (world, finding) pairs are let through, so a new one fails. Remove the set when the browse admits by the same arms as the oracle.
+KNOWN_BROWSE_GAPS = {
+    ('adversarial-7-33', 'A-s1: the browse leaves out A-b10, which the viewer may open'),
+    ('adversarial-7-42', 'A-c0: the browse leaves out A-c1, which the viewer may open'),
+    ('adversarial-7-42', 'A-c0: the browse leaves out A-c27, which the viewer may open'),
+    ('adversarial-7-49', 'A-c13: the browse leaves out A-c14, which the viewer may open'),
+    ('proptest-7-1', 'B-s1: the browse leaves out B-g1, which the viewer may open'),
+    ('proptest-7-14', 'A-s2: the browse leaves out A-r1, which the viewer may open'),
+    ('proptest-7-14', 'A-s2: the browse leaves out A-r2, which the viewer may open'),
+    ('proptest-7-18', 'B-s1: the browse leaves out B-r4, which the viewer may open'),
+    ('proptest-7-31', 'B-s1: the browse leaves out B-r0, which the viewer may open'),
+    ('proptest-7-5', 'A-s1: the browse leaves out A-r0, which the viewer may open'),
+}
 
 
 def _describe(found: list[KhFinding]) -> str:
     return "\n".join(f"{f.kind} {f.scenario} {f.viewer}: {f.detail}" for f in found[:40])
 
 
-def _bad(found: list[KhFinding], gaps: set[str] = GAPS) -> list[KhFinding]:
-    return [f for f in found if f.kind not in gaps]
+def _bad(found: list[KhFinding], known: set[tuple[str, str]] = frozenset()) -> list[KhFinding]:
+    return [f for f in found if f.kind not in GAPS and (f.kind != "browse_gap" or (f.scenario, f.detail) not in known)]
 
 
 async def test_golden_worlds_count_what_the_viewer_may_read(graph_layers) -> None:
@@ -76,6 +87,6 @@ async def test_generated_worlds_count_what_the_viewer_may_read(graph_layers, kin
                 chunk = worlds[start:start + CHUNK]
                 await layer.preload(chunk)
                 for offset, world in enumerate(chunk):
-                    bad += _bad(await check_world(layer, world, f"{kind}-{seed}-{start + offset}"), GENERATED_GAPS)
+                    bad += _bad(await check_world(layer, world, f"{kind}-{seed}-{start + offset}"), KNOWN_BROWSE_GAPS)
                 await layer.release(chunk)
             assert not bad, f"{layer.name} {kind} seed {seed}\n{_describe(bad)}"
