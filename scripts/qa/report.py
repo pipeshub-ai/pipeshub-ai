@@ -82,6 +82,46 @@ def _short(test_id: str) -> str:
     return test_id if len(test_id) <= 110 else "…" + test_id[-109:]
 
 
+def _model_text(text: str, limit: int) -> str:
+    """Model-written text in a PR comment: no mentions, no HTML comments (the sticky markers), one line."""
+    text = _one_line(" ".join(redact(str(text or "")).split()), limit)
+    return text.replace("@", "@\u200b").replace("<!--", "&lt;!--")
+
+
+def agent_section(doc: dict[str, Any]) -> list[str]:
+    """The QA agent's analysis. It never changes the gate, which reads the test results only."""
+    v = doc.get("verdict") or {}
+    lines = ["", "### QA agent", ""]
+    combined = doc.get("combined") or {}
+    if combined.get("prs"):
+        lines.append("Combined run of " + ", ".join(f"#{p['number']}" for p in combined["prs"]) + f" on `{str(combined.get('base', ''))[:10]}`.")
+        for c in combined.get("conflicts", []):
+            lines.append(f"- Conflict: #{c['pr']} against " + ", ".join(f"#{n}" for n in c.get("against", [])) +
+                         " in " + ", ".join(f"`{f}`" for f in c.get("files", [])[:10]) + f" (resolved in `{str(c.get('commit', ''))[:10]}`)")
+        lines.append("")
+    if v:
+        lines += [f"**Verdict: {v.get('verdict', 'unsure')}** (Claude's judgment; the gate comes from the test results only)", "",
+                  _model_text(v.get("summary"), 1500)]
+        if v.get("findings"):
+            lines += ["", "| Kind | Finding | Tests | Evidence |", "| --- | --- | --- | --- |"]
+            for f in v["findings"][:20]:
+                tests = ", ".join(f"`{_short(t)}`" for t in f.get("tests", [])[:3]) + (f" +{len(f['tests']) - 3}" if len(f.get("tests", [])) > 3 else "")
+                prs = (" (" + ", ".join(f"#{n}" for n in f.get("prs", [])) + ")") if f.get("prs") else ""
+                lines.append(f"| {f['kind']} | {_model_text(f.get('title'), 120)}{prs} | {tests} | {_model_text(f.get('evidence'), 300)} |")
+        if v.get("rounds"):
+            lines += ["", f"Rounds after the rule floor: {len(v['rounds'])}"]
+            lines += [f"- {_model_text(r.get('why'), 200)} ({len(r.get('tests', []))} tests)" for r in v["rounds"][:10]]
+    added = doc.get("tests_added") or []
+    if added:
+        lines += ["", "Test files the agent added or changed (pushed as one commit when the run allows it):"]
+        lines += [f"- `{p}`" for p in added[:20]]
+    if v.get("unproven"):
+        lines += ["", "Added but not proven: " + ", ".join(f"`{_short(t)}`" for t in v["unproven"][:10])]
+    for note in doc.get("notes", [])[:10]:
+        lines += ["", f"Note: {_model_text(note, 400)}"]
+    return lines
+
+
 def render(cfg: Config, plan: dict[str, Any], results: dict[str, Any] | None, allowed: frozenset[str] = DEFAULT_ALLOWED, run_url: str | None = None) -> str:
     v, _ = verdict(cfg, results, allowed)
     title = {"pass": "passed", "fail": "failed", "plan-only": "plan only (nothing executed)"}[v]
@@ -105,6 +145,8 @@ def render(cfg: Config, plan: dict[str, Any], results: dict[str, Any] | None, al
     for note in plan.get("notes", []):
         lines += ["", f"Note: {note}"]
 
+    if plan.get("agent"):
+        lines += agent_section(plan["agent"])
     if results is not None:
         counts = Counter(t["outcome"] for t in results["tests"])
         lines += ["", "| Outcome | Tests |", "| --- | --- |"]

@@ -18,6 +18,7 @@ if __package__ in (None, ""):
     sys.path[0] = str(Path(__file__).resolve().parent.parent)
 
 from qa import (
+    agent,
     catalog,
     collect,
     command,
@@ -87,6 +88,12 @@ def _record(store: Path, plan: dict, results: dict, trigger: str | None = None,
 def _merged(out: Path) -> tuple[dict, dict | None]:
     """plan.json and every results*.json part merged, as the report reads them."""
     plan = _load(out / "plan.json")
+    if (out / "agent.json").is_file():
+        # Tests the QA agent ran beyond the floor join the plan, so their results reach the report and the gate.
+        doc = _load(out / "agent.json")
+        have = {t["id"] for t in plan["tests"]}
+        plan["tests"] += [t for t in doc.get("extra_tests", []) if t["id"] not in have]
+        plan["agent"] = doc
     # A run job's artifact holds its files under qa-out/ when it also uploads files from outside it
     # (Playwright diffs, perf summaries), so a merged download nests them one level down.
     parts = [_load(p) for p in sorted(out.glob("results*.json")) + sorted(out.glob(f"{out.name}/results*.json"))]
@@ -293,6 +300,58 @@ def cmd_report(args) -> int:
         print(f"gate: {verdict}" + (f" ({len(blocking)} blocking)" if blocking else ""))
         return 1 if verdict == "fail" else 0
     return 0
+
+
+def cmd_agent(args) -> int:
+    """Round 0 runs the rule floor; then Claude Code picks and judges further rounds, which the engine runs."""
+    cfg = config.load()
+    out = _out(args)
+    args.adapter = "none"
+    for step in (cmd_collect, cmd_impact, cmd_plan, cmd_validate):
+        rc = step(args)
+        if rc:
+            return rc
+    plan = _load(out / "plan.json")
+    rows = catalog.index(_rows(cfg, out))
+    sess = None
+    previous = signal.signal(signal.SIGTERM, run._on_term)
+    try:
+        if plan["stack"].get("needed") and args.stack != "none":
+            try:
+                sess = session.up(cfg, out, plan["stack"], args.graph_db or "neo4j", build=not args.no_build, head=plan.get("head"))
+            except (RuntimeError, subprocess.SubprocessError, OSError) as exc:
+                print(f"qa agent: the stack did not start: {exc}", file=sys.stderr)
+                plan.setdefault("notes", []).append(f"the stack did not start ({str(exc)[:300]}); stack tests could not run")
+                _dump(out / "plan.json", plan)
+
+        def run_round(ids: list[str], where: Path) -> None:
+            where.mkdir(parents=True, exist_ok=True)
+            sub_plan = validate.plan_from_tests(cfg, ids, rows)
+            _dump(where / "plan.json", sub_plan)
+            base_url = session.use(session.path(out)) if sess else None
+            result = run.run(cfg, sub_plan, rows, where, stack_mode="external" if sess else "none", base_url=base_url)
+            report.redact_files(where)
+            report.redact_results(result)
+            _dump(where / "results.json", result)
+
+        doc = agent.run_agent(cfg, out, plan, run_round, sess=sess, minutes=args.minutes, max_turns=args.max_turns)
+    except run._Cancelled:
+        print("qa agent: cancelled", file=sys.stderr)
+        return 130
+    finally:
+        if sess:
+            print("qa agent: stack down: " + "; ".join(session.down(cfg, out)), file=sys.stderr)
+        signal.signal(signal.SIGTERM, previous)
+    for note in doc["notes"]:
+        print(f"qa agent: {note}", file=sys.stderr)
+    verdict = (doc.get("verdict") or {}).get("verdict", "none")
+    print(f"qa agent: verdict {verdict}; {doc['rounds']} rounds; {len(doc['tests_added'])} test files changed")
+    args.summary = bool(os.environ.get("GITHUB_STEP_SUMMARY"))
+    args.comment = bool(getattr(args, "pr", None)) and args.comment
+    args.quiet = True
+    rc = cmd_report(args)
+    print(f"report: {out / 'report.md'}")
+    return rc
 
 
 def cmd_stack(args) -> int:
@@ -874,6 +933,24 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--history", default=os.environ.get("QA_HISTORY"), metavar="DIR",
                    help="history directory to add this run to")
     s.set_defaults(fn=cmd_run)
+
+    s = sub.add_parser("agent", help="Claude Code as the QA engineer: it picks tests, the engine runs them, it judges and adds tests")
+    change_args(s)
+    impact_args(s, full=True)
+    s.add_argument("--stack", default=None, choices=["none", "managed"], help="managed (default when the floor needs a stack) or none")
+    s.add_argument("--graph-db", choices=["neo4j", "arango"])
+    s.add_argument("--no-build", action="store_true", help="use the image a previous run built for this commit")
+    s.add_argument("--minutes", type=float, default=float(os.environ.get("QA_AGENT_MINUTES") or 120), help="the agent's time budget")
+    s.add_argument("--max-turns", type=int, default=int(os.environ.get("QA_AGENT_MAX_TURNS") or 150))
+    s.add_argument("--allow-not-run", default=",".join(sorted(report.DEFAULT_ALLOWED)), metavar="KINDS")
+    s.add_argument("--strict", action="store_true")
+    s.add_argument("--run-url")
+    s.add_argument("--gate", action="store_true")
+    s.add_argument("--comment", action="store_true", help="post the report on --pr")
+    s.add_argument("--pr", type=int)
+    s.add_argument("--repo")
+    s.add_argument("--timeout", type=int, default=600)
+    s.set_defaults(fn=cmd_agent, emit_gh_outputs=False)
 
     s = sub.add_parser("stack", help="keep one managed stack up across several runs (qa run --session)")
     s.add_argument("action", choices=["up", "down", "status"])
