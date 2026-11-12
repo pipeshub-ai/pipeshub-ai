@@ -211,7 +211,7 @@ def _make_connector(existing_record=None, user_with_permission=None, user_by_id=
         conn.drive_data_source.execute = AsyncMock(side_effect=execute)
         conn.config = {"credentials": {}}
         # Collaborators the run safety fixes call: account status, groups, access withdrawal.
-        conn._user_status = MagicMock(compare=AsyncMock(return_value=UserStatusChange()), save=AsyncMock())
+        conn._user_status = MagicMock(compare=AsyncMock(return_value=UserStatusChange()), save=AsyncMock(), forget_fingerprint=AsyncMock())
         dep.get_all_user_groups = AsyncMock(return_value=[])
         dep.remove_user_access_to_connector = AsyncMock(return_value=0)
         dep.on_new_user_groups = AsyncMock()
@@ -541,9 +541,10 @@ class TestSyncUsers:
         conn.data_entities_processor.remove_user_access_to_connector.assert_awaited_once_with(conn.connector_id, "b@x.com")
         saved = conn.data_entities_processor.on_new_app_users.await_args.args[0]
         assert [u.email for u in saved] == ["a@x.com", "gone@x.com"]
-        # nobody is restored, the account that was away stays away, and the held-back set is the narrowest safe one
+        # nobody is restored, the account that was away stays away, and an account that is merely not listed is
+        # unknown, not inactive
         assert conn._returning_emails == set()
-        assert conn._inactive_emails == {"gone@x.com", "b@x.com", "lost@x.com", "linked@x.com"}
+        assert conn._inactive_emails == {"gone@x.com", "b@x.com"}
         sync_point.update_sync_point.assert_not_awaited()
         assert conn._sync_ledger.has_gaps and conn._listing_cut is True
 
@@ -580,8 +581,60 @@ class TestSyncUsers:
 
         assert conn.synced_users == [] and conn._listing_cut is True
         assert conn._sync_ledger.has_gaps
-        assert conn._inactive_emails == {"gone@x.com", "a@x.com", "b@x.com", "lost@x.com", "linked@x.com"}
+        assert conn._inactive_emails == {"gone@x.com"}
         conn.data_entities_processor.on_new_app_users.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_account_only_on_the_missing_page_keeps_its_file_grants_through_a_cut_run(self) -> None:
+        conn, _ = self._cut_listing_connector()
+        conn.admin_data_source.users_list = AsyncMock(side_effect=[
+            {"users": [_make_google_user("a@x.com", "u1")], "nextPageToken": "p2"}, {"users": [], "nextPageToken": "p3"},
+            {"users": [_make_google_user("gone@x.com", "u3")]},
+        ])
+        await conn._sync_users()
+        conn.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            {"id": "p1", "role": "reader", "type": "user", "emailAddress": "lost@x.com"},
+            {"id": "p2", "role": "reader", "type": "user", "emailAddress": "gone@x.com"},
+        ]})
+
+        perms, _, _ = await conn._fetch_permissions("file-1", is_drive=False, user_email="a@x.com")
+
+        # lost@x.com is on the missing page: unknown, so its grant is written; gone@x.com was away at the last complete listing
+        assert [p.email for p in perms] == ["lost@x.com"]
+        assert conn._is_inactive_email("lost@x.com") is False
+
+    @pytest.mark.asyncio
+    async def test_a_stored_fingerprint_does_not_vouch_for_a_later_listing_after_a_listing_that_ended_normally(self) -> None:
+        conn, sync_point = self._cut_listing_connector()
+        ab = [_make_google_user("a@x.com", "u1"), _make_google_user("b@x.com", "u2")]
+
+        def ambiguous() -> list:
+            return [{"users": ab[:1], "nextPageToken": "p2"}, {"users": ab[1:], "nextPageToken": "p3"}, {"users": []}]
+
+        state: dict = {}
+        sync_point.read_sync_point = AsyncMock(side_effect=lambda key: state.get(key) or (
+            {"inactive": [], "known": ["a@x.com", "b@x.com", "c@x.com"], "domains": ["x.com"]} if key == "workspace_user_status" else None
+        ))
+
+        async def put(key: str, data: dict) -> None:
+            state[key] = {**state.get(key, {}), **data}
+
+        sync_point.update_sync_point = AsyncMock(side_effect=put)
+        run = lambda pages: setattr(conn.admin_data_source, "users_list", AsyncMock(side_effect=pages))  # noqa: E731
+
+        run(ambiguous())
+        await conn._sync_users()  # {A,B} ends on an empty page: cut, fingerprint kept
+        assert conn._listing_cut is True and state["workspace_user_listing_fingerprint"]["fingerprint"]
+
+        run([{"users": ab[:1], "nextPageToken": "p2"}, {"users": [*ab[1:], _make_google_user("c@x.com", "u3")]}])
+        await conn._sync_users()  # a complete {A,B,C} ending on a page with users: the old fingerprint is cleared
+        assert conn._listing_cut is False and not state["workspace_user_listing_fingerprint"]["fingerprint"]
+
+        conn.data_entities_processor.remove_user_access_to_connector.reset_mock()
+        run(ambiguous())
+        await conn._sync_users()  # {A,B} again: still cut, and C is not withdrawn
+        assert conn._listing_cut is True
+        conn.data_entities_processor.remove_user_access_to_connector.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_cut_user_listing_holds_back_external_membership_of_the_workspaces_own_domains(self) -> None:

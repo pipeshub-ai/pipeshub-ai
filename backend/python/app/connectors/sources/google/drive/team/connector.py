@@ -835,11 +835,14 @@ class GoogleDriveTeamConnector(BaseConnector):
                     raise
 
             if ambiguous_end and listing_complete:
-                # The same listing twice in a row is the directory's own size; a transient cut differs next time.
+                # The same listing on the next run is the directory's own size; a transient cut differs. It is kept
+                # after a match, so an exact page-size directory stays complete.
                 fingerprint = self._user_status.fingerprint(all_users)
                 if not await self._user_status.fingerprint_is_remembered(fingerprint):
                     listing_complete = False
                     await self._user_status.remember_fingerprint(fingerprint)
+            else:
+                await self._user_status.forget_fingerprint()
             self._listing_cut = not listing_complete
             if self._listing_cut:
                 self.logger.warning(
@@ -878,19 +881,15 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _hold_back_on_cut_listing(self, listed: list[AppUser]) -> None:
         """What a cut user listing may be used for: narrowing only. Accounts it shows as unable to sign in lose their
-        access now; accounts it does not show are held back for the run; nobody is restored and nothing is saved."""
-        for email in sorted(u.email.lower() for u in listed if u.email and not is_active_account(u)):
-            removed = await self.data_entities_processor.remove_user_access_to_connector(self.connector_id, email)
-            self.logger.info(f"{email} can no longer sign in to Google Workspace; removed {removed} grant(s)")
-        try:
-            linked = {u.email.lower() for u in await self.data_entities_processor.get_all_app_users(
-                self.connector_id, raise_on_error=True) if u.email}
-        except Exception as e:
-            # shortcut: without the linked accounts only those the last complete listing knew are held back;
-            # upgrade by holding the whole directory back when they cannot be read.
-            self.logger.error(f"Could not read the linked accounts: {e}")
-            linked = set()
-        self._inactive_emails = await self._user_status.inactive_on_partial_listing(listed, linked)
+        access now; accounts it does not show are unknown, and keep their groups and grants; nobody is restored and
+        nothing is saved."""
+        suspended = sorted(u.email.lower() for u in listed if u.email and not is_active_account(u))
+        removed = 0
+        for email in suspended:
+            removed += await self.data_entities_processor.remove_user_access_to_connector(self.connector_id, email)
+        if suspended:
+            self.logger.info(f"{len(suspended)} account(s) shown unable to sign in lose access; removed {removed} grant(s)")
+        self._inactive_emails = await self._user_status.inactive_on_partial_listing(listed)
         self._returning_emails = set()
 
     async def _apply_user_status(self, listed: list[AppUser]) -> None:

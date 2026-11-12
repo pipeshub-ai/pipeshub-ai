@@ -69,21 +69,14 @@ class UserStatusTracker:
             await self._sync_point.update_sync_point(USER_STATUS_SYNC_POINT_KEY, self._pending)
             self._pending = None
 
-    async def inactive_on_partial_listing(self, listed: list[AppUser], linked: set[str]) -> set[str]:
+    async def inactive_on_partial_listing(self, listed: list[AppUser]) -> set[str]:
         """The accounts to treat as unable to sign in when `listed` may be missing users: the last complete
-        listing's, any listed now, and every account that was known or linked before but is not listed (it may be
-        one that cannot sign in, and a missing page does not say). Nobody is withdrawn or restored, and nothing is
-        saved, so a complete listing sets it all right."""
+        listing's, plus any listed now. An account that is merely not listed is unknown, not inactive: it keeps its
+        groups and grants. Nobody is restored and nothing is saved, so a complete listing sets it all right."""
         stored = await self._sync_point.read_sync_point(USER_STATUS_SYNC_POINT_KEY) or {}
         was_inactive = {e for e in stored.get("inactive") or [] if isinstance(e, str)}
-        was_known = {e for e in stored.get("known") or [] if isinstance(e, str)}
-        known = {u.email.lower() for u in listed if u.email}
         self._pending = None
-        return (
-            was_inactive
-            | {u.email.lower() for u in listed if u.email and not is_active_account(u)}
-            | ((was_known | linked) - known)
-        )
+        return was_inactive | {u.email.lower() for u in listed if u.email and not is_active_account(u)}
 
     async def known_domains(self) -> set[str]:
         """The domains of the last complete listing's accounts."""
@@ -98,7 +91,13 @@ class UserStatusTracker:
 
     async def fingerprint_is_remembered(self, fingerprint: str) -> bool:
         stored = await self._sync_point.read_sync_point(USER_LISTING_FINGERPRINT_KEY) or {}
-        return stored.get("fingerprint") == fingerprint
+        return bool(fingerprint) and stored.get("fingerprint") == fingerprint
 
     async def remember_fingerprint(self, fingerprint: str) -> None:
         await self._sync_point.update_sync_point(USER_LISTING_FINGERPRINT_KEY, {"fingerprint": fingerprint})
+
+    async def forget_fingerprint(self) -> None:
+        """A listing that did not end as the ambiguous candidate: an older fingerprint must not vouch for a later one."""
+        stored = await self._sync_point.read_sync_point(USER_LISTING_FINGERPRINT_KEY) or {}
+        if stored.get("fingerprint"):
+            await self._sync_point.update_sync_point(USER_LISTING_FINGERPRINT_KEY, {"fingerprint": ""})
