@@ -3,7 +3,7 @@
 import React, { useEffect, useCallback, useState, useMemo, useRef, Suspense, useReducer } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { Box, Flex } from '@radix-ui/themes';
+import { Box, Flex, Text } from '@radix-ui/themes';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import {
   // Legacy components (for collections mode)
@@ -3171,6 +3171,13 @@ function KnowledgeBasePageContent() {
             {/* KB Filter Bar - mode-aware */}
             <FilterBar pageViewMode={pageViewMode} />
           </>
+        )}
+
+        {/* Sources still being prepared are left off All Records and named on every page: say so, so the list does not look complete. */}
+        {isAllRecordsMode && (allRecordsTableData?.notReady?.length ?? 0) > 0 && (
+          <Flex role="status" px="4" py="2">
+            <Text size="2" color="gray">{t('kb.sourcesNotReady', { count: allRecordsTableData?.notReady?.length ?? 0 })}</Text>
+          </Flex>
         )}
 
         {/* Data Table - shows appropriate items based on mode */}

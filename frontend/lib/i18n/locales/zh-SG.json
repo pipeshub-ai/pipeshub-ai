@@ -793,7 +793,8 @@
     "nameRules": {
       "folderSeparator": "文件夹名称不能包含“/”或“\\”。",
       "collectionExists": "你已有名为“{{name}}”的集合。请换一个名称。"
-    }
+    },
+    "sourcesNotReady": "部分来源仍在准备中，尚未列出（{{count}}）。请稍后再试。"
   },
   "connectorTypes": {
     "slack": "Slack",

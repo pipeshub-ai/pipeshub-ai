@@ -1646,6 +1646,16 @@ describe('Knowledge base page — All Records', () => {
     expect(api.hub.getAllRootItems).toHaveBeenCalledWith(expect.objectContaining({ cursor: 'scan2' }), expect.anything());
   });
 
+  it('says that sources still being prepared are not listed yet, so the list does not look complete', async () => {
+    withCollections();
+    const one = hubNode({ id: 'rec-one', name: 'One.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE' });
+    api.hub.getAllRootItems.mockResolvedValue({ ...hubResponse([one]), notReady: ['app-2'] });
+    openAt('/knowledge-base?view=all-records');
+
+    expect(await screen.findByRole('row', { name: 'One.xlsx' })).toBeTruthy();
+    expect((await screen.findByRole('status')).textContent).toContain('still being prepared');
+  });
+
   const emptyPage = (nextCursor: string | null, extra: Record<string, unknown> = {}) =>
     hubResponse([], {
       pagination: { page: 1, limit: 50, totalItems: 0, totalPages: 0, hasNext: nextCursor !== null, hasPrev: false, nextCursor, prevCursor: null, ...extra },

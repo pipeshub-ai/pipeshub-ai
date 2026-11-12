@@ -12,8 +12,8 @@ import logging
 import pytest
 
 from . import gen
-from .kh_layer import KhFinding, check_world
-from .kh_worlds import KH_WORLDS
+from .kh_layer import KhFinding, check_world, children_of
+from .kh_worlds import KH_WORLDS, OPENSTUB
 from .scenario import Scenario, load_all
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(0)]  # sized by the scenario set and PERM_GEN_WORLDS
@@ -62,6 +62,16 @@ async def test_golden_worlds_count_what_the_viewer_may_read(graph_layers) -> Non
                 bad += _bad(await check_world(layer, world, f"golden-{start + offset}"))
             await layer.release(chunk)
         assert not bad, f"{layer.name}\n{_describe(bad)}"
+
+
+async def test_a_stub_on_the_way_to_a_node_the_open_app_reads_is_listed_and_opens(graph_layers) -> None:
+    """The conformance check leaves stubs out of the children it expects, so this one asks the browse directly: in an App that opens everything the
+    folder lists the stub, with an arrow, and opening the stub lists what it leads to."""
+    for layer in graph_layers:
+        await layer.preload([OPENSTUB])
+        assert await children_of(layer, OPENSTUB, "u", "g", "recordGroup") == {"p": True}, layer.name
+        assert await children_of(layer, OPENSTUB, "u", "p", "record") == {"s": True}, layer.name
+        await layer.release([OPENSTUB])
 
 
 async def test_the_declared_group_arm_lists_only_its_own_connectors_records(graph_layers) -> None:
