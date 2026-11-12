@@ -2106,6 +2106,153 @@ async def test_a_file_shared_out_of_a_drive_with_no_synced_member_is_cut_when_a_
     assert BOB not in g1_people(ws)
 
 
+class Crash(BaseException):
+    """The process stops here: no handler in the connector catches it."""
+
+
+async def restart(ws: Workspace) -> None:
+    """A new connector object over the same graph and sync points: nothing in memory survives."""
+    old, ws.connector = ws.connector, None
+    with contextlib.suppress(Exception):
+        await old.cleanup()
+
+
+def crash_on_write(ws: Workspace, key_suffix: str, data: dict[str, Any]) -> None:
+    """The next write of `data` to the sync point ending in `key_suffix` never happens: the process stops first."""
+    real = ws.sync_points.update_sync_point
+
+    async def update(key: str, written: dict[str, Any]) -> None:
+        if key.endswith(key_suffix) and data.items() <= written.items():
+            ws.sync_points.update_sync_point = real
+            raise Crash
+        await real(key, written)
+
+    ws.sync_points.update_sync_point = update
+
+
+def crash_on_reset(ws: Workspace, key_suffix: str) -> None:
+    """The next reset of the token ending in `key_suffix` never happens: the process stops first."""
+    real = ws.sync_points.delete_sync_point
+
+    async def delete(key: str) -> None:
+        if key.endswith(key_suffix):
+            ws.sync_points.delete_sync_point = real
+            raise Crash
+        await real(key)
+
+    ws.sync_points.delete_sync_point = delete
+
+
+async def crash_in_bobs_shared_read(ws: Workspace) -> None:
+    """Bob's shared-with-me read stops after it has written its items, before it finishes."""
+    connector = await ws.connector_()
+    real = connector._process_shared_with_me_items
+
+    async def process(**kwargs: Any) -> Any:
+        out = await real(**kwargs)
+        if kwargs["user"].email == BOB:
+            raise Crash
+        return out
+
+    connector._process_shared_with_me_items = process
+
+
+def bob_checkpoint(ws: Workspace) -> dict[str, Any]:
+    return ws.sync_points.value(f"/users/{ws.world.users[BOB].user_id}") or {}
+
+
+async def tightened_and_left_out(ws: Workspace) -> dict[str, set[tuple[Optional[str], str, str]]]:
+    """Both drives stored as unrestricted, then made members-only at the source, which answers without restrictions.
+    Returns the grants before, which the drives get back once they are unrestricted again."""
+    await stored_as_unrestricted(ws)
+    before = all_grants(ws)
+    for drive in ("sd-1", "sd-2"):
+        ws.world.drives[drive]["restrictions"] = MEMBERS_ONLY
+    restrictions_left_out(ws, True)
+    return before
+
+
+async def lifted_with_the_object(ws: Workspace, before: dict[str, set[tuple[Optional[str], str, str]]]) -> None:
+    for drive in ("sd-1", "sd-2"):
+        ws.world.drives[drive]["restrictions"] = {}
+    restrictions_left_out(ws, False)
+    await ws.sync()
+    assert ws.incomplete is False
+    assert ws.sync_points.value("shared_drive_restrictions_sd-1")["assumed"] is False
+    assert bob_checkpoint(ws).get("reseed_shared_with_me") is not True
+    assert all_grants(ws) == before
+
+
+@pytest.mark.parametrize("stop", ["at the first token reset", "after the resets, before the mark"])
+async def test_a_restart_between_the_token_reset_and_the_mark_reads_the_drive_again_under_the_assumed_limits(
+    ws: Workspace, stop: str
+) -> None:
+    before = await tightened_and_left_out(ws)
+    if stop == "at the first token reset":
+        crash_on_reset(ws, "_sd-1")
+    else:
+        crash_on_write(ws, "shared_drive_restrictions_sd-1", {"assumed": True})
+    with pytest.raises(Crash):
+        await ws.sync()
+    assert not ws.sync_points.value("shared_drive_restrictions_sd-1").get("assumed")
+
+    await restart(ws)
+    await ws.sync()  # still left out: no mark was stored, so this run resets and reads again
+    assert ws.incomplete is True
+    assert f1_people(ws) == MEMBERS and BOB not in g1_people(ws)
+    assert ws.sync_points.value("shared_drive_restrictions_sd-1")["assumed"] is True
+
+    await restart(ws)
+    await lifted_with_the_object(ws, before)
+
+
+async def test_a_restart_after_the_mark_finishes_the_interrupted_shared_read_under_the_assumed_limits(
+    ws: Workspace,
+) -> None:
+    before = await tightened_and_left_out(ws)
+    await crash_in_bobs_shared_read(ws)
+    await ws.sync()  # Bob's sync stops partway; the run ends incomplete
+    assert ws.sync_points.value("shared_drive_restrictions_sd-1")["assumed"] is True
+    assert bob_checkpoint(ws)["reseed_shared_with_me"] is True  # kept: the read did not finish
+
+    await restart(ws)
+    await ws.sync()  # still left out: the mark is stored, so tokens stay, and Bob's read is done again
+    assert ws.incomplete is True
+    assert f1_people(ws) == MEMBERS and BOB not in g1_people(ws)
+    assert bob_checkpoint(ws)["reseed_shared_with_me"] is False
+
+    await restart(ws)
+    await lifted_with_the_object(ws, before)
+
+
+async def test_a_shared_read_interrupted_after_a_limit_is_lifted_is_finished_by_a_new_process(ws: Workspace) -> None:
+    ws.world.add_drive("sd-2", "Outside", {PARTNER: "organizer"}, MEMBERS_ONLY)
+    ws.world.add_item("g1", "memo.txt", parent="sd-2", perms=[BOB_WRITES])
+    await ws.sync()
+    assert BOB not in g1_people(ws)
+
+    ws.world.drives["sd-2"]["restrictions"] = {}
+    await crash_in_bobs_shared_read(ws)
+    await ws.sync()
+    assert bob_checkpoint(ws)["reseed_shared_with_me"] is True  # cleared only after a complete read
+
+    await restart(ws)
+    await ws.sync()
+    assert ws.incomplete is False
+    assert BOB in g1_people(ws)
+    assert bob_checkpoint(ws)["reseed_shared_with_me"] is False
+
+
+async def test_a_new_process_heals_a_drive_marked_assumed_on_the_first_answer_with_restrictions(ws: Workspace) -> None:
+    before = await tightened_and_left_out(ws)
+    await ws.sync()
+    assert ws.sync_points.value("shared_drive_restrictions_sd-1")["assumed"] is True
+    assert f1_people(ws) == MEMBERS and BOB not in g1_people(ws)
+
+    await restart(ws)
+    await lifted_with_the_object(ws, before)
+
+
 async def test_an_unreadable_answer_for_a_new_drive_shares_nothing(ws: Workspace) -> None:
     restricted_drive(ws)
     ws.world.restrictions_unlisted = ws.world.restrictions_unreadable = True
