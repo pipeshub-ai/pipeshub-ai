@@ -63,6 +63,7 @@ from app.utils.chat_helpers import (
     get_record_id_shortener_if_enabled,
     resolve_frontend_url,
 )
+from app.utils.error_class import innermost_type
 
 if TYPE_CHECKING:
     from app.modules.agents.qna.chat_state import ChatState
@@ -265,8 +266,11 @@ async def execute_find_records_by_value(
             graph, context, hits, user_id, org_id, start, bounded_limit,
         )
         records = await _details(graph, org_id, page)
-    except (EntityAccessError, EntityFilterUnavailableError, PermissionVerificationUnavailableError):
-        logger.warning("find_records_by_value failed", exc_info=True)
+    except (EntityAccessError, EntityFilterUnavailableError, PermissionVerificationUnavailableError) as exc:
+        logger.warning(
+            "find_records_by_value failed",
+            extra={"error_type": type(exc).__name__, "cause_type": innermost_type(exc)},
+        )
         return False, LOOKUP_FAILED_MSG
     values = await _matched_values(graph, org_id, raw, records)
     # Unconverted amounts both over- and under-match ("EUR 48,000" is not over 50,000),

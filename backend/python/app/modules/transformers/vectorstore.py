@@ -121,6 +121,7 @@ from app.utils.embedding_retry import (
     retry_delay_seconds,
     signal_backpressure_if_rate_limited,
 )
+from app.utils.error_class import innermost_type
 from app.utils.image_utils import normalize_image_to_base64
 from app.utils.indexing_timing import stage
 from app.utils.llm import load_ai_models
@@ -2153,14 +2154,14 @@ class VectorStore(Transformer):
             if attempt >= _EMBEDDING_BATCH_MAX_ATTEMPTS:
                 break
             delay = retry_delay_seconds(attempt)
-            # The chain, not str(): the OpenAI SDK reports every transport
-            # failure as "Connection error." and keeps the httpx exception that
-            # says which one as __cause__; a bare timeout's message is empty.
+            # The innermost cause, not the text: the OpenAI SDK reports every transport failure as
+            # "Connection error." with the httpx error that says which one as __cause__, and a
+            # provider's text is its response body, which can echo the chunks.
             self.logger.warning(
                 f"Dense embedding attempt {attempt}/{_EMBEDDING_BATCH_MAX_ATTEMPTS} "
                 f"failed for batch of {len(texts)} texts / {total_chars} chars "
-                f"(record {record_id}); retrying in {delay:.1f}s: "
-                f"{format_exception_chain(last_error)}"
+                f"(record {record_id}); retrying in {delay:.1f}s: {type(last_error).__name__}",
+                extra={"error_type": type(last_error).__name__, "cause_type": innermost_type(last_error)},
             )
             # A failing provider is not a stalled record: the stall timer waits out the retry.
             if progress is not None:

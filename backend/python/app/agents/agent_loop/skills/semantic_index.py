@@ -37,6 +37,7 @@ from app.agent_loop_lib.modules.providers.skills.text_scoring import (
     tokenize,
 )
 from app.utils.env_utils import env_int
+from app.utils.error_class import log_failure
 from app.utils.query_instruction import instruct_query
 
 if TYPE_CHECKING:
@@ -125,8 +126,8 @@ class SemanticSkillIndex(SkillIndex):
             vector = await embedder.aembed_query(text)
             self._vectors[metadata.name] = vector
             _vector_cache[key] = vector
-        except Exception:
-            logger.exception("SemanticSkillIndex: failed to embed skill %r", metadata.name)
+        except Exception as exc:
+            log_failure(logger, "skill_index.embed_failed", exc, include_error_text=False, step="skill")
             self._vectors.pop(metadata.name, None)
 
     # ---- SkillIndex -----------------------------------------------------
@@ -154,12 +155,12 @@ class SemanticSkillIndex(SkillIndex):
         if missing:
             try:
                 fresh = await embedder.aembed_documents([texts[m.name] for m in missing])
-            except Exception:
+            except Exception as exc:
                 # Whatever is already cached still scores semantically; only the
                 # uncached skills fall back to keyword matching.
-                logger.exception(
-                    "SemanticSkillIndex: bulk embedding failed for %d/%d skill(s), "
-                    "those fall back to keyword search", len(missing), len(skills),
+                log_failure(
+                    logger, "skill_index.embed_failed", exc, include_error_text=False,
+                    step="bulk", count=len(missing), total=len(skills),
                 )
                 self._vectors = vectors
                 return
@@ -212,8 +213,8 @@ class SemanticSkillIndex(SkillIndex):
             return None
         try:
             return await embedder.aembed_query(instruct_query(embedder, query))
-        except Exception:
-            logger.exception("SemanticSkillIndex: failed to embed query, falling back to keyword search")
+        except Exception as exc:
+            log_failure(logger, "skill_index.embed_failed", exc, include_error_text=False, step="query")
             return None
 
     async def get_categories(self) -> dict[str, list[str]]:

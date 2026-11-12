@@ -89,6 +89,7 @@ from app.utils.aimodels import (
     get_default_embedding_model,
     get_embedding_model,
 )
+from app.utils.error_class import log_failure
 from app.utils.query_instruction import instruct_query
 
 if TYPE_CHECKING:
@@ -1058,7 +1059,11 @@ class EntityVectorStore:
             except _MembershipReadError as exc:
                 self.logger.warning("Skipping entity upsert batch, membership unknown: %s", exc)
             except Exception as exc:
-                self.logger.error("Failed to upsert entity batch starting at %d: %s", start, exc)
+                # The embedding call's error carries the provider's body, which can echo the entity names.
+                log_failure(
+                    self.logger, "entity_index.upsert_failed", exc, include_error_text=False,
+                    batch_start=start, count=len(named),
+                )
             unwritten = [e for e in named if self._key_of(e) not in settled]
             if unwritten:
                 # Checked again on the next write: it may have been dropped

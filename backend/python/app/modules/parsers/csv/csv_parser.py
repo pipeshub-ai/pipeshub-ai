@@ -36,6 +36,7 @@ from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
 from app.services.parsing.interface import ParseResult
 from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.concurrency import max_table_rows_for_llm
+from app.utils.error_class import log_failure
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
 from app.utils.llm import get_llm_for_role
 from app.utils.logger import create_logger
@@ -759,7 +760,7 @@ class CSVParser:
         except NonRetryableError:
             raise
         except Exception as e:
-            logger.warning("Table summary unavailable (%s); using a plain one", e)
+            log_failure(logger, "table_summary.failed", e, include_error_text=False, parser="csv")
             return fallback_table_summary(list(rows[0].keys()) if rows else [], len(rows))
 
     async def get_rows_text(

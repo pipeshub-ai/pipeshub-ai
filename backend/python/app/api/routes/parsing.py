@@ -65,6 +65,7 @@ from app.services.resource_governor.memory_domain import (
 from app.services.resource_governor.models import ParseTier
 from app.services.resource_governor.org_share import OrgShare, max_org_share
 from app.services.resource_governor.policy import INDEX_LIGHT_WORKING_SET_GB
+from app.utils.error_class import log_failure
 from app.utils.request_context import current_display_id
 from app.utils.semaphore_logger import SemaphoreLogger
 from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR
@@ -348,14 +349,14 @@ async def parse_file(
                     },
                 },
             )
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             parse_ms = (time.monotonic() - parse_start) * 1000
-            logger.exception(
-                "Unexpected error parsing '%s' (provider=%s, parse_ms=%.0f)",
-                record_name, provider_enum.value, parse_ms,
+            # Class and frames only: the text can quote the document, a path, or (VLM OCR) the model
+            # provider's response body; the caller only needs to correlate.
+            log_failure(
+                logger, "parse.failed", exc, include_error_text=False,
+                provider=provider_enum.value, parse_ms=round(parse_ms),
             )
-            # The exception and its type stay in the log above: the text can quote the
-            # document or a path, and the caller only needs to correlate.
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 content={

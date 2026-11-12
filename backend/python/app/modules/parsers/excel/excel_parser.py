@@ -60,6 +60,7 @@ from app.services.resource_governor.kinds import ParseKind
 from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.concurrency import max_table_rows_for_llm
 from app.utils.env_config import env_int, env_positive_int
+from app.utils.error_class import log_failure
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
 from app.utils.llm import get_llm_for_role
 from app.utils.opik import get_llm_invoke_config
@@ -1574,7 +1575,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
         except NonRetryableError:
             raise
         except Exception as e:
-            self.logger.warning("Table summary unavailable (%s); using a plain one", e)
+            log_failure(self.logger, "table_summary.failed", e, include_error_text=False, parser="excel")
             return fallback_table_summary(table["headers"], len(table["data"]))
 
     async def get_rows_text(

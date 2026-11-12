@@ -6,9 +6,9 @@ never the already-searchable record."""
 import asyncio
 import base64
 import io
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import openai
 import pytest
 from botocore.exceptions import ClientError
@@ -21,7 +21,17 @@ from app.modules.transformers.document_extraction import (
     ExtractionLLMError,
     SubCategories,
 )
+from app.services.llm_gateway.gateway import ProviderUnavailableError
 from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
+from tests.support.provider_errors import (
+    MARK,
+    assert_text_free,
+    failure_line,
+    httpx_error,
+    openai_error,
+    schema_mismatch,
+    with_cause,
+)
 
 _MODULE = "app.modules.transformers.document_extraction"
 
@@ -225,17 +235,11 @@ def _multimodal_role() -> AsyncMock:
     return AsyncMock(return_value=(MagicMock(), {"isMultimodal": True, "contextLength": 8000}))
 
 
-def _openai_error(
-    status: int, error: dict | None = None,
-) -> openai.APIStatusError:
-    response = httpx.Response(status, request=httpx.Request("POST", "http://x"))
-    body = {"error": error or {
+def _openai_error(status: int, error: dict | None = None) -> openai.APIStatusError:
+    return openai_error(status, error or {
         "message": "The image data you provided does not represent a valid image.",
         "type": "invalid_request_error", "param": "input", "code": "invalid_value",
-    }}
-    error_type = {400: openai.BadRequestError, 401: openai.AuthenticationError, 404: openai.NotFoundError}[status]
-    # The SDK's own message format, which carries the body.
-    return error_type(f"Error code: {status} - {body}", response=response, body=body)
+    })
 
 
 def _bedrock_validation_error() -> ClientError:
@@ -378,3 +382,102 @@ def test_an_image_declared_with_the_wrong_type_is_relabelled() -> None:
     ]
     content = _extraction()._prepare_content(blocks, is_multimodal_llm=True, context_length=8000, allow_remote_image_uri=True)
     assert content[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+# ---------------------------------------------------------------------------
+# Failure lines: one per handled failure, with its class and none of the provider's text (F24b)
+# ---------------------------------------------------------------------------
+
+
+def _logged_extraction() -> DocumentExtraction:
+    # A real logger: log_failure on a MagicMock takes its silent fallback.
+    graph_provider = AsyncMock()
+    graph_provider.get_departments = AsyncMock(return_value=["Engineering"])
+    return DocumentExtraction(logging.getLogger("test.document_extraction"), graph_provider, AsyncMock())
+
+
+def _record() -> MagicMock:
+    record = MagicMock()
+    record.id, record.org_id, record.record_name = "rec-1", "org-1", "doc.txt"
+    record.record_type.value = "FILE"
+    record.block_containers.blocks = _blocks()
+    record.block_containers.block_groups = []
+    return record
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "error_class", "level"),
+    [
+        (lambda: with_cause(ExtractionLLMError(f"call failed: {MARK}"), openai_error(400)), "bad_request", logging.WARNING),
+        (lambda: with_cause(ExtractionLLMError(f"call failed: {MARK}"), openai_error(401)), "misconfigured", logging.ERROR),
+        (lambda: with_cause(ExtractionLLMError(f"call failed: {MARK}"), httpx_error(400)), "bad_request", logging.WARNING),
+        (lambda: with_cause(ProviderUnavailableError(f"p: {MARK}", provider="p"), openai_error(429)), "rate_limited",
+         logging.WARNING),
+        # Causeless: the model twice gave nothing usable, or the provider's circuit is open. Neither is our bug.
+        (lambda: ExtractionLLMError("Document classification and the fallback summary both failed"), "bad_request",
+         logging.WARNING),
+        (lambda: with_cause(ExtractionLLMError(f"call failed: {MARK}"), schema_mismatch(DocumentClassification)),
+         "bad_request", logging.WARNING),
+        (lambda: ProviderUnavailableError(f"p is failing {MARK}", provider="p"), "unavailable", logging.WARNING),
+    ],
+    ids=["400", "401", "httpx-400", "outage-429", "both-failed", "circuit-open", "answer-not-fitting"],
+)
+async def test_a_failed_extraction_is_one_text_free_line_for_the_record(caplog, error, error_class, level) -> None:
+    caplog.set_level(logging.DEBUG)
+    extraction = _logged_extraction()
+    record = _record()
+    with patch.object(extraction, "process_document", AsyncMock(side_effect=error())):
+        await extraction.apply(MagicMock(record=record))
+
+    assert record.semantic_metadata is None
+    assert failure_line(caplog.records, "document_extraction.failed", error_class, level)["record_id"] == "rec-1"
+    assert_text_free(caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_refused_images_are_noted_by_count_without_the_refusal(caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    extraction = _logged_extraction()
+    invoke = AsyncMock(side_effect=[_openai_error(400, {
+        "message": f"The image data you provided does not represent a valid image. {MARK}",
+        "type": "invalid_request_error", "param": "input", "code": "invalid_value",
+    }), _classification()])
+    with patch(f"{_MODULE}.get_llm_for_role", _multimodal_role()), patch(
+        f"{_MODULE}.invoke_with_structured_output_and_reflection", invoke
+    ):
+        assert await extraction.classify(_blocks_with_image(), "org-1", ["Engineering"]) is not None
+
+    (note,) = [r for r in caplog.records if "classifying its text alone" in r.getMessage()]
+    assert note.levelno == logging.WARNING
+    assert note.error_type == "ExtractionLLMError"
+    assert "1 image" in note.getMessage()
+    assert_text_free(caplog.records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["document", "code"])
+async def test_a_failed_fallback_summary_is_one_text_free_line(caplog, kind) -> None:
+    caplog.set_level(logging.DEBUG)
+    extraction = _logged_extraction()
+    gateway = MagicMock(invoke=AsyncMock(side_effect=openai_error(400)))
+    with patch(f"{_MODULE}.get_llm_gateway", return_value=gateway):
+        if kind == "document":
+            result = await extraction._fallback_summary(MagicMock(), [{"type": "text", "text": "doc"}])
+        else:
+            result = await extraction._code_fallback_summary(MagicMock(), "code")
+
+    assert result is None
+    assert failure_line(caplog.records, "extraction.fallback_failed", "bad_request", logging.WARNING)["kind"] == kind
+    assert_text_free(caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_an_outage_in_the_fallback_is_raised_without_a_line(caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    extraction = _logged_extraction()
+    gateway = MagicMock(invoke=AsyncMock(side_effect=LLMUnavailableError(MARK)))
+    with patch(f"{_MODULE}.get_llm_gateway", return_value=gateway), pytest.raises(LLMUnavailableError):
+        await extraction._fallback_summary(MagicMock(), [{"type": "text", "text": "doc"}])
+
+    assert not [r for r in caplog.records if r.getMessage() == "extraction.fallback_failed"]

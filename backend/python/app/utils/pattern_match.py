@@ -50,6 +50,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     requested_scope_ids,
 )
 from app.utils.env_utils import accuracy_feature_enabled, high_accuracy_mode
+from app.utils.error_class import log_failure
 from app.utils.exact_text_index import (
     LexicalSearcher,
     plan_command,
@@ -651,7 +652,7 @@ async def generate_grep_command_via_llm(
     in the Opik trace alongside the rest of the agent loop.
     """
     from app.agent_loop_lib.transport.opik_tracing import build_langchain_opik_callbacks
-    from app.utils.streaming import _apply_structured_output
+    from app.utils.streaming import _apply_structured_output, answer_error_class
 
     messages = [
         SystemMessage(content=_GREP_GENERATION_SYSTEM_PROMPT),
@@ -683,8 +684,9 @@ async def generate_grep_command_via_llm(
             )
             continue
         except Exception as exc:
-            logger_instance.warning(
-                "generate_grep_command_via_llm: attempt %d, LLM call failed: %s", attempt, exc,
+            log_failure(
+                logger_instance, "grep_generation.failed", exc, include_error_text=False,
+                error_class=answer_error_class(exc), attempt=attempt,
             )
             continue
         _report_llm_usage(response, on_llm_usage, logger_instance)

@@ -28,6 +28,8 @@ from app.services.parsing.interface import (
 from app.services.parsing.registry import ParserRegistry
 from app.services.resource_governor import Pool, ResourceGovernor
 from app.services.resource_governor.models import ResourceSnapshot
+from app.utils.logger import JsonFormatter, TextFormatter
+from tests.support.provider_errors import assert_text_free, failure_line, openai_error
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -248,8 +250,9 @@ def test_parse_endpoint_invalid_provider() -> None:
 
 
 def test_parse_endpoint_unexpected_exception(caplog: pytest.LogCaptureFixture) -> None:
-    """The 500 body names the failure without echoing the exception text,
-    which stays in the service's own log with its traceback."""
+    """The 500 body names the failure without echoing the exception text. The log
+    line has its class and frames but not its text either: a model provider's error
+    (VLM OCR) carries its response body, and any text can quote the document."""
     registry = MagicMock(spec=ParserRegistry)
     mock_parser = MagicMock()
     mock_parser.parse = AsyncMock(side_effect=RuntimeError("Boom /srv/secret token=abc"))
@@ -274,7 +277,23 @@ def test_parse_endpoint_unexpected_exception(caplog: pytest.LogCaptureFixture) -
     assert "RuntimeError" not in response.text
     assert "Boom" not in response.text
     assert "/srv/secret" not in response.text
-    assert any(r.exc_info and "Boom" in str(r.exc_info[1]) for r in caplog.records)
+    fields = failure_line(caplog.records, "parse.failed", "internal", logging.ERROR)
+    assert fields["provider"] == "default"
+    assert isinstance(fields["parse_ms"], int)
+    (line,) = [r for r in caplog.records if r.getMessage() == "parse.failed"]
+    assert "RuntimeError: <message omitted>" in line.exc_text
+    # The file name can be personal: neither the line nor its stack carries it, in either format.
+    for rendered in (TextFormatter().format(line), JsonFormatter().format(line)):
+        assert "Boom" not in rendered and "test.pdf" not in rendered
+
+
+def test_a_model_provider_error_while_parsing_is_logged_without_its_text(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.DEBUG):
+        response = _post_pdf_to_parser_raising(openai_error(401))
+
+    assert response.status_code == 500
+    failure_line(caplog.records, "parse.failed", "misconfigured", logging.ERROR)
+    assert_text_free(caplog.records)
 
 
 def _post_pdf_to_parser_raising(exc: Exception) -> Response:

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import warnings
 from typing import (
     Any,
@@ -29,7 +28,7 @@ from langchain_core.utils.utils import (
 )
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from tenacity import (
-    before_sleep_log,
+    RetryCallState,
     retry,
     stop_after_attempt,
     wait_exponential,
@@ -41,6 +40,16 @@ from app.utils.logger import create_logger
 logger = create_logger("custom_embeddings")
 
 
+def _log_voyage_retry(retry_state: RetryCallState) -> None:
+    # The type only: the error's text is Voyage's whole response, which can echo the input.
+    error = retry_state.outcome.exception() if retry_state.outcome else None
+    logger.warning(
+        "Voyage embedding attempt %d failed; retrying in %.1fs",
+        retry_state.attempt_number, retry_state.upcoming_sleep,
+        extra={"error_type": type(error).__name__},
+    )
+
+
 def _create_retry_decorator(embeddings: VoyageEmbeddings) -> Callable[[Any], Any]:
     min_seconds = 4
     max_seconds = 10
@@ -50,7 +59,7 @@ def _create_retry_decorator(embeddings: VoyageEmbeddings) -> Callable[[Any], Any
         reraise=True,
         stop=stop_after_attempt(embeddings.max_retries),
         wait=wait_exponential(multiplier=1, min=min_seconds, max=max_seconds),
-        before_sleep=before_sleep_log(logger, logging.WARNING),
+        before_sleep=_log_voyage_retry,
     )
 
 
