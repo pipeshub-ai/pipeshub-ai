@@ -22,6 +22,7 @@ const handleRegenerationError = (...args: any[]): Promise<any> => {
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
 import { AGUI_PROTOCOL, frameAGUI } from '../../../../src/modules/enterprise_search/utils/agui'
 import { StreamedContentAccumulator } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
+import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { InternalServerError } from '../../../../src/libs/errors/http.errors'
 import { CONVERSATION_STATUS } from '../../../../src/modules/enterprise_search/constants/constants'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
@@ -564,6 +565,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
   })
 
   describe('handleRegenerationError', () => {
+    const reader = { appConfig: {} as any, userId: 'u', orgId: 'o' }
     const stubMessagesQuery = (messages: unknown[]): sinon.SinonStub => {
       const chain = {
         sort: sinon.stub().returnsThis(),
@@ -589,7 +591,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const error = Object.assign(new Error('connect ECONNREFUSED 10.0.0.7:8000'), { code: 'ECONNREFUSED' })
 
       await handleRegenerationError(
-        asRes(res), error, asDoc(conversation), messageId, conversation._id.toString(), null, 'req-1', 'regeneration_error', AGUI_PROTOCOL,
+        asRes(res), error, asDoc(conversation), messageId, conversation._id.toString(), null, 'req-1', 'regeneration_error', AGUI_PROTOCOL, reader,
       )
 
       expect(findConversation.calledOnceWithExactly(conversation._id.toString())).to.equal(true)
@@ -605,6 +607,27 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       expect(out).to.not.include('ECONNREFUSED')
     })
 
+    it('an error event never carries an answer the reader lost access to', async () => {
+      const res = makeRes()
+      const conversation = makeConversation()
+      const messageId = new mongoose.Types.ObjectId()
+      sinon.stub(ChatSessionMessage, 'findOne').resolves({ _id: messageId, seq: 2 })
+      sinon.stub(ChatSessionMessage, 'findOneAndReplace').resolves({ _id: messageId })
+      sinon.stub(ChatSession, 'findById').resolves({ _id: conversation._id, toObject: () => ({ _id: conversation._id, title: 'T' }) })
+      stubMessagesQuery([
+        { _id: new mongoose.Types.ObjectId(), messageType: 'bot_response', content: 'SECRET-OLD-ANSWER', attachments: [{ recordId: 'rec-lost' }], seq: 1, orgId: 'o' },
+        { _id: messageId, messageType: 'error', content: CHAT_ERROR_MESSAGES.unavailable, seq: 2, orgId: 'o' },
+      ])
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { accessible: [], accessibleUrls: [] } } as never)
+      const secured = { appConfig: { aiBackend: 'http://ai', jwtSecret: 's', scopedJwtSecret: 's2' } as any, userId: 'u', orgId: 'o' }
+
+      await handleRegenerationError(asRes(res), new Error('boom'), asDoc(conversation), messageId, conversation._id.toString(), null, 'req-1', 'regeneration_error', AGUI_PROTOCOL, secured)
+
+      const out = written(res)
+      expect(out).to.not.include('SECRET-OLD-ANSWER')
+      expect(out).to.include('no_longer_accessible')
+    })
+
     it('still tells the user when the conversation cannot be reloaded', async () => {
       const res = makeRes()
       const conversation = makeConversation()
@@ -614,7 +637,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       sinon.stub(ChatSession, 'findById').resolves(null)
 
       await handleRegenerationError(
-        asRes(res), new Error('socket hang up'), asDoc(conversation), messageId, 'conv-1', null, 'req-1', 'regeneration_error', AGUI_PROTOCOL,
+        asRes(res), new Error('socket hang up'), asDoc(conversation), messageId, 'conv-1', null, 'req-1', 'regeneration_error', AGUI_PROTOCOL, reader,
       )
 
       const payload = JSON.parse(at(written(res).split('data: '), 1)) as { message: string; conversation?: unknown }
@@ -631,7 +654,7 @@ describe('Regenerating an answer (enterprise search utils)', () => {
       const reload = sinon.stub(ChatSession, 'findById')
 
       await handleRegenerationError(
-        asRes(res), new Error('stack overflow in parser at line 7'), asDoc(conversation), messageId, 'conv-1', null, 'req-1', 'regeneration_error', AGUI_PROTOCOL,
+        asRes(res), new Error('stack overflow in parser at line 7'), asDoc(conversation), messageId, 'conv-1', null, 'req-1', 'regeneration_error', AGUI_PROTOCOL, reader,
       )
 
       expect(reload.called).to.equal(false)
