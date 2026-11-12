@@ -2930,11 +2930,12 @@ class GoogleDriveTeamConnector(BaseConnector):
     async def _handle_removed_change(
         self,
         file_id: str | None,
-        user: AppUser,
+        user: AppUser | None,
         owner_sources: dict[str, GoogleDriveDataSource],
         drive_id: str | None = None,
     ) -> None:
-        """Apply a `removed` change from one user's changes feed.
+        """Apply a `removed` change from one user's changes feed (None: an undecided one of a user no longer in the
+        directory, decided by everyone else).
 
         Drive reports `removed` both when a file is deleted and when only this user lost
         access to it. For a My Drive file the owner is asked first: a clean "not found",
@@ -2961,16 +2962,18 @@ class GoogleDriveTeamConnector(BaseConnector):
             await self._drop_reporters_grant(record, user)
             raise
 
-    async def _drop_reporters_grant(self, record: Record, user: AppUser) -> None:
+    async def _drop_reporters_grant(self, record: Record, user: AppUser | None) -> None:
         """The user who reported a file removed can no longer open it, whatever the others can: their own grant goes
         now. A failure raises, so the change is held and the grant is removed when it is read again, also when the
-        file itself is kept."""
+        file itself is kept. A user no longer in the directory lost every direct grant then (`_apply_user_status`)."""
+        if user is None:
+            return
         await self.data_entities_processor.delete_permission_from_record(
             record_id=record.id, user_email=user.email, connector_id=record.connector_id
         )
 
     async def _decide_removed_change(
-        self, record: Record, user: AppUser, owner_sources: dict[str, GoogleDriveDataSource], drive_id: str | None
+        self, record: Record, user: AppUser | None, owner_sources: dict[str, GoogleDriveDataSource], drive_id: str | None
     ) -> None:
         # A shared drive file's OWNER edges are its organizers, and an organizer who
         # left the drive gets "not found" too, so the owner is never asked for one.
@@ -2994,6 +2997,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             return
         # Deleting only their direct USER edge would leave group- and drive-derived
         # access intact, and stale access is the worse way to be wrong here.
+        if user is None:
+            return
         self.logger.info(f"Removing permission from record {record.record_name} for user {user.email}")
         await self.data_entities_processor.delete_permission_from_record(
             record_id=record.id, user_email=user.email, connector_id=record.connector_id
@@ -3159,9 +3164,10 @@ class GoogleDriveTeamConnector(BaseConnector):
 
     async def _recheck_unvisited_undecided_removals(self) -> None:
         """Check again the undecided lists no user's run reached: their user left the shared drive, so nobody walks
-        it for them, or is no longer synced. Everyone else who may open a file is asked as for any removal, and the
-        user too while they can still sign in. A list whose user is not in the directory any more is left, still
-        spared by the stale-record cleanup."""
+        it for them, is no longer synced, or is no longer in the directory. Everyone else who may open a file is
+        asked, as for any removal, and the user too while they can still sign in. A list's keys are never deleted,
+        so one whose user has gone is still checked here every run; until a clean answer, its files stay spared by
+        the stale-record cleanup."""
         try:
             index = await self.drive_delta_sync_point.read_sync_point(UNDECIDED_REMOVAL_KEYS_SYNC_POINT_KEY) or {}
             keys = [k for k in map(str, index.get("keys") or []) if k not in self._undecided_visited]
@@ -3169,24 +3175,21 @@ class GoogleDriveTeamConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"The undecided removals could not be listed ({type(e).__name__}); checked next run")
             return
-        unknown = 0
         for key in keys:
             reporter = next(
                 (u for u in self.synced_users if key == (own := self._undecided_key(u)) or key.startswith(f"{own}_")),
                 None,
             )
-            if reporter is None:
-                unknown += 1
-                continue
-            drive_id = key.removeprefix(self._undecided_key(reporter)).removeprefix("_") or None
+            # Source user ids hold no "_", so what follows the first one is the shared drive.
+            drive_id = key.removeprefix(UNDECIDED_REMOVALS_SYNC_POINT_PREFIX).partition("_")[2] or None
             try:
                 source = (
                     await self._build_user_drive_data_source(reporter)
-                    if reporter.email and reporter.email.lower() in active else None
+                    if reporter and reporter.email and reporter.email.lower() in active else None
                 )
 
                 async def settle(
-                    file_id: str, entry_drive_id: str | None, reporter: AppUser = reporter,
+                    file_id: str, entry_drive_id: str | None, reporter: AppUser | None = reporter,
                     drive_id: str | None = drive_id, source: GoogleDriveDataSource | None = source,
                 ) -> None:
                     if drive_id:
@@ -3197,13 +3200,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                 await self._recheck_undecided_removals(key, reporter, source, settle)
             except Exception as e:
                 self.logger.warning(f"An undecided list could not be checked again ({type(e).__name__}); next run")
-        if unknown:
-            self.logger.warning(f"{unknown} undecided list(s) belong to users not in the directory; they are kept")
 
     async def _recheck_undecided_removals(
         self,
         undecided_key: str,
-        user: AppUser,
+        user: AppUser | None,
         source: GoogleDriveDataSource | None,
         settle: Callable[[str, str | None], Awaitable[None]],
     ) -> None:
@@ -3223,7 +3224,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                 record = await self.data_entities_processor.get_record_by_external_id(
                     connector_id=self.connector_id, external_record_id=file_id
                 )
-                if record is None or (source is not None and await self._user_can_open(record, user, {user.email: source})):
+                if record is None or (
+                    user is not None and source is not None and await self._user_can_open(record, user, {user.email: source})
+                ):
                     continue
                 await settle(file_id, drive_id or None)
             except Exception as e:
@@ -3241,7 +3244,7 @@ class GoogleDriveTeamConnector(BaseConnector):
     async def _apply_shared_drive_removal(
         self,
         file_id: str | None,
-        user: AppUser,
+        user: AppUser | None,
         drive_id: str,
         user_drive_data_source: GoogleDriveDataSource | None,
     ) -> None:
@@ -3260,7 +3263,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         )
         if record is None:
             return
-        sources = {user.email: user_drive_data_source} if user_drive_data_source else {}
+        sources = {user.email: user_drive_data_source} if user and user_drive_data_source else {}
 
         async def still_open(item: Record) -> bool:
             for candidate in await self._removal_candidates(item, user, drive_id):
@@ -3307,11 +3310,11 @@ class GoogleDriveTeamConnector(BaseConnector):
             await self._drop_reporters_grant(record, user)
             raise
 
-    async def _removal_candidates(self, record: Record, user: AppUser, drive_id: str) -> list[AppUser]:
+    async def _removal_candidates(self, record: Record, user: AppUser | None, drive_id: str) -> list[AppUser]:
         """Synced users who could still open a file a drive feed reported removed: the reporting user, the
         drive's synced members, and those the record grants access to. At most MAX_IMPERSONATION_CANDIDATES."""
         synced = await self._synced_user_emails()
-        wanted: list[str] = [user.email.lower()]
+        wanted: list[str] = [user.email.lower()] if user else []
         if drive_id in self._synced_drive_ids:
             if drive_id not in self._drive_member_emails:
                 members: list[str] = []
@@ -3338,7 +3341,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             if len(out) >= MAX_IMPERSONATION_CANDIDATES:
                 break
         # A reporter who can no longer sign in (an undecided list checked again without its user's run) cannot answer.
-        if user not in out and user.email.lower() in synced:
+        if user is not None and user not in out and user.email.lower() in synced:
             out.insert(0, user)
         return out
 
@@ -3416,9 +3419,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         return self._deployment_emails
 
     async def _another_synced_user_can_open(
-        self, record: Record, removed_for: AppUser, owner_sources: dict[str, GoogleDriveDataSource]
+        self, record: Record, removed_for: AppUser | None, owner_sources: dict[str, GoogleDriveDataSource]
     ) -> bool:
-        """Whether a synced user other than ``removed_for`` can still open the record's file.
+        """Whether a synced user other than ``removed_for`` (None: a user no longer in the directory) can still open
+        the record's file.
 
         Asks each active synced user the graph holds a permission for, directly or
         through a group grant, then up to AUDIENCE_PROBES people of each audience group
@@ -3454,7 +3458,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             may_open |= self._group_people.get(group.source_user_group_id) or set()
 
         by_email = {u.email.lower(): u for u in self.synced_users if u.email}
-        others = {e: u for e, u in by_email.items() if e != removed_for.email.lower()}
+        others = {e: u for e, u in by_email.items() if not removed_for or e != removed_for.email.lower()}
         for email in sorted(holder_emails):
             if email in others and await self._user_can_open(record, others[email], owner_sources):
                 return True
@@ -3491,7 +3495,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         self._raise_if_cut_listing_left_out(record, may_open, removed_for)
         return False
 
-    def _raise_if_cut_listing_left_out(self, record: Record, may_open: set[str], removed_for: AppUser) -> None:
+    def _raise_if_cut_listing_left_out(self, record: Record, may_open: set[str], removed_for: AppUser | None) -> None:
         """On a cut user listing, people it left out were not asked whether they can open the file, so "nobody can"
         is not known: raise, and the change is read again on a complete listing. Only the account's own people who
         are not known to be unable to sign in count."""
@@ -3500,7 +3504,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         domains = self._account_domains
         left_out = sorted(
             e for e in may_open
-            if e and e not in self.synced_user_emails and e != (removed_for.email or "").lower()
+            if e and e not in self.synced_user_emails and (not removed_for or e != (removed_for.email or "").lower())
             and not self._is_inactive_email(e) and (domains is None or _email_domain(e) in domains)
         )
         if left_out:

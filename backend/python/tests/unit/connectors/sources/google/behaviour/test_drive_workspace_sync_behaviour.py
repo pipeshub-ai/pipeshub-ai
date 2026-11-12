@@ -4227,7 +4227,7 @@ async def test_a_normal_full_syncs_cleanup_spares_a_file_on_an_undecided_list(ws
     assert "g1" not in ws.records.records, "a clean answer settles it"
 
 
-@pytest.mark.parametrize("bob", ["leaves the drive", "is no longer synced"])
+@pytest.mark.parametrize("bob", ["leaves the drive", "is no longer synced", "leaves the directory"])
 async def test_a_parked_shared_drive_removal_is_settled_after_every_synced_member_leaves_the_drive(
     ws: Workspace, bob: str
 ) -> None:
@@ -4248,6 +4248,9 @@ async def test_a_parked_shared_drive_removal_is_settled_after_every_synced_membe
     # No synced user walks the drive any more. One no longer synced cannot be asked, and is not.
     if bob == "leaves the drive":
         del ws.world.drives["sd-1"]["members"][BOB]
+    elif bob == "leaves the directory":
+        ws.world.users.pop(BOB)
+        ws.records.active_users = [u for u in ws.records.active_users if u.email != BOB]
     else:
         ws.records.active_users = [u for u in ws.records.active_users if u.email != BOB]
         ws.http.fail("GET", "/drive/v3/files/d", 401, "authError", when=lambda r: r.identity == BOB)
@@ -4291,3 +4294,19 @@ async def test_a_parked_removal_of_a_user_no_longer_synced_is_still_settled(ws: 
     _drop_the_audience_shares(ws, "g1")
     await ws.sync()
     assert "g1" not in ws.records.records, "checked again without Bob's run: nobody can open it"
+
+
+async def test_a_parked_removal_of_a_user_who_left_the_directory_is_settled_by_everyone_else(ws: Workspace) -> None:
+    await _park_undecided_removals(ws, "g1")
+    ws.world.users.pop(BOB)  # Bob's account is deleted: nobody can ask as him, or by his id
+    ws.records.active_users = [u for u in ws.records.active_users if u.email != BOB]
+    _read_everything_in_full_next_run(ws)
+    for _ in range(2):
+        await ws.sync()
+        assert "g1" in ws.records.records, "still undecided: spared by the full sync's cleanup"
+        assert ("workspace-members", "GROUP", "READ") in ws.grants("g1")
+    assert not any(email == BOB for email, _, _ in ws.grants("g1")), "Bob keeps no grant"
+
+    _drop_the_audience_shares(ws, "g1")
+    await ws.sync()
+    assert "g1" not in ws.records.records, "settled by the people who may still open it: none can"
