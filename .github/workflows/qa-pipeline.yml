@@ -654,6 +654,9 @@ jobs:
             else
               args=(--stack managed --graph-db neo4j --target "$DEFAULT_BRANCH" --head "$HEAD_SHA")
             fi
+            # A secret this repository lacks arrives as an empty variable; the unit suites the agent runs
+            # read "set but empty" as a broken setting (SECRET_KEY), where the run-unit job leaves them unset.
+            while IFS= read -r name; do unset "$name"; done < <(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=$/\1/p')
             # The combine step commits; the gate is the report job's, so the agent's own exit code only goes to the log.
             git config user.name 'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'

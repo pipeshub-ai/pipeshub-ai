@@ -88,11 +88,13 @@ def _record(store: Path, plan: dict, results: dict, trigger: str | None = None,
 
 def _merged(out: Path) -> tuple[dict, dict | None]:
     """plan.json and every results*.json part merged, as the report reads them."""
+    # A merged artifact download can nest a run job's files one level down (see below).
+    found = {n: next((p for p in (out / n, out / out.name / n) if p.is_file()), None) for n in ("agent-plan.json", "agent.json")}
     # The QA agent plans its own floor (a combined run's differs from the PR's), so its plan wins.
-    plan = _load(out / "agent-plan.json") if (out / "agent-plan.json").is_file() else _load(out / "plan.json")
-    if (out / "agent.json").is_file():
+    plan = _load(found["agent-plan.json"]) if found["agent-plan.json"] else _load(out / "plan.json")
+    if found["agent.json"]:
         # Tests the QA agent ran beyond the floor join the plan, so their results reach the report and the gate.
-        doc = _load(out / "agent.json")
+        doc = _load(found["agent.json"])
         have = {t["id"] for t in plan["tests"]}
         plan["tests"] += [t for t in doc.get("extra_tests", []) if t["id"] not in have]
         plan["agent"] = doc
