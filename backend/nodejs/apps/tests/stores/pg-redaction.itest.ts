@@ -266,8 +266,8 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       };
       const asked = stubAccess(['rec-ok']);
       const denied = await listArchived();
-      // `no_longer_accessible`, not `access_check_unavailable`: each bare id was resolved to its record in PostgreSQL.
       expectHidden(denied.answer, lost);
+      // The check was asked about both bare citation ids, which proves each was resolved to its record in PostgreSQL.
       expect(asked.flat()).to.include.members(['rec-ok', 'rec-no']);
       expect(JSON.stringify(denied.body)).to.not.contain(SECRET);
 

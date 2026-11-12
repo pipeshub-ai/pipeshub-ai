@@ -9,21 +9,10 @@ on:
       - 'main'
     paths:
       - 'backend/db/**'
-      # Every source directory the store tests import, so a change to code they exercise runs them.
-      - 'backend/nodejs/apps/src/libs/**'
-      - 'backend/nodejs/apps/src/modules/auth/**'
-      - 'backend/nodejs/apps/src/modules/configuration_manager/**'
-      - 'backend/nodejs/apps/src/modules/crawling_manager/**'
-      - 'backend/nodejs/apps/src/modules/enterprise_search/**'
-      - 'backend/nodejs/apps/src/modules/mail/**'
-      - 'backend/nodejs/apps/src/modules/notification/**'
-      - 'backend/nodejs/apps/src/modules/oauth_provider/**'
-      - 'backend/nodejs/apps/src/modules/projects/**'
-      - 'backend/nodejs/apps/src/modules/storage/**'
-      - 'backend/nodejs/apps/src/modules/user_management/**'
+      # The store tests load the chat controller, which reaches most of the Node source tree, so any source change runs them.
+      - 'backend/nodejs/apps/src/**'
       - 'backend/nodejs/apps/tests/support/**'
       - 'backend/nodejs/apps/tests/storage/fingerprint-model/**'
-      - 'backend/nodejs/apps/src/libs/services/ttl-sweeper.service.ts'
       - 'backend/nodejs/apps/tests/stores/**'
       - 'backend/nodejs/apps/tests/libs/repositories/**'
       - 'backend/nodejs/apps/package.json'
