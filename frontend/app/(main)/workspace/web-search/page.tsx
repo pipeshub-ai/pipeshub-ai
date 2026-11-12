@@ -134,7 +134,7 @@ export default function WebSearchPage() {
       const meta = WEB_SEARCH_PROVIDER_META.find((m) => m.type === provider);
       const label = meta?.label ?? provider;
       // The server makes the first search provider the default; a later one waits for "Set as default".
-      const becomesDefault = !configuredProviders.some((p) => p.isDefault);
+      const becomesDefault = !!meta?.searches && !configuredProviders.some((p) => p.isDefault);
       addToast({
         variant: 'success',
         title: isEdit ? `${label} updated` : `${label} added`,

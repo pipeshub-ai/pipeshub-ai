@@ -110,6 +110,10 @@ class TestOrgWithoutWebSearch:
         query_info = await _run(ASSISTANT, {"query": "q"})
         assert query_info["webSearchUnset"] is False
 
+    async def test_a_turn_with_web_search_switched_off_is_not_asked_to_set_it_up(self) -> None:
+        off = await _run(ASSISTANT, {"query": "q", "agentCapabilities": {"webSearch": False}}, resolved=None)
+        assert off["webSearchUnset"] is False
+
     async def test_an_agent_without_web_search_is_not_an_unset_org(self) -> None:
         query_info = await _run(NAMED, {"query": "q"}, resolved=None)
         assert query_info["webSearchUnset"] is False

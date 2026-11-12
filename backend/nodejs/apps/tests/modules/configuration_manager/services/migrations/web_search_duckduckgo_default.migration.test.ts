@@ -142,6 +142,17 @@ describe('WebSearchDuckDuckGoDefaultMigration', () => {
     expect(kv.values[FLAG]).to.equal(undefined);
   });
 
+  it('does not seed on a guess when the done-flag cannot be read', async () => {
+    const kv = makeKv({ providers: [] });
+    kv.get.withArgs(FLAG).rejects(new Error('kv down'));
+
+    const result = await run(kv);
+
+    expect(result.errored).to.equal(1);
+    expect(result.seeded).to.equal(false);
+    expect(kv.compareAndSet.called).to.equal(false);
+  });
+
   it('retries on the next boot when the store cannot be reached', async () => {
     const kv = makeKv();
     orgCount.rejects(new Error('db down'));

@@ -80,6 +80,8 @@ interface ResponseBody {
   details?: Record<string, unknown>;
   settings?: Record<string, unknown>;
   providers?: StoredProvider[];
+  warning?: string;
+  configured?: boolean;
 }
 
 interface FakeRes {
@@ -599,6 +601,36 @@ describe('Configuration manager stored settings', () => {
         expect(res.statusCode).to.equal(409);
         expect(kv.values.get(configPaths.webSearch)).to.equal(original);
       });
+
+      it('follows the same rule when chosen again by the key it was stored under', async () => {
+        const ddg = { provider: 'duckduckgo', providerKey: 'ddg-uuid', configuration: {}, isDefault: false };
+        kv.values.set(configPaths.webSearch, seal({ providers: [{ ...serper, isDefault: true }, ddg] }));
+        healthAnswer = { status: 400, body: { error: 'DuckDuckGo blocked the test search.', errorType: 'blocked' } };
+
+        const { res } = await run(updateDefaultWebSearchProvider(store(), appConfig), {
+          params: { providerKey: 'ddg-uuid' },
+        });
+
+        expect(res.statusCode).to.equal(200);
+        expect(res.body?.warning).to.match(/saved anyway/);
+        expect(stored().providers.map((p) => [p.provider, p.isDefault])).to.deep.equal([
+          ['serper', false],
+          ['duckduckgo', true],
+        ]);
+      });
+    });
+
+    it('does not overwrite a write that landed while another provider was being checked', async () => {
+      const original = seal({ providers: [serper, tavily] });
+      kv.values.set(configPaths.webSearch, original);
+      kv.casConflictsLeft = 1;
+
+      const { res } = await run(updateDefaultWebSearchProvider(store(), appConfig), {
+        params: { providerKey: tavily.providerKey },
+      });
+
+      expect(res.statusCode).to.equal(409);
+      expect(kv.values.get(configPaths.webSearch)).to.equal(original);
     });
 
     it('saves the image settings and keeps the providers', async () => {

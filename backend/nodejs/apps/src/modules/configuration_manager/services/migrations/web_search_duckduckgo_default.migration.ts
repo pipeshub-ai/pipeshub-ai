@@ -47,10 +47,13 @@ export class WebSearchDuckDuckGoDefaultMigration {
         return result;
       }
     } catch (error) {
+      // Seeding on a guess could switch web search back on after an admin removed it.
+      result.errored += 1;
       this.logger.warn(
-        'Failed to read the web search default flag; proceeding with idempotent run',
+        'Failed to read the web search default flag; will retry on next boot',
         { error: error instanceof Error ? error.message : 'Unknown error' },
       );
+      return result;
     }
 
     try {

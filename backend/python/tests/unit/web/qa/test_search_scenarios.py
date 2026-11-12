@@ -171,7 +171,7 @@ class TestBadAnswersFromProviders:
     async def test_never_crashes_the_tool(self, lab: WebLab, answer) -> None:
         lab.engines.answers["google.serper.dev"] = answer
         lab.engines.set_ddgs(DOCS)
-        call = await lab.agent("serper", {"apiKey": "k"}).search("q")
-        # A provider's junk never breaks the search: the next source answers.
+        call = await lab.agent("serper", {"apiKey": "k"}, others=[{"provider": "duckduckgo"}]).search("q")
+        # A provider's junk never breaks the search: the next stored source answers.
         assert call.output.success
         assert [s.url.split("#")[0] for s in call.output.sources] == ["https://docs.example.com/a", "https://news.example.org/b"]

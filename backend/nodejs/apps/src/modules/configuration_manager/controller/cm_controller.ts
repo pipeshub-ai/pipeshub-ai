@@ -4966,8 +4966,25 @@ export const updateDefaultWebSearchProvider =
       );
 
       // DuckDuckGo needs no settings, so choosing it is the one case where the key names a provider
-      // that may not be stored yet: store it, then make it the default.
-      if (providerKey === DUCKDUCKGO_PROVIDER) {
+      // that may not be stored yet: store it, then make it the default. Once stored it has a
+      // generated key like any provider, and choosing it by that key follows the same rule.
+      let storedDuckDuckGo = false;
+      if (encryptedWebSearchConfig !== null) {
+        const current = JSON.parse(
+          EncryptionService.getInstance(
+            configManagerConfig.algorithm,
+            configManagerConfig.secretKey,
+          ).decrypt(encryptedWebSearchConfig),
+        ) as WebSearchConfig;
+        storedDuckDuckGo =
+          Array.isArray(current.providers) &&
+          current.providers.some(
+            (p) =>
+              p.providerKey === providerKey &&
+              p.provider === DUCKDUCKGO_PROVIDER,
+          );
+      }
+      if (providerKey === DUCKDUCKGO_PROVIDER || storedDuckDuckGo) {
         const duckduckgoCheckOptions: AICommandOptions = {
           uri: `${appConfig.aiBackend}/api/v1/web-search-health-check`,
           method: HttpMethod.POST,
@@ -5127,10 +5144,18 @@ export const updateDefaultWebSearchProvider =
         configManagerConfig.secretKey,
       ).encrypt(JSON.stringify(webSearchConfig));
 
-      await keyValueStoreService.set<string>(
+      const savedDefault = await keyValueStoreService.compareAndSet<string>(
         configPaths.webSearch,
+        encryptedWebSearchConfig,
         encryptedUpdatedConfig,
       );
+      if (!savedDefault) {
+        res.status(409).json({
+          status: 'error',
+          message: 'Unable to save changes. Please retry.',
+        });
+        return;
+      }
 
       res.status(200).json({
         status: 'success',

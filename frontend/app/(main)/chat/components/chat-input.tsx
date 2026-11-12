@@ -1806,7 +1806,7 @@ export function ChatInput({
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node | null;
       if (!t || containerRef.current?.contains(t)) return;
-      if (t instanceof Element && t.closest('[data-composer-popover]')) return;
+      if (t instanceof Element && t.closest('[data-composer-popover], [role="dialog"], [role="alertdialog"]')) return;
       shrink();
     };
     document.addEventListener('mousedown', onDown);

@@ -37,9 +37,19 @@ def _mock_request(body: dict) -> MagicMock:
     return request
 
 
+_WEB_SEARCH_KEY = "/services/webSearch"
+
+
 def _mock_config_service() -> AsyncMock:
     config_service = AsyncMock()
-    config_service.get_config.return_value = {"providers": []}
+
+    async def get_config(key, *args, **kwargs):
+        # Web search has no implicit provider: a run that searches needs one an admin chose.
+        if key == _WEB_SEARCH_KEY:
+            return {"providers": [{"provider": "duckduckgo", "providerKey": "k", "configuration": {}, "isDefault": True}]}
+        return {"providers": []}
+
+    config_service.get_config.side_effect = get_config
     return config_service
 
 
