@@ -189,6 +189,8 @@ class DriveWorld:
         self.unlistable_groups: dict[str, int] = {}
         self.other_domains: dict[str, list[str]] = {}
         self.domains_unreadable = False
+        # Whether a domain share reaches the people of the account's other domains, which Google does not document.
+        self.domain_share_reaches_all = False
         self.restrictions_unreadable = False
         self.hide_unreadable_parents = False
         self.files: dict[str, FileState] = {}
@@ -438,7 +440,14 @@ class DriveWorld:
                     return True
                 if perm.get("type") == "domain" and email.rpartition("@")[2] == perm.get("domain"):
                     return True
+                if perm.get("type") == "domain" and self.domain_share_reaches_all and {
+                    perm.get("domain"), email.rpartition("@")[2]
+                } <= self.account_domains():
+                    return True
         return False
+
+    def account_domains(self) -> set[str]:
+        return {self.domain, *self.other_domains, *(a for aliases in self.other_domains.values() for a in aliases)}
 
     def _access_set(self, file_id: str) -> set[str]:
         return {email for email in self.users if self.direct_role(file_id, email) or self.member_role(file_id, email)}
@@ -684,6 +693,8 @@ class DriveWorld:
             role = self.drive_role(drive["id"], email)
             if not admin and not role:
                 continue
+            if admin and drive.get("foreign"):
+                continue  # another organization's drive: its admin listing does not have it
             drives.append({
                 "id": drive["id"],
                 "name": drive["name"],
