@@ -88,7 +88,7 @@ class TestGroupMemberCandidates:
     @pytest.mark.asyncio
     async def test_an_audience_group_is_not_asked_of_the_directory(self, connector) -> None:
         connector.data_entities_processor.get_groups_with_access_to_record = AsyncMock(
-            return_value=[_group("workspace-members"), _group("domain-members:x.com"), _group("ok@x.com")]
+            return_value=[_group("workspace-members"), _group("ok@x.com")]
         )
         connector._fetch_group_members = AsyncMock(return_value=[{"email": "bo@x.com", "type": "USER"}])
 

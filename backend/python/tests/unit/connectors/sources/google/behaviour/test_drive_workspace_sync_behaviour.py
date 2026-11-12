@@ -195,7 +195,7 @@ async def test_users_and_groups_are_read_to_the_last_page(ws: Workspace) -> None
         ALICE, BOB, "extra0@example.com", "extra1@example.com", "extra2@example.com"
     }
     assert set(ws.records.user_groups) == {
-        "eng@example.com", "ops@example.com", "empty-ish@example.com", "workspace-members", "domain-members:example.com"
+        "eng@example.com", "ops@example.com", "empty-ish@example.com", "workspace-members"
     }
 
 
@@ -292,7 +292,7 @@ async def test_a_discoverable_domain_or_anyone_share_grants_the_enabled_people_o
     ])
     await ws.sync()
 
-    assert ("domain-members:example.com", "GROUP", "READ") in ws.grants("f-domain")
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("f-domain")
     assert ("workspace-members", "GROUP", "READ") in ws.grants("f-anyone")
     for external_id in ("f-partner", "f-link"):
         assert {g[1] for g in ws.grants(external_id)} == {"USER"}, external_id
@@ -355,8 +355,8 @@ async def test_a_members_only_drive_ignores_a_discoverable_share_and_a_domain_on
     ws.world.add_drive("sd-d", "Domain", {ALICE: "organizer"}, DOMAIN_ONLY)
     ws.world.add_item("fd", "d.txt", parent="sd-d", perms=[discoverable("domain", domain="example.com")])
     await ws.sync()
-    assert "domain-members:example.com" not in {g[0] for g in ws.grants("fm")}
-    assert "domain-members:example.com" in {g[0] for g in ws.grants("fd")}
+    assert "workspace-members" not in {g[0] for g in ws.grants("fm")}
+    assert "workspace-members" in {g[0] for g in ws.grants("fd")}
 
 
 async def test_a_domain_share_and_a_domain_link_share_grant_no_one(ws: Workspace) -> None:
@@ -2429,13 +2429,39 @@ async def test_an_unreadable_item_that_is_not_limited_keeps_inheriting(ws: Works
     assert "f" not in ws.records.stopped_inheriting
 
 
-async def test_a_domain_whose_people_are_all_gone_is_written_empty(ws: Workspace) -> None:
-    ws.world.add_user("zed@gone.example")
+async def test_a_domain_share_with_any_verified_domain_reaches_the_people_of_every_domain(ws: Workspace) -> None:
+    # Drive sharing in an account with several domains is set by organization, not by domain.
+    ws.world.other_domains = {"labs.example.org": ["alias.example.net"]}
+    ws.world.add_user("zed@labs.example.org")
+    for file_id, domain in (("f-primary", "example.com"), ("f-secondary", "labs.example.org"), ("f-alias", "alias.example.net")):
+        ws.world.add_item(file_id, f"{file_id}.txt", parent="root-alice", owner=ALICE, perms=[discoverable("domain", domain=domain)])
     await ws.sync()
-    assert "domain-members:gone.example" in ws.records.user_groups
-    ws.world.users.pop("zed@gone.example")
+
+    for file_id in ("f-primary", "f-secondary", "f-alias"):
+        assert ("workspace-members", "GROUP", "READ") in ws.grants(file_id), file_id
+    assert "zed@labs.example.org" in {m.email for m in ws.records.user_groups["workspace-members"][1]}
+
+
+async def test_a_domain_share_whose_domains_cannot_be_read_fails_the_item_and_keeps_its_stored_grants(ws: Workspace) -> None:
+    ws.world.add_item("f", "x.txt", parent="root-alice", owner=ALICE, perms=[discoverable("domain", domain="example.com")])
+    ws.world.add_item("g", "y.txt", parent="root-alice", owner=ALICE, perms=[discoverable("anyone")])
     await ws.sync()
-    assert ws.records.user_groups["domain-members:gone.example"][1] == []
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("f")
+
+    # A refusal, not only an outage: a refused domain list must not read as a refused permission list.
+    ws.http.fail("GET", "/admin/directory/v1/customer/[^/]+/domains", 403, "forbidden")
+    ws.world.share("f", {"type": "user", "role": "reader", "emailAddress": BOB})
+    ws.world.share("g", {"type": "user", "role": "reader", "emailAddress": BOB})
+    await ws.sync()
+
+    assert ws.incomplete is True
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("f"), "the stored grants stay until a read succeeds"
+    assert (BOB, "USER", "READ") not in ws.grants("f")
+    assert (BOB, "USER", "READ") in ws.grants("g"), "an item without a domain share does not need the domains"
+
+    ws.http.clear_faults()
+    await ws.sync()
+    assert {("workspace-members", "GROUP", "READ"), (BOB, "USER", "READ")} <= ws.grants("f")
 
 
 async def test_a_file_deleted_from_a_filtered_out_drive_is_removed_though_a_discoverable_share_names_the_audience(
@@ -2447,7 +2473,7 @@ async def test_a_file_deleted_from_a_filtered_out_drive_is_removed_though_a_disc
     ])
     ws.filters(drive_ids={"operator": "not_in", "type": "list", "value": ["sd-2"]})
     await ws.sync()
-    assert ("domain-members:example.com", "GROUP", "READ") in ws.grants("f1")
+    assert ("workspace-members", "GROUP", "READ") in ws.grants("f1")
 
     ws.world.delete("f1")
     await ws.sync()
