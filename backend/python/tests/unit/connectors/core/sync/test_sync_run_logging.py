@@ -26,6 +26,7 @@ from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.sync.sync_coordinator import Admission, LocalSyncCoordinator
 from app.connectors.core.sync.sync_runner import join_cleanup_tasks, run_sync_task
 from app.connectors.core.sync.task_manager import SyncTaskManager
+from app.exceptions.non_retryable import NonRetryableError
 from app.schema.node_validator import NodeSchemaValidator, SchemaValidationError
 from app.utils import error_class
 from app.utils.logger import TextFormatter, log_record_fields
@@ -489,7 +490,8 @@ class TestEntryPoints:
         assert "connector_id" not in fields and fields["connector_type"] == "rss"
 
     async def test_a_malformed_event_binds_nothing(self, records) -> None:
-        assert await self._service().process_event("rss", {"connectorId": "c1"}) is False
+        with pytest.raises(NonRetryableError):
+            await self._service().process_event("rss", {"connectorId": "c1"})
         assert all("connector_id" not in log_record_fields(r) for r in records)
 
     async def test_a_run_carries_the_stored_type_not_the_events_name(self, records) -> None:

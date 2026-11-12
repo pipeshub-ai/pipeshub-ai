@@ -158,11 +158,31 @@ def legacy_ctx(message: dict[str, Any]) -> OrgContext | None:
     return OrgContext(org_id, None, "service", "legacy-payload", sanitize_root_id(message.get("requestId")) or "-")
 
 
+def decode_json(text: str) -> Any:  # noqa: ANN401
+    """``json.loads`` whose every failure on text that can never decode is a ``JSONDecodeError``.
+
+    ``json.loads`` also raises ``RecursionError`` (nesting deeper than the decoder's fixed limit) and a plain
+    ``ValueError`` (an integer longer than ``sys.get_int_max_str_digits()``). Both are as permanent as a syntax error.
+    """
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        raise
+    except (ValueError, RecursionError) as e:
+        raise json.JSONDecodeError(str(e), text, 0) from e
+
+
+def decode_message(value: str) -> Any:  # noqa: ANN401
+    """A consumed message body, decoded a second time when a producer JSON-encoded it twice."""
+    raw = decode_json(value)
+    return decode_json(raw) if isinstance(raw, str) else raw
+
+
 def _decode_payload(payload: object) -> dict[str, Any] | None:
     if not isinstance(payload, str):
         return None
     try:
-        body = json.loads(payload)
+        body = decode_json(payload)
     except json.JSONDecodeError:
         return None
     return body if isinstance(body, dict) else None
@@ -235,7 +255,7 @@ async def open_envelope(
         event_type = event_type if isinstance(event_type, str) else ""
         if not any(hmac.compare_digest(compute_sig(k, topic, c, payload, event_type), c["sig"]) for k in keys):
             raise EnvelopeRejected("bad_signature")
-    except (KeyError, TypeError) as e:
+    except (KeyError, TypeError, UnicodeEncodeError) as e:  # a lone surrogate cannot be encoded for the HMAC
         raise EnvelopeRejected("malformed") from e
     age = now() - c["issuedAt"]
     if age > max_age_seconds():
@@ -246,7 +266,7 @@ async def open_envelope(
     if -age > MAX_FUTURE_SKEW_SECONDS:
         raise EnvelopeRejected("future")
     try:
-        body = json.loads(payload)
+        body = decode_json(payload)
     except json.JSONDecodeError as e:
         raise EnvelopeRejected("malformed") from e
     if not isinstance(body, dict):

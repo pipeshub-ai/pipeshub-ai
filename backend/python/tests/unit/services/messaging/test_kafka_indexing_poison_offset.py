@@ -34,6 +34,7 @@ from app.services.messaging.kafka.consumer.indexing_consumer import (
 )
 from app.services.messaging.scheduling.interface import FairSchedulerConfig
 from tests.support.fake_kafka import FakeAIOKafkaConsumer, FakeKafkaBroker
+from tests.support.undecodable_json import DEEP, UNDECODABLE
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Iterator
@@ -45,7 +46,7 @@ GROUP = "records_consumer_group"
 # A person's name in a payload: must never reach a log line. Short, because pydantic cuts the middle of a long input_value.
 SEEDED = "Qa Fakeperson"
 
-# Valid JSON, never a StreamMessage. Each id names the exception main lets escape.
+# Each id names the exception main lets escape. Values that are str are sent as they are.
 POISON = {
     "validation_no_event_type": {"payload": {"n": SEEDED}},
     "validation_payload_is_a_list": {"eventType": "newRecord", "payload": [SEEDED]},
@@ -54,6 +55,8 @@ POISON = {
     "type_json_list": ["not", "an", "object"],
     "type_json_number": 42,
     "type_double_encoded_number": json.dumps("42"),
+    **UNDECODABLE,  # F34
+    "nesting_too_deep_offloaded_to_a_thread": "[" * 150_000 + "]" * 150_000,  # 300 KB: parsed off the loop
 }
 GOOD = {
     "eventType": "newRecord",
@@ -63,8 +66,12 @@ GOOD = {
 }
 
 
+def _raw(value: object) -> str:
+    return value if isinstance(value, str) else json.dumps(value)
+
+
 def _record(value: object, offset: int = 0) -> ConsumerRecord:
-    raw = value if isinstance(value, str) else json.dumps(value)
+    raw = _raw(value)
     return ConsumerRecord(topic=TOPIC, partition=0, offset=offset, timestamp=0, timestamp_type=0, key=None,
                           value=raw.encode(), checksum=None, serialized_key_size=0,
                           serialized_value_size=len(raw), headers=())
@@ -102,11 +109,22 @@ class TestParseMessageTreatsSchemaFailuresAsPoison:
         assert any("ValidationError" in line and "record-events-0-0" in line for line in lines)
         assert not any(SEEDED in line for line in lines)
 
-    async def test_a_transient_failure_still_raises(self) -> None:
-        # The fix must stay narrow: a key-store or network failure inside open_stream_message is retried (seek back).
-        with patch.object(consumer_module, "open_stream_message", AsyncMock(side_effect=ConnectionError("down"))), \
-                pytest.raises(ConnectionError):
+    @pytest.mark.parametrize("error", [
+        ConnectionError("key store down"),
+        ValueError("ENVELOPE_MAX_AGE_SECONDS must be a positive number"),  # F34: only a decode's ValueError is poison
+        RecursionError("not from the decoder"),
+    ], ids=["transient", "misconfigured", "recursion_outside_the_decoder"])
+    async def test_a_failure_that_is_not_the_message_still_raises(self, error: Exception) -> None:
+        # The fix must stay narrow: anything but the message itself failing inside open_stream_message is retried.
+        with patch.object(consumer_module, "open_stream_message", AsyncMock(side_effect=error)), \
+                pytest.raises(type(error)):
             await _parse(_consumer(fair=True), _record(GOOD))
+
+    async def test_an_undecodable_message_logs_a_json_failure(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.DEBUG, logger="test.f19"):
+            assert await _parse(_consumer(fair=True), _record(DEEP)) is None
+        assert [r.getMessage() for r in caplog.records] == ["JSON parsing failed for message record-events-0-0"]
+        assert caplog.records[0].error_type == "RecursionError"  # why valid-looking JSON failed: the decoder's cause
 
     async def test_a_good_message_still_parses(self) -> None:
         parsed = await _parse(_consumer(fair=True), _record(GOOD))
@@ -163,11 +181,12 @@ async def _until(predicate, timeout: float = 10.0) -> bool:
 
 
 @pytest.mark.parametrize("fair", [True, False], ids=["fair_scheduling", "fifo"])
-@pytest.mark.parametrize("poison", ["validation_no_event_type", "type_json_list"])
+@pytest.mark.parametrize("poison", ["validation_no_event_type", "type_json_list", "nesting_too_deep",
+                                    "integer_too_long"])
 async def test_poison_ahead_of_a_good_message_is_dead_lettered_once_and_the_partition_moves_on(
     broker: FakeKafkaBroker, fair: bool, poison: str
 ) -> None:
-    broker.produce(TOPIC, json.dumps(POISON[poison]))  # offset 0
+    broker.produce(TOPIC, _raw(POISON[poison]))  # offset 0
     broker.produce(TOPIC, GOOD)  # offset 1
     sink = AsyncMock()
     handler = Handler()

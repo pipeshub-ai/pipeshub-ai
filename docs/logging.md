@@ -10,6 +10,7 @@ follows. The Python side is `backend/python/app/utils/logger.py`; Node mirrors t
 | `LOG_LEVEL` | `debug`, `info`, `warn`/`warning`, `error`, `critical` (any case) | `info` | Level of the `app` logger, of every `create_logger` logger, and of the root logger. Root never goes below `info`, so third-party libraries never log at debug by accident (some log whole requests, prompts and bodies there). Use `debug`, `info`, `warn` or `error`: Node reads the same variable. |
 | `LOG_LEVELS` | `name=LEVEL,name=LEVEL` | empty | Per-logger levels, applied last. Any logger can be named, `root` included. `LOG_LEVELS=app.services.graph_db=DEBUG,aiokafka=WARNING`. `LOG_LEVELS=root=DEBUG` opens third-party debug output on purpose. |
 | `LOG_FORMAT` | `text`, `json` | `text` | Both runtimes: Node reads it at start-up (`Logger.applyEnv`) with the same line shape. |
+| `DB_SLOW_QUERY_MS` | milliseconds, `0` = off | `500` | A database client call (ArangoDB, Neo4j) or Postgres statement that succeeds after at least this long writes `db.query.slow` at WARNING. An unusable value means `500`. |
 
 A bad value never stops a service: an unknown `LOG_LEVEL` (or `notset`) means `info`, a malformed `LOG_LEVELS` entry is skipped,
 an unknown `LOG_FORMAT` means `text`; each logs one warning. Values are read at import and again whenever they change before a
@@ -137,8 +138,9 @@ if log_once(f"envelope:stripped:{topic}", 30): ...          # bounded keys only,
 
 - Bindable ids (`LOG_FIELD_NAMES`): `conversation_id`, `agent_id`, `run_id`, `parent_run_id`, `agent_run_id`, `attempt`, `connector_id`,
   `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`, `mcp_server_id`, `toolset_id`, `job`, and for credential
-  refresh `refresh_kind`, `trigger`, `provider`, `scheduled_by`, `owner_id`, and for broker messages `topic`, `message_id`, `event_type`.
-  A module that needs another adds it there and here. A name with
+  refresh `refresh_kind`, `trigger`, `provider`, `scheduled_by`, `owner_id`, for broker messages `topic`, `message_id`,
+  `event_type`, and for the user a step acts on `target_user_id` and `source_user_id` (see "Personal data"). A module that
+  needs another adds it there and here. A name with
   a credential word in it (`token`, `secret`, `credential`, …) is masked like a secret, so ids never use one. Another key, or `org_id`/`user_id`, raises `ValueError`. `None` values are skipped. Pass literal keyword
   arguments, not a `**dict`. Do not hold `log_fields` across `yield` in an async generator.
 - `log_event(logger, event, /, *, level=logging.INFO, **fields)`: message = the event name; `None` values, identity names and record
@@ -203,12 +205,13 @@ the auth middleware bound.
 
 | Event | Level | Fields |
 | --- | --- | --- |
-| `http.request.end` | INFO; DEBUG for a `/health*` answer below 400; INFO for a 4xx (WARNING for `reason=org_mismatch`); WARNING for a 5xx answered without an exception; an unhandled exception: ERROR with its stack (`internal`); an `HTTPException` of 500 or more that was raised: its class's level; WARNING at most, with no second stack, for an exception already logged; INFO with `error_class=cancelled reason=client_disconnect` when the client left first | `method`, `route`, `status`, `duration_ms`, `client_ip`, `outcome`, `error_class` (4xx, 5xx), `reason`, and for an exception the `log_failure` fields plus `cause_type` |
+| `http.request.end` | INFO; DEBUG for a `/health*` answer below 400; INFO for a 4xx (WARNING for `reason=org_mismatch`); WARNING for a 5xx answered without an exception; an unhandled exception: ERROR with its stack (`internal`); an `HTTPException` of 500 or more that was raised: its class's level; WARNING at most, with no second stack, for an exception already logged; INFO with `error_class=cancelled reason=client_disconnect` when the client left before the answer was complete (see "When the client leaves" below) | `method`, `route`, `status`, `duration_ms`, `client_ip`, `outcome`, `error_class` (4xx, 5xx), `reason`, and for an exception the `log_failure` fields plus `cause_type` |
 
 - `route` is the template (`/api/v1/kb/{kb_id}`), the same one `MetricsMiddleware` uses (`app/utils/route_template.py`); a request
   refused before routing gets the route it would have reached. `unmatched` when no route matches. The raw path and the query
   string are never logged.
-- `status` is what the client received, and the level follows it: an `HTTPException(500)` an edition handler answers with 402
+- `status` is what the client received (for a client that left before the answer, what the route answered), and the level
+  follows it: an `HTTPException(500)` an edition handler answers with 402
   is an INFO 4xx line. An unhandled exception before anything was sent is answered here with 500
   `{"detail": "Internal server error"}` (the same body in all three services) and the connection stays open. A stream that fails
   midway keeps the status already sent, with `outcome=failure`; the exception is re-raised, so uvicorn closes the connection.
@@ -248,18 +251,40 @@ the auth middleware bound.
   code there marks it with `reason=`.
 - `client_ip` is the peer as uvicorn resolves it (`FORWARDED_ALLOW_IPS`, default loopback), usually the Node API, and only when it
   parses as an IP address. The end user's address is on Node's `http.request.end` with the same `request_id`.
-- A client disconnect is seen two ways: the response never sent its last body message, or an `http.disconnect` was read before
-  it did (a `BaseHTTPMiddleware` below may end its own stream cleanly after the inner one was cut). An escaped `ClientDisconnect`
-  (a body read after the client left) is `cancelled reason=client_disconnect`; any other exception is still `internal`.
+- **When the client leaves.** The middleware reads `receive` itself, one message ahead of the app, so it sees an
+  `http.disconnect` whenever it arrives, even while a route is still working on a plain response (uvicorn drops that answer
+  silently). What the line says depends on when it saw the client leave (`_end_outcome`, in this order):
+
+  | Seen | Line |
+  | --- | --- |
+  | an exception escaped the route | the exception's line, whatever else: `ClientDisconnect` (a body read after the client left) is `cancelled reason=client_disconnect`, a cancelled request `cancelled`, anything else `internal` with its stack |
+  | after `http.response.start`, before the last body message; or the client was not seen leaving and the last body message never came | `cancelled`, whatever the status or a marked failure: the client never got the whole answer (a `BaseHTTPMiddleware` below may still send a last body message after the disconnect) |
+  | before `http.response.start` (the route answered after the client left) | a 4xx, a 5xx or a marked failure keeps its own line; a 2xx, a 3xx or no answer is `cancelled` |
+  | never, or after the last body message was handed over | the normal line |
+
+  "After the last body message was handed over" includes the time the server is still writing it: from this middleware that
+  cannot be told apart from uvicorn's `http.disconnect` for a complete response (measured: in the indexing layout it arrives
+  before `send` returns for every small answer), so a client that leaves while a large last message is being written is
+  logged by the normal line.
 - Limits: an org bound by a route dependency (not by the auth middleware) runs in a child task, so the line has no `org_id`
   from it (only the request context's org, without `user_id`). An exception raised by `MetricsMiddleware` or
   `RequestContextMiddleware` themselves gets uvicorn's line only. A middleware added before `install_request_logging` sits
   inside it, so the crash 500 sent here does not pass through it: an edition that adds `CORSMiddleware` adds it after
   `install_request_logging`, so that it wraps that 500 and the CORS headers stay. A mounted sub-app (`app.mount`) gets one line,
   but its `route` lacks the mount prefix and its own `HTTPException`s are not handed over: install on the sub-app too. None of
-  the three services mounts one.
+  the three services mounts one. Because the middleware reads `receive` first, uvicorn answers `Expect: 100-continue` as soon
+  as the request starts; in query and connectors that is before an auth refusal (`100 Continue`, then `401`). When a route
+  never reads a body larger than one message, or reads it only after its slow work, the line does not see the client leave
+  (the read-ahead holds one message and waits for the route). A client that leaves before its request reaches a route that
+  answers without awaiting anything can still be logged `success` when no `BaseHTTPMiddleware` sits below this middleware
+  (indexing): the last body message is handed over before the read-ahead has read the disconnect. `request.is_disconnected()` sees the disconnect in a route with
+  no `BaseHTTPMiddleware` between it and this middleware (indexing); behind the auth middleware (query, connectors) its poll
+  is still cancelled before it reads.
 - Node writes the same event and fields (`HttpAccess`, `access-log.middleware.ts`). Node also logs the error on its own
   `http.request.error` line; Python logs it on this one.
+- Node: a 401 for a credential the request submitted (a sign-in code, a password, a CAPTCHA, an identity-provider token) that
+  is wrong, expired or already used is a `WrongCredentialError`, logged `error_class=bad_request`; the request's own session or
+  token refused stays `auth_expired`. `status=401 error_class=bad_request` on `http.request.end` selects credential guessing.
 
 ## Connector sync runs
 
@@ -332,12 +357,15 @@ carries them: the handler's own, and the ack, retry or dead-letter decision. Bef
   delivery count (`times_delivered`) without one.
 - Kafka with no retry tracker commits a failed message: `disposition=dead_letter`. Redis with none leaves it pending: `retry`.
 - `reason`: `duplicate` (the envelope was already handled), `already_settled` (Kafka: the offset was settled before), `no_value`,
-  `handler_false` (the handler returned false; it logged why), `exception`, `unparseable` (not JSON, not an envelope, or not a valid
+  `handler_false` (the handler asked for the message again, e.g. a user whose org does not exist yet), `exception`, `unparseable` (not JSON, not an envelope, or not a valid
   message), `envelope_rejected` with `code` (`bad_signature`, `stale`, `malformed`, `org_mismatch`, `no_key`, …),
   `attempts_exhausted` (dead-lettered before running again), `no_handler`, `cancelled`. A rejected envelope is ERROR with no stack:
   most codes are our own configuration (a key rotation, a backlog older than the age limit), and each drops every message on the topic.
 - A handler logs its own failure once (`entity_event.failed`, `entity_event.step_failed` with `step`, `message.handler_failed`,
-  `ai_config.refresh_failed`) and returns false or raises; `message.end` does not repeat its text. A user event's failure carries
+  `ai_config.refresh_failed`) and raises; `message.end` does not repeat its text. A handler returns true when done or when the
+  message is not for it (skipped at DEBUG), false only to ask for it again, and raises on failure, so the consumer's classifier
+  decides: a terminal error (4xx, validation, `NonRetryableError` for a malformed message) is dead-lettered on its first delivery,
+  a transient one is retried. A user event's failure carries
   `target_user_id`, the user the event is about (`user_id` is who sent it). `target_user_id` is not passed through the provider's
   `log_identity`.
 - The message value and its payload are never logged whole. Lines carry only the ids taken from it (`record_id`, `connector_id`,
@@ -457,33 +485,78 @@ whole spawn tree, `agent_run_id=C` one child, and `parent_run_id` rebuilds the t
 
 ## Credential refresh
 
-The connector and toolset (and later MCP) token refresh services log through `app/utils/credential_refresh_log.py`, so one
+The connector, toolset and MCP token refresh services log through `app/utils/credential_refresh_log.py`, so one
 refresh of one credential reads the same everywhere:
 
 | Event | Level | Fields |
 | --- | --- | --- |
 | `credential_refresh.scheduled` | INFO when the refresh time is new, DEBUG when a scan re-arms the same one | `next_refresh_at` (UTC), `delay_s` |
 | `credential_refresh.start` | DEBUG | |
-| `credential_refresh.end` | INFO on success; a failure at its class's level | `outcome`, `reason` (`adopted`, `invalid_grant`, `config_missing`, `save_failed`, `recursion`), `duration_ms`, and on failure `error_class`, `error_type`, `error_message`, `http_status`, `oauth_error`. Toolsets add `oauth_app` (`linked` to an admin OAuth app, or `unlinked`: a fact, not a warning; it is normal for a personal instance) |
+| `credential_refresh.end` | INFO on success; a failure at its class's level | `outcome`, `reason` (`adopted`, `superseded`, `invalid_grant`, `config_missing`, `save_failed`, `recursion`; MCP also `no_credential`, `invalid_token_record`, `no_refresh_token`, `no_token_url`, `credential_removed`, `lock_contention`, `url_blocked`, `host_unresolved`), `duration_ms`, and on failure `error_class`, `error_type`, `error_message`, `http_status`, `oauth_error`. Toolsets add `oauth_app` (`linked` to an admin OAuth app, or `unlinked`: a fact, not a warning; it is normal for a personal instance) |
 | `credential_refresh.check_failed` | the failure's level; DEBUG when the attempt's `end` already logged it | as a failed `end` |
 | `credential_refresh.strike` | INFO | `strike` (`2/3`), `counted` (false: the rejected token was already rotated), the cause's `error_class` and `oauth_error` |
-| `credential_refresh.deauthenticated` | WARNING | `reason`, `strikes`, `app_disabled_event` (connectors: `sent`, `direct_write`) |
+| `credential_refresh.deauthenticated` | WARNING | `reason`, `strikes`, `app_disabled_event` (connectors: `sent`, `direct_write`), `path` (MCP: `background` after 3 rejections, `route` after one) |
 | `credential_refresh.not_scheduled`, `.deauthenticate_failed`, `.app_disabled_event_failed` | WARNING, ERROR, by class | `reason` / failure fields; `deauthenticate_failed` has `reason=not_updated` when the write changed nothing, `not_found` when the record is gone |
 | `credential_refresh.skipped` | WARNING | `outcome=skipped`, `reason` (`lock_wait_timeout`: another refresh of the same credential holds its lock) |
 
 Every line in a refresh carries `refresh_kind` (`connector`, `toolset`, `mcp`), `trigger` (`scan`, `scheduled`, `on_demand`), the
 kind's ids (connectors: `connector_id`, `connector_type`; toolsets: `toolset_id` and `owner_id`, the user id or agent key the
-sign-in belongs to), `provider` (the connector or toolset type), and the org as a job context when nothing else bound one. A timer
+sign-in belongs to; MCP: `mcp_server_id` and `owner_id`), `provider` (the connector or toolset type; MCP lines have no
+`provider`), and the org as a job context when nothing else bound one. A timer
 firing gets its own `sys-credential_refresh-` root, with `scheduled_by` naming the root that armed it. Exactly one `end` is
 written per attempt, by the code that calls the token endpoint. A misconfigured credential (no OAuth client, the provider
 rejected our client) is ERROR with a stack once per credential per hour and DEBUG in between. `trigger` is set by the refresh
 scope and never inherited from a sync's own `trigger`. The toolset service has no on-demand refresh: its lines say `trigger=scan`
 or `scheduled`, and `on_demand` only on the `scheduled` line written when a sign-in completes.
 
+Every MCP refresh, whoever starts it (the background service, the refresh route, tool listing or discovery, an agent's 401), goes
+through `app/agents/mcp/token_refresh.py`, which writes its `end`; `duration_ms` includes waiting for another process's refresh lock.
+The tool call and discovery lines of the same failure carry the same `error_class` and keep their own level. Per-turn MCP lines
+classed `misconfigured` share one hourly ERROR per server and class (`tool_call.end`, `mcp.discover.end` turn and listing); the
+others in that hour are DEBUG. A token host that does not resolve is `host_unresolved` (`unavailable`, WARNING); only a URL the
+guard refuses by policy is `url_blocked` (`misconfigured`).
+
 Nothing a token endpoint answered is logged as text: its body, and the token URL and redirect URI in the exception message, can
 quote the refresh token in prose no redactor recognises. When the exception chain holds such an answer, every failure line of
 a refresh service (`log_refresh_failure`) leaves the text out of `error_message` and the stack (each exception shows as
 `Type: <message omitted>`) and logs `http_status` and `oauth_error` instead.
+
+## Database queries (Python)
+
+The ArangoDB and Neo4j clients (`arango_http_client.py`, `neo4j_client.py`) and the Postgres runtime (`app/core/db/uow.py`,
+which every Postgres graph provider runs through) write one record per call that failed or was slow, through
+`app/utils/db_query_log.py`. A call that succeeds in time writes nothing.
+
+| Event | Level | Fields |
+| --- | --- | --- |
+| `db.query.failed` | `level_for(error_class)`: WARNING, except `internal` and `misconfigured` (ERROR) | `backend` (`arango`, `neo4j`, `postgres`), `op` (the client method, or `fetch`/`execute`/... and `begin`, `prologue`, `check_alive`, `commit`, `copy`, `rollback_to` on Postgres), `site` (Postgres `/* pipeshub:<site> */` tag), `caller`, `code` (ArangoDB errorNum, Neo4j code, SQLSTATE), `status` (ArangoDB HTTP status), `error_class`, `error_type`, `duration_ms`, `outcome`; Neo4j memory limit adds `bulk`, `size`; Postgres adds `db_request_id` |
+| `db.query.slow` | WARNING | `backend`, `op`, `site`, `caller`, `duration_ms`, `threshold_ms`; Postgres `db_request_id` |
+| `db.query.retry` | WARNING | `backend=neo4j`, `op`, `reason=connection_lost`, `error_type` |
+| `db.connect.failed`, `db.disconnect.failed`, `db.schema.failed`, `db.edge.failed` | `log_failure` | `backend`, `op` (schema or edge) |
+
+- **One record per call, outside the client's own retries.** A write conflict the ArangoDB or Neo4j client retries and wins
+  writes nothing; one it gives up on writes one record. Retries above the client (`KernelDB.run`, the KB push, a provider
+  transaction its owner re-runs) write one record per lost attempt. `duration_ms` is the whole client call, including the
+  client's own back-off and every cursor page; a Postgres record is one statement.
+- **An operation record that uses its class's level.** Unlike `mcp.connect.end` and `llm_call.end`, which stay below ERROR and
+  leave the severity to the layer that gives up, `db.query.failed` is ERROR for our own bug (an AQL, Cypher or SQL error) or our
+  configuration: many provider methods still swallow database errors, and the record can be the only ERROR line. It does not mark
+  the exception as logged, so the handler's `log_failure` keeps its level and prints the one stack.
+- **No driver text, ever.** Driver messages can quote bound values (a Neo4j constraint names the clashing value; a Postgres data
+  error or asyncpg's encoding error quotes the input). The record carries `code` and `error_class` instead, and the client stamps
+  the exception (`error_class.mark_error(exc, error_class, hide_text=True)`; without a class, `mark_error(exc, hide_text=True)` only
+  hides the text and leaves the class to `classify_error`), so `classify_error` returns its class and `log_failure` leaves `error_message` out and
+  prints the stack as `Type: <message omitted>` for any chain, or exception group member, that holds it. This also hides the
+  server's own text for our bugs (an ArangoDB 1501 "syntax error … near …" reads `code=1501 caller=…`): diagnose from `code`,
+  `caller` and `site`, and never add a database error's `{e}` or `str(e)` back to a log line. Our own texts stay visible (the
+  Neo4j memory-limit hint).
+- **Classes.** Only our bugs and our configuration are ERROR classes. Conflicts and lost races (ArangoDB 1200, 1210, 29, 1654,
+  1655; Neo4j constraint, deadlock, entity lost to a delete; Postgres 23xxx, 40001, 40P01) are `conflict`; ArangoDB 18 and 1500,
+  Neo4j transaction timeouts and Postgres 57014/55P03 are `timeout`; Postgres 22xxx, 54xxx, 23502 and 23514, and Neo4j data
+  exceptions (GQL status 22xxx), are `bad_request` (a value or a size a caller handles), even when our own parameter caused them.
+- **`caller` and `[file:line]`** are the first frame outside the client: the provider line that called it. In a Postgres provider
+  transaction the statement runs in another task, so `_Txn.run` finds the caller while its stack is live and hands it over; the
+  unit's own `begin` and `prologue` there have `caller=unknown`.
 
 ## Auth audit events (Node)
 
@@ -584,6 +657,58 @@ time name (`token_expires_at=1730000000`, `token_expires_in=3600.5`); any other 
 alike. Other numeric types (`Decimal`, numpy scalars) take the string path and are masked under a credential name. Redaction is a
 safety net; it cannot recognise content, so the rules below still apply.
 
+## Personal data
+
+Log lines never carry an email or a person's name (full, display, first or last name, username, login), and never a whole user
+object or list. Org and user ids are opaque and may be logged. Never mask (`a***@x.com`), truncate, keep only the domain, or hash an
+email: it is still personal data, and an id says more.
+
+Which id replaces it:
+
+- **`target_user_id`**: the PipesHub user id (the users `_id`; `userId` on a graph user) of the user a step acts on, and only
+  where the code holds that id: Node `user._id` or `req.user.userId`, Python graph `User.user_id`, or a connector's `created_by`.
+  Never `AppUser.id` (a fresh uuid each sync run) or a graph key, which support cannot match. `user_id` stays the caller's id, set
+  from the bound context.
+- **`source_user_id`**: the provider's id of an external account, and only where that id is opaque: a Google directory id, a
+  Microsoft Graph object id, an Atlassian Cloud `accountId`, a Box, Dropbox (`dbmid:`/`dbid:`), Salesforce, GitLab, GitHub (the
+  numeric id, not the login), Linear, Notion, Zammad or BookStack id. Some connectors' ids can be an email or a login, so they never
+  log one: Gmail individual (`source_user_id` is the address), Nextcloud (the uid is a login), Jira and Confluence Data Center (the
+  key can be the username), a Dropbox invitee's `Permission.external_id`, connector core (it can't tell which connector's id it
+  has), and every connector that fills `source_user_id` from `user.source_user_id or user.id or user.email`.
+- **Neither**: drop the value. Where a count helps, use a counter the code already keeps or the sync run's stats, and keep the
+  summary at the old line's level.
+
+In a per-user loop, bind the id once inside the per-user coroutine: `with log_fields(source_user_id=user.source_user_id):` at the
+top of the function that `gather` runs. `gather` runs each coroutine in a task that copies the context at the `gather` call, so a
+binding made around `asyncio.gather(...)` reaches every coroutine, and all users' lines would carry the same id: bind only fields
+they share there (`connector_id`). A binding made while the coroutines are only being created, and ended before `gather`, reaches
+none of them. A line about one user's result logged after `gather` passes the id with `extra=`.
+
+If an exception's text can quote an email (a driver error, `Email already in use: <address>`), keep its class only: in Python
+pass `include_error_text=False` to `log_failure` (it logs the text by default, and the redactor masks secrets, not emails); in
+Node, drop the address from the thrown message.
+
+**Finding a user's lines (support).** Get the PipesHub id from the admin console (Users, open the user: the profile URL has
+`userId=<id>`) or `GET /api/v1/users?search=<email>` (`_id`), then filter on `user_id=<id>` (requests made by that user) or
+`target_user_id=<id>` (sign-in, user management and connector-creator lines). A connector's per-user lines carry
+`source_user_id`: find that id for the email in the provider's admin console (Google Admin user id, Entra object id, Atlassian
+account id, Box or Salesforce user id). For a connector with no opaque id (the list above), per-user lines carry only
+`connector_id` and counts: reproduce with a one-user sync, or read the run's `sync_run.end` stats.
+
+**CI.** `.github/scripts/new_lint_findings.py log-pii` (scanner `scripts/log_pii.py`, which reads TypeScript through
+`scripts/log_pii_ts.cjs`) fails a pull request that adds an email or a person's name to a log call under `backend/python/app` or
+`backend/nodejs/apps/src`, in a new call or in one that already logs one (each value counts): `user.email`, `user_email`, `payload["email"]`, `m.get("emailAddress")`,
+`extra={"email": …}`, `{ email }`, `member.name`, `full_name` of a user, `users`. Like the emoji check it counts per file, so
+ones already on main do not fail and moving one to another file counts as new. Names of connectors, files, tools, groups and
+repos are not findings (`group.email` either), and neither are ids, counts, flags or settings about email (`email_count`,
+`bool(user.email)`, `email_format`, `mail_server`), nor a bare `name` or `user` in Python, nor a field named `user` (`{ user: userId }`). It reads names, not values, so an email stored in an id-named field (`source_user_id`, `external_id`) or copied to another
+variable is not caught: the rules above still apply, and tests use `tests/support/log_capture.py` (`assert_not_logged`,
+`assert_not_logged_mock`) or Node's `assertNotLogged` (`tests/helpers/mock-logger.ts`) with the email seeded into id fields too.
+A real false positive is better renamed (`repo_full_name`, `entry` for a tar member); otherwise mark the line of the flagged value
+with `# log-pii: ok <reason>` (`// log-pii: ok <reason>` in TypeScript). The mark covers only the values on its line, must be a
+comment and must give a reason, and each new one is shown to reviewers as a `LOG-PII-OK` warning. Run the scanner's tests locally
+with `TS_MODULE=backend/nodejs/apps/node_modules/typescript python3 -m unittest discover -s scripts -p 'test_*.py'`.
+
 ## Conventions
 
 - **Bind ids once** where work enters: an HTTP request, a broker message, a scheduled tick. Never thread ids through call sites.
@@ -592,17 +717,18 @@ safety net; it cannot recognise content, so the rules below still apply.
 - **Event names** are dotted lowercase: `sync_run.end`, `tool_call.end`, `http.request.end`.
 - **Field names** are snake_case and the same in Python and Node: `org_id`, `user_id`, `request_id`, `conversation_id`, `agent_id`,
   `run_id`, `parent_run_id`, `attempt`, `connector_id`, `connector_type`, `record_id`, `kb_id`, `tool`, `tool_call_id`,
-  `mcp_server_id`, `toolset_id`, `job`, `workload`, `duration_ms`, `status`, `error_class`, `error_type`, `outcome`, `method`,
-  `route`, `client_ip`, `reason`, `topic`, `message_id`, `event_type`, `disposition`, `target_user_id`. Python also has
-  `ctx_kind`, `ctx_source`, `error_message` and `cause_type`; Node's `error` is an object (`error.message`). Node also has
-  `upstream` and `network_code` (on `upstream.call.end`).
+  `mcp_server_id`, `toolset_id`, `job`, `workload`, `target_user_id`, `source_user_id`, `duration_ms`, `status`, `error_class`,
+  `error_type`, `outcome`, `method`, `route`, `client_ip`, `reason`, `topic`, `message_id`, `event_type`, `disposition`. Python
+  also has `ctx_kind`, `ctx_source`, `error_message` and `cause_type`; Node's `error` is an object (`error.message`). Node also
+  has `upstream` and `network_code` (on `upstream.call.end`).
 - **Fields are scalars**: ids, sizes, counts, enums. Never pass a config, a request, a response or a document as a field.
 - **Log an error once**, at the layer that handles it, with `error_class.log_failure` (see "Failures"). Lower layers raise
   (`raise … from e`), they do not log and re-raise.
 - **Levels**: ERROR = our fault, needs a human. WARNING = degraded, retried, or an upstream 4xx. INFO = lifecycle, about one line
   per unit of work. DEBUG = per item.
 - **Never log** secrets, tokens, request or response bodies, prompts, document content, emails or names. Log ids, sizes, counts and
-  enums. Org and user ids are opaque ids and may be logged; the provider can hash or hide them.
+  enums. Org and user ids are opaque ids and may be logged; the provider can hash or hide them. Emails and names: see "Personal
+  data", which CI checks.
 - **No emoji** in log text: the level already says it. CI (`.github/scripts/new_lint_findings.py log-emoji`, scanner
   `scripts/log_emoji.py`) fails a pull request that adds an emoji log call to a file under `backend/python/app`; ones already on
   main do not fail, and moving one to another file counts as new. It reads the direct arguments of any method named after a

@@ -12,8 +12,12 @@ import asyncio
 import hashlib
 import json
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from aiohttp import web
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 
 def etag_of(data: bytes) -> str:
@@ -41,6 +45,8 @@ class FakeStorage:
         self.signed_override: dict[str, str] = {}  # id -> signedUrl to answer
         self.signed_pad = 0  # extra bytes in the signed-URL answer
         self.mode: dict[str, str] = {}  # id -> 500 | reset | truncated | slow
+        # Awaited with the id when a download arrives, before it is answered: the caller is then mid-task.
+        self.on_download: Callable[[str], Awaitable[None]] | None = None
         self.runner: web.AppRunner | None = None
         self.url = ""
 
@@ -71,6 +77,8 @@ class FakeStorage:
     async def download(self, request: web.Request) -> web.StreamResponse:
         doc_id = request.match_info["id"]
         self.requests.append(("download", doc_id))
+        if self.on_download is not None:
+            await self.on_download(doc_id)
         obj = self.objects.get(doc_id)
         if obj is None:
             return web.json_response({"error": "not found"}, status=404)

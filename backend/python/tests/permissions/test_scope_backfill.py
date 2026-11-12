@@ -853,3 +853,39 @@ async def test_a_page_is_scanned_once_not_once_per_virtual_record(monkeypatch: p
     assert p.state == DONE and p.stale == 0 and len(scans) >= 1 and 1 not in scans      # (every scan covers the page's virtual records)
     want, got = await expected(loaded), await read_stamps(vdb, loaded)
     assert got == want
+
+
+@pytest.mark.parametrize(("world", "exact"), [("stamped:KB-C-01", True), ("stamped:GM-C-03", False), ("derived:SCOPES-ADV-04", False)])
+async def test_a_connector_is_exact_only_when_the_pass_left_no_legacy_or_stale_point(world: str, exact: bool) -> None:
+    """GM-C-03 has records the stamper refuses (their points are legacy), ADV-04 has one on the stale marker."""
+    vdb = InMemoryVectorDB()
+    loaded = await load(vdb, COLL, {"w": CASES[world]})
+    app = loaded.apps[0]
+    p = await ScopeBackfill(loaded.graph, vdb, loaded.locator, log, clock=advancing_clock()).run_connector(ORG, app)
+    assert p.state == DONE and p.exact is exact and (p.legacy == 0 and p.stale == 0) is exact
+    assert loaded.graph.app_docs[app]["scopeBackfillExact"] is exact
+    assert (await status(loaded.graph, ORG, app)).exact is exact       # and it reads back
+
+
+def test_a_pass_that_is_not_done_is_not_exact() -> None:
+    assert scope_backfill.Progress(state=DONE).exact and not scope_backfill.Progress(state=RUNNING).exact and not scope_backfill.Progress(state=FAILED).exact
+    assert not scope_backfill.Progress(state=DONE, stale=1).exact and not scope_backfill.Progress(state=DONE, legacy=1).exact
+
+
+@pytest.mark.parametrize("saved", [None, "x", -3, True, 1.5])
+async def test_a_checkpoint_without_a_readable_legacy_count_is_not_exact_and_the_next_pass_starts_over(saved: object) -> None:
+    """A missing or unreadable count is not "none left": the connector is not exact, and a finished pass of that checkpoint is made again."""
+    vdb = InMemoryVectorDB()
+    loaded = await load(vdb, COLL, {"w": CASES["stamped:KB-C-01"]})
+    app = loaded.apps[0]
+    job = ScopeBackfill(loaded.graph, vdb, loaded.locator, log, clock=advancing_clock())
+    assert (await job.run_connector(ORG, app)).exact
+    doc = loaded.graph.app_docs[app]
+    doc["scopeBackfillExact"] = True
+    if saved is None:
+        del doc["scopeBackfillLegacy"]
+    else:
+        doc["scopeBackfillLegacy"] = saved
+    assert not (await status(loaded.graph, ORG, app)).exact
+    again = await job.run_connector(ORG, app)
+    assert again.exact and again.legacy == 0 and loaded.graph.app_docs[app]["scopeBackfillExact"] is True

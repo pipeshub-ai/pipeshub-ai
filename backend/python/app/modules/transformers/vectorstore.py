@@ -116,11 +116,13 @@ from app.utils.aimodels import (
     get_embedding_model,
     is_local_cpu_embedding_provider,
 )
+from app.utils.embedding_gate import GateFailFast
 from app.utils.embedding_retry import (
     is_retriable_embedding_error,
     retry_delay_seconds,
     signal_backpressure_if_rate_limited,
 )
+from app.utils.embedding_server_client import EmbeddingServerEmbeddings
 from app.utils.image_utils import normalize_image_to_base64
 from app.utils.indexing_timing import stage
 from app.utils.llm import load_ai_models
@@ -2123,20 +2125,37 @@ class VectorStore(Transformer):
         total_chars = sum(len(text) for text in texts)
         last_error: BaseException | None = None
         progress = current_progress()
+        # isinstance, not getattr: a duck-typed lookup answers for any Mock embedder.
+        # Read once: a config change can replace the field while a batch waits in the gate.
+        embedder = self.dense_embeddings
+        gate = embedder.bulk_gate() if isinstance(embedder, EmbeddingServerEmbeddings) else None
 
         for attempt in range(1, _EMBEDDING_BATCH_MAX_ATTEMPTS + 1):
             if progress is not None:
                 progress.call_start()
             try:
                 # The stall timer is off while the call runs: attempt_timeout, which may be longer
-                # than the stall floor on local CPU, is what bounds a hung batch.
-                return await asyncio.wait_for(
-                    self.dense_embeddings.aembed_documents(texts),
-                    timeout=attempt_timeout,
-                )
+                # than the stall floor on local CPU, is what bounds a hung batch. The gate is per
+                # attempt so the backoff sleep below does not hold a permit, and its wait is outside
+                # the timeout so queueing behind other batches is not counted as embedding time.
+                async with (
+                    gate.slot(progress, attempt_timeout=attempt_timeout, service_name=service_name)
+                    if gate is not None
+                    else contextlib.nullcontext()
+                ):
+                    # Gated: the client must not sleep through its own backoff while holding the permit;
+                    # this loop retries, and sleeps below with the permit released.
+                    return await asyncio.wait_for(
+                        embedder.aembed_documents(texts, single_attempt=True)
+                        if gate is not None
+                        else embedder.aembed_documents(texts),
+                        timeout=attempt_timeout,
+                    )
             except asyncio.TimeoutError as e:
                 last_error = e
-                get_default_downstream_feedback().report_timeout(service_name)
+                # The gate has already reported its own fail-fast, once for all waiters.
+                if not isinstance(e, GateFailFast):
+                    get_default_downstream_feedback().report_timeout(service_name)
             except Exception as e:
                 signal_backpressure_if_rate_limited(
                     e,
@@ -2580,6 +2599,21 @@ class VectorStore(Transformer):
             titles = table_titles(blocks, block_groups)
 
         tokens = await self._bind_membership(virtual_record_id, record)
+        progress = current_progress()
+
+        async def embed_section(docs: list[Document]) -> None:
+            # Every embed of a reconciliation is planned, so a wait at the embedding server pauses the
+            # budget. Planned once (a second plan would restart the attempt's clock) and timed only while
+            # embedding: the splitting and deletes between sections have no batches to beat.
+            if progress is not None:
+                if progress.planned:
+                    progress.unfinish()
+                else:
+                    progress.plan(0, 0)
+            await self._process_document_chunks(docs, record_id, collection_name)
+            if progress is not None:
+                progress.finish()
+
         try:
             # On reconciliation: always refresh the record summary first
             if block_ids_to_delete or is_reconciliation:
@@ -2595,7 +2629,7 @@ class VectorStore(Transformer):
                             record_id, virtual_record_id, org_id, semantic_metadata
                         )
                         if summary_doc:
-                            await self._process_document_chunks([summary_doc], record_id, collection_name)
+                            await embed_section([summary_doc])
 
                 # The residue spans the whole file, so any change replaces it. The code documents below
                 # rebuild it; with no code block or class re-indexed (only deletions) it is rebuilt here.
@@ -2608,7 +2642,7 @@ class VectorStore(Transformer):
                         residue = await asyncio.to_thread(code_residue_documents, code_members, virtual_record_id,
                                                           org_id, _record_context_line(record))
                         if residue:
-                            await self._process_document_chunks(residue, record_id, collection_name)
+                            await embed_section(residue)
 
             if not blocks and not block_groups:
                 if block_ids_to_delete:
@@ -2959,7 +2993,7 @@ class VectorStore(Transformer):
                 langchain_docs = [d for d in documents_to_embed if isinstance(d, Document)]
                 image_chunks = [d for d in documents_to_embed if not isinstance(d, Document)]
                 if langchain_docs:
-                    await self._process_document_chunks(langchain_docs, record_id, collection_name)
+                    await embed_section(langchain_docs)
                 if image_chunks:
                     image_base64s = [c.get("image_uri") for c in image_chunks]
                     points = await self._process_image_embeddings(
@@ -2968,6 +3002,9 @@ class VectorStore(Transformer):
                     await self._store_image_points(points, collection_name)
             else:
                 await self._create_embeddings(documents_to_embed, record_id, virtual_record_id, collection_name, org_id=org_id)
+
+            if progress is not None:
+                progress.finish()
 
             if block_ids_to_delete:
                 self.logger.debug(f"📊 Deleting {len(block_ids_to_delete)} removed blocks")
@@ -2994,4 +3031,7 @@ class VectorStore(Transformer):
                 details={"error_type": type(e).__name__, "error": str(e)},
             ) from e
         finally:
+            if progress is not None:
+                # Nothing after the embedding has batches to time (a no-op when nothing was planned).
+                progress.finish()
             reset_membership_context(tokens)

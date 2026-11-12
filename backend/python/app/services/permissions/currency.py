@@ -82,23 +82,34 @@ def app_is_served(app: Mapping[str, object] | None) -> bool:
     return app_is_current(app) and not parse((app or {}).get(PENDING_KEY)) and (app or {}).get("status") not in RUNNING
 
 
+def app_is_exact(app: Mapping[str, object] | None) -> bool:
+    """Whether the connector is served and its last pass left no stale or legacy point (`Progress.exact`, recorded with the pass's own keys, so it is read
+    only beside the version, generation and structure generation `app_is_current` checks). Anything but the boolean ``True`` (missing, a number, a
+    string) is not exact: a connector's points that no stamp decides are then the request's arms' to return, so it keeps today's over-fetch."""
+    return app_is_served(app) and (app or {}).get(BACKFILL_KEYS["exact"]) is True
+
+
 class StampCurrency:
     def __init__(self, graph_provider: IGraphDBProvider) -> None:
         self._graph = graph_provider
 
     async def served(self, connector_ids: Iterable[str]) -> frozenset[str]:
-        """The connectors among ``connector_ids`` whose stamps may decide a search now (`app_is_served`), from one batched read of their app
+        return (await self.read(connector_ids))[0]
+
+    async def read(self, connector_ids: Iterable[str]) -> tuple[frozenset[str], frozenset[str]]:
+        """The connectors among ``connector_ids`` whose stamps may decide a search now (`app_is_served`) and, of those, the exact ones (`app_is_exact`), from one batched read of their app
         documents, made for this call and kept by nobody: the answer moves in the transaction that moves the generation, so a cached one is
         a window in which a revoked access still admits. A read that fails, or a connector it does not return, is not served. Runs inside the
         organisation the connectors belong to."""
         ids = sorted(set(connector_ids))
         if not ids:
-            return frozenset()
+            return frozenset(), frozenset()
         try:
             found = await self._graph.get_nodes_by_field_in(CollectionNames.APPS.value, "_key", ids, raise_on_error=True)
         except Exception:
-            return frozenset()
-        return frozenset(key for d in found or [] if isinstance(d, dict) and (key := str(d.get("_key") or d.get("id"))) in ids and app_is_served(d))
+            return frozenset(), frozenset()
+        docs = {key: d for d in found or [] if isinstance(d, dict) and (key := str(d.get("_key") or d.get("id"))) in ids}
+        return frozenset(k for k, d in docs.items() if app_is_served(d)), frozenset(k for k, d in docs.items() if app_is_exact(d))
 
     async def current(self, connector_ids: Iterable[str]) -> frozenset[str]:
         """The connectors among ``connector_ids`` whose stamps are usable now. Runs inside the organisation the connectors belong to. A

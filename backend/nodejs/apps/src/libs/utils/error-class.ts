@@ -5,6 +5,7 @@
  */
 import { BaseError } from '../errors/base.error';
 import { unansweredKind } from '../errors/backend-error';
+import { WrongCredentialError } from '../errors/http.errors';
 
 export const ERROR_CLASSES = [
   'auth_expired',
@@ -96,6 +97,7 @@ function linkClass(link: Indexed): ErrorClass | undefined {
   if (BUG_TYPES.some((type) => link instanceof type)) {
     return link.cause === undefined ? 'internal' : undefined;
   }
+  if (link instanceof WrongCredentialError) return 'bad_request';
   const status = statusOf(link);
   // Our own 500 says nothing about why; its cause may.
   if (status === undefined || (link instanceof BaseError && status === 500)) {
@@ -118,7 +120,8 @@ function classifyChain(error: unknown): ErrorClass {
 }
 
 /**
- * The class of a status (401 auth_expired, 403 forbidden, 404/410 not_found,
+ * The class of a status (401 auth_expired (a WrongCredentialError:
+ * bad_request), 403 forbidden, 404/410 not_found,
  * 408/504 timeout, 409 conflict, 429 rate_limited, other 4xx bad_request, 503
  * unavailable, other 5xx upstream_5xx; anything below 400 internal) or of an
  * error, walking its `cause` chain (outermost first, cycle-safe). Never throws.
@@ -140,7 +143,8 @@ export function classifyError(errorOrStatus: unknown): ErrorClass {
  * upstream failure on purpose (a BaseError with that cause). A driver or
  * library error nobody handled stays `internal`, even when a refused
  * connection sits in its chain (our own database down): it needs a human.
- * Any other status decides by itself.
+ * Any other status decides by itself, unless the error that set it is more
+ * specific (a wrong credential answered 401 is bad_request).
  */
 export function classifyRequestError(
   error: unknown,
@@ -152,8 +156,10 @@ export function classifyRequestError(
       ? fromError
       : 'internal';
   }
-  return fromError === 'cancelled'
-    ? 'cancelled'
+  if (fromError === 'cancelled') return 'cancelled';
+  // The error that set the status can say more than the status (a wrong code is answered 401).
+  return error instanceof BaseError && error.statusCode === answeredStatus
+    ? fromError
     : classifyStatus(answeredStatus);
 }
 

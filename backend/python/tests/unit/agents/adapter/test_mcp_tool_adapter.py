@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -28,6 +29,8 @@ from app.agents.mcp.errors import MCPHttpStatusError, MCPToolNotOfferedError
 from app.agents.mcp.models import MCPToolInfo
 from app.agents.mcp.oauth_client import MCPOAuthError
 from app.agents.mcp.token_refresh import MCPTokenRefreshError
+from app.utils import logging_fields
+from app.utils.credential_refresh_log import MISCONFIGURED_REPEAT_S
 from app.utils.logger import log_record_fields
 from tests.unit.agents.adapter.conftest import make_context
 from tests.unit.agents.mcp.refresh_failures import (
@@ -1085,3 +1088,43 @@ class TestStopInterruptsACall:
         await asyncio.sleep(0)
 
         assert session_manager.cancelled is True
+
+
+class TestAMisconfiguredSignInIsAnErrorOnceAnHour:
+    """A refresh that can't work until an admin acts (no OAuth client) fails every turn: its `tool_call.end` is ERROR
+    once an hour per server, DEBUG in between, with the class the refresh's own `end` said."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(logging_fields, "_log_once_last", {})
+
+    async def _turn(self, exc: Exception, caplog: pytest.LogCaptureFixture, server: str = "inst-1") -> logging.LogRecord:
+        adapter = MCPToolAdapter(replace(_server(), instance_id=server), _tool_info(), _FakeSessionManager(exc=exc))
+        registry = ToolRegistry()
+        registry.register_tool(adapter)
+        with caplog.at_level(logging.DEBUG):
+            await ToolExecutor(registry).call_tool(ToolCall(id="t1", name=adapter.name, arguments={"query": "PA"}))
+        return [r for r in caplog.records if r.getMessage() == "tool_call.end"][-1]
+
+    async def test_the_second_turn_in_the_hour_is_debug_and_another_server_is_not(self, caplog: pytest.LogCaptureFixture) -> None:
+        def no_client() -> Exception:
+            return MCPTokenRefreshError("No OAuth client configuration found", refresh_reason="config_missing")
+
+        first = await self._turn(no_client(), caplog)
+        second = await self._turn(no_client(), caplog)
+        other = await self._turn(no_client(), caplog, server="inst-2")
+        for key in logging_fields._log_once_last:
+            logging_fields._log_once_last[key] -= MISCONFIGURED_REPEAT_S + 1
+        later = await self._turn(no_client(), caplog)
+
+        assert [r.levelno for r in (first, second, other, later)] == [logging.ERROR, logging.DEBUG, logging.ERROR, logging.ERROR]
+        assert {log_record_fields(r)["error_class"] for r in (first, second, other, later)} == {"misconfigured"}
+
+    @pytest.mark.parametrize("refresh_reason", ["lock_contention", "host_unresolved"])
+    async def test_an_unavailable_refresh_is_never_gated(self, caplog: pytest.LogCaptureFixture, refresh_reason: str) -> None:
+        def failure() -> Exception:
+            return MCPOAuthError("x", refresh_reason=refresh_reason)
+
+        lines = [await self._turn(failure(), caplog), await self._turn(failure(), caplog)]
+
+        assert [(r.levelno, log_record_fields(r)["error_class"]) for r in lines] == [(logging.WARNING, "unavailable")] * 2

@@ -860,6 +860,11 @@
     "fork": "Bifurcar chat",
     "forkFromHere": "Bifurcar desde aquí",
     "regenerate": "Regenerar",
+    "answerHidden": {
+      "lost": "Esta respuesta usó contenido al que ya no tienes acceso.",
+      "unconfirmed": "No pudimos confirmar tu acceso. Inténtalo de nuevo.",
+      "askAgain": "Preguntar de nuevo"
+    },
     "readAloud": "Leer en voz alta",
     "stopReading": "Dejar de leer",
     "ttsNotSupported": "La conversión de texto a voz no es compatible con este navegador",
@@ -6033,5 +6038,20 @@
     },
     "nothingNew": "No hay nada más que mostrar para este nodo.",
     "tableOnly": "Se muestra solo la tabla para mantener la fluidez."
+  },
+  "accessNotice": {
+    "permissions_updating": "Algunas fuentes están actualizando permisos, por lo que pueden faltar algunos resultados durante unos minutos.",
+    "connector_syncing": "{{name}} aún se está sincronizando, por lo que sus resultados pueden estar incompletos.",
+    "connector_syncing_unnamed": "Una fuente aún se está sincronizando, por lo que sus resultados pueden estar incompletos.",
+    "check_unavailable": "No pudimos comprobar a qué documentos tiene acceso en este momento, por lo que no se muestran resultados. Inténtelo de nuevo en un minuto.",
+    "emptySyncing": "Aún no hay nada que buscar. {{name}} se está sincronizando.",
+    "emptySyncing_unnamed": "Aún no hay nada que buscar. Una fuente se está sincronizando.",
+    "noAccess": {
+      "title": "No tiene acceso a este elemento",
+      "body": "Puede que se haya movido, eliminado o restringido. Pregunte al propietario o ábralo donde se originó si tiene el enlace.",
+      "justGotAccess": "¿Acaba de obtener acceso en el origen? El nuevo acceso aparece tras la próxima sincronización.",
+      "copyDetails": "Copiar los detalles para un administrador",
+      "copied": "Detalles copiados"
+    }
   }
 }

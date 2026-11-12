@@ -41,6 +41,10 @@ def check_env() -> None:
         value = os.environ.get(name, "")
         if value and value not in allowed:
             raise ValueError(f"{name}={value!r} is not understood: set it to one of {', '.join(allowed)}, or leave it unset")
+    from app.services.graph_db.postgres.kg import (
+        net,  # imports backfill, which imports this module
+    )
+    net.check_env()
 
 
 def mode() -> str:

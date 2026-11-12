@@ -306,6 +306,7 @@ from app.services.graph_db.vector_membership_queries import (
     can_use_membership_cleanup,
 )
 from app.utils.user_messages import action_failed
+from app.utils import error_class
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import folder_in_trash
 
@@ -7686,6 +7687,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         per_address: int = 2,
         transaction: str | None = None,
+        *,
+        include_deleted: bool = False,
     ) -> list[dict[str, Any]]:
         if not weburls or not org_id:
             return []
@@ -7699,7 +7702,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         AND record.orgId == @org_id
                         AND record.recordType != "LINK"
                         AND record.isPlaceholder != true
-                        AND {aql_live_record("record")}
+                        AND ({"true" if include_deleted else aql_live_record("record")})
                     SORT record.isDependentNode == true, record._key
                     LIMIT @per_address
                     RETURN {{
@@ -8511,9 +8514,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             AppUser object if found, None otherwise
         """
         try:
-            self.logger.debug(
-                f"🚀 Retrieving user for email {email} and app {connector_id}"
-            )
+            self.logger.debug("Retrieving the app user by email for connector %s", connector_id)
 
             query = f"""
                 // First find the app
@@ -8554,15 +8555,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
 
             if results and results[0]:
-                self.logger.debug(f"✅ Successfully retrieved user for email {email} and app {connector_id}")
+                self.logger.debug("Retrieved the app user by email for connector %s", connector_id)
                 user_data = self._translate_node_from_arango(results[0])
                 return AppUser.from_arango_user(user_data)
             else:
-                self.logger.warning(f"⚠️ No user found for email {email} and app {connector_id}")
+                self.logger.warning("No app user found by email for connector %s", connector_id)
                 return None
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to retrieve user for email {email} and app {connector_id}: {str(e)}")
+            error_class.log_failure(self.logger, "graph.get_app_user_by_email.failed", e, include_error_text=False,  # the lookup is by email
+                                    connector_id=connector_id)
             return None
 
     async def get_app_users(
@@ -14201,13 +14203,11 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             Optional[Dict]: Updated relation document if successful, None otherwise
         """
         try:
-            self.logger.debug(
-                f"🚀 Updating {service_type} sync state for user {user_email} to {state}"
-            )
+            self.logger.debug("Updating a user's %s sync state to %s", service_type, state)
 
             user_key = await self.get_entity_id_by_email(user_email)
             if not user_key:
-                self.logger.warning(f"⚠️ User not found for email {user_email}")
+                self.logger.warning("No user found by email for the %s sync state update", service_type)
                 return None
 
             # Get user key and app key based on service type and update the sync state
@@ -14242,20 +14242,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             result = results[0] if results else None
             if result:
-                self.logger.debug(
-                    f"✅ Successfully updated {service_type} sync state for user {user_email} to {state}"
-                )
+                self.logger.debug("Updated a user's %s sync state to %s", service_type, state)
                 return result
 
-            self.logger.warning(
-                f"⚠️ UPDATE:No user-app relation found for email {user_email} and service {service_type}"
-            )
+            self.logger.warning("No user-app relation found for the %s sync state update", service_type)
             return None
 
         except Exception as e:
-            self.logger.error(
-                f"❌ Failed to update user {service_type} sync state: {str(e)}"
-            )
+            error_class.log_failure(self.logger, "graph.update_user_sync_state.failed", e, include_error_text=False,  # the lookup is by email
+                                    service_type=service_type)
             return None
 
     async def get_drive_sync_state(
@@ -14323,22 +14318,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> dict | None:
         """Store page token with user channel information."""
         try:
-            self.logger.debug(
-                """
-            🚀 Storing page token:
-
-            - Channel: %s
-            - Resource: %s
-            - User Email: %s
-            - Token: %s
-            - Expiration: %s
-            """,
-                channel_id,
-                resource_id,
-                user_email,
-                token,
-                expiration,
-            )
+            self.logger.debug("Storing a page token for channel %s, resource %s, expiring %s", channel_id, resource_id, expiration)
 
             token_doc = {
                 "channelId": channel_id,
@@ -14381,17 +14361,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> dict | None:
         """Get page token for specific channel."""
         try:
-            self.logger.debug(
-                """
-            🔍 Getting page token for:
-            - Channel: %s
-            - Resource: %s
-            - User Email: %s
-            """,
-                channel_id,
-                resource_id,
-                user_email,
-            )
+            self.logger.debug("Getting the page token for channel %s, resource %s", channel_id, resource_id)
 
             filters = []
             bind_vars = {}

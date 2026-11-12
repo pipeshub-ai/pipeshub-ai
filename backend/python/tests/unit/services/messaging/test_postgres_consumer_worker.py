@@ -159,11 +159,28 @@ async def test_a_record_deleted_while_indexed_is_dead_lettered_without_a_warning
     logger.error.assert_not_called()
 
 
-async def test_an_unexpected_failure_is_still_logged_as_an_error() -> None:
-    (ok, _, _, _), logger = await _process_raising(RuntimeError("boom"))
+async def test_an_unexpected_failure_is_still_logged_as_an_error(caplog) -> None:
+    import json
+    import logging
+
+    from app.services.messaging.postgres.queue import Delivery
+    from app.utils.logger import log_record_fields
+
+    async def handler(_msg) -> bool:
+        raise RuntimeError("boom")
+
+    consumer = PgMessagingConsumer(LOG, CFG)
+    consumer.message_handler = handler
+    value = json.dumps({"eventType": "e", "payload": {}, "requestId": "req-1", "orgId": "org-1"})
+    with caplog.at_level(logging.DEBUG, logger=LOG.name):
+        ok, _, _, reason = await consumer._process(
+            Delivery(topic="t", message_id=1, attempts=1, value=value, key=None), final=False
+        )
 
     assert not ok
-    logger.error.assert_called_once()
+    [line] = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert (line.getMessage(), log_record_fields(line)["error_type"]) == ("message.handler_failed", "RuntimeError")
+    assert reason == "internal: RuntimeError"
 
 
 async def _settle_raising(exc: Exception) -> PgMessagingConsumer:

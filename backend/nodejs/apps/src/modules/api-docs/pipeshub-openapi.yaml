@@ -257,6 +257,15 @@ tags:
       way a browser's `maxLength` does, so an emoji counts as two characters.
   - name: Code Graph
     description: Code repositories indexed into a navigable code graph, and each one's graph status
+  - name: Local Repositories
+    description: |
+      Push a repository from a developer's machine (`pipeshub index`) so its code is indexed into the code
+      graph. The caller sends a manifest (path and sha256 of each file), uploads only the files the server
+      lacks, then commits to start indexing. The repository is identified by a key the client chooses; the
+      organization and user come from the token, and the repository is visible only to the user who pushed it.
+      Files are UTF-8 text; binaries, files over the size limit and the server's default ignore list
+      (`node_modules/`, `dist/`, lockfiles, images, archives) are rejected per file. The limits are returned
+      when the repository is registered.
   - name: Semantic Search
     description: Enterprise semantic search across all indexed knowledge with relevance scoring
   - name: Agents
@@ -587,6 +596,14 @@ x-pipeshub-nav:
           - API Documentation
 components:
   parameters:
+    LocalRepoKey:
+      name: repoKey
+      in: path
+      required: true
+      description: A key the client chooses and keeps for the working copy (8-64 letters, digits, `-` or `_`).
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9_-]{8,64}$'
     RevealStoredSecrets:
       name: reveal
       in: query
@@ -740,6 +757,7 @@ components:
             connector:sync: Trigger connector synchronization
             connector:delete: Delete connectors
             code:read: Read indexed code repositories and their code graph
+            code:write: Push local repositories to be indexed into the code graph
             config:read: Read system configuration
             config:write: Update system configuration
             crawl:read: Read crawling jobs
@@ -792,6 +810,7 @@ components:
             connector:sync: Trigger connector synchronization
             connector:delete: Delete connectors
             code:read: Read indexed code repositories and their code graph
+            code:write: Push local repositories to be indexed into the code graph
             config:read: Read system configuration
             config:write: Update system configuration
             crawl:read: Read crawling jobs
@@ -2579,6 +2598,8 @@ components:
         The `code` field is a machine-readable string identifying the error type (e.g.
         `HTTP_UNAUTHORIZED`, `HTTP_NOT_FOUND`, `VALIDATION_ERROR`, `INTERNAL_ERROR`).
       properties:
+        accessNotices:
+          $ref: '#/components/schemas/AccessNotices'
         error:
           type: object
           additionalProperties: false
@@ -9482,6 +9503,8 @@ components:
             duration:
               type: integer
               minimum: 0
+            accessNotices:
+              $ref: '#/components/schemas/AccessNotices'
             searchDegraded:
               type: boolean
               description: |
@@ -9520,6 +9543,8 @@ components:
               type: integer
               minimum: 0
               description: Total handler duration in milliseconds.
+            accessNotices:
+              $ref: '#/components/schemas/AccessNotices'
             searchDegraded:
               type: boolean
               description: |
@@ -10113,6 +10138,8 @@ components:
               description: |
                 Same value as the top-level `recordsUsed`. Duplicated inside
                 `meta` for client convenience.
+            accessNotices:
+              $ref: '#/components/schemas/AccessNotices'
             searchDegraded:
               type: boolean
               description: |
@@ -10504,19 +10531,27 @@ components:
           description: Ordered agent-activity transcript for this turn.
           items:
             $ref: '#/components/schemas/MessagePart'
+        answerHidden:
+          $ref: '#/components/schemas/HiddenAnswer'
         createdAt:
           type: string
           format: date-time
         updatedAt:
           type: string
           format: date-time
-    RedactedSource:
+    HiddenAnswer:
       type: object
       additionalProperties: false
       description: |
-        Stands in for a source the viewer of a shared chat or search cannot read:
-        a citation, reference, filter node or search hit with no id, name, link or
-        text. Only the owner of a conversation or search sees every source.
+        Present on an assistant message whose answer is withheld from the reader,
+        and on the `tool_call` rows of that answer's turn.
+        An answer is shown only while its reader can read every record it used
+        (citations, attachments, reference data, applied filters). If any one is
+        out of reach, the whole answer is replaced: `content` carries a short
+        notice, and citations, attachments, reference data, follow-up questions,
+        reasoning, tools and parts are empty. The user's own question is kept.
+        Ask the question again to get an answer built from what the reader can
+        read now.
       required:
         - redacted
         - reason
@@ -10526,7 +10561,35 @@ components:
           enum: [true]
         reason:
           type: string
-          enum: [no_access]
+          enum: [no_longer_accessible, access_check_unavailable]
+          description: |
+            `no_longer_accessible`: a record the answer used can no longer be read
+            by the reader. `access_check_unavailable`: access could not be
+            confirmed; try again.
+    RedactedSource:
+      type: object
+      additionalProperties: false
+      description: |
+        Stands in for a source the viewer of a shared chat or search cannot read:
+        a citation, reference, filter node or search hit with no id, name, link or
+        text. Only the owner of a conversation or search sees every source. An
+        assistant answer that used a record its reader cannot read is withheld as
+        a whole (`HiddenAnswer`), the owner's included.
+      required:
+        - redacted
+        - reason
+      properties:
+        redacted:
+          type: boolean
+          enum: [true]
+        reason:
+          type: string
+          enum: [no_access, no_longer_accessible, access_check_unavailable]
+          description: |
+            `no_access`: the source is not the viewer's to read (shared chats and
+            searches). `no_longer_accessible`: the viewer's own saved search holds
+            a hit on a record they can no longer read. `access_check_unavailable`:
+            access could not be confirmed; try again.
         name:
           type: string
           description: A neutral label (`Restricted source`).
@@ -12642,6 +12705,8 @@ components:
           $ref: '#/components/schemas/SemanticSearchTimeline'
         outsideDates:
           $ref: '#/components/schemas/SemanticSearchOutsideDates'
+        accessNotices:
+          $ref: '#/components/schemas/AccessNotices'
         searchDegraded:
           type: boolean
           description: |
@@ -12669,6 +12734,29 @@ components:
             results may miss documents: says how many parts failed, for example
             `1 of 3 parts of the search index could not be searched, so this search may
             have missed documents.`
+    AccessNotices:
+      type: array
+      description: |
+        Present only when a source the caller can reach is syncing or updating permissions, or the check of what the
+        caller may read could not be made, so results may be incomplete. Codes only; the client words them. A notice
+        names only a connector the caller can already see, never a record, container or person.
+      items:
+        type: object
+        additionalProperties: false
+        required: [code]
+        properties:
+          code:
+            type: string
+            enum: [permissions_updating, connector_syncing, check_unavailable]
+          connectorId:
+            type: string
+          connectorName:
+            type: string
+          firstSync:
+            type: boolean
+            description: |
+              On `connector_syncing`: `true` when the connector has never finished a sync, so there is nothing to
+              search yet. Absent for a routine resync of a connector that has synced before.
     SemanticSearchUnindexedMatch:
       type: object
       additionalProperties: false
@@ -15967,6 +16055,8 @@ components:
           description: Ordered agent-activity transcript for this turn.
           items:
             $ref: '#/components/schemas/MessagePart'
+        answerHidden:
+          $ref: '#/components/schemas/HiddenAnswer'
         modelInfo:
           $ref: '#/components/schemas/ConversationModelInfo'
         appliedFilters:
@@ -23910,6 +24000,8 @@ components:
               type: integer
               minimum: 0
               description: Same value as the top-level `recordsUsed`.
+            accessNotices:
+              $ref: '#/components/schemas/AccessNotices'
             searchDegraded:
               type: boolean
               description: |
@@ -24774,6 +24866,94 @@ components:
         relatedNote:
           type: string
           description: Set when `relatedEntities` covers only the records on this page.
+    LocalRepoRejected:
+      type: array
+      items:
+        type: object
+        properties:
+          path:
+            type: string
+          reason:
+            type: string
+            enum: [ignored, too_large, invalid_path, too_many_files, hash_mismatch, binary, user_quota]
+    LocalRepoStatus:
+      type: object
+      properties:
+        repoKey:
+          type: string
+        name:
+          type: string
+        connectorId:
+          type: string
+        state:
+          type: string
+          enum: [empty, syncing, indexing, ready, partial, failed, stuck]
+        note:
+          type: string
+          description: Present when the state is `partial`; says how many files failed to index.
+        error:
+          type: string
+          description: Why the state is `failed` or `stuck`.
+        generation:
+          type: integer
+        syncedGeneration:
+          type: integer
+        files:
+          type: integer
+        lastCommitAt:
+          type: integer
+          nullable: true
+        indexing:
+          type: object
+          properties:
+            total:
+              type: integer
+            notStarted:
+              type: integer
+            queued:
+              type: integer
+            inProgress:
+              type: integer
+            completed:
+              type: integer
+            failed:
+              type: integer
+            skipped:
+              type: integer
+            excluded:
+              type: object
+              additionalProperties:
+                type: integer
+              description: Files left out altogether, by reason (the client's counts and the files a generator's header proved to be generated output).
+        codeGraph:
+          type: string
+          description: Status of the repository's code graph (`ready`, `building`, `no_code`, ...)
+    LocalRepoRegistered:
+      allOf:
+        - $ref: '#/components/schemas/LocalRepoStatus'
+        - type: object
+          properties:
+            created:
+              type: boolean
+            limits:
+              type: object
+              properties:
+                maxFiles:
+                  type: integer
+                maxFileBytes:
+                  type: integer
+                maxBatchFiles:
+                  type: integer
+                maxBatchBytes:
+                  type: integer
+                maxManifestEntries:
+                  type: integer
+                maxTotalBytes:
+                  type: integer
+                maxReposPerUser:
+                  type: integer
+                maxUserBytes:
+                  type: integer
   responses:
     CodeToolResult:
       description: The code tool's result, as the matching `pipeshub_code_*` MCP tool returns it.
@@ -49474,6 +49654,10 @@ paths:
             selected below app level exists or is readable by the caller
             ("Nothing in your selection is available to search"). The
             search is not persisted in this case.
+
+            The body is the usual error envelope. When a source the caller can search is still
+            syncing or updating permissions, it also carries `accessNotices` (codes only, no
+            record, container or person), so a client can say why nothing was found.
           content:
             application/json:
               schema:
@@ -49506,6 +49690,9 @@ paths:
           description: |
             The upstream AI search service is temporarily unavailable, or
             could not be reached (for example, it is still starting).
+
+            When the service could not check what the caller may read, the usual error envelope
+            also carries `accessNotices` with the code `check_unavailable`, and no results are shown.
           content:
             application/json:
               schema:
@@ -62880,6 +63067,318 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
+  # -------------------- Local repositories --------------------
+  /local-repos:
+    get:
+      tags:
+        - Local Repositories
+      summary: List the caller's local repositories
+      description: Only repositories pushed by the caller are listed.
+      operationId: listLocalRepos
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      responses:
+        '200':
+          description: Repositories
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repos:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LocalRepoStatus'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+  /local-repos/{repoKey}:
+    parameters:
+      - $ref: '#/components/parameters/LocalRepoKey'
+    put:
+      tags:
+        - Local Repositories
+      summary: Register a local repository (idempotent)
+      description: |
+        Creates the repository the first time (201) and returns it afterwards (200). The response carries the
+        limits to batch by. The body may name the repository; it may not name anything else.
+      operationId: registerLocalRepo
+      security:
+        - bearerAuth: []
+        - oauth2: [code:write]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+      responses:
+        '200':
+          description: The repository (already registered)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalRepoRegistered'
+        '201':
+          description: The repository was created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalRepoRegistered'
+        '400':
+          description: Invalid repository key
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+        '409':
+          description: The repository is being deleted, or the user already has the most repositories one person may keep (`limits.maxReposPerUser`)
+        '411':
+          description: The request has no Content-Length (a chunked body)
+        '413':
+          description: The request body is over the size limit
+        '422':
+          description: The body names a field this API does not accept, or the name has markup, control or format characters
+    get:
+      tags:
+        - Local Repositories
+      summary: Get a local repository and its indexing status
+      description: |
+        `state` is `empty` (nothing committed), `syncing`, `indexing`, `ready`, `partial` (searchable, but some files failed to index; see `indexing.failed`), `failed` or `stuck` (the commit is
+        more than two minutes old and no sync is running; commit again). Polling also restarts a sync that was
+        coalesced with a newer commit.
+      operationId: getLocalRepo
+      security:
+        - bearerAuth: []
+        - oauth2: [code:read]
+      responses:
+        '200':
+          description: The repository
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalRepoStatus'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+        '404':
+          description: No such repository for this user
+    delete:
+      tags:
+        - Local Repositories
+      summary: Delete a local repository
+      description: Deletes the repository's connector (records, symbols, edges, vectors) and the server's copy of the files.
+      operationId: deleteLocalRepo
+      security:
+        - bearerAuth: []
+        - oauth2: [code:write]
+      responses:
+        '202':
+          description: Deletion started
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+        '404':
+          description: No such repository for this user
+        '500':
+          description: The repository was removed from the index but its files could not be removed from the server
+  /local-repos/{repoKey}/manifest:
+    parameters:
+      - $ref: '#/components/parameters/LocalRepoKey'
+    post:
+      tags:
+        - Local Repositories
+      summary: Compare a manifest with the server's copy
+      description: |
+        Returns the paths to upload. With `complete: true` the server deletes every path the list leaves out;
+        `deleted` removes paths explicitly (a rename is a deleted path plus a new one).
+      operationId: diffLocalRepoManifest
+      security:
+        - bearerAuth: []
+        - oauth2: [code:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [path, sha256, size]
+                    properties:
+                      path:
+                        type: string
+                        description: Repo-relative, slash separated, NFC
+                      sha256:
+                        type: string
+                        pattern: '^[0-9a-f]{64}$'
+                      size:
+                        type: integer
+                        minimum: 0
+                complete:
+                  type: boolean
+                  default: false
+                deleted:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: What to upload and what was deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  upload:
+                    type: array
+                    items:
+                      type: string
+                  deleted:
+                    type: array
+                    items:
+                      type: string
+                  unchanged:
+                    type: integer
+                  rejected:
+                    $ref: '#/components/schemas/LocalRepoRejected'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+        '404':
+          description: No such repository for this user
+        '413':
+          description: Too many manifest entries
+  /local-repos/{repoKey}/files:
+    parameters:
+      - $ref: '#/components/parameters/LocalRepoKey'
+    put:
+      tags:
+        - Local Repositories
+      summary: Upload changed files
+      description: |
+        A batch of UTF-8 files, each with its sha256. Good files are stored even when others in the batch are rejected.
+      operationId: uploadLocalRepoFiles
+      security:
+        - bearerAuth: []
+        - oauth2: [code:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [files]
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [path, sha256, content]
+                    properties:
+                      path:
+                        type: string
+                      sha256:
+                        type: string
+                        pattern: '^[0-9a-f]{64}$'
+                      content:
+                        type: string
+      responses:
+        '200':
+          description: Stored and rejected paths
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stored:
+                    type: array
+                    items:
+                      type: string
+                  rejected:
+                    $ref: '#/components/schemas/LocalRepoRejected'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+        '404':
+          description: No such repository for this user
+        '413':
+          description: |
+            Two different refusals. A batch over `limits.maxBatchFiles` or `limits.maxBatchBytes`, or a body over the size limit, stores nothing and
+            answers `{ "detail": "..." }`. An upload that would take the user's repositories past `limits.maxUserBytes` stores the files that fit
+            and answers with the body below: send the files in `rejected` again only after removing something, and do not commit a repository
+            believing that every file arrived.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                  stored:
+                    type: array
+                    items:
+                      type: string
+                  rejected:
+                    $ref: '#/components/schemas/LocalRepoRejected'
+  /local-repos/{repoKey}/commit:
+    parameters:
+      - $ref: '#/components/parameters/LocalRepoKey'
+    post:
+      tags:
+        - Local Repositories
+      summary: Start indexing the pushed files
+      description: Bumps the repository generation and starts a sync. Safe to call after every burst of changes.
+      operationId: commitLocalRepo
+      security:
+        - bearerAuth: []
+        - oauth2: [code:write]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                excluded:
+                  type: object
+                  additionalProperties:
+                    type: integer
+                  description: What the client left out before sending, as a count per reason (`ignored_folder`, `binary`, `too_large`, `linked`, `unreadable`). Shown in the status.
+      responses:
+        '202':
+          description: Accepted; the current status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LocalRepoStatus'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The token lacks the required scope
+        '404':
+          description: No such repository for this user
 
   # -------------------- Skills --------------------
   /api-toolsets/validate:

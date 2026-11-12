@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -110,6 +110,8 @@ class StorageDocumentInfo:
     settled: bool | None = None
     #: Why a fingerprint cannot be trusted: no_fingerprint, version, unverifiable, clock, open_writer, other; None when trusted.
     untrusted_reason: str | None = None
+    #: The document's ``customMetadata`` as a mapping. Anyone who can upload can set these, so they prove nothing alone.
+    tags: dict[str, str] = field(default_factory=dict)
 
     @property
     def if_match_header(self) -> str | None:
@@ -151,6 +153,13 @@ def _document_mime(document: dict[str, Any]) -> str | None:
         return _IMAGE_MIME_BY_EXTENSION.get(extension.lower().replace(".", "", 1))
     mime = document.get("mimeType")
     return mime if isinstance(mime, str) else None
+
+
+def _tags_of(document: dict[str, Any]) -> dict[str, str]:
+    raw = document.get("customMetadata")
+    if not isinstance(raw, list):
+        return {}
+    return {m["key"]: m["value"] for m in raw if isinstance(m, dict) and isinstance(m.get("key"), str) and isinstance(m.get("value"), str)}
 
 
 def parse_document_info(body: object, *, verify: bool) -> StorageDocumentInfo | None:
@@ -204,6 +213,7 @@ def parse_document_info(body: object, *, verify: bool) -> StorageDocumentInfo | 
         object_url=object_url,
         settled=fp.get("settled") if fp and isinstance(fp.get("settled"), bool) else None,
         untrusted_reason=why,
+        tags=_tags_of(document),
     )
 
 

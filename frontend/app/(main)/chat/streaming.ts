@@ -64,6 +64,7 @@ import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import { ChatStreamError, streamErrorInfo, type ChatStreamErrorInfo } from './stream-error';
 import { StreamError } from '@/lib/api/stream-errors';
+import { readAccessNotices, type AccessNotice } from '@/app/components/feedback/access-notice';
 import { discardCompare, onPrimaryTurnStarted } from './compare/compare-controller';
 
 /** Stable id for the in-flight assistant placeholder (works on HTTP where randomUUID is missing). */
@@ -231,8 +232,8 @@ function turnReply(messages: ThreadMessageLike[]): ThreadMessageLike | null {
   return last?.role === 'assistant' ? last : null;
 }
 
-type AnswerCustom = { messageId?: string; searchDegraded?: boolean };
-const answerCustom = (m: ThreadMessageLike) => m.metadata?.custom as AnswerCustom | undefined;
+type AnswerCustom = { messageId?: string; searchDegraded?: boolean; accessNotices?: AccessNotice[] };
+const answerCustom = (m: ThreadMessageLike | undefined) => m?.metadata?.custom as AnswerCustom | undefined;
 
 /** Whether `row` is the assistant answer `target` names: by row id, or by the backend message id when the row id differs from it. */
 function isAnswerRow(row: ThreadMessageLike, target: string | null | undefined, backendId?: string | null): boolean {
@@ -251,15 +252,23 @@ function isAnswerRow(row: ThreadMessageLike, target: string | null | undefined, 
 function withSearchDegraded(
   next: ThreadMessageLike[],
   previous: ThreadMessageLike[],
-  opts: { mark?: ThreadMessageLike | null; fresh?: string | null } = {},
+  opts: { mark?: ThreadMessageLike | null; fresh?: string | null; degraded?: boolean; notices?: AccessNotice[] } = {},
 ): ThreadMessageLike[] {
-  const degradedBefore = previous.filter((m) => m.role === 'assistant' && answerCustom(m)?.searchDegraded === true);
+  // The access notices (a source syncing or updating permissions) are kept on the answer the same way as the partial-search note.
+  const flaggedBefore = previous.filter((m) => m.role === 'assistant' && (answerCustom(m)?.searchDegraded === true || answerCustom(m)?.accessNotices?.length));
   return next.map((row) => {
     if (row.role !== 'assistant') return row;
     const marked = Boolean(opts.mark) && row.id === opts.mark!.id;
-    const carried = !isAnswerRow(row, opts.fresh ?? null) && degradedBefore.some((p) => isAnswerRow(row, typeof p.id === 'string' ? p.id : null, answerCustom(p)?.messageId));
-    if (!marked && !carried) return row;
-    return { ...row, metadata: { ...row.metadata, custom: { ...row.metadata?.custom, searchDegraded: true } } };
+    const before = !isAnswerRow(row, opts.fresh ?? null)
+      ? flaggedBefore.find((p) => isAnswerRow(row, typeof p.id === 'string' ? p.id : null, answerCustom(p)?.messageId))
+      : undefined;
+    const degraded = (marked && opts.degraded !== false) || answerCustom(before)?.searchDegraded === true;
+    const notices = marked && opts.notices?.length ? opts.notices : answerCustom(before)?.accessNotices;
+    if (!degraded && !notices?.length) return row;
+    return {
+      ...row,
+      metadata: { ...row.metadata, custom: { ...row.metadata?.custom, ...(degraded ? { searchDegraded: true } : {}), ...(notices?.length ? { accessNotices: notices } : {}) } },
+    };
   });
 }
 
@@ -1547,7 +1556,9 @@ export async function streamMessageForSlot(
             messages: withSearchDegraded(finalMessages, slotBeforeComplete?.messages ?? [], {
               // This turn's own reply is the row the history ends on. A turn stopped before any text has none (history drops the
               // empty reply and ends on the question), and then the note belongs to no row: an earlier answer must not get it.
-              mark: data.meta?.searchDegraded === true
+              degraded: data.meta?.searchDegraded === true,
+              notices: readAccessNotices(data.meta?.accessNotices),
+              mark: data.meta?.searchDegraded === true || readAccessNotices(data.meta?.accessNotices).length > 0
                 ? (reuseExistingAssistant
                     ? (cardRow ?? turnReply(finalMessages))
                     : turnReply(finalMessages))
@@ -2077,7 +2088,9 @@ export async function streamRegenerateForSlot(
             useChatStore.getState().slots[slotId]?.messages ?? [],
             {
               fresh: regenRowId,
-              mark: data?.meta?.searchDegraded === true
+              degraded: data?.meta?.searchDegraded === true,
+              notices: readAccessNotices(data?.meta?.accessNotices),
+              mark: data?.meta?.searchDegraded === true || readAccessNotices(data?.meta?.accessNotices).length > 0
                 ? (finalMessages.find((m) => m.id === regenRowId) ?? null)
                 : null,
             },
