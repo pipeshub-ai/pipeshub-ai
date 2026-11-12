@@ -37,6 +37,7 @@ from app.connectors.sources.local_repo.connector import (
     LOCAL_REPO_CONNECTOR_NAME,
     REPO_KEY,
 )
+from app.core.org_context import MissingOrgContext, SystemContextNotAllowed, current_org_id
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 logger = logging.getLogger(__name__)
@@ -153,9 +154,14 @@ class UploadBody(_Body):
 
 
 def _caller(request: Request) -> tuple[str, str]:
-    user = getattr(request.state, "user", None) or {}
-    org_id, user_id = user.get("orgId"), user.get("userId")
-    if not org_id or not user_id:
+    """The org and user of the authenticated request. The org is the one the auth layer bound for this request (from the verified token,
+    never from anything the client sent), read from the ambient context like every other route."""
+    try:
+        org_id = current_org_id()
+    except (MissingOrgContext, SystemContextNotAllowed) as exc:
+        raise HTTPException(status_code=401, detail="User not authenticated") from exc
+    user_id = (getattr(request.state, "user", None) or {}).get("userId")
+    if not user_id:
         raise HTTPException(status_code=401, detail="User not authenticated")
     return org_id, user_id
 

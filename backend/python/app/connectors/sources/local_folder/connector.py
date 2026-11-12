@@ -202,7 +202,7 @@ class FolderConnector(BaseConnector):
         sync_cfg = (config or {}).get("sync", {}) or {}
         # The allow-list comes from the environment on every load, never from stored config.
         self.web_base = ""
-        self.root = self._resolve_root(sync_cfg)
+        self.root = await asyncio.to_thread(self._resolve_root, sync_cfg)  # a subclass may take a lock or read the disk: not on the shared loop
         self.web_base = self.web_base or f"file://{self.root}"
         self.user_patterns = _patterns(_cfg(sync_cfg, IGNORE_KEY, ""))
         self.use_gitignore = _as_bool(_cfg(sync_cfg, GITIGNORE_KEY, True), True)

@@ -70,7 +70,7 @@ class LocalRepoConnector(FolderConnector):
             self._syncing = False
             pinned, self._pinned = self._pinned, None
             if pinned is not None:
-                pinned[1]()
+                await asyncio.to_thread(pinned[1])  # removing the mark touches the disk
 
     def _resolve_root(self, sync_cfg: Any) -> Path:  # noqa: ANN401
         # The refusals of the syncs so far, by path. Not reset here: the indexer's content reads call this too, in the middle of a sync, and a reset

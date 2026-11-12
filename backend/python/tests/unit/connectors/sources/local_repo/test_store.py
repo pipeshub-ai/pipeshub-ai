@@ -280,6 +280,10 @@ def test_a_commit_that_fails_midway_leaves_the_old_generation_serving_and_can_be
 
 
 def test_a_retried_commit_after_a_failed_move_still_asks_for_a_graph_build(repo, monkeypatch):
+    import types
+
+    ticks = iter(range(2_000_000_000, 3_000_000_000, 5))  # a clock that moves a whole few seconds between any two readings
+    monkeypatch.setattr(store, "time", types.SimpleNamespace(time=lambda: next(ticks)))
     push(repo, **{"a.py": "v = 1\n", "README.md": "# one\n"})
     repo.commit()
     before = repo.meta()["codeChangedAt"]

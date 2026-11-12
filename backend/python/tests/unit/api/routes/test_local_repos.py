@@ -13,6 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 from app.api.routes import local_repos
+from app.core.org_context import OrgContext, set_request_context
 from app.connectors.sources.local_repo import store
 
 KEY = "repo-key-0001"
@@ -67,7 +68,10 @@ def world(tmp_path, monkeypatch):
     async def identify(request: Request, call_next):
         who = request.headers.get("x-test-user", "u1")
         scopes = request.headers.get("x-test-scopes")
-        request.state.user = {"userId": who, "orgId": "org1", "isOAuth": scopes is not None, "oauthScopes": (scopes or "").split(",")}
+        request.state.user = {"userId": who, "orgId": request.headers.get("x-test-claim-org", "org1"), "isOAuth": scopes is not None, "oauthScopes": (scopes or "").split(",")}
+        # what the auth layer does for a verified token: the org is bound for the request, and the routes read it from there
+        if "x-test-unbound" not in request.headers:
+            set_request_context(OrgContext(org_id="org1", user_id=who, kind="user", source="jwt", request_id="t"))
         return await call_next(request)
 
     app.add_middleware(local_repos.BodyLimit)
@@ -484,3 +488,10 @@ def test_a_repository_whose_every_file_was_left_out_on_purpose_is_ready_not_wait
     # a file that was NOT left out and has no record yet still holds it back (the stale entry for another path does not hide it)
     store.Repo("org1", "u1", KEY).save_meta(excludedFiles={"other.py": "generated"})
     assert world.c.get(f"/api/v1/local-repos/{KEY}").json()["state"] == "indexing"
+
+
+def test_the_org_is_the_one_bound_for_the_request_not_a_claim_in_the_user_dict_and_an_unbound_request_is_a_401(world, tmp_path):
+    r = world.c.put(f"/api/v1/local-repos/{KEY}", json={"name": "shop"}, headers={"x-test-claim-org": "evil-org"})
+    assert r.status_code == 201
+    assert store.Repo("org1", "u1", KEY).exists() and not store.Repo("evil-org", "u1", KEY).exists()  # the bound org decided where it went
+    assert world.c.get("/api/v1/local-repos", headers={"x-test-unbound": "1"}).status_code == 401
