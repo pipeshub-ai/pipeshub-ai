@@ -768,6 +768,32 @@ describe('a hidden answer takes its turn with it; web links are not records', ()
     expect(JSON.stringify(rows[1])).to.not.contain(SECRET)
   })
 
+  it('an approval answer continues its turn: the question\'s file counts for the continuation', async () => {
+    stubAccess(['att-ok'])
+    stubConversation([
+      { messageType: 'user_query', content: QUESTION, attachments: [{ recordId: 'att-no', recordName: 'x.pdf' }], ...at(0) },
+      { messageType: 'bot_response', content: 'first', citations: [], ...at(1) },
+      { messageType: 'user_query', content: 'Tool approval: allow', ...at(2) },
+      { messageType: 'bot_response', content: SECRET, status: 'stopped', citations: [], ...at(3) },
+    ])
+    const rows = await fetchRows(OWNER)
+    expect(rows[1].answerHidden).to.deep.equal(lost)
+    expect(rows[3].answerHidden).to.deep.equal(lost)
+    expect(JSON.stringify(rows[3])).to.not.contain(SECRET)
+  })
+
+  it('a card reply\'s own file is checked and counts for the turn\'s answer', async () => {
+    stubAccess(['att-ok'])
+    stubConversation([
+      { messageType: 'user_query', content: QUESTION, ...at(0) },
+      { messageType: 'user_query', content: 'User selections: A', attachments: [{ recordId: 'att-no', recordName: 'y.pdf' }], ...at(1) },
+      { messageType: 'bot_response', content: SECRET, status: 'stopped', citations: [], ...at(2) },
+    ])
+    const rows = await fetchRows(OWNER)
+    expect(rows[2].answerHidden).to.deep.equal(lost)
+    expect(JSON.stringify(rows[2])).to.not.contain(SECRET)
+  })
+
   it('a stopped answer is hidden when the question\'s own file or filter is lost', async () => {
     stubAccess(['att-ok'])
     stubConversation([

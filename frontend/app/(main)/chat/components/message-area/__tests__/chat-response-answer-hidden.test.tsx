@@ -107,6 +107,13 @@ describe('ChatResponse hidden answer', () => {
     expect(screen.queryByRole('button', { name: 'Ask again' })).toBeNull();
   });
 
+  it('shows the notice without Ask again inside a Compare column', () => {
+    renderRow({ answerHidden: { redacted: true, reason: 'no_longer_accessible' }, columnMode: true });
+
+    expect(screen.getByTestId('answer-hidden')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Ask again' })).toBeNull();
+  });
+
   it('shows no notice for an ordinary answer', () => {
     renderRow({ answer: 'Revenue was 4M.' });
     expect(screen.queryByTestId('answer-hidden')).toBeNull();

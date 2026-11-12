@@ -260,7 +260,8 @@ export const ChatResponse = React.memo(function ChatResponse({
   // Asks the same question again as a new turn of this chat, answered with today's access.
   const askAgain = useCallback(() => {
     const slot = activeSlotId ? useChatStore.getState().slots[activeSlotId] : null;
-    if (!activeSlotId || !slot || slot.isStreaming) return;
+    // Two answers compete in a Compare column: one is chosen, not asked again.
+    if (columnMode || !activeSlotId || !slot || slot.isStreaming) return;
     const request = buildStreamChatRequestForSlot(activeSlotId, question);
     if (!request) return;
     // The turn's own scope and files, not what the composer holds now. The server's usual
@@ -281,7 +282,7 @@ export const ChatResponse = React.memo(function ChatResponse({
     }
     if (attachments && attachments.length > 0) request.attachments = attachments;
     void streamMessageForSlot(activeSlotId, question, request);
-  }, [activeSlotId, question, appliedFilters, attachments]);
+  }, [activeSlotId, question, appliedFilters, attachments, columnMode]);
   const activeExpandedMessageId = useChatStore((s) =>
     activeSlotId ? s.slots[activeSlotId]?.activeExpandedMessageId ?? null : null
   );
@@ -1219,7 +1220,7 @@ export const ChatResponse = React.memo(function ChatResponse({
               ? t('chat.answerHidden.unconfirmed')
               : t('chat.answerHidden.lost')}
           </Text>
-          {isChatOwner && (
+          {isChatOwner && !columnMode && (
             <Button size="1" variant="soft" onClick={askAgain}>
               {t('chat.answerHidden.askAgain')}
             </Button>

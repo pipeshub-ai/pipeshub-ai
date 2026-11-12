@@ -272,10 +272,14 @@ type HiddenMarker = typeof ANSWER_LOST | typeof ANSWER_UNCONFIRMED;
 
 const isAnswer = (m: ViewerMessage): boolean =>
   m.messageType === 'bot_response' || m.messageType === 'error';
-/** A question that opens a turn; `User selections:` is the user's reply to a card of the same turn. */
-export const startsTurn = (m: ViewerMessage): boolean =>
-  m.messageType === 'user_query' &&
-  !(m.content ?? '').startsWith('User selections:');
+/** A question that opens a turn; `User selections:` and `Tool approval:` are replies to a card of the same turn. */
+export const startsTurn = (m: ViewerMessage): boolean => {
+  if (m.messageType !== 'user_query') return false;
+  const text = (m.content ?? '').trimStart();
+  return (
+    !text.startsWith('User selections:') && !text.startsWith('Tool approval:')
+  );
+};
 
 /** What the hidden answer keeps: who, when and which message, never what was said. */
 const hiddenAnswer = (
@@ -312,9 +316,10 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
 ): Promise<M[]> => {
   const { known, timeoutMs, fresh } = opts;
   const isOthers = (m: M): boolean => ownerOf(m) !== viewer.userId;
-  // The question's own files and filters are used by its answer too (a stopped answer stores none).
+  // The user's own files and filters (the question's, and a card reply's) are used by the turn's
+  // answer too; a stopped answer stores none.
   const checked = messages.filter(
-    (m) => isOthers(m) || isAnswer(m) || startsTurn(m),
+    (m) => isOthers(m) || isAnswer(m) || m.messageType === 'user_query',
   );
   if (checked.length === 0 && !opts.leadUnknown && !opts.trailUnknown)
     return messages;
@@ -428,8 +433,14 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
   for (const m of messages) {
     if (startsTurn(m)) {
       turn += 1;
+      turnDeps[turn] = { ids: [], urls: [] };
+    }
+    if (m.messageType === 'user_query') {
       const { ids, urls } = usedBy(m);
-      turnDeps[turn] = { ids, urls };
+      const deps = turnDeps[turn] ?? { ids: [], urls: [] };
+      deps.ids.push(...ids);
+      deps.urls.push(...urls);
+      turnDeps[turn] = deps;
     }
     turnOf.push(turn);
   }
