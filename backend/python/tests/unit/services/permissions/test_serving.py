@@ -108,6 +108,13 @@ async def test_the_plan_says_exact_only_when_every_gated_connector_is_served_and
     assert await planner({})[0].plan_exact(ORG, USER) == (None, False)
 
 
+async def test_a_viewer_with_a_legacy_app_is_never_exact() -> None:
+    both = {"c1": current(**{K["exact"]: True}), "c2": current(**{K["exact"]: True})}
+    held = scopes(legacy_apps=frozenset({"c3"}))                            # c3's points are read by the arms and can be denied: the fetch must over-fetch
+    flt, exact = await planner(both, held)[0].plan_exact(ORG, USER)
+    assert flt is not None and exact is False
+
+
 async def test_only_the_served_connectors_are_in_the_filter() -> None:
     p, _ = planner({"c1": current(), "c2": current(scopeProjectionPendingRoots='{"r":5}')})
     flt = await p.plan(ORG, USER)

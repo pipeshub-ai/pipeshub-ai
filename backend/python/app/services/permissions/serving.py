@@ -58,7 +58,7 @@ class ServingPlanner:
         return (await self.plan_exact(org_id, user_key))[0]
 
     async def plan_exact(self, org_id: str, user_key: str) -> tuple[ScopeFilter | None, bool]:
-        """`plan`, and whether every connector the viewer is gated into is served and exact: then no point the request returns is left to the arms'
+        """`plan`, and whether every connector the viewer is gated into is served and exact and the viewer has no legacy app: then no point the request returns is left to the arms'
         guess, so it needs no over-fetch for the post-check's denials (the post-check itself stays on every hit)."""
         try:
             flt, exact, reason = await asyncio.wait_for(self._plan(org_id, user_key), self._budget)
@@ -88,4 +88,4 @@ class ServingPlanner:
             flt.lists()
         except ScopeFilterTooLarge:
             return None, False, "too_large"
-        return flt, exact == scopes.gated_apps, "scopes"
+        return flt, exact == scopes.gated_apps and not scopes.legacy_apps, "scopes"      # a legacy app is outside `gated_apps` and is read by the arms: not exact
