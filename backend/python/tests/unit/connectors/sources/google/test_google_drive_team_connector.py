@@ -515,6 +515,10 @@ class TestSyncUsers:
         sync_point.update_sync_point = AsyncMock()
         conn._user_status = UserStatusTracker(sync_point)
         conn.data_entities_processor.remove_user_access_to_connector = AsyncMock(return_value=0)
+        # linked before, not in this listing (it may be on the missing page, and suspended)
+        conn.data_entities_processor.get_all_app_users = AsyncMock(return_value=[
+            MagicMock(email="Linked@x.com"), MagicMock(email="a@x.com")
+        ])
         returning = _make_google_user("gone@x.com", "u3")  # active in this listing, suspended in the last complete one
         suspended = _make_google_user("b@x.com", "u2")
         suspended["suspended"] = True
@@ -531,7 +535,9 @@ class TestSyncUsers:
             # no one is withdrawn or restored, the account that was away stays away, and nothing is saved
             conn.data_entities_processor.remove_user_access_to_connector.assert_not_awaited()
             assert conn._returning_emails == set()
-            assert conn._inactive_emails == {"gone@x.com", "b@x.com"}
+            # the last complete listing's away set, the account suspended now, and every account known or linked
+            # before that this listing does not show
+            assert conn._inactive_emails == {"gone@x.com", "b@x.com", "lost@x.com", "linked@x.com"}
             sync_point.update_sync_point.assert_not_awaited()
             assert conn._sync_ledger.has_gaps
         else:

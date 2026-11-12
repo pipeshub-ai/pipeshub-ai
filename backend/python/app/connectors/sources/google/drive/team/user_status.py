@@ -62,10 +62,18 @@ class UserStatusTracker:
             await self._sync_point.update_sync_point(USER_STATUS_SYNC_POINT_KEY, self._pending)
             self._pending = None
 
-    async def inactive_on_partial_listing(self, listed: list[AppUser]) -> set[str]:
+    async def inactive_on_partial_listing(self, listed: list[AppUser], linked: set[str]) -> set[str]:
         """The accounts to treat as unable to sign in when `listed` may be missing users: the last complete
-        listing's, plus any listed now. Nobody is withdrawn or restored, and nothing is saved."""
+        listing's, any listed now, and every account that was known or linked before but is not listed (it may be
+        one that cannot sign in, and a missing page does not say). Nobody is withdrawn or restored, and nothing is
+        saved, so a complete listing sets it all right."""
         stored = await self._sync_point.read_sync_point(USER_STATUS_SYNC_POINT_KEY) or {}
         was_inactive = {e for e in stored.get("inactive") or [] if isinstance(e, str)}
+        was_known = {e for e in stored.get("known") or [] if isinstance(e, str)}
+        known = {u.email.lower() for u in listed if u.email}
         self._pending = None
-        return was_inactive | {u.email.lower() for u in listed if u.email and not is_active_account(u)}
+        return (
+            was_inactive
+            | {u.email.lower() for u in listed if u.email and not is_active_account(u)}
+            | ((was_known | linked) - known)
+        )

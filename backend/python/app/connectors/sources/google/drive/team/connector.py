@@ -843,7 +843,15 @@ class GoogleDriveTeamConnector(BaseConnector):
                     "The user listing had an empty page before its end; no account's status is changed on this run"
                 )
                 self._sync_ledger.note_incomplete()
-                self._inactive_emails = await self._user_status.inactive_on_partial_listing(all_users)
+                try:
+                    linked = {u.email.lower() for u in await self.data_entities_processor.get_all_app_users(
+                        self.connector_id, raise_on_error=True) if u.email}
+                except Exception as e:
+                    # shortcut: without the linked accounts only those the last complete listing knew are held back;
+                    # upgrade by holding the whole directory back when they cannot be read.
+                    self.logger.error(f"Could not read the linked accounts: {e}")
+                    linked = set()
+                self._inactive_emails = await self._user_status.inactive_on_partial_listing(all_users, linked)
                 self._returning_emails = set()
 
             self.logger.info(f"✅ Successfully synced {len(all_users)} users")
