@@ -37,6 +37,9 @@ SUSPECT_LIMIT = 4
 LEASE_BUDGET_S = 150.0
 MAX_USERS = 4096
 MAX_ROWS = 64
+#: Lease charges past MAX_ROWS are merged within a slot this long. The window spans at most MAX_ROWS - 1 slots
+#: (one to spare against float rounding at a slot edge).
+LEASE_SLOT_S = WINDOW_S / (MAX_ROWS - 2)
 
 TEXT = "text"
 IMAGE = "image"
@@ -98,11 +101,18 @@ class PushLedger:
         for rows in (row.strikes, row.suspects):
             while len(rows) > MAX_ROWS:
                 rows.popleft()
-        # Seconds are never dropped: the oldest two charges become one (their sum, the newer end time), so the
-        # budget can only err on the side of counting a charge a little longer, never of losing it to many small ones.
+        # Seconds are never dropped: two charges in the same LEASE_SLOT_S slot become one at the later time, so no
+        # charge expires early and none is counted more than one slot late. The window spans at most MAX_ROWS slots,
+        # so such a pair always exists; the oldest pair is only a fallback for a clock that went backwards.
         while len(row.lease) > MAX_ROWS:
-            (_, first), (when, second) = row.lease.popleft(), row.lease.popleft()
-            row.lease.appendleft((when, first + second))
+            i = next(
+                (j for j in range(len(row.lease) - 1)
+                 if row.lease[j][0] // LEASE_SLOT_S == row.lease[j + 1][0] // LEASE_SLOT_S),
+                0,
+            )
+            (t1, first), (t2, second) = row.lease[i], row.lease[i + 1]
+            del row.lease[i]
+            row.lease[i] = (max(t1, t2), first + second)
         for key in [k for k, (until, _) in row.pairs.items() if until <= now]:
             del row.pairs[key]
 

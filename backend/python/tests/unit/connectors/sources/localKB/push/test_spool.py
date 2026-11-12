@@ -131,21 +131,39 @@ def test_a_young_dir_with_a_free_lock_is_kept_by_the_floor(root) -> None:
     assert S.sweep(root, floor_s=-1) == 1
 
 
-def test_a_lock_error_other_than_held_means_skip(root, monkeypatch) -> None:
+@pytest.mark.parametrize("where", ["flock", "open"])
+def test_a_lock_error_other_than_held_means_skip(root, monkeypatch, caplog, where) -> None:
+    """A probe that fails says nothing about the owner, and an mtime does not prove it died: the run is kept, at any
+    age, and only a count is logged."""
     run_dir = Path(root) / "run-other"
     run_dir.mkdir(parents=True)
     (run_dir / S.ALIVE).write_text("")
-    age(str(run_dir), S.FLOOR_S + 60)
+    if where == "open":
+        (run_dir / S.ALIVE).chmod(0)
+        if os.access(run_dir / S.ALIVE, os.R_OK):
+            pytest.skip("not applicable when running as root: file modes do not refuse the open")
+    else:
 
-    def denied(fd, op) -> NoReturn:
-        raise PermissionError(errno.EACCES, "not ours")
+        def denied(fd, op) -> NoReturn:
+            raise PermissionError(errno.EACCES, "not ours")
 
-    monkeypatch.setattr(S.fcntl, "flock", denied)
-    assert S.sweep(root, floor_s=0, max_age_s=0) == 0 and run_dir.exists()
-    age(str(run_dir), S.UNLOCKABLE_AGE_S + 60)
-    assert S.sweep(root) == 1, (
-        "a day on, a directory nobody can lock is not kept forever"
-    )
+        monkeypatch.setattr(S.fcntl, "flock", denied)
+    for seconds in (S.FLOOR_S + 60, S.UNLOCKABLE_AGE_S + 60, 30 * S.UNLOCKABLE_AGE_S):
+        age(str(run_dir), seconds)
+        with caplog.at_level("WARNING", logger=S.__name__):
+            assert S.sweep(root, floor_s=0, max_age_s=0) == 0 and run_dir.exists()
+    assert "skipped 1 run" in caplog.text and "run-other" not in caplog.text
+
+
+def test_without_flock_a_run_goes_by_age_only(root, monkeypatch) -> None:
+    old, young = Path(root) / "run-old", Path(root) / "run-young"
+    for d in (old, young):
+        d.mkdir(parents=True)
+        (d / S.ALIVE).write_text("")
+    age(str(old), S.UNLOCKABLE_AGE_S + 60)
+    age(str(young), S.UNLOCKABLE_AGE_S - 60)
+    monkeypatch.setattr(S, "fcntl", None)
+    assert S.sweep(root) == 1 and not old.exists() and young.exists()
 
 
 def test_missing_lock_file_uses_the_age_rule_and_a_symlinked_run_dir_is_never_followed(
@@ -255,6 +273,21 @@ def test_a_full_disk_when_the_run_dir_must_be_recreated_is_503_spool_full(
     with pytest.raises(PushRefusal) as e:
         spool.write(b"body")
     assert e.value.reason == "SPOOL_FULL"
+
+
+@pytest.mark.parametrize("code", [errno.ENOSPC, errno.EDQUOT])
+def test_a_full_disk_when_the_spool_root_is_made_is_503_spool_full(root, monkeypatch, code) -> None:
+    real = os.makedirs
+
+    def failing(path, *a, **kw) -> object:
+        if str(path) == root:
+            raise OSError(code, os.strerror(code))
+        return real(path, *a, **kw)
+
+    monkeypatch.setattr(os, "makedirs", failing)
+    with pytest.raises(PushRefusal) as e:
+        S.Spool(root)
+    assert (e.value.status, e.value.reason) == (503, "SPOOL_FULL")
 
 
 def test_a_full_disk_at_startup_degrades_to_no_lock_and_does_not_fail_every_push(
@@ -379,5 +412,25 @@ async def test_timer_survives_a_failing_sweep_and_jitters(root, monkeypatch) -> 
             await S.sweep_loop(spool, 300.0, sleep=fake_sleep)
     finally:
         spool.close()
-    assert len(calls) == 3, "the first failure did not end the timer"
+    assert len(calls) == 4, "a pass before each of the 3 sleeps and one after; the first failure did not end the timer"
     assert all(270.0 <= s <= 330.0 for s in sleeps) and len(set(sleeps)) > 1
+
+
+async def test_the_first_pass_runs_before_the_first_sleep_and_never_sees_this_run_as_dead(root) -> None:
+    """The run is locked in ``Spool()``, before the timer exists, so even a pass with no floor and no age keeps it."""
+    dead = Path(root) / f"{S.RUN_PREFIX}dead"
+    dead.mkdir(parents=True)
+    (dead / S.ALIVE).write_text("")
+    age(str(dead), OLD)
+    spool = S.Spool(root)
+
+    async def stop(_s: float) -> None:
+        raise asyncio.CancelledError
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await S.sweep_loop(spool, 300.0, sleep=stop, floor_s=-1, max_age_s=-1)
+        assert not dead.exists(), "the first pass did not wait for the interval"
+        assert Path(spool.dir, S.ALIVE).exists()
+    finally:
+        spool.close()

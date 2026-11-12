@@ -244,6 +244,38 @@ def test_many_small_charges_cannot_push_a_large_one_out_of_the_budget(
     assert refusal(ledger.check_all, U).reason == "PUSH_TIMEOUT"
 
 
+def test_merged_charges_stop_counting_once_they_leave_the_window(ledger, clock) -> None:
+    """Three 49 s runs, then a small charge every 2 s: once the big runs are out of the window, the caller is served."""
+    start = clock.t
+    for _ in range(3):
+        ledger.lease(U, 49.0)
+        clock.t += 1
+    while clock.t < start + L.WINDOW_S + L.LEASE_SLOT_S + 5:
+        clock.t += 2.0
+        ledger.lease(U, 0.1)  # 30 s per window: far under the budget
+    assert len(ledger._rows[U].lease) <= L.MAX_ROWS
+    assert refusal(ledger.check_all, U) is None, "the 147 s left the window; merging must not carry them forward"
+
+
+def test_merging_never_counts_a_charge_less_and_at_most_one_slot_more(ledger, clock) -> None:
+    """Against an exact record of every charge: never fewer live seconds (the budget is a security bound), never
+    more than the charges of the window widened by one slot."""
+    import random
+
+    rnd, charges = random.Random(5720), []
+    for _ in range(2000):
+        clock.t += rnd.choice((0.01, 0.2, 1.0, 3.0, 12.0))
+        seconds = rnd.choice((0.01, 0.3, 2.0, 49.0))
+        ledger.lease(U, seconds)
+        charges = [c for c in charges if c[0] > clock.t - 2 * L.WINDOW_S] + [(clock.t, seconds)]
+        for at in (clock.t, clock.t + rnd.uniform(0, L.WINDOW_S + 2 * L.LEASE_SLOT_S)):
+            counted = sum(s for t, s in ledger._rows[U].lease if t > at - L.WINDOW_S)
+            exact = sum(s for t, s in charges if t > at - L.WINDOW_S)
+            widened = sum(s for t, s in charges if t > at - L.WINDOW_S - L.LEASE_SLOT_S)
+            assert exact - 1e-6 <= counted <= widened + 1e-6
+        assert len(ledger._rows[U].lease) <= L.MAX_ROWS
+
+
 def test_the_flush_pattern_of_big_charges_between_floods_of_small_ones_is_refused(
     ledger, clock
 ) -> None:

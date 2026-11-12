@@ -21,7 +21,7 @@ from app.models.record_metadata import MetadataSchema, PropertyDefinition, Prope
 from .bodies import TEXT, cells_body, envelope, raw
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Awaitable, Callable, Iterator
 
 SCHEMA_ID = "org1:kb1:2"
 SCHEMA = MetadataSchema(
@@ -202,13 +202,35 @@ def big_body(n: int = 60_000) -> bytes:
     return raw(envelope({"blocks": [{"index": i, "type": "text", "data": "x" * 20} for i in range(n)]}))
 
 
-async def start(worker: W.PushWorker, spool: Spool, body: bytes) -> asyncio.Task:
-    task = asyncio.create_task(worker.validate(spool.write(body), spool.new_path("out"), schema_id=None, schema=None))
-    for _ in range(200):
-        await asyncio.sleep(0.05)
-        if worker._tasks >= 1 and worker._proc is not None:
-            break
+def _rchar(pid: int) -> int:
+    with open(f"/proc/{pid}/io") as f:
+        return next(int(line.split()[1]) for line in f if line.startswith("rchar:"))
+
+
+async def delivered(worker: W.PushWorker, run: Callable[[], Awaitable[W.Validated]]) -> asyncio.Task:
+    """Start ``run`` and return once the worker process has read the task, so a signal sent next hits it mid-task.
+
+    The proof is on the child's side: ``rchar`` (bytes the kernel counted the child reading) is still while it waits
+    for a task and moves when it reads one from its pipe. ``_tasks`` moves before the send, so a signal sent on it can
+    land before the task is delivered, and the send then fails instead of the task dying.
+    """
+    await worker._ensure()  # an idle process, blocked reading its next task
+    pid = worker._proc.pid
+    before = _rchar(pid)
+    task = asyncio.create_task(run())
+    await read_since(pid, before)
     return task
+
+
+async def read_since(pid: int, before: int) -> None:
+    deadline = time.monotonic() + 30
+    while _rchar(pid) == before:
+        assert time.monotonic() < deadline, "the worker never read its task"
+        await asyncio.sleep(0.002)
+
+
+async def start(worker: W.PushWorker, spool: Spool, body: bytes) -> asyncio.Task:
+    return await delivered(worker, lambda: worker.validate(spool.write(body), spool.new_path("out"), schema_id=None, schema=None))
 
 
 async def test_worker_validates_in_another_process(spool) -> None:
@@ -450,12 +472,9 @@ class Events:
 
 
 async def start_accounted(worker: W.PushWorker, spool: Spool, body: bytes, events: Events) -> asyncio.Task:
-    task = asyncio.create_task(worker.validate(spool.write(body), spool.new_path("out"), schema_id=None, schema=None, account=events))
-    for _ in range(200):
-        await asyncio.sleep(0.05)
-        if worker._tasks >= 1 and worker._proc is not None:
-            break
-    return task
+    return await delivered(
+        worker, lambda: worker.validate(spool.write(body), spool.new_path("out"), schema_id=None, schema=None, account=events),
+    )
 
 
 async def push_small(w: W.PushWorker, spool: Spool, events: Events | None = None) -> W.Validated:
@@ -502,17 +521,26 @@ async def test_a_reused_worker_death_is_replayed_once_and_a_surviving_replay_is_
         await w.close()
 
 
-async def test_a_replay_that_dies_too_is_a_strike(spool) -> None:
+async def test_a_replay_that_dies_too_is_a_strike(spool, monkeypatch) -> None:
+    ready: dict[int, int] = {}
+    real_start = W.PushWorker._start
+
+    def start_and_note_ready(self) -> None:
+        real_start(self)
+        ready[self._proc.pid] = _rchar(self._proc.pid)  # it has sent "ready" and waits for its first task
+
+    monkeypatch.setattr(W.PushWorker, "_start", start_and_note_ready)
     events, w = Events(), W.PushWorker()
     try:
         await push_small(w, spool)
         task = await start_accounted(w, spool, big_body(), events)
         first = w._proc.pid
         os.kill(first, signal.SIGSEGV)
-        for _ in range(200):
-            await asyncio.sleep(0.05)
-            if w._proc is not None and w._proc.pid != first and w._tasks >= 1:
+        for _ in range(3000):
+            await asyncio.sleep(0.01)
+            if w._proc is not None and w._proc.pid != first and w._proc.pid in ready:
                 break
+        await read_since(w._proc.pid, ready[w._proc.pid])  # the replay was delivered to the fresh process
         os.kill(w._proc.pid, signal.SIGSEGV)
         with pytest.raises(PushRefusal) as e:
             await task

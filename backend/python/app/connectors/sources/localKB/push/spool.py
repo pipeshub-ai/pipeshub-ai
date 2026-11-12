@@ -9,7 +9,8 @@ A run directory is created under a ``.new-`` name, its ``.alive`` file is locked
 (``flock``, held for the life of the process), and only then is it renamed to
 ``run-``. The sweeper removes a ``run-`` directory only when it can take that lock
 (its owner is gone) and the directory is older than a floor, so a live process is
-never swept, whatever the interleaving. A lock error other than "held" means skip.
+never swept, whatever the interleaving. A lock error other than "held" means skip, at
+any age: a failed probe says nothing about the owner, and an mtime does not prove it died.
 A descriptor inherited by a forked child keeps a directory alive after its owner
 died (a leak, never an early delete).
 """
@@ -34,7 +35,7 @@ if TYPE_CHECKING:
 
 try:
     import fcntl
-except ImportError:  # no flock on this platform: the sweep then runs once at start, by age only
+except ImportError:  # no flock on this platform: runs then go by age only
     fcntl = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ NO_LOCK_AGE_S = 1800.0
 LEFTOVER_AGE_S = 3600.0
 #: Work directories and files inside a live run that are older than this belong to a push that is long gone.
 LIVE_TRIM_AGE_S = 1800.0
+#: Without flock on the platform, a run directory goes by this age alone.
 UNLOCKABLE_AGE_S = 86400.0
 SWEEP_INTERVAL_S = 300.0
 
@@ -67,7 +69,8 @@ def _age(path: str, now: float) -> float | None:
 
 
 def _owner_state(path: str) -> str:
-    """``dead`` (lock taken and released), ``alive`` (held), ``none`` (no lock file) or ``unknown`` (any other error)."""
+    """``dead`` (lock taken and released), ``alive`` (held), ``none`` (no lock file), ``error`` (the probe failed)
+    or ``unknown`` (no flock on this platform)."""
     if fcntl is None:
         return "unknown"
     try:
@@ -75,14 +78,14 @@ def _owner_state(path: str) -> str:
     except FileNotFoundError:
         return "none"
     except OSError:
-        return "unknown"
+        return "error"
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return "alive"
         except OSError:
-            return "unknown"
+            return "error"
         return "dead"
     finally:
         os.close(fd)
@@ -92,7 +95,7 @@ def sweep(root: str, floor_s: float = FLOOR_S, max_age_s: float = NO_LOCK_AGE_S,
           leftover_age_s: float = LEFTOVER_AGE_S) -> int:
     """Remove the directories of runs that ended; returns how many. Blocking: call it in a thread from the loop."""
     now = time.time() if now is None else now
-    removed = 0
+    removed = unprobed = 0
     if not os.path.isdir(root):
         return 0
     for entry in os.scandir(root):
@@ -104,6 +107,7 @@ def sweep(root: str, floor_s: float = FLOOR_S, max_age_s: float = NO_LOCK_AGE_S,
         name = entry.name
         if name.startswith(RUN_PREFIX):
             state = _owner_state(entry.path)
+            unprobed += state == "error"
             doomed = (
                 (state == "dead" and age > floor_s)
                 or (state == "none" and age > max_age_s)
@@ -118,6 +122,8 @@ def sweep(root: str, floor_s: float = FLOOR_S, max_age_s: float = NO_LOCK_AGE_S,
         if doomed:
             shutil.rmtree(entry.path, ignore_errors=True)
             removed += 1
+    if unprobed:
+        logger.warning("the push spool sweep skipped %d run directories whose lock could not be probed", unprobed)
     return removed
 
 
@@ -146,7 +152,12 @@ def spool_report(root: str, mountinfo: str = "/proc/self/mountinfo") -> dict[str
 class Spool:
     def __init__(self, root: str | None = None) -> None:
         self.root = root or default_root()
-        os.makedirs(self.root, mode=0o700, exist_ok=True)
+        try:
+            os.makedirs(self.root, mode=0o700, exist_ok=True)
+        except OSError as e:
+            if e.errno in DISK_FULL:
+                raise spool_full() from e
+            raise
         name = uuid.uuid4().hex
         self.dir = os.path.join(self.root, f"{RUN_PREFIX}{name}")
         self._lock_fd: int | None = None
@@ -242,9 +253,9 @@ class Spool:
 
 
 async def sweep_loop(spool: Spool, interval_s: float = SWEEP_INTERVAL_S, *, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep, **kwargs: float) -> None:
-    """Sweep other runs' directories and trim this run's, forever. One failed round never ends it."""
+    """Sweep other runs' directories and trim this run's, at once and then forever, always in a thread. One failed
+    round never ends it. ``spool`` holds its lock before this task exists, so no pass can see its run as dead."""
     while True:
-        await sleep(interval_s * random.uniform(0.9, 1.1))
         try:
             removed = await asyncio.to_thread(sweep, spool.root, **kwargs)
             removed += await asyncio.to_thread(spool.trim)
@@ -252,3 +263,4 @@ async def sweep_loop(spool: Spool, interval_s: float = SWEEP_INTERVAL_S, *, slee
                 logger.info("the push spool sweep removed %d leftover entries", removed)
         except Exception as e:  # the timer must outlive any one failure
             logger.warning("the push spool sweep failed: %s", e)
+        await sleep(interval_s * random.uniform(0.9, 1.1))

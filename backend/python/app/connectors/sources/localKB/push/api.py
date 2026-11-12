@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import dataclasses
 import logging
 import os
@@ -29,7 +31,7 @@ from .contract import PushRefusal
 from .image_admission import ImageAdmission
 from .ledger import PushLedger
 from .materialiser import Materialiser
-from .spool import Spool, spool_report, sweep, sweep_loop
+from .spool import Spool, spool_report, sweep_loop
 from .worker import PushWorker
 
 if TYPE_CHECKING:
@@ -85,8 +87,8 @@ def runtime_for(app: FastAPI) -> PushRuntime:
     """One worker, spool and admission per connectors process, made on first use."""
     runtime = getattr(app.state, "kb_push_runtime", None)
     if runtime is None:
-        spool = Spool()  # takes its lock first, so the sweep below can never see this run as dead
-        sweep(spool.root)
+        # Takes its lock before the timer exists; the timer's first pass (in a thread) cleans up after earlier runs.
+        spool = Spool()
         report = spool_report(spool.root)
         (logger.warning if report["fstype"] in ("tmpfs", "ramfs") else logger.info)(
             "the push spool is on %s (%s)%s", report["fstype"], report["mount"],
@@ -96,6 +98,19 @@ def runtime_for(app: FastAPI) -> PushRuntime:
         runtime.sweeper = org_context.spawn_detached(sweep_loop(spool), name="kb-push-spool-sweep")
         app.state.kb_push_runtime = runtime
     return runtime
+
+
+async def close_runtime(app: FastAPI) -> None:
+    """Lifespan teardown: stop the spool timer, then remove this run's spool directory. Nothing to do if no push ran."""
+    runtime = getattr(app.state, "kb_push_runtime", None)
+    if runtime is None:
+        return
+    app.state.kb_push_runtime = None
+    if runtime.sweeper is not None:
+        runtime.sweeper.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await runtime.sweeper
+    await asyncio.to_thread(runtime.spool.close)
 
 
 def error_body(r: PushRefusal, request_id: str | None = None) -> dict[str, Any]:
