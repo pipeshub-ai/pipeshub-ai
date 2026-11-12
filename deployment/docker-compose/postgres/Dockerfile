@@ -16,11 +16,14 @@ ARG PG_TEXTSEARCH_VERSION=1.5.1
 ARG PG_TEXTSEARCH_SHA256=2e7fb76ed96176afc6d16cc5d095ced2cb233ff27fbeaa8c7bfffc82e02f7498
 ARG PGBOUNCER_VERSION=1.26.1
 ARG PGBOUNCER_SHA256=00886a2994b4844cd37110970df777772cfc42a74c400522c82fba509a3f42d9
-# apt installs the current Debian/PGDG build tools; only the build stage uses them, and the ABI is stable within a major
+# apt installs the current Debian/PGDG build tools; only the build stage uses them. The server headers are pinned to the
+# base image's server (PG_VERSION, set by the image): an extension built against a newer minor release can call symbols the
+# image's server does not have (17.12 headers reference heap_datum_check, which 17.11 lacks). When PGDG drops that version,
+# this fails; bump the base digests instead.
 # hadolint ignore=DL3008
 RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential ca-certificates curl \
-      postgresql-server-dev-${PG_MAJOR} libevent-dev libssl-dev pkg-config \
+      "postgresql-server-dev-${PG_MAJOR}=${PG_VERSION}" libevent-dev libssl-dev pkg-config \
  && rm -rf /var/lib/apt/lists/*
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 WORKDIR /src
