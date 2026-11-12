@@ -44,4 +44,5 @@ END $$""")
         for d in ("asc", "desc"):
             op.execute(f"DROP INDEX kg.records_list_{k}_{d}")
     op.execute("DROP INDEX kg.records_list_class")
+    op.execute("DROP INDEX kg.records_hiders")
     op.execute("ALTER TABLE kg.records DROP COLUMN name_sort")

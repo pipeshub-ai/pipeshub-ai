@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 import pytest
 
@@ -269,3 +270,60 @@ async def test_the_record_group_filter_narrows_a_collections_groups_only(pg_db, 
         page = await p.get_knowledge_hub_connector_page_v3(**asks(org, granted_ids=["g1", "g2", "rg1", "rg2"]), limit=20, filters={"record_group_ids": ["g1"]})
     ids = {r["id"] for r in page["rows"]}
     assert sorted(i for i in ids if i.startswith("g")) == kept and {"rg1", "rg2"} <= ids
+
+
+# an index condition that names the node (or nodes) the statement asks about: a parent, a key, a group, a child, an id (not merely the organisation, a kind or a class)
+NODE_COND = re.compile(r"\b(parent_sk|sk|child_sk|id|app_sk|group_sk)\b\)?(::text)?\s*=")
+
+
+def _generic_plan(sql: str) -> object:
+    """``EXPLAIN (GENERIC_PLAN)`` of a statement with its ``$n`` unbound: sent as a simple query (a client-side cursor), which the extended protocol of asyncpg cannot."""
+    import os
+
+    import psycopg
+    with psycopg.connect(os.environ["PG_ADMIN_URL"], autocommit=True) as c, psycopg.ClientCursor(c) as cur:
+        cur.execute("SET enable_seqscan = off")
+        cur.execute("EXPLAIN (GENERIC_PLAN, FORMAT JSON) " + sql.replace("%", "%%"))
+        plan = cur.fetchone()[0]
+    return json.loads(plan) if isinstance(plan, str) else plan
+
+
+@pytest.mark.parametrize("analyzed", [False, True], ids=["before_analyze", "after_analyze"])
+async def test_the_hidden_rows_the_arrows_and_their_sample_read_by_key_and_never_walk_the_organisation(pg_db, analyzed) -> None:
+    """On an organisation whose rows mostly lie elsewhere, with groups that hide their children and children that hang by links: the hidden rows, the arrows and the arrows' sample
+    read the nodes they ask about by their keys, in the plan for the values and in the generic one, so their cost is the nodes', never the organisation's."""
+    import asyncio
+    import os
+
+    from asyncpg import connect
+    p, org = prov(pg_db), new_org()
+    await seed_folder(p, pg_db, org, 400, readable_kids=[], hide=True)
+    for _ in range(2):
+        await seed_folder(p, pg_db, new_org(), 50, readable_kids=[])
+    await _admin("INSERT INTO kg.links (org_id, parent_sk, kind, child_sk) SELECT r.org_id, g.sk, k, r.sk FROM kg.records r JOIN kg.node_keys g ON g.org_id = r.org_id AND g.coll = 2 "
+                 "AND g.id = 'g1' CROSS JOIN (VALUES (1), (2)) AS kinds(k) WHERE r.org_id = $1 AND r.parent_sk IS NOT NULL", org)
+    await _admin("INSERT INTO kg.records (org_id, sk, coll, id, kind, app_sk, parent_sk, group_sk, class_id) SELECT $1, 60000000 + g, 3, 'other' || g, 3, a.sk, h.sk, h.sk, g % 3 FROM generate_series(1, 4000) g "
+                 "JOIN kg.node_keys a ON a.org_id = $1 AND a.coll = 1 AND a.id = 'app1' JOIN kg.node_keys h ON h.org_id = $1 AND h.coll = 2 AND h.id = 'g1'", org)
+    con = await connect(os.environ["PG_ADMIN_URL"])
+    try:
+        if analyzed:
+            await con.execute("ANALYZE kg.records; ANALYZE kg.links; ANALYZE kg.node_keys")
+        app_sk = await con.fetchval("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND coll = 1 AND id = 'app1'", org)
+        sks = [r["sk"] for r in await con.fetch("SELECT sk FROM kg.node_keys WHERE org_id = $1 AND id = ANY($2::text[])", org, ["fold", "g1", "hid"])]
+        arrows = kgl.Params([org, sks, []])
+        statements = [("hiders", kgl.HAS_HIDER, [org, app_sk]), ("hidden", kgl.HIDDEN, [org, app_sk]),
+                      ("arrows", kgl.arrows_sql(kgl.class_admit("c", arrows, {"plain": [1], "own": [2], "unvouched": [], "granted": ["x"], "walked": set()})), arrows.values),
+                      ("children", kh_listing.CHILDREN, [org, sks, 200, []])]
+        for name, sql, args in statements:
+            await con.execute("SET enable_seqscan = off")
+            for kind, plan in (("custom", json.loads(await con.fetchval("EXPLAIN (FORMAT JSON) " + sql, *args))), ("generic", await asyncio.to_thread(_generic_plan, sql))):
+                at = f"{name} {kind} ({'after' if analyzed else 'before'} ANALYZE)"
+                seq = [n["Relation Name"] for n in _nodes(plan) if n.get("Node Type") == "Seq Scan" and n.get("Relation Name") in ("records", "links", "node_keys")]
+                assert not seq, f"{at}: sequential scan of {seq}"
+                # once analyzed (with no statistics the planner may take a wider range of a small table: the plan without a scan above is what holds then)
+                loose = [n["Index Name"] for n in _nodes(plan) if analyzed and str(n.get("Index Name")).startswith(("records_", "links_")) and not NODE_COND.search(n.get("Index Cond") or "")]
+                assert not loose, f"{at}: reads {loose} without the node in its index condition: {[n.get('Index Cond') for n in _nodes(plan) if n.get('Index Name') in loose]}"
+                if name == "hiders":      # the connector's hiders by their own index, not a pass over the connector's rows
+                    assert {n.get("Index Name") for n in _nodes(plan)} & {"records_hiders"}, f"{at}: {plan}"
+    finally:
+        await con.close()

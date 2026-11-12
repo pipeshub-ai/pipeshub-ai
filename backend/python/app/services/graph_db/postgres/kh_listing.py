@@ -45,8 +45,8 @@ CHILDREN = """/* pipeshub:kg.listing_children */ SELECT p.sk AS parent, c.id FRO
     SELECT x.id FROM (
       (SELECT r.id FROM kg.records r WHERE r.org_id = $1 AND r.parent_sk = p.sk AND r.kind IN (2, 3) AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien AND r.sk <> ALL($4::bigint[]) LIMIT $3)
       UNION ALL (SELECT r.id FROM kg.records r WHERE r.org_id = $1 AND r.group_sk = p.sk AND r.kind IN (2, 3) AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien AND r.sk <> ALL($4::bigint[]) LIMIT $3)
-      UNION ALL (SELECT r.id FROM kg.links l JOIN kg.records r ON r.org_id = l.org_id AND r.sk = l.child_sk WHERE l.org_id = $1 AND l.parent_sk = p.sk AND r.kind IN (2, 3)
-                 AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien AND r.sk <> ALL($4::bigint[]) LIMIT $3)) x LIMIT $3) c"""
+      UNION ALL (SELECT r.id FROM kg.records r WHERE r.org_id = $1 AND r.sk = ANY (ARRAY(SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = p.sk LIMIT $3))
+                 AND r.kind IN (2, 3) AND NOT r.deleted AND NOT r.placeholder AND NOT r.alien AND r.sk <> ALL($4::bigint[]) LIMIT $3)) x LIMIT $3) c"""
 LINKS = "/* pipeshub:kg.listing_links */ SELECT child_sk, parent_sk, kind FROM kg.links WHERE org_id = $1 AND child_sk = ANY($2::bigint[])"
 KEYS = "/* pipeshub:kg.listing_keys */ SELECT sk, coll, id FROM kg.node_keys WHERE org_id = $1 AND sk = ANY($2::bigint[])"
 DOCS = """/* pipeshub:kg.listing_docs */ SELECT n.coll, n.id, n.doc FROM unnest($2::text[], $3::text[]) AS q(coll, id)

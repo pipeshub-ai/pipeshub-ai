@@ -23,10 +23,11 @@ STATE = """/* pipeshub:kg.listing_state */ SELECT k.sk, coalesce(s.mode, 'legacy
 
 # Rows a group that hides its children hides from a listing: what lies below it by the hierarchy (the primary parent and the non-primary links), and the members of it or of a group below it.
 # The hider itself is listed. Empty when no group of the connector hides.
+# Every step reads by a key (a lateral read per node, kept one by OFFSET 0), so the plan never joins against the whole organisation's rows or links.
 HIDDEN = """/* pipeshub:kg.listing_hidden */ WITH RECURSIVE hid AS (SELECT sk FROM kg.records WHERE org_id = $1 AND app_sk = $2 AND hide_children),
   seed(sk) AS (
-    SELECT c.sk FROM hid h JOIN kg.records c ON c.org_id = $1 AND c.parent_sk = h.sk
-    UNION SELECT l.child_sk FROM hid h JOIN kg.links l ON l.org_id = $1 AND l.parent_sk = h.sk AND l.kind = 1),
+    SELECT c.sk FROM hid h CROSS JOIN LATERAL (SELECT c.sk FROM kg.records c WHERE c.org_id = $1 AND c.parent_sk = h.sk OFFSET 0) c
+    UNION SELECT l.child_sk FROM hid h CROSS JOIN LATERAL (SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = h.sk AND l.kind = 1 OFFSET 0) l),
   below(sk) AS (
     SELECT sk FROM seed
     UNION SELECT x.sk FROM below b CROSS JOIN LATERAL (
@@ -35,8 +36,8 @@ HIDDEN = """/* pipeshub:kg.listing_hidden */ WITH RECURSIVE hid AS (SELECT sk FR
   scope AS (SELECT sk FROM hid UNION SELECT sk FROM below)
 SELECT coalesce(array_agg(x.sk), '{}') AS sks FROM (
   SELECT sk FROM below
-  UNION SELECT r.sk FROM kg.records r WHERE r.org_id = $1 AND r.group_sk IN (SELECT sk FROM scope)
-  UNION SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.kind = 2 AND l.parent_sk IN (SELECT sk FROM scope)) x"""
+  UNION SELECT r.sk FROM scope s CROSS JOIN LATERAL (SELECT r.sk FROM kg.records r WHERE r.org_id = $1 AND r.group_sk = s.sk OFFSET 0) r
+  UNION SELECT l.child_sk FROM scope s CROSS JOIN LATERAL (SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = s.sk AND l.kind = 2 OFFSET 0) l) x"""
 HAS_HIDER = "/* pipeshub:kg.listing_hiders */ SELECT EXISTS (SELECT 1 FROM kg.records WHERE org_id = $1 AND app_sk = $2 AND hide_children)"
 
 
@@ -161,6 +162,9 @@ def class_admit(alias: str, p: Params, viewer: dict[str, Any]) -> str:
             f"OR {a}.id = ANY({p.add(sorted(viewer['walked']))}::text[]))")
 
 
+LINKS_MAX = 5_000      # shortcut: the links of one row an arrow reads (a row with more shows its arrow only for the first ones); upgrade to a paged read if a connector links more
+
+
 def arrows_sql(admit: str) -> str:
     """The containers among ``$2`` (sks) that list something when opened: some child (by the hierarchy parent, the group, or a link) that is live, not hidden (``$3``) and open to the viewer
     (``admit``, a condition on a row ``c`` with the columns of the listing's window). Exact: no sample of the children."""
@@ -168,6 +172,7 @@ def arrows_sql(admit: str) -> str:
     cols = "SELECT c.sk, c.id, c.r13, c.path IS NOT NULL AS has_path, c.class_id, c.fence_job IS NOT NULL AS fenced FROM kg.records c"
     def one(where: str) -> str:
         return f"EXISTS (SELECT 1 FROM ({cols} WHERE {live} AND {where}) c WHERE {admit})"
+    # the linked children by their keys, from the row's links first (an array, so the planner cannot turn it into a pass over the organisation's rows)
     return ("/* pipeshub:kg.listing_arrows */ SELECT p.sk FROM unnest($2::bigint[]) AS p(sk) WHERE "
             + one("c.parent_sk = p.sk") + " OR " + one("c.group_sk = p.sk")
-            + " OR " + one("c.sk IN (SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = p.sk)"))
+            + " OR " + one(f"c.sk = ANY (ARRAY(SELECT l.child_sk FROM kg.links l WHERE l.org_id = $1 AND l.parent_sk = p.sk LIMIT {LINKS_MAX}))"))
