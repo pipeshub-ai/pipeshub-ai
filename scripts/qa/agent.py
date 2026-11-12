@@ -213,9 +213,9 @@ def _input(out: Path, plan: dict[str, Any], merged: dict[str, dict[str, Any]], s
         "stack": ({"base_url": sess["base_url"], "graph_db": sess["graph_db"], "profiles": sess["compose_profiles"],
                    "session": str(session.path(out))} if sess else None),
         "commands": {
-            "run": f"{engine} --out {agent_dir}/rounds/<N> run --ids <id> [<id> ...]" + (f" --session {session.path(out)}" if sess else ""),
+            "run": f"{engine} run --out {agent_dir}/rounds/<N> --ids <id> [<id> ...]" + (f" --session {session.path(out)}" if sess else ""),
             "catalog": f"{engine} catalog build",
-            "prove": f"{engine} --out {agent_dir}/prove/<N> prove <id> --base {plan.get('base')}",
+            "prove": f"{engine} prove <id> --out {agent_dir}/prove/<N> --base {plan.get('base')}",
         },
         "minutes": minutes,
         "verdict_file": str(agent_dir / "verdict.json"),
