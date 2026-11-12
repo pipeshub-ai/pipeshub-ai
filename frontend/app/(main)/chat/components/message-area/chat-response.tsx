@@ -7,6 +7,7 @@ import { AppliedFilters } from '../applied-filters';
 import { ResponseTabs } from './response-tabs';
 import { ConfidenceIndicator } from './confidence-indicator';
 import { SearchDegradedNote } from './search-degraded-note';
+import { AccessNotices, type AccessNotice } from '@/app/components/feedback/access-notice';
 import { AnswerContent } from './answer-content';
 import { QuoteSelectionLayer } from './quote-selection-toolbar';
 import { StatusMessageComponent } from './status-message';
@@ -110,6 +111,7 @@ interface ChatResponseProps {
   confidence?: ConfidenceLevel;
   /** A search behind this answer was served with less than the full search. */
   searchDegraded?: boolean;
+  accessNotices?: AccessNotice[];
   isStreaming?: boolean;
   modelInfo?: ModelInfo;
   /** Collections attached to this message (e.g. KB filters the user selected) */
@@ -187,6 +189,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   citationCallbacks,
   confidence,
   searchDegraded = false,
+  accessNotices,
   isStreaming = false,
   modelInfo,
   collections,
@@ -916,6 +919,7 @@ export const ChatResponse = React.memo(function ChatResponse({
             )}
 
             {!isStreaming && searchDegraded && <SearchDegradedNote />}
+            {!isStreaming && <AccessNotices notices={accessNotices} />}
 
             {/* After an answered question the reply carries on in this row and can stop on an
                 approval: its card shows under the question. Only an unanswered question comes first. */}

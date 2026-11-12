@@ -2598,6 +2598,8 @@ components:
         The `code` field is a machine-readable string identifying the error type (e.g.
         `HTTP_UNAUTHORIZED`, `HTTP_NOT_FOUND`, `VALIDATION_ERROR`, `INTERNAL_ERROR`).
       properties:
+        accessNotices:
+          $ref: '#/components/schemas/AccessNotices'
         error:
           type: object
           additionalProperties: false
@@ -9501,6 +9503,8 @@ components:
             duration:
               type: integer
               minimum: 0
+            accessNotices:
+              $ref: '#/components/schemas/AccessNotices'
             searchDegraded:
               type: boolean
               description: |
@@ -9539,6 +9543,8 @@ components:
               type: integer
               minimum: 0
               description: Total handler duration in milliseconds.
+            accessNotices:
+              $ref: '#/components/schemas/AccessNotices'
             searchDegraded:
               type: boolean
               description: |
@@ -10132,6 +10138,8 @@ components:
               description: |
                 Same value as the top-level `recordsUsed`. Duplicated inside
                 `meta` for client convenience.
+            accessNotices:
+              $ref: '#/components/schemas/AccessNotices'
             searchDegraded:
               type: boolean
               description: |
@@ -12697,6 +12705,8 @@ components:
           $ref: '#/components/schemas/SemanticSearchTimeline'
         outsideDates:
           $ref: '#/components/schemas/SemanticSearchOutsideDates'
+        accessNotices:
+          $ref: '#/components/schemas/AccessNotices'
         searchDegraded:
           type: boolean
           description: |
@@ -12724,6 +12734,29 @@ components:
             results may miss documents: says how many parts failed, for example
             `1 of 3 parts of the search index could not be searched, so this search may
             have missed documents.`
+    AccessNotices:
+      type: array
+      description: |
+        Present only when a source the caller can reach is syncing or updating permissions, or the check of what the
+        caller may read could not be made, so results may be incomplete. Codes only; the client words them. A notice
+        names only a connector the caller can already see, never a record, container or person.
+      items:
+        type: object
+        additionalProperties: false
+        required: [code]
+        properties:
+          code:
+            type: string
+            enum: [permissions_updating, connector_syncing, check_unavailable]
+          connectorId:
+            type: string
+          connectorName:
+            type: string
+          firstSync:
+            type: boolean
+            description: |
+              On `connector_syncing`: `true` when the connector has never finished a sync, so there is nothing to
+              search yet. Absent for a routine resync of a connector that has synced before.
     SemanticSearchUnindexedMatch:
       type: object
       additionalProperties: false
@@ -23967,6 +24000,8 @@ components:
               type: integer
               minimum: 0
               description: Same value as the top-level `recordsUsed`.
+            accessNotices:
+              $ref: '#/components/schemas/AccessNotices'
             searchDegraded:
               type: boolean
               description: |
@@ -49619,6 +49654,10 @@ paths:
             selected below app level exists or is readable by the caller
             ("Nothing in your selection is available to search"). The
             search is not persisted in this case.
+
+            The body is the usual error envelope. When a source the caller can search is still
+            syncing or updating permissions, it also carries `accessNotices` (codes only, no
+            record, container or person), so a client can say why nothing was found.
           content:
             application/json:
               schema:
@@ -49651,6 +49690,9 @@ paths:
           description: |
             The upstream AI search service is temporarily unavailable, or
             could not be reached (for example, it is still starting).
+
+            When the service could not check what the caller may read, the usual error envelope
+            also carries `accessNotices` with the code `check_unavailable`, and no results are shown.
           content:
             application/json:
               schema:

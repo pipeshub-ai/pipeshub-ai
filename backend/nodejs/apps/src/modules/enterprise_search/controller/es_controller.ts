@@ -5428,6 +5428,27 @@ export const search =
       if (!aiResponse?.data) {
         throw new InternalServerError('Failed to get response from AI service');
       }
+      // A search that found nothing, or could not check access, says why as codes the client words. The error is
+      // mapped as for any other failure, so the body keeps its envelope (code, message, requestId); only the codes are added.
+      const noticed = (aiResponse.data as { accessNotices?: unknown })
+        .accessNotices;
+      if (
+        (aiResponse.statusCode === 404 || aiResponse.statusCode === 503) &&
+        Array.isArray(noticed)
+      ) {
+        const mapped = handleBackendError(
+          {
+            response: { status: aiResponse.statusCode, data: aiResponse.data },
+          },
+          'Search',
+        );
+        throw Object.assign(mapped, {
+          metadata: {
+            ...(mapped as { metadata?: object }).metadata,
+            accessNotices: noticed,
+          },
+        });
+      }
       if (aiResponse.statusCode !== 200) {
         throw handleBackendError(
           {

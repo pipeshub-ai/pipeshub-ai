@@ -1454,6 +1454,16 @@ describe('Enterprise Search Utils', () => {
       expect(searchDegradedMeta({})).to.deep.equal({})
       expect(searchDegradedMeta(null)).to.deep.equal({})
     })
+
+    it('carries the access notice codes when there are some, and no key when there are none', () => {
+      const notices = [{ code: 'permissions_updating', connectorId: 'c1' }]
+      expect(searchDegradedMeta({ accessNotices: notices })).to.deep.equal({ accessNotices: notices })
+      expect(searchDegradedMeta({ searchDegraded: true, accessNotices: notices })).to.deep.equal({
+        searchDegraded: true,
+        accessNotices: notices,
+      })
+      expect(searchDegradedMeta({ accessNotices: [] })).to.deep.equal({})
+    })
   })
 
   // -----------------------------------------------------------------------

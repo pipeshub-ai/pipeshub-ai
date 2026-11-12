@@ -6113,5 +6113,20 @@
     },
     "nothingNew": "U tohoto uzlu není co dalšího zobrazit.",
     "tableOnly": "Zobrazuje se jen tabulka, aby vše zůstalo plynulé."
+  },
+  "accessNotice": {
+    "permissions_updating": "Některé zdroje aktualizují oprávnění, takže několik minut může chybět část výsledků.",
+    "connector_syncing": "{{name}} se stále synchronizuje, takže výsledky z něj mohou být neúplné.",
+    "connector_syncing_unnamed": "Zdroj se stále synchronizuje, takže výsledky z něj mohou být neúplné.",
+    "check_unavailable": "Právě teď se nepodařilo zjistit, ke kterým dokumentům máte přístup, proto se nezobrazují žádné výsledky. Zkuste to znovu za minutu.",
+    "emptySyncing": "Zatím není co prohledávat. {{name}} se stále synchronizuje.",
+    "emptySyncing_unnamed": "Zatím není co prohledávat. Zdroj se stále synchronizuje.",
+    "noAccess": {
+      "title": "K této položce nemáte přístup",
+      "body": "Mohla být přesunuta, smazána nebo omezena. Zeptejte se vlastníka, nebo ji otevřete tam, odkud pochází, pokud máte odkaz.",
+      "justGotAccess": "Právě jste získali přístup ve zdroji? Nový přístup se objeví po další synchronizaci.",
+      "copyDetails": "Zkopírovat podrobnosti pro správce",
+      "copied": "Podrobnosti zkopírovány"
+    }
   }
 }

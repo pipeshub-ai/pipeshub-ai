@@ -207,6 +207,7 @@ export interface CompletedTurn {
   recordsUsed: number;
   /** The answer's search was served with less than the full search (see `searchDegradedMeta`). */
   searchDegraded?: true;
+  accessNotices?: NonNullable<IAIResponse['accessNotices']>;
 }
 
 /** Phases 2 and 3. Throws the error the client should see once the failure is saved. */
