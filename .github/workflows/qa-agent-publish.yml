@@ -55,6 +55,10 @@ jobs:
         with:
           python-version: '3.12'
 
+      # Before the untrusted artifact arrives: the checks run from this copy, which no patch can reach.
+      - name: Keep a clean copy of the engine
+        run: cp -a qa-engine/scripts "$RUNNER_TEMP/engine-scripts"
+
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
@@ -72,6 +76,7 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RUN_ID: ${{ github.run_id }}
+          ENGINE_SCRIPTS: ${{ runner.temp }}/engine-scripts
         run: |
           # Failures are handled below, so the PR always gets its comment.
           set +e -uo pipefail
@@ -92,8 +97,8 @@ jobs:
               [[ "$(realpath -m -- "$f")" == "$GITHUB_WORKSPACE/$f" ]] || return 1
             done
             QA_ROOT="$GITHUB_WORKSPACE" python3 -I - "$@" <<'PY'
-          import sys
-          sys.path.insert(0, "qa-engine/scripts")
+          import os, sys
+          sys.path.insert(0, os.environ["ENGINE_SCRIPTS"])
           from qa import agent, config
           cfg = config.load()
           bad = [p for p in sys.argv[1:] if not agent.is_test_path(cfg, p)]
@@ -102,12 +107,20 @@ jobs:
           PY
           }
           changed_files() { git status --porcelain --untracked-files=all | cut -c4- | grep -v '^qa-engine/'; }
-          # Apply the agent's test patch on HEAD and commit it; prints why not, or nothing when committed.
+          # Check the agent's test patch, then apply it on HEAD and commit it; prints why not, or nothing when committed.
           commit_tests() {
             if [[ -z "$patch" || ! -s "$patch" ]]; then echo "the agent kept no test changes"; return; fi
-            if ! git apply --check "$patch" 2>/dev/null; then echo "the agent's test changes do not apply"; return; fi
-            git apply "$patch"
-            local files
+            # The patch is untrusted: its paths are checked before anything is written.
+            if git apply --summary "$patch" 2>/dev/null | grep -qE 'rename|copy|mode|120000'; then
+              echo "the agent's changes rename files, change modes or add symlinks"; return
+            fi
+            local names files
+            mapfile -t names < <(git apply --numstat "$patch" 2>/dev/null | cut -f3-)
+            if [[ ${#names[@]} -eq 0 ]] || printf '%s\n' "${names[@]}" | grep -qF ' => ' || ! tests_only "${names[@]}"; then
+              echo "the agent's changes include files that are not tests"; return
+            fi
+            if ! git apply --check --exclude='qa-engine/*' --exclude='.github/*' "$patch" 2>/dev/null; then echo "the agent's test changes do not apply"; return; fi
+            git apply --exclude='qa-engine/*' --exclude='.github/*' "$patch"
             mapfile -t files < <(changed_files)
             if [[ ${#files[@]} -eq 0 ]] || ! tests_only "${files[@]}"; then
               git checkout -q -- . && git clean -fdq -e qa-engine

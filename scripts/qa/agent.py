@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import catalog, paths, report, session
+from .run import MODEL_CREDENTIALS
 from .config import Config
 
 SCHEMA = "qa-agent/v1"
@@ -50,10 +51,20 @@ def tools(engine: str) -> list[str]:
             *(f"Bash(git {c}:*)" for c in ("diff", "log", "show", "status"))]
 
 
-def unavailable() -> str | None:
+def take_credentials() -> dict[str, str]:
+    """Remove Claude's credential from this process's environment, so no test the engine runs inherits it;
+    only the claude processes get it back (claude_env)."""
+    return {k: v for k in MODEL_CREDENTIALS if (v := os.environ.pop(k, ""))}
+
+
+def claude_env(creds: dict[str, str]) -> dict[str, str]:
+    return {**os.environ, **creds}
+
+
+def unavailable(creds: dict[str, str]) -> str | None:
     if not shutil.which("claude"):
         return "the claude CLI is not installed"
-    if os.environ.get("CI") and not (os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")):
+    if os.environ.get("CI") and not creds:
         return "no CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY"
     return None
 
@@ -192,8 +203,8 @@ def _secrets() -> list[str]:
     return [v for k, v in os.environ.items() if names.search(k) and len(v) >= 8]
 
 
-def holds_secret(*texts: str) -> bool:
-    values = _secrets()
+def holds_secret(*texts: str, extra: tuple[str, ...] = ()) -> bool:
+    values = _secrets() + [v for v in extra if len(v) >= 8]
     return any(v in t for t in texts for v in values)
 
 
@@ -226,7 +237,7 @@ def _input(out: Path, plan: dict[str, Any], merged: dict[str, dict[str, Any]], s
     return path
 
 
-def _claude(root: Path, prompt: str, engine: str, minutes: float, max_turns: int, log: Path) -> str:
+def _claude(root: Path, prompt: str, engine: str, minutes: float, max_turns: int, log: Path, creds: dict[str, str]) -> str:
     cmd = [shutil.which("claude") or "claude", "-p", prompt, "--output-format", "json", "--max-turns", str(max_turns),
            "--allowedTools", ",".join(tools(engine)), "--disallowedTools", ",".join(DENIED),
            # User settings only and no MCP servers: the tree under test could add hooks, tools or servers.
@@ -234,7 +245,7 @@ def _claude(root: Path, prompt: str, engine: str, minutes: float, max_turns: int
     if os.environ.get("QA_PLANNER_MODEL") and os.environ.get("QA_PLANNER", "claude_code") == "claude_code":
         cmd += ["--model", os.environ["QA_PLANNER_MODEL"]]
     with log.open("w", encoding="utf-8") as fh:
-        proc = subprocess.Popen(cmd, cwd=root, stdout=subprocess.PIPE, stderr=fh, text=True, start_new_session=True)
+        proc = subprocess.Popen(cmd, cwd=root, env=claude_env(creds), stdout=subprocess.PIPE, stderr=fh, text=True, start_new_session=True)
         try:
             stdout, _ = proc.communicate(timeout=minutes * 60)
         except subprocess.TimeoutExpired:
@@ -257,16 +268,18 @@ def _claude(root: Path, prompt: str, engine: str, minutes: float, max_turns: int
 
 def run_agent(cfg: Config, out: Path, plan: dict[str, Any], run_round: Callable[[list[str], Path], None], *,
               sess: dict[str, Any] | None, minutes: float, max_turns: int,
-              combined: dict[str, Any] | None = None) -> dict[str, Any]:
+              combined: dict[str, Any] | None = None, creds: dict[str, str] | None = None) -> dict[str, Any]:
     """run_round(ids, round_dir) runs tests through the engine (round 0 is the floor). Returns agent.json's content."""
     root = cfg.root
+    # Before round 0: no test the engine runs may inherit Claude's credential.
+    creds = creds if creds is not None else take_credentials()
     out = out.resolve()  # Claude works in root; every path it is given must not depend on this process's cwd
     agent_dir = out / "agent"
     (agent_dir / "rounds").mkdir(parents=True, exist_ok=True)
     started = time.time()
     run_round([t["id"] for t in plan["tests"]], agent_dir / "rounds" / "0")
     notes: list[str] = []
-    reason = unavailable()
+    reason = unavailable(creds)
     # Only what Claude changes is judged: files round 0 or the checkout already had stay as they are.
     before = set(_changed(root))
     if reason:
@@ -280,7 +293,7 @@ def run_agent(cfg: Config, out: Path, plan: dict[str, Any], run_round: Callable[
         inp = _input(out, plan, merge_rounds(round_dirs(agent_dir)), sess, engine, minutes, combined, changed)
         prompt = (paths.REPO / "scripts/qa/prompts/agent.md").read_text(encoding="utf-8")
         prompt += f"\n\n## This run\n\nRead `{inp}` first. Write the verdict to `{agent_dir / 'verdict.json'}`.\n"
-        problem = _claude(root, prompt, engine, minutes, max_turns, agent_dir / "claude.log")
+        problem = _claude(root, prompt, engine, minutes, max_turns, agent_dir / "claude.log", creds)
         if problem:
             notes.append(f"agent {problem}")
     ignore = tuple(p for p in (os.path.relpath(out, root) + "/",) if not p.startswith(".."))
@@ -301,7 +314,7 @@ def run_agent(cfg: Config, out: Path, plan: dict[str, Any], run_round: Callable[
     verdict, problems = validate_verdict(raw, known) if raw is not None else ({}, [])
     notes += problems[:20]
     patch = test_patch(root, kept)
-    if holds_secret(json.dumps(verdict), patch, json.dumps(notes)):
+    if holds_secret(json.dumps(verdict), patch, json.dumps(notes), extra=tuple(creds.values())):
         verdict, patch, kept = {}, "", []
         notes = ["the agent's output held a secret value; its verdict and test changes were dropped"]
     (out / "agent-tests.patch").write_text(patch, encoding="utf-8")

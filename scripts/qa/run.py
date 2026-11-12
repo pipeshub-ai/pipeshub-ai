@@ -39,6 +39,7 @@ DEFAULT_TIMEOUT = {"it-pytest": 90 * 60, "playwright": 3600}
 DEFAULT_DEADLINE_SECONDS = 270 * 60
 # Each pytest session otherwise deletes the models it added while the previous group's records still index.
 LEAVE_MODELS = "PIPESHUB_TEST_LEAVE_SEEDED_MODELS"
+MODEL_CREDENTIALS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
 
 
 @dataclass
@@ -348,6 +349,9 @@ def _execute(cfg: Config, inv: Invocation, log_dir: Path, extra_env: dict[str, s
     log_dir.mkdir(parents=True, exist_ok=True)
     log = log_dir / f"{inv.label}.log"
     env = {**os.environ, **extra_env, **inv.env}
+    # Tests are the PR's code: they never get the model credential the QA agent signs in with.
+    for name in MODEL_CREDENTIALS:
+        env.pop(name, None)
     if inv.family == "playwright":
         env.update({k: env[src] for k, src in PLAYWRIGHT_ENV.items() if not env.get(k) and env.get(src)})
     timeout = int(os.environ.get(f"QA_TIMEOUT_{inv.family.upper().replace('-', '_')}", DEFAULT_TIMEOUT.get(inv.family, 3600)))
