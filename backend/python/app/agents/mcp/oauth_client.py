@@ -57,6 +57,12 @@ class MCPOAuthError(Exception):
         """The provider doesn't know the client (or its secret) any more."""
         return (self.error_code or "").lower() == "invalid_client"
 
+    @property
+    def unanswered(self) -> bool:
+        """The request failed before the token endpoint answered (refused, timed out, cut off):
+        an outage, not a verdict on the grant."""
+        return isinstance(self.__cause__, httpx.TransportError)
+
 
 class MCPRefreshTokenInvalidError(MCPOAuthError):
     """The provider permanently rejected the refresh token — re-authentication is required."""
@@ -129,6 +135,8 @@ async def _post_token_request(
             # The guard refuses a host that doesn't resolve with the same error as a policy block; DNS is often transient.
             reason = "host_unresolved" if chain_has(e, UnresolvableHostError, socket.gaierror) else "url_blocked"
             raise MCPOAuthError(str(e), refresh_reason=reason) from e
+        except httpx.TransportError as e:
+            raise MCPOAuthError(f"OAuth token request failed before an answer ({type(e).__name__})") from e
         content_type = resp.headers.get("content-type", "").lower()
         text = resp.text
         json_body = None
