@@ -285,5 +285,51 @@ class TestCommand(AgentCase):
         down.assert_called_once()
 
 
+class TestCombineCommand(AgentCase):
+    def pr_branch(self, number, rel, body):
+        testing.git(self.root, "checkout", "-q", "-b", f"pr{number}", self.base)
+        testing.write(self.root, rel, body)
+        sha = testing.commit(self.root, f"pr {number}")
+        testing.git(self.root, "checkout", "-q", "main")
+        return sha
+
+    def test_a_combined_run_tests_the_stacked_prs_and_reports_them(self) -> None:
+        from qa import __main__ as qa_main, run
+        a = self.pr_branch(11, "backend/python/app/services/untested.py", "x = 11\n")
+        b = self.pr_branch(12, "backend/python/app/connectors/sources/jira/sync.py", "y = 12\n")
+        self.scenario.write_text(json.dumps({"verdict": verdict(verdict="works", findings=[])}))
+        with mock.patch.object(run, "run", return_value={"schema": "qa-results/v1", "tests": [], "seconds": 0, "fatal": []}), \
+             mock.patch.object(agent.paths, "REPO", Path(__file__).resolve().parents[2]), \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            code = qa_main.main(["--out", str(self.out), "agent", "--stack", "none", "--combine-base", self.base,
+                                 "--combine", f"11:{a}:First", "--combine", f"12:{b}"])
+        self.assertEqual(code, 0)
+        doc = json.loads((self.out / "agent.json").read_text())
+        self.assertEqual([p["number"] for p in doc["combined"]["prs"]], [11, 12])
+        plan = json.loads((self.out / "plan.json").read_text())
+        self.assertEqual(plan["base"], self.base)
+        self.assertTrue((self.out / "combined.bundle").is_file())
+        self.assertIn("Combined run of #11, #12", (self.out / "report.md").read_text())
+        self.assertEqual(testing.git(self.root, "rev-list", "--merges", f"{self.base}..HEAD"), "")
+
+    def test_a_combine_that_stops_reports_why_and_tests_nothing(self) -> None:
+        from qa import __main__ as qa_main, run
+        a = self.pr_branch(11, "backend/python/app/services/untested.py", "x = 11\n")
+        with mock.patch.object(run, "run") as ran, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            code = qa_main.main(["--out", str(self.out), "agent", "--combine-base", self.base,
+                                 "--combine", f"11:{a}", "--combine", f"12:{'e' * 40}"])
+        self.assertEqual(code, 1)
+        ran.assert_not_called()
+        body = (self.out / "report.md").read_text()
+        self.assertIn("could not be stacked: #12: commit eeeeeeeeeeee is not in this checkout", body)
+        self.assertIn("Stacked before it stopped: #11.", body)
+
+    def test_a_malformed_combine_argument_is_refused(self) -> None:
+        from qa import __main__ as qa_main
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(qa_main.main(["--out", str(self.out), "agent", "--combine", "11:abc"]), 2)
+        self.assertIn("NUMBER:FULL_SHA", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

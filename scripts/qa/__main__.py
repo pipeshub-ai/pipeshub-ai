@@ -21,6 +21,7 @@ from qa import (
     agent,
     catalog,
     collect,
+    combine,
     command,
     config,
     culprit,
@@ -306,6 +307,23 @@ def cmd_agent(args) -> int:
     """Round 0 runs the rule floor; then Claude Code picks and judges further rounds, which the engine runs."""
     cfg = config.load()
     out = _out(args)
+    combined = None
+    if args.combine:
+        try:
+            prs = [_combine_arg(v) for v in args.combine]
+        except ValueError as exc:
+            print(f"qa agent: {exc}", file=sys.stderr)
+            return 2
+        try:
+            combined = combine.build(cfg.root, args.combine_base, prs, combine.claude_resolver())
+        except combine.CombineError as exc:
+            return _combine_stopped(args, out, str(exc), exc.result)
+        # A bundle needs a ref; publish fetches refs/qa/combined from it to push the combined branch.
+        subprocess.run(["git", "update-ref", "refs/qa/combined", combined["head"]], cwd=cfg.root, check=True, capture_output=True)
+        subprocess.run(["git", "bundle", "create", str(out / "combined.bundle"), f"^{combined['base']}", "refs/qa/combined"],
+                       cwd=cfg.root, check=True, capture_output=True)
+        args.base, args.head, args.since, args.range = combined["base"], combined["head"], None, None
+        config.clear_cache()
     args.adapter = "none"
     for step in (cmd_collect, cmd_impact, cmd_plan, cmd_validate):
         rc = step(args)
@@ -334,7 +352,8 @@ def cmd_agent(args) -> int:
             report.redact_results(result)
             _dump(where / "results.json", result)
 
-        doc = agent.run_agent(cfg, out, plan, run_round, sess=sess, minutes=args.minutes, max_turns=args.max_turns)
+        doc = agent.run_agent(cfg, out, plan, run_round, sess=sess, minutes=args.minutes, max_turns=args.max_turns,
+                              combined=_combined_summary(combined))
     except run._Cancelled:
         print("qa agent: cancelled", file=sys.stderr)
         return 130
@@ -352,6 +371,39 @@ def cmd_agent(args) -> int:
     rc = cmd_report(args)
     print(f"report: {out / 'report.md'}")
     return rc
+
+
+def _combine_arg(value: str) -> dict:
+    """--combine NUMBER:SHA[:TITLE]"""
+    m = re.fullmatch(r"#?(\d{1,7}):([0-9a-f]{40})(?::(.{0,200}))?", value, re.S)
+    if not m:
+        raise ValueError(f"--combine takes NUMBER:FULL_SHA[:TITLE], not {value[:60]!r}")
+    return {"number": int(m.group(1)), "sha": m.group(2), "title": (m.group(3) or "").strip()}
+
+
+def _combined_summary(combined: dict | None) -> dict | None:
+    if not combined:
+        return None
+    return {"base": combined["base"], "head": combined["head"],
+            "prs": [{k: p.get(k) for k in ("number", "sha", "title", "files", "commit")} for p in combined["prs"]],
+            "conflicts": combined["conflicts"]}
+
+
+def _combine_stopped(args, out: Path, why: str, partial: dict) -> int:
+    out.mkdir(parents=True, exist_ok=True)
+    _dump(out / "combine.json", {"stopped": why, **(partial or {})})
+    stacked = ", ".join(f"#{p['number']}" for p in (partial or {}).get("prs", []))
+    body = "\n".join([report.marker("all"), "## QA combined run — stopped", "",
+                       f"The pull requests could not be stacked: {report._one_line(why, 600)}",
+                       *([f"", f"Stacked before it stopped: {stacked}."] if stacked else []),
+                       "", "Nothing was tested. Resolve the conflict in one of the pull requests, or combine fewer of them."])
+    (out / "report.md").write_text(body + "\n", encoding="utf-8")
+    print(body)
+    if args.comment and args.pr:
+        repo = args.repo or os.environ.get("GITHUB_REPOSITORY")
+        if repo:
+            print(report.post_comment(repo, int(args.pr), body, "all"))
+    return 1
 
 
 def cmd_stack(args) -> int:
@@ -950,6 +1002,9 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--pr", type=int)
     s.add_argument("--repo")
     s.add_argument("--timeout", type=int, default=600)
+    s.add_argument("--combine", action="append", default=[], metavar="NUMBER:SHA[:TITLE]",
+                   help="stack these pull requests on --combine-base first (in order), then test the result")
+    s.add_argument("--combine-base", default="main", metavar="REF")
     s.set_defaults(fn=cmd_agent, emit_gh_outputs=False)
 
     s = sub.add_parser("stack", help="keep one managed stack up across several runs (qa run --session)")
