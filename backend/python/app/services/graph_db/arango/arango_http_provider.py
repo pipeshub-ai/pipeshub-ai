@@ -7610,6 +7610,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         per_address: int = 2,
         transaction: str | None = None,
+        *,
+        include_deleted: bool = False,
     ) -> list[dict[str, Any]]:
         if not weburls or not org_id:
             return []
@@ -7623,7 +7625,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         AND record.orgId == @org_id
                         AND record.recordType != "LINK"
                         AND record.isPlaceholder != true
-                        AND {aql_live_record("record")}
+                        AND ({"true" if include_deleted else aql_live_record("record")})
                     SORT record.isDependentNode == true, record._key
                     LIMIT @per_address
                     RETURN {{

@@ -63,14 +63,14 @@ async def drain(db: KernelDB, org: str, *, limit: int = 25000) -> int:
             return 0
         rows = await tx.fetch(r"""/* pipeshub:kg.drain_read */ SELECT id, ends FROM (
             SELECT id, ends, sum(cardinality(ends)) OVER (ORDER BY txid, id) AS run FROM (
-              SELECT id, txid, ends FROM kg.graph_changes WHERE org_id = $1 AND txid <> pg_current_xact_id() AND NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258) ORDER BY txid, id LIMIT 1000) q) r
+              SELECT id, txid, ends FROM kg.graph_changes WHERE org_id = $1 AND txid <> pg_current_xact_id() AND NOT (ends @> ARRAY['3:@demote']::text[]) AND NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258) ORDER BY txid, id LIMIT 1000) q) r
             WHERE run - cardinality(ends) < $2 ORDER BY id""", org, limit)
         if not rows:
             return 0
         # The rows behind this page, as they are now: a row whose nodes this projection re-derives from the graph is satisfied by it (it was committed, with its graph change,
         # before the projection reads), so it is acknowledged with the page instead of projecting the same nodes again later. A group that appears pulls all its members in
         # (expansion), which in a bulk import is most of the log.
-        ahead = await tx.fetch(r"""/* pipeshub:kg.drain_ahead */ SELECT id, ends FROM kg.graph_changes WHERE org_id = $1 AND txid <> pg_current_xact_id() AND NOT (id = ANY($2::bigint[])) AND NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258)
+        ahead = await tx.fetch(r"""/* pipeshub:kg.drain_ahead */ SELECT id, ends FROM kg.graph_changes WHERE org_id = $1 AND txid <> pg_current_xact_id() AND NOT (id = ANY($2::bigint[])) AND NOT (ends @> ARRAY['3:@demote']::text[]) AND NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258)
             ORDER BY id LIMIT $3""", org, [r["id"] for r in rows], AHEAD)
         st = await project(tx, org, decode(rows))
         covered = {(COLL_CODE[k[0]], k[1]) for k in st.keys}
@@ -103,7 +103,7 @@ async def drain_org(db: KernelDB, org: str, *, page: int = PAGE, max_rows: int |
 
 async def lag_in(tx: Tx, org: str) -> int:
     """Committed change-log keys not yet projected for the org, in the caller's unit (rows the drain cannot read are counted by ``quarantined``, not here)."""
-    return int(await tx.fetchval(r"/* pipeshub:kg.lag */ SELECT COALESCE(sum(cardinality(ends)), 0) FROM kg.graph_changes WHERE org_id = $1 AND NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258)", org))
+    return int(await tx.fetchval(r"/* pipeshub:kg.lag */ SELECT COALESCE(sum(cardinality(ends)), 0) FROM kg.graph_changes WHERE org_id = $1 AND NOT (ends @> ARRAY['3:@demote']::text[]) AND NOT EXISTS (SELECT 1 FROM unnest(ends) AS e WHERE e IS NULL OR e !~ '^[1-8]:[\s\S]+$' OR length(e) > 258)", org))
 
 
 async def lag(db: KernelDB, org: str) -> int:
