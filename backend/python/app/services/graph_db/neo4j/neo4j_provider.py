@@ -13066,53 +13066,63 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def get_record_by_id(
         self,
         record_id: str,
-        transaction: str | None = None
-    ) -> dict | None:
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> Record | None:
         """
         Get a record by its internal ID with associated type document (file/mail/etc.).
 
         Args:
             record_id (str): The internal record ID to look up
             transaction (Optional[str]): Optional transaction ID
+            raise_on_error (bool): Propagate a failed read instead of answering None.
+                A record that will not build is still None.
 
         Returns:
             Optional[Record]: Typed Record instance (FileRecord, MailRecord, etc.) or None
         """
+        self.logger.debug(f"🚀 Retrieving record for id {record_id}")
+
+        query = """
+        MATCH (record:Record {id: $record_id})
+        OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(typeDoc)
+        RETURN record, typeDoc
+        LIMIT 1
+        """
         try:
-            self.logger.debug(f"🚀 Retrieving record for id {record_id}")
-
-            query = """
-            MATCH (record:Record {id: $record_id})
-            OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(typeDoc)
-            RETURN record, typeDoc
-            LIMIT 1
-            """
-
             results = await self.client.execute_query(
                 query,
                 parameters={"record_id": record_id},
                 txn_id=transaction
             )
-
-            if results and len(results) > 0:
-                result = results[0]
-                record_dict = dict(result["record"])
-                record_dict = self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value)
-
-                type_doc = dict(result["typeDoc"]) if result.get("typeDoc") else None
-                if type_doc:
-                    type_doc = self._neo4j_to_arango_node(type_doc, "")
-
-                typed_record = self._create_typed_record_from_neo4j(record_dict, type_doc)
-                self.logger.debug(f"✅ Successfully retrieved record for id {record_id}")
-                return typed_record
-            else:
-                self.logger.warning(f"⚠️ No record found for id {record_id}")
-                return None
-
         except Exception as e:
-            self.logger.error(f"❌ Failed to retrieve record for id {record_id}: {str(e)}")
+            if raise_on_error:  # raised before logging: the caller that handles it logs it once
+                raise
+            self.logger.error("Failed to retrieve record for id %s: %s", record_id, type(e).__name__)
             return None
+
+        if not results:
+            self.logger.warning(f"⚠️ No record found for id {record_id}")
+            return None
+
+        result = results[0]
+        record_dict = dict(result["record"])
+        try:
+            record_dict = self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value)
+
+            type_doc = dict(result["typeDoc"]) if result.get("typeDoc") else None
+            if type_doc:
+                type_doc = self._neo4j_to_arango_node(type_doc, "")
+
+            typed_record = self._create_typed_record_from_neo4j(record_dict, type_doc)
+        except Exception as e:
+            # The builder's error quotes the whole type document.
+            self.logger.error("Failed to build record %s of type %s: %s",
+                              record_id, record_dict.get("recordType"), type(e).__name__)
+            return None
+        self.logger.debug(f"✅ Successfully retrieved record for id {record_id}")
+        return typed_record
 
     async def page_record_ids_by_type(
         self,
