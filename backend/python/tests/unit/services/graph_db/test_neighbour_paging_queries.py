@@ -63,7 +63,7 @@ async def test_the_postgres_cursor_ends_with_the_edge_key() -> None:
         async def fetchval(self, sql: str, *args: object) -> None:
             return None
 
-        async def fetch(self, sql: str, *args: object) -> list:
+        async def fetch_custom_plan(self, sql: str, *args: object) -> list:
             seen.append(sql)
             return []
 

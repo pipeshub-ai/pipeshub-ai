@@ -132,11 +132,20 @@ async def test_another_orgs_edges_are_never_returned(pg_db) -> None:
     assert len([r for page in await _walk(pg_db, b, True, IDS, TYPES, "any", 50) for r in page]) > 100
 
 
-async def test_a_malformed_cursor_is_an_error_not_a_page(pg_db) -> None:
+async def test_a_cursor_that_cannot_be_split_resumes_as_the_whole_key_always_did(pg_db) -> None:
+    """An id that holds the separator makes a cursor of more than seven parts, and any other text is no cursor of ours: the page is the rows after it in the order of the whole key, as before."""
     org = new_org()
+    await _seed(org)
+    await _admin("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'blocks', 'a1', 'blocks', v, 'CALLS', "
+                 "'{\"relationshipType\": \"CALLS\"}'::jsonb FROM unnest(ARRAY[E'p\\x01q', E'p\\x01r']) v", org)
     p = PostgresGraphProvider(logging.getLogger("hop"), pg_db)
-    with _bound(org), pytest.raises(ValueError, match="invalid cursor"):
-        await p.get_neighbors_for_nodes_by_relationship_types(["a1"], "blocks", ["CALLS"], "any", limit=5, after="not a cursor", raise_on_error=True)
+    for after in ("a1\x01outbound\x01blocks", "a1\x01outbound\x01blocks\x01p\x01q\x01CALLS\x01nodeRelations\x01CALLS"):
+        async def old(tx, after=after) -> list:
+            return list(await tx.fetch(LEGACY, org, ["nodeRelations", "recordLinks"], "blocks", ["a1"], ["CALLS"], 6, True, False, False, after))
+        with _bound(org):
+            want = [(r["anchor"], r["dir"], r["coll"], r["key"], r["page_key"]) for r in await pg_db.run(old)]
+            got = await p.get_neighbors_for_nodes_by_relationship_types(["a1"], "blocks", ["CALLS"], "outbound", limit=6, after=after, raise_on_error=True)
+        assert want and [(r["anchorKey"], r["direction"], r["collection"], r["key"], r["cursor"]) for r in got] == [(w[0], w[1], w[2], w[3], w[4]) for w in want], after
 
 
 async def test_the_provider_pages_through_the_same_rows_as_the_statement(pg_db) -> None:
@@ -178,3 +187,29 @@ async def test_a_page_of_a_node_of_any_degree_reads_about_a_page_of_its_edges(pg
             assert touched < 2500, (state, after, touched, plan)                                                         # a page's rows, not the 120,000 of the hub
             if after:
                 assert re.search(r"Index Cond: .*ROW\(", plan), plan                                                  # the cursor is a bound of the index scan
+
+
+async def test_the_page_is_planned_for_its_arguments_in_every_run_of_a_unit(pg_db) -> None:
+    """Eight pages in the one unit (one connection, so the statement's counters add up): a prepared statement may take its generic plan from the sixth run, which reads every edge of a hub whatever the cursor."""
+    org = new_org()
+    await _admin("INSERT INTO graph.edges (org_id, coll, from_coll, from_id, to_coll, to_id, ekey, doc) SELECT $1, 'nodeRelations', 'blocks', 'c' || lpad(g::text, 6, '0'), 'blocks', 'hub', 'CALLS', "
+                 "jsonb_build_object('relationshipType', 'CALLS') FROM generate_series(1, 20000) g", org)
+    p = PostgresGraphProvider(logging.getLogger("hop"), pg_db)
+    with _bound(org):
+        t = await p.begin_transaction([], [])
+    try:
+        with _bound(org):
+            await p._txn(t).run(lambda tx: tx.fetchval("SELECT set_config('plan_cache_mode', 'force_generic_plan', true)"))      # the mode the unit would be in once a prepared statement went generic
+        after = ""
+        for _ in range(8):
+            with _bound(org):
+                rows = await p.get_neighbors_for_nodes_by_relationship_types(["hub"], "blocks", ["CALLS"], "inbound", limit=50, after=after, transaction=t)
+            assert len(rows) == 50
+            after = rows[-1]["cursor"]
+        with _bound(org):
+            counts = await p._txn(t).run(lambda tx: tx.fetch("SELECT generic_plans, custom_plans FROM pg_prepared_statements "
+                                                             "WHERE statement LIKE '%pipeshub:graph.get_neighbors_for_nodes_by_relationship_types%' AND statement NOT LIKE '%pg_prepared_statements%' AND statement LIKE '%UNION ALL%'"))
+        assert len(counts) == 1 and counts[0]["generic_plans"] == 0 and counts[0]["custom_plans"] == 8, [dict(c) for c in counts]
+    finally:
+        with _bound(org):
+            await p.rollback_transaction(t)

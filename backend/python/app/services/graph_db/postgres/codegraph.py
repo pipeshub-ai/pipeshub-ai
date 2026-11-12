@@ -119,6 +119,21 @@ _HOP_PAGE_SQL = """/* pipeshub:graph.get_neighbors_for_nodes_by_relationship_typ
 _NO_AFTER = ("", "", "", "", "")
 
 
+# The page of a cursor that cannot be split (an anchor, neighbour or edge key that holds the separator): the whole key, compared as a string. Reads every edge of the anchors, so it is for that case only.
+# shortcut: a hub whose ids hold the separator pages slowly; no id of the application does.
+_HOP_PAGE_WHOLE_KEY_SQL = """/* pipeshub:graph.get_neighbors_for_nodes_by_relationship_types */ SELECT e.anchor, e.coll, e.key, e.dir,
+    coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) AS rel, e.doc,
+    concat_ws(chr(1), e.anchor, e.dir, e.coll, e.key, coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')), e.edge_coll, e.ekey) COLLATE "C" AS page_key FROM (
+    SELECT e.from_id AS anchor, e.to_coll AS coll, e.to_id AS key, 'outbound' AS dir, e.ekey, e.doc, e.coll AS edge_coll FROM graph.edges e
+      WHERE $7::bool AND e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.from_coll = $3 AND e.from_id = ANY($4::text[])
+    UNION ALL
+    SELECT e.to_id, e.from_coll, e.from_id, 'inbound', e.ekey, e.doc, e.coll FROM graph.edges e
+      WHERE $8::bool AND e.org_id = $1 AND e.coll = ANY($2::text[]) AND e.to_coll = $3 AND e.to_id = ANY($4::text[])
+        AND NOT ($9::bool AND e.from_coll = e.to_coll AND e.from_id = e.to_id)) e
+    WHERE coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')) = ANY($5::text[])
+      AND concat_ws(chr(1), e.anchor, e.dir, e.coll, e.key, coalesce(e.doc->>'relationshipType', nullif(e.ekey, '')), e.edge_coll, e.ekey) COLLATE "C" > $10::text
+    ORDER BY page_key LIMIT $6"""
+
 # With few statistics, or a cursor whose range the planner cannot size, a scan of the edges (or a bitmap of them) and a sort can look cheaper than the ordered index and a page: both are off for
 # this unit, and so is a parallel scan (a page is a few rows). The sort left is the incremental one over the index's order (an expression of the document cannot be an index column under row-level security).
 _HOP_PROFILE = "/* pipeshub:graph.hop_page_profile */ SELECT set_config('enable_bitmapscan', 'off', true), set_config('enable_seqscan', 'off', true), set_config('max_parallel_workers_per_gather', '0', true)"
@@ -143,8 +158,13 @@ def _hop_args(org: str, node_collection: str, node_keys: list[str], types: list[
 
 
 async def _hop_page(tx: Tx, org: str, node_collection: str, node_keys: list[str], types: list[str], limit: int, *, out: bool, inn: bool, both: bool, after: str) -> list[Any]:
+    try:
+        args = _hop_args(org, node_collection, node_keys, types, limit, out=out, inn=inn, both=both, after=after)
+    except ValueError:      # a cursor that does not split into its seven parts (an id holding the separator): the statement that compares the whole key resumes it, as it always did
+        return list(await tx.fetch(_HOP_PAGE_WHOLE_KEY_SQL, org, _LINK_COLLS, node_collection, node_keys, types, limit, out, inn, both, after))
     await tx.fetchval(_HOP_PROFILE)
-    return list(await tx.fetch(_HOP_PAGE_SQL, *_hop_args(org, node_collection, node_keys, types, limit, out=out, inn=inn, both=both, after=after)))
+    # a custom plan every time: after five runs a prepared statement may take the generic plan, which cannot use the cursor bound or the anchor list (as in access.py)
+    return list(await tx.fetch_custom_plan(_HOP_PAGE_SQL, *args))
 
 
 def _page_whole_ids(pointers: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:

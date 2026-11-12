@@ -1130,9 +1130,9 @@ def test_the_hop_order_indexes_are_partial_byte_ordered_and_on_every_leaf(rdb):
     """graph_0011: a page of a code-graph hop reads its anchor's edges in the order of these two indexes, on the link edges only."""
     cluster, name = rdb
     with connect(cluster, name) as c:
-        for idx, lead in (("edges_by_neighbour_in", "to_id"), ("edges_by_neighbour_out", "from_id")):
+        for idx, coll, lead in (("edges_by_neighbour_in", "to_coll", "to_id"), ("edges_by_neighbour_out", "from_coll", "from_id")):
             d = c.execute("SELECT indexdef FROM pg_indexes WHERE schemaname = 'graph' AND tablename = 'edges' AND indexname = %s", (idx,)).fetchone()[0]
-            assert f'{lead} COLLATE "C"' in d and "WHERE" in d and "nodeRelations" in d and "recordLinks" in d, d
+            assert f'{coll}, {lead} COLLATE "C"' in d and "WHERE" in d and "nodeRelations" in d and "recordLinks" in d, d
             leaves = c.execute("SELECT count(*) FROM pg_partition_tree(%s::regclass) WHERE isleaf", (f"graph.{idx}",)).fetchone()[0]
             parts = c.execute("SELECT count(*) FROM pg_partition_tree('graph.edges'::regclass) WHERE isleaf").fetchone()[0]
             assert leaves == parts and leaves > 0, (idx, leaves, parts)
