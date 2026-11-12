@@ -202,3 +202,24 @@ def test_arangodb_reached_shortcut_needs_the_browse_hop_from_the_start() -> None
     from app.services.graph_db.arango.arango_http_provider import _aql_row_from_app
 
     assert "kh_sp._id == @kh_start" in _aql_row_from_app("node", reached=True)
+
+
+def test_arangodb_stub_way_below_reads_the_reach_of_the_browse_and_a_filed_stub_stays_strict() -> None:
+    from app.services.graph_db.arango.arango_http_provider import (
+        _aql_kh_filed,
+        _aql_kh_has_children,
+        _aql_way_below,
+    )
+
+    for every_hop in (False, True):
+        assert "REACH" in _aql_way_below("v", every_hop=every_hop, from_app="REACH") and "REACH" not in _aql_way_below("v", every_hop=every_hop)
+    stub_pass, page = _aql_kh_has_children("node", exact=True, every_hop=True), _aql_kh_has_children("node", exact=True)
+    assert stub_pass.count("kh_row_from_app") > page.count("kh_row_from_app")          # a child stub is reached as the row is
+    assert "kh_row_from_app" not in _aql_kh_filed("node", every_hop=True)      # a stub only filed in the node is not
+
+
+def test_neo4j_arrow_tests_a_child_stub_with_the_row_s_reach_and_a_filed_one_strictly() -> None:
+    from app.services.graph_db.neo4j.neo4j_provider import _cypher_kh_has_children
+
+    expr = _cypher_kh_has_children("node", "RULE", "FILED", lambda v: f"CHILD({v})", "CONT", exact=True, stub_filed=lambda v: f"STRICT({v})")
+    assert "CHILD(kh_ch)" in expr and "STRICT(kh_bg)" in expr and "STRICT(kh_bc)" in expr and "CHILD(kh_bc)" not in expr

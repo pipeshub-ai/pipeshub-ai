@@ -439,7 +439,7 @@ def _cypher_kh_held(v: str, stub: Callable[[str], str], container: str) -> str:
 
 def _cypher_kh_has_children(
     v: str, rule: str, filed: str, stub: Callable[[str], str], container: str, *, exact: bool = False, chain_tops: bool = True,
-    reached: str = "true",
+    reached: str = "true", stub_filed: Callable[[str], str] | None = None,
 ) -> str:
     """Whether expanding ``v`` would list a child: a hierarchy child that passes
     the browse's own ``rule`` (``_kh_v3_child_rule``), or, where ``filed`` says
@@ -464,10 +464,10 @@ def _cypher_kh_has_children(
     def held(var: str, cond: str = "true") -> str:
         """Some record belonging to ``v`` that the expansion would list, under ``cond``."""
         return (f"EXISTS {{ ({var}:Record)-[:BELONGS_TO]->({v}) WHERE NOT coalesce({var}.isDeleted, false)"
-                f" AND {var}.orgId = $org_id AND {_cypher_read_by_app(var)} {stub(var) if exact else ''}"
+                f" AND {var}.orgId = $org_id AND {_cypher_read_by_app(var)} {(stub_filed or stub)(var) if exact else ''}"
                 f" AND ({cond}) }}")
 
-    holds = _cypher_kh_held(v, stub, container) if exact and chain_tops else "false"
+    holds = _cypher_kh_held(v, stub_filed or stub, container) if exact and chain_tops else "false"
     # A declared group on the page was admitted by the listing, so it is its own scope: the groups below it and
     # the records that belong to it are what the rule reads from the scope an expansion carries.
     in_scope = (f"({declared} AND NOT coalesce(kh_ch.isDeleted, false) AND (kh_ch:RecordGroup"
@@ -21546,13 +21546,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if transaction is None else self._kh_v3_name_matches(org_id, search, state=state, transaction=transaction)
             )
 
-        def placeholder_test(v: str) -> str:
+        def placeholder_test(v: str, reached: str = "false") -> str:
+            """A stub is listed when a readable node lies below it. ``reached``: whether the browse reaches the stub from the App (a child of the
+            browsed folder: its ``fromApp``); below it the hops read as an expansion of it reads them. A stub only filed in a node is not reached."""
             if not lists_placeholders:
                 return f"AND NOT {self._kh_placeholder(v, state=state)}"
             # A browse shows a stub only as the way to something readable below it: a path of hierarchy hops, each of which passes the
             # browse rule, ending at a node that is no stub.
             below = self._kh_v3_child_rule(
-                "kh_xs", "kh_xp", from_app="false", opens=app_opens, state=state, grant_once=grant_once)
+                "kh_xs", "kh_xp", from_app=reached, opens=app_opens, state=state, grant_once=grant_once)
             return (f"AND (NOT {self._kh_placeholder(v, state=state)} OR EXISTS {{ ({v}) "
                     f"((kh_xp)-[kh_xr:NODE_RELATION]->(kh_xs) WHERE kh_xr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
                     f"AND ({below})){{1,50}} (kh_xz) WHERE NOT {self._kh_placeholder('kh_xz', state=state)} }})")
@@ -21582,7 +21584,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "OR toUpper(coalesce(node.recordType, '')) = 'FOLDER')"
             )
             expr = _cypher_kh_has_children(
-                "node", rule, app_opens, placeholder_test, container, exact=not flatten, chain_tops=not row,
+                "node", rule, app_opens, lambda v: placeholder_test(v, row_from_app), container, exact=not flatten, chain_tops=not row,
+                stub_filed=placeholder_test,
                 reached=row_from_app if row and scoped_start and not flatten else "true")
             # $grantedIds holds only the App's direct children here: every grant test, the rule's and the
             # cheap reject's alike, is read from the node.
@@ -22085,7 +22088,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         WHERE (node:Record OR node:RecordGroup)
           AND node.id IS NOT NULL
           AND node.orgId = $org_id
-          {placeholder_test("node")}
+          {placeholder_test("node", "true")}
         WITH {slim} AS node
         {tail}
         {enrich}
@@ -22123,7 +22126,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                          AND n <> start
                          AND n.orgId = $org_id
                          AND n.id IS NOT NULL
-                         {placeholder_test("n")}] AS rawNodes
+                         {placeholder_test("n", "fromApp")}] AS rawNodes
             UNWIND rawNodes + [null] AS node
             WITH app, fromApp, CASE WHEN node IS NULL THEN true ELSE false END AS sentinel,
                  CASE WHEN node IS NULL THEN {{
