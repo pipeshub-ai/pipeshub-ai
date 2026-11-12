@@ -122,9 +122,10 @@ _DELAY_POLL_INTERVAL_SECONDS = 1.0
 # How often the consume loop checks for offsets held past the dwell budget.
 # Cheap (a scan of the outstanding sets) but pointless every iteration.
 _DWELL_SWEEP_INTERVAL_SECONDS = 30.0
-# Poll timeout used while the scheduler still has buffered work to dispatch.
-# Short on purpose: the loop has something to do, so waiting for new messages
-# is pure added latency on everything already read.
+# Longest the fair loop waits for a delivery to finish while it has work it
+# cannot dispatch yet. A finish ends the wait at once; this bounds it for what
+# no finish signals (a backoff coming due, a downstream pause lifting, records
+# on another partition). Also the poll timeout parallel dispatch keeps.
 _BUSY_POLL_TIMEOUT_MS = 50
 # Sentinel CompositeKeyExtractor uses for an absent fairness field.
 _DEFAULT_KEY_LEVEL = "__default__"
@@ -337,6 +338,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._partitions_with_data: set[TopicPartition] = set()
         # Partitions revoked since the last poll; see __read_phase.
         self._revoked_since_poll: set[TopicPartition] = set()
+        # Set by every finish, cleared by the dispatch phase; see
+        # __wait_for_finish. Made again by start(): a stop() leaves it set, and
+        # an Event binds to the first loop that waits on it.
+        self._finished = asyncio.Event()
         # Bumped on every revocation: a delivery of an earlier assignment settles nothing, however late it ends.
         self._partition_epoch: dict[TopicPartition, int] = {}
         self._deferred_messages: deque[
@@ -706,6 +711,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             self.running = True
             self.message_handler = message_handler
             self.main_loop = asyncio.get_running_loop()
+            self._finished = asyncio.Event()
 
             if not self.consumer:
                 await self.initialize()
@@ -1059,6 +1065,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         retry_current: bool,
         record_key: str | None = None,
     ) -> None:
+        self._finished.set()
         if record_key is not None:
             # Parallel dispatch: the partition was never reserved or paused
             # for this message, so there is nothing to resume. Lane pauses and
@@ -1227,17 +1234,28 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # __apply_backpressure has paused every partition in that case, so
         # the call returns nothing; the floor of 1 only matters if a
         # partition slips through, and that message is seeked back.
-        # Do not block for new messages while the buffer already holds work.
-        # Read and dispatch alternate, so a full-length poll here delays the
-        # dispatch of everything already buffered by the whole timeout --
-        # which caps throughput at (partitions / timeout) records per second
-        # no matter how much is waiting.
-        # Remembered messages are buffered work too: a full-length poll here
-        # would hold each fetch-back for the whole timeout.
-        poll_timeout_ms = (
-            _BUSY_POLL_TIMEOUT_MS
-            if scheduler.pending_count
+        # Do not block for new messages while the buffer holds work (remembered
+        # messages included): read and dispatch alternate, so a long poll here
+        # delays everything already buffered. While a record is in flight its
+        # partition is paused under it and only its finish frees the next one,
+        # but a finish does not wake getmany(): any poll timeout then caps a
+        # partition at one record per timeout. So poll without blocking and
+        # wait for the finish instead (__wait_for_finish).
+        holds_work = bool(
+            scheduler.pending_count
             or (self._remembered is not None and self._remembered.total)
+        )
+        with self._partition_lock:
+            in_flight = bool(self._in_flight_partitions)
+        # shortcut: parallel dispatch keeps the busy poll timeout. It commits once
+        # per record and aiokafka commits one at a time, so waking on every finish
+        # outruns the commits; upgrade once commits are coalesced per partition.
+        wait_for_finish = in_flight and not self.__parallel_dispatch()
+        poll_timeout_ms = (
+            0
+            if wait_for_finish
+            else _BUSY_POLL_TIMEOUT_MS
+            if holds_work
             else messaging_env.message_timeout_ms
         )
         max_records = max(
@@ -1265,6 +1283,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # only a revocation from here on makes a partition's batch stale.
         self._revoked_since_poll.clear()
         if not message_batch:
+            if wait_for_finish:
+                await self.__wait_for_finish()
             return
 
         pre_parsed = await self.__parse_batch(message_batch)
@@ -1338,6 +1358,18 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     self.__pause_lane(tp, blocked_key)
                     break
         await self.__resolve_settled(settled_reached, settled)
+
+    async def __wait_for_finish(self) -> None:
+        """Wait for a delivery to finish, for at most _BUSY_POLL_TIMEOUT_MS.
+
+        Returns at once if one finished since the last dispatch phase. The poll
+        itself is never cancelled instead: aiokafka then never ends that poll's
+        fetch_context, and max_poll_interval_ms stops being enforced.
+        """
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                self._finished.wait(), timeout=_BUSY_POLL_TIMEOUT_MS / 1000
+            )
 
     async def __parse_batch(
         self, message_batch: dict[TopicPartition, list[ConsumerRecord]]
@@ -2005,6 +2037,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         if scheduler is None:
             return
 
+        # Every finish so far is seen by this phase; only a later one frees more.
+        self._finished.clear()
         parallel = self.__parallel_dispatch()
         budget = self._dispatch_budget()
 
