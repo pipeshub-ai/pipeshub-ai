@@ -4225,3 +4225,69 @@ async def test_a_normal_full_syncs_cleanup_spares_a_file_on_an_undecided_list(ws
     _drop_the_audience_shares(ws, "g1")
     await ws.sync()
     assert "g1" not in ws.records.records, "a clean answer settles it"
+
+
+@pytest.mark.parametrize("bob", ["leaves the drive", "is no longer synced"])
+async def test_a_parked_shared_drive_removal_is_settled_after_every_synced_member_leaves_the_drive(
+    ws: Workspace, bob: str
+) -> None:
+    from app.connectors.sources.google.drive.utils.folder_filter_utils import (
+        MAX_UNRECOGNISED_403_RUNS,
+    )
+
+    ws.world.add_user(CAROL)  # in the account, not a user of this deployment
+    ws.world.add_drive("sd-1", "Team", {BOB: "writer", CAROL: "reader"})
+    ws.world.add_item("d", "d.txt", parent="sd-1", perms=[])
+    await ws.sync()
+    ws.world.cut_user_listing = {CAROL}  # Carol, who may still open it, is not asked
+    ws.world.delete("d")
+    for _ in range(MAX_UNRECOGNISED_403_RUNS):
+        await ws.sync()
+    assert "d" in ws.records.records
+
+    # No synced user walks the drive any more. One no longer synced cannot be asked, and is not.
+    if bob == "leaves the drive":
+        del ws.world.drives["sd-1"]["members"][BOB]
+    else:
+        ws.records.active_users = [u for u in ws.records.active_users if u.email != BOB]
+        ws.http.fail("GET", "/drive/v3/files/d", 401, "authError", when=lambda r: r.identity == BOB)
+    await ws.sync()
+    assert "d" in ws.records.records, "still undecided: Carol is not asked"
+
+    ws.world.cut_user_listing = None
+    await ws.sync()
+    assert "d" not in ws.records.records, "checked again without Bob's drive run: nobody can open it"
+
+
+async def test_an_unreadable_undecided_index_makes_the_run_incomplete_and_removes_nothing(
+    ws: Workspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.connectors.sources.google.drive.team.connector import (
+        UNDECIDED_REMOVAL_KEYS_SYNC_POINT_KEY,
+    )
+
+    await _park_undecided_removals(ws, "g1")
+    _read_everything_in_full_next_run(ws)
+    ws.world.delete("e")  # a stale record a complete full sync would remove
+    real_get = ws.sync_points.get_sync_point
+
+    async def get_sync_point(key: str, raise_on_error: bool = False) -> dict | None:
+        if key.endswith(UNDECIDED_REMOVAL_KEYS_SYNC_POINT_KEY):
+            raise RuntimeError("store unavailable")
+        return await real_get(key, raise_on_error)
+
+    monkeypatch.setattr(ws.sync_points, "get_sync_point", get_sync_point)
+    await ws.sync()
+    assert ws.incomplete
+    assert {"g1", "e"} <= set(ws.records.records) and ws.records.deleted == []
+
+
+async def test_a_parked_removal_of_a_user_no_longer_synced_is_still_settled(ws: Workspace) -> None:
+    await _park_undecided_removals(ws, "g1")
+    ws.records.active_users = [u for u in ws.records.active_users if u.email != BOB]  # Bob's runs stop
+    await ws.sync()
+    assert "g1" in ws.records.records, "still undecided"
+
+    _drop_the_audience_shares(ws, "g1")
+    await ws.sync()
+    assert "g1" not in ws.records.records, "checked again without Bob's run: nobody can open it"
